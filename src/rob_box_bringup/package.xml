@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rob_box_bringup</name>
+  <version>0.0.1</version>
+  <description>Meta-package for launching the entire rob_box system</description>
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rob_box_description</depend>
+  <depend>rob_box_navigation</depend>
+  <depend>rob_box_control</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+</package>
