@@ -2,13 +2,23 @@
 <package format="3">
   <name>rob_box_bringup</name>
   <version>0.0.1</version>
-  <description>Meta-package for launching the entire rob_box system</description>
+  <description>
+    Meta-package for launching the entire rob_box system, an autonomous wheeled rover powered by ROS2.
+    This package includes:
+    - MAVLink communication setup
+    - SLAM and navigation configuration
+    - Control system integration
+    - Robot description (URDF)
+  </description>
   <maintainer email="your_email@example.com">Your Name</maintainer>
   <license>Apache-2.0</license>
 
+  <!-- Dependencies -->
   <depend>rob_box_description</depend>
   <depend>rob_box_navigation</depend>
   <depend>rob_box_control</depend>
 
+  <!-- Exec dependencies -->
   <exec_depend>ros2launch</exec_depend>
+  <exec_depend>turtlesim</exec_depend> <!-- For testing purposes -->
 </package>
