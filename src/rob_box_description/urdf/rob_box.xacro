@@ -104,8 +104,8 @@
 	<xacro:rocker name="left_rocker" side="1" side_x="-0.05"/>
 	<xacro:rocker name="right_rocker" side="-1" side_x="0.05"/>
 	<!-- Использование макросов -->
-	<xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="1.5708" side="1"/>
-	<xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="1.5708" side="1"/>
-	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="-1.5708" side="-1" />
-	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="-1.5708" side="-1"/>
+	<xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
+	<xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
+	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="-1.5708" side="-1" />
+	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
 </robot>
