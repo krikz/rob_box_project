@@ -1,0 +1,5 @@
+{
+  "urdf-visualizer.packages": {
+    "rob_box_description": "src/rob_box_description"
+  }
+}

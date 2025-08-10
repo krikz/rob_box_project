@@ -42,7 +42,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/> <!-- Поворот на 90 градусов (π/2) вокруг оси X -->
       <geometry>
-        <cylinder radius="${wheel_radius}" length="${wheel_length}"/>
+        <mesh filename="package://rob_box_description/meshes/wheel.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="black"/>
     </visual>
