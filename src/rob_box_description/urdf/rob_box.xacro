@@ -37,17 +37,19 @@
   </link>
 
   <!-- Макросы -->
-<xacro:macro name="wheel" params="name parent_link origin_xyz">
+<xacro:macro name="wheel" params="name parent_link origin_xyz rotation_z">
   <link name="${name}">
     <visual>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/> <!-- Поворот на 90 градусов (π/2) вокруг оси X -->
+      <origin xyz="0 0 0" rpy="1.5708 0 ${rotation_z}"/> <!-- Поворот на 90 градусов вокруг X и Z -->
       <geometry>
         <mesh filename="package://rob_box_description/meshes/wheel.stl" scale="0.001 0.001 0.001"/>
       </geometry>
-      <material name="black"/>
+      <material name="black">
+        <color rgba="0 0 0 1"/> <!-- Черный цвет -->
+      </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/> <!-- Поворот на 90 градусов (π/2) вокруг оси X -->
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/> <!-- Поворот на 90 градусов вокруг оси X -->
       <geometry>
         <cylinder radius="${wheel_radius}" length="${wheel_length}"/>
       </geometry>
@@ -67,42 +69,45 @@
   </joint>
 </xacro:macro>
 
-  <xacro:macro name="rocker" params="name side">
-    <link name="${name}">
-      <visual>
-        <origin xyz="0 0 0" rpy="0 0 0"/>
-        <geometry>
-          <mesh filename="package://rob_box_description/meshes/rocker.stl" scale="0.001 0.001 0.001"/>
-        </geometry>
-        <material name="black"/>
-      </visual>
-      <collision>
-        <origin xyz="0 0 0" rpy="0 0 0"/>
-        <geometry>
-          <box size="${rocker_length} ${rocker_width} ${rocker_thickness}"/>
-        </geometry>
-      </collision>
-      <inertial>
-        <mass value="${rocker_mass}"/>
-        <origin xyz="0 0 0"/>
-        <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
-      </inertial>
-    </link>
-    <joint name="${name}_joint" type="revolute">
-      <parent link="base_link"/>
-      <child link="${name}"/>
-      <origin xyz="0 ${side * 0.23048} 0.09425" rpy="0 0 0"/>
-      <axis xyz="0 1 0"/>
-      <limit effort="10" velocity="1" lower="-0.5" upper="0.5"/>
-    </joint>
-  </xacro:macro>
+<xacro:macro name="rocker" params="name side rotation_z">
+  <link name="${name}">
+    <visual>
+      <origin xyz="0 -0.1 -0.1" rpy="0 3.1416 ${rotation_z}"/> <!-- Поворот вокруг оси Z -->
+      <geometry>
+        <mesh filename="package://rob_box_description/meshes/rocker.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0 0 1 1"/> <!-- Черный цвет -->
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${rocker_length} ${rocker_width} ${rocker_thickness}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${rocker_mass}"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+
+  <joint name="${name}_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="${name}"/>
+    <origin xyz="0 ${side * 0.23048} 0.09425" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="10" velocity="1" lower="-0.5" upper="0.5"/>
+  </joint>
+</xacro:macro>
 
   <!-- Использование макросов -->
-  <xacro:rocker name="left_rocker" side="1"/>
-  <xacro:rocker name="right_rocker" side="-1"/>
-  <xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.025"/>
-  <xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.025"/>
-  <xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.025"/>
-  <xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.025"/>
-
+<xacro:rocker name="left_rocker" side="1" rotation_z="-1.5708"/>
+<xacro:rocker name="right_rocker" side="-1" rotation_z="-1.5708"/>
+  <!-- Использование макросов -->
+  <xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="1.5708"/>
+  <xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="1.5708"/>
+  <xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="-1.5708"/>
+  <xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="-1.5708"/>
 </robot>
