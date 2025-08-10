@@ -69,15 +69,15 @@
   </joint>
 </xacro:macro>
 
-<xacro:macro name="rocker" params="name side rotation_z">
+<xacro:macro name="rocker" params="name side side_x">
   <link name="${name}">
     <visual>
-      <origin xyz="0 -0.1 -0.1" rpy="0 3.1416 ${rotation_z}"/> <!-- Поворот вокруг оси Z -->
+      <origin xyz="0 ${side_x} -0.11" rpy="0 3.1416 -1.5708"/> <!-- Поворот вокруг оси Z -->
       <geometry>
         <mesh filename="package://rob_box_description/meshes/rocker.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="black">
-        <color rgba="0 0 1 1"/> <!-- Черный цвет -->
+        <color rgba="0 0 1 1"/>
       </material>
     </visual>
     <collision>
@@ -103,8 +103,8 @@
 </xacro:macro>
 
   <!-- Использование макросов -->
-<xacro:rocker name="left_rocker" side="1" rotation_z="-1.5708"/>
-<xacro:rocker name="right_rocker" side="-1" rotation_z="-1.5708"/>
+<xacro:rocker name="left_rocker" side="1" side_x="-0.06"/>
+<xacro:rocker name="right_rocker" side="-1" side_x="0.10"/>
   <!-- Использование макросов -->
   <xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="1.5708"/>
   <xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="1.5708"/>
