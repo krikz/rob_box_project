@@ -74,7 +74,7 @@
     <visual>
       <origin xyz="0 0 -0.11" rpy="0 3.1416  -1.5708"/> <!-- Поворот вокруг оси Z -->
       <geometry>
-        <mesh filename="package://rob_box_description/meshes/rocker.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://rob_box_description/meshes/rocker.stl" scale="${side * 0.001} 0.001 0.001"/>
       </geometry>
       <material name="black">
         <color rgba="0 0 1 1"/>
