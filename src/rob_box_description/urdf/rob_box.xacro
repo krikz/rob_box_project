@@ -21,6 +21,18 @@
 				<color rgba="1 1 1 1"/>
 			</material>
 		</visual>
+		<!-- Меш body_case.stl -->
+		<visual>
+			<origin xyz="0 -0.18 -0.02" rpy="0 0 -1.5708"/>
+			<!-- Позиция и ориентация меша -->
+			<geometry>
+				<mesh filename="package://rob_box_description/meshes/body_case.stl" scale="0.001 0.001 0.001"/>
+			</geometry>
+			<material name="silver">
+				<color rgba="0.75 0.75 0.75 1"/>
+				<!-- Серый цвет -->
+			</material>
+		</visual>
 		<collision>
 			<origin xyz="0 0 0.0565" rpy="0 0 0"/>
 			<geometry>
@@ -106,6 +118,6 @@
 	<!-- Использование макросов -->
 	<xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
 	<xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
-	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="-1.5708" side="-1" />
+	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
 	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
 </robot>
