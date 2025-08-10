@@ -34,10 +34,10 @@
 		</inertial>
 	</link>
 	<!-- Макросы -->
-	<xacro:macro name="wheel" params="name parent_link origin_xyz rotation_z">
+	<xacro:macro name="wheel" params="name parent_link origin_xyz rotation_z side">
 		<link name="${name}">
 			<visual>
-				<origin xyz="0 0 0.14" rpy="1.5708 0 ${rotation_z}"/>
+				<origin xyz="${-0.0035*side} 0 0.1451" rpy="1.5708 0 ${rotation_z}"/>
 				<!-- Поворот на 90 градусов вокруг X и Z -->
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/wheel.stl" scale="0.001 0.001 0.001"/>
@@ -48,7 +48,7 @@
 				</material>
 			</visual>
 			<collision>
-				<origin xyz="0 0 0" rpy="1.5708 0 0"/>
+				<origin xyz="0 ${0.05*side} 0" rpy="1.5708 0 0"/>
 				<!-- Поворот на 90 градусов вокруг оси X -->
 				<geometry>
 					<cylinder radius="${wheel_radius}" length="${wheel_length}"/>
@@ -104,8 +104,8 @@
 	<xacro:rocker name="left_rocker" side="1" side_x="-0.05"/>
 	<xacro:rocker name="right_rocker" side="-1" side_x="0.05"/>
 	<!-- Использование макросов -->
-	<xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="1.5708"/>
-	<xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="1.5708"/>
-	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="-1.5708"/>
-	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="-1.5708"/>
+	<xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="1.5708" side="1"/>
+	<xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="1.5708" side="1"/>
+	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.025" rotation_z="-1.5708" side="-1" />
+	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.025" rotation_z="-1.5708" side="-1"/>
 </robot>
