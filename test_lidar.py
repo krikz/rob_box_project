@@ -1,7 +1,6 @@
 import serial
 import matplotlib.pyplot as plt
 import numpy as np
-import struct
 import time
 
 # Настройки последовательного порта
@@ -34,7 +33,7 @@ line, = ax.plot([], [], lw=2)
 distances = np.zeros(360)
 
 def calculate_crc(data):
-    """Расчет CRC8 для N10"""
+    """Расчет CRC8 для N10 согласно спецификации"""
     crc = 0
     for byte in data[:-1]:
         crc += byte
@@ -73,11 +72,12 @@ def parse_packet(packet):
             continue
         
         # Преобразуем в метры
-        distance_m = distance_raw / 1000.0
+        distance_m = distance_raw / 100.0
         
         # Вычисляем угол
         angle = start_angle + (i * angle_step)
         angle = angle % 360
+        
         
         distances.append(distance_m)
         angles.append(angle)
