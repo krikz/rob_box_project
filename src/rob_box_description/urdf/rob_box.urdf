@@ -207,7 +207,7 @@
     <origin rpy="0 0 0" xyz="-0.14467 0 -0.11"/>
     <axis xyz="0 1 0"/>
   </joint>
-  <link name="lidar">
+  <link name="lslidar_n10">
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
@@ -229,38 +229,44 @@
       <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
     </inertial>
   </link>
-  <joint name="lidar_joint" type="fixed">
+  <joint name="lslidar_n10_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="lidar"/>
+    <child link="lslidar_n10"/>
     <origin rpy="0 0 0" xyz="0.25 0 0.2"/>
   </joint>
-  <link name="depth_camera">
-    <visual>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
-      <geometry>
-        <box size="0.0175 0.091 0.028"/>
-      </geometry>
-      <material name="gray">
-        <color rgba="0.5 0.5 0.5 1"/>
-      </material>
-    </visual>
-    <collision>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
-      <geometry>
-        <box size="0.0175 0.091 0.028"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <mass value="0.2"/>
-      <origin xyz="0 0 0"/>
-      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
-    </inertial>
-  </link>
-  <joint name="depth_camera_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="depth_camera"/>
-    <origin rpy="0 0 0" xyz="0.29 0 0.167"/>
-  </joint>
+  <gazebo reference="lslidar_n10">
+    <sensor name="lslidar_n10_sensor" type="gpu_lidar">
+      <pose>0 0 0 0 0 0</pose>
+      <topic>/scan</topic>
+      <update_rate>10</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>640</samples>
+            <resolution>1</resolution>
+            <min_angle>-1.396263</min_angle>
+            <max_angle>1.396263</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>1</samples>
+            <resolution>0.01</resolution>
+            <min_angle>0</min_angle>
+            <max_angle>0</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.08</min>
+          <max>10.0</max>
+          <resolution>0.01</resolution>
+        </range>
+      </ray>
+      <always_on>1</always_on>
+      <visualize>true</visualize>
+    </sensor>
+    <plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+  </gazebo>
   <link name="rgb_camera">
     <visual>
       <origin rpy="1.5708 0 0" xyz="0 0 0"/>
@@ -288,4 +294,26 @@
     <child link="rgb_camera"/>
     <origin rpy="0 0 0" xyz="0.25 0.2 0.167"/>
   </joint>
+  <gazebo reference="rgb_camera">
+    <sensor name="rgb_camera_sensor" type="camera">
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>100</far>
+        </clip>
+      </camera>
+      <topic>/camera/image_raw</topic>
+      <update_rate>30</update_rate>
+      <always_on>1</always_on>
+      <visualize>true</visualize>
+    </sensor>
+    <plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+  </gazebo>
 </robot>

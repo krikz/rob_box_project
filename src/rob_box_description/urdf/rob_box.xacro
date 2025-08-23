@@ -110,7 +110,7 @@
 	</xacro:macro>
 
 	<!-- Сенсоры -->
-	<xacro:macro name="lidar" params="name parent_link origin_xyz">
+	<xacro:macro name="lidar" params="name parent_link origin_xyz topic_name">
 		<link name="${name}">
 			<visual>
 				<origin xyz="0 0 0" rpy="0 0 0"/>
@@ -138,39 +138,42 @@
 			<child link="${name}"/>
 			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
 		</joint>
+		<gazebo reference="${name}">
+			<sensor name="${name}_sensor" type="gpu_lidar">
+				<pose>0 0 0 0 0 0</pose>
+				<topic>${topic_name}</topic>
+				<update_rate>10</update_rate>
+				<ray>
+					<scan>
+						<horizontal>
+							<samples>640</samples>
+							<resolution>1</resolution>
+							<min_angle>-1.396263</min_angle>
+							<max_angle>1.396263</max_angle>
+						</horizontal>
+						<vertical>
+							<samples>1</samples>
+							<resolution>0.01</resolution>
+							<min_angle>0</min_angle>
+							<max_angle>0</max_angle>
+						</vertical>
+					</scan>
+					<range>
+						<min>0.08</min>
+						<max>10.0</max>
+						<resolution>0.01</resolution>
+					</range>
+				</ray>
+				<always_on>1</always_on>
+				<visualize>true</visualize>
+			</sensor>
+			<plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
+				<render_engine>ogre2</render_engine>
+			</plugin>
+		</gazebo>
 	</xacro:macro>
 
-	<xacro:macro name="depth_camera" params="name parent_link origin_xyz">
-		<link name="${name}">
-			<visual>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
-				<geometry>
-					<box size="0.0175 0.091 0.028"/>
-				</geometry>
-				<material name="gray">
-					<color rgba="0.5 0.5 0.5 1"/>
-				</material>
-			</visual>
-			<collision>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
-				<geometry>
-					<box size="0.0175 0.091 0.028"/>
-				</geometry>
-			</collision>
-			<inertial>
-				<mass value="0.2"/>
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
-			</inertial>
-		</link>
-		<joint name="${name}_joint" type="fixed">
-			<parent link="${parent_link}"/>
-			<child link="${name}"/>
-			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
-		</joint>
-	</xacro:macro>
-
-	<xacro:macro name="rgb_camera" params="name parent_link origin_xyz">
+	<xacro:macro name="rgb_camera" params="name parent_link origin_xyz topic_name">
 		<link name="${name}">
 			<visual>
 				<origin xyz="0 0 0" rpy="1.5708 0 0"/>
@@ -198,6 +201,28 @@
 			<child link="${name}"/>
 			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
 		</joint>
+		<gazebo reference="${name}">
+			<sensor name="${name}_sensor" type="camera">
+				<camera>
+					<horizontal_fov>1.047</horizontal_fov>
+					<image>
+						<width>640</width>
+						<height>480</height>
+					</image>
+					<clip>
+						<near>0.1</near>
+						<far>100</far>
+					</clip>
+				</camera>
+				<topic>${topic_name}</topic>
+				<update_rate>30</update_rate>
+				<always_on>1</always_on>
+				<visualize>true</visualize>
+			</sensor>
+			<plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
+				<render_engine>ogre2</render_engine>
+			</plugin>
+		</gazebo>
 	</xacro:macro>
 
 	<!-- Использование макросов -->
@@ -209,7 +234,6 @@
 	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
 
 	<!-- Сенсоры -->
-	<xacro:lidar name="lidar" parent_link="base_link" origin_xyz="0.25 0 0.2"/>
-	<xacro:depth_camera name="depth_camera" parent_link="base_link" origin_xyz="0.29 0 0.167"/>
-	<xacro:rgb_camera name="rgb_camera" parent_link="base_link" origin_xyz="0.25 0.2 0.167"/>
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="0.25 0 0.2" topic_name="/scan"/>
+	<xacro:rgb_camera name="rgb_camera" parent_link="base_link" origin_xyz="0.25 0.2 0.167" topic_name="/camera/image_raw"/>
 </robot>
