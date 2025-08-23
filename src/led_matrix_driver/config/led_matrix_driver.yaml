@@ -1,0 +1,10 @@
+led_matrix_driver:
+  ros__parameters:
+    # Общее количество светодиодов в цепочке
+    num_leds: 125    
+    # Скорость SPI в кГц
+    spi_speed_khz: 1300    
+    # SPI устройство
+    spi_device: '/dev/spidev0.0' 
+    # Топик для приема данных
+    input_topic: 'led_matrix/data'

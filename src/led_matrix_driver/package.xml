@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>led_matrix_driver</name>
+  <version>0.0.1</version>
+  <description>ROS 2 driver for LED matrix displays with flexible configuration</description>
+  <maintainer email="user@example.com">Your Name</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  
+  <exec_depend>pi5neo</exec_depend>
+  <exec_depend>spidev</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
