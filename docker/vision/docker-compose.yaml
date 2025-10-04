@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   oak-d:
-    image: depthai/depthai-ros:humble
+    image: luxonis/depthai-ros:humble-latest
     container_name: oak-d
     network_mode: host
     devices:
