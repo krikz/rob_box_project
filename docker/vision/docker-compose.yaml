@@ -7,25 +7,29 @@ services:
     network_mode: host
     privileged: true
     environment:
+      - ROS_DOMAIN_ID=0
       - DISPLAY=:0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - ./config:/config  # Монтируем всю папку конфигов
+      - /dev/shm:/dev/shm
     command: >
       bash -c "source /opt/ros/humble/setup.bash && 
       ros2 launch depthai_ros_driver camera.launch.py 
       params_file:=/config/oak_d_config.yaml
       rs_compat:=true"
     restart: unless-stopped
+    
   apriltag:
     image: husarion/apriltag:humble
     container_name: apriltag
     network_mode: host
     environment:
-      - ROS_MASTER_URI=http://10.1.1.10:11311
       - ROS_DOMAIN_ID=0
     volumes:
       - ./config:/config
+      - /dev/shm:/dev/shm
     command: >
       bash -c "source /opt/ros/humble/setup.bash && 
       ros2 run apriltag_ros apriltag_node --ros-args
