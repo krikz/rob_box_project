@@ -13,15 +13,16 @@ services:
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
       frame_id:=base_link
-      subscribe_stereo:=true
-      left_image_topic:=/stereo_inertial_publisher/left/image_rect
-      right_image_topic:=/stereo_inertial_publisher/right/image_rect
-      left_camera_info_topic:=/stereo_inertial_publisher/left/camera_info
-      right_camera_info_topic:=/stereo_inertial_publisher/right/camera_info
+      stereo:=true
+      left_image_topic:=/camera/camera/infra1/image_rect_raw
+      right_image_topic:=/camera/camera/infra2/image_rect_raw
+      left_camera_info_topic:=/camera/camera/infra1/camera_info
+      right_camera_info_topic:=/camera/camera/infra2/camera_info
       subscribe_scan:=true
       scan_topic:=/scan
       visual_odometry:=false
-      rtabmap_args:="--delete_db_on_start"
+      rtabmap_args:="--delete_db_on_start --Stereo/MaxDisparity 200 --Vis/CorFlowMaxLevel 5"
       compressed:=true
       approx_sync:=true
+      wait_for_transform:=0.2
     restart: unless-stopped
