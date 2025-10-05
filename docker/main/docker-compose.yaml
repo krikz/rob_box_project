@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:    
+  rtabmap:
+    image: rtabmap:latest
+    container_name: rtabmap
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
+      - ./maps:/maps
+    command: ros2 launch rtabmap rtabmap.launch.py
+    restart: unless-stopped
+    
+  micro-ros-agent:
+    image: micro-ros-agent:latest
+    container_name: micro-ros-agent
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/ttyS0:/dev/ttyS0  # UART для Sensor Hub
+    environment:
+      - ROS_DOMAIN_ID=0
+    command: micro_ros_agent serial --dev /dev/ttyS0
+    restart: unless-stopped

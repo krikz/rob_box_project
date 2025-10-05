@@ -1,0 +1,12 @@
+camera:
+  i_nn_type: none  # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
+  i_pipeline_type: "RGBD"
+  i_rgb_resolution: "1080p"
+  i_stereo_width: 1280
+  i_stereo_height: 720
+  i_fps: 15.0  # Снижаем FPS для Raspberry Pi
+  i_enable_ir: false  # Отключаем ИК, если не используется
+  i_laser_dot_brightness: 0  # Отключаем лазер
+  i_floodlight_brightness: 0  # Отключаем прожектор
+  i_publish_tf_from_calibration: true  # Важно для RTAB-Map
+  i_tf_base_frame: "base_link"  # Должно совпадать с вашей URDF
