@@ -23,9 +23,9 @@ services:
       scan_topic:=/scan
       visual_odometry:=false
       rtabmap_args:="--delete_db_on_start --Stereo/MaxDisparity 200 --Vis/CorFlowMaxLevel 5"
-      compressed:=false  # Отключено сжатие
+      compressed:=false
       approx_sync:=true
       wait_for_transform:=0.2
-      rtabmapviz:=false  # Отключен GUI
-      rviz:=false        # Отключен RViz
+      rtabmapviz:=false
+      rviz:=false
     restart: unless-stopped
