@@ -2,7 +2,7 @@ version: '3.8'
 
 services:    
   rtabmap:
-    image: introlab3it/rtabmap_ros:humble
+    image: introlab3it/rtabmap_ros:humble-latest
     container_name: rtabmap
     network_mode: host
     environment:
