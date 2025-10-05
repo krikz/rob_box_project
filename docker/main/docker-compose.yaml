@@ -1,12 +1,13 @@
 version: '3.8'
 
 services:    
-   rtabmap:
-    image: introlab3it/rtabmap_ros:humble-latest
+  rtabmap:
+    image: introlab3it/rtabmap_ros:humble
     container_name: rtabmap
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
+      - QT_QPA_PLATFORM=offscreen  # Добавлено для headless режима
     volumes:
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
@@ -22,7 +23,9 @@ services:
       scan_topic:=/scan
       visual_odometry:=false
       rtabmap_args:="--delete_db_on_start --Stereo/MaxDisparity 200 --Vis/CorFlowMaxLevel 5"
-      compressed:=true
+      compressed:=false  # Отключено сжатие
       approx_sync:=true
       wait_for_transform:=0.2
+      rtabmapviz:=false  # Отключен GUI
+      rviz:=false        # Отключен RViz
     restart: unless-stopped
