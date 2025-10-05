@@ -25,16 +25,3 @@ services:
       compressed:=true
       approx_sync:=true
     restart: unless-stopped
-    
-   micro-ros-agent:
-    image: micro-ros/micro-ros-agent:foxy
-    container_name: micro-ros-agent
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/ttyS0:/dev/ttyS0  # UART для Sensor Hub
-    environment:
-      - ROS_DOMAIN_ID=0
-    command: micro-ros-agent serial --dev /dev/ttyS0
-    restart: unless-stopped
