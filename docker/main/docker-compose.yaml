@@ -1,8 +1,8 @@
 version: '3.8'
 
 services:    
-  rtabmap:
-    image: rtabmap:latest
+   rtabmap:
+    image: introlab3it/rtabmap_ros:humble
     container_name: rtabmap
     network_mode: host
     environment:
@@ -10,11 +10,24 @@ services:
     volumes:
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
-    command: ros2 launch rtabmap rtabmap.launch.py
+    command: >
+      ros2 launch rtabmap_launch rtabmap.launch.py
+      frame_id:=base_link
+      subscribe_stereo:=true
+      left_image_topic:=/stereo_inertial_publisher/left/image_rect
+      right_image_topic:=/stereo_inertial_publisher/right/image_rect
+      left_camera_info_topic:=/stereo_inertial_publisher/left/camera_info
+      right_camera_info_topic:=/stereo_inertial_publisher/right/camera_info
+      subscribe_scan:=true
+      scan_topic:=/scan
+      visual_odometry:=false
+      rtabmap_args:="--delete_db_on_start"
+      compressed:=true
+      approx_sync:=true
     restart: unless-stopped
     
-  micro-ros-agent:
-    image: micro-ros-agent:latest
+   micro-ros-agent:
+    image: micro-ros/micro-ros-agent:foxy
     container_name: micro-ros-agent
     network_mode: host
     cap_add:
@@ -23,5 +36,5 @@ services:
       - /dev/ttyS0:/dev/ttyS0  # UART для Sensor Hub
     environment:
       - ROS_DOMAIN_ID=0
-    command: micro_ros_agent serial --dev /dev/ttyS0
+    command: micro-ros-agent serial --dev /dev/ttyS0
     restart: unless-stopped
