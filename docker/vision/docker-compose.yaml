@@ -39,3 +39,21 @@ services:
     restart: unless-stopped
     depends_on:
       - oak-d
+  zenoh-router:
+    image: eclipse/zenoh:1.3.4
+    container_name: zenoh-router
+    ports:
+      - "7447:7447/tcp"
+      - "8000:8000"
+    volumes:
+      - ./config/router-config.json5:/router-config.json5
+    command: ["-c", "/router-config.json5"]
+    networks:
+      - zenoh-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
