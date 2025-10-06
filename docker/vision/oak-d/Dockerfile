@@ -7,9 +7,6 @@ RUN apt-get update && \
     ros-kilted-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# Копируем конфигурационные файлы Zenoh
-#COPY config/zenoh_session_config.json5 /config/zenoh_session_config.json5
-
 # Экспортируем переменные окружения по умолчанию
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
     ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5 \
