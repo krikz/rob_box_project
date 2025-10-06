@@ -1,0 +1,7 @@
+#!/bin/bash
+source /opt/ros/humble/setup.bash
+
+# Запускаем OAK-D с использованием Zenoh
+exec ros2 launch depthai_ros_driver camera.launch.py \
+  params_file:=/config/oak_d_config.yaml \
+  rs_compat:=true

@@ -1,9 +1,9 @@
-FROM introlab3it/rtabmap_ros:humble-latest
+FROM introlab3it/rtabmap_ros:kilted-latest
 
 # Установка плагинов для сжатия изображений
 RUN apt-get update && \
     apt-get install -y \
-        ros-humble-image-transport-plugins \
-        ros-humble-compressed-image-transport \
-        ros-humble-theora-image-transport \
+        ros-kilted-image-transport-plugins \
+        ros-kilted-compressed-image-transport \
+        ros-kilted-theora-image-transport \
     && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,16 @@
+{
+  "mode": "peer",
+  "connect": {
+    "endpoints": [
+      "tcp/zenoh-router:7447"
+    ]
+  },
+  "transport": {
+    "shared_memory": {
+      "enabled": true
+    },
+    "multicast": {
+      "enabled": false
+    }
+  }
+}
