@@ -3,7 +3,7 @@ FROM luxonis/depthai-ros:jazzy-latest
 
 RUN apt-get update &&  apt-get install curl gnupg2 -y && curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
 # Устанавливаем rmw_cyclonedds
-RUN apt-get update && \
+RUN apt-get update --fix-missing && \
     apt-get install -y \
     ros-jazzy-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
