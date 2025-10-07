@@ -13,8 +13,9 @@ services:
       - ROS_LOCALHOST_ONLY=0
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI="<Disc><DefaultMulticastAddress>0.0.0.0</></>"
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
+      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - /dev/bus/usb:/dev/bus/usb
       - ./config:/config
       - /dev/shm:/dev/shm
@@ -30,8 +31,9 @@ services:
       - ROS_DOMAIN_ID=0
       - ROS_LOCALHOST_ONLY=0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI="<Disc><DefaultMulticastAddress>0.0.0.0</></>"
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
+      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - ./config:/config
       - /dev/shm:/dev/shm
     depends_on:

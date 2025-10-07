@@ -13,8 +13,9 @@ services:
       - ROS_LOCALHOST_ONLY=0
       - QT_QPA_PLATFORM=offscreen
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI="<Disc><DefaultMulticastAddress>0.0.0.0</></>"
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
+      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
       - ./config:/config

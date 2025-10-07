@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <!-- Запрещаем multicast полностью -->
+      <AllowMulticast>false</AllowMulticast>
+      <!-- Используем все интерфейсы, но только unicast -->
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+    </General>
+    <Discovery>
+      <!-- Отключаем multicast для discovery -->
+      <DefaultMulticastAddress>0.0.0.0</DefaultMulticastAddress>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
