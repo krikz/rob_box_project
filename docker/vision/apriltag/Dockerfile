@@ -1,4 +1,4 @@
-ARG ROS_DISTRO=kilted
+ARG ROS_DISTRO=jazzy
 ARG PREFIX=
 
 FROM osrf/ros:${PREFIX}${ROS_DISTRO}-desktop
@@ -13,17 +13,14 @@ RUN apt update && apt install -y \
 
 RUN echo $(dpkg -s ros-$ROS_DISTRO-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt
 
-# Устанавливаем rmw_zenoh
+# Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
     apt-get install -y \
-    ros-${ROS_DISTRO}-rmw-zenoh-cpp \
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Экспортируем переменные окружения по умолчанию
-ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
-    ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5 \
-    ZENOH_ROUTER_CHECK_ATTEMPTS=10 \
-    ZENOH_CONFIG_OVERRIDE='transport/shared_memory/enabled=true;transport/multicast/enabled=false'
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
 
 # Устанавливаем права на выполнение скрипта запуска
 COPY config/start_apriltag.sh /start_apriltag.sh
