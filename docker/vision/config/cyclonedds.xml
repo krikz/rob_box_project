@@ -9,9 +9,5 @@
       <!-- Отключаем multicast для discovery -->
       <DefaultMulticastAddress>0.0.0.0</DefaultMulticastAddress>
     </Discovery>
-    <Interfaces>
-      <!-- Используем ТОЛЬКО eth0 (стандартное имя в Docker) -->
-      <NetworkInterface name="eth0" autodetermine="false"/>
-    </Interfaces>
   </Domain>
 </CycloneDDS>
