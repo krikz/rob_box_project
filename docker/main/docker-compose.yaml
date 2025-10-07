@@ -11,11 +11,11 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - QT_QPA_PLATFORM=offscreen
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+#      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ #     - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
       - ./config:/config
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
+ #     - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
     command: >

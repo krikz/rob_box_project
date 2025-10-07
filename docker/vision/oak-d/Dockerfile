@@ -12,7 +12,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
     
 # Экспортируем переменные окружения по умолчанию
-ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
+#ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
 
 # Устанавливаем права на выполнение скрипта запуска
 COPY config/start_oak_d.sh /start_oak_d.sh

@@ -11,11 +11,11 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - DISPLAY=:0
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+ #     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ #     - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
       - ./config:/config
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
+  #    - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     restart: unless-stopped
@@ -28,11 +28,11 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+ #     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ #     - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
       - ./config:/config
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
+ #     - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - /dev/shm:/dev/shm
     depends_on:
       oak-d:
