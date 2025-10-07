@@ -1,7 +1,6 @@
 ARG ROS_DISTRO=jazzy
-ARG PREFIX=
 
-FROM osrf/ros:${PREFIX}${ROS_DISTRO}-desktop
+FROM ros:${ROS_DISTRO}-ros-base
 
 RUN apt update && apt install -y \
       ros-${ROS_DISTRO}-apriltag-ros \
