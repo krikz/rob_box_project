@@ -1,5 +1,5 @@
 # Используем базовый образ depthai-ros
-FROM luxonis/depthai-ros:jazzy-latest
+FROM luxonis/depthai-ros:humble-latest
 
 # Обновляем существующий ключ ROS 2 в базовом образе
 RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
@@ -8,7 +8,7 @@ RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
     apt-get install -y \
-    ros-jazzy-rmw-cyclonedds-cpp \
+    ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
     
 # Экспортируем переменные окружения по умолчанию

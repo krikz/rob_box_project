@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<CycloneDDS xmlns="https://cdds.io/config">
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config
+https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
   <Domain id="any">
-    <General>
-      <!-- Полностью отключаем multicast -->
-      <AllowMulticast>false</AllowMulticast>
-    </General>
-    <Discovery>
-      <!-- Отключаем multicast для discovery -->
-      <DefaultMulticastAddress>0.0.0.0</DefaultMulticastAddress>
-    </Discovery>
+    <Internal>
+      <!-- Увеличиваем буфер приёма до 10 МБ -->
+      <SocketReceiveBufferSize min="10MB"/>
+    </Internal>
   </Domain>
 </CycloneDDS>

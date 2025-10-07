@@ -17,21 +17,25 @@ rgb:
   i_width: 1280
   i_height: 720
   i_fps: 10.0
+  image_transport: compressed
 left:
   i_low_bandwidth: true
   i_enabled: true
   i_width: 640
   i_height: 400
   i_fps: 10.0
+  image_transport: compressed
 right:
   i_low_bandwidth: true
   i_enabled: true
   i_width: 640
   i_height: 400
   i_fps: 10.0
+  image_transport: compressed
 stereo:
   i_low_bandwidth: true
   i_enabled: true
   i_width: 640
   i_height: 400
   i_fps: 10.0
+  image_transport: compressed

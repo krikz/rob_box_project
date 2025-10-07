@@ -1,4 +1,4 @@
-ARG ROS_DISTRO=jazzy
+ARG ROS_DISTRO=humble
 
 FROM ros:${ROS_DISTRO}-ros-base
 
@@ -16,7 +16,7 @@ RUN echo $(dpkg -s ros-$ROS_DISTRO-apriltag-ros | grep 'Version' | sed -r 's/Ver
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
     apt-get install -y \
-    ros-jazzy-rmw-cyclonedds-cpp \
+    ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Экспортируем переменные окружения по умолчанию
