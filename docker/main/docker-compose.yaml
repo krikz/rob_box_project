@@ -10,7 +10,6 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
-      - ROS_LOCALHOST_ONLY=0
       - QT_QPA_PLATFORM=offscreen
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
