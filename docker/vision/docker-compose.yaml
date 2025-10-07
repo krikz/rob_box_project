@@ -12,7 +12,7 @@ services:
       - ROS_DOMAIN_ID=0
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+      #- CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
       - ./config:/config
       - ./config/cyclonedds.xml:/etc/cyclonedds.xml
