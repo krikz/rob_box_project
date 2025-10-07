@@ -1,11 +1,11 @@
 # Используем базовый образ depthai-ros
 FROM luxonis/depthai-ros:jazzy-latest
 
-RUN apt-get update && apt-get install -y curl gnupg2 lsb-release && \
-    mkdir -p /etc/apt/keyrings && \
-    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | gpg --dearmor -o /etc/apt/keyrings/ros-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null && \
-    apt-get update
+# Обновляем существующий ключ ROS 2 в базовом образе
+RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | gpg --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg && \
+    apt-get update && \
+    apt-get install -y ros-jazzy-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
