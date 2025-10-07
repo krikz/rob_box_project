@@ -1,5 +1,5 @@
 #!/bin/bash
-source /opt/ros/kilted/setup.bash
+source /opt/ros/jazzy/setup.bash
 
 # Запускаем AprilTag с использованием Zenoh
 exec ros2 run apriltag_ros apriltag_node --ros-args \
