@@ -16,7 +16,7 @@ RUN echo $(dpkg -s ros-$ROS_DISTRO-apriltag-ros | grep 'Version' | sed -r 's/Ver
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
     apt-get install -y \
-    os-eloquent-rmw-cyclonedds-cpp \
+    ros-jazzy-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Экспортируем переменные окружения по умолчанию
