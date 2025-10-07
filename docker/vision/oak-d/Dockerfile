@@ -1,10 +1,10 @@
 # Используем базовый образ depthai-ros
-FROM luxonis/depthai-ros:kilted-latest
+FROM luxonis/depthai-ros:jazzy-latest
 
 # Устанавливаем rmw_zenoh
 RUN apt-get update && \
     apt-get install -y \
-    ros-kilted-rmw-zenoh-cpp \
+    ros-jazzy-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Экспортируем переменные окружения по умолчанию

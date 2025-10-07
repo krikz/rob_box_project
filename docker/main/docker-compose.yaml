@@ -11,6 +11,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - QT_QPA_PLATFORM=offscreen
+      - LD_DEBUG=libs
     volumes:
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps

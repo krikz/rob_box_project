@@ -1,17 +1,18 @@
-FROM introlab3it/rtabmap_ros:kilted-latest
+FROM introlab3it/rtabmap_ros:jazzy-latest
 
 # Установка плагинов для сжатия изображений
 RUN apt-get update && \
     apt-get install -y \
-        ros-kilted-image-transport-plugins \
-        ros-kilted-compressed-image-transport \
-        ros-kilted-theora-image-transport \
+        ros-jazzy-image-transport-plugins \
+        ros-jazzy-compressed-image-transport \
+        ros-jazzy-theora-image-transport \
     && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем rmw_zenoh
 RUN apt-get update && \
     apt-get install -y \
-    ros-kilted-rmw-zenoh-cpp \
+        ros-jazzy-zenoh-cpp-vendor \
+        ros-jazzy-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Экспортируем переменные окружения по умолчанию
