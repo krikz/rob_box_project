@@ -1,52 +1,21 @@
 version: '3.8'
 
-networks:
-  zenoh-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 10.10.0.0/24
-
 services:
-  zenoh-router:
-    image: eclipse/zenoh:1.3.4
-    container_name: zenoh-router
-    networks:
-      - zenoh-net
-    ports:
-      - "7447:7447/tcp"
-      - "8000:8000"
-    volumes:
-      - ./config/zenoh_router_config.json5:/config/zenoh_router_config.json5
-    command: ["-c", "/config/zenoh_router_config.json5"]
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
-      interval: 5s
-      timeout: 10s
-      retries: 20
-      start_period: 30s
-    restart: unless-stopped
-
   oak-d:
     build:
       context: .
       dockerfile: oak-d/Dockerfile
     container_name: oak-d
-    networks:
-      - zenoh-net
+    network_mode: host
     privileged: true
     environment:
       - ROS_DOMAIN_ID=0
+      - ROS_LOCALHOST_ONLY=0
       - DISPLAY=:0
-      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
-      - ZENOH_CONFIG_OVERRIDE=transport/shared_memory/enabled=true
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - ./config:/config
       - /dev/shm:/dev/shm
-    depends_on:
-      zenoh-router:
-        condition: service_healthy
     restart: unless-stopped
     
   apriltag:
@@ -54,18 +23,14 @@ services:
       context: .
       dockerfile: apriltag/Dockerfile
     container_name: apriltag
-    networks:
-      - zenoh-net
+    network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
-      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
-      - ZENOH_CONFIG_OVERRIDE=transport/shared_memory/enabled=true
+      - ROS_LOCALHOST_ONLY=0
     volumes:
       - ./config:/config
       - /dev/shm:/dev/shm
     depends_on:
-      zenoh-router:
-        condition: service_healthy
       oak-d:
         condition: service_started
     restart: unless-stopped
