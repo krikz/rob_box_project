@@ -1,5 +1,5 @@
 # Используем базовый образ depthai-ros
-FROM luxonis/depthai-ros:jazzy-latest
+FROM luxonis/depthai-ros:humble-latest
 
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \

@@ -1,4 +1,4 @@
-ARG ROS_DISTRO=jazzy
+ARG ROS_DISTRO=humble
 ARG PREFIX=
 
 FROM osrf/ros:${PREFIX}${ROS_DISTRO}-desktop
