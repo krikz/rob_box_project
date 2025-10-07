@@ -1,4 +1,4 @@
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=jazzy
 ARG PREFIX=
 
 FROM osrf/ros:${PREFIX}${ROS_DISTRO}-desktop
@@ -19,7 +19,7 @@ RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/r
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
     apt-get install -y \
-    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    os-eloquent-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Экспортируем переменные окружения по умолчанию
