@@ -14,15 +14,10 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
+      - ./config:/config
       - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - /dev/bus/usb:/dev/bus/usb
-      - ./config:/config
       - /dev/shm:/dev/shm
-    command: >
-      bash -c "source /opt/ros/humble/setup.bash && 
-      ros2 launch depthai_ros_driver camera.launch.py 
-      params_file:=/config/oak_d_config.yaml
-      rs_compat:=true"
     restart: unless-stopped
     
   apriltag:
@@ -36,8 +31,8 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - ./config:/config
+      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - /dev/shm:/dev/shm
     depends_on:
       oak-d:

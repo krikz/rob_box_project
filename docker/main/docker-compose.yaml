@@ -14,10 +14,10 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     volumes:
+      - ./config:/config
       - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
-      - ./config:/config
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
       frame_id:=base_link
