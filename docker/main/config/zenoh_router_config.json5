@@ -12,8 +12,7 @@
     
     "listen": {
         "endpoints": [
-            "tcp/10.1.1.10:7447",  // Main Pi eth0 - принимаем соединения от Vision Pi (Gigabit)
-            "tcp/10.1.1.20:7447"   // Main Pi wlan0 - для управления по WiFi
+            "tcp/10.1.1.10:7447"  // Main Pi eth0 Gigabit - принимаем соединения от Vision Pi ТОЛЬКО по Ethernet
         ]
     },
     
