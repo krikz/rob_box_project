@@ -20,14 +20,14 @@ rgb:
   image_transport: compressed
 left:
   i_low_bandwidth: true
-  i_enabled: true
+  i_enabled: false
   i_width: 640
   i_height: 400
   i_fps: 10.0
   image_transport: compressed
 right:
   i_low_bandwidth: true
-  i_enabled: true
+  i_enabled: false
   i_width: 640
   i_height: 400
   i_fps: 10.0
@@ -38,4 +38,4 @@ stereo:
   i_width: 640
   i_height: 400
   i_fps: 10.0
-  image_transport: compressed
+  image_transport: compressedDepth
