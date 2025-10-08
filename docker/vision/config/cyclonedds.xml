@@ -11,9 +11,9 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
     </General>
     
     <Internal>
-      <!-- Оптимизированные буферы для Pi -->
-      <SocketReceiveBufferSize min="2MB" max="4MB"/>
-      <SocketSendBufferSize min="1MB" max="2MB"/>
+      <!-- Оптимизированные буферы для Pi (adjusted for system limits) -->
+      <SocketReceiveBufferSize min="256kB" max="400kB"/>
+      <SocketSendBufferSize min="256kB" max="400kB"/>
       
       <!-- Ограничиваем количество потоков -->
       <DeliveryQueueMaxSamples>10</DeliveryQueueMaxSamples>

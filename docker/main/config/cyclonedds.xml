@@ -11,9 +11,9 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
     </General>
     
     <Internal>
-      <!-- Оптимизированные буферы для приема сжатых изображений -->
-      <SocketReceiveBufferSize min="4MB" max="8MB"/>
-      <SocketSendBufferSize min="512kB" max="1MB"/>
+      <!-- Оптимизированные буферы для приема сжатых изображений (adjusted for system limits) -->
+      <SocketReceiveBufferSize min="256kB" max="400kB"/>
+      <SocketSendBufferSize min="256kB" max="400kB"/>
       
       <!-- Ограничиваем очередь -->
       <DeliveryQueueMaxSamples>20</DeliveryQueueMaxSamples>
