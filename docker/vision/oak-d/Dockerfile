@@ -5,6 +5,8 @@ FROM luxonis/depthai-ros:humble-latest
 RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
     gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg
 
+RUN apt install ros-humble-compressed-depth-image-transport
+
 # Устанавливаем rmw_cyclonedds
 RUN apt-get update && \
     apt-get install -y \

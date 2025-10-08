@@ -21,22 +21,22 @@ services:
       - /dev/shm:/dev/shm
     restart: unless-stopped
     
-  apriltag:
-    build:
-      context: .
-      dockerfile: apriltag/Dockerfile
-    container_name: apriltag
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=0
-#      - ROS_DISCOVERY_SERVER=10.1.1.10:11811
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
-    volumes:
-      - ./config:/config
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
-      - /dev/shm:/dev/shm
-    depends_on:
-      oak-d:
-        condition: service_started
-    restart: unless-stopped
+#  apriltag:
+#    build:
+#      context: .
+#      dockerfile: apriltag/Dockerfile
+#    container_name: apriltag
+#    network_mode: host
+#    environment:
+#      - ROS_DOMAIN_ID=0
+##      - ROS_DISCOVERY_SERVER=10.1.1.10:11811
+#      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+#      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+#    volumes:
+#      - ./config:/config
+#      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
+#      - /dev/shm:/dev/shm
+#    depends_on:
+#      oak-d:
+#        condition: service_started
+#    restart: unless-stopped
