@@ -8,9 +8,9 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
       <!-- Оптимизация для Raspberry Pi (RTAB-Map) -->
       <MaxMessageSize>65500B</MaxMessageSize>
       <FragmentSize>4096B</FragmentSize>
-      <!-- Принудительно используем wlan0 для DDS -->
+      <!-- Принудительно используем eth0 для Gigabit Ethernet соединения -->
       <Interfaces>
-        <NetworkInterface name="wlan0" priority="default"/>
+        <NetworkInterface name="eth0" priority="default"/>
       </Interfaces>
     </General>
     
