@@ -1,5 +1,8 @@
 #!/bin/bash
 # Финальная диагностика связи Vision Pi (10.1.1.21) <-> Main Pi (10.1.1.20)
+# Использует sshpass для автоматической аутентификации
+
+SSH_CMD="sshpass -p 'open' ssh -o StrictHostKeyChecking=no"
 
 echo "========================================="
 echo " Camera Data Flow Diagnostic"
@@ -7,27 +10,27 @@ echo " Vision Pi (10.1.1.21) -> Main Pi (10.1.1.20)"
 echo "========================================="
 echo ""
 
-# Перезапуск камеры
-echo "[1/5] Restarting camera on Vision Pi..."
-ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker restart oak-d' > /dev/null 2>&1
-echo "  Waiting 25s for initialization..."
-sleep 25
+# Полный перезапуск камеры через docker-compose
+echo "[1/5] Full restart of camera on Vision Pi (docker-compose)..."
+$SSH_CMD ros2@10.1.1.21 'cd ~/rob_box_project/docker/vision && docker-compose down --remove-orphans && docker-compose up -d' > /dev/null 2>&1
+echo "  Waiting 30s for initialization..."
+sleep 30
 
 echo ""
 echo "[2/5] Checking publishers on Vision Pi..."
-RGB_PUB=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker exec oak-d /ros_entrypoint.sh ros2 topic info /camera/camera/color/image_raw/compressed 2>/dev/null | grep "Publisher count" | awk "{print \$3}"')
-DEPTH_PUB=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker exec oak-d /ros_entrypoint.sh ros2 topic info /camera/camera/depth/image_raw/compressed 2>/dev/null | grep "Publisher count" | awk "{print \$3}"')
+RGB_PUB=$($SSH_CMD ros2@10.1.1.21 'docker exec oak-d /ros_entrypoint.sh ros2 topic info /camera/camera/color/image_raw/compressed 2>/dev/null | grep "Publisher count" | awk "{print \$3}"')
+DEPTH_PUB=$($SSH_CMD ros2@10.1.1.21 'docker exec oak-d /ros_entrypoint.sh ros2 topic info /camera/camera/depth/image_raw/compressed 2>/dev/null | grep "Publisher count" | awk "{print \$3}"')
 
 echo "  RGB publisher count: $RGB_PUB"
 echo "  Depth publisher count: $DEPTH_PUB"
 
 echo ""
 echo "[3/5] Checking network traffic on Vision Pi..."
-RX1=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/rx_bytes')
-TX1=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/tx_bytes')
+RX1=$($SSH_CMD ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/rx_bytes')
+TX1=$($SSH_CMD ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/tx_bytes')
 sleep 3
-RX2=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/rx_bytes')
-TX2=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/tx_bytes')
+RX2=$($SSH_CMD ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/rx_bytes')
+TX2=$($SSH_CMD ros2@10.1.1.21 'cat /sys/class/net/eth0/statistics/tx_bytes')
 RX_RATE=$(( (RX2 - RX1) / 3 / 1024 ))
 TX_RATE=$(( (TX2 - TX1) / 3 / 1024 ))
 
@@ -36,15 +39,15 @@ echo "  eth0 TX: $TX_RATE KB/s"
 
 echo ""
 echo "[4/5] Checking topic visibility on Main Pi..."
-MAIN_RGB=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/humble/bin/ros2 topic list 2>/dev/null | grep -c color/image_raw"' 2>/dev/null)
-MAIN_DEPTH=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/humble/bin/ros2 topic list 2>/dev/null | grep -c depth/image_raw"' 2>/dev/null)
+MAIN_RGB=$($SSH_CMD ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/humble/bin/ros2 topic list 2>/dev/null | grep -c color/image_raw"' 2>/dev/null)
+MAIN_DEPTH=$($SSH_CMD ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/humble/bin/ros2 topic list 2>/dev/null | grep -c depth/image_raw"' 2>/dev/null)
 
 echo "  Main Pi sees RGB topics: $MAIN_RGB"
 echo "  Main Pi sees Depth topics: $MAIN_DEPTH"
 
 echo ""
 echo "[5/5] Checking RTAB-Map data reception..."
-RTAB_WARNINGS=$(ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker logs rtabmap --tail 10 2>&1 | grep -c "Did not receive data"')
+RTAB_WARNINGS=$($SSH_CMD ros2@10.1.1.20 'docker logs rtabmap --tail 10 2>&1 | grep -c "Did not receive data"')
 
 if [ "$RTAB_WARNINGS" = "0" ]; then
     echo "  ✅ RTAB-Map IS receiving data!"
