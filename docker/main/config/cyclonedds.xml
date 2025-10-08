@@ -15,12 +15,6 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
       <SocketReceiveBufferSize min="4MB" max="8MB"/>
       <SocketSendBufferSize min="512kB" max="1MB"/>
       
-      <!-- Водяные знаки для управления потоком -->
-      <Watermarks>
-        <WhcHigh>1MB</WhcHigh>
-        <WhcLow>256kB</WhcLow>
-      </Watermarks>
-      
       <!-- Ограничиваем очередь -->
       <DeliveryQueueMaxSamples>20</DeliveryQueueMaxSamples>
     </Internal>
