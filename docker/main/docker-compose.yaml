@@ -3,7 +3,10 @@ version: '3.8'
 services:
   # ROS 2 Zenoh Router - центральный роутер для связи между Pi
   zenoh-router:
-    image: introlab3it/rtabmap_ros:humble-latest
+    build:
+      context: ./zenoh-router
+      dockerfile: Dockerfile
+    image: zenoh-router-main:latest
     container_name: zenoh-router
     network_mode: host
     environment:
@@ -13,7 +16,6 @@ services:
     volumes:
       - ./config/zenoh_router_config.json5:/zenoh_config.json5
       - /dev/shm:/dev/shm
-    command: /bin/bash -c "source /opt/ros/humble/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd"
     restart: unless-stopped
     
   #  discovery:
