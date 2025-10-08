@@ -14,5 +14,6 @@ RUN apt-get update && \
     ros-humble-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# Добавляем путь к библиотекам Zenoh в LD_LIBRARY_PATH
-ENV LD_LIBRARY_PATH=/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:$LD_LIBRARY_PATH
+# КРИТИЧНО: Добавляем путь к библиотекам Zenoh
+# zenoh_cpp_vendor устанавливает libzenohc.so в нестандартный путь
+ENV LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:$LD_LIBRARY_PATH
