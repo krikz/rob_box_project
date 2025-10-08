@@ -24,6 +24,8 @@ rgb:
   i_max_q_size: 2  # Минимальный размер очереди
   i_interleaved: false
   i_board_socket_id: 0
+  i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
+  i_publish_topic: true  # Явно включаем публикацию
   image_transport: compressed
   i_keep_preview_aspect_ratio: false
 left:
@@ -49,6 +51,8 @@ stereo:
   i_height: 400
   i_fps: 5.0  # СНИЖЕНО до 5 FPS
   i_max_q_size: 2  # Минимальный размер очереди
+  i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
+  i_publish_topic: true  # Явно включаем публикацию
   i_output_disparity: false  # Не публикуем disparity - экономим bandwidth
   i_get_base_device_timestamp: false
   i_add_exposure_offset: false
