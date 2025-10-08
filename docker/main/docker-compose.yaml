@@ -28,7 +28,7 @@ services:
       - ./config/cyclonedds.xml:/etc/cyclonedds.xml
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
-    # НОВАЯ команда - использует OAK-D топики и оптимизированный конфиг
+    # Оптимизированная команда - прямое использование сжатых топиков от OAK-D
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
       params:=/config/rtabmap.yaml
@@ -37,6 +37,7 @@ services:
       qos:=1
       approx_sync:=true
       approx_sync_max_interval:=0.1
+      subscribe_rgbd:=false
       subscribe_rgb:=true
       subscribe_depth:=true
       subscribe_scan:=false
@@ -45,7 +46,8 @@ services:
       rgb_topic:=/oak/rgb/image_raw
       depth_topic:=/oak/stereo/image_raw
       camera_info_topic:=/oak/rgb/camera_info
-      compressed:=true
+      image_transport:=compressed
+      depth_image_transport:=compressedDepth
       rtabmap_viz:=false
       rviz:=false
       visual_odometry:=true
