@@ -18,7 +18,7 @@
       i_usb_speed: "SUPER"  # Принудительно USB 3.0
       rs_compat: true
     color:
-      i_low_bandwidth: true
+      i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 2  # Минимальный размер очереди
       i_interleaved: false
@@ -27,7 +27,7 @@
       i_publish_topic: true  # Явно включаем публикацию
       i_keep_preview_aspect_ratio: false
     depth:
-      i_low_bandwidth: true
+      i_low_bandwidth: false  # ОТКЛЮЧЕНО: для совместимости
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 2  # Минимальный размер очереди
       i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
@@ -38,10 +38,10 @@
       i_exposure_offset: 0
       i_alpha_scaling: 0.0
     left:
-      i_low_bandwidth: true
+      i_low_bandwidth: false
       i_fps: 5.0
       i_max_q_size: 2
     right:
-      i_low_bandwidth: true
+      i_low_bandwidth: false
       i_fps: 5.0
       i_max_q_size: 2
