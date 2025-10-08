@@ -4,9 +4,56 @@
             xsi:schemaLocation="https://cdds.io/config
 https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
   <Domain id="any">
+    <General>
+      <!-- Оптимизация для Raspberry Pi (RTAB-Map) -->
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+      <MaxMessageSize>65500B</MaxMessageSize>
+      <FragmentSize>4096B</FragmentSize>
+    </General>
+    
     <Internal>
-      <!-- Увеличиваем буфер приёма до 10 МБ -->
-      <SocketReceiveBufferSize min="10MB"/>
+      <!-- Оптимизированные буферы для приема сжатых изображений -->
+      <SocketReceiveBufferSize min="4MB" max="8MB"/>
+      <SocketSendBufferSize min="512kB" max="1MB"/>
+      
+      <!-- Водяные знаки для управления потоком -->
+      <Watermarks>
+        <WhcHigh>1MB</WhcHigh>
+        <WhcLow>256kB</WhcLow>
+      </Watermarks>
+      
+      <!-- Ограничиваем очередь -->
+      <DeliveryQueueMaxSamples>20</DeliveryQueueMaxSamples>
     </Internal>
+    
+    <Discovery>
+      <!-- Синхронизация с настройками vision Pi -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>10</MaxAutoParticipantIndex>
+      <SPDPInterval>5s</SPDPInterval>
+      <DSGracePeriod>10s</DSGracePeriod>
+    </Discovery>
+    
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+      <OutputFile>stdout</OutputFile>
+    </Tracing>
+    
+    <Transport>
+      <UDPv4>
+        <Enable>true</Enable>
+        <MulticastInterfaceAddress>auto</MulticastInterfaceAddress>
+      </UDPv4>
+      
+      <UDPv6>
+        <Enable>false</Enable>
+      </UDPv6>
+    </Transport>
+    
+    <!-- Throttling для стабильности -->
+    <Throttle>
+      <MaxBurst>30</MaxBurst>
+      <RecoveryTime>0.1s</RecoveryTime>
+    </Throttle>
   </Domain>
 </CycloneDDS>

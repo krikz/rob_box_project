@@ -4,9 +4,60 @@
             xsi:schemaLocation="https://cdds.io/config
 https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
   <Domain id="any">
+    <General>
+      <!-- Оптимизация для Raspberry Pi -->
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+      <!-- Увеличиваем интервал для снижения нагрузки -->
+      <MaxMessageSize>65500B</MaxMessageSize>
+      <FragmentSize>4096B</FragmentSize>
+    </General>
+    
     <Internal>
-      <!-- Увеличиваем буфер приёма до 10 МБ -->
-      <SocketReceiveBufferSize min="10MB"/>
+      <!-- Оптимизированные буферы для Pi -->
+      <SocketReceiveBufferSize min="2MB" max="4MB"/>
+      <SocketSendBufferSize min="1MB" max="2MB"/>
+      
+      <!-- Снижаем частоту обновления для экономии CPU -->
+      <Watermarks>
+        <WhcHigh>500kB</WhcHigh>
+        <WhcLow>100kB</WhcLow>
+      </Watermarks>
+      
+      <!-- Ограничиваем количество потоков -->
+      <DeliveryQueueMaxSamples>10</DeliveryQueueMaxSamples>
     </Internal>
+    
+    <Discovery>
+      <!-- Снижаем частоту discovery для экономии CPU -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>10</MaxAutoParticipantIndex>
+      <SPDPInterval>5s</SPDPInterval>  <!-- Увеличено с 1s -->
+      <DSGracePeriod>10s</DSGracePeriod>
+    </Discovery>
+    
+    <Tracing>
+      <Verbosity>warning</Verbosity>  <!-- Минимизируем логи -->
+      <OutputFile>stdout</OutputFile>
+    </Tracing>
+    
+    <!-- Оптимизация транспорта -->
+    <Transport>
+      <UDPv4>
+        <Enable>true</Enable>
+        <!-- Multicast для эффективной работы между двумя Pi -->
+        <MulticastInterfaceAddress>auto</MulticastInterfaceAddress>
+      </UDPv4>
+      
+      <!-- Отключаем IPv6 если не используется -->
+      <UDPv6>
+        <Enable>false</Enable>
+      </UDPv6>
+    </Transport>
+    
+    <!-- Throttling для больших сообщений (изображений) -->
+    <Throttle>
+      <MaxBurst>20</MaxBurst>
+      <RecoveryTime>0.1s</RecoveryTime>
+    </Throttle>
   </Domain>
 </CycloneDDS>

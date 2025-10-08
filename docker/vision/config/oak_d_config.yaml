@@ -1,41 +1,55 @@
 camera:
   i_nn_type: none  # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
   i_pipeline_type: "RGBD"
-  i_rgb_resolution: "1080p"
-  i_stereo_width: 1280
-  i_stereo_height: 720
-  i_fps: 10.0  # Снижаем FPS для Raspberry Pi
-  i_enable_ir: false  # Отключаем ИК, если не используется
+  i_rgb_resolution: "720p"  # СНИЖЕНО с 1080p до 720p для Raspberry Pi
+  i_stereo_width: 640  # СНИЖЕНО с 1280 до 640
+  i_stereo_height: 400  # СНИЖЕНО с 720 до 400
+  i_fps: 5.0  # СНИЖЕНО с 10 до 5 FPS - критично для Pi!
+  i_enable_ir: false  # Отключаем ИК
   i_laser_dot_brightness: 0  # Отключаем лазер
   i_floodlight_brightness: 0  # Отключаем прожектор
   i_publish_tf_from_calibration: true  # Важно для RTAB-Map
-  i_tf_base_frame: "base_link"  # Должно совпадать с вашей URDF
+  i_tf_base_frame: "base_link"
+  i_enable_imu: false  # Отключаем IMU если не используется
+  i_enable_preview: false  # Отключаем preview поток
   rs_compat: true
 rgb:
   i_low_bandwidth: true
   i_enabled: true
-  i_width: 1280
-  i_height: 720
-  i_fps: 10.0
+  i_width: 640  # СНИЖЕНО с 1280 до 640
+  i_height: 360  # СНИЖЕНО с 720 до 360
+  i_fps: 5.0  # СНИЖЕНО до 5 FPS
+  i_max_q_size: 2  # Минимальный размер очереди
+  i_interleaved: false
+  i_board_socket_id: 0
   image_transport: compressed
+  i_keep_preview_aspect_ratio: false
 left:
   i_low_bandwidth: true
-  i_enabled: false
+  i_enabled: false  # ОТКЛЮЧЕНО - не нужно для RTAB-Map с depth
   i_width: 640
   i_height: 400
-  i_fps: 10.0
+  i_fps: 5.0
+  i_max_q_size: 2
   image_transport: compressed
 right:
   i_low_bandwidth: true
-  i_enabled: false
+  i_enabled: false  # ОТКЛЮЧЕНО - не нужно для RTAB-Map с depth
   i_width: 640
   i_height: 400
-  i_fps: 10.0
+  i_fps: 5.0
+  i_max_q_size: 2
   image_transport: compressed
 stereo:
   i_low_bandwidth: true
   i_enabled: true
   i_width: 640
   i_height: 400
-  i_fps: 10.0
-  image_transport: compressedDepth
+  i_fps: 5.0  # СНИЖЕНО до 5 FPS
+  i_max_q_size: 2  # Минимальный размер очереди
+  i_output_disparity: false  # Не публикуем disparity - экономим bandwidth
+  i_get_base_device_timestamp: false
+  i_add_exposure_offset: false
+  i_exposure_offset: 0
+  i_alpha_scaling: 0.0
+  image_transport: compressedDepth  # Сжатая глубина для экономии bandwidth
