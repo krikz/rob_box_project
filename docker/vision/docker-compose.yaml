@@ -12,9 +12,11 @@ services:
       - ROS_DOMAIN_ID=0
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Пытаемся подключиться к router 10 раз
       - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
+      # Zenoh endpoints - подключение к роутеру Main Pi по Gigabit Ethernet
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+      - ZENOH_CONNECT=tcp/10.1.1.10:7447
     volumes:
       - ./config:/config
       - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
@@ -31,9 +33,11 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
+      # Zenoh endpoints - подключение к роутеру Main Pi по Gigabit Ethernet
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+      - ZENOH_CONNECT=tcp/10.1.1.10:7447
     volumes:
       - ./config:/config
       - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
