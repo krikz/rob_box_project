@@ -43,11 +43,10 @@ services:
       subscribe_scan:=false
       subscribe_stereo:=false
       rgbd_sync:=true
-      rgb_topic:=/oak/rgb/image_raw
-      depth_topic:=/oak/stereo/image_raw
+      rgb_topic:=/oak/rgb/image_raw/compressed
+      depth_topic:=/oak/stereo/image_raw/compressedDepth
       camera_info_topic:=/oak/rgb/camera_info
       image_transport:=compressed
-      depth_image_transport:=compressedDepth
       rtabmap_viz:=false
       rviz:=false
       visual_odometry:=true
