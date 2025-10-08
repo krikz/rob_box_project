@@ -12,6 +12,9 @@ RUN apt-get update && \
     apt-get install -y \
     ros-humble-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
+
+# Добавляем путь к библиотекам Zenoh в LD_LIBRARY_PATH  
+ENV LD_LIBRARY_PATH=/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:$LD_LIBRARY_PATH
     
 # Экспортируем переменные окружения по умолчанию
 #ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp 
