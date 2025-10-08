@@ -12,6 +12,8 @@ camera:
   i_tf_base_frame: "base_link"
   i_enable_imu: false  # Отключаем IMU если не используется
   i_enable_preview: false  # Отключаем preview поток
+  i_enable_diagnostics: false  # ОТКЛЮЧАЕМ диагностику - вызывает X_LINK_ERROR
+  i_usb_speed: "SUPER"  # Принудительно USB 3.0
   rs_compat: true
 rgb:
   i_low_bandwidth: true
