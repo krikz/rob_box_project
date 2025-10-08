@@ -6,9 +6,12 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
   <Domain id="any">
     <General>
       <!-- Оптимизация для Raspberry Pi (RTAB-Map) -->
-      <NetworkInterfaceAddress>wlan0</NetworkInterfaceAddress>
       <MaxMessageSize>65500B</MaxMessageSize>
       <FragmentSize>4096B</FragmentSize>
+      <!-- Принудительно используем wlan0 для DDS -->
+      <Interfaces>
+        <NetworkInterface name="wlan0" priority="default"/>
+      </Interfaces>
     </General>
     
     <Internal>
