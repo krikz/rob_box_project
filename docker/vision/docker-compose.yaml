@@ -9,7 +9,8 @@ services:
     environment:
       - RUST_LOG=zenoh=info
     volumes:
-      - ./config/zenoh_router_config.json5:/zenoh_config.json5
+      - ./config/zenoh_router_config.json5:/zenoh_config.json5      
+      - /dev/shm:/dev/shm
     command: -c /zenoh_config.json5
     restart: unless-stopped
 
