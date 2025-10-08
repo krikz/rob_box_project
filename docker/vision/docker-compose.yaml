@@ -8,13 +8,12 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
       - ZENOH_CONFIG=/zenoh_config.json5
     volumes:
       - ./config/zenoh_router_config.json5:/zenoh_config.json5      
       - /dev/shm:/dev/shm
-    command: ros2 run rmw_zenoh_cpp rmw_zenohd
+    command: /bin/bash -c "source /opt/ros/humble/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd"
     restart: unless-stopped
 
   oak-d:
