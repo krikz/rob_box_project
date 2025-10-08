@@ -19,7 +19,7 @@
       rs_compat: true
     color:
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
-      i_publish_compressed: true  # КРИТИЧНО: публикуем сжатые данные напрямую
+      i_publish_compressed: false  # ОТКЛЮЧЕНО: пусть image_transport делает сжатие
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 2  # Минимальный размер очереди
       i_interleaved: false
@@ -29,7 +29,7 @@
       i_keep_preview_aspect_ratio: false
     depth:
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: для совместимости
-      i_publish_compressed: true  # КРИТИЧНО: публикуем сжатые depth данные
+      i_publish_compressed: false  # ОТКЛЮЧЕНО: пусть image_transport делает сжатие
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 2  # Минимальный размер очереди
       i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
