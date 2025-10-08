@@ -6,8 +6,6 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
   <Domain id="any">
     <General>
       <!-- Оптимизация для Raspberry Pi -->
-      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
-      <!-- Увеличиваем интервал для снижения нагрузки -->
       <MaxMessageSize>65500B</MaxMessageSize>
       <FragmentSize>4096B</FragmentSize>
     </General>
@@ -39,25 +37,5 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
       <Verbosity>warning</Verbosity>  <!-- Минимизируем логи -->
       <OutputFile>stdout</OutputFile>
     </Tracing>
-    
-    <!-- Оптимизация транспорта -->
-    <Transport>
-      <UDPv4>
-        <Enable>true</Enable>
-        <!-- Multicast для эффективной работы между двумя Pi -->
-        <MulticastInterfaceAddress>auto</MulticastInterfaceAddress>
-      </UDPv4>
-      
-      <!-- Отключаем IPv6 если не используется -->
-      <UDPv6>
-        <Enable>false</Enable>
-      </UDPv6>
-    </Transport>
-    
-    <!-- Throttling для больших сообщений (изображений) -->
-    <Throttle>
-      <MaxBurst>20</MaxBurst>
-      <RecoveryTime>0.1s</RecoveryTime>
-    </Throttle>
   </Domain>
 </CycloneDDS>

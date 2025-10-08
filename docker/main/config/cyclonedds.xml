@@ -6,7 +6,6 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
   <Domain id="any">
     <General>
       <!-- Оптимизация для Raspberry Pi (RTAB-Map) -->
-      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
       <MaxMessageSize>65500B</MaxMessageSize>
       <FragmentSize>4096B</FragmentSize>
     </General>
@@ -38,22 +37,5 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
       <Verbosity>warning</Verbosity>
       <OutputFile>stdout</OutputFile>
     </Tracing>
-    
-    <Transport>
-      <UDPv4>
-        <Enable>true</Enable>
-        <MulticastInterfaceAddress>auto</MulticastInterfaceAddress>
-      </UDPv4>
-      
-      <UDPv6>
-        <Enable>false</Enable>
-      </UDPv6>
-    </Transport>
-    
-    <!-- Throttling для стабильности -->
-    <Throttle>
-      <MaxBurst>30</MaxBurst>
-      <RecoveryTime>0.1s</RecoveryTime>
-    </Throttle>
   </Domain>
 </CycloneDDS>
