@@ -48,12 +48,22 @@ echo ""
 echo "⏳ Ждем 5 секунд для инициализации..."
 sleep 5
 
+# КРИТИЧНО: Отключаем lazy publisher
+echo "🔧 Отключаем lazy publisher для принудительной публикации..."
+docker exec oak-d /ros_entrypoint.sh ros2 param set /camera/camera color.i_enable_lazy_publisher false 2>/dev/null || echo "  (color уже настроен)"
+docker exec oak-d /ros_entrypoint.sh ros2 param set /camera/camera depth.i_enable_lazy_publisher false 2>/dev/null || echo "  (depth уже настроен)"
+sleep 2
+
 # Показываем логи
 echo ""
 echo "📝 Последние логи OAK-D камеры:"
 echo "=========================================="
 docker logs --tail 30 oak-d
 echo "=========================================="
+echo ""
+
+echo "📊 Проверка топиков:"
+docker exec oak-d /ros_entrypoint.sh ros2 topic info /oak/rgb/image_raw/compressed 2>/dev/null | grep "Publisher count" || echo "Топик еще не готов"
 echo ""
 
 echo "✅ Обновление завершено!"
