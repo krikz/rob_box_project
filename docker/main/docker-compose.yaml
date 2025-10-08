@@ -31,7 +31,7 @@ services:
     # НОВАЯ команда - использует OAK-D топики и оптимизированный конфиг
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
-      args:=--params-file /config/rtabmap.yaml
+      params:=/config/rtabmap.yaml
       frame_id:=base_link
       use_sim_time:=false
       qos:=1
