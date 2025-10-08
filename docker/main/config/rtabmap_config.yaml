@@ -55,11 +55,12 @@ rtabmap:
     qos_imu: 1
     
     # Ремаппинг топиков с OAK-D
-    # Эти топики публикует depthai_ros_driver
-    rgb/image: /camera/camera/color/image_raw
+    # ВАЖНО: используем image_rect (ректифицированные изображения) а не image_raw
+    # RectifyNode автоматически создаёт /compressed варианты через image_transport
+    rgb/image: /camera/camera/color/image_rect
     rgb/camera_info: /camera/camera/color/camera_info
-    depth/image: /camera/camera/depth/image_raw
-    depth/camera_info: /camera/camera/color/camera_info
+    depth/image: /camera/camera/depth/image_rect_raw
+    depth/camera_info: /camera/camera/depth/camera_info
     
     # КРИТИЧНО: указываем использовать сжатые топики
     image_transport: compressed
