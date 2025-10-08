@@ -1,6 +1,31 @@
 # RTAB-Map конфигурация для Raspberry Pi с OAK-D-Lite
 # Оптимизировано для работы на отдельной Raspberry Pi
 
+# Глобальные параметры для всех нод
+/**:
+  ros__parameters:
+    image_transport: compressed
+    rgb_image_transport: compressed
+    depth_image_transport: compressed
+
+# Параметры rgbd_sync ноды
+rgbd_sync:
+  ros__parameters:
+    image_transport: compressed
+    rgb_image_transport: compressed
+    depth_image_transport: compressed
+    approx_sync: true
+    queue_size: 10
+
+# Параметры rgbd_odometry ноды
+rgbd_odometry:
+  ros__parameters:
+    image_transport: compressed
+    rgb_image_transport: compressed
+    depth_image_transport: compressed
+    approx_sync: true
+    queue_size: 10
+
 rtabmap:
   ros__parameters:
     
