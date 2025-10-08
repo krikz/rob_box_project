@@ -7,8 +7,5 @@ RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
     apt-get install -y ros-humble-rmw-zenoh-cpp && \
     rm -rf /var/lib/apt/lists/*
 
-# Добавляем путь к библиотекам Zenoh
-ENV LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:${LD_LIBRARY_PATH}
-
 # Запуск rmw_zenohd
 CMD ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd"]
