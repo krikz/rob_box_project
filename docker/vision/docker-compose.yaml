@@ -1,20 +1,17 @@
 version: '3.8'
 
 services:
-  # ROS 2 Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
+  # Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
   zenoh-router:
-    image: luxonis/depthai-ros:humble-latest
+    image: eclipse/zenoh:latest
     container_name: zenoh-router-vision
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
-      - ZENOH_CONFIG=/zenoh_config.json5
     volumes:
       - ./config/zenoh_router_config.json5:/zenoh_config.json5      
       - /dev/shm:/dev/shm
-    command: ros2 run rmw_zenoh_cpp rmw_zenohd
+    command: -c /zenoh_config.json5
     restart: unless-stopped
 
   oak-d:
