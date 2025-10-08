@@ -1,8 +1,30 @@
 {
+    // Zenoh Session для RTAB-Map (Main Pi)
+    // Подключается к локальному Zenoh Router
+    
     "mode": "peer",
+    
     "connect": {
         "endpoints": [
-            "tcp/zenoh-router:7447"
+            "tcp/127.0.0.1:7447"  // Локальный Zenoh Router на Main Pi
         ]
+    },
+    
+    "listen": {
+        "endpoints": [
+            "tcp/10.1.1.10:0"  // Main Pi eth0 - слушаем на случайном порту
+        ]
+    },
+    
+    "scouting": {
+        "multicast": {
+            "enabled": false  // Отключаем multicast
+        }
+    },
+    
+    "transport": {
+        "shared_memory": {
+            "enabled": true  // Включаем SHM для быстрой передачи данных с router
+        }
     }
 }

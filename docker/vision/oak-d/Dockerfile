@@ -7,14 +7,14 @@ RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
 
 RUN apt install ros-humble-compressed-depth-image-transport
 
-# Устанавливаем rmw_cyclonedds
+# Устанавливаем rmw_zenoh для лучшей производительности и надёжности
 RUN apt-get update && \
     apt-get install -y \
-    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
     
 # Экспортируем переменные окружения по умолчанию
-#ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
+#ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp 
 
 # Устанавливаем права на выполнение скрипта запуска
 COPY config/start_oak_d.sh /start_oak_d.sh

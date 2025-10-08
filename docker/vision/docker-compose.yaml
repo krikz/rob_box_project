@@ -11,12 +11,13 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - DISPLAY=:0
-#      - ROS_DISCOVERY_SERVER=10.1.1.10:11811
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Пытаемся подключиться к router 10 раз
+      - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
     volumes:
       - ./config:/config
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
+      - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     restart: unless-stopped
@@ -29,12 +30,13 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
-#      - ROS_DISCOVERY_SERVER=10.1.1.10:11811
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
     volumes:
       - ./config:/config
-      - ./config/cyclonedds.xml:/etc/cyclonedds.xml
+      - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
       - /dev/shm:/dev/shm
     depends_on:
       oak-d:

@@ -1,8 +1,30 @@
 {
+    // Zenoh Session для OAK-D камеры (Vision Pi)
+    // Подключается к Zenoh Router на Main Pi через Gigabit Ethernet
+    
     "mode": "peer",
+    
     "connect": {
         "endpoints": [
-            "tcp/zenoh-router:7447"
+            "tcp/10.1.1.10:7447"  // Main Pi eth0 - Zenoh Router
         ]
+    },
+    
+    "listen": {
+        "endpoints": [
+            "tcp/10.1.1.11:0"  // Vision Pi eth0 - слушаем на случайном порту
+        ]
+    },
+    
+    "scouting": {
+        "multicast": {
+            "enabled": false  // Отключаем multicast - используем только router
+        }
+    },
+    
+    "transport": {
+        "shared_memory": {
+            "enabled": false  // Отключаем SHM для inter-host коммуникации
+        }
     }
 }

@@ -8,8 +8,8 @@ RUN apt-get update && \
         ros-humble-theora-image-transport \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем rmw_cyclonedds
+# Устанавливаем rmw_zenoh для лучшей производительности и надёжности
 RUN apt-get update && \
     apt-get install -y \
-    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*

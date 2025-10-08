@@ -1,0 +1,33 @@
+{
+    // Zenoh Router конфигурация для Main Pi
+    // Центральный роутер для связи Vision Pi <-> Main Pi
+    
+    "mode": "router",
+    
+    "listen": {
+        "endpoints": [
+            "tcp/10.1.1.10:7447"  // Main Pi eth0 - принимаем соединения от Vision Pi
+        ]
+    },
+    
+    "scouting": {
+        "multicast": {
+            "enabled": false  // Отключаем multicast
+        },
+        "gossip": {
+            "enabled": true  // Включаем gossip для распространения информации о peers
+        }
+    },
+    
+    "transport": {
+        "shared_memory": {
+            "enabled": true  // Включаем SHM для локальных нод на Main Pi
+        }
+    },
+    
+    "routing": {
+        "peer": {
+            "mode": "peer_to_peer"  // Разрешаем маршрутизацию между peers
+        }
+    }
+}

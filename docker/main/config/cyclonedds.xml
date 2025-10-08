@@ -32,7 +32,7 @@ https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclo
     </Discovery>
     
     <Tracing>
-      <Verbosity>warning</Verbosity>
+      <Verbosity>info</Verbosity>  <!-- Временно info для отладки -->
       <OutputFile>stdout</OutputFile>
     </Tracing>
   </Domain>
