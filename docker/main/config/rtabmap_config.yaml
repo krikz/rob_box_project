@@ -31,10 +31,15 @@ rtabmap:
     
     # Ремаппинг топиков с OAK-D
     # Эти топики публикует depthai_ros_driver
-    rgb/image: /oak/rgb/image_raw/compressed
-    rgb/camera_info: /oak/rgb/camera_info
-    depth/image: /oak/stereo/image_raw/compressedDepth
-    depth/camera_info: /oak/stereo/camera_info
+    rgb/image: /camera/camera/color/image_raw
+    rgb/camera_info: /camera/camera/color/camera_info
+    depth/image: /camera/camera/depth/image_raw
+    depth/camera_info: /camera/camera/color/camera_info
+    
+    # КРИТИЧНО: указываем использовать сжатые топики
+    image_transport: compressed
+    rgb_image_transport: compressed
+    depth_image_transport: compressed
     
     # Параметры RTAB-Map для экономии ресурсов Pi
     Rtabmap/DetectionRate: "0.5"  # Обнаружение loop closures раз в 2 секунды
