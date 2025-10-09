@@ -1,0 +1,64 @@
+name: Build All Docker Images
+
+# Полная сборка всех образов проекта (базовые + сервисы)
+# Используется для проверки что всё собирается корректно
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:  # Ручной запуск
+  schedule:
+    # Полная пересборка раз в неделю
+    - cron: '0 3 * * 0'  # Воскресенье 3:00 UTC
+
+jobs:
+  # Шаг 1: Собираем базовые образы
+  build-base-images:
+    uses: ./.github/workflows/build-base-images.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  # Шаг 2: Собираем сервисы Main Pi (зависят от базовых образов)
+  build-main-services:
+    needs: build-base-images
+    uses: ./.github/workflows/build-main-services.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  # Шаг 3: Собираем сервисы Vision Pi (зависят от базовых образов)
+  build-vision-services:
+    needs: build-base-images
+    uses: ./.github/workflows/build-vision-services.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  # Финальная проверка
+  verify-all:
+    runs-on: ubuntu-latest
+    needs: [build-base-images, build-main-services, build-vision-services]
+    steps:
+      - name: All builds succeeded
+        run: |
+          echo "🎉 Полная сборка проекта завершена успешно!"
+          echo ""
+          echo "Базовые образы:"
+          echo "  - ghcr.io/krikz/rob_box_base:ros2-zenoh"
+          echo "  - ghcr.io/krikz/rob_box_base:rtabmap"
+          echo "  - ghcr.io/krikz/rob_box_base:depthai"
+          echo "  - ghcr.io/krikz/rob_box_base:pcl"
+          echo ""
+          echo "Main Pi сервисы:"
+          echo "  - ghcr.io/krikz/rob_box:robot-state-publisher"
+          echo "  - ghcr.io/krikz/rob_box:rtabmap"
+          echo ""
+          echo "Vision Pi сервисы:"
+          echo "  - ghcr.io/krikz/rob_box:oak-d"
+          echo "  - ghcr.io/krikz/rob_box:lslidar"
+          echo "  - ghcr.io/krikz/rob_box:apriltag"

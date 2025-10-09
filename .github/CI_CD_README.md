@@ -1,12 +1,15 @@
 # GitHub Actions CI/CD для rob_box_project
 
-## Автоматическая сборка базовых образов
+## Автоматическая сборка образов
 
-Проект использует GitHub Actions для автоматической сборки и публикации базовых Docker образов в GitHub Container Registry (ghcr.io).
+Проект использует GitHub Actions для автоматической сборки и публикации Docker образов в GitHub Container Registry (ghcr.io).
 
-### Workflow: Build Base Docker Images
+### Workflows
 
+#### 1. Build Base Docker Images
 **Файл:** `.github/workflows/build-base-images.yml`
+
+Собирает базовые образы с предустановленными зависимостями.
 
 **Триггеры:**
 - Push в `main` с изменениями в `docker/base/**`
@@ -14,6 +17,7 @@
 - Еженедельная пересборка (воскресенье 2:00 UTC) для обновления upstream образов
 
 **Собираемые образы:**
+
 1. `ghcr.io/krikz/rob_box_base:ros2-zenoh` - базовый ROS 2 + Zenoh
 2. `ghcr.io/krikz/rob_box_base:rtabmap` - RTAB-Map SLAM
 3. `ghcr.io/krikz/rob_box_base:depthai` - DepthAI для OAK-D камеры
@@ -21,11 +25,63 @@
 
 **Архитектуры:** `linux/amd64`, `linux/arm64` (поддержка Raspberry Pi)
 
+#### 2. Build Main Pi Services
+**Файл:** `.github/workflows/build-main-services.yml`
+
+Собирает сервисы для Main Pi (robot-state-publisher, rtabmap).
+
+**Собираемые образы:**
+
+1. `ghcr.io/krikz/rob_box:robot-state-publisher` - TF дерево робота
+2. `ghcr.io/krikz/rob_box:rtabmap` - RTAB-Map SLAM
+
+#### 3. Build Vision Pi Services
+**Файл:** `.github/workflows/build-vision-services.yml`
+
+Собирает сервисы для Vision Pi (oak-d, lslidar, apriltag).
+
+**Собираемые образы:**
+
+1. `ghcr.io/krikz/rob_box:oak-d` - OAK-D camera driver
+2. `ghcr.io/krikz/rob_box:lslidar` - LSLIDAR N10 driver
+3. `ghcr.io/krikz/rob_box:apriltag` - AprilTag detection
+
+#### 4. Build All Docker Images
+**Файл:** `.github/workflows/build-all.yml`
+
+Запускает полную сборку всех образов (базовые + сервисы) для проверки.
+
+**Триггеры:**
+
+- Push в `main`
+- Pull Request
+- Ручной запуск
+- Еженедельно (воскресенье 3:00 UTC)
+
 ## Использование предсобранных образов
 
-### На Raspberry Pi (автоматически):
+### Базовые образы (используются автоматически)
 
-Все Dockerfile уже настроены на использование образов из ghcr.io по умолчанию:
+Все Dockerfile уже настроены на использование базовых образов из ghcr.io.
+Сервисы скачивают их автоматически при сборке.
+
+### Сервисы (опционально)
+
+Можно использовать предсобранные образы сервисов вместо локальной сборки:
+
+```yaml
+# docker-compose.yaml
+services:
+  oak-d:
+    image: ghcr.io/krikz/rob_box:oak-d  # Вместо build: ...
+    # build:
+    #   context: .
+    #   dockerfile: oak-d/Dockerfile
+```
+
+### На Raspberry Pi (обычный workflow)
+
+**Main Pi:**
 
 ```bash
 # Main Pi

@@ -1,0 +1,162 @@
+name: Build Vision Pi Services
+
+# Собираем сервисы Vision Pi для проверки работоспособности
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/vision/**'
+      - '.github/workflows/build-vision-services.yml'
+  pull_request:
+    paths:
+      - 'docker/vision/**'
+  workflow_dispatch:  # Ручной запуск
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+
+jobs:
+  # OAK-D Camera
+  build-oak-d:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=oak-d
+            type=sha,prefix=oak-d-
+
+      - name: Build and push oak-d
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/vision/oak-d
+          file: docker/vision/oak-d/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # LSLIDAR N10
+  build-lslidar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=lslidar
+            type=sha,prefix=lslidar-
+
+      - name: Build and push lslidar
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/vision
+          file: docker/vision/lslidar/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # AprilTag Detection
+  build-apriltag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=apriltag
+            type=sha,prefix=apriltag-
+
+      - name: Build and push apriltag
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/vision/apriltag
+          file: docker/vision/apriltag/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Проверка сборки всех сервисов прошла успешно
+  verify-build:
+    runs-on: ubuntu-latest
+    needs: [build-oak-d, build-lslidar, build-apriltag]
+    steps:
+      - name: Verify all builds succeeded
+        run: echo "✅ All Vision Pi services built successfully!"
