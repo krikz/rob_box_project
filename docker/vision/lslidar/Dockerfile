@@ -7,6 +7,8 @@ RUN apt-get update && \
         ros-humble-rmw-zenoh-cpp \
         git \
         python3-pip \
+        libboost-thread-dev \
+        libboost-chrono-dev \
         && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
