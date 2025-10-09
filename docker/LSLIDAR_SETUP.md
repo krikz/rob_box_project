@@ -14,52 +14,24 @@
 - **Weight**: 60g
 - **IP Rating**: IPX-4
 
-### Network Configuration
+### Physical Connection
 
-**Your Network Setup:**
-- Main Pi: `10.1.1.20`
-- Vision Pi: `10.1.1.21` (wlan0 or eth0)
-- LiDAR: **`10.1.1.200`** (must be configured)
+**Connect to Vision Pi:**
+1. **USB/Serial Cable**: Connect LSLIDAR to Vision Pi via USB
+2. **Power**: 5V power supply to LiDAR
+3. **Device Path**: Usually appears as `/dev/ttyUSB0`
 
-**ВАЖНО:** LiDAR по умолчанию имеет IP `192.168.1.200`. Нужно изменить на `10.1.1.200` чтобы он был в вашей сети!
+**Verify connection:**
+```bash
+# On Vision Pi, check USB devices
+ls -la /dev/ttyUSB*
 
-**Настройка IP адреса LiDAR:**
+# Should show:
+# /dev/ttyUSB0  (LiDAR device)
 
-1. **Подключите LiDAR временно к компьютеру с IP 192.168.1.x:**
-   - Установите на ПК статический IP `192.168.1.100/24`
-   - Подключите LiDAR по ethernet
-
-2. **Используйте web-интерфейс LiDAR:**
-   ```bash
-   # Откройте браузер
-   http://192.168.1.200
-   
-   # В настройках измените:
-   IP Address: 10.1.1.200
-   Subnet Mask: 255.255.255.0
-   Gateway: 10.1.1.1
-   ```
-
-3. **Или используйте утилиту конфигурации:**
-   - Скачайте с сайта Lslidar
-   - Измените IP через GUI
-
-4. **Проверка после изменения IP:**
-   ```bash
-   # Подключите LiDAR к Vision Pi (eth0 или к роутеру)
-   # На Vision Pi проверьте связь:
-   ping 10.1.1.200
-   ```
-
-**Vision Pi Network (уже настроено):**
-
-Ваша текущая конфигурация:
-```yaml
-# Vision Pi: 10.1.1.21
-# Ethernet или WiFi - одна сеть 10.1.1.x
+# Check device permissions
+sudo chmod 666 /dev/ttyUSB0
 ```
-
-**НЕ НУЖНО менять сеть на Vision Pi** - она уже правильно настроена!
 
 ### Physical Mounting
 
@@ -162,33 +134,24 @@ Grid/RangeMax: "5.0"       # Use LiDAR up to 5m
 
 ### LiDAR Not Detected
 
-**Check LiDAR IP configuration:**
+**Check USB connection:**
 ```bash
-# Verify Vision Pi can reach 10.1.1.200
-ping 10.1.1.200
+# List USB devices
+ls -la /dev/ttyUSB*
 
-# If no response, LiDAR IP might still be 192.168.1.200
-# See "Network Configuration" section above
+# Should show /dev/ttyUSB0 or /dev/ttyUSB1
+# If not found, check dmesg for USB errors
+dmesg | grep ttyUSB
 ```
 
-**Check network connection:**
+**Check permissions:**
 ```bash
-# Verify Vision Pi IP
-ip addr show
+# Give access to USB device
+sudo chmod 666 /dev/ttyUSB0
 
-# Should show either:
-# wlan0: 10.1.1.21/24  (if WiFi)
-# or
-# eth0: 10.1.1.21/24   (if Ethernet)
-```
-
-**Check UDP packets:**
-```bash
-# Install tcpdump if needed
-sudo apt-get install tcpdump
-
-# Listen for LiDAR data on any interface
-sudo tcpdump port 2368 -n
+# Add user to dialout group (permanent fix)
+sudo usermod -a -G dialout $USER
+# Then logout and login again
 ```
 
 ### No /scan Topic

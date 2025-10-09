@@ -54,7 +54,9 @@ services:
       dockerfile: lslidar/Dockerfile
     container_name: lslidar
     network_mode: host
-    privileged: true  # Для доступа к сетевому устройству
+    privileged: true  # Для доступа к USB/Serial устройству
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0  # LiDAR serial port
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp

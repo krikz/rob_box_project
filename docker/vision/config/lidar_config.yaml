@@ -1,9 +1,6 @@
 # LSLIDAR N10 Configuration
 # 360° 2D LiDAR: 4500 pts/sec, 0.02-12m range, ±3cm accuracy
-
-# Network settings - LiDAR в подсети 10.1.1.x
-device_ip: "10.1.1.200"  # LiDAR IP в вашей сети
-lidar_udp_port: 2368
+# Подключен к Vision Pi через USB/Serial порт
 
 # Frame settings
 frame_id: "lslidar_n10"
