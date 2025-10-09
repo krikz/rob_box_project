@@ -13,6 +13,7 @@ RUN apt-get update && \
         ros-humble-pcl-conversions \
         ros-humble-pcl-ros \
         ros-humble-diagnostic-updater \
+        libpcap-dev \
         && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
