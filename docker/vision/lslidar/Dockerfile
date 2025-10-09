@@ -15,11 +15,11 @@ WORKDIR /ws/src
 # Клонируем LSLIDAR ROS 2 драйвер
 RUN git clone --depth 1 https://github.com/Lslidar/lslidar_ros2_driver.git
 
-# Собираем пакет
+# Собираем все пакеты из репозитория
 WORKDIR /ws
 SHELL ["/bin/bash", "-c"]
 RUN source /opt/ros/humble/setup.bash && \
-    colcon build --packages-select lslidar_driver lslidar_msgs --symlink-install
+    colcon build --symlink-install
 
 # Копируем entrypoint скрипт
 COPY lslidar/entrypoint.sh /entrypoint.sh
