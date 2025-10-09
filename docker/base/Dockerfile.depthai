@@ -1,0 +1,26 @@
+# Базовый образ для DepthAI (OAK-D camera)
+# Наследуется от официального образа Luxonis и добавляет Zenoh
+FROM luxonis/depthai-ros:humble-latest
+
+# Обновляем ключ ROS 2 (может быть устаревшим в базовом образе)
+RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
+    gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg
+
+# Устанавливаем Zenoh middleware и дополнительные плагины
+RUN apt-get update && \
+    apt-get install -y \
+        ros-humble-rmw-zenoh-cpp \
+        ros-humble-compressed-depth-image-transport \
+        && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем переменные окружения для Zenoh
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+    RUST_LOG=zenoh=info \
+    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+
+# Метаданные образа
+LABEL maintainer="rob_box_project" \
+      description="Base DepthAI image with Zenoh for OAK-D camera" \
+      version="1.0"
+

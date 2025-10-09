@@ -10,8 +10,10 @@ def generate_launch_description():
     """
     Headless launch для LSLIDAR N10
     Только драйвер, без визуализации RViz2
+    Использует кастомный конфиг с /dev/ttyACM0
     """
-    driver_dir = os.path.join(get_package_share_directory('lslidar_driver'), 'params', 'lsx10.yaml')
+    # Используем наш кастомный конфиг вместо стандартного
+    driver_dir = '/config/lsx10_custom.yaml'
 
     driver_node = LifecycleNode(
         package='lslidar_driver',

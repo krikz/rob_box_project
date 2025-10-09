@@ -1,11 +1,12 @@
 # Dockerfile для robot_state_publisher - публикует TF дерево робота из URDF
-FROM ros:humble-ros-base
+# Использует базовый образ ros2-zenoh
+ARG BASE_IMAGE=rob_box_base:ros2-zenoh
+FROM ${BASE_IMAGE}
 
-# Установка необходимых пакетов
+# Установка специфичных пакетов для robot_state_publisher
 RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
     ros-humble-xacro \
-    ros-humble-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем рабочую директорию

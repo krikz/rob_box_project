@@ -1,0 +1,25 @@
+# Базовый образ для RTAB-Map SLAM
+# Наследуется от официального образа RTAB-Map и добавляет Zenoh
+FROM introlab3it/rtabmap_ros:humble-latest
+
+# Установка плагинов для сжатия изображений и Zenoh
+RUN apt-get update && \
+    apt-get install -y \
+        ros-humble-image-transport-plugins \
+        ros-humble-compressed-image-transport \
+        ros-humble-theora-image-transport \
+        ros-humble-rmw-zenoh-cpp \
+        && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем переменные окружения для Zenoh
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+    RUST_LOG=zenoh=info \
+    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib \
+    QT_QPA_PLATFORM=offscreen
+
+# Метаданные образа
+LABEL maintainer="rob_box_project" \
+      description="Base RTAB-Map image with Zenoh for SLAM" \
+      version="1.0"
+

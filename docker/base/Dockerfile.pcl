@@ -1,0 +1,27 @@
+# Базовый образ для работы с Point Cloud (PCL) - лидары и обработка облаков точек
+# Наследуется от base-ros2-zenoh и добавляет PCL зависимости
+ARG BASE_IMAGE=rob_box_base:ros2-zenoh
+FROM ${BASE_IMAGE}
+
+# Установка зависимостей для работы с облаками точек
+RUN apt-get update && \
+    apt-get install -y \
+        # PCL (Point Cloud Library) для обработки облаков точек
+        libpcl-dev \
+        ros-humble-pcl-conversions \
+        ros-humble-pcl-ros \
+        # Diagnostic updater для мониторинга состояния устройств
+        ros-humble-diagnostic-updater \
+        # libpcap для захвата сетевых пакетов (Ethernet лидары)
+        libpcap-dev \
+        # Boost libraries (требуются для многих ROS пакетов и драйверов лидаров)
+        libboost-thread-dev \
+        libboost-chrono-dev \
+        libboost-system-dev \
+        # Очистка кэша
+        && rm -rf /var/lib/apt/lists/*
+
+# Метаданные образа
+LABEL maintainer="rob_box_project" \
+      description="Base PCL image with Zenoh for lidar and point cloud processing" \
+      version="1.0"

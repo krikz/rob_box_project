@@ -38,7 +38,6 @@ services:
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
     volumes:
       - ./config:/config
-      - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     # КРИТИЧНО: Ограничение памяти для защиты от OOM на Pi (8GB RAM total)
@@ -66,7 +65,6 @@ services:
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
     volumes:
       - ./config:/config
-      - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
       - /dev/shm:/dev/shm
     depends_on:
       - zenoh-router
@@ -88,7 +86,6 @@ services:
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
     volumes:
       - ./config:/config
-      - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
       - /dev/shm:/dev/shm
     depends_on:
       - zenoh-router

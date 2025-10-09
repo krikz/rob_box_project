@@ -1,29 +1,18 @@
-ARG ROS_DISTRO=humble
+# AprilTag Detection - использует базовый образ ros2-zenoh
+ARG BASE_IMAGE=rob_box_base:ros2-zenoh
+FROM ${BASE_IMAGE}
 
-FROM ros:${ROS_DISTRO}-ros-base
-
-RUN apt update && apt install -y \
-    ros-${ROS_DISTRO}-apriltag-ros \
-    ros-${ROS_DISTRO}-v4l2-camera \
-    ros-${ROS_DISTRO}-image-transport-plugins \
-    ros-${ROS_DISTRO}-image-proc && \
-    apt clean &&  \
-    rm -rf /var/lib/apt/lists/*
-
-RUN echo $(dpkg -s ros-$ROS_DISTRO-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt
-
-
-# Устанавливаем rmw_zenoh для лучшей производительности и надёжности
-RUN apt-get update && \
-    apt-get install -y \
-    ros-humble-rmw-zenoh-cpp \
+# Установка AprilTag пакетов
+RUN apt-get update && apt-get install -y \
+    ros-humble-apriltag-ros \
+    ros-humble-image-transport-plugins \
+    ros-humble-cv-bridge \
     && rm -rf /var/lib/apt/lists/*
 
-# Экспортируем переменные окружения по умолчанию
-ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp 
+RUN echo $(dpkg -s ros-humble-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
 
 # Устанавливаем права на выполнение скрипта запуска
-COPY config/start_apriltag.sh /start_apriltag.sh
+COPY scripts/start_apriltag.sh /start_apriltag.sh
 RUN chmod +x /start_apriltag.sh
 
 CMD ["/start_apriltag.sh"]

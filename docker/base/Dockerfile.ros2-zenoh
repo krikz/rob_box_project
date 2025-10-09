@@ -1,0 +1,28 @@
+# Базовый образ ROS 2 Humble + Zenoh
+# Общая база для всех контейнеров проекта, которые не требуют специализированных пакетов
+FROM ros:humble-ros-base
+
+# Установка Zenoh middleware и минимальных зависимостей
+RUN apt-get update && \
+    apt-get install -y \
+        # Zenoh middleware для ROS 2
+        ros-humble-rmw-zenoh-cpp \
+        # Базовые утилиты
+        git \
+        wget \
+        curl \
+        python3-pip \
+        # Очистка кэша для уменьшения размера образа
+        && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем переменные окружения для Zenoh по умолчанию
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+    RUST_LOG=zenoh=info \
+    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+
+# Метаданные образа
+LABEL maintainer="rob_box_project" \
+      description="Base ROS 2 Humble + Zenoh image" \
+      version="1.0"
+

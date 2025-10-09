@@ -1,27 +1,13 @@
-# Используем базовый образ depthai-ros
-FROM luxonis/depthai-ros:humble-latest
+# OAK-D Camera - использует специализированный базовый образ depthai
+# Базовый образ luxonis/depthai-ros уже содержит все необходимое для OAK-D
+ARG BASE_IMAGE=rob_box_base:depthai
+FROM ${BASE_IMAGE}
 
-# Обновляем существующий ключ ROS 2 в базовом образе
-RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
-    gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg
-
-RUN apt install ros-humble-compressed-depth-image-transport
-
-# Устанавливаем rmw_zenoh для лучшей производительности и надёжности
-RUN apt-get update && \
-    apt-get install -y \
-    ros-humble-rmw-zenoh-cpp \
-    && rm -rf /var/lib/apt/lists/*
-
-# КРИТИЧНО: Добавляем путь к библиотекам Zenoh
-# zenoh_cpp_vendor устанавливает libzenohc.so в /opt/ros/humble/opt/zenoh_cpp_vendor/lib
-ENV LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:$LD_LIBRARY_PATH
-    
-# Экспортируем переменные окружения по умолчанию
-#ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp 
+# Все необходимые зависимости (rmw-zenoh, image-transport, opencv, depthai) 
+# уже установлены в базовом образе 
 
 # Устанавливаем права на выполнение скрипта запуска
-COPY config/start_oak_d.sh /start_oak_d.sh
+COPY scripts/start_oak_d.sh /start_oak_d.sh
 RUN chmod +x /start_oak_d.sh
 
 CMD ["/start_oak_d.sh"]

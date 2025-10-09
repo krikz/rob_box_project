@@ -1,20 +1,10 @@
 # LSLIDAR N10 Driver для ROS 2 Humble
-FROM ros:humble-ros-base
+# Использует базовый образ PCL с предустановленными зависимостями для облаков точек
+ARG BASE_IMAGE=rob_box_base:pcl
+FROM ${BASE_IMAGE}
 
-# Установка необходимых пакетов
-RUN apt-get update && \
-    apt-get install -y \
-        ros-humble-rmw-zenoh-cpp \
-        git \
-        python3-pip \
-        libboost-thread-dev \
-        libboost-chrono-dev \
-        libpcl-dev \
-        ros-humble-pcl-conversions \
-        ros-humble-pcl-ros \
-        ros-humble-diagnostic-updater \
-        libpcap-dev \
-        && rm -rf /var/lib/apt/lists/*
+# Все необходимые пакеты (rmw-zenoh-cpp, PCL, diagnostic-updater, libpcap, boost)
+# уже установлены в базовом образе
 
 # Создаём рабочее пространство
 WORKDIR /ws/src
@@ -23,7 +13,10 @@ WORKDIR /ws/src
 RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_driver.git
 
 # Копируем наш headless лаунч-файл (без RViz2)
-COPY lslidar/lslidar_headless_launch.py /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py
+COPY lslidar/config/lslidar_headless_launch.py /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py
+
+# Копируем кастомный конфиг с правильным serial портом
+COPY lslidar/config/lsx10_custom.yaml /config/lsx10_custom.yaml
 
 # Собираем все пакеты из репозитория
 WORKDIR /ws
