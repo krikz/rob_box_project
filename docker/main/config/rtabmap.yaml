@@ -1,0 +1,24 @@
+# RTAB-Map параметры для стабильной работы через сеть между Pi
+# Увеличенные очереди для компенсации задержек Zenoh/CycloneDDS
+
+/**:
+  ros__parameters:
+    queue_size: 30
+    sync_queue_size: 30
+    approx_sync: true
+    approx_sync_max_interval: 0.1
+
+rgbd_sync:
+  ros__parameters:
+    queue_size: 30
+    sync_queue_size: 30
+
+rgbd_odometry:
+  ros__parameters:
+    queue_size: 30
+    sync_queue_size: 30
+
+rtabmap:
+  ros__parameters:
+    queue_size: 30
+    sync_queue_size: 30
