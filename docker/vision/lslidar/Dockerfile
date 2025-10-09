@@ -17,7 +17,8 @@ RUN git clone --depth 1 https://github.com/Lslidar/lslidar_ros2_driver.git
 
 # Собираем пакет
 WORKDIR /ws
-RUN . /opt/ros/humble/setup.bash && \
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/humble/setup.bash && \
     colcon build --packages-select lslidar_driver lslidar_msgs --symlink-install
 
 # Копируем entrypoint скрипт
