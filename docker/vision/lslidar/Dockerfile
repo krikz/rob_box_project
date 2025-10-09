@@ -12,8 +12,8 @@ RUN apt-get update && \
 # Создаём рабочее пространство
 WORKDIR /ws/src
 
-# Клонируем LSLIDAR N10 драйвер (специальная ветка для N10)
-RUN git clone --depth 1 -b N10_V1.0 https://github.com/Lslidar/lslidar_ros2_driver.git
+# Клонируем LSLIDAR N10 драйвер (ветка M10P/N10P для N10)
+RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_driver.git
 
 # Собираем все пакеты из репозитория
 WORKDIR /ws

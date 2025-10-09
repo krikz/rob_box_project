@@ -27,8 +27,6 @@ done
 
 echo "Starting LSLIDAR N10 driver..."
 
-# Запуск LSLIDAR драйвера
+# Запуск LSLIDAR драйвера (M10P/N10P branch)
 # LiDAR подключен к Vision Pi через USB/Serial
-exec ros2 launch lslidar_driver lslidar_n10.launch.py \
-    frame_id:=lslidar_n10 \
-    scan_topic:=/scan
+exec ros2 launch lslidar_driver lslidar_launch.py
