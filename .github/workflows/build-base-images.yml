@@ -1,16 +1,19 @@
 name: Build Base Docker Images
 
-# Собираем базовые образы при изменениях в docker/base/ или вручную
+# Собираем базовые образы только для main, develop и release веток
 on:
   push:
     branches:
-      - main
+      - main          # Production
+      - develop       # Development
+      - 'release/**'  # Release candidates
+      - 'hotfix/**'   # Hotfixes
     paths:
       - 'docker/base/**'
       - '.github/workflows/build-base-images.yml'
   workflow_dispatch:  # Ручной запуск
   schedule:
-    # Пересборка каждую неделю для обновления upstream образов
+    # Пересборка каждую неделю для обновления upstream образов (только main)
     - cron: '0 2 * * 0'  # Воскресенье 2:00 UTC
 
 env:
@@ -18,8 +21,34 @@ env:
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box_base
 
 jobs:
+  # Определение тега Docker на основе ветки
+  determine-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      docker_tag: ${{ steps.set-tag.outputs.docker_tag }}
+    steps:
+      - name: Determine Docker tag
+        id: set-tag
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          if [ "$BRANCH_NAME" = "main" ]; then
+            echo "docker_tag=latest" >> $GITHUB_OUTPUT
+          elif [ "$BRANCH_NAME" = "develop" ]; then
+            echo "docker_tag=dev" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH_NAME" == release/* ]]; then
+            VERSION="${BRANCH_NAME#release/}"
+            echo "docker_tag=rc-${VERSION}" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH_NAME" == hotfix/* ]]; then
+            VERSION="${BRANCH_NAME#hotfix/}"
+            echo "docker_tag=hotfix-${VERSION}" >> $GITHUB_OUTPUT
+          else
+            echo "docker_tag=test" >> $GITHUB_OUTPUT
+          fi
+          echo "Branch: $BRANCH_NAME, Tag: $(cat $GITHUB_OUTPUT | grep docker_tag | cut -d= -f2)"
+
   # Сборка базового образа ROS 2 + Zenoh (общая база для всех)
   build-ros2-zenoh:
+    needs: determine-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -45,7 +74,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
-            type=raw,value=ros2-zenoh
+            type=raw,value=ros2-zenoh-${{ needs.determine-tag.outputs.docker_tag }}
             type=sha,prefix=ros2-zenoh-
 
       - name: Build and push ros2-zenoh base image
