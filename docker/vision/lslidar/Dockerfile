@@ -22,6 +22,14 @@ WORKDIR /ws/src
 # Клонируем LSLIDAR N10 драйвер (ветка M10P/N10P для N10)
 RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_driver.git
 
+# Патчим лаунч-файл для headless режима (удаляем RViz2)
+RUN sed -i '/rviz_dir = /,/output=.screen.)/d' \
+    /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py && \
+    sed -i 's/driver_node,$/driver_node,/' \
+    /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py && \
+    sed -i '/rviz_node,/d' \
+    /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py
+
 # Собираем все пакеты из репозитория
 WORKDIR /ws
 SHELL ["/bin/bash", "-c"]
