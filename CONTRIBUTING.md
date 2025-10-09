@@ -137,31 +137,86 @@ git push origin develop
 
 ## 🐳 Docker образы и теги
 
+### Система тегирования
+
+Docker образы тегируются по формату: `{image_name}:{ros_version}-{branch_tag}`
+
+**Примеры:**
+- `rob_box_base:ros2-zenoh-humble-latest` - Production на ROS 2 Humble
+- `rob_box_base:ros2-zenoh-humble-dev` - Development на ROS 2 Humble
+- `rob_box_base:ros2-zenoh-jazzy-latest` - Production на ROS 2 Jazzy
+- `rob_box:rtabmap-humble-rc-1.0.0` - Release candidate 1.0.0 на Humble
+
+### Поддерживаемые версии ROS 2
+
+| Версия ROS 2 | Кодовое имя | Статус | Docker tag prefix |
+|--------------|-------------|--------|-------------------|
+| Humble Hawksbill | humble | ✅ Активная | `humble-` |
+| Jazzy Jalisco | jazzy | 🔄 Планируется | `jazzy-` |
+| Kilted Kaiju | kilted | 📋 Будущая | `kilted-` |
+
+**Текущая версия по умолчанию:** `humble`
+
 ### Автоматическая сборка
 
-| Ветка | Триггер | Docker тег | Описание |
-|-------|---------|------------|----------|
-| `main` | Push/Merge | `latest` | Production релиз |
-| `develop` | Push/Merge | `dev` | Разработка |
-| `release/*` | Push | `rc-X.Y.Z` | Release candidate |
-| `hotfix/*` | Push | `hotfix-X.Y.Z` | Срочное исправление |
+| Ветка | Триггер | Docker тег (Humble) | Описание |
+|-------|---------|---------------------|----------|
+| `main` | Push/Merge | `humble-latest` | Production релиз |
+| `develop` | Push/Merge | `humble-dev` | Разработка |
+| `release/*` | Push | `humble-rc-X.Y.Z` | Release candidate |
+| `hotfix/*` | Push | `humble-hotfix-X.Y.Z` | Срочное исправление |
 | `feature/*` | - | ❌ Не собирается | Экономия ресурсов |
 | `fix/*` | - | ❌ Не собирается | Экономия ресурсов |
+
+### Переход на новую версию ROS 2
+
+При переходе на новую версию ROS 2 (например, с Humble на Jazzy):
+
+1. Создать ветку `ros2/jazzy` из `develop`
+2. Обновить Dockerfiles (FROM ros:jazzy-ros-base)
+3. Тестировать в этой ветке
+4. После успешных тестов merge в `develop`
+5. Обновить `ROS_DISTRO` в GitHub Actions
+
+```bash
+# Создать ветку для миграции на Jazzy
+git checkout develop
+git checkout -b ros2/jazzy
+
+# Обновить все Dockerfiles
+find docker -name "Dockerfile*" -exec sed -i 's/humble/jazzy/g' {} \;
+
+# Протестировать сборку
+cd docker/base && docker build -f Dockerfile.ros2-zenoh -t test:jazzy .
+
+# После успешных тестов
+git add .
+git commit -m "feat: migrate to ROS 2 Jazzy"
+git push origin ros2/jazzy
+
+# Создать PR: ros2/jazzy → develop
+```
 
 ### Использование образов на Raspberry Pi
 
 ```bash
-# Production (stable)
-docker-compose pull  # Использует latest по умолчанию
+# Production (Humble, stable)
+docker-compose pull  # Использует humble-latest по умолчанию
 docker-compose up -d
 
-# Development (testing)
-export IMAGE_TAG=dev
+# Development (Humble, testing)
+export IMAGE_TAG=humble-dev
 docker-compose pull
 docker-compose up -d
 
-# Specific release candidate
-export IMAGE_TAG=rc-1.0.0
+# Specific release candidate (Humble)
+export IMAGE_TAG=humble-rc-1.0.0
+docker-compose pull
+docker-compose up -d
+
+# Production на новой версии ROS (Jazzy)
+export ROS_DISTRO=jazzy
+export IMAGE_TAG=jazzy-latest
 docker-compose pull
 docker-compose up -d
 ```

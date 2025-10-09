@@ -1,5 +1,11 @@
 version: '3.8'
 
+# Использует переменные из .env файла:
+# - ROS_DISTRO: версия ROS 2 (humble, jazzy, и т.д.)
+# - IMAGE_TAG: тег ветки (latest, dev, rc-X.Y.Z)
+# - BASE_IMAGE_PREFIX: ghcr.io/krikz/rob_box_base
+# - SERVICE_IMAGE_PREFIX: ghcr.io/krikz/rob_box
+
 services:
   # Zenoh Router - центральный роутер для связи между Pi
   zenoh-router:
@@ -24,7 +30,9 @@ services:
     build:
       context: ./robot_state_publisher
       dockerfile: Dockerfile
-    image: robot-state-publisher-custom:latest
+      args:
+        BASE_IMAGE: ${BASE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box_base}:ros2-zenoh-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:robot-state-publisher-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: robot-state-publisher
     network_mode: host
     environment:
@@ -45,7 +53,9 @@ services:
     build: 
       context: ./rtabmap
       dockerfile: Dockerfile
-    image: rtabmap-custom:latest
+      args:
+        BASE_IMAGE: ${BASE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box_base}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: rtabmap
     network_mode: host
     environment:
@@ -58,7 +68,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
-      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+      - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
       # Переменные для сжатия изображений
       - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=80
       - COMPRESSED_DEPTH_IMAGE_TRANSPORT_PNG_LEVEL=3

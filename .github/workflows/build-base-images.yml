@@ -19,6 +19,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box_base
+  ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
 
 jobs:
   # Определение тега Docker на основе ветки
@@ -26,25 +27,38 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docker_tag: ${{ steps.set-tag.outputs.docker_tag }}
+      full_tag: ${{ steps.set-tag.outputs.full_tag }}
     steps:
       - name: Determine Docker tag
         id: set-tag
         run: |
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          ROS_DISTRO="${{ env.ROS_DISTRO }}"
+          
+          # Определяем базовый тег на основе ветки
           if [ "$BRANCH_NAME" = "main" ]; then
-            echo "docker_tag=latest" >> $GITHUB_OUTPUT
+            BRANCH_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
-            echo "docker_tag=dev" >> $GITHUB_OUTPUT
+            BRANCH_TAG="dev"
           elif [[ "$BRANCH_NAME" == release/* ]]; then
             VERSION="${BRANCH_NAME#release/}"
-            echo "docker_tag=rc-${VERSION}" >> $GITHUB_OUTPUT
+            BRANCH_TAG="rc-${VERSION}"
           elif [[ "$BRANCH_NAME" == hotfix/* ]]; then
             VERSION="${BRANCH_NAME#hotfix/}"
-            echo "docker_tag=hotfix-${VERSION}" >> $GITHUB_OUTPUT
+            BRANCH_TAG="hotfix-${VERSION}"
           else
-            echo "docker_tag=test" >> $GITHUB_OUTPUT
+            BRANCH_TAG="test"
           fi
-          echo "Branch: $BRANCH_NAME, Tag: $(cat $GITHUB_OUTPUT | grep docker_tag | cut -d= -f2)"
+          
+          # Полный тег: ros_distro-branch_tag
+          FULL_TAG="${ROS_DISTRO}-${BRANCH_TAG}"
+          
+          echo "docker_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
+          echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "Branch: $BRANCH_NAME"
+          echo "ROS Distro: $ROS_DISTRO"
+          echo "Branch Tag: $BRANCH_TAG"
+          echo "Full Tag: $FULL_TAG"
 
   # Сборка базового образа ROS 2 + Zenoh (общая база для всех)
   build-ros2-zenoh:
@@ -74,8 +88,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
-            type=raw,value=ros2-zenoh-${{ needs.determine-tag.outputs.docker_tag }}
-            type=sha,prefix=ros2-zenoh-
+            type=raw,value=ros2-zenoh-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=ros2-zenoh-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=ros2-zenoh-${{ env.ROS_DISTRO }}-
 
       - name: Build and push ros2-zenoh base image
         uses: docker/build-push-action@v5
