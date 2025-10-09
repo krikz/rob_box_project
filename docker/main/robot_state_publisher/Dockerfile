@@ -5,6 +5,7 @@ FROM ros:humble-ros-base
 RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
     ros-humble-xacro \
+    ros-humble-rmw-zenoh-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем рабочую директорию
