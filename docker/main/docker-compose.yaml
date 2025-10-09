@@ -72,6 +72,7 @@ services:
       ros2 launch rtabmap_launch rtabmap.launch.py
       params:=/config/rtabmap.yaml
       frame_id:=base_link
+      odom_frame_id:=odom
       use_sim_time:=false
       qos:=1
       approx_sync:=true
@@ -89,7 +90,7 @@ services:
       rviz:=false
       visual_odometry:=true
       icp_odometry:=false
-      odom_topic:=/odom
+      odom_topic:=odom
       wait_for_transform:=0.5
       database_path:=/maps/rtabmap.db
     depends_on:
