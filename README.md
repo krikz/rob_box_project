@@ -1,7 +1,11 @@
-# РОББОКС - Автономный колесный ровер
+<div align="center">
+  <img src="assets/logo.svg" alt="РОББОКС Logo" width="400"/>
+  
+  # РОББОКС - Автономный колесный ровер
 
-[![Build All Docker Images](https://github.com/krikz/rob_box_project/actions/workflows/build-all.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/build-all.yml)
-[![Build Base Images](https://github.com/krikz/rob_box_project/actions/workflows/build-base-images.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/build-base-images.yml)
+  [![Build All Docker Images](https://github.com/krikz/rob_box_project/actions/workflows/build-all.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/build-all.yml)
+  [![Build Base Images](https://github.com/krikz/rob_box_project/actions/workflows/build-base-images.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/build-base-images.yml)
+</div>
 
 ## Описание проекта
 РОББОКС - это образовательный проект автономного робота, созданный для изучения работы с ROS2. Проект охватывает основные аспекты разработки роботизированных систем, включая управление движением, обработку данных с датчиков и взаимодействие с пользователем.
