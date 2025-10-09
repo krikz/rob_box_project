@@ -15,7 +15,8 @@ rgbd_sync:
     rgb_image_transport: compressed
     depth_image_transport: compressed
     approx_sync: true
-    queue_size: 10
+    queue_size: 30  # Увеличен для нестабильной сети
+    sync_queue_size: 30
 
 # Параметры rgbd_odometry ноды
 rgbd_odometry:
@@ -24,7 +25,8 @@ rgbd_odometry:
     rgb_image_transport: compressed
     depth_image_transport: compressed
     approx_sync: true
-    queue_size: 10
+    queue_size: 30  # Увеличен для буферизации задержек
+    sync_queue_size: 30
 
 rtabmap:
   ros__parameters:
@@ -38,7 +40,8 @@ rtabmap:
     
     # Частота обработки (снижена для Pi)
     approx_sync: true
-    queue_size: 5  # Уменьшен размер очереди
+    queue_size: 30  # Увеличен для компенсации задержек сети
+    sync_queue_size: 30
     
     # Используем сжатые изображения от OAK-D
     subscribe_depth: true
