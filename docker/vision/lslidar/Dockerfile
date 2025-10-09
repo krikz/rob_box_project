@@ -9,6 +9,9 @@ RUN apt-get update && \
         python3-pip \
         libboost-thread-dev \
         libboost-chrono-dev \
+        libpcl-dev \
+        ros-humble-pcl-conversions \
+        ros-humble-pcl-ros \
         && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
