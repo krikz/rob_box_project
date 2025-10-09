@@ -1,0 +1,24 @@
+# LSLIDAR N10 Configuration
+# 360° 2D LiDAR: 4500 pts/sec, 0.02-12m range, ±3cm accuracy
+
+# Network settings
+device_ip: "192.168.1.200"  # Default LSLIDAR IP
+lidar_udp_port: 2368
+
+# Frame settings
+frame_id: "lslidar_n10"
+scan_topic: "/scan"
+
+# Angle filtering (0=disabled, full 360°)
+angle_disable_min: 0
+angle_disable_max: 0
+
+# Scan parameters
+min_range: 0.02  # 2cm minimum
+max_range: 12.0  # 12m maximum
+angle_min: -3.14159265  # -180°
+angle_max: 3.14159265   # +180°
+
+# Output configuration
+scan_num: 1  # Single scan line (2D LiDAR)
+publish_scan: true

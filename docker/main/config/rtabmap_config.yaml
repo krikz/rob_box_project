@@ -43,10 +43,10 @@ rtabmap:
     queue_size: 30  # Увеличен для компенсации задержек сети
     sync_queue_size: 30
     
-    # Используем сжатые изображения от OAK-D
+    # Используем сжатые изображения от OAK-D + LiDAR scan
     subscribe_depth: true
     subscribe_rgb: true
-    subscribe_scan: false
+    subscribe_scan: true  # ВКЛЮЧЕНО: используем LSLIDAR N10
     subscribe_scan_cloud: false
     subscribe_stereo: false
     

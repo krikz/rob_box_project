@@ -67,7 +67,7 @@ services:
       - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
       - ./config/rtabmap_config.yaml:/config/rtabmap.yaml
       - ./maps:/maps
-    # Оптимизированная команда - прямое использование сжатых топиков от OAK-D
+    # Оптимизированная команда - прямое использование сжатых топиков от OAK-D + LiDAR
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
       params:=/config/rtabmap.yaml
@@ -80,12 +80,13 @@ services:
       subscribe_rgbd:=false
       subscribe_rgb:=true
       subscribe_depth:=true
-      subscribe_scan:=false
+      subscribe_scan:=true
       subscribe_stereo:=false
       rgbd_sync:=true
       rgb_topic:=/camera/camera/color/image_rect
       depth_topic:=/camera/camera/depth/image_rect_raw
       camera_info_topic:=/camera/camera/color/camera_info
+      scan_topic:=/scan
       rtabmap_viz:=false
       rviz:=false
       visual_odometry:=true
