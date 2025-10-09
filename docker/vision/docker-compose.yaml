@@ -13,6 +13,12 @@ services:
       - /dev/shm:/dev/shm
     command: -c /zenoh_config.json5
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
 
   oak-d:
     build:

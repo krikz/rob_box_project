@@ -88,9 +88,7 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    endpoints: [
-      "tcp/[::]:7447"
-    ],
+    endpoints: ["tcp/[::]:7447"],
 
     /// Global listen configuration,
     /// Accepts a single value or different values for router, peer and client.
@@ -159,7 +157,9 @@
       /// (e.g. autoconnect_strategy : { to_router:  "always", to_peer: "greater-zid" }),
       /// or different values for router or peer mode
       /// (e.g. autoconnect_strategy : { peer: { to_router:  "always", to_peer: "greater-zid" } }).
-      autoconnect_strategy: { router: { to_router: "always", to_peer: "always" } },
+      autoconnect_strategy: {
+        router: { to_router: "always", to_peer: "always" },
+      },
       /// Whether or not to listen for scout messages on UDP multicast and reply to them.
       listen: true,
     },
@@ -179,7 +179,7 @@
       /// Each value is a list of "peer" and/or "router".
       /// ROS setting: by default all peers rely on the router to discover each other. Thus configuring the peer to send gossip
       ///               messages only to the router is sufficient and avoids unecessary traffic between Nodes at launch time.
-      target: { router: ["router", "peer"], peer: ["router"]},
+      target: { router: ["router", "peer"], peer: ["router"] },
       /// Which type of Zenoh instances to automatically establish sessions with upon discovery on gossip.
       /// Accepts a single value (e.g. autoconnect: ["router", "peer"]) which applies whatever the configured "mode" is,
       /// or different values for router or peer mode (e.g. autoconnect: { router: [], peer: ["router", "peer"] }).
@@ -197,7 +197,9 @@
       /// (e.g. autoconnect_strategy : { to_router:  "always", to_peer: "greater-zid" }),
       /// or different values for router or peer mode
       /// (e.g. autoconnect_strategy : { peer: { to_router:  "always", to_peer: "greater-zid" } }).
-      autoconnect_strategy: { router: { to_router: "always", to_peer: "always" } },
+      autoconnect_strategy: {
+        router: { to_router: "always", to_peer: "always" },
+      },
     },
   },
 
@@ -759,13 +761,13 @@
       /// startup time, but guarantees no latency impact when first SHM buffer is processed.
       mode: "lazy",
       transport_optimization: {
-          /// Enables transport optimization for large messages (default `true`).
-          /// Implicitly puts large messages into shared memory for transports with SHM-compatible connection.
-          enabled: true,
-          /// SHM memory size in bytes used for transport optimization (default `16 * 1024 * 1024`).
-          pool_size: 16777216,
-          /// Allow optimization for messages equal or larger than this threshold in bytes (default `3072`).
-          message_size_threshold: 3072,
+        /// Enables transport optimization for large messages (default `true`).
+        /// Implicitly puts large messages into shared memory for transports with SHM-compatible connection.
+        enabled: true,
+        /// SHM memory size in bytes used for transport optimization (default `16 * 1024 * 1024`).
+        pool_size: 16777216,
+        /// Allow optimization for messages equal or larger than this threshold in bytes (default `3072`).
+        message_size_threshold: 3072,
       },
     },
     auth: {
@@ -799,5 +801,19 @@
       write: false,
     },
   },
-
+  plugins: {
+    rest: {
+      http_port: 8000,
+    },
+    storage_manager: {
+      storages: {
+        robot_data: {
+          key_expr: "robots/**",
+          volume: {
+            id: "memory",
+          },
+        },
+      },
+    },
+  },
 }
