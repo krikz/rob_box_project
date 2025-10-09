@@ -1,5 +1,6 @@
 # AprilTag Detection - использует базовый образ ros2-zenoh
-ARG BASE_IMAGE=rob_box_base:ros2-zenoh
+# Локальная сборка: docker build --build-arg BASE_IMAGE=rob_box_base:ros2-zenoh
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
 # Установка AprilTag пакетов

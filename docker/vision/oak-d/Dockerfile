@@ -1,6 +1,7 @@
 # OAK-D Camera - использует специализированный базовый образ depthai
 # Базовый образ luxonis/depthai-ros уже содержит все необходимое для OAK-D
-ARG BASE_IMAGE=rob_box_base:depthai
+# Локальная сборка: docker build --build-arg BASE_IMAGE=rob_box_base:depthai
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai
 FROM ${BASE_IMAGE}
 
 # Все необходимые зависимости (rmw-zenoh, image-transport, opencv, depthai) 

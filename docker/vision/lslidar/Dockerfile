@@ -1,6 +1,7 @@
 # LSLIDAR N10 Driver для ROS 2 Humble
 # Использует базовый образ PCL с предустановленными зависимостями для облаков точек
-ARG BASE_IMAGE=rob_box_base:pcl
+# Локальная сборка: docker build --build-arg BASE_IMAGE=rob_box_base:pcl
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:pcl
 FROM ${BASE_IMAGE}
 
 # Все необходимые пакеты (rmw-zenoh-cpp, PCL, diagnostic-updater, libpcap, boost)

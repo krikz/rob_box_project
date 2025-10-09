@@ -1,6 +1,6 @@
 # Базовый образ для работы с Point Cloud (PCL) - лидары и обработка облаков точек
 # Наследуется от base-ros2-zenoh и добавляет PCL зависимости
-ARG BASE_IMAGE=rob_box_base:ros2-zenoh
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
 # Установка зависимостей для работы с облаками точек

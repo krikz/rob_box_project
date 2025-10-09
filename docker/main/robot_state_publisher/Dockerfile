@@ -1,6 +1,7 @@
 # Dockerfile для robot_state_publisher - публикует TF дерево робота из URDF
-# Использует базовый образ ros2-zenoh
-ARG BASE_IMAGE=rob_box_base:ros2-zenoh
+# Использует базовый образ ros2-zenoh из GitHub Container Registry
+# Локальная сборка: docker build --build-arg BASE_IMAGE=rob_box_base:ros2-zenoh
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
 # Установка специфичных пакетов для robot_state_publisher
