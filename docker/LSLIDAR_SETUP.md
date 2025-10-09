@@ -16,59 +16,50 @@
 
 ### Network Configuration
 
-**Default LiDAR Settings:**
-- IP Address: `192.168.1.200`
-- UDP Port: `2368`
-- Subnet Mask: `255.255.255.0`
+**Your Network Setup:**
+- Main Pi: `10.1.1.20`
+- Vision Pi: `10.1.1.21` (wlan0 or eth0)
+- LiDAR: **`10.1.1.200`** (must be configured)
 
-**Raspberry Pi Vision Setup:**
+**ВАЖНО:** LiDAR по умолчанию имеет IP `192.168.1.200`. Нужно изменить на `10.1.1.200` чтобы он был в вашей сети!
 
-1. **Configure static IP for ethernet:**
-```bash
-# Edit netplan configuration
-sudo nano /etc/netplan/01-netcfg.yaml
-```
+**Настройка IP адреса LiDAR:**
 
-Add ethernet interface:
+1. **Подключите LiDAR временно к компьютеру с IP 192.168.1.x:**
+   - Установите на ПК статический IP `192.168.1.100/24`
+   - Подключите LiDAR по ethernet
+
+2. **Используйте web-интерфейс LiDAR:**
+   ```bash
+   # Откройте браузер
+   http://192.168.1.200
+   
+   # В настройках измените:
+   IP Address: 10.1.1.200
+   Subnet Mask: 255.255.255.0
+   Gateway: 10.1.1.1
+   ```
+
+3. **Или используйте утилиту конфигурации:**
+   - Скачайте с сайта Lslidar
+   - Измените IP через GUI
+
+4. **Проверка после изменения IP:**
+   ```bash
+   # Подключите LiDAR к Vision Pi (eth0 или к роутеру)
+   # На Vision Pi проверьте связь:
+   ping 10.1.1.200
+   ```
+
+**Vision Pi Network (уже настроено):**
+
+Ваша текущая конфигурация:
 ```yaml
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    eth0:
-      dhcp4: no
-      addresses:
-        - 192.168.1.100/24  # Pi IP in LiDAR subnet
-      nameservers:
-        addresses: [8.8.8.8]
-  wifis:
-    wlan0:
-      dhcp4: no
-      addresses:
-        - 10.1.1.21/24  # Main network
-      routes:
-        - to: default
-          via: 10.1.1.1
-      nameservers:
-        addresses: [10.1.1.1, 8.8.8.8]
-      access-points:
-        "WiFi_Network":
-          password: "your_password"
+# Vision Pi: 10.1.1.21
+# Ethernet или WiFi - одна сеть 10.1.1.x
 ```
 
-Apply configuration:
-```bash
-sudo netplan apply
-```
-
-2. **Test LiDAR connectivity:**
-```bash
-# Ping LiDAR
-ping 192.168.1.200
-
-# Listen for UDP packets
-sudo tcpdump -i eth0 port 2368 -c 10
-```
+**НЕ НУЖНО менять сеть на Vision Pi** - она уже правильно настроена!
 
 ### Physical Mounting
 
@@ -171,13 +162,24 @@ Grid/RangeMax: "5.0"       # Use LiDAR up to 5m
 
 ### LiDAR Not Detected
 
-**Check network:**
+**Check LiDAR IP configuration:**
 ```bash
-# Verify eth0 has IP 192.168.1.100
-ip addr show eth0
+# Verify Vision Pi can reach 10.1.1.200
+ping 10.1.1.200
 
-# Ping LiDAR
-ping 192.168.1.200
+# If no response, LiDAR IP might still be 192.168.1.200
+# See "Network Configuration" section above
+```
+
+**Check network connection:**
+```bash
+# Verify Vision Pi IP
+ip addr show
+
+# Should show either:
+# wlan0: 10.1.1.21/24  (if WiFi)
+# or
+# eth0: 10.1.1.21/24   (if Ethernet)
 ```
 
 **Check UDP packets:**
@@ -185,8 +187,8 @@ ping 192.168.1.200
 # Install tcpdump if needed
 sudo apt-get install tcpdump
 
-# Listen for LiDAR data
-sudo tcpdump -i eth0 port 2368 -n
+# Listen for LiDAR data on any interface
+sudo tcpdump port 2368 -n
 ```
 
 ### No /scan Topic

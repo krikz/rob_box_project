@@ -1,8 +1,8 @@
 # LSLIDAR N10 Configuration
 # 360° 2D LiDAR: 4500 pts/sec, 0.02-12m range, ±3cm accuracy
 
-# Network settings
-device_ip: "192.168.1.200"  # Default LSLIDAR IP
+# Network settings - LiDAR в подсети 10.1.1.x
+device_ip: "10.1.1.200"  # LiDAR IP в вашей сети
 lidar_udp_port: 2368
 
 # Frame settings

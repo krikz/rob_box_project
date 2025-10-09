@@ -27,5 +27,10 @@ done
 
 echo "Starting LSLIDAR N10 driver..."
 
-# Запуск LSLIDAR драйвера с конфигурацией
-exec ros2 launch lslidar_driver lslidar_n10.launch.py
+# Запуск LSLIDAR драйвера
+# LiDAR должен быть в той же подсети 10.1.1.x
+exec ros2 launch lslidar_driver lslidar_n10.launch.py \
+    frame_id:=lslidar_n10 \
+    scan_topic:=/scan \
+    device_ip:=10.1.1.200 \
+    lidar_udp_port:=2368
