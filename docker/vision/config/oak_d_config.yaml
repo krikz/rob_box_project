@@ -10,8 +10,8 @@
       i_enable_ir: false  # Отключаем ИК
       i_laser_dot_brightness: 0  # Отключаем лазер
       i_floodlight_brightness: 0  # Отключаем прожектор
-      i_publish_tf_from_calibration: true  # Важно для RTAB-Map
-      i_tf_base_frame: "base_link"
+      i_publish_tf_from_calibration: false  # ОТКЛЮЧЕНО: TF публикует robot_state_publisher
+      i_tf_base_frame: "camera_link"  # Изменено с base_link - теперь камера публикует относительно camera_link
       i_enable_imu: false  # Отключаем IMU если не используется
       i_enable_preview: false  # Отключаем preview поток
       i_enable_diagnostics: false  # ОТКЛЮЧАЕМ диагностику - вызывает X_LINK_ERROR

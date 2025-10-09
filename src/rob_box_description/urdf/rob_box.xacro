@@ -173,56 +173,87 @@
 		</gazebo>
 	</xacro:macro>
 
-	<xacro:macro name="rgb_camera" params="name parent_link origin_xyz topic_name">
-		<link name="${name}">
+	<!-- OAK-D Camera Macro - соответствует реальной структуре фреймов depthai_ros_driver -->
+	<xacro:macro name="oak_d_camera" params="name parent_link origin_xyz origin_rpy">
+		<!-- camera_link - основной корпус камеры -->
+		<link name="${name}_link">
 			<visual>
-				<origin xyz="0 0 0" rpy="1.5708 0 0"/>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.05 0.03 0.03"/>
+					<box size="0.097 0.0275 0.0214"/>  <!-- Размеры OAK-D-Lite -->
 				</geometry>
-				<material name="blue">
-					<color rgba="0 0 1 1"/>
+				<material name="dark_grey">
+					<color rgba="0.2 0.2 0.2 1"/>
 				</material>
 			</visual>
 			<collision>
-				<origin xyz="0 0 0" rpy="1.5708 0 0"/>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.05 0.03 0.03"/>
+					<box size="0.097 0.0275 0.0214"/>
 				</geometry>
 			</collision>
 			<inertial>
-				<mass value="0.1"/>
+				<mass value="0.061"/>  <!-- 61g вес OAK-D-Lite -->
 				<origin xyz="0 0 0"/>
-				<inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+				<inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
 			</inertial>
 		</link>
+
+		<!-- Присоединение к роботу -->
 		<joint name="${name}_joint" type="fixed">
 			<parent link="${parent_link}"/>
-			<child link="${name}"/>
-			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
+			<child link="${name}_link"/>
+			<origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
 		</joint>
-		<gazebo reference="${name}">
-			<sensor name="${name}_sensor" type="camera">
-				<camera>
-					<horizontal_fov>1.047</horizontal_fov>
-					<image>
-						<width>640</width>
-						<height>480</height>
-					</image>
-					<clip>
-						<near>0.1</near>
-						<far>100</far>
-					</clip>
-				</camera>
-				<topic>${topic_name}</topic>
-				<update_rate>30</update_rate>
-				<always_on>1</always_on>
-				<visualize>true</visualize>
-			</sensor>
-			<plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
-				<render_engine>ogre2</render_engine>
-			</plugin>
-		</gazebo>
+
+		<!-- camera (intermediate frame - используется depthai_ros_driver) -->
+		<link name="${name}"/>
+		<joint name="${name}_base_joint" type="fixed">
+			<parent link="${name}_link"/>
+			<child link="${name}"/>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+		</joint>
+
+		<!-- Color camera frames -->
+		<link name="${name}_color_frame"/>
+		<joint name="${name}_color_frame_joint" type="fixed">
+			<parent link="${name}"/>
+			<child link="${name}_color_frame"/>
+			<!-- Смещение RGB камеры относительно базы (из calibration) -->
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+		</joint>
+
+		<link name="${name}_color_optical_frame"/>
+		<joint name="${name}_color_optical_frame_joint" type="fixed">
+			<parent link="${name}_color_frame"/>
+			<child link="${name}_color_optical_frame"/>
+			<!-- Optical frame: X right, Y down, Z forward (ROS camera convention) -->
+			<origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+		</joint>
+
+		<!-- Depth/Stereo camera frames -->
+		<link name="${name}_depth_frame"/>
+		<joint name="${name}_depth_frame_joint" type="fixed">
+			<parent link="${name}"/>
+			<child link="${name}_depth_frame"/>
+			<!-- Depth камера немного смещена (левая камера stereo пары) -->
+			<origin xyz="0 0.0375 0" rpy="0 0 0"/>
+		</joint>
+
+		<link name="${name}_depth_optical_frame"/>
+		<joint name="${name}_depth_optical_frame_joint" type="fixed">
+			<parent link="${name}_depth_frame"/>
+			<child link="${name}_depth_optical_frame"/>
+			<origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+		</joint>
+
+		<!-- IMU frame (если используется) -->
+		<link name="${name}_imu_frame"/>
+		<joint name="${name}_imu_frame_joint" type="fixed">
+			<parent link="${name}"/>
+			<child link="${name}_imu_frame"/>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+		</joint>
 	</xacro:macro>
 
 	<!-- Использование макросов -->
@@ -235,5 +266,6 @@
 
 	<!-- Сенсоры -->
 	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="0.25 0 0.2" topic_name="/scan"/>
-	<xacro:rgb_camera name="rgb_camera" parent_link="base_link" origin_xyz="0.25 0.2 0.167" topic_name="/camera/image_raw"/>
+	<!-- OAK-D-Lite камера на передней части робота -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="0.25 0 0.167" origin_rpy="0 0 0"/>
 </robot>

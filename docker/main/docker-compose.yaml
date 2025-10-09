@@ -18,6 +18,28 @@ services:
       timeout: 10s
       retries: 20
       start_period: 30s
+
+  # Robot State Publisher - публикует TF дерево робота из URDF
+  robot-state-publisher:
+    build:
+      context: ./robot_state_publisher
+      dockerfile: Dockerfile
+    image: robot-state-publisher-custom:latest
+    container_name: robot-state-publisher
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_CONFIG=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ../../src:/workspace/src:ro  # Read-only доступ к исходникам URDF
+      - ./config/zenoh_session_config.json5:/config/zenoh_session_config.json5
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
     
   rtabmap:
     build: 
