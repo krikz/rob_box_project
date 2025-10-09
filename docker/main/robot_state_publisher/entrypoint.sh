@@ -16,9 +16,17 @@ fi
 
 echo "URDF generated successfully ($(wc -l < /tmp/rob_box.urdf) lines)"
 
-# Запускаем robot_state_publisher с URDF из файла
-echo "Starting robot_state_publisher..."
+# Создаем yaml файл с параметрами для robot_state_publisher
+cat > /tmp/robot_state_publisher_params.yaml << EOF
+robot_state_publisher:
+  ros__parameters:
+    robot_description: |
+$(cat /tmp/rob_box.urdf | sed 's/^/      /')
+    use_sim_time: false
+    publish_frequency: 30.0
+EOF
+
+# Запускаем robot_state_publisher с параметрами из файла
+echo "Starting robot_state_publisher with params from YAML file..."
 exec ros2 run robot_state_publisher robot_state_publisher \
-    --ros-args \
-    -p use_sim_time:=false \
-    -p robot_description:="$(cat /tmp/rob_box.urdf)"
+    --ros-args --params-file /tmp/robot_state_publisher_params.yaml
