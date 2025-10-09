@@ -12,6 +12,7 @@ RUN apt-get update && \
         libpcl-dev \
         ros-humble-pcl-conversions \
         ros-humble-pcl-ros \
+        ros-humble-diagnostic-updater \
         && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
