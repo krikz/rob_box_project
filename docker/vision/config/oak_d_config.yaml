@@ -21,7 +21,7 @@
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
       i_publish_compressed: false  # ОТКЛЮЧЕНО: пусть image_transport делает сжатие
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
-      i_max_q_size: 2  # Минимальный размер очереди
+      i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
       i_interleaved: false
       i_board_socket_id: 0
       i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
@@ -31,7 +31,7 @@
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: для совместимости
       i_publish_compressed: false  # ОТКЛЮЧЕНО: пусть image_transport делает сжатие
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
-      i_max_q_size: 2  # Минимальный размер очереди
+      i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
       i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
       i_publish_topic: true  # Явно включаем публикацию
       i_output_disparity: false  # Не публикуем disparity - экономим bandwidth
