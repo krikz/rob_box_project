@@ -13,7 +13,7 @@ def generate_launch_description():
     Использует кастомный конфиг с /dev/ttyACM0
     """
     # Используем наш кастомный конфиг вместо стандартного
-    driver_dir = '/config/lsx10_custom.yaml'
+    driver_dir = '/config/lslidar/lsx10_custom.yaml'
 
     driver_node = LifecycleNode(
         package='lslidar_driver',

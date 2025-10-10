@@ -10,15 +10,15 @@ RUN apt-get update && apt-get install -y \
     ros-humble-xacro \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаем рабочую директорию
-
 # Рабочая директория
 WORKDIR /workspace
 
-# Копируем URDF файлы робота в контейнер
-COPY src/rob_box_description /workspace/src/rob_box_description
+# ВАЖНО: URDF файлы и скрипты НЕ копируются в образ!
+# Они монтируются через volumes в docker-compose.yaml:
+# - ./config:/config/shared:ro (общие конфиги: zenoh, cyclonedds)
+# - ../../src/rob_box_description:/workspace/src/rob_box_description:ro (URDF)
+# - ./robot_state_publisher/scripts:/scripts:ro (скрипт запуска)
 
-COPY docker/main/robot_state_publisher/scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
-RUN chmod +x /start_robot_state_publisher.sh
-ENTRYPOINT ["/start_robot_state_publisher.sh"]
+# ENTRYPOINT монтируется из volume: /scripts/start_robot_state_publisher.sh
+ENTRYPOINT ["/scripts/start_robot_state_publisher.sh"]
 

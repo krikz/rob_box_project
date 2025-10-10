@@ -1,7 +1,14 @@
 name: Build Main Pi Services
 
-# Собираем сервисы Main Pi только по требованию
+# Собираем сервисы Main Pi
 on:
+  push:
+    branches:
+      - develop        # Автосборка при пуше в develop
+    paths:
+      - 'docker/main/**'
+      - 'src/rob_box_description/**'
+      - '.github/workflows/build-main-services.yml'
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Main Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 

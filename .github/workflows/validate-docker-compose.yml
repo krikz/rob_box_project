@@ -10,7 +10,7 @@ on:
     paths:
       - 'docker/main/docker-compose.yaml'
       - 'docker/vision/docker-compose.yaml'
-      - 'docker/DOCKER_STANDARDS.md'
+      - 'docs/development/DOCKER_STANDARDS.md'
       - '.github/workflows/validate-docker-compose.yml'
   pull_request:
     branches:
@@ -19,7 +19,7 @@ on:
     paths:
       - 'docker/main/docker-compose.yaml'
       - 'docker/vision/docker-compose.yaml'
-      - 'docker/DOCKER_STANDARDS.md'
+      - 'docs/development/DOCKER_STANDARDS.md'
   workflow_dispatch:  # Ручной запуск
 
 jobs:
@@ -72,12 +72,30 @@ jobs:
           done
           echo "✅ Основные environment переменные проверены"
           
-          # Проверка что нет дублирования volumes
-          if grep -A 5 "./config:/config" docker/main/docker-compose.yaml | grep -q "./config/.*:/config/"; then
-            echo "❌ Ошибка: найдено дублирование монтирования config файлов"
+          # Проверка правильной структуры volumes (новая архитектура)
+          # Должно быть: ./config:/config/shared и ./config/{service}:/config/{service}
+          # НЕ должно быть: ./{service}/config:/config/{service} (старая структура)
+          if grep -q "\\./.*/config:/config/" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/config:/config/)"
+            echo "   Должно быть: ./config/{service}:/config/{service}"
             exit 1
           fi
-          echo "✅ Нет дублирования volumes"
+          echo "✅ Структура volumes соответствует стандарту"
+          
+          # Проверка что используется ./config:/config/shared
+          if ! grep -q "./config:/config/shared" docker/main/docker-compose.yaml; then
+            echo "⚠️  Предупреждение: не найден маунт ./config:/config/shared"
+          fi
+          
+          # Проверка правильной структуры скриптов (новая архитектура)
+          # Должно быть: ./scripts/{service}:/scripts
+          # НЕ должно быть: ./{service}/scripts:/scripts (старая структура)
+          if grep -q "\\./.*/scripts:/scripts" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/scripts:/scripts)"
+            echo "   Должно быть: ./scripts/{service}:/scripts"
+            exit 1
+          fi
+          echo "✅ Структура скриптов соответствует стандарту"
           
           # Проверка что нет монтирования src папки
           if grep -q "src:/workspace/src" docker/main/docker-compose.yaml; then
@@ -135,12 +153,30 @@ jobs:
           done
           echo "✅ Основные environment переменные проверены"
           
-          # Проверка что нет дублирования volumes
-          if grep -A 5 "./config:/config" docker/vision/docker-compose.yaml | grep -q "./config/.*:/config/"; then
-            echo "❌ Ошибка: найдено дублирование монтирования config файлов"
+          # Проверка правильной структуры volumes (новая архитектура)
+          # Должно быть: ./config:/config/shared и ./config/{service}:/config/{service}
+          # НЕ должно быть: ./{service}/config:/config/{service} (старая структура)
+          if grep -q "\\./.*/config:/config/" docker/vision/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/config:/config/)"
+            echo "   Должно быть: ./config/{service}:/config/{service}"
             exit 1
           fi
-          echo "✅ Нет дублирования volumes"
+          echo "✅ Структура volumes соответствует стандарту"
+          
+          # Проверка что используется ./config:/config/shared
+          if ! grep -q "./config:/config/shared" docker/vision/docker-compose.yaml; then
+            echo "⚠️  Предупреждение: не найден маунт ./config:/config/shared"
+          fi
+          
+          # Проверка правильной структуры скриптов (новая архитектура)
+          # Должно быть: ./scripts/{service}:/scripts
+          # НЕ должно быть: ./{service}/scripts:/scripts (старая структура)
+          if grep -q "\\./.*/scripts:/scripts" docker/vision/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/scripts:/scripts)"
+            echo "   Должно быть: ./scripts/{service}:/scripts"
+            exit 1
+          fi
+          echo "✅ Структура скриптов соответствует стандарту"
           
           # Проверка memory limits для oak-d
           if ! grep -A 10 "oak-d:" docker/vision/docker-compose.yaml | grep -q "mem_limit:"; then
@@ -169,8 +205,8 @@ jobs:
           
           # Проверка наличия обязательных файлов
           required_files=(
-            "docker/DOCKER_STANDARDS.md"
-            "docker/AGENT_GUIDE.md"
+            "docs/development/DOCKER_STANDARDS.md"
+            "docs/development/AGENT_GUIDE.md"
             "docker/main/docker-compose.yaml"
             "docker/main/config/zenoh_router_config.json5"
             "docker/main/config/zenoh_session_config.json5"

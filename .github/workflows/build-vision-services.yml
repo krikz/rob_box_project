@@ -1,7 +1,13 @@
 name: Build Vision Pi Services
 
-# Собираем сервисы Vision Pi только по требованию
+# Собираем сервисы Vision Pi
 on:
+  push:
+    branches:
+      - develop        # Автосборка при пуше в develop
+    paths:
+      - 'docker/vision/**'
+      - '.github/workflows/build-vision-services.yml'
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Vision Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 

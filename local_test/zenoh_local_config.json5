@@ -1,0 +1,25 @@
+{
+  // Zenoh конфигурация для локального тестирования
+  // Использует session mode (без внешнего router)
+  
+  mode: "peer",
+  
+  connect: {
+    endpoints: []
+  },
+  
+  listen: {
+    endpoints: [
+      "tcp/127.0.0.1:7447",
+      "udp/224.0.0.1:7447"
+    ]
+  },
+  
+  scouting: {
+    multicast: {
+      enabled: true,
+      address: "224.0.0.1:7447",
+      interface: "lo"
+    }
+  }
+}
