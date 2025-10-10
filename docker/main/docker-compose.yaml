@@ -64,12 +64,28 @@ services:
       - ./config:/config/shared:ro
       - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
-    # Лидар режим: запуск rtabmap напрямую с явными параметрами
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        source /opt/ros/humble/setup.bash
-        exec ros2 run rtabmap_slam rtabmap --ros-args -r odom:=odom -r scan:=/scan -p frame_id:=base_link -p odom_frame_id:=odom -p subscribe_depth:=False -p subscribe_rgb:=False -p subscribe_rgbd:=False -p subscribe_stereo:=False -p subscribe_scan:=True -p queue_size:=10 -p Reg/Strategy:=1 -p database_path:=/maps/rtabmap.db
+    # Лидар режим: только LaserScan для SLAM
+    command: >
+      ros2 launch rtabmap_launch rtabmap.launch.py
+      args:='--ros-args --log-level warn'
+      use_sim_time:=False
+      frame_id:=base_link
+      odom_frame_id:=odom
+      subscribe_rgbd:=False
+      subscribe_rgb:=False
+      subscribe_depth:=False
+      subscribe_stereo:=False
+      subscribe_scan:=True
+      scan_topic:=/scan
+      qos:=1
+      approx_sync:=False
+      rtabmap_viz:=False
+      rviz:=False
+      visual_odometry:=False
+      icp_odometry:=True
+      odom_topic:=odom
+      database_path:=/maps/rtabmap.db
+      wait_for_transform:=0.5
     depends_on:
       - zenoh-router
     restart: unless-stopped
