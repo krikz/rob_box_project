@@ -1,56 +1,56 @@
-# LSLIDAR N10 Setup Guide
+# Руководство по настройке LSLIDAR N10
 
-## Hardware Connection
+## Подключение оборудования
 
-### LSLIDAR N10 Specifications
-- **Model**: N10 Navigation & Obstacle Avoidance LiDAR
-- **Type**: 2D 360° Single-Line LiDAR
-- **Range**: 0.02m - 12m @ 70% reflectivity
-- **Accuracy**: ±3cm (0-6m), ±4.5cm (6-12m)
-- **FOV**: 360°
-- **Resolution**: 0.48° - 0.96°
-- **Data Rate**: 4500 points/sec
-- **Dimensions**: φ52 × 36.1mm
-- **Weight**: 60g
-- **IP Rating**: IPX-4
+### Технические характеристики LSLIDAR N10
+- **Модель**: N10 Navigation & Obstacle Avoidance LiDAR
+- **Тип**: 2D 360° однолучевой лидар
+- **Дальность**: 0.02м - 12м @ 70% отражение
+- **Точность**: ±3см (0-6м), ±4.5см (6-12м)
+- **Угол обзора**: 360°
+- **Разрешение**: 0.48° - 0.96°
+- **Частота данных**: 4500 точек/сек
+- **Размеры**: φ52 × 36.1мм
+- **Вес**: 60г
+- **Защита**: IPX-4
 
-### Physical Connection
+### Физическое подключение
 
-**Connect to Vision Pi:**
-1. **USB/Serial Cable**: Connect LSLIDAR to Vision Pi via USB
-2. **Power**: 5V power supply to LiDAR
-3. **Device Path**: Usually appears as `/dev/ttyUSB0`
+**Подключение к Vision Pi:**
+1. **USB/Serial кабель**: Подключите LSLIDAR к Vision Pi через USB
+2. **Питание**: 5В питание для лидара
+3. **Путь устройства**: Обычно определяется как `/dev/ttyUSB0`
 
-**Verify connection:**
+**Проверка подключения:**
 ```bash
-# On Vision Pi, check USB devices
+# На Vision Pi проверьте USB устройства
 ls -la /dev/ttyUSB*
 
-# Should show:
-# /dev/ttyUSB0  (LiDAR device)
+# Должно показать:
+# /dev/ttyUSB0  (устройство лидара)
 
-# Check device permissions
+# Проверьте права доступа
 sudo chmod 666 /dev/ttyUSB0
 ```
 
-### Physical Mounting
+### Физический монтаж
 
-Mount LSLIDAR on robot top center:
-- **Position**: Front of robot, 0.25m from base_link
-- **Height**: 0.2m above base_link
-- **Orientation**: Aligned with robot forward (X-axis)
+Установите LSLIDAR в центре верхней части робота:
+- **Позиция**: Спереди робота, 0.25м от base_link
+- **Высота**: 0.2м над base_link
+- **Ориентация**: Выровнен с направлением движения робота (ось X)
 
-URDF frame hierarchy:
+Иерархия фреймов URDF:
 ```
 base_link
-  └─ lslidar_n10 (position: x=0.25m, y=0.0m, z=0.2m)
+  └─ lslidar_n10 (позиция: x=0.25м, y=0.0м, z=0.2м)
 ```
 
-## Software Setup
+## Настройка ПО
 
-### Docker Container
+### Docker контейнер
 
-Container already configured in `docker/vision/docker-compose.yaml`:
+Контейнер уже настроен в `docker/vision/docker-compose.yaml`:
 
 ```yaml
 lslidar:
@@ -58,27 +58,27 @@ lslidar:
     context: .
     dockerfile: lslidar/Dockerfile
   container_name: lslidar
-  network_mode: host  # Required for UDP multicast
+  network_mode: host  # Требуется для UDP multicast
   privileged: true
 ```
 
-### Build and Start
+### Сборка и запуск
 
-**On Vision Pi:**
+**На Vision Pi:**
 ```bash
 cd ~/rob_box_project/docker/vision
 
-# Build LiDAR container
+# Соберите контейнер лидара
 docker-compose build lslidar
 
-# Start LiDAR (stops if already running)
+# Запустите лидар (остановит если уже работает)
 docker-compose up -d lslidar
 
-# Check logs
+# Проверьте логи
 docker logs lslidar -f
 ```
 
-Expected output:
+Ожидаемый вывод:
 ```
 Zenoh router is ready!
 Starting LSLIDAR N10 driver...
@@ -87,150 +87,151 @@ Starting LSLIDAR N10 driver...
 [INFO] Scan rate: ~10 Hz
 ```
 
-### Verify Data Stream
+### Проверка потока данных
 
-**Check ROS 2 topics:**
+**Проверьте ROS 2 топики:**
 ```bash
-# List topics (should see /scan)
+# Список топиков (должен быть /scan)
 ros2 topic list | grep scan
 
-# Monitor scan data
+# Мониторинг данных сканирования
 ros2 topic hz /scan
 
-# View scan messages
+# Просмотр сообщений
 ros2 topic echo /scan --once
 ```
 
-Expected output:
+Ожидаемый вывод:
 ```
 average rate: 10.000
   min: 0.100s max: 0.100s std dev: 0.00100s window: 10
 
-ranges: [12.0, 11.95, ..., 0.35, 0.02]  # 4500 points
+ranges: [12.0, 11.95, ..., 0.35, 0.02]  # 4500 точек
 angle_min: -3.14159
 angle_max: 3.14159
 ```
 
-## RTAB-Map Integration
+## Интеграция с RTAB-Map
 
-RTAB-Map automatically receives `/scan` topic for:
-- **2D Grid Map**: Obstacle detection for navigation
-- **Loop Closure**: Scan matching for drift correction
-- **Localization**: ICP alignment with visual odometry
+RTAB-Map автоматически получает топик `/scan` для:
+- **2D карта сетки**: Обнаружение препятствий для навигации
+- **Замыкание петель**: Сопоставление сканов для коррекции дрейфа
+- **Локализация**: ICP выравнивание с визуальной одометрией
 
-Configuration in `docker/main/config/rtabmap_config.yaml`:
+Конфигурация в `docker/main/config/rtabmap/rtabmap_config.yaml`:
 ```yaml
 subscribe_scan: true
 scan_topic: /scan
 
-# Scan parameters
-Mem/LaserScanNormalK: "0"  # Disabled (2D LiDAR)
-Grid/FromDepth: "true"     # Combine with depth camera
-Grid/CellSize: "0.05"      # 5cm grid resolution
-Grid/RangeMax: "5.0"       # Use LiDAR up to 5m
+# Параметры сканирования
+Mem/LaserScanNormalK: "0"  # Отключено (2D лидар)
+Grid/FromDepth: "true"     # Комбинировать с камерой глубины
+Grid/CellSize: "0.05"      # Разрешение сетки 5см
+Grid/RangeMax: "5.0"       # Использовать лидар до 5м
 ```
 
-## Troubleshooting
+## Устранение неисправностей
 
-### LiDAR Not Detected
+### Лидар не обнаружен
 
-**Check USB connection:**
+**Проверьте USB подключение:**
 ```bash
-# List USB devices
+# Список USB устройств
 ls -la /dev/ttyUSB*
 
-# Should show /dev/ttyUSB0 or /dev/ttyUSB1
-# If not found, check dmesg for USB errors
+# Должно показать /dev/ttyUSB0 или /dev/ttyUSB1
+# Если не найдено, проверьте dmesg на ошибки USB
 dmesg | grep ttyUSB
 ```
 
-**Check permissions:**
+**Проверьте права доступа:**
 ```bash
-# Give access to USB device
+# Дайте доступ к USB устройству
 sudo chmod 666 /dev/ttyUSB0
 
-# Add user to dialout group (permanent fix)
+# Добавьте пользователя в группу dialout (постоянное решение)
 sudo usermod -a -G dialout $USER
-# Then logout and login again
+# Затем выйдите и войдите снова
 ```
 
-### No /scan Topic
+### Нет топика /scan
 
-**Check container:**
+**Проверьте контейнер:**
 ```bash
-# Container status
+# Статус контейнера
 docker ps -a | grep lslidar
 
-# Full logs
+# Полные логи
 docker logs lslidar
 
-# Restart container
+# Перезапустите контейнер
 docker restart lslidar
 ```
 
-**Check Zenoh connection:**
+**Проверьте соединение Zenoh:**
 ```bash
-# Verify Zenoh router running
+# Убедитесь что Zenoh router работает
 docker logs zenoh-router-vision | grep "listening"
 
-# Check ROS 2 discovery
+# Проверьте обнаружение ROS 2
 ros2 node list | grep lslidar
 ```
 
-### Low Scan Rate
+### Низкая частота сканирования
 
-**Check system load:**
+**Проверьте нагрузку системы:**
 ```bash
-# CPU usage
+# Использование CPU
 htop
 
-# Memory usage (should be <80%)
+# Использование памяти (должно быть <80%)
 free -h
 ```
 
-**Reduce other processes:**
+**Уменьшите другие процессы:**
 ```bash
-# Temporarily stop camera
+# Временно остановите камеру
 docker stop oak-d
 
-# Check scan rate improves
+# Проверьте улучшение частоты сканирования
 ros2 topic hz /scan
 ```
 
-### Scan Data Quality Issues
+### Проблемы с качеством данных сканирования
 
-**Check LiDAR positioning:**
-- Ensure no obstacles blocking 360° view
-- Mount height should be >20cm from ground
-- Keep away from reflective surfaces (glass, mirrors)
+**Проверьте расположение лидара:**
+- Убедитесь, что нет препятствий, блокирующих обзор 360°
+- Высота установки должна быть >20см от земли
+- Держите подальше от отражающих поверхностей (стекло, зеркала)
 
-**Adjust filtering in `lidar_config.yaml`:**
+**Настройте фильтрацию в `lidar_config.yaml`:**
 ```yaml
-min_range: 0.05  # Increase if too noisy near LiDAR
-max_range: 8.0   # Decrease if long-range unreliable
+min_range: 0.05  # Увеличьте если много шума рядом с лидаром
+max_range: 8.0   # Уменьшите если дальние данные ненадежны
 ```
 
-## Performance Notes
+## Производительность
 
-**Resource Usage:**
+**Использование ресурсов:**
 - CPU: ~5-10% (lslidar_driver)
-- RAM: ~200MB
-- Network: ~1 Mbps UDP
+- RAM: ~200МБ
+- Сеть: ~1 Мбит/с UDP
 
-**Combined System Load (Vision Pi):**
-- OAK-D Camera: 4-5GB RAM
-- LSLIDAR: 200MB RAM
-- Total: ~5.2GB / 7.8GB (67% - good!)
+**Общая нагрузка системы (Vision Pi):**
+- Камера OAK-D: 4-5ГБ RAM
+- LSLIDAR: 200МБ RAM
+- Всего: ~5.2ГБ / 7.8ГБ (67% - хорошо!)
 
-**Scan Integration with RTAB-Map:**
-- Visual Odometry: RGB-D camera (primary)
-- Scan Matching: LiDAR (secondary, loop closure)
-- Grid Map: Combined depth + laser for navigation
-- Odometry Fusion: Visual + ICP for accuracy
+**Интеграция сканирования с RTAB-Map:**
+- Визуальная одометрия: RGB-D камера (основная)
+- Сопоставление сканов: Лидар (вторичная, замыкание петель)
+- Карта сетки: Объединенная глубина + лазер для навигации
+- Слияние одометрии: Визуальная + ICP для точности
 
-## Related Files
+## Связанные файлы
 
-- **URDF**: `src/rob_box_description/urdf/rob_box.xacro` (line 268)
+- **URDF**: `src/rob_box_description/urdf/rob_box.xacro` (строка 268)
 - **Docker**: `docker/vision/lslidar/Dockerfile`
-- **Config**: `docker/vision/config/lidar_config.yaml`
-- **RTAB-Map**: `docker/main/config/rtabmap_config.yaml`
+- **Конфиг**: `docker/vision/config/lslidar/lslidar_config.yaml`
+- **RTAB-Map**: `docker/main/config/rtabmap/rtabmap_config.yaml`
+
