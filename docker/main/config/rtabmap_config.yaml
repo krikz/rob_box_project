@@ -49,6 +49,13 @@ rtabmap:
     subscribe_scan: true  # ВКЛЮЧЕНО: используем LSLIDAR N10
     subscribe_scan_cloud: false
     subscribe_stereo: false
+
+  # Подключение топика AprilTag (маркеры)
+  subscribe_odom_info: true
+  subscribe_landmarks: true  # Включаем поддержку маркеров
+
+  # Ремаппинг топика маркеров (AprilTag)
+  landmarks: /apriltag/tag_detections
     
     # QoS настройки для работы через CycloneDDS между Pi
     qos: 1  # Reliable
@@ -64,6 +71,9 @@ rtabmap:
     rgb/camera_info: /camera/camera/color/camera_info
     depth/image: /camera/camera/depth/image_rect_raw
     depth/camera_info: /camera/camera/depth/camera_info
+
+  # AprilTag marker remap
+  landmarks: /apriltag/tag_detections
     
     # КРИТИЧНО: указываем использовать сжатые топики
     image_transport: compressed
