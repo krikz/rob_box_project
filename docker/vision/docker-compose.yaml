@@ -36,6 +36,7 @@ services:
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config
+      - ./oak-d/config/oak_d_config.yaml:/config/oak_d_config.yaml:ro
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     # AprilTag-only mode: OAK-D publishes only color image and camera_info for marker detection
