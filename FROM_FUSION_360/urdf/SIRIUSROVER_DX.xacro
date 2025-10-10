@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<robot name="SIRIUSROVER_DX" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find SIRIUSROVER_DX_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find SIRIUSROVER_DX_description)/urdf/SIRIUSROVER_DX.trans" />
+<xacro:include filename="$(find SIRIUSROVER_DX_description)/urdf/SIRIUSROVER_DX.gazebo" />
+<link name="base_link">
+  <inertial>
+    <origin xyz="-0.18 0.02255492508769995 0.08772092355261586" rpy="0 0 0"/>
+    <mass value="7.782560572066453"/>
+    <inertia ixx="0.24698" iyy="0.086974" izz="0.295958" ixy="0.0" iyz="-0.000187" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://SIRIUSROVER_DX_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://SIRIUSROVER_DX_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+</robot>
