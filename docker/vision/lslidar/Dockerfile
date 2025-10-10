@@ -1,4 +1,4 @@
-# LSLIDAR N10 Driver для ROS 2 Humble
+﻿# LSLIDAR N10 Driver для ROS 2 Humble
 # Использует базовый образ PCL с предустановленными зависимостями для облаков точек
 # Локальная сборка: docker build --build-arg BASE_IMAGE=rob_box_base:pcl
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:pcl
@@ -6,6 +6,14 @@ FROM ${BASE_IMAGE}
 
 # Все необходимые пакеты (rmw-zenoh-cpp, PCL, diagnostic-updater, libpcap, boost)
 # уже установлены в базовом образе
+
+# Устанавливаем дополнительные зависимости для сборки lslidar драйвера
+RUN apt-get update && apt-get install -y \
+    ros-humble-rosidl-default-generators \
+    ros-humble-rosidl-default-runtime \
+    ros-humble-std-msgs \
+    ros-humble-sensor-msgs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
 WORKDIR /ws/src
