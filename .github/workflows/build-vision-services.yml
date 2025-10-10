@@ -4,8 +4,6 @@ name: Build Vision Pi Services
 on:
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Vision Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
-    secrets:
-      inherit
 
 env:
   REGISTRY: ghcr.io
