@@ -32,16 +32,18 @@ services:
       - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/zenoh_session_config.json5
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
-      - ./config:/config
-      - ./oak-d/config:/oak-d-config:ro
+      - ./config:/config/shared:ro
+      - ./oak-d/config:/config/oak-d:ro
+      - ./oak-d/scripts:/scripts:ro
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     # AprilTag-only mode: OAK-D publishes only color image and camera_info for marker detection
     mem_limit: 6g  # Максимум 6GB (оставляем 2GB для системы)
     memswap_limit: 7g  # 6GB RAM + 1GB swap максимум
+    command: ["/scripts/start_oak_d.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -59,10 +61,13 @@ services:
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/zenoh_session_config.json5
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
     volumes:
-      - ./config:/config
+      - ./config:/config/shared:ro
+      - ./lslidar/config:/config/lslidar:ro
+      - ./lslidar/scripts:/scripts:ro
       - /dev/shm:/dev/shm
+    command: ["/scripts/start_lslidar.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -78,10 +83,13 @@ services:
       - RUST_LOG=zenoh=info
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/zenoh_session_config.json5
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
     volumes:
-      - ./config:/config
+      - ./config:/config/shared:ro
+      - ./apriltag/config:/config/apriltag:ro
+      - ./apriltag/scripts:/scripts:ro
       - /dev/shm:/dev/shm
+    command: ["/scripts/start_apriltag.sh"]
     depends_on:
       - zenoh-router
       - oak-d

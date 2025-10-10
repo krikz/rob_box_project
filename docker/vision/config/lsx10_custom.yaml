@@ -1,0 +1,26 @@
+# LSLIDAR N10 Driver Parameters для Vision Pi
+# Serial interface через /dev/ttyACM0 (USB CDC ACM)
+/lslidar_driver_node:
+  ros__parameters:
+    frame_id: laser_link                    # Лазерная система координат
+    # Сетевые параметры (не используются в serial режиме)
+    # group_ip: 224.1.1.2
+    # add_multicast: false
+    # device_ip: 192.168.1.200              # IP лидара (не используется в serial режиме)
+    # device_ip_difop: 192.168.1.102        # Отключено для serial режима
+    # msop_port: 2368                       # UDP порт (только для network режима)
+    # difop_port: 2369                      # UDP порт (только для network режима)
+    lidar_name: M10                         # Тип лидара: N10 (используется M10 конфиг)
+    angle_disable_min: 0.0                  # Обрезка угла - начало
+    angle_disable_max: 0.0                  # Обрезка угла - конец
+    min_range: 0.15                         # Минимальная дистанция (м)
+    max_range: 10.0                         # Максимальная дистанция (м) - N10 до 10м
+    use_gps_ts: false                       # GPS синхронизация времени
+    scan_topic: /scan                       # Topic для LaserScan сообщений
+    interface_selection: serial             # SERIAL интерфейс (не network)
+    serial_port_: /dev/ttyACM0              # USB CDC ACM устройство на Vision Pi
+    high_reflection: false                  
+    compensation: false                     # Компенсация угла
+    pubScan: true                           # Публикуем LaserScan для навигации
+    pubPointCloud2: false                   # Отключаем PointCloud2 для экономии bandwidth
+    pointcloud_topic: /lslidar_point_cloud

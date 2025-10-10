@@ -7,7 +7,7 @@ source /ws/install/setup.bash
 
 # Настройка Zenoh middleware
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG=/config/zenoh_session_config.json5
+export ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 
 # Ожидание запуска Zenoh router
