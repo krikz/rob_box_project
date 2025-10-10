@@ -39,7 +39,7 @@ services:
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config/shared:ro
-      - ./robot_state_publisher/scripts:/scripts:ro
+      - ./scripts/robot_state_publisher:/scripts:ro
     command: ["/scripts/start_robot_state_publisher.sh"]
     depends_on:
       - zenoh-router
@@ -62,7 +62,7 @@ services:
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
     volumes:
       - ./config:/config/shared:ro
-      - ./rtabmap/config:/config/rtabmap:ro
+      - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
     # Лидар + AprilTag режим: только LaserScan для навигации и маркеры для локализации
     command: >

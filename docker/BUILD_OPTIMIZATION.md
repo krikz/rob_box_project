@@ -36,8 +36,8 @@ services:
     image: ghcr.io/krikz/rob_box:lslidar-humble-latest
     volumes:
       - ./config:/config/shared:ro              # Общие конфиги (zenoh, cyclonedds)
-      - ./lslidar/config:/config/lslidar:ro     # Конфиги lslidar
-      - ./lslidar/scripts:/scripts:ro           # Скрипты запуска
+      - ./config/lslidar:/config/lslidar:ro     # Конфиги lslidar
+      - ./scripts/lslidar:/scripts:ro           # Скрипты запуска
     command: ["/scripts/start_lslidar.sh"]
 ```
 
@@ -54,38 +54,52 @@ services:
 ```
 docker/
 ├── main/                          # Для Main Pi (10.1.1.20)
-│   ├── config/                    # Общие конфиги для всех контейнеров
+│   ├── config/                    # Shared конфиги для всех контейнеров
 │   │   ├── cyclonedds.xml         # → /config/shared/cyclonedds.xml
-│   │   └── zenoh_session_config.json5  # → /config/shared/zenoh_session_config.json5
-│   ├── rtabmap/
-│   │   └── config/                # Конфиги специфичные для rtabmap
+│   │   ├── zenoh_session_config.json5  # → /config/shared/zenoh_session_config.json5
+│   │   └── rtabmap/               # Конфиги специфичные для rtabmap
 │   │       └── rtabmap.yaml       # → /config/rtabmap/rtabmap.yaml
+│   ├── scripts/
+│   │   └── robot_state_publisher/ # Скрипты запуска
+│   │       └── start_robot_state_publisher.sh  # → /scripts/start_robot_state_publisher.sh
+│   ├── rtabmap/
+│   │   └── Dockerfile
 │   └── robot_state_publisher/
-│       └── scripts/               # Скрипты запуска
-│           └── start_robot_state_publisher.sh  # → /scripts/start_robot_state_publisher.sh
+│       └── Dockerfile
 │
 └── vision/                        # Для Vision Pi (10.1.1.21)
-    ├── config/                    # Общие конфиги
+    ├── config/                    # Shared конфиги
     │   ├── cyclonedds.xml
-    │   └── zenoh_session_config.json5
-    ├── apriltag/
-    │   ├── config/                # → /config/apriltag/
+    │   ├── zenoh_session_config.json5
+    │   ├── apriltag/              # → /config/apriltag/
     │   │   └── apriltag_config.yaml
-    │   └── scripts/               # → /scripts/
-    │       └── start_apriltag.sh
-    ├── lslidar/
-    │   ├── config/                # → /config/lslidar/
+    │   ├── lslidar/               # → /config/lslidar/
     │   │   ├── lslidar_headless_launch.py
     │   │   └── lsx10_custom.yaml
-    │   └── scripts/               # → /scripts/
-    │       └── start_lslidar.sh
+    │   └── oak-d/                 # → /config/oak-d/
+    │       └── oak_d_config.yaml
+    ├── scripts/
+    │   ├── apriltag/              # → /scripts/
+    │   │   └── start_apriltag.sh
+    │   ├── lslidar/               # → /scripts/
+    │   │   └── start_lslidar.sh
+    │   └── oak-d/                 # → /scripts/
+    │       └── start_oak_d.sh
+    ├── apriltag/
+    │   └── Dockerfile
+    ├── lslidar/
+    │   └── Dockerfile
     └── oak-d/
-        ├── config/                # → /config/oak-d/
-        ├── launch/                # → /oak-d/launch/
-        │   └── oakd_apriltag_only.launch.py
-        └── scripts/               # → /scripts/
-            └── start_oak_d.sh
+        ├── Dockerfile
+        └── launch/                # → /oak-d/launch/
+            └── oakd_apriltag_only.launch.py
 ```
+
+**Ключевые моменты:**
+- `config/` - shared конфиги (zenoh, cyclonedds)
+- `config/{service}/` - конфиги специфичные для сервиса
+- `scripts/{service}/` - скрипты запуска сервиса
+- `{service}/Dockerfile` - только Dockerfile и необходимые для сборки файлы
 
 ## Правила для Dockerfiles
 

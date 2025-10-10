@@ -36,8 +36,8 @@ services:
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config/shared:ro
-      - ./oak-d/config:/config/oak-d:ro
-      - ./oak-d/scripts:/scripts:ro
+      - ./config/oak-d:/config/oak-d:ro
+      - ./scripts/oak-d:/scripts:ro
       - ./oak-d/launch:/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
@@ -65,8 +65,8 @@ services:
       - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
     volumes:
       - ./config:/config/shared:ro
-      - ./lslidar/config:/config/lslidar:ro
-      - ./lslidar/scripts:/scripts:ro
+      - ./config/lslidar:/config/lslidar:ro
+      - ./scripts/lslidar:/scripts:ro
       - /dev/shm:/dev/shm
     command: ["/scripts/start_lslidar.sh"]
     depends_on:
@@ -87,8 +87,8 @@ services:
       - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
     volumes:
       - ./config:/config/shared:ro
-      - ./apriltag/config:/config/apriltag:ro
-      - ./apriltag/scripts:/scripts:ro
+      - ./config/apriltag:/config/apriltag:ro
+      - ./scripts/apriltag:/scripts:ro
       - /dev/shm:/dev/shm
     command: ["/scripts/start_apriltag.sh"]
     depends_on:
