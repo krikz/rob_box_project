@@ -28,13 +28,21 @@ echo ""
 # Обновляем код из GitHub
 echo "📥 Получаем обновления из GitHub..."
 cd "$PROJECT_ROOT"
-git pull origin main
+CURRENT_BRANCH=$(git branch --show-current)
+echo "   Текущая ветка: $CURRENT_BRANCH"
+git pull origin $CURRENT_BRANCH
 echo "✅ Код обновлен"
+echo ""
+
+# Скачиваем новые образы из registry
+echo "📦 Скачиваем обновленные Docker образы из registry..."
+cd docker/vision
+docker-compose pull
+echo "✅ Образы обновлены"
 echo ""
 
 # Запускаем контейнеры
 echo "🚀 Запускаем Docker контейнеры..."
-cd docker/vision
 docker-compose up -d
 echo "✅ Контейнеры запущены"
 echo ""
