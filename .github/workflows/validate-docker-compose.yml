@@ -34,8 +34,7 @@ jobs:
         run: |
           echo "📋 Проверка синтаксиса YAML для Main Pi..."
           docker run --rm -v "$PWD:/workspace" -w /workspace alpine sh -c '
-            apk add --no-cache python3 py3-pip
-            pip3 install pyyaml
+            apk add --no-cache python3 py3-yaml
             python3 -c "import yaml; yaml.safe_load(open(\"docker/main/docker-compose.yaml\"))"
           '
           echo "✅ Синтаксис YAML корректен"
@@ -98,8 +97,7 @@ jobs:
         run: |
           echo "📋 Проверка синтаксиса YAML для Vision Pi..."
           docker run --rm -v "$PWD:/workspace" -w /workspace alpine sh -c '
-            apk add --no-cache python3 py3-pip
-            pip3 install pyyaml
+            apk add --no-cache python3 py3-yaml
             python3 -c "import yaml; yaml.safe_load(open(\"docker/vision/docker-compose.yaml\"))"
           '
           echo "✅ Синтаксис YAML корректен"
