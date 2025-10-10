@@ -1,10 +1,13 @@
 name: Build Vision Pi Services
 
-# Собираем сервисы Vision Pi для проверки работоспособности
+# Собираем сервисы Vision Pi только для main, develop и release веток
 on:
   push:
     branches:
-      - main
+      - main          # Production
+      - develop       # Development
+      - 'release/**'  # Release candidates
+      - 'hotfix/**'   # Hotfixes
     paths:
       - 'docker/vision/**'
       - '.github/workflows/build-vision-services.yml'
@@ -16,10 +19,49 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+  ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
 
 jobs:
+  # Определение тега Docker на основе ветки
+  determine-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      docker_tag: ${{ steps.set-tag.outputs.docker_tag }}
+      full_tag: ${{ steps.set-tag.outputs.full_tag }}
+    steps:
+      - name: Determine Docker tag
+        id: set-tag
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          ROS_DISTRO="${{ env.ROS_DISTRO }}"
+          
+          # Определяем базовый тег на основе ветки
+          if [ "$BRANCH_NAME" = "main" ]; then
+            BRANCH_TAG="latest"
+          elif [ "$BRANCH_NAME" = "develop" ]; then
+            BRANCH_TAG="dev"
+          elif [[ "$BRANCH_NAME" == release/* ]]; then
+            VERSION="${BRANCH_NAME#release/}"
+            BRANCH_TAG="rc-${VERSION}"
+          elif [[ "$BRANCH_NAME" == hotfix/* ]]; then
+            VERSION="${BRANCH_NAME#hotfix/}"
+            BRANCH_TAG="hotfix-${VERSION}"
+          else
+            BRANCH_TAG="test"
+          fi
+          
+          # Полный тег: ros_distro-branch_tag
+          FULL_TAG="${ROS_DISTRO}-${BRANCH_TAG}"
+          
+          echo "docker_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
+          echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "Branch: $BRANCH_NAME"
+          echo "ROS Distro: $ROS_DISTRO"
+          echo "Branch Tag: $BRANCH_TAG"
+          echo "Full Tag: $FULL_TAG"
   # OAK-D Camera
   build-oak-d:
+    needs: determine-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,15 +90,16 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
-            type=raw,value=oak-d
-            type=sha,prefix=oak-d-
+            type=raw,value=oak-d-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=oak-d-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=oak-d-${{ env.ROS_DISTRO }}-
 
       - name: Build and push oak-d
         uses: docker/build-push-action@v5
         with:
           context: docker/vision/oak-d
           file: docker/vision/oak-d/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -65,6 +108,7 @@ jobs:
 
   # LSLIDAR N10
   build-lslidar:
+    needs: determine-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,15 +137,16 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
-            type=raw,value=lslidar
-            type=sha,prefix=lslidar-
+            type=raw,value=lslidar-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=lslidar-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=lslidar-${{ env.ROS_DISTRO }}-
 
       - name: Build and push lslidar
         uses: docker/build-push-action@v5
         with:
           context: docker/vision
           file: docker/vision/lslidar/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -110,6 +155,7 @@ jobs:
 
   # AprilTag Detection
   build-apriltag:
+    needs: determine-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -138,15 +184,16 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
-            type=raw,value=apriltag
-            type=sha,prefix=apriltag-
+            type=raw,value=apriltag-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=apriltag-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=apriltag-${{ env.ROS_DISTRO }}-
 
       - name: Build and push apriltag
         uses: docker/build-push-action@v5
         with:
           context: docker/vision/apriltag
           file: docker/vision/apriltag/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
