@@ -69,7 +69,7 @@ services:
     command:
       - |
         source /opt/ros/humble/setup.bash
-        exec ros2 run rtabmap_slam rtabmap --ros-args -r odom:=odom -r scan:=/scan -p frame_id:=base_link -p odom_frame_id:=odom -p subscribe_depth:=false -p subscribe_rgb:=false -p subscribe_rgbd:=false -p subscribe_stereo:=false -p subscribe_scan:=true -p queue_size:=10 -p Reg/Strategy:=1 -p Reg/Force3DoF:=true -p database_path:=/maps/rtabmap.db
+        exec ros2 run rtabmap_slam rtabmap --ros-args -r odom:=odom -r scan:=/scan -p frame_id:=base_link -p odom_frame_id:=odom -p subscribe_depth:=False -p subscribe_rgb:=False -p subscribe_rgbd:=False -p subscribe_stereo:=False -p subscribe_scan:=True -p queue_size:=10 -p Reg/Strategy:=1 -p Reg/Force3DoF:=True -p database_path:=/maps/rtabmap.db
     depends_on:
       - zenoh-router
     restart: unless-stopped
