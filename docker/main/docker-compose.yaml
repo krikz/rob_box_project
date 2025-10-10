@@ -64,33 +64,53 @@ services:
       - ./config:/config/shared:ro
       - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
-    # КРИТИЧНО: rtabmap.launch.py имеет значения ПО УМОЛЧАНИЮ для камеры:
-    # rgb_topic='/camera/rgb/image_rect_color'
-    # depth_topic='/camera/depth_registered/image_raw'
-    # 
-    # Для LaserScan-only режима (без камеры) нужно ПЕРЕОПРЕДЕЛИТЬ эти топики
-    # пустыми значениями, чтобы rtabmap НЕ подписывался на них!
+    # === RTAB-Map конфигурация для 2D LiDAR SLAM ===
+    # Полная документация: docs/reference/RTABMAP_LIDAR_CONFIG.md
     #
-    # Источник: анализ /opt/ros/humble/share/rtabmap_launch/launch/rtabmap.launch.py
+    # Источники:
+    # 1. http://wiki.ros.org/rtabmap_ros/Tutorials/SetupOnYourRobot
+    # 2. rtabmap_demos: turtlebot3_scan.launch.py
+    # 3. Анализ rtabmap.launch.py (строки 45-46)
+    #
+    # КЛЮЧЕВЫЕ ПАРАМЕТРЫ:
+    # • depth:=false - КРИТИЧНО! Отключает RGB/Depth подписку
+    #   (По умолчанию depth=true → subscribe_rgb=true → камерные топики)
+    # • subscribe_scan:=true - включает LaserScan
+    # • icp_odometry:=true - ICP одометрия из сканов
+    # • Reg/Strategy=1 - ICP регистрация (0=Visual, 1=ICP, 2=Visual+ICP)
+    # • Reg/Force3DoF=true - 2D SLAM (только x, y, yaw)
+    # • Icp/VoxelSize=0.05 - фильтрация сканов 5см вокселями
+    # • Grid/RangeMin=0.2 - игнорировать точки ближе 20см
+    # • Grid/Sensor=0 - сетка из лидара (не из depth камеры)
+    #
+    # ОЖИДАЕМЫЕ ПОДПИСКИ: /scan, /rtabmap/odom_info
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
-      args:="--delete_db_on_start"
-      use_sim_time:=false
+      depth:=false
+      subscribe_scan:=true
+      scan_topic:=/scan
+      icp_odometry:=true
       frame_id:=base_link
       odom_frame_id:=odom
-      rgb_topic:=/null/rgb
-      depth_topic:=/null/depth
-      camera_info_topic:=/null/camera_info
-      scan_topic:=/scan
+      odom_topic:=odom
       qos:=1
       approx_sync:=false
       rtabmap_viz:=false
       rviz:=false
       visual_odometry:=false
-      icp_odometry:=true
-      odom_topic:=odom
       database_path:=/maps/rtabmap.db
       wait_for_transform:=0.5
+      use_sim_time:=false
+      args:="--delete_db_on_start
+      -p Reg/Strategy:1
+      -p Reg/Force3DoF:true
+      -p Icp/VoxelSize:0.05
+      -p Icp/MaxCorrespondenceDistance:0.1
+      -p RGBD/NeighborLinkRefining:true
+      -p RGBD/ProximityBySpace:true
+      -p Grid/RangeMin:0.2
+      -p Grid/Sensor:0
+      -p Optimizer/GravitySigma:0"
     depends_on:
       - zenoh-router
     restart: unless-stopped
