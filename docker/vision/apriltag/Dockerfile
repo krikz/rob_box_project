@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 RUN echo $(dpkg -s ros-humble-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
 
 # Устанавливаем права на выполнение скрипта запуска
-COPY scripts/start_apriltag.sh /start_apriltag.sh
+COPY apriltag/scripts/start_apriltag.sh /start_apriltag.sh
 RUN chmod +x /start_apriltag.sh
 
 CMD ["/start_apriltag.sh"]
