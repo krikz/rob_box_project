@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /workspace
 
 # Точка входа
-COPY docker/main/robot_state_publisher/scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
+COPY robot_state_publisher/scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
 RUN chmod +x /start_robot_state_publisher.sh
 ENTRYPOINT ["/start_robot_state_publisher.sh"]
 
