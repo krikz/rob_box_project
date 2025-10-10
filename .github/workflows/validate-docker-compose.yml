@@ -205,8 +205,8 @@ jobs:
           
           # Проверка наличия обязательных файлов
           required_files=(
-            "docker/DOCKER_STANDARDS.md"
-            "docker/AGENT_GUIDE.md"
+            "docs/development/DOCKER_STANDARDS.md"
+            "docs/development/AGENT_GUIDE.md"
             "docker/main/docker-compose.yaml"
             "docker/main/config/zenoh_router_config.json5"
             "docker/main/config/zenoh_session_config.json5"
