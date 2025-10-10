@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y \
 # Рабочая директория
 WORKDIR /workspace
 
-# Копируем скрипт из корня репозитория (универсально для CI/CD)
-COPY ../../scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
+COPY scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
 RUN chmod +x /start_robot_state_publisher.sh
 ENTRYPOINT ["/start_robot_state_publisher.sh"]
 
