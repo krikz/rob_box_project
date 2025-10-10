@@ -38,6 +38,7 @@ services:
       - ./config:/config/shared:ro
       - ./oak-d/config:/config/oak-d:ro
       - ./oak-d/scripts:/scripts:ro
+      - ./oak-d/launch:/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     # AprilTag-only mode: OAK-D publishes only color image and camera_info for marker detection
