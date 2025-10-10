@@ -12,16 +12,17 @@ rtabmap:
     queue_size: 10
     
     # Режим работы: только LaserScan, без RGB-D
-    Mem/IncrementalMemory: "true"
-    Mem/InitWMWithAllNodes: "false"
+    Mem/IncrementalMemory: true
+    Mem/InitWMWithAllNodes: false
     
-    # LaserScan параметры
-    subscribe_scan: "true"
-    subscribe_rgbd: "false"
-    subscribe_rgb: "false"
-    subscribe_depth: "false"
+    # LaserScan параметры - ВАЖНО: boolean без кавычек!
+    subscribe_scan: true
+    subscribe_rgbd: false
+    subscribe_rgb: false
+    subscribe_depth: false
+    subscribe_stereo: false
     
-    # Grid mapping параметры для лидара
+    # Grid mapping параметры для лидара - строковые значения в кавычках
     Grid/FromDepth: "false"  # Не используем depth камеру
     Grid/CellSize: "0.05"    # 5см разрешение сетки
     Grid/RangeMax: "10.0"    # Используем лидар до 10м
