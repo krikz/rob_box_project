@@ -9,8 +9,7 @@ services:
     environment:
       - RUST_LOG=zenoh=info
     volumes:
-      - ./config/zenoh_router_config.json5:/zenoh_config.json5      
-      - /dev/shm:/dev/shm
+      - ./config/zenoh_router_config.json5:/zenoh_config.json5
     command: -c /zenoh_config.json5
     restart: unless-stopped
     healthcheck:
@@ -34,6 +33,7 @@ services:
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config
       - /dev/bus/usb:/dev/bus/usb
