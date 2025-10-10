@@ -63,29 +63,10 @@ services:
     volumes:
       - ./config:/config/shared:ro
       - ./config/rtabmap:/config/rtabmap:ro
+      - ./scripts/rtabmap:/scripts:ro
       - ./maps:/maps
-    # Лидар режим: только LaserScan для SLAM
-    command: >
-      ros2 launch rtabmap_launch rtabmap.launch.py
-      args:='--ros-args --log-level warn'
-      use_sim_time:=False
-      frame_id:=base_link
-      odom_frame_id:=odom
-      subscribe_rgbd:=False
-      subscribe_rgb:=False
-      subscribe_depth:=False
-      subscribe_stereo:=False
-      subscribe_scan:=True
-      scan_topic:=/scan
-      qos:=1
-      approx_sync:=False
-      rtabmap_viz:=False
-      rviz:=False
-      visual_odometry:=False
-      icp_odometry:=True
-      odom_topic:=odom
-      database_path:=/maps/rtabmap.db
-      wait_for_transform:=0.5
+    # Лидар режим: прямой запуск rtabmap через скрипт
+    command: ["/scripts/start_rtabmap.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
