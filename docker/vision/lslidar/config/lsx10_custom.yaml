@@ -3,12 +3,13 @@
 /lslidar_driver_node:
   ros__parameters:
     frame_id: laser_link                    # Лазерная система координат
-    group_ip: 224.1.1.2
-    add_multicast: false
-  # device_ip: 192.168.1.200                # IP лидара (не используется в serial режиме)
-  # device_ip_difop: 192.168.1.102          # Отключено для serial режима
-    msop_port: 2368                         
-    difop_port: 2369                        
+    # Сетевые параметры (не используются в serial режиме)
+    # group_ip: 224.1.1.2
+    # add_multicast: false
+    # device_ip: 192.168.1.200              # IP лидара (не используется в serial режиме)
+    # device_ip_difop: 192.168.1.102        # Отключено для serial режима
+    # msop_port: 2368                       # UDP порт (только для network режима)
+    # difop_port: 2369                      # UDP порт (только для network режима)
     lidar_name: M10                         # Тип лидара: N10 (используется M10 конфиг)
     angle_disable_min: 0.0                  # Обрезка угла - начало
     angle_disable_max: 0.0                  # Обрезка угла - конец

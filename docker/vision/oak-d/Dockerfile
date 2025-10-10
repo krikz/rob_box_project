@@ -7,6 +7,9 @@ FROM ${BASE_IMAGE}
 # Все необходимые зависимости (rmw-zenoh, image-transport, opencv, depthai) 
 # уже установлены в базовом образе 
 
+# Копируем launch файлы
+COPY oak-d/launch /oak-d/launch
+
 # Копируем скрипт запуска из папки сервиса
 COPY oak-d/scripts/start_oak_d.sh /start_oak_d.sh
 RUN chmod +x /start_oak_d.sh
