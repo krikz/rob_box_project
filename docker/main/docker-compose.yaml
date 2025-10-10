@@ -64,17 +64,17 @@ services:
       - ./config:/config/shared:ro
       - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
-    # Лидар режим: запуск через launch файл
+    # КРИТИЧНО: Для LaserScan-only режима (без камеры):
+    # 1. НЕ указываем rgb_topic, depth_topic, camera_info_topic
+    # 2. НЕ используем subscribe_rgb/depth/rgbd/stereo (эти параметры НЕ СУЩЕСТВУЮТ в rtabmap.launch.py!)
+    # 3. Указываем ТОЛЬКО scan_topic - rtabmap автоматически не будет подписываться на камеру
+    # Источник: https://github.com/introlab/rtabmap_ros/issues/1326
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
+      args:="--delete_db_on_start"
       use_sim_time:=false
       frame_id:=base_link
       odom_frame_id:=odom
-      subscribe_rgbd:=false
-      subscribe_rgb:=false
-      subscribe_depth:=false
-      subscribe_stereo:=false
-      subscribe_scan:=true
       scan_topic:=/scan
       qos:=1
       approx_sync:=false
