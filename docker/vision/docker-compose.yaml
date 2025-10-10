@@ -21,9 +21,7 @@ services:
       start_period: 30s
 
   oak-d:
-    build:
-      context: .
-      dockerfile: oak-d/Dockerfile
+    image: ghcr.io/krikz/rob_box:oak-d-humble-latest
     container_name: oak-d
     network_mode: host
     privileged: true
@@ -48,9 +46,7 @@ services:
     restart: unless-stopped
     
   lslidar:
-    build:
-      context: .
-      dockerfile: lslidar/Dockerfile
+    image: ghcr.io/krikz/rob_box:lslidar-humble-latest
     container_name: lslidar
     network_mode: host
     privileged: true  # Для доступа к USB/Serial устройству
@@ -71,9 +67,7 @@ services:
     restart: unless-stopped
 
   apriltag:
-    build:
-      context: .
-      dockerfile: apriltag/Dockerfile
+    image: ghcr.io/krikz/rob_box:apriltag-humble-latest
     container_name: apriltag
     network_mode: host
     environment:

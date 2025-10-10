@@ -27,12 +27,7 @@ services:
 
   # Robot State Publisher - публикует TF дерево робота из URDF
   robot-state-publisher:
-    build:
-      context: ./robot_state_publisher
-      dockerfile: Dockerfile
-      args:
-        BASE_IMAGE: ${BASE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box_base}:ros2-zenoh-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:robot-state-publisher-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    image: ghcr.io/krikz/rob_box:robot-state-publisher-humble-latest
     container_name: robot-state-publisher
     network_mode: host
     environment:
@@ -50,12 +45,7 @@ services:
     restart: unless-stopped
     
   rtabmap:
-    build: 
-      context: ./rtabmap
-      dockerfile: Dockerfile
-      args:
-        BASE_IMAGE: ${BASE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box_base}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    image: ghcr.io/krikz/rob_box:rtabmap-humble-latest
     container_name: rtabmap
     network_mode: host
     environment:
