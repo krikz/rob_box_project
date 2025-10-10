@@ -14,6 +14,6 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /workspace
 
 # Точка входа
-COPY entrypoint.sh /
+COPY docker/main/robot_state_publisher/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

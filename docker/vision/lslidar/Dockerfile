@@ -14,7 +14,7 @@ WORKDIR /ws/src
 RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_driver.git
 
 # Копируем наш headless лаунч-файл (без RViz2)
-COPY lslidar/config/lslidar_headless_launch.py /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py
+COPY config/lslidar_headless_launch.py /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py
 
 # Копируем кастомный конфиг с правильным serial портом
 COPY lslidar/config/lsx10_custom.yaml /config/lsx10_custom.yaml
