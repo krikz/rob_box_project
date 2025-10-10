@@ -127,6 +127,7 @@ jobs:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
             type=raw,value=rtabmap
+            type=raw,value=rtabmap-latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=rtabmap-
 
       - name: Build and push rtabmap base image
