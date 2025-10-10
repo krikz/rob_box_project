@@ -1,20 +1,11 @@
 name: Build Base Docker Images
 
-# Собираем базовые образы только для main, develop и release веток
+# Собираем базовые образы только по требованию или по расписанию
 on:
-  push:
-    branches:
-      - main          # Production
-      - develop       # Development
-      - 'release/**'  # Release candidates
-      - 'hotfix/**'   # Hotfixes
-    paths:
-      - 'docker/base/**'
-      - '.github/workflows/build-base-images.yml'
-  workflow_dispatch:  # Ручной запуск
-  schedule:
-    # Пересборка каждую неделю для обновления upstream образов (только main)
-    - cron: '0 2 * * 0'  # Воскресенье 2:00 UTC
+  workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Base Images -> Run workflow)
+  workflow_call:      # Вызов из других workflow (например, build-all.yml)
+    secrets:
+      inherit
 
 env:
   REGISTRY: ghcr.io

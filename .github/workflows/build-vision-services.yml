@@ -1,20 +1,11 @@
 name: Build Vision Pi Services
 
-# Собираем сервисы Vision Pi только для main, develop и release веток
+# Собираем сервисы Vision Pi только по требованию
 on:
-  push:
-    branches:
-      - main          # Production
-      - develop       # Development
-      - 'release/**'  # Release candidates
-      - 'hotfix/**'   # Hotfixes
-    paths:
-      - 'docker/vision/**'
-      - '.github/workflows/build-vision-services.yml'
-  pull_request:
-    paths:
-      - 'docker/vision/**'
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Vision Pi Services -> Run workflow)
+  workflow_call:      # Вызов из других workflow (например, build-all.yml)
+    secrets:
+      inherit
 
 env:
   REGISTRY: ghcr.io

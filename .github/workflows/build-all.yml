@@ -3,14 +3,10 @@ name: Build All Docker Images
 # Полная сборка всех образов проекта (базовые + сервисы)
 # Используется для проверки что всё собирается корректно
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build All -> Run workflow)
   schedule:
-    # Полная пересборка раз в неделю
-    - cron: '0 3 * * 0'  # Воскресенье 3:00 UTC
+    # Ночная сборка каждый день в 3:00 UTC (6:00 MSK)
+    - cron: '0 3 * * *'
 
 jobs:
   # Шаг 1: Собираем базовые образы

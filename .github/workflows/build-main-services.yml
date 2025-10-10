@@ -1,22 +1,11 @@
 name: Build Main Pi Services
 
-# Собираем сервисы Main Pi только для main, develop и release веток
+# Собираем сервисы Main Pi только по требованию
 on:
-  push:
-    branches:
-      - main          # Production
-      - develop       # Development
-      - 'release/**'  # Release candidates
-      - 'hotfix/**'   # Hotfixes
-    paths:
-      - 'docker/main/**'
-      - 'src/**'  # URDF и другие исходники
-      - '.github/workflows/build-main-services.yml'
-  pull_request:
-    paths:
-      - 'docker/main/**'
-      - 'src/**'
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Main Pi Services -> Run workflow)
+  workflow_call:      # Вызов из других workflow (например, build-all.yml)
+    secrets:
+      inherit
 
 env:
   REGISTRY: ghcr.io
