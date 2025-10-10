@@ -64,17 +64,23 @@ services:
       - ./config:/config/shared:ro
       - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
-    # КРИТИЧНО: Для LaserScan-only режима (без камеры):
-    # 1. НЕ указываем rgb_topic, depth_topic, camera_info_topic
-    # 2. НЕ используем subscribe_rgb/depth/rgbd/stereo (эти параметры НЕ СУЩЕСТВУЮТ в rtabmap.launch.py!)
-    # 3. Указываем ТОЛЬКО scan_topic - rtabmap автоматически не будет подписываться на камеру
-    # Источник: https://github.com/introlab/rtabmap_ros/issues/1326
+    # КРИТИЧНО: rtabmap.launch.py имеет значения ПО УМОЛЧАНИЮ для камеры:
+    # rgb_topic='/camera/rgb/image_rect_color'
+    # depth_topic='/camera/depth_registered/image_raw'
+    # 
+    # Для LaserScan-only режима (без камеры) нужно ПЕРЕОПРЕДЕЛИТЬ эти топики
+    # пустыми значениями, чтобы rtabmap НЕ подписывался на них!
+    #
+    # Источник: анализ /opt/ros/humble/share/rtabmap_launch/launch/rtabmap.launch.py
     command: >
       ros2 launch rtabmap_launch rtabmap.launch.py
       args:="--delete_db_on_start"
       use_sim_time:=false
       frame_id:=base_link
       odom_frame_id:=odom
+      rgb_topic:=/null/rgb
+      depth_topic:=/null/depth
+      camera_info_topic:=/null/camera_info
       scan_topic:=/scan
       qos:=1
       approx_sync:=false
