@@ -13,8 +13,7 @@ RUN apt-get update && apt-get install -y \
 # Создаем рабочую директорию
 WORKDIR /workspace
 
-# Точка входа
-COPY robot_state_publisher/scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
+COPY scripts/start_robot_state_publisher.sh /start_robot_state_publisher.sh
 RUN chmod +x /start_robot_state_publisher.sh
 ENTRYPOINT ["/start_robot_state_publisher.sh"]
 
