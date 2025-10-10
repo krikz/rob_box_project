@@ -7,11 +7,12 @@ FROM ${BASE_IMAGE}
 # Все необходимые зависимости (rmw-zenoh, image-transport, opencv, depthai) 
 # уже установлены в базовом образе 
 
-# Копируем launch файлы
-COPY oak-d/launch /oak-d/launch
+# ВАЖНО: Launch файлы и скрипты НЕ копируются в образ!
+# Они монтируются через volumes в docker-compose.yaml:
+# - ./config:/config/shared:ro (общие конфиги: zenoh, cyclonedds)
+# - ./oak-d/config:/config/oak-d:ro (конфиги oak-d)
+# - ./oak-d/launch:/oak-d/launch:ro (launch файлы)
+# - ./oak-d/scripts:/scripts:ro (скрипт запуска)
 
-# Копируем скрипт запуска из папки сервиса
-COPY oak-d/scripts/start_oak_d.sh /start_oak_d.sh
-RUN chmod +x /start_oak_d.sh
-
-CMD ["/start_oak_d.sh"]
+# CMD монтируется из volume: /scripts/start_oak_d.sh
+CMD ["/scripts/start_oak_d.sh"]

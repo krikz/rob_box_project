@@ -12,8 +12,11 @@ RUN apt-get update && apt-get install -y \
 
 RUN echo $(dpkg -s ros-humble-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
 
-# Копируем скрипт запуска из папки сервиса
-COPY apriltag/scripts/start_apriltag.sh /start_apriltag.sh
-RUN chmod +x /start_apriltag.sh
+# ВАЖНО: Скрипты и конфиги НЕ копируются в образ!
+# Они монтируются через volumes в docker-compose.yaml:
+# - ./config:/config/shared:ro (общие конфиги: zenoh, cyclonedds)
+# - ./apriltag/config:/config/apriltag:ro (конфиг apriltag)
+# - ./apriltag/scripts:/scripts:ro (скрипт запуска)
 
-CMD ["/start_apriltag.sh"]
+# CMD монтируется из volume: /scripts/start_apriltag.sh
+CMD ["/scripts/start_apriltag.sh"]
