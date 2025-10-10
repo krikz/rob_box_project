@@ -11,8 +11,10 @@ FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y \
     ros-humble-rosidl-default-generators \
     ros-humble-rosidl-default-runtime \
+    ros-humble-builtin-interfaces \
     ros-humble-std-msgs \
     ros-humble-sensor-msgs \
+    ros-humble-ament-cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
@@ -22,6 +24,7 @@ WORKDIR /ws/src
 RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_driver.git
 
 # Копируем наш headless лаунч-файл (без RViz2)
+# Контекст сборки: docker/vision
 COPY lslidar/config/lslidar_headless_launch.py /ws/src/lslidar_ros2_driver/lslidar_driver/launch/lslidar_launch.py
 
 # Копируем кастомный конфиг с правильным serial портом
