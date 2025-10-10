@@ -164,8 +164,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
-            type=raw,value=rtabmap
-            type=sha,prefix=rtabmap-
+            type=raw,value=rtabmap-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=rtabmap-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=rtabmap-${{ env.ROS_DISTRO }}-
 
       - name: Build and push rtabmap
         uses: docker/build-push-action@v5
