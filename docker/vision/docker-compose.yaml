@@ -40,7 +40,7 @@ services:
       - ./config:/config
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
-    # КРИТИЧНО: Ограничение памяти для защиты от OOM на Pi (8GB RAM total)
+    # AprilTag-only mode: OAK-D publishes only color image and camera_info for marker detection
     mem_limit: 6g  # Максимум 6GB (оставляем 2GB для системы)
     memswap_limit: 7g  # 6GB RAM + 1GB swap максимум
     depends_on:
