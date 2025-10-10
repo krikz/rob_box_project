@@ -65,29 +65,29 @@ services:
       - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
     # Лидар режим: запуск rtabmap напрямую без launch файла
-    # Это позволяет точно контролировать какие ноды запускаются
-    command: >
-      bash -c "
-      source /opt/ros/humble/setup.bash &&
-      ros2 run rtabmap_slam rtabmap
-      --ros-args
-      -r odom:=odom
-      -r scan:=/scan
-      -p frame_id:=base_link
-      -p odom_frame_id:=odom
-      -p subscribe_depth:=false
-      -p subscribe_rgb:=false
-      -p subscribe_rgbd:=false
-      -p subscribe_stereo:=false
-      -p subscribe_scan:=true
-      -p queue_size:=10
-      -p Reg/Strategy:=1
-      -p Reg/Force3DoF:=true
-      -p Optimizer/Strategy:=0
-      -p Grid/FromDepth:=false
-      -p Grid/CellSize:=0.05
-      -p database_path:=/maps/rtabmap.db
-      "
+    command: 
+      - bash
+      - -c
+      - |
+        source /opt/ros/humble/setup.bash
+        ros2 run rtabmap_slam rtabmap \
+          --ros-args \
+          -r odom:=odom \
+          -r scan:=/scan \
+          -p frame_id:=base_link \
+          -p odom_frame_id:=odom \
+          -p subscribe_depth:=false \
+          -p subscribe_rgb:=false \
+          -p subscribe_rgbd:=false \
+          -p subscribe_stereo:=false \
+          -p subscribe_scan:=true \
+          -p queue_size:=10 \
+          -p Reg/Strategy:=1 \
+          -p Reg/Force3DoF:=true \
+          -p Optimizer/Strategy:=0 \
+          -p Grid/FromDepth:=false \
+          -p Grid/CellSize:=0.05 \
+          -p database_path:=/maps/rtabmap.db
     depends_on:
       - zenoh-router
     restart: unless-stopped
