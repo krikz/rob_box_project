@@ -1,7 +1,7 @@
 <launch>
-  <arg name="model" default="$(find SIRIUSROVER_DX_description)/urdf/SIRIUSROVER_DX.xacro"/>
+  <arg name="model" default="$(find URDF_ROBBOX_description)/urdf/URDF_ROBBOX.xacro"/>
   <arg name="gui" default="true"/>
-  <arg name="rvizconfig" default="$(find SIRIUSROVER_DX_description)/launch/urdf.rviz"/>
+  <arg name="rvizconfig" default="$(find URDF_ROBBOX_description)/launch/urdf.rviz"/>
   <param name="robot_description" command="$(find xacro)/xacro $(arg model)"/>
   <param name="use_gui" value="$(arg gui)"/>
   <node name="joint_state_publisher_gui" pkg="joint_state_publisher_gui" type="joint_state_publisher_gui"/>

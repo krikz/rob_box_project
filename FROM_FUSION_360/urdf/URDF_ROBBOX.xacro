@@ -1,0 +1,221 @@
+<?xml version="1.0" ?>
+<robot name="URDF_ROBBOX" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find URDF_ROBBOX_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find URDF_ROBBOX_description)/urdf/URDF_ROBBOX.trans" />
+<xacro:include filename="$(find URDF_ROBBOX_description)/urdf/URDF_ROBBOX.gazebo" />
+<link name="base_link">
+  <inertial>
+    <origin xyz="-0.18002333793623312 0.026489651804313053 0.11170444005390669" rpy="0 0 0"/>
+    <mass value="63.140006731450704"/>
+    <inertia ixx="2.85111" iyy="1.941217" izz="3.669589" ixy="-0.0018" iyz="-0.297833" ixz="-0.001666"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="camera_rpi_1">
+  <inertial>
+    <origin xyz="-5.7124881908121594e-09 -3.038944734745641e-08 0.008386121687044501" rpy="0 0 0"/>
+    <mass value="0.029114258669862954"/>
+    <inertia ixx="2e-06" iyy="2e-06" izz="1e-06" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.115 -0.171194 -0.429" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/camera_rpi_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.115 -0.171194 -0.429" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/camera_rpi_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="lidar_1">
+  <inertial>
+    <origin xyz="-4.0530012918038594e-07 -3.4694122783007764e-07 0.018049999999999955" rpy="0 0 0"/>
+    <mass value="0.60182943827698"/>
+    <inertia ixx="0.000167" iyy="0.000167" izz="0.000203" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.180331 -0.171338 -0.444" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/lidar_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.180331 -0.171338 -0.444" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/lidar_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="camera_oak_1">
+  <inertial>
+    <origin xyz="3.860152281709439e-07 -0.008750067994356125 2.220446049250313e-16" rpy="0 0 0"/>
+    <mass value="0.3500314999999997"/>
+    <inertia ixx="3.2e-05" iyy="0.000264" izz="0.00025" ixy="0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.180238 -0.116303 -0.4135" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/camera_oak_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.180238 -0.116303 -0.4135" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/camera_oak_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_rear_left_1">
+  <inertial>
+    <origin xyz="0.03750000000000001 -1.4240049836522495e-07 -3.196217084376965e-07" rpy="0 0 0"/>
+    <mass value="21.68159743475603"/>
+    <inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.015 -0.144329 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_rear_left_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.015 -0.144329 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_rear_left_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_front_left_1">
+  <inertial>
+    <origin xyz="0.03750000000000001 1.424004984207361e-07 -3.196217084376965e-07" rpy="0 0 0"/>
+    <mass value="21.68159743475603"/>
+    <inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.015 0.144329 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_front_left_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.015 0.144329 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_front_left_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_front_right_1">
+  <inertial>
+    <origin xyz="-0.037500289005600596 -1.1962063206638618e-07 -3.196217084168798e-07" rpy="0 0 0"/>
+    <mass value="21.681597434756032"/>
+    <inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.375967 0.143266 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_front_right_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.375967 0.143266 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_front_right_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_rear_right_1">
+  <inertial>
+    <origin xyz="-0.03749999999999998 -1.4240049836522495e-07 -3.196217084376965e-07" rpy="0 0 0"/>
+    <mass value="21.68159743475603"/>
+    <inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.375 -0.144329 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_rear_right_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.375 -0.144329 0.003733" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://URDF_ROBBOX_description/meshes/wheel_rear_right_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="Rigid 1" type="fixed">
+  <origin xyz="-0.115 0.171194 0.429" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="camera_rpi_1"/>
+</joint>
+
+<joint name="Rigid 2" type="fixed">
+  <origin xyz="-0.180331 0.171338 0.444" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="lidar_1"/>
+</joint>
+
+<joint name="Rigid 3" type="fixed">
+  <origin xyz="-0.180238 0.116303 0.4135" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="camera_oak_1"/>
+</joint>
+
+<joint name="Revolute 4" type="continuous">
+  <origin xyz="0.015 0.144329 -0.003733" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_rear_left_1"/>
+  <axis xyz="1.0 0.0 0.0"/>
+</joint>
+
+<joint name="Revolute 5" type="continuous">
+  <origin xyz="0.015 -0.144329 -0.003733" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_front_left_1"/>
+  <axis xyz="1.0 0.0 0.0"/>
+</joint>
+
+<joint name="Revolute 6" type="continuous">
+  <origin xyz="-0.375967 -0.143266 -0.003733" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_front_right_1"/>
+  <axis xyz="-1.0 -0.0 0.0"/>
+</joint>
+
+<joint name="Revolute 7" type="continuous">
+  <origin xyz="-0.375 0.144329 -0.003733" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_rear_right_1"/>
+  <axis xyz="-1.0 0.0 0.0"/>
+</joint>
+
+</robot>
