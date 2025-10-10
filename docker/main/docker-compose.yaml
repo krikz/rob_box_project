@@ -63,10 +63,28 @@ services:
     volumes:
       - ./config:/config/shared:ro
       - ./config/rtabmap:/config/rtabmap:ro
-      - ./scripts/rtabmap:/scripts:ro
       - ./maps:/maps
-    # Лидар режим: прямой запуск rtabmap через скрипт
-    command: ["/scripts/start_rtabmap.sh"]
+    # Лидар режим: запуск через launch файл
+    command: >
+      ros2 launch rtabmap_launch rtabmap.launch.py
+      use_sim_time:=false
+      frame_id:=base_link
+      odom_frame_id:=odom
+      subscribe_rgbd:=false
+      subscribe_rgb:=false
+      subscribe_depth:=false
+      subscribe_stereo:=false
+      subscribe_scan:=true
+      scan_topic:=/scan
+      qos:=1
+      approx_sync:=false
+      rtabmap_viz:=false
+      rviz:=false
+      visual_odometry:=false
+      icp_odometry:=true
+      odom_topic:=odom
+      database_path:=/maps/rtabmap.db
+      wait_for_transform:=0.5
     depends_on:
       - zenoh-router
     restart: unless-stopped
