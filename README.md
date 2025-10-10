@@ -26,6 +26,13 @@
 - [Чеклист запуска](docker/CHECKLIST.md)
 - [Архитектура системы](docker/ARCHITECTURE.md)
 
+📋 **Документация для разработчиков**:
+- [DOCKER_STANDARDS.md](docker/DOCKER_STANDARDS.md) - Стандарты Docker Compose
+- [BUILD_OPTIMIZATION.md](docker/BUILD_OPTIMIZATION.md) - ⚡ Оптимизация сборки (volumes вместо COPY)
+- [AGENT_GUIDE.md](docker/AGENT_GUIDE.md) - Руководство для AI агентов
+- [POWER_MANAGEMENT.md](docker/POWER_MANAGEMENT.md) - Управление питанием RPi5
+- [TROUBLESHOOTING.md](docker/TROUBLESHOOTING.md) - Решение проблем
+
 ## 🎯 Цель проекта
 
 **РОББОКС** - автономный робот-доставщик для использования внутри помещений.
