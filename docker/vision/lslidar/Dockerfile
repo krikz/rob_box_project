@@ -26,7 +26,7 @@ RUN source /opt/ros/humble/setup.bash && \
     colcon build --symlink-install
 
 # Копируем entrypoint скрипт
-COPY lslidar/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY lslidar/scripts/start_lslidar.sh /start_lslidar.sh
+RUN chmod +x /start_lslidar.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/start_lslidar.sh"]
