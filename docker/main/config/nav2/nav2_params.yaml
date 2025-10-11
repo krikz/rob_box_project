@@ -1,0 +1,223 @@
+# Nav2 Navigation Parameters для rob_box
+# Main Pi - автономная навигация
+
+# === ОБЩИЕ ПАРАМЕТРЫ ===
+use_sim_time: False
+robot_base_frame: base_link
+odom_topic: /odom
+global_frame: map
+robot_radius: 0.17  # rob_box диаметр ~340мм → радиус 170мм
+
+# === BT NAVIGATOR ===
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    enable_groot_monitoring: False
+    groot_zmq_publisher_port: 1666
+    groot_zmq_server_port: 1667
+    # Behavior Tree XML файл
+    default_nav_to_pose_bt_xml: "/config/nav2/behavior_trees/navigate_to_pose_w_replanning.xml"
+    default_nav_through_poses_bt_xml: "/config/nav2/behavior_trees/navigate_through_poses.xml"
+    
+    # Плагины
+    plugin_lib_names:
+    - nav2_compute_path_to_pose_action_bt_node
+    - nav2_compute_path_through_poses_action_bt_node
+    - nav2_smooth_path_action_bt_node
+    - nav2_follow_path_action_bt_node
+    - nav2_spin_action_bt_node
+    - nav2_wait_action_bt_node
+    - nav2_back_up_action_bt_node
+    - nav2_drive_on_heading_bt_node
+    - nav2_clear_costmap_service_bt_node
+    - nav2_is_stuck_condition_bt_node
+    - nav2_goal_reached_condition_bt_node
+    - nav2_goal_updated_condition_bt_node
+    - nav2_globally_updated_goal_condition_bt_node
+    - nav2_is_path_valid_condition_bt_node
+    - nav2_initial_pose_received_condition_bt_node
+    - nav2_reinitialize_global_localization_service_bt_node
+    - nav2_rate_controller_bt_node
+    - nav2_distance_controller_bt_node
+    - nav2_speed_controller_bt_node
+    - nav2_truncate_path_action_bt_node
+    - nav2_truncate_path_local_action_bt_node
+    - nav2_goal_updater_node_bt_node
+    - nav2_recovery_node_bt_node
+    - nav2_pipeline_sequence_bt_node
+    - nav2_round_robin_node_bt_node
+    - nav2_transform_available_condition_bt_node
+    - nav2_time_expired_condition_bt_node
+    - nav2_path_expiring_timer_condition
+    - nav2_distance_traveled_condition_bt_node
+    - nav2_single_trigger_bt_node
+    - nav2_goal_updated_controller_bt_node
+    - nav2_is_battery_low_condition_bt_node
+    - nav2_navigate_through_poses_action_bt_node
+    - nav2_navigate_to_pose_action_bt_node
+    - nav2_remove_passed_goals_action_bt_node
+    - nav2_planner_selector_bt_node
+    - nav2_controller_selector_bt_node
+    - nav2_goal_checker_selector_bt_node
+    - nav2_controller_cancel_bt_node
+    - nav2_path_longer_on_approach_bt_node
+    - nav2_wait_cancel_bt_node
+    - nav2_spin_cancel_bt_node
+    - nav2_back_up_cancel_bt_node
+    - nav2_drive_on_heading_cancel_bt_node
+
+# === CONTROLLER SERVER ===
+controller_server:
+  ros__parameters:
+    use_sim_time: False
+    controller_frequency: 20.0  # Hz
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    
+    # Progress Checker
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+    
+    # Goal Checker
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.15  # 15см точность позиции
+      yaw_goal_tolerance: 0.15  # ~8.6 градусов точность угла
+    
+    # DWB Controller (Dynamic Window Approach)
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: True
+      min_vel_x: -0.3  # Максимальная обратная скорость (м/с)
+      min_vel_y: 0.0   # Дифференциальный привод - нет бокового движения
+      max_vel_x: 0.5   # Максимальная прямая скорость (м/с)
+      max_vel_y: 0.0
+      max_vel_theta: 1.2  # ~68 градусов/сек вращение
+      min_speed_xy: 0.0
+      max_speed_xy: 0.5
+      min_speed_theta: 0.0
+      # Ускорения
+      acc_lim_x: 0.5
+      acc_lim_y: 0.0
+      acc_lim_theta: 1.5
+      decel_lim_x: -0.5
+      decel_lim_y: 0.0
+      decel_lim_theta: -1.5
+      # DWB параметры
+      vx_samples: 20
+      vy_samples: 0  # Дифференциальный привод
+      vtheta_samples: 40
+      sim_time: 1.7
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      transform_tolerance: 0.2
+      xy_goal_tolerance: 0.15
+      trans_stopped_velocity: 0.15
+      short_circuit_trajectory_evaluation: True
+      stateful: True
+      # Критерии (critics)
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+# === PLANNER SERVER ===
+planner_server:
+  ros__parameters:
+    use_sim_time: False
+    planner_plugins: ["GridBased"]
+    
+    # NavFn Planner (A* на сетке)
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: True  # A* вместо Dijkstra (быстрее)
+      allow_unknown: True
+      use_final_approach_orientation: False
+
+# === BEHAVIOR SERVER (Recovery Behaviors) ===
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.1
+    use_sim_time: False
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+
+# === WAYPOINT FOLLOWER ===
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: False
+    loop_rate: 20
+    stop_on_failure: False
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+# === VELOCITY SMOOTHER ===
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: False
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.0, 1.2]
+    min_velocity: [-0.3, 0.0, -1.2]
+    max_accel: [0.5, 0.0, 1.5]
+    max_decel: [-0.5, 0.0, -1.5]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+# === LIFECYCLE MANAGER ===
+lifecycle_manager_navigation:
+  ros__parameters:
+    use_sim_time: False
+    autostart: True
+    node_names:
+      - controller_server
+      - planner_server
+      - behavior_server
+      - bt_navigator
+      - waypoint_follower
+      - velocity_smoother
