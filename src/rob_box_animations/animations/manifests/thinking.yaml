@@ -1,0 +1,72 @@
+# Thinking Animation
+name: "thinking"
+description: "Thinking with eyes looking around and dots"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 3200
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Eyes looking around (8 positions)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fl_think_01.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_02.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_03.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_04.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_05.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_06.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_07.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fl_think_08.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fr_think_01.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_02.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_03.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_04.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_05.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_06.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_07.png"
+        duration_ms: 400
+      - image: "frames/emotions/eye_fr_think_08.png"
+        duration_ms: 400
+
+  # Main display (thinking dots)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/dots_01.png"
+        duration_ms: 800
+      - image: "frames/emotions/dots_02.png"
+        duration_ms: 800
+      - image: "frames/emotions/dots_03.png"
+        duration_ms: 800
+      - image: "frames/emotions/dots_04.png"
+        duration_ms: 800
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "emotions"
+  tags: ["thinking", "processing", "contemplating", "dots"]

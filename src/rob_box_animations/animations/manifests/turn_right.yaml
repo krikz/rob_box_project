@@ -1,0 +1,62 @@
+# Turn Right Navigation Signal
+name: "turn_right"
+description: "Turn right signal with orange flashing on right wheels"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 1000
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Right front wheel (orange flashing)
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/wheel_fr_orange.png"
+        duration_ms: 500
+      - image: "frames/navigation/wheel_fr_off.png"
+        duration_ms: 500
+
+  # Right rear wheel (orange flashing)
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/wheel_rr_orange.png"
+        duration_ms: 500
+      - image: "frames/navigation/wheel_rr_off.png"
+        duration_ms: 500
+
+  # Left wheels off
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/wheel_fl_off.png"
+        duration_ms: 1000
+
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/wheel_rl_off.png"
+        duration_ms: 1000
+
+  # Main display (right arrow animation)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/arrow_right_01.png"
+        duration_ms: 250
+      - image: "frames/navigation/arrow_right_02.png"
+        duration_ms: 250
+      - image: "frames/navigation/arrow_right_03.png"
+        duration_ms: 250
+      - image: "frames/navigation/arrow_right_04.png"
+        duration_ms: 250
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "navigation"
+  tags: ["turn", "right", "signal", "orange", "navigation"]

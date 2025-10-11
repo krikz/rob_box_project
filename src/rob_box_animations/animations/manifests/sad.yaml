@@ -1,0 +1,49 @@
+# Sad Emotion Animation
+name: "sad"
+description: "Sad emotion with dim blue eyes and frown"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 3000
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Eyes (dim blue - sad)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fl_sad.png"
+        duration_ms: 3000
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fr_sad.png"
+        duration_ms: 3000
+
+  # Rear wheels off
+  - logical_group: "wheels_rear"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_rl_off.png"
+        duration_ms: 3000
+
+  # Main display (sad face with frown)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/mouth_sad_01.png"
+        duration_ms: 1000
+      - image: "frames/emotions/mouth_sad_02.png"
+        duration_ms: 1000
+      - image: "frames/emotions/mouth_sad_03.png"
+        duration_ms: 1000
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "emotions"
+  tags: ["sad", "emotion", "blue", "frown"]

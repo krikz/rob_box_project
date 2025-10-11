@@ -191,7 +191,7 @@ class FrameGenerator:
         
         # Battery animation (16 frames)
         for i in range(16):
-            pattern = self._create_battery_indicator(i, 16, self.GREEN)
+            pattern = self._create_battery_indicator(self.DISPLAY_SIZE, i, 16, critical=False)
             self.create_pattern_frame(self.DISPLAY_SIZE, pattern,
                                     f"battery_{i:02d}.png", subdir)
     
@@ -410,16 +410,561 @@ class FrameGenerator:
         
         return img
     
+    def _create_arrow_right(self, frame: int) -> np.ndarray:
+        """Create right arrow animation"""
+        width, height = self.DISPLAY_SIZE
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Arrow pointing right, moving
+        offset = frame * 3
+        arrow_x = 5 + offset
+        
+        # Arrow shape
+        for i in range(5):
+            x = arrow_x - i
+            if 0 <= x < width:
+                img[2, x] = self.ORANGE
+        
+        # Arrow head (pointing right)
+        if arrow_x < width:
+            img[1, arrow_x] = self.ORANGE
+            img[3, arrow_x] = self.ORANGE
+        
+        return img
+    
+    def generate_ambulance(self):
+        """Generate ambulance emergency lights frames"""
+        print("\n=== Generating ambulance ===")
+        subdir = "ambulance"
+        
+        # All wheels flash red
+        for suffix in ['fl', 'fr', 'rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED,
+                                  f"wheel_{suffix}_red.png", subdir)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Display: "AMBULANCE" text frames
+        for i, text in enumerate(["AMBUL", "ULANCE", "AMBU", "LANCE"]):
+            img = self._create_scrolling_text(text, i * 6, self.RED)
+            self._save_frame(img, f"text_{i+1:02d}.png", subdir)
+    
+    def generate_fire_truck(self):
+        """Generate fire truck emergency lights frames"""
+        print("\n=== Generating fire_truck ===")
+        subdir = "fire_truck"
+        
+        # All wheels flash red/yellow
+        for suffix in ['fl', 'fr', 'rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED,
+                                  f"wheel_{suffix}_red.png", subdir)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.ORANGE,
+                                  f"wheel_{suffix}_orange.png", subdir)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Display: "FIRE" text
+        img = self._create_scrolling_text("FIRE!", 8, self.ORANGE)
+        self._save_frame(img, "text_fire_on.png", subdir)
+        self.create_solid_frame(self.DISPLAY_SIZE, self.BLACK, "text_fire_off.png", subdir)
+    
+    def generate_turn_right(self):
+        """Generate turn right signal frames"""
+        print("\n=== Generating turn_right ===")
+        subdir = "navigation"
+        
+        # Right wheels flash orange
+        for suffix in ['fr', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.ORANGE,
+                                  f"wheel_{suffix}_orange.png", subdir)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Left wheels off
+        for suffix in ['fl', 'rl']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Right arrow animation (4 frames)
+        for i in range(4):
+            img = self._create_arrow_right(i)
+            self._save_frame(img, f"arrow_right_{i+1:02d}.png", subdir)
+    
+    def generate_braking(self):
+        """Generate braking animation frames"""
+        print("\n=== Generating braking ===")
+        subdir = "navigation"
+        
+        # Rear wheels bright red
+        for suffix in ['rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED,
+                                  f"brake_{suffix}_on.png", subdir)
+        
+        # Front wheels off
+        for suffix in ['fl', 'fr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"brake_{suffix}_off.png", subdir)
+        
+        # Display: "STOP" sign (3 frames - pulsing)
+        for i, intensity in enumerate([255, 200, 150]):
+            color = (intensity, 0, 0)
+            img = self._create_scrolling_text("STOP", 9, color)
+            self._save_frame(img, f"stop_sign_{i+1:02d}.png", subdir)
+    
+    def generate_accelerating(self):
+        """Generate acceleration animation frames"""
+        print("\n=== Generating accelerating ===")
+        subdir = "navigation"
+        
+        # Front wheels bright white (headlights)
+        for suffix in ['fl', 'fr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.WHITE,
+                                  f"accel_{suffix}_on.png", subdir)
+        
+        # Rear wheels dim
+        for suffix in ['rl', 'rr']:
+            dim_color = (30, 30, 30)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, dim_color,
+                                  f"accel_{suffix}_dim.png", subdir)
+        
+        # Speed lines animation (6 frames)
+        for i in range(6):
+            img = self._create_speed_lines(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"speed_{i+1:02d}.png", subdir)
+    
+    def generate_error(self):
+        """Generate error/warning animation frames"""
+        print("\n=== Generating error ===")
+        subdir = "system"
+        
+        # All wheels flash red (error state)
+        for suffix in ['fl', 'fr', 'rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED,
+                                  f"wheel_{suffix}_error.png", subdir)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Display: "ERROR" and "X" pattern
+        img = self._create_scrolling_text("ERROR", 8, self.RED)
+        self._save_frame(img, "error_text.png", subdir)
+        
+        img = self._create_x_pattern(self.DISPLAY_SIZE, self.RED)
+        self._save_frame(img, "error_x.png", subdir)
+        
+        self.create_solid_frame(self.DISPLAY_SIZE, self.BLACK, "error_off.png", subdir)
+    
+    def generate_sad(self):
+        """Generate sad emotion animation frames"""
+        print("\n=== Generating sad ===")
+        subdir = "emotions"
+        
+        # Dim blue wheels (sad mood)
+        sad_blue = (0, 50, 100)
+        for suffix in ['fl', 'fr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, sad_blue,
+                                  f"eye_{suffix}_sad.png", subdir)
+        
+        for suffix in ['rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Sad face (3 frames - frown animation)
+        for i in range(3):
+            img = self._create_sad_face(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"mouth_sad_{i+1:02d}.png", subdir)
+    
+    def generate_angry(self):
+        """Generate angry emotion animation frames"""
+        print("\n=== Generating angry ===")
+        subdir = "emotions"
+        
+        # Bright red pulsing wheels
+        for i, intensity in enumerate([255, 200, 150]):
+            color = (intensity, 0, 0)
+            for suffix in ['fl', 'fr']:
+                img = np.full((self.HEADLIGHT_SIZE[1], self.HEADLIGHT_SIZE[0], 3), 
+                            color, dtype=np.uint8)
+                self._save_frame(img, f"eye_{suffix}_angry_{i+1:02d}.png", subdir)
+        
+        # Angry eyebrows and mouth (3 frames)
+        for i in range(3):
+            img = self._create_angry_face(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"mouth_angry_{i+1:02d}.png", subdir)
+    
+    def generate_surprised(self):
+        """Generate surprised emotion animation frames"""
+        print("\n=== Generating surprised ===")
+        subdir = "emotions"
+        
+        # Wide eyes (bright white)
+        for suffix in ['fl', 'fr']:
+            # Large circle pattern for wide eyes
+            img = self._create_eye_pattern(self.HEADLIGHT_SIZE, 'wide')
+            self._save_frame(img, f"eye_{suffix}_surprised.png", subdir)
+        
+        # "O" shaped mouth (3 sizes)
+        for i, size in enumerate([1, 2, 3]):
+            img = self._create_o_mouth(self.DISPLAY_SIZE, size)
+            self._save_frame(img, f"mouth_surprised_{i+1:02d}.png", subdir)
+    
+    def generate_sleep(self):
+        """Generate sleeping animation frames"""
+        print("\n=== Generating sleep ===")
+        subdir = "system"
+        
+        # Closed eyes (horizontal lines)
+        for suffix in ['fl', 'fr']:
+            img = self._create_eye_pattern(self.HEADLIGHT_SIZE, 'closed')
+            self._save_frame(img, f"eye_{suffix}_closed.png", subdir)
+        
+        # Rear wheels off
+        for suffix in ['rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # "ZZZ" animation (5 frames)
+        for i in range(5):
+            img = self._create_zzz_pattern(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"zzz_{i+1:02d}.png", subdir)
+    
+    def generate_wakeup(self):
+        """Generate wake up animation frames"""
+        print("\n=== Generating wakeup ===")
+        subdir = "system"
+        
+        # Eyes opening sequence (6 frames)
+        for i in range(6):
+            for suffix in ['fl', 'fr']:
+                img = self._create_eye_opening(self.HEADLIGHT_SIZE, i)
+                self._save_frame(img, f"eye_{suffix}_open_{i+1:02d}.png", subdir)
+        
+        # Yawn animation (4 frames)
+        for i in range(4):
+            img = self._create_yawn(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"yawn_{i+1:02d}.png", subdir)
+    
+    def generate_low_battery(self):
+        """Generate low battery warning frames"""
+        print("\n=== Generating low_battery ===")
+        subdir = "system"
+        
+        # Wheels flash red slowly
+        for suffix in ['fl', 'fr', 'rl', 'rr']:
+            dim_red = (100, 0, 0)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, dim_red,
+                                  f"wheel_{suffix}_low.png", subdir)
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_off.png", subdir)
+        
+        # Battery indicator (empty to critical) - 6 frames
+        for i in range(6):
+            img = self._create_battery_indicator(self.DISPLAY_SIZE, i, 6, critical=True)
+            self._save_frame(img, f"battery_low_{i+1:02d}.png", subdir)
+    
+    def generate_thinking(self):
+        """Generate thinking animation frames"""
+        print("\n=== Generating thinking ===")
+        subdir = "emotions"
+        
+        # Eyes look around (8 frames)
+        positions = ['center', 'right', 'center', 'left', 'center', 'up', 'center', 'down']
+        for i, pos in enumerate(positions):
+            for suffix in ['fl', 'fr']:
+                img = self._create_eye_looking(self.HEADLIGHT_SIZE, pos)
+                self._save_frame(img, f"eye_{suffix}_think_{i+1:02d}.png", subdir)
+        
+        # Thinking dots animation (4 frames)
+        for i in range(4):
+            img = self._create_thinking_dots(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"dots_{i+1:02d}.png", subdir)
+    
+    def generate_victory(self):
+        """Generate victory/success animation frames"""
+        print("\n=== Generating victory ===")
+        subdir = "emotions"
+        
+        # Rainbow cycling on wheels (8 frames)
+        colors = [self.RED, self.ORANGE, self.YELLOW, self.GREEN, 
+                 self.CYAN, self.BLUE, self.MAGENTA, (255, 255, 255)]
+        for i, color in enumerate(colors):
+            for suffix in ['fl', 'fr', 'rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_rainbow_{i+1:02d}.png", subdir)
+        
+        # Checkmark animation (3 frames)
+        for i in range(3):
+            img = self._create_checkmark(self.DISPLAY_SIZE, i)
+            self._save_frame(img, f"checkmark_{i+1:02d}.png", subdir)
+    
+    # Helper methods for new patterns
+    
+    def _create_speed_lines(self, size: tuple, frame: int):
+        """Create speed lines moving effect"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Moving horizontal lines
+        offset = frame * 4
+        for y in [1, 3]:
+            for x in range(width):
+                if (x + offset) % 8 < 4:
+                    img[y, x] = self.CYAN
+        
+        return img
+    
+    def _create_x_pattern(self, size: tuple, color: tuple):
+        """Create X pattern"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Diagonal lines
+        for i in range(min(width, height)):
+            if i < width and i < height:
+                img[i, i] = color
+            if i < width and height - 1 - i >= 0:
+                img[height - 1 - i, i] = color
+        
+        return img
+    
+    def _create_sad_face(self, size: tuple, frame: int):
+        """Create sad face (frown)"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Sad eyes (small dots)
+        if frame % 3 != 2:  # Blink occasionally
+            img[1, 8] = self.BLUE
+            img[1, 16] = self.BLUE
+        
+        # Frown (inverted arc)
+        y = 3
+        for x in range(7, 18):
+            if (x - 12) ** 2 / 20 < (3.5 - y) ** 2:
+                img[y, x] = self.BLUE
+        
+        return img
+    
+    def _create_angry_face(self, size: tuple, frame: int):
+        """Create angry face with furrowed brows"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Angry eyebrows
+        for x in range(6, 11):
+            img[1, x] = self.RED
+        for x in range(14, 19):
+            img[1, x] = self.RED
+        
+        # Straight line mouth (angry)
+        for x in range(8, 17):
+            img[3, x] = self.RED
+        
+        # Intensity pulsing
+        if frame > 0:
+            img = (img * (0.7 + 0.3 * frame / 2)).astype(np.uint8)
+        
+        return img
+    
+    def _create_o_mouth(self, size: tuple, mouth_size: int):
+        """Create O-shaped mouth"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Circle in center
+        cx, cy = width // 2, height // 2
+        for y in range(height):
+            for x in range(width):
+                dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+                if mouth_size <= dist < mouth_size + 1:
+                    img[y, x] = self.YELLOW
+        
+        return img
+    
+    def _create_eye_pattern(self, size: tuple, pattern_type: str):
+        """Create different eye patterns"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        if pattern_type == 'wide':
+            # Large circle for surprised eyes
+            for y in range(2, 6):
+                for x in range(2, 6):
+                    img[y, x] = self.WHITE
+        elif pattern_type == 'closed':
+            # Horizontal line for closed eyes
+            for x in range(2, 6):
+                img[4, x] = (100, 100, 100)
+        
+        return img
+    
+    def _create_zzz_pattern(self, size: tuple, frame: int):
+        """Create ZZZ sleep pattern"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Animated Z's moving up
+        offset = frame
+        positions = [(10, 3 - offset % 4), (15, 2 - offset % 4), (20, 1 - offset % 4)]
+        
+        for x, y in positions:
+            if 0 <= y < height and x < width:
+                # Draw Z
+                for dx in range(3):
+                    if x + dx < width:
+                        img[y, x + dx] = (150, 150, 255)
+        
+        return img
+    
+    def _create_eye_opening(self, size: tuple, frame: int):
+        """Create eye opening animation"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Progressive opening
+        open_height = min(frame + 1, height // 2)
+        center_y = height // 2
+        
+        for y in range(center_y - open_height, center_y + open_height):
+            if 0 <= y < height:
+                for x in range(2, 6):
+                    img[y, x] = self.WHITE
+        
+        return img
+    
+    def _create_yawn(self, size: tuple, frame: int):
+        """Create yawn animation"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Growing oval
+        mouth_width = 5 + frame * 2
+        mouth_height = 2 + frame
+        
+        cx, cy = width // 2, height // 2
+        for y in range(height):
+            for x in range(width):
+                if ((x - cx) ** 2) / (mouth_width ** 2) + ((y - cy) ** 2) / (mouth_height ** 2) < 1:
+                    img[y, x] = (255, 200, 0)
+        
+        return img
+    
+    def _create_battery_indicator(self, size: tuple, level: int, max_level: int, critical: bool = False):
+        """Create battery level indicator"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Battery outline
+        for x in range(5, 20):
+            img[1, x] = (100, 100, 100)
+            img[3, x] = (100, 100, 100)
+        for y in range(1, 4):
+            img[y, 5] = (100, 100, 100)
+            img[y, 19] = (100, 100, 100)
+        
+        # Battery tip
+        img[2, 20] = (100, 100, 100)
+        
+        # Fill level
+        fill_width = int((level / max_level) * 13)
+        color = self.RED if critical and level < 3 else self.GREEN
+        for x in range(6, 6 + fill_width):
+            img[2, x] = color
+        
+        return img
+    
+    def _create_eye_looking(self, size: tuple, direction: str):
+        """Create eye looking in direction"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Pupil position
+        offsets = {
+            'center': (0, 0),
+            'left': (-1, 0),
+            'right': (1, 0),
+            'up': (0, -1),
+            'down': (0, 1)
+        }
+        
+        cx, cy = width // 2, height // 2
+        dx, dy = offsets.get(direction, (0, 0))
+        
+        # Eye white
+        for y in range(2, 6):
+            for x in range(2, 6):
+                img[y, x] = (200, 200, 200)
+        
+        # Pupil
+        px, py = cx + dx, cy + dy
+        if 0 <= py < height and 0 <= px < width:
+            img[py, px] = self.BLUE
+            if py + 1 < height:
+                img[py + 1, px] = self.BLUE
+        
+        return img
+    
+    def _create_thinking_dots(self, size: tuple, frame: int):
+        """Create thinking dots animation"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Three dots appearing sequentially
+        positions = [(10, 2), (15, 2), (20, 2)]
+        for i, (x, y) in enumerate(positions):
+            if frame >= i:
+                img[y, x] = self.YELLOW
+                img[y, x + 1] = self.YELLOW
+        
+        return img
+    
+    def _create_checkmark(self, size: tuple, frame: int):
+        """Create checkmark pattern"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Progressive checkmark drawing
+        if frame >= 0:
+            # Short stroke
+            img[3, 10] = self.GREEN
+            img[4, 11] = self.GREEN
+        if frame >= 1:
+            # Longer stroke
+            img[2, 12] = self.GREEN
+            img[1, 13] = self.GREEN
+        if frame >= 2:
+            # Complete
+            img[1, 14] = self.GREEN
+            img[2, 15] = self.GREEN
+        
+        return img
+    
     def generate_all(self):
         """Generate all animation frames"""
         print("Generating all LED matrix animation frames...")
         
+        # Original animations
         self.generate_police_lights()
         self.generate_road_service()
         self.generate_idle()
         self.generate_charging()
         self.generate_happy()
         self.generate_turn_left()
+        
+        # New animations
+        self.generate_ambulance()
+        self.generate_fire_truck()
+        self.generate_turn_right()
+        self.generate_braking()
+        self.generate_accelerating()
+        self.generate_error()
+        self.generate_sad()
+        self.generate_angry()
+        self.generate_surprised()
+        self.generate_sleep()
+        self.generate_wakeup()
+        self.generate_low_battery()
+        self.generate_thinking()
+        self.generate_victory()
         
         print("\n✅ All frames generated successfully!")
         print(f"Output directory: {self.output_dir}")
@@ -437,7 +982,9 @@ def main():
     parser.add_argument(
         '--animation',
         choices=['police', 'road_service', 'idle', 'charging', 'happy', 
-                'turn_left', 'all'],
+                'turn_left', 'ambulance', 'fire_truck', 'turn_right', 'braking',
+                'accelerating', 'error', 'sad', 'angry', 'surprised', 'sleep',
+                'wakeup', 'low_battery', 'thinking', 'victory', 'all'],
         default='all',
         help='Which animation to generate'
     )
@@ -446,20 +993,33 @@ def main():
     
     generator = FrameGenerator(args.output_dir)
     
+    animation_map = {
+        'police': generator.generate_police_lights,
+        'road_service': generator.generate_road_service,
+        'idle': generator.generate_idle,
+        'charging': generator.generate_charging,
+        'happy': generator.generate_happy,
+        'turn_left': generator.generate_turn_left,
+        'ambulance': generator.generate_ambulance,
+        'fire_truck': generator.generate_fire_truck,
+        'turn_right': generator.generate_turn_right,
+        'braking': generator.generate_braking,
+        'accelerating': generator.generate_accelerating,
+        'error': generator.generate_error,
+        'sad': generator.generate_sad,
+        'angry': generator.generate_angry,
+        'surprised': generator.generate_surprised,
+        'sleep': generator.generate_sleep,
+        'wakeup': generator.generate_wakeup,
+        'low_battery': generator.generate_low_battery,
+        'thinking': generator.generate_thinking,
+        'victory': generator.generate_victory,
+    }
+    
     if args.animation == 'all':
         generator.generate_all()
-    elif args.animation == 'police':
-        generator.generate_police_lights()
-    elif args.animation == 'road_service':
-        generator.generate_road_service()
-    elif args.animation == 'idle':
-        generator.generate_idle()
-    elif args.animation == 'charging':
-        generator.generate_charging()
-    elif args.animation == 'happy':
-        generator.generate_happy()
-    elif args.animation == 'turn_left':
-        generator.generate_turn_left()
+    else:
+        animation_map[args.animation]()
 
 
 if __name__ == '__main__':

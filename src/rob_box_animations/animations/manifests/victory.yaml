@@ -1,0 +1,110 @@
+# Victory/Success Animation
+name: "victory"
+description: "Victory celebration with rainbow cycling and checkmark"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 3200
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # All wheels rainbow cycling
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_fl_rainbow_01.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_02.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_03.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_04.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_05.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_06.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_07.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fl_rainbow_08.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 100
+    frames:
+      - image: "frames/emotions/wheel_fr_rainbow_01.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_02.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_03.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_04.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_05.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_06.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_07.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_fr_rainbow_08.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_rear_left"
+    offset_ms: 200
+    frames:
+      - image: "frames/emotions/wheel_rl_rainbow_01.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_02.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_03.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_04.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_05.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_06.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_07.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rl_rainbow_08.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 300
+    frames:
+      - image: "frames/emotions/wheel_rr_rainbow_01.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_02.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_03.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_04.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_05.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_06.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_07.png"
+        duration_ms: 400
+      - image: "frames/emotions/wheel_rr_rainbow_08.png"
+        duration_ms: 400
+
+  # Main display (checkmark animation)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/checkmark_01.png"
+        duration_ms: 1000
+      - image: "frames/emotions/checkmark_02.png"
+        duration_ms: 1000
+      - image: "frames/emotions/checkmark_03.png"
+        duration_ms: 1200
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "emotions"
+  tags: ["victory", "success", "celebration", "rainbow", "checkmark"]

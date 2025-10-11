@@ -1,0 +1,49 @@
+# Accelerating Animation
+name: "accelerating"
+description: "Acceleration with bright headlights and speed lines"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 1200
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Front wheels bright (headlights)
+  - logical_group: "wheels_front"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/accel_fl_on.png"
+        duration_ms: 1200
+
+  # Rear wheels dim
+  - logical_group: "wheels_rear"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/accel_rl_dim.png"
+        duration_ms: 1200
+
+  # Main display (speed lines animation)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/speed_01.png"
+        duration_ms: 200
+      - image: "frames/navigation/speed_02.png"
+        duration_ms: 200
+      - image: "frames/navigation/speed_03.png"
+        duration_ms: 200
+      - image: "frames/navigation/speed_04.png"
+        duration_ms: 200
+      - image: "frames/navigation/speed_05.png"
+        duration_ms: 200
+      - image: "frames/navigation/speed_06.png"
+        duration_ms: 200
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "navigation"
+  tags: ["acceleration", "speed", "headlights", "movement"]

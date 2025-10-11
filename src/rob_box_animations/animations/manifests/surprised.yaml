@@ -1,0 +1,42 @@
+# Surprised Emotion Animation
+name: "surprised"
+description: "Surprised emotion with wide eyes and O mouth"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 1500
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Wide eyes (surprised)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fl_surprised.png"
+        duration_ms: 1500
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fr_surprised.png"
+        duration_ms: 1500
+
+  # Main display (O-shaped mouth growing)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/mouth_surprised_01.png"
+        duration_ms: 500
+      - image: "frames/emotions/mouth_surprised_02.png"
+        duration_ms: 500
+      - image: "frames/emotions/mouth_surprised_03.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "emotions"
+  tags: ["surprised", "emotion", "shock", "wide_eyes"]

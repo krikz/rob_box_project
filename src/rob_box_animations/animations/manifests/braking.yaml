@@ -1,0 +1,49 @@
+# Braking Animation
+name: "braking"
+description: "Brake lights with red rear wheels and STOP sign"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 1500
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Front wheels off
+  - logical_group: "wheels_front"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/brake_fl_off.png"
+        duration_ms: 1500
+
+  # Rear wheels bright red (brake lights)
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/brake_rl_on.png"
+        duration_ms: 1500
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/brake_rr_on.png"
+        duration_ms: 1500
+
+  # Main display (STOP sign pulsing)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/stop_sign_01.png"
+        duration_ms: 500
+      - image: "frames/navigation/stop_sign_02.png"
+        duration_ms: 500
+      - image: "frames/navigation/stop_sign_03.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "high"
+  category: "navigation"
+  tags: ["braking", "stop", "red", "safety"]
