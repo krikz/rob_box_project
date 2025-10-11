@@ -27,6 +27,9 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-controller-manager \
     ros-${ROS_DISTRO}-hardware-interface \
     ros-${ROS_DISTRO}-pluginlib \
+    # rosidl для компиляции кастомных сообщений
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
     # Контроллеры
     ros-${ROS_DISTRO}-diff-drive-controller \
     ros-${ROS_DISTRO}-joint-state-broadcaster \
@@ -40,8 +43,10 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /ws
 RUN mkdir -p src
 
-# Копируем vesc_nexus пакет (содержит VescSystemHardwareInterface плагин)
-COPY src/vesc_nexus /ws/src/vesc_nexus
+# Копируем vesc_nexus пакеты (vesc_msgs и vesc_nexus) из их src/
+# vesc_nexus - это отдельный репозиторий, пакеты находятся в vesc_nexus/src/
+COPY src/vesc_nexus/src/vesc_msgs /ws/src/vesc_msgs
+COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 
 # Копируем rob_box_description (URDF с ros2_control блоком)
 COPY src/rob_box_description /ws/src/rob_box_description

@@ -1,0 +1,21 @@
+# LED Matrix Driver Configuration
+# Низкоуровневый драйвер для управления физической цепочкой LED
+# через SPI на Raspberry Pi 5 (Vision Pi)
+#
+# Использует библиотеку pi5neo для WS2812B/NeoPixel LED
+
+led_matrix_driver:
+  ros__parameters:
+    # Общее количество светодиодов в цепочке
+    # 4× 8×8 (фары) + 5× 5×5 (main display) = 256 + 125 = 381
+    num_leds: 381
+    
+    # Скорость SPI в кГц (обычно 800 для WS2812B)
+    spi_speed_khz: 800
+    
+    # SPI устройство (Raspberry Pi 5)
+    # spidev0.0 - первый SPI интерфейс (GPIO 10 MOSI)
+    spi_device: '/dev/spidev0.0'
+    
+    # Топик для получения данных от композитора
+    input_topic: 'led_matrix/data'

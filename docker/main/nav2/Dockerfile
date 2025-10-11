@@ -1,6 +1,6 @@
 # Nav2 Navigation Stack для Main Pi
 # Автономная навигация с планированием пути и избежанием препятствий
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-humble
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="Nav2 Navigation Stack"
@@ -23,9 +23,8 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-nav2-controller \
     ros-${ROS_DISTRO}-nav2-dwb-controller \
     ros-${ROS_DISTRO}-nav2-regulated-pure-pursuit-controller \
-    # Поведения (recovery behaviors)
+    # Поведения (recovery behaviors - переименован из recoveries в behaviors)
     ros-${ROS_DISTRO}-nav2-behaviors \
-    ros-${ROS_DISTRO}-nav2-recoveries \
     # Локализация
     ros-${ROS_DISTRO}-nav2-amcl \
     # Map Server

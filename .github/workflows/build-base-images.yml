@@ -85,6 +85,7 @@ jobs:
             type=sha,prefix=ros2-zenoh-${{ env.ROS_DISTRO }}-
 
       - name: Build and push ros2-zenoh base image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: docker/base
@@ -95,6 +96,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Collect build logs on failure
+        if: failure()
+        uses: ./.github/actions/collect-build-logs
+        with:
+          job-name: ros2-zenoh-base
 
   # Сборка базового образа RTAB-Map (для SLAM)
   build-rtabmap:

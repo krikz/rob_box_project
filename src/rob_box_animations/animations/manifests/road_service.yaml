@@ -1,0 +1,243 @@
+# Road Service Yellow Beacon Animation
+name: "road_service"
+description: "Road service yellow pulsing lights"
+version: "2.5"
+author: "rob_box"
+
+duration_ms: 2000
+loop: true
+fps: 20
+
+fade_in_ms: 200
+fade_out_ms: 200
+
+panels:
+  # Front left wheel
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/wheel_fl_pulse_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fl_pulse_20.png"
+        duration_ms: 100
+
+  # Front right wheel
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/wheel_fr_pulse_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_fr_pulse_20.png"
+        duration_ms: 100
+
+  # Rear left wheel
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/wheel_rl_pulse_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rl_pulse_20.png"
+        duration_ms: 100
+
+  # Rear right wheel
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/wheel_rr_pulse_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/wheel_rr_pulse_20.png"
+        duration_ms: 100
+
+  # Main display
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/text_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_20.png"
+        duration_ms: 100
+
+metadata:
+  priority: "high"
+  category: "emergency"
+  tags: ["road_service", "emergency", "yellow", "pulsing"]

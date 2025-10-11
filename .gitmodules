@@ -2,3 +2,7 @@
 	path = src/vesc_nexus
 	url = https://github.com/krikz/vesc_nexus.git
 	branch = release/v1.0.0
+[submodule "src/ros2leds"]
+	path = src/ros2leds
+	url = https://github.com/krikz/ros2leds.git
+	branch = main

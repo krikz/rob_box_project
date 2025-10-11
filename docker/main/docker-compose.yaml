@@ -25,6 +25,66 @@ services:
       retries: 20
       start_period: 30s
 
+  # twist_mux - мультиплексирование команд скорости с приоритизацией
+  twist-mux:
+    image: ghcr.io/krikz/rob_box:twist-mux-humble-latest
+    container_name: twist-mux
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config/shared:ro
+      - ./config/twist_mux:/config/twist_mux:ro
+      - ./scripts/twist_mux:/scripts:ro
+    command: ["/scripts/start_twist_mux.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ros2 node list | grep -q twist_mux || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # micro-ROS Agent - связь с ESP32 Sensor Hub по UART
+  # Транслирует сообщения между ROS2 (DDS/Zenoh) и micro-ROS (XRCE-DDS)
+  micro-ros-agent:
+    image: ghcr.io/krikz/rob_box:micro-ros-agent-humble-latest
+    container_name: micro-ros-agent
+    network_mode: host
+    privileged: true  # Нужен для доступа к serial устройствам
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+      # micro-ROS специфичные переменные
+      - MICROROS_SERIAL_PORT=/dev/ttyUSB0  # ESP32 USB serial (измените на /dev/ttyAMA0 для GPIO UART)
+      - MICROROS_BAUDRATE=115200
+    volumes:
+      - ./config:/config/shared:ro
+      - ./scripts/micro_ros_agent:/scripts:ro
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0  # ESP32 через USB (измените при необходимости)
+    command: ["/scripts/start_micro_ros_agent.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f micro_ros_agent || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
   # Robot State Publisher - публикует TF дерево робота из URDF
   robot-state-publisher:
     image: ghcr.io/krikz/rob_box:robot-state-publisher-humble-latest
@@ -141,6 +201,7 @@ services:
     depends_on:
       - zenoh-router
       - robot-state-publisher
+      - twist-mux
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ros2 control list_controllers | grep -q diff_drive_controller || exit 1"]
@@ -172,6 +233,7 @@ services:
       - robot-state-publisher
       - rtabmap
       - ros2-control
+      - twist-mux
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ros2 node list | grep -q 'bt_navigator\\|controller_server\\|planner_server' || exit 1"]

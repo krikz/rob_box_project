@@ -1,0 +1,101 @@
+# Accelerating Animation (IMPROVED v2.5)
+name: "accelerating"
+description: "Acceleration with bright white headlights, orange rear glow, and speed lines"
+version: "2.5"
+author: "rob_box"
+
+duration_ms: 2400
+loop: true
+fps: 10
+
+fade_in_ms: 100
+fade_out_ms: 100
+
+panels:
+  # Front wheels - progressive bright headlights (6 frames)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/accel_fl_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fl_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fl_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fl_04.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fl_05.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fl_06.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/accel_fr_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fr_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fr_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fr_04.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fr_05.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_fr_06.png"
+        duration_ms: 400
+
+  # Rear wheels - orange glow animation (6 frames)
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/accel_rl_glow_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rl_glow_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rl_glow_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rl_glow_04.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rl_glow_05.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rl_glow_06.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/accel_rr_glow_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rr_glow_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rr_glow_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rr_glow_04.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rr_glow_05.png"
+        duration_ms: 400
+      - image: "frames/navigation/accel_rr_glow_06.png"
+        duration_ms: 400
+
+  # Main display - speed lines (6 frames)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/speed_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/speed_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/speed_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/speed_04.png"
+        duration_ms: 400
+      - image: "frames/navigation/speed_05.png"
+        duration_ms: 400
+      - image: "frames/navigation/speed_06.png"
+        duration_ms: 400
+
+metadata:
+  priority: "normal"
+  category: "navigation"
+  tags: ["accelerating", "speed", "headlights", "fast"]

@@ -1,0 +1,75 @@
+# Sleep Animation
+name: "sleep"
+description: "Sleeping mode with closed eyes and ZZZ"
+version: "2.5"
+author: "rob_box"
+
+# Timing
+duration_ms: 2500
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # Closed eyes
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/eye_fl_closed.png"
+        duration_ms: 2500
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/eye_fr_closed.png"
+        duration_ms: 2500
+
+  # Rear wheels - dim pulsing
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_rl_sleep_01.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rl_sleep_02.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rl_sleep_03.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rl_sleep_04.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rl_sleep_05.png"
+        duration_ms: 500
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_rr_sleep_01.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rr_sleep_02.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rr_sleep_03.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rr_sleep_04.png"
+        duration_ms: 500
+      - image: "frames/system/wheel_rr_sleep_05.png"
+        duration_ms: 500
+
+  # Main display (ZZZ animation)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/zzz_01.png"
+        duration_ms: 500
+      - image: "frames/system/zzz_02.png"
+        duration_ms: 500
+      - image: "frames/system/zzz_03.png"
+        duration_ms: 500
+      - image: "frames/system/zzz_04.png"
+        duration_ms: 500
+      - image: "frames/system/zzz_05.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "low"
+  category: "system"
+  tags: ["sleep", "idle", "rest", "power_save"]
