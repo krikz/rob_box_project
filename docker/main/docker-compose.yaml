@@ -148,3 +148,34 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+
+  # Nav2 Navigation Stack - автономная навигация
+  nav2:
+    image: ghcr.io/krikz/rob_box:nav2-humble-latest
+    container_name: nav2
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config/shared:ro
+      - ./config/nav2:/config/nav2:ro
+      - ./scripts/nav2:/scripts:ro
+      - ./maps:/maps:ro  # Карты из RTAB-Map
+    command: ["/scripts/start_nav2.sh"]
+    depends_on:
+      - zenoh-router
+      - robot-state-publisher
+      - rtabmap
+      - ros2-control
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ros2 node list | grep -q 'bt_navigator\\|controller_server\\|planner_server' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
