@@ -16,20 +16,23 @@ LABEL org.opencontainers.image.description="Controller Manager with VescSystemHa
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Установка ROS2 Control и зависимостей
+# КРИТИЧНО: Базовый образ слишком минимальный, устанавливаем ros-base для всех библиотек
 RUN apt-get update && apt-get install -y \
+    # ROS2 Base - содержит ВСЕ необходимые библиотеки для компиляции
+    ros-${ROS_DISTRO}-ros-base \
     # CAN утилиты
     can-utils \
     iproute2 \
     net-tools \
+    # ROS2 базовая инфраструктура
+    ros-${ROS_DISTRO}-ament-cmake \
+    ros-${ROS_DISTRO}-ament-cmake-ros \
     # ROS2 Control
     ros-${ROS_DISTRO}-ros2-control \
     ros-${ROS_DISTRO}-ros2-controllers \
     ros-${ROS_DISTRO}-controller-manager \
     ros-${ROS_DISTRO}-hardware-interface \
     ros-${ROS_DISTRO}-pluginlib \
-    # rosidl для компиляции кастомных сообщений
-    ros-${ROS_DISTRO}-rosidl-default-runtime \
-    ros-${ROS_DISTRO}-rosidl-default-generators \
     # Контроллеры
     ros-${ROS_DISTRO}-diff-drive-controller \
     ros-${ROS_DISTRO}-joint-state-broadcaster \
@@ -52,9 +55,11 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep
+# Пропускаем GUI пакеты (rviz2, joint-state-publisher-gui) и serial-driver (для vesc_nexus они опциональны)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src --ignore-src -r -y || true
+    rosdep install --from-paths src --ignore-src -r -y \
+        --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" || true
 
 # Сборка пакетов
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
