@@ -1,0 +1,3 @@
+[submodule "src/vesc_nexus"]
+	path = src/vesc_nexus
+	url = https://github.com/krikz/vesc_nexus.git

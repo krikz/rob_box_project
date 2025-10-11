@@ -1,0 +1,71 @@
+name: Auto-merge develop to main
+
+# Автоматическое слияние develop в main после успешной сборки
+# Срабатывает только при пуше в develop
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  # Шаг 1: Проверяем что все образы собираются
+  build-and-test:
+    uses: ./.github/workflows/build-all.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  # Шаг 2: Если сборка успешна, мержим в main
+  auto-merge:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Полная история для мерджа
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+      - name: Merge develop to main
+        run: |
+          echo "🔀 Merging develop to main..."
+          git checkout main
+          git merge --no-ff develop -m "chore: auto-merge develop to main after successful build"
+          git push origin main
+
+      - name: Success notification
+        run: |
+          echo "✅ Successfully merged develop to main!"
+          echo ""
+          echo "Branch: develop → main"
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
+  # Шаг 3: Собираем main branch для проверки
+  build-main:
+    runs-on: ubuntu-latest
+    needs: auto-merge
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Trigger main build
+        run: |
+          echo "🚀 Main branch updated, build will be triggered automatically"
+          echo "Main branch is now at: $(git rev-parse HEAD)"
