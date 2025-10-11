@@ -1,0 +1,19 @@
+[Unit]
+Description=Setup CAN interfaces for VESC controllers
+Documentation=https://github.com/krikz/rob_box_project
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Setup both CAN interfaces (can0 and can1)
+ExecStart=/opt/rob_box/setup_can.sh can0
+ExecStart=/opt/rob_box/setup_can.sh can1
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
