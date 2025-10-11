@@ -1,0 +1,40 @@
+# twist_mux configuration для rob_box
+# Мультиплексирование команд скорости с приоритизацией
+
+# Источники команд (в порядке приоритета)
+topics:
+  # 1. Emergency Stop (наивысший приоритет)
+  - name: emergency_stop
+    topic: cmd_vel_emergency
+    timeout: 0.1  # Быстрый timeout для безопасности
+    priority: 255  # Максимальный приоритет
+    short_desc: "Emergency stop from safety systems"
+    
+  # 2. Joystick/Gamepad (высокий приоритет)
+  - name: joystick
+    topic: cmd_vel_joy
+    timeout: 0.5  # 0.5 сек после последней команды
+    priority: 100  # Высокий приоритет (человек > автономия)
+    short_desc: "Manual control from gamepad/joystick"
+    
+  # 3. Web UI / Mobile App (средний приоритет)
+  - name: web_ui
+    topic: cmd_vel_web
+    timeout: 1.0
+    priority: 50
+    short_desc: "Manual control from web interface"
+    
+  # 4. Nav2 Navigation (низкий приоритет)
+  - name: navigation
+    topic: cmd_vel
+    timeout: 0.5
+    priority: 10  # Низкий приоритет (автономия < человек)
+    short_desc: "Autonomous navigation from Nav2"
+
+# Locks (блокировка определенных источников)
+# locks:
+#   - name: manual_lock
+#     topic: /manual_lock
+#     timeout: 5.0
+#     priority: 255
+#     locks: [navigation]  # Блокирует Nav2 при ручном управлении
