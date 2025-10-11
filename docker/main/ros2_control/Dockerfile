@@ -27,6 +27,9 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-controller-manager \
     ros-${ROS_DISTRO}-hardware-interface \
     ros-${ROS_DISTRO}-pluginlib \
+    # rosidl для компиляции кастомных сообщений
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
     # Контроллеры
     ros-${ROS_DISTRO}-diff-drive-controller \
     ros-${ROS_DISTRO}-joint-state-broadcaster \
