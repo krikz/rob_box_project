@@ -27,9 +27,15 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-controller-manager \
     ros-${ROS_DISTRO}-hardware-interface \
     ros-${ROS_DISTRO}-pluginlib \
-    # rosidl для компиляции кастомных сообщений
+    # rosidl для компиляции кастомных сообщений (ПОЛНЫЙ набор)
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     ros-${ROS_DISTRO}-rosidl-default-generators \
+    ros-${ROS_DISTRO}-rosidl-generator-c \
+    ros-${ROS_DISTRO}-rosidl-generator-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     # Контроллеры
     ros-${ROS_DISTRO}-diff-drive-controller \
     ros-${ROS_DISTRO}-joint-state-broadcaster \
