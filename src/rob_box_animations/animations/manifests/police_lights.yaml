@@ -19,68 +19,68 @@ panels:
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/police/front_left_blue.png"
+      - image: "frames/police/wheel_fl_blue.png"
         duration_ms: 100
-      - image: "frames/police/front_left_off.png"
+      - image: "frames/police/wheel_fl_off.png"
         duration_ms: 50
-      - image: "frames/police/front_left_blue.png"
+      - image: "frames/police/wheel_fl_blue.png"
         duration_ms: 100
-      - image: "frames/police/front_left_off.png"
+      - image: "frames/police/wheel_fl_off.png"
         duration_ms: 250
-      - image: "frames/police/front_left_red.png"
+      - image: "frames/police/wheel_fl_red.png"
         duration_ms: 100
-      - image: "frames/police/front_left_off.png"
+      - image: "frames/police/wheel_fl_off.png"
         duration_ms: 50
-      - image: "frames/police/front_left_red.png"
+      - image: "frames/police/wheel_fl_red.png"
         duration_ms: 100
-      - image: "frames/police/front_left_off.png"
+      - image: "frames/police/wheel_fl_off.png"
         duration_ms: 250
 
   # Front right wheel (alternates red -> blue, offset)
   - logical_group: "wheel_front_right"
     offset_ms: 500
     frames:
-      - image: "frames/police/front_right_blue.png"
+      - image: "frames/police/wheel_fr_blue.png"
         duration_ms: 100
-      - image: "frames/police/front_right_off.png"
+      - image: "frames/police/wheel_fr_off.png"
         duration_ms: 50
-      - image: "frames/police/front_right_blue.png"
+      - image: "frames/police/wheel_fr_blue.png"
         duration_ms: 100
-      - image: "frames/police/front_right_off.png"
+      - image: "frames/police/wheel_fr_off.png"
         duration_ms: 250
-      - image: "frames/police/front_right_red.png"
+      - image: "frames/police/wheel_fr_red.png"
         duration_ms: 100
-      - image: "frames/police/front_right_off.png"
+      - image: "frames/police/wheel_fr_off.png"
         duration_ms: 50
-      - image: "frames/police/front_right_red.png"
+      - image: "frames/police/wheel_fr_red.png"
         duration_ms: 100
-      - image: "frames/police/front_right_off.png"
+      - image: "frames/police/wheel_fr_off.png"
         duration_ms: 250
 
   # Rear left (red flashing)
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/police/rear_red.png"
+      - image: "frames/police/wheel_rl_red.png"
         duration_ms: 100
-      - image: "frames/police/rear_off.png"
+      - image: "frames/police/wheel_rl_off.png"
         duration_ms: 100
-      - image: "frames/police/rear_red.png"
+      - image: "frames/police/wheel_rl_red.png"
         duration_ms: 100
-      - image: "frames/police/rear_off.png"
+      - image: "frames/police/wheel_rl_off.png"
         duration_ms: 700
 
   # Rear right (blue flashing)
   - logical_group: "wheel_rear_right"
     offset_ms: 500
     frames:
-      - image: "frames/police/rear_blue.png"
+      - image: "frames/police/wheel_rr_blue.png"
         duration_ms: 100
-      - image: "frames/police/rear_off.png"
+      - image: "frames/police/wheel_rr_off.png"
         duration_ms: 100
-      - image: "frames/police/rear_blue.png"
+      - image: "frames/police/wheel_rr_blue.png"
         duration_ms: 100
-      - image: "frames/police/rear_off.png"
+      - image: "frames/police/wheel_rr_off.png"
         duration_ms: 700
 
   # Main display (POLICE text flashing)

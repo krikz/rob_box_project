@@ -440,25 +440,41 @@ class RobotVisualizer:
             self._update_panel(self.display_leds, img_array)
         elif logical_group == 'wheels_front':
             # Разделить на две панели 8×8
-            left = img_array[:, :8]
-            right = img_array[:, 8:]
-            self._update_panel(self.wheel_fl_leds, left)
-            self._update_panel(self.wheel_fr_leds, right)
+            if img_array.shape[1] >= 16:
+                left = img_array[:, :8]
+                right = img_array[:, 8:16]
+                self._update_panel(self.wheel_fl_leds, left)
+                self._update_panel(self.wheel_fr_leds, right)
+            else:
+                # Если всего 8 пикселей - отобразить на обеих
+                self._update_panel(self.wheel_fl_leds, img_array)
+                self._update_panel(self.wheel_fr_leds, img_array)
         elif logical_group == 'wheels_rear':
-            left = img_array[:, :8]
-            right = img_array[:, 8:]
-            self._update_panel(self.wheel_rl_leds, left)
-            self._update_panel(self.wheel_rr_leds, right)
+            if img_array.shape[1] >= 16:
+                left = img_array[:, :8]
+                right = img_array[:, 8:16]
+                self._update_panel(self.wheel_rl_leds, left)
+                self._update_panel(self.wheel_rr_leds, right)
+            else:
+                self._update_panel(self.wheel_rl_leds, img_array)
+                self._update_panel(self.wheel_rr_leds, img_array)
         elif logical_group == 'wheels_all':
             # 2×2 сетка
-            fl = img_array[:8, :8]
-            fr = img_array[:8, 8:]
-            rl = img_array[8:, :8]
-            rr = img_array[8:, 8:]
-            self._update_panel(self.wheel_fl_leds, fl)
-            self._update_panel(self.wheel_fr_leds, fr)
-            self._update_panel(self.wheel_rl_leds, rl)
-            self._update_panel(self.wheel_rr_leds, rr)
+            if img_array.shape[0] >= 16 and img_array.shape[1] >= 16:
+                fl = img_array[:8, :8]
+                fr = img_array[:8, 8:16]
+                rl = img_array[8:16, :8]
+                rr = img_array[8:16, 8:16]
+                self._update_panel(self.wheel_fl_leds, fl)
+                self._update_panel(self.wheel_fr_leds, fr)
+                self._update_panel(self.wheel_rl_leds, rl)
+                self._update_panel(self.wheel_rr_leds, rr)
+            else:
+                # На всех отобразить одно и то же
+                self._update_panel(self.wheel_fl_leds, img_array)
+                self._update_panel(self.wheel_fr_leds, img_array)
+                self._update_panel(self.wheel_rl_leds, img_array)
+                self._update_panel(self.wheel_rr_leds, img_array)
     
     def _load_frame_image(self, frame_path):
         """Загрузить изображение кадра"""

@@ -91,29 +91,37 @@ class FrameGenerator:
         print("\n=== Generating police_lights ===")
         subdir = "police"
         
-        # Front left - blue/red alternating
+        # Front left wheel - blue/red alternating
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLUE, 
-                              "front_left_blue.png", subdir)
+                              "wheel_fl_blue.png", subdir)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED, 
-                              "front_left_red.png", subdir)
+                              "wheel_fl_red.png", subdir)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK, 
-                              "front_left_off.png", subdir)
+                              "wheel_fl_off.png", subdir)
         
-        # Front right - blue/red alternating (opposite phase)
+        # Front right wheel - blue/red alternating (opposite phase)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLUE, 
-                              "front_right_blue.png", subdir)
+                              "wheel_fr_blue.png", subdir)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED, 
-                              "front_right_red.png", subdir)
+                              "wheel_fr_red.png", subdir)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK, 
-                              "front_right_off.png", subdir)
+                              "wheel_fr_off.png", subdir)
         
-        # Rear lights
+        # Rear left wheel
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLUE, 
-                              "rear_blue.png", subdir)
+                              "wheel_rl_blue.png", subdir)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED, 
-                              "rear_red.png", subdir)
+                              "wheel_rl_red.png", subdir)
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK, 
-                              "rear_off.png", subdir)
+                              "wheel_rl_off.png", subdir)
+        
+        # Rear right wheel
+        self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLUE, 
+                              "wheel_rr_blue.png", subdir)
+        self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED, 
+                              "wheel_rr_red.png", subdir)
+        self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK, 
+                              "wheel_rr_off.png", subdir)
         
         # Main display - POLICE text (simplified)
         self._create_text_frame("POLICE", self.WHITE, "mouth_police_on.png", subdir)
