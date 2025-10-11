@@ -110,7 +110,41 @@ services:
       -p RGBD/ProximityBySpace:true
       -p Grid/RangeMin:0.2
       -p Grid/Sensor:0
-      -p Optimizer/GravitySigma:0"
+            -p Optimizer/GravitySigma:0"
     depends_on:
       - zenoh-router
     restart: unless-stopped
+
+  # ROS2 Control Manager - управление моторами через VESC
+  # VESC Nexus работает как hardware_interface плагин
+  ros2-control:
+    image: ghcr.io/krikz/rob_box:ros2-control-humble-latest
+    container_name: ros2-control
+    network_mode: host
+    privileged: true  # Для доступа к CAN интерфейсу
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+      # CAN интерфейс (can0 или can1)
+      - CAN_INTERFACE=can0
+    volumes:
+      - ./config:/config/shared:ro
+      - ./config/vesc_nexus:/config/vesc_nexus:ro
+      - ./config/controllers:/config/controllers:ro
+      - ./scripts/ros2_control:/scripts:ro
+      - /dev:/dev  # Доступ к CAN устройствам
+    command: ["/scripts/start_ros2_control.sh"]
+    depends_on:
+      - zenoh-router
+      - robot-state-publisher
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ros2 control list_controllers | grep -q diff_drive_controller || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

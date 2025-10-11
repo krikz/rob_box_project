@@ -23,9 +23,18 @@ echo -e "${BLUE}═════════════════════�
 # ═══════════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════════
+# CAN_INTERFACE можно переопределить через environment variable
+# Поддерживаемые значения: can0, can1
 CAN_INTERFACE="${CAN_INTERFACE:-can0}"
 URDF_PATH="${URDF_PATH:-/ws/src/rob_box_description/urdf/rob_box.xacro}"
 CONTROLLER_CONFIG="${CONTROLLER_CONFIG:-/config/shared/controllers/controller_manager.yaml}"
+
+# Валидация CAN интерфейса
+if [[ ! "$CAN_INTERFACE" =~ ^can[01]$ ]]; then
+    echo -e "${RED}❌ ERROR: Invalid CAN interface '${CAN_INTERFACE}'${NC}"
+    echo "Supported: can0, can1"
+    exit 1
+fi
 
 echo -e "${GREEN}📋 Configuration:${NC}"
 echo -e "   CAN Interface:       ${CAN_INTERFACE}"
@@ -45,7 +54,11 @@ if ! ip link show ${CAN_INTERFACE} > /dev/null 2>&1; then
     ip link show
     echo ""
     echo -e "${YELLOW}Please run on host:${NC}"
-    echo "  sudo /path/to/setup_can0.sh"
+    echo "  cd /path/to/rob_box_project/host/main"
+    echo "  sudo ./install_host_scripts.sh"
+    echo ""
+    echo "Or manually:"
+    echo "  sudo /opt/rob_box/setup_can.sh ${CAN_INTERFACE}"
     exit 1
 fi
 
@@ -54,7 +67,7 @@ echo -e "${GREEN}✅ CAN interface: ${CAN_INTERFACE} (state: ${CAN_STATE})${NC}"
 
 if [ "$CAN_STATE" != "UP" ]; then
     echo -e "${RED}❌ ERROR: CAN interface is DOWN!${NC}"
-    echo "Run: sudo ip link set ${CAN_INTERFACE} up type can bitrate 500000"
+    echo "Run on host: sudo /path/to/setup_can.sh ${CAN_INTERFACE}"
     exit 1
 fi
 
