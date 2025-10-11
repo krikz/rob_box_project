@@ -23,8 +23,9 @@ RUN apt-get update && apt-get install -y \
 # Создание рабочего пространства для custom messages
 WORKDIR /ws
 
-# Копирование пакета custom messages (относительно корня репозитория)
-COPY ../../src/robot_sensor_hub_msg /ws/src/robot_sensor_hub_msg
+# Копирование пакета custom messages (относительно Docker build context)
+# Build context должен быть корень репозитория
+COPY src/robot_sensor_hub_msg /ws/src/robot_sensor_hub_msg
 
 # Сборка custom messages
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \

@@ -237,7 +237,7 @@ jobs:
       - name: Build and push micro-ros-agent
         uses: docker/build-push-action@v5
         with:
-          context: docker/main/micro_ros_agent
+          context: .
           file: docker/main/micro_ros_agent/Dockerfile
           platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
