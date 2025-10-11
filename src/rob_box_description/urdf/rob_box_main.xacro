@@ -1,0 +1,238 @@
+<?xml version="1.0"?>
+<!--
+  rob_box.xacro - Главный URDF файл для Rob Box Robot
+  
+  Rob Box - автономный робот доставки с:
+  - 4× VESC моторами (CAN)
+  - LSLIDAR N10 (2D LiDAR)
+  - OAK-D-Lite (RGB + Stereo Depth)
+  - Raspberry Pi Camera (ceiling navigation)
+  - LED матрицы
+  - Сенсорная плата (ESP32)
+  
+  Структура:
+  - Базовое шасси и колеса
+  - ros2_control интеграция (VESC Nexus)
+  - Сенсоры
+-->
+<robot name="rob_box" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Constants and Properties -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <!-- Размеры базы -->
+  <xacro:property name="base_length" value="0.4757"/>
+  <xacro:property name="base_width" value="0.238"/>
+  <xacro:property name="base_height" value="0.1885"/>
+  <xacro:property name="base_mass" value="10.0"/>
+
+  <!-- Параметры колес -->
+  <xacro:property name="wheel_radius" value="0.115"/>     <!-- 10" колеса -->
+  <xacro:property name="wheel_width" value="0.05"/>
+  <xacro:property name="wheel_mass" value="2.0"/>
+
+  <!-- Геометрия робота (ВРЕМЕННЫЕ ЗНАЧЕНИЯ - обновить из Fusion 360!) -->
+  <xacro:property name="wheelbase" value="0.28934"/>      <!-- Расстояние передняя-задняя ось -->
+  <xacro:property name="track_width" value="0.360"/>      <!-- Расстояние левое-правое колесо -->
+
+  <!-- Rocker (подвеска) -->
+  <xacro:property name="rocker_length" value="0.28934"/>
+  <xacro:property name="rocker_width" value="0.05"/>
+  <xacro:property name="rocker_thickness" value="0.01"/>
+  <xacro:property name="rocker_mass" value="3.0"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Materials -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+  
+  <material name="black">
+    <color rgba="0.0 0.0 0.0 1.0"/>
+  </material>
+  
+  <material name="silver">
+    <color rgba="0.75 0.75 0.75 1.0"/>
+  </material>
+  
+  <material name="dark_gray">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Base Link - Main Chassis -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <link name="base_link">
+    <!-- Visual: простая коробка -->
+    <visual>
+      <origin xyz="0 0 0.0565" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="white"/>
+    </visual>
+    
+    <!-- Visual: mesh корпуса -->
+    <visual>
+      <origin xyz="0 -0.18 -0.02" rpy="0 0 -1.5708"/>
+      <geometry>
+        <mesh filename="package://rob_box_description/meshes/body_case.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    
+    <!-- Collision -->
+    <collision>
+      <origin xyz="0 0 0.0565" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    
+    <!-- Inertial -->
+    <inertial>
+      <mass value="${base_mass}"/>
+      <origin xyz="0 0 0.0565"/>
+      <inertia ixx="0.1" ixy="0" ixz="0" 
+               iyy="0.1" iyz="0" 
+               izz="0.1"/>
+    </inertial>
+  </link>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Rocker Links (подвеска для колес) -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <xacro:macro name="rocker" params="name side side_x">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 -0.11" rpy="0 3.1416 -1.5708"/>
+        <geometry>
+          <mesh filename="package://rob_box_description/meshes/rocker.stl" 
+                scale="${side * 0.001} 0.001 0.001"/>
+        </geometry>
+        <material name="silver"/>
+      </visual>
+      
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${rocker_length} ${rocker_width} ${rocker_thickness}"/>
+        </geometry>
+      </collision>
+      
+      <inertial>
+        <mass value="${rocker_mass}"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.02" ixy="0" ixz="0" 
+                 iyy="0.02" iyz="0" 
+                 izz="0.02"/>
+      </inertial>
+    </link>
+    
+    <joint name="${name}_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${name}"/>
+      <origin xyz="0 ${side * 0.23048 + side_x} 0.09425" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Wheel Macro -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <xacro:macro name="wheel" params="name parent_link origin_xyz rotation_z side">
+    <link name="${name}">
+      <!-- Visual: mesh колеса -->
+      <visual>
+        <origin xyz="${-0.0035*side} 0 0.1451" rpy="1.5708 0 ${rotation_z}"/>
+        <geometry>
+          <mesh filename="package://rob_box_description/meshes/wheel.stl" 
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      
+      <!-- Collision: цилиндр -->
+      <collision>
+        <origin xyz="0 ${0.05*side} 0" rpy="1.5708 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      
+      <!-- Inertial -->
+      <inertial>
+        <mass value="${wheel_mass}"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.01" ixy="0" ixz="0" 
+                 iyy="0.01" iyz="0" 
+                 izz="0.01"/>
+      </inertial>
+    </link>
+    
+    <!-- Joint: continuous для вращения колеса -->
+    <joint name="${name}_joint" type="continuous">
+      <parent link="${parent_link}"/>
+      <child link="${name}"/>
+      <origin xyz="${origin_xyz}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Instantiate Rockers and Wheels -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <xacro:rocker name="left_rocker" side="1" side_x="-0.05"/>
+  <xacro:rocker name="right_rocker" side="-1" side_x="0.05"/>
+  
+  <!-- ВАЖНО: имена должны совпадать с ros2_control joint names! -->
+  <xacro:wheel name="front_left_wheel" parent_link="left_rocker" 
+               origin_xyz="0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
+  
+  <xacro:wheel name="rear_left_wheel" parent_link="left_rocker" 
+               origin_xyz="-0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
+  
+  <xacro:wheel name="front_right_wheel" parent_link="right_rocker" 
+               origin_xyz="0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
+  
+  <xacro:wheel name="rear_right_wheel" parent_link="right_rocker" 
+               origin_xyz="-0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Include Sensors -->
+  <!-- Координаты обновлены из Fusion 360 STL Analysis (2025-10-11) -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <xacro:include filename="$(find rob_box_description)/urdf/sensors/rob_box_sensors.xacro"/>
+  
+  <!-- LSLIDAR N10 - 2D LiDAR -->
+  <!-- Координаты из STL: x=-0.1803, y=0.1713, z=0.4620 -->
+  <xacro:lslidar_n10 parent_link="base_link" 
+                     xyz="-0.1803 0.1713 0.4620" 
+                     rpy="0 0 0"/>
+  
+  <!-- OAK-D-Lite - RGB + Stereo Depth -->
+  <!-- Координаты из STL: x=-0.1802, y=0.1076, z=0.4115 -->
+  <xacro:oak_d_lite parent_link="base_link" 
+                    xyz="-0.1802 0.1076 0.4115" 
+                    rpy="0 0 0"/>
+  
+  <!-- Raspberry Pi Camera - направлена вверх для ceiling navigation -->
+  <!-- Координаты из STL: x=-0.1130, y=0.1712, z=0.4390 -->
+  <xacro:rpi_camera_ceiling parent_link="base_link" 
+                            xyz="-0.1130 0.1712 0.4390"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Include ros2_control Hardware Interface (VESC Nexus) -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <xacro:include filename="$(find rob_box_description)/urdf/rob_box_ros2_control.xacro"/>
+
+</robot>

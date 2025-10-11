@@ -3,7 +3,11 @@ name: Build All Docker Images
 # Полная сборка всех образов проекта (базовые + сервисы)
 # Используется для проверки что всё собирается корректно
 on:
+  push:
+    branches:
+      - main  # Автосборка при пуше в main
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build All -> Run workflow)
+  workflow_call:  # Вызов из других workflow (например, auto-merge)
   schedule:
     # Ночная сборка каждый день в 3:00 UTC (6:00 MSK)
     - cron: '0 3 * * *'

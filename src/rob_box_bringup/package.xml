@@ -1,24 +1,28 @@
 <?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rob_box_bringup</name>
-  <version>0.0.1</version>
+  <version>0.1.0</version>
   <description>
-    Meta-package for launching the entire rob_box system, an autonomous wheeled rover powered by ROS2.
-    This package includes:
-    - MAVLink communication setup
-    - SLAM and navigation configuration
-    - Control system integration
-    - Robot description (URDF)
+    Launch files for Rob Box robot system.
+    Includes display, control, and full system launch configurations.
   </description>
-  <maintainer email="your_email@example.com">Your Name</maintainer>
-  <license>Apache-2.0</license>
+  <maintainer email="krikz@example.com">krikz</maintainer>
+  <license>MIT</license>
 
-  <!-- Dependencies -->
-  <depend>rob_box_description</depend>
-  <depend>rob_box_navigation</depend>
-  <depend>rob_box_control</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- Exec dependencies -->
-  <exec_depend>ros2launch</exec_depend>
-  <exec_depend>turtlesim</exec_depend> <!-- For testing purposes -->
+  <exec_depend>rob_box_description</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>xacro</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>
