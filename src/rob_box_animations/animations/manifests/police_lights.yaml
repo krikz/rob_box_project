@@ -83,17 +83,33 @@ panels:
       - image: "frames/police/wheel_rr_off.png"
         duration_ms: 700
 
-  # Main display (POLICE text flashing)
+  # Main display (Russian "ПОЛИЦИЯ" scrolling text - 10 frames)
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/police/mouth_police_on.png"
-        duration_ms: 500
-      - image: "frames/police/mouth_police_off.png"
-        duration_ms: 500
+      - image: "frames/police/mouth_police_01.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_02.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_03.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_04.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_05.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_06.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_07.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_08.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_09.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_10.png"
+        duration_ms: 100
 
 # Metadata
 metadata:
   priority: "high"
   category: "emergency"
-  tags: ["police", "emergency", "lights", "blue", "red"]
+  tags: ["police", "emergency", "lights", "blue", "red", "russian", "cyrillic"]

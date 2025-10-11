@@ -1,7 +1,7 @@
 # Angry Emotion Animation
 name: "angry"
 description: "Angry emotion with red pulsing eyes"
-version: "1.0"
+version: "2.5"
 author: "rob_box"
 
 # Timing
@@ -30,6 +30,27 @@ panels:
       - image: "frames/emotions/eye_fr_angry_02.png"
         duration_ms: 500
       - image: "frames/emotions/eye_fr_angry_03.png"
+        duration_ms: 500
+
+  # Rear wheels - aggressive red pulsing
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_rl_angry_01.png"
+        duration_ms: 500
+      - image: "frames/emotions/wheel_rl_angry_02.png"
+        duration_ms: 500
+      - image: "frames/emotions/wheel_rl_angry_03.png"
+        duration_ms: 500
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_rr_angry_01.png"
+        duration_ms: 500
+      - image: "frames/emotions/wheel_rr_angry_02.png"
+        duration_ms: 500
+      - image: "frames/emotions/wheel_rr_angry_03.png"
         duration_ms: 500
 
   # Main display (angry face with furrowed brows)

@@ -1,7 +1,7 @@
 # Turn Right Navigation Signal
 name: "turn_right"
 description: "Turn right signal with orange flashing on right wheels"
-version: "1.0"
+version: "2.5"
 author: "rob_box"
 
 # Timing
@@ -29,17 +29,18 @@ panels:
       - image: "frames/navigation/wheel_rr_off.png"
         duration_ms: 500
 
-  # Left wheels off
+  # Left front wheel - dim white (headlight)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_fl_off.png"
+      - image: "frames/navigation/wheel_fl_dim.png"
         duration_ms: 1000
 
+  # Left rear wheel - red brake light
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_rl_off.png"
+      - image: "frames/navigation/wheel_rl_red.png"
         duration_ms: 1000
 
   # Main display (right arrow animation)
@@ -59,4 +60,4 @@ panels:
 metadata:
   priority: "normal"
   category: "navigation"
-  tags: ["turn", "right", "signal", "orange", "navigation"]
+  tags: ["turn", "right", "signal", "orange", "navigation", "brake"]

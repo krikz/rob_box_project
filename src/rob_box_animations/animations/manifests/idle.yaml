@@ -1,7 +1,7 @@
-# Idle Animation - Robot in standby mode
+# Idle Animation - Robot in standby mode (IMPROVED v2.5)
 name: "idle"
-description: "Idle state with soft breathing effect"
-version: "1.0"
+description: "Idle state with realistic gradient eyes breathing and rear glow"
+version: "2.5"
 author: "rob_box"
 
 duration_ms: 3000
@@ -12,42 +12,78 @@ fade_in_ms: 500
 fade_out_ms: 500
 
 panels:
-  # Front wheels - soft white breathing
-  - logical_group: "wheels_front"
+  # Front wheels - realistic gradient eyes with breathing (6 frames)
+  - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/idle/eyes_01.png"  # Dim
-        duration_ms: 200
-      - image: "frames/idle/eyes_02.png"
-        duration_ms: 200
-      - image: "frames/idle/eyes_03.png"
-        duration_ms: 200
-      - image: "frames/idle/eyes_04.png"
-        duration_ms: 200
-      - image: "frames/idle/eyes_05.png"  # Bright
-        duration_ms: 200
-      - image: "frames/idle/eyes_04.png"
-        duration_ms: 200
-      - image: "frames/idle/eyes_03.png"
-        duration_ms: 200
-      - image: "frames/idle/eyes_02.png"
-        duration_ms: 200
-      - image: "frames/idle/eyes_01.png"  # Dim
-        duration_ms: 1400
+      - image: "frames/idle/eye_fl_breath_01.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fl_breath_02.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fl_breath_03.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fl_breath_04.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fl_breath_05.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fl_breath_06.png"
+        duration_ms: 500
 
-  # Rear wheels - dim red glow
-  - logical_group: "wheels_rear"
+  - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/idle/rear_glow.png"
-        duration_ms: 3000
+      - image: "frames/idle/eye_fr_breath_01.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fr_breath_02.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fr_breath_03.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fr_breath_04.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fr_breath_05.png"
+        duration_ms: 500
+      - image: "frames/idle/eye_fr_breath_06.png"
+        duration_ms: 500
 
-  # Main display - slow mouth open/close
+  # Rear wheels - red breathing glow (6 frames)
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/idle/wheel_rl_glow_01.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rl_glow_02.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rl_glow_03.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rl_glow_04.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rl_glow_05.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rl_glow_06.png"
+        duration_ms: 500
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/idle/wheel_rr_glow_01.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rr_glow_02.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rr_glow_03.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rr_glow_04.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rr_glow_05.png"
+        duration_ms: 500
+      - image: "frames/idle/wheel_rr_glow_06.png"
+        duration_ms: 500
+
+  # Main display - minimal closed
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/idle/mouth_closed.png"
-        duration_ms: 1000
+      - image: "frames/idle/mouth_idle.png"
+        duration_ms: 3000
       - image: "frames/idle/mouth_01.png"
         duration_ms: 200
       - image: "frames/idle/mouth_02.png"

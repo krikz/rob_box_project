@@ -1,7 +1,7 @@
 # Turn Left Navigation Animation
 name: "turn_left"
 description: "Left turn signal with arrow"
-version: "1.0"
+version: "2.5"
 author: "rob_box"
 
 duration_ms: 1000
@@ -9,36 +9,44 @@ loop: true
 fps: 10
 
 panels:
-  # Front left wheel - orange flashing
+  # Front left wheel - orange flashing (4 frames)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/turn_left_on.png"
-        duration_ms: 500
-      - image: "frames/navigation/turn_left_off.png"
-        duration_ms: 500
+      - image: "frames/navigation/wheel_fl_blink_01.png"
+        duration_ms: 250
+      - image: "frames/navigation/wheel_fl_blink_02.png"
+        duration_ms: 250
+      - image: "frames/navigation/wheel_fl_blink_03.png"
+        duration_ms: 250
+      - image: "frames/navigation/wheel_fl_blink_04.png"
+        duration_ms: 250
 
   # Front right wheel - dim white
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/front_dim.png"
+      - image: "frames/navigation/wheel_fr_dim.png"
         duration_ms: 1000
 
-  # Rear left wheel - orange flashing
+  # Rear left wheel - orange flashing (4 frames)
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/turn_left_on.png"
-        duration_ms: 500
-      - image: "frames/navigation/turn_left_off.png"
-        duration_ms: 500
+      - image: "frames/navigation/wheel_rl_blink_01.png"
+        duration_ms: 250
+      - image: "frames/navigation/wheel_rl_blink_02.png"
+        duration_ms: 250
+      - image: "frames/navigation/wheel_rl_blink_03.png"
+        duration_ms: 250
+      - image: "frames/navigation/wheel_rl_blink_04.png"
+        duration_ms: 250
 
-  # Rear right wheel - red glow
+  # Rear right wheel - red brake light
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/rear_glow.png"
+      - image: "frames/navigation/wheel_rr_red.png"
         duration_ms: 1000
 
   # Main display - left arrow
@@ -57,4 +65,4 @@ panels:
 metadata:
   priority: "normal"
   category: "navigation"
-  tags: ["turn", "left", "navigation", "signal", "orange"]
+  tags: ["turn", "left", "navigation", "signal", "orange", "brake"]

@@ -123,22 +123,25 @@ class FrameGenerator:
         self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK, 
                               "wheel_rr_off.png", subdir)
         
-        # Main display - POLICE text (simplified)
-        self._create_text_frame("POLICE", self.WHITE, "mouth_police_on.png", subdir)
-        self.create_solid_frame(self.DISPLAY_SIZE, self.BLACK, 
-                              "mouth_police_off.png", subdir)
+        # Main display - ПОЛИЦИЯ scrolling text (10 frames)
+        text = "ПОЛИЦИЯ"
+        for i in range(10):
+            img = self._create_russian_text_scroll(text, i, self.BLUE, self.RED)
+            self._save_frame(img, f"mouth_police_{i+1:02d}.png", subdir)
     
     def generate_road_service(self):
         """Generate road service beacon frames"""
         print("\n=== Generating road_service ===")
         subdir = "road_service"
         
-        # Rotating beacon effect (20 frames)
+        # All wheels - yellow pulsing (20 frames)
         for i in range(20):
-            angle = i * 18  # 360/20 = 18 degrees per frame
-            pattern = self._create_rotating_beacon(angle, self.YELLOW)
-            self.create_pattern_frame((16, 8), pattern, 
-                                    f"beacon_{i+1:02d}.png", subdir)
+            # Pulsing yellow brightness
+            brightness = int(100 + 155 * abs(np.sin(i * np.pi / 10)))
+            color = (brightness, brightness, 0)  # Yellow
+            for suffix in ['fl', 'fr', 'rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_pulse_{i+1:02d}.png", subdir)
         
         # Scrolling text "ROAD SERVICE" (20 frames)
         text = "ROAD SERVICE"
@@ -153,102 +156,108 @@ class FrameGenerator:
         print("\n=== Generating idle ===")
         subdir = "idle"
         
-        # Breathing effect - 5 levels
-        for i in range(5):
-            brightness = int(50 + (i * 40))  # 50 to 210
-            color = (brightness, brightness, brightness)
-            self.create_solid_frame((16, 8), color, 
-                                  f"eyes_{i+1:02d}.png", subdir)
+        # Breathing eyes - realistic gradient with breathing effect (6 frames)
+        for i in range(6):
+            brightness_mult = 0.5 + 0.5 * (np.sin(i * np.pi / 3))  # Breathing cycle
+            for suffix in ['fl', 'fr']:
+                img = self._create_realistic_eye(self.HEADLIGHT_SIZE, 'normal')
+                # Apply breathing brightness
+                img = (img * brightness_mult).astype(np.uint8)
+                self._save_frame(img, f"eye_{suffix}_breath_{i+1:02d}.png", subdir)
         
-        # Rear glow
-        self.create_solid_frame((16, 8), (50, 0, 0), 
-                              "rear_glow.png", subdir)
+        # Rear glow with breathing (6 frames)
+        for i in range(6):
+            brightness = int(30 + 20 * np.sin(i * np.pi / 3))
+            color = (brightness, 0, 0)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color, 
+                                      f"wheel_{suffix}_glow_{i+1:02d}.png", subdir)
         
-        # Mouth states
+        # Mouth closed (minimal)
         self.create_solid_frame(self.DISPLAY_SIZE, self.BLACK, 
-                              "mouth_closed.png", subdir)
-        
-        for i in range(3):
-            height_open = i + 1
-            pattern = self._create_mouth(height_open, self.WHITE)
-            self.create_pattern_frame(self.DISPLAY_SIZE, pattern,
-                                    f"mouth_{i+1:02d}.png", subdir)
+                              "mouth_idle.png", subdir)
     
     def generate_charging(self):
         """Generate charging animation frames"""
         print("\n=== Generating charging ===")
         subdir = "charging"
         
-        # Level indicators (16 levels for 16x8)
-        for i in range(16):
-            pattern = self._create_level_indicator(i, 16, self.GREEN)
-            self.create_pattern_frame((16, 8), pattern,
-                                    f"level_{i:02d}.png", subdir)
+        # Front wheels - charging indicator animation (8 frames)
+        for i in range(8):
+            brightness = int(100 + 155 * (i / 7))
+            color = (0, brightness, 0)  # Green charging
+            for suffix in ['fl', 'fr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_charge_{i+1:02d}.png", subdir)
         
-        # Rear off
-        self.create_solid_frame((16, 8), self.BLACK, 
-                              "rear_off.png", subdir)
+        # Rear wheels - pulsing green (8 frames)
+        for i in range(8):
+            brightness = int(50 + 50 * np.sin(i * np.pi / 4))
+            color = (0, brightness, 0)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_pulse_{i+1:02d}.png", subdir)
         
-        # Battery animation (16 frames)
-        for i in range(16):
-            pattern = self._create_battery_indicator(self.DISPLAY_SIZE, i, 16, critical=False)
-            self.create_pattern_frame(self.DISPLAY_SIZE, pattern,
-                                    f"battery_{i:02d}.png", subdir)
+        # Battery animation (8 frames - filling up)
+        for i in range(8):
+            img = self._create_battery_indicator(self.DISPLAY_SIZE, i, 8, critical=False)
+            self._save_frame(img, f"battery_{i+1:02d}.png", subdir)
     
     def generate_happy(self):
         """Generate happy emotion frames"""
         print("\n=== Generating happy ===")
         subdir = "emotions"
         
-        # Happy eyes
-        left_eye = self._create_happy_eye(False)
-        right_eye = self._create_happy_eye(True)
+        # Happy eyes - bright gradient (4 frames with sparkle)
+        for i in range(4):
+            for suffix in ['fl', 'fr']:
+                img = self._create_realistic_eye(self.HEADLIGHT_SIZE, 'happy')
+                # Add sparkle effect on frame 2
+                if i == 1:
+                    img[1, 1] = self.WHITE
+                    img[1, 6] = self.WHITE
+                self._save_frame(img, f"eye_{suffix}_happy_{i+1:02d}.png", subdir)
         
-        self.create_pattern_frame(self.HEADLIGHT_SIZE, left_eye,
-                                "eye_left_happy_01.png", subdir)
-        self.create_pattern_frame(self.HEADLIGHT_SIZE, right_eye,
-                                "eye_right_happy_01.png", subdir)
+        # Rear wheels - rainbow cycle (8 frames)
+        colors = [self.RED, self.ORANGE, self.YELLOW, self.GREEN, 
+                 self.CYAN, self.BLUE, self.MAGENTA, (255, 192, 203)]  # Pink
+        for i, color in enumerate(colors):
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_rainbow_{i+1:02d}.png", subdir)
         
-        # Blink (closed eyes)
-        self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                              "eye_left_happy_blink.png", subdir)
-        self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                              "eye_right_happy_blink.png", subdir)
-        
-        # Rear off
-        self.create_solid_frame((16, 8), self.BLACK,
-                              "rear_off.png", subdir)
-        
-        # Smile (3 levels)
-        for i in range(3):
-            pattern = self._create_smile(i + 1)
-            self.create_pattern_frame(self.DISPLAY_SIZE, pattern,
-                                    f"mouth_smile_{i+1:02d}.png", subdir)
+        # Smile (4 frames - curved smile)
+        for i in range(4):
+            img = self._create_smile_advanced(i)
+            self._save_frame(img, f"mouth_smile_{i+1:02d}.png", subdir)
     
     def generate_turn_left(self):
         """Generate turn left navigation frames"""
         print("\n=== Generating turn_left ===")
         subdir = "navigation"
         
-        # Turn signal orange
-        self.create_solid_frame(self.HEADLIGHT_SIZE, self.ORANGE,
-                              "turn_left_on.png", subdir)
-        self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                              "turn_left_off.png", subdir)
-        
-        # Dim white front
-        self.create_solid_frame(self.HEADLIGHT_SIZE, (100, 100, 100),
-                              "front_dim.png", subdir)
-        
-        # Rear glow
-        self.create_solid_frame(self.HEADLIGHT_SIZE, (100, 0, 0),
-                              "rear_glow.png", subdir)
-        
-        # Left arrow animation (4 frames)
+        # Left wheels (fl, rl) - flash orange (4 frames)
         for i in range(4):
-            pattern = self._create_arrow_left(i)
-            self.create_pattern_frame(self.DISPLAY_SIZE, pattern,
-                                    f"arrow_left_{i+1:02d}.png", subdir)
+            if i % 2 == 0:
+                color = self.ORANGE
+            else:
+                color = self.BLACK
+            for suffix in ['fl', 'rl']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_blink_{i+1:02d}.png", subdir)
+        
+        # Right front wheel - dim white (static)
+        self.create_solid_frame(self.HEADLIGHT_SIZE, (80, 80, 80),
+                              f"wheel_fr_dim.png", subdir)
+        
+        # Right rear wheel - red brake light (static)
+        self.create_solid_frame(self.HEADLIGHT_SIZE, (150, 0, 0),
+                              f"wheel_rr_red.png", subdir)
+        
+        # Left arrow animation (4 frames - moving left)
+        for i in range(4):
+            img = self._create_arrow_animated(self.DISPLAY_SIZE, 'left', i)
+            self._save_frame(img, f"arrow_left_{i+1:02d}.png", subdir)
     
     # === PATTERN HELPERS ===
     
@@ -473,21 +482,27 @@ class FrameGenerator:
         print("\n=== Generating turn_right ===")
         subdir = "navigation"
         
-        # Right wheels flash orange
-        for suffix in ['fr', 'rr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.ORANGE,
-                                  f"wheel_{suffix}_orange.png", subdir)
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                                  f"wheel_{suffix}_off.png", subdir)
-        
-        # Left wheels off
-        for suffix in ['fl', 'rl']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                                  f"wheel_{suffix}_off.png", subdir)
-        
-        # Right arrow animation (4 frames)
+        # Right wheels (fr, rr) - flash orange (4 frames)
         for i in range(4):
-            img = self._create_arrow_right(i)
+            if i % 2 == 0:
+                color = self.ORANGE
+            else:
+                color = self.BLACK
+            for suffix in ['fr', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_blink_{i+1:02d}.png", subdir)
+        
+        # Left front wheel - dim white (static)
+        self.create_solid_frame(self.HEADLIGHT_SIZE, (80, 80, 80),
+                              f"wheel_fl_dim.png", subdir)
+        
+        # Left rear wheel - red brake light (static)
+        self.create_solid_frame(self.HEADLIGHT_SIZE, (150, 0, 0),
+                              f"wheel_rl_red.png", subdir)
+        
+        # Right arrow animation (4 frames - moving right)
+        for i in range(4):
+            img = self._create_arrow_animated(self.DISPLAY_SIZE, 'right', i)
             self._save_frame(img, f"arrow_right_{i+1:02d}.png", subdir)
     
     def generate_braking(self):
@@ -495,18 +510,26 @@ class FrameGenerator:
         print("\n=== Generating braking ===")
         subdir = "navigation"
         
-        # Rear wheels bright red
-        for suffix in ['rl', 'rr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.RED,
-                                  f"brake_{suffix}_on.png", subdir)
+        # Rear wheels bright red (pulsing - 4 frames)
+        for i in range(4):
+            brightness = 255 if i < 2 else 200
+            color = (brightness, 0, 0)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"brake_{suffix}_{i+1:02d}.png", subdir)
         
-        # Front wheels off
-        for suffix in ['fl', 'fr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                                  f"brake_{suffix}_off.png", subdir)
+        # Front wheels - expanding white glow (4 frames)
+        for i in range(4):
+            radius = 2.0 + i * 0.8  # Expanding from 2 to 4.4 pixels
+            brightness = int(255 - i * 30)  # Slight dimming as it expands
+            color = (brightness, brightness, brightness)
+            for suffix in ['fl', 'fr']:
+                img = self._create_expanding_glow(self.HEADLIGHT_SIZE, radius, color)
+                self._save_frame(img, f"eye_{suffix}_brake_{i+1:02d}.png", subdir)
         
-        # Display: "STOP" sign (3 frames - pulsing)
-        for i, intensity in enumerate([255, 200, 150]):
+        # Display: "STOP" sign (4 frames - pulsing)
+        for i in range(4):
+            intensity = 255 if i < 2 else 180
             color = (intensity, 0, 0)
             img = self._create_scrolling_text("STOP", 9, color)
             self._save_frame(img, f"stop_sign_{i+1:02d}.png", subdir)
@@ -516,16 +539,21 @@ class FrameGenerator:
         print("\n=== Generating accelerating ===")
         subdir = "navigation"
         
-        # Front wheels bright white (headlights)
-        for suffix in ['fl', 'fr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.WHITE,
-                                  f"accel_{suffix}_on.png", subdir)
+        # Front wheels bright white (headlights - 6 frames with intensity)
+        for i in range(6):
+            brightness = int(150 + 105 * (i / 5))
+            color = (brightness, brightness, brightness)
+            for suffix in ['fl', 'fr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"accel_{suffix}_{i+1:02d}.png", subdir)
         
-        # Rear wheels dim
-        for suffix in ['rl', 'rr']:
-            dim_color = (30, 30, 30)
-            self.create_solid_frame(self.HEADLIGHT_SIZE, dim_color,
-                                  f"accel_{suffix}_dim.png", subdir)
+        # Rear wheels - orange/red glow (6 frames)
+        for i in range(6):
+            brightness = int(50 + 50 * np.sin(i * np.pi / 3))
+            color = (brightness, brightness // 2, 0)  # Orange glow
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"accel_{suffix}_glow_{i+1:02d}.png", subdir)
         
         # Speed lines animation (6 frames)
         for i in range(6):
@@ -558,19 +586,23 @@ class FrameGenerator:
         print("\n=== Generating sad ===")
         subdir = "emotions"
         
-        # Dim blue wheels (sad mood)
-        sad_blue = (0, 50, 100)
-        for suffix in ['fl', 'fr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, sad_blue,
-                                  f"eye_{suffix}_sad.png", subdir)
+        # Sad eyes - dim blue with droopy look (4 frames)
+        for i in range(4):
+            for suffix in ['fl', 'fr']:
+                img = self._create_sad_eye(self.HEADLIGHT_SIZE, i)
+                self._save_frame(img, f"eye_{suffix}_sad_{i+1:02d}.png", subdir)
         
-        for suffix in ['rl', 'rr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                                  f"wheel_{suffix}_off.png", subdir)
+        # Rear wheels - dim blue (4 frames)
+        for i in range(4):
+            brightness = int(30 + 10 * np.sin(i * np.pi / 2))
+            color = (0, 0, brightness)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_sad_{i+1:02d}.png", subdir)
         
-        # Sad face (3 frames - frown animation)
-        for i in range(3):
-            img = self._create_sad_face(self.DISPLAY_SIZE, i)
+        # Sad curved mouth (4 frames - Bender style arc downward)
+        for i in range(4):
+            img = self._create_sad_mouth_curved(self.DISPLAY_SIZE, i)
             self._save_frame(img, f"mouth_sad_{i+1:02d}.png", subdir)
     
     def generate_angry(self):
@@ -578,13 +610,20 @@ class FrameGenerator:
         print("\n=== Generating angry ===")
         subdir = "emotions"
         
-        # Bright red pulsing wheels
+        # Bright red pulsing front eyes (3 frames)
         for i, intensity in enumerate([255, 200, 150]):
             color = (intensity, 0, 0)
             for suffix in ['fl', 'fr']:
                 img = np.full((self.HEADLIGHT_SIZE[1], self.HEADLIGHT_SIZE[0], 3), 
                             color, dtype=np.uint8)
                 self._save_frame(img, f"eye_{suffix}_angry_{i+1:02d}.png", subdir)
+        
+        # Rear wheels - aggressive red pulsing (3 frames)
+        for i, intensity in enumerate([200, 150, 100]):
+            color = (intensity, 0, 0)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_angry_{i+1:02d}.png", subdir)
         
         # Angry eyebrows and mouth (3 frames)
         for i in range(3):
@@ -596,11 +635,22 @@ class FrameGenerator:
         print("\n=== Generating surprised ===")
         subdir = "emotions"
         
-        # Wide eyes (bright white)
-        for suffix in ['fl', 'fr']:
-            # Large circle pattern for wide eyes
-            img = self._create_eye_pattern(self.HEADLIGHT_SIZE, 'wide')
-            self._save_frame(img, f"eye_{suffix}_surprised.png", subdir)
+        # Wide eyes (bright white - 3 frames)
+        for i in range(3):
+            for suffix in ['fl', 'fr']:
+                # Large circle pattern for wide eyes
+                img = self._create_eye_pattern(self.HEADLIGHT_SIZE, 'wide', i)
+                self._save_frame(img, f"eye_{suffix}_surprised_{i+1:02d}.png", subdir)
+        
+        # Rear wheels - yellow flash (surprise) - 6 frames
+        for i in range(6):
+            if i % 2 == 0:
+                color = self.YELLOW
+            else:
+                color = (150, 150, 0)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_surprise_{i+1:02d}.png", subdir)
         
         # "O" shaped mouth (3 sizes)
         for i, size in enumerate([1, 2, 3]):
@@ -617,10 +667,13 @@ class FrameGenerator:
             img = self._create_eye_pattern(self.HEADLIGHT_SIZE, 'closed')
             self._save_frame(img, f"eye_{suffix}_closed.png", subdir)
         
-        # Rear wheels off
-        for suffix in ['rl', 'rr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                                  f"wheel_{suffix}_off.png", subdir)
+        # Rear wheels - very dim pulsing (5 frames)
+        for i in range(5):
+            brightness = int(15 + 10 * np.sin(i * np.pi / 2.5))
+            color = (brightness // 2, brightness // 2, brightness)  # Dim blue
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_sleep_{i+1:02d}.png", subdir)
         
         # "ZZZ" animation (5 frames)
         for i in range(5):
@@ -637,6 +690,14 @@ class FrameGenerator:
             for suffix in ['fl', 'fr']:
                 img = self._create_eye_opening(self.HEADLIGHT_SIZE, i)
                 self._save_frame(img, f"eye_{suffix}_open_{i+1:02d}.png", subdir)
+        
+        # Rear wheels - bright waking up sequence (6 frames)
+        for i in range(6):
+            brightness = int(30 + 90 * (i / 5))  # 30 to 120 - much more visible
+            color = (brightness, brightness, brightness)
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_wakeup_{i+1:02d}.png", subdir)
         
         # Yawn animation (4 frames)
         for i in range(4):
@@ -673,6 +734,14 @@ class FrameGenerator:
                 img = self._create_eye_looking(self.HEADLIGHT_SIZE, pos)
                 self._save_frame(img, f"eye_{suffix}_think_{i+1:02d}.png", subdir)
         
+        # Rear wheels - dim purple (thinking color) - 8 frames pulsing
+        for i in range(8):
+            brightness = int(40 + 30 * np.sin(i * np.pi / 4))
+            color = (brightness, 0, brightness)  # Purple
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_think_{i+1:02d}.png", subdir)
+        
         # Thinking dots animation (4 frames)
         for i in range(4):
             img = self._create_thinking_dots(self.DISPLAY_SIZE, i)
@@ -701,49 +770,41 @@ class FrameGenerator:
         print("\n=== Generating talking ===")
         subdir = "emotions"
         
-        # Eyes stay normal (dim cyan like Bender)
-        bender_eye = (0, 200, 200)
+        # Eyes - more realistic based on INIT_* reference images
+        # Create gradient eyes similar to user's design
         for suffix in ['fl', 'fr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, bender_eye,
-                                  f"eye_{suffix}_normal.png", subdir)
+            img = self._create_realistic_eye(self.HEADLIGHT_SIZE, 'normal')
+            self._save_frame(img, f"eye_{suffix}_normal.png", subdir)
         
-        # Rear wheels off
-        for suffix in ['rl', 'rr']:
-            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
-                                  f"wheel_{suffix}_talk_off.png", subdir)
+        # Rear wheels - subtle pulse (12 frames)
+        for i in range(12):
+            brightness = int(30 + 20 * np.sin(i * np.pi / 6))
+            color = (0, brightness, brightness)  # Cyan glow
+            for suffix in ['rl', 'rr']:
+                self.create_solid_frame(self.HEADLIGHT_SIZE, color,
+                                      f"wheel_{suffix}_talk_{i+1:02d}.png", subdir)
         
-        # Mouth animation (8 frames - various open positions)
-        # Frame 1: Closed
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 0)
-        self._save_frame(img, "mouth_talk_01_closed.png", subdir)
-        
-        # Frame 2: Slightly open
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 1)
-        self._save_frame(img, "mouth_talk_02_open1.png", subdir)
-        
-        # Frame 3: Half open
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 2)
-        self._save_frame(img, "mouth_talk_03_open2.png", subdir)
-        
-        # Frame 4: Wide open
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 3)
-        self._save_frame(img, "mouth_talk_04_open3.png", subdir)
-        
-        # Frame 5: Half open (closing)
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 2)
-        self._save_frame(img, "mouth_talk_05_open2.png", subdir)
-        
-        # Frame 6: Slightly open
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 1)
-        self._save_frame(img, "mouth_talk_06_open1.png", subdir)
-        
-        # Frame 7: Closed
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 0)
-        self._save_frame(img, "mouth_talk_07_closed.png", subdir)
-        
-        # Frame 8: Slightly open again
-        img = self._create_bender_mouth(self.DISPLAY_SIZE, 1)
-        self._save_frame(img, "mouth_talk_08_open1.png", subdir)
+        # Mouth animation (12 frames - using FULL 25×5 matrix)
+        # Different waveforms for variety
+        for i in range(12):
+            openness = i / 11.0  # 0.0 to 1.0
+            
+            if i < 3:
+                # Opening - sawtooth wave
+                img = self._create_advanced_mouth(self.DISPLAY_SIZE, openness, 'sawtooth')
+                self._save_frame(img, f"mouth_talk_{i+1:02d}.png", subdir)
+            elif i < 6:
+                # Peak - sine wave
+                img = self._create_advanced_mouth(self.DISPLAY_SIZE, 0.8 + 0.2 * np.sin(i * np.pi / 3), 'sine')
+                self._save_frame(img, f"mouth_talk_{i+1:02d}.png", subdir)
+            elif i < 9:
+                # Closing - sawtooth reversed
+                img = self._create_advanced_mouth(self.DISPLAY_SIZE, 1.0 - (i - 6) / 3.0, 'sawtooth')
+                self._save_frame(img, f"mouth_talk_{i+1:02d}.png", subdir)
+            else:
+                # Rest - sine wave low
+                img = self._create_advanced_mouth(self.DISPLAY_SIZE, 0.2 * np.sin((i - 9) * np.pi / 3), 'sine')
+                self._save_frame(img, f"mouth_talk_{i+1:02d}.png", subdir)
     
     # Helper methods for new patterns
     
@@ -826,6 +887,22 @@ class FrameGenerator:
                 dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
                 if mouth_size <= dist < mouth_size + 1:
                     img[y, x] = self.YELLOW
+        
+        return img
+    
+    def _create_expanding_glow(self, size: tuple, radius: float, color: tuple):
+        """Create expanding circular glow effect"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        cx, cy = width // 2, height // 2
+        for y in range(height):
+            for x in range(width):
+                dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+                if dist <= radius:
+                    # Full color in center
+                    intensity = max(0, 1.0 - (dist / radius) * 0.3)
+                    img[y, x] = tuple(int(c * intensity) for c in color)
         
         return img
     
@@ -1036,6 +1113,335 @@ class FrameGenerator:
             # Add "teeth" effect
             for x in range(6, 19, 3):
                 img[2, x] = (255, 255, 255)
+        
+        return img
+    
+    def _create_realistic_eye(self, size: tuple, state: str):
+        """Create realistic gradient eye based on INIT_* reference
+        
+        Args:
+            size: Eye size (8, 8)
+            state: 'normal', 'blink', etc.
+        """
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        if state == 'blink':
+            # Horizontal line for blink
+            for x in range(2, 6):
+                img[4, x] = (100, 100, 150)
+            return img
+        
+        # Normal eye - circular gradient (like DISARM_* images)
+        # Center of eye
+        cx, cy = 3.5, 3.5
+        
+        # Define gradient colors (cyan/blue theme)
+        colors = [
+            (0, 50, 80),      # Dark outer
+            (0, 100, 150),    # Mid dark
+            (50, 150, 200),   # Mid light
+            (100, 200, 255),  # Bright
+            (150, 230, 255),  # Very bright (center)
+        ]
+        
+        for y in range(height):
+            for x in range(width):
+                # Calculate distance from center
+                dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                
+                if dist < 1.0:
+                    # Center - brightest
+                    img[y, x] = colors[4]
+                elif dist < 1.8:
+                    # Inner ring
+                    img[y, x] = colors[3]
+                elif dist < 2.5:
+                    # Mid ring
+                    img[y, x] = colors[2]
+                elif dist < 3.2:
+                    # Outer ring
+                    img[y, x] = colors[1]
+                elif dist < 4.0:
+                    # Edge
+                    img[y, x] = colors[0]
+        
+        return img
+    
+    def _create_advanced_mouth(self, size: tuple, openness: float, wave_type: str):
+        """Create advanced animated mouth using full 25×5 display
+        
+        Args:
+            size: Display size (25, 5)
+            openness: 0.0 (closed) to 1.0 (wide open)
+            wave_type: 'sine', 'sawtooth', 'square'
+        """
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Colors
+        bg_color = (20, 20, 20)         # Dark background
+        mouth_color = (200, 50, 50)     # Red interior
+        teeth_color = (240, 240, 240)   # White teeth
+        lip_color = (100, 100, 100)     # Gray lips/edges
+        
+        # Calculate wave amplitude based on openness
+        max_amplitude = 2.0  # pixels
+        amplitude = openness * max_amplitude
+        
+        # Generate waveform for mouth shape
+        for x in range(width):
+            # Calculate wave height at this x position
+            if wave_type == 'sine':
+                # Sine wave - smooth
+                wave = amplitude * np.sin(2 * np.pi * x / width)
+            elif wave_type == 'sawtooth':
+                # Sawtooth - sharp
+                wave = amplitude * (2 * (x / width) - 1)
+            else:  # square
+                wave = amplitude if (x / width) < 0.5 else -amplitude
+            
+            # Center line
+            center_y = height // 2
+            
+            # Draw mouth opening
+            mouth_start = int(center_y - abs(wave))
+            mouth_end = int(center_y + abs(wave))
+            
+            # Ensure bounds
+            mouth_start = max(0, mouth_start)
+            mouth_end = min(height - 1, mouth_end)
+            
+            # Draw the mouth column
+            for y in range(height):
+                if y < mouth_start or y > mouth_end:
+                    # Outside mouth - background
+                    img[y, x] = bg_color
+                elif y == mouth_start or y == mouth_end:
+                    # Lip/edge
+                    img[y, x] = lip_color
+                else:
+                    # Inside mouth - red interior
+                    img[y, x] = mouth_color
+            
+            # Add teeth (vertical lines) at regular intervals
+            if openness > 0.3 and x % 3 == 1 and mouth_start < mouth_end - 1:
+                # Draw tooth
+                tooth_y = mouth_start + 1
+                if tooth_y < height:
+                    img[tooth_y, x] = teeth_color
+        
+        return img
+    
+    def _create_russian_text_scroll(self, text: str, frame: int, color1: tuple, color2: tuple) -> np.ndarray:
+        """Create scrolling Russian text with alternating colors"""
+        width, height = self.DISPLAY_SIZE
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # 3×5 pixel font for Cyrillic - full height usage
+        # П О Л И Ц И Я
+        cyrillic_map = {
+            'П': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,0,1]],  # P - 5 rows
+            'О': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],  # O - 5 rows
+            'Л': [[0,0,1],[0,1,0],[0,1,0],[1,0,0],[1,0,0]],  # L - 5 rows
+            'И': [[1,0,1],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],  # I - 5 rows
+            'Ц': [[1,0,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],  # Ts with bottom - 5 rows
+            'Я': [[1,1,1],[1,0,1],[1,1,1],[0,1,0],[1,0,1]],  # Ya - 5 rows
+        }
+        
+        # Static text - no scrolling, just color alternation
+        # Calculate starting position to center text
+        # Each letter is 3 pixels wide, 7 letters = 21 pixels total
+        x_start = 2  # Start at x=2 to center in 25-pixel width
+        x_pos = x_start
+        
+        for i, char in enumerate(text):
+            if char in cyrillic_map:
+                pattern = cyrillic_map[char]
+                # Alternate colors based on frame for blinking effect
+                color = color1 if (i + frame) % 2 == 0 else color2
+                
+                for py, row in enumerate(pattern):
+                    for px, pixel in enumerate(row):
+                        draw_x = x_pos + px
+                        draw_y = py  # Start from row 0, use all 5 rows
+                        if 0 <= draw_x < width and 0 <= draw_y < height and pixel:
+                            img[draw_y, draw_x] = color
+                
+                x_pos += 3  # 3 pixels per letter (no space between)
+        
+        return img
+    
+    def _create_smile_advanced(self, frame: int) -> np.ndarray:
+        """Create advanced curved smile"""
+        width, height = self.DISPLAY_SIZE
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Curved smile using sine wave
+        amplitude = 1.0 + frame * 0.3
+        for x in range(5, 20):
+            y = int(3 - amplitude * np.sin((x - 5) * np.pi / 15))
+            if 0 <= y < height:
+                img[y, x] = (255, 255, 100)  # Yellow smile
+        
+        return img
+    
+    def _create_arrow_animated(self, size: tuple, direction: str, frame: int) -> np.ndarray:
+        """Create animated arrow moving in direction"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Arrow color
+        color = self.ORANGE
+        
+        if direction == 'left':
+            # Arrow pointing and moving left
+            start_x = 20 - frame * 5
+            for i in range(7):
+                x = start_x - i
+                if 0 <= x < width:
+                    img[2, x] = color
+            # Arrowhead
+            if 0 <= start_x - 7 < width:
+                img[1, start_x - 7] = color
+                img[3, start_x - 7] = color
+        
+        else:  # right
+            # Arrow pointing and moving right
+            start_x = 5 + frame * 5
+            for i in range(7):
+                x = start_x + i
+                if 0 <= x < width:
+                    img[2, x] = color
+            # Arrowhead
+            if 0 <= start_x + 7 < width:
+                img[1, start_x + 7] = color
+                img[3, start_x + 7] = color
+        
+        return img
+    
+    def _create_sad_eye(self, size: tuple, frame: int) -> np.ndarray:
+        """Create sad droopy eye"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Gradient eye with droopy look (shifted down)
+        cx, cy = 3.5, 4.5 + frame * 0.1  # Drooping effect
+        
+        colors = [
+            (0, 30, 60),      # Dark blue outer
+            (0, 50, 100),     # Mid
+            (0, 80, 150),     # Lighter
+            (0, 100, 180),    # Center
+        ]
+        
+        for y in range(height):
+            for x in range(width):
+                dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                
+                if dist < 1.0:
+                    img[y, x] = colors[3]
+                elif dist < 1.8:
+                    img[y, x] = colors[2]
+                elif dist < 2.5:
+                    img[y, x] = colors[1]
+                elif dist < 3.5:
+                    img[y, x] = colors[0]
+        
+        return img
+    
+    def _create_sad_mouth_curved(self, size: tuple, frame: int) -> np.ndarray:
+        """Create sad downward curved mouth (Bender style)"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Downward curve (inverted smile)
+        amplitude = 0.8 + frame * 0.1
+        color = (100, 100, 150)  # Sad blue-gray
+        
+        for x in range(5, 20):
+            y = int(1 + amplitude * np.sin((x - 5) * np.pi / 15))
+            if 0 <= y < height:
+                img[y, x] = color
+        
+        return img
+    
+    def _create_eye_pattern(self, size: tuple, pattern_type: str, frame: int = 0) -> np.ndarray:
+        """Create different eye patterns (fixed signature)"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        if pattern_type == 'wide':
+            # Large circle for surprised eyes - grows with frame
+            radius = 2 + frame
+            cx, cy = width // 2, height // 2
+            for y in range(height):
+                for x in range(width):
+                    if np.sqrt((x - cx)**2 + (y - cy)**2) < radius:
+                        img[y, x] = self.WHITE
+        elif pattern_type == 'closed':
+            # Horizontal line for closed eyes
+            for x in range(2, 6):
+                img[4, x] = (100, 100, 100)
+        elif pattern_type == 'focused':
+            # Focused look - smaller pupil
+            cx, cy = width // 2, height // 2
+            for y in range(height):
+                for x in range(width):
+                    dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                    if dist < 1.5:
+                        img[y, x] = (0, 0, 255)  # Blue focused
+                    elif dist < 2.5:
+                        img[y, x] = (0, 100, 200)
+        
+        return img
+    
+    def _create_realistic_eye(self, size: tuple, state: str) -> np.ndarray:
+        """Create realistic gradient eye (updated for different states)"""
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        if state == 'blink':
+            # Horizontal line for blink
+            for x in range(2, 6):
+                img[4, x] = (100, 100, 150)
+            return img
+        
+        # Center of eye
+        cx, cy = 3.5, 3.5
+        
+        # Different color schemes for different states
+        if state == 'happy':
+            colors = [
+                (0, 50, 100),     # Dark outer
+                (50, 100, 180),   # Mid dark
+                (100, 180, 230),  # Mid light
+                (150, 220, 255),  # Bright
+                (200, 240, 255),  # Very bright (center)
+            ]
+        else:  # normal, focused
+            colors = [
+                (0, 50, 80),      # Dark outer
+                (0, 100, 150),    # Mid dark
+                (50, 150, 200),   # Mid light
+                (100, 200, 255),  # Bright
+                (150, 230, 255),  # Very bright (center)
+            ]
+        
+        for y in range(height):
+            for x in range(width):
+                dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                
+                if dist < 1.0:
+                    img[y, x] = colors[4]
+                elif dist < 1.8:
+                    img[y, x] = colors[3]
+                elif dist < 2.5:
+                    img[y, x] = colors[2]
+                elif dist < 3.2:
+                    img[y, x] = colors[1]
+                elif dist < 4.0:
+                    img[y, x] = colors[0]
         
         return img
     

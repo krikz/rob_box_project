@@ -1,10 +1,10 @@
-# Charging Animation - Battery charging indicator
+# Charging Animation - Battery charging indicator (IMPROVED v2.5)
 name: "charging"
-description: "Battery charging animation with progress bar"
-version: "1.0"
+description: "Battery charging with green progress on all wheels and battery display"
+version: "2.5"
 author: "rob_box"
 
-duration_ms: 4000
+duration_ms: 3200
 loop: true
 fps: 10
 
@@ -12,89 +12,110 @@ fade_in_ms: 300
 fade_out_ms: 0
 
 panels:
-  # Front wheels - green level indicator
-  - logical_group: "wheels_front"
+  # Front wheels - progressive green charging (8 frames)
+  - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/charging/level_00.png"
-        duration_ms: 250
-      - image: "frames/charging/level_01.png"
-        duration_ms: 250
-      - image: "frames/charging/level_02.png"
-        duration_ms: 250
-      - image: "frames/charging/level_03.png"
-        duration_ms: 250
-      - image: "frames/charging/level_04.png"
-        duration_ms: 250
-      - image: "frames/charging/level_05.png"
-        duration_ms: 250
-      - image: "frames/charging/level_06.png"
-        duration_ms: 250
-      - image: "frames/charging/level_07.png"
-        duration_ms: 250
-      - image: "frames/charging/level_08.png"
-        duration_ms: 250
-      - image: "frames/charging/level_09.png"
-        duration_ms: 250
-      - image: "frames/charging/level_10.png"
-        duration_ms: 250
-      - image: "frames/charging/level_11.png"
-        duration_ms: 250
-      - image: "frames/charging/level_12.png"
-        duration_ms: 250
-      - image: "frames/charging/level_13.png"
-        duration_ms: 250
-      - image: "frames/charging/level_14.png"
-        duration_ms: 250
-      - image: "frames/charging/level_15.png"  # Full
-        duration_ms: 250
+      - image: "frames/charging/wheel_fl_charge_01.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_02.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_03.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_04.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_05.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_06.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_07.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fl_charge_08.png"
+        duration_ms: 400
 
-  # Rear wheels - off during charging
-  - logical_group: "wheels_rear"
+  - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/charging/rear_off.png"
-        duration_ms: 4000
+      - image: "frames/charging/wheel_fr_charge_01.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_02.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_03.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_04.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_05.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_06.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_07.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_fr_charge_08.png"
+        duration_ms: 400
 
-  # Main display - battery filling animation
+  # Rear wheels - pulsing green (8 frames)
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/charging/wheel_rl_pulse_01.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_02.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_03.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_04.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_05.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_06.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_07.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rl_pulse_08.png"
+        duration_ms: 400
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/charging/wheel_rr_pulse_01.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_02.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_03.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_04.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_05.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_06.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_07.png"
+        duration_ms: 400
+      - image: "frames/charging/wheel_rr_pulse_08.png"
+        duration_ms: 400
+
+  # Main display - battery filling animation (8 frames)
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/charging/battery_00.png"
-        duration_ms: 250
       - image: "frames/charging/battery_01.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_02.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_03.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_04.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_05.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_06.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_07.png"
-        duration_ms: 250
+        duration_ms: 400
       - image: "frames/charging/battery_08.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_09.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_10.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_11.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_12.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_13.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_14.png"
-        duration_ms: 250
-      - image: "frames/charging/battery_15.png"
-        duration_ms: 250
+        duration_ms: 400
 
 metadata:
   priority: "normal"
-  category: "state"
-  tags: ["charging", "battery", "power", "green"]
-  requires_state: "charging"
+  category: "system"
+  tags: ["charging", "battery", "green", "progress"]

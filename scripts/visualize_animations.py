@@ -131,7 +131,7 @@ class RobotVisualizer:
         
         # Центр canvas
         cx = 400
-        cy = 320
+        cy = 400
         
         # Корпус робота (прямоугольник) - увеличен по высоте
         body_w = 300
@@ -159,7 +159,7 @@ class RobotVisualizer:
         # Передние колёса (сверху, ближе к краям)
         # Левое переднее колесо
         fl_x = body_x1 - wheel_w - 30
-        fl_y = body_y1 + 10
+        fl_y = body_y1
         self.wheel_fl_rect = self.canvas.create_rectangle(
             fl_x, fl_y, fl_x + wheel_w, fl_y + wheel_h,
             fill=self.LED_OFF_COLOR,
@@ -176,7 +176,7 @@ class RobotVisualizer:
         
         # Правое переднее колесо
         fr_x = body_x2 + 30
-        fr_y = body_y1 + 10
+        fr_y = body_y1
         self.wheel_fr_rect = self.canvas.create_rectangle(
             fr_x, fr_y, fr_x + wheel_w, fr_y + wheel_h,
             fill=self.LED_OFF_COLOR,
@@ -211,7 +211,7 @@ class RobotVisualizer:
         # Задние колёса (снизу, ЗНАЧИТЕЛЬНО дальше от передних)
         # Левое заднее колесо
         rl_x = body_x1 - wheel_w - 30
-        rl_y = body_y2 + 20  # Ниже корпуса
+        rl_y = body_y2- wheel_w  # Ниже корпуса
         self.wheel_rl_rect = self.canvas.create_rectangle(
             rl_x, rl_y, rl_x + wheel_w, rl_y + wheel_h,
             fill=self.LED_OFF_COLOR,
@@ -228,7 +228,7 @@ class RobotVisualizer:
         
         # Правое заднее колесо
         rr_x = body_x2 + 30
-        rr_y = body_y2 + 20  # Ниже корпуса
+        rr_y = body_y2 - wheel_w # Ниже корпуса
         self.wheel_rr_rect = self.canvas.create_rectangle(
             rr_x, rr_y, rr_x + wheel_w, rr_y + wheel_h,
             fill=self.LED_OFF_COLOR,

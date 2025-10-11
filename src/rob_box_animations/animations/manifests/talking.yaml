@@ -1,13 +1,13 @@
-# Talking Animation (Bender-style)
+# Talking Animation (Advanced with realistic eyes and waveform mouth)
 name: "talking"
-description: "Robot speaking with Bender-style rectangular mouth animation"
-version: "1.0"
+description: "Robot speaking with realistic gradient eyes and sine/sawtooth wave mouth with teeth"
+version: "2.0"
 author: "rob_box"
 
 # Timing
-duration_ms: 800
+duration_ms: 1200
 loop: true
-fps: 10
+fps: 12
 
 # Audio reactive settings
 audio_reactive: true
@@ -17,70 +17,139 @@ audio_smoothing: 0.2  # Smoothing factor for volume changes
 
 # Panels
 panels:
-  # Eyes stay normal (cyan like Bender)
+  # Realistic gradient eyes (cyan/blue theme)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
       - image: "frames/emotions/eye_fl_normal.png"
-        duration_ms: 800
+        duration_ms: 1200
 
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
       - image: "frames/emotions/eye_fr_normal.png"
-        duration_ms: 800
+        duration_ms: 1200
 
-  # Rear wheels off
-  - logical_group: "wheels_rear"
+  # Rear wheels - cyan pulsing glow (12 frames)
+  - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/wheel_rl_talk_off.png"
-        duration_ms: 800
+      - image: "frames/emotions/wheel_rl_talk_01.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_02.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_03.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_04.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_05.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_06.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_07.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_08.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_09.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_10.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_11.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rl_talk_12.png"
+        duration_ms: 100
 
-  # Mouth animation (8 frames - synchronized with audio)
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_rr_talk_01.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_02.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_03.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_04.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_05.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_06.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_07.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_08.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_09.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_10.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_11.png"
+        duration_ms: 100
+      - image: "frames/emotions/wheel_rr_talk_12.png"
+        duration_ms: 100
+
+  # Advanced mouth animation (12 frames - sine/sawtooth waves with teeth)
   # When audio_reactive is true, frame selection is based on audio volume
-  # Higher volume = more open mouth
+  # Smooth progression from closed to wide open with curved waveforms
   - logical_group: "main_display"
     offset_ms: 0
     audio_controlled: true  # This panel responds to audio level
     frames:
-      # Frame progression based on volume:
-      # 0.0-0.1: closed
-      # 0.1-0.3: slightly open
-      # 0.3-0.5: half open
-      # 0.5-0.7: wide open
-      # Then back down (closing)
-      - image: "frames/emotions/mouth_talk_01_closed.png"
+      # Opening phase (sawtooth wave) - frames 1-3
+      - image: "frames/emotions/mouth_talk_01.png"
         duration_ms: 100
-        audio_range: [0.0, 0.1]
-      - image: "frames/emotions/mouth_talk_02_open1.png"
+        audio_range: [0.0, 0.08]
+      - image: "frames/emotions/mouth_talk_02.png"
         duration_ms: 100
-        audio_range: [0.1, 0.3]
-      - image: "frames/emotions/mouth_talk_03_open2.png"
+        audio_range: [0.08, 0.17]
+      - image: "frames/emotions/mouth_talk_03.png"
         duration_ms: 100
-        audio_range: [0.3, 0.5]
-      - image: "frames/emotions/mouth_talk_04_open3.png"
+        audio_range: [0.17, 0.25]
+      
+      # Peak phase (sine wave) - frames 4-6
+      - image: "frames/emotions/mouth_talk_04.png"
         duration_ms: 100
-        audio_range: [0.5, 1.0]
-      - image: "frames/emotions/mouth_talk_05_open2.png"
+        audio_range: [0.25, 0.40]
+      - image: "frames/emotions/mouth_talk_05.png"
         duration_ms: 100
-        audio_range: [0.3, 0.5]
-      - image: "frames/emotions/mouth_talk_06_open1.png"
+        audio_range: [0.40, 0.55]
+      - image: "frames/emotions/mouth_talk_06.png"
         duration_ms: 100
-        audio_range: [0.1, 0.3]
-      - image: "frames/emotions/mouth_talk_07_closed.png"
+        audio_range: [0.55, 0.70]
+      
+      # Closing phase (sawtooth wave) - frames 7-9
+      - image: "frames/emotions/mouth_talk_07.png"
         duration_ms: 100
-        audio_range: [0.0, 0.1]
-      - image: "frames/emotions/mouth_talk_08_open1.png"
+        audio_range: [0.70, 0.78]
+      - image: "frames/emotions/mouth_talk_08.png"
         duration_ms: 100
-        audio_range: [0.1, 0.3]
+        audio_range: [0.78, 0.87]
+      - image: "frames/emotions/mouth_talk_09.png"
+        duration_ms: 100
+        audio_range: [0.87, 0.92]
+      
+      # Rest phase (low sine wave) - frames 10-12
+      - image: "frames/emotions/mouth_talk_10.png"
+        duration_ms: 100
+        audio_range: [0.92, 0.95]
+      - image: "frames/emotions/mouth_talk_11.png"
+        duration_ms: 100
+        audio_range: [0.95, 0.98]
+      - image: "frames/emotions/mouth_talk_12.png"
+        duration_ms: 100
+        audio_range: [0.98, 1.0]
 
 # Metadata
 metadata:
   priority: "normal"
   category: "emotions"
-  tags: ["talking", "speaking", "audio", "bender", "mouth", "reactive"]
+  tags: ["talking", "speaking", "audio", "realistic", "mouth", "reactive", "waveform", "sine", "sawtooth", "teeth"]
   audio_features:
     - "volume_reactive"
     - "real_time"
     - "lip_sync"
+    - "waveform_animation"
+  features:
+    - "realistic_gradient_eyes"
+    - "advanced_mouth_curves"
+    - "visible_teeth"
+    - "full_25x5_display"

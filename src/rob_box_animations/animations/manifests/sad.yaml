@@ -1,49 +1,81 @@
-# Sad Emotion Animation
+# Sad Emotion Animation (IMPROVED v2.5)
 name: "sad"
-description: "Sad emotion with dim blue eyes and frown"
-version: "1.0"
+description: "Sad emotion with droopy eyes, dim blue rear wheels, and downward curved mouth"
+version: "2.5"
 author: "rob_box"
 
-# Timing
-duration_ms: 3000
+duration_ms: 2400
 loop: true
 fps: 10
 
-# Panels
+fade_in_ms: 300
+fade_out_ms: 300
+
 panels:
-  # Eyes (dim blue - sad)
+  # Front wheels - sad droopy eyes (4 frames)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fl_sad.png"
-        duration_ms: 3000
+      - image: "frames/emotions/eye_fl_sad_01.png"
+        duration_ms: 600
+      - image: "frames/emotions/eye_fl_sad_02.png"
+        duration_ms: 600
+      - image: "frames/emotions/eye_fl_sad_03.png"
+        duration_ms: 600
+      - image: "frames/emotions/eye_fl_sad_04.png"
+        duration_ms: 600
 
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fr_sad.png"
-        duration_ms: 3000
+      - image: "frames/emotions/eye_fr_sad_01.png"
+        duration_ms: 600
+      - image: "frames/emotions/eye_fr_sad_02.png"
+        duration_ms: 600
+      - image: "frames/emotions/eye_fr_sad_03.png"
+        duration_ms: 600
+      - image: "frames/emotions/eye_fr_sad_04.png"
+        duration_ms: 600
 
-  # Rear wheels off
-  - logical_group: "wheels_rear"
+  # Rear wheels - dim blue pulsing (4 frames)
+  - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/wheel_rl_off.png"
-        duration_ms: 3000
+      - image: "frames/emotions/wheel_rl_sad_01.png"
+        duration_ms: 600
+      - image: "frames/emotions/wheel_rl_sad_02.png"
+        duration_ms: 600
+      - image: "frames/emotions/wheel_rl_sad_03.png"
+        duration_ms: 600
+      - image: "frames/emotions/wheel_rl_sad_04.png"
+        duration_ms: 600
 
-  # Main display (sad face with frown)
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_rr_sad_01.png"
+        duration_ms: 600
+      - image: "frames/emotions/wheel_rr_sad_02.png"
+        duration_ms: 600
+      - image: "frames/emotions/wheel_rr_sad_03.png"
+        duration_ms: 600
+      - image: "frames/emotions/wheel_rr_sad_04.png"
+        duration_ms: 600
+
+  # Main display - downward curved mouth (4 frames)
   - logical_group: "main_display"
     offset_ms: 0
     frames:
       - image: "frames/emotions/mouth_sad_01.png"
-        duration_ms: 1000
+        duration_ms: 600
       - image: "frames/emotions/mouth_sad_02.png"
-        duration_ms: 1000
+        duration_ms: 600
       - image: "frames/emotions/mouth_sad_03.png"
-        duration_ms: 1000
+        duration_ms: 600
+      - image: "frames/emotions/mouth_sad_04.png"
+        duration_ms: 600
 
-# Metadata
 metadata:
   priority: "normal"
-  category: "emotions"
-  tags: ["sad", "emotion", "blue", "frown"]
+  category: "emotion"
+  tags: ["sad", "emotion", "negative", "blue", "droopy"]

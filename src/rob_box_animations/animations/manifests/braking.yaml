@@ -1,49 +1,81 @@
-# Braking Animation
+# Braking Animation (IMPROVED v2.5)
 name: "braking"
-description: "Brake lights with red rear wheels and STOP sign"
-version: "1.0"
+description: "Braking with bright red rear lights, focused front eyes, and STOP sign"
+version: "2.5"
 author: "rob_box"
 
-# Timing
-duration_ms: 1500
+duration_ms: 1600
 loop: true
 fps: 10
 
-# Panels
+fade_in_ms: 100
+fade_out_ms: 100
+
 panels:
-  # Front wheels off
-  - logical_group: "wheels_front"
+  # Front wheels - focused eyes (4 frames)
+  - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/brake_fl_off.png"
-        duration_ms: 1500
+      - image: "frames/navigation/eye_fl_brake_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/eye_fl_brake_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/eye_fl_brake_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/eye_fl_brake_04.png"
+        duration_ms: 400
 
-  # Rear wheels bright red (brake lights)
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/eye_fr_brake_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/eye_fr_brake_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/eye_fr_brake_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/eye_fr_brake_04.png"
+        duration_ms: 400
+
+  # Rear wheels - bright red brake lights (4 frames)
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/brake_rl_on.png"
-        duration_ms: 1500
+      - image: "frames/navigation/brake_rl_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/brake_rl_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/brake_rl_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/brake_rl_04.png"
+        duration_ms: 400
 
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/brake_rr_on.png"
-        duration_ms: 1500
+      - image: "frames/navigation/brake_rr_01.png"
+        duration_ms: 400
+      - image: "frames/navigation/brake_rr_02.png"
+        duration_ms: 400
+      - image: "frames/navigation/brake_rr_03.png"
+        duration_ms: 400
+      - image: "frames/navigation/brake_rr_04.png"
+        duration_ms: 400
 
-  # Main display (STOP sign pulsing)
+  # Main display - STOP sign (4 frames)
   - logical_group: "main_display"
     offset_ms: 0
     frames:
       - image: "frames/navigation/stop_sign_01.png"
-        duration_ms: 500
+        duration_ms: 400
       - image: "frames/navigation/stop_sign_02.png"
-        duration_ms: 500
+        duration_ms: 400
       - image: "frames/navigation/stop_sign_03.png"
-        duration_ms: 500
+        duration_ms: 400
+      - image: "frames/navigation/stop_sign_04.png"
+        duration_ms: 400
 
-# Metadata
 metadata:
   priority: "high"
   category: "navigation"
-  tags: ["braking", "stop", "red", "safety"]
+  tags: ["braking", "stop", "red", "brake lights"]
