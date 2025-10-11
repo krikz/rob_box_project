@@ -113,7 +113,7 @@ class RobotVisualizer:
             self.master,
             bg=self.BG_COLOR,
             width=800,
-            height=600,
+            height=700,
             highlightthickness=0
         )
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -131,11 +131,11 @@ class RobotVisualizer:
         
         # Центр canvas
         cx = 400
-        cy = 300
+        cy = 320
         
-        # Корпус робота (прямоугольник)
+        # Корпус робота (прямоугольник) - увеличен по высоте
         body_w = 300
-        body_h = 250
+        body_h = 400
         body_x1 = cx - body_w // 2
         body_y1 = cy - body_h // 2
         body_x2 = cx + body_w // 2
@@ -208,10 +208,10 @@ class RobotVisualizer:
             font=('Arial', 11, 'bold')
         )
         
-        # Задние колёса (снизу, дальше от передних)
+        # Задние колёса (снизу, ЗНАЧИТЕЛЬНО дальше от передних)
         # Левое заднее колесо
         rl_x = body_x1 - wheel_w - 30
-        rl_y = body_y2 - wheel_h - 10
+        rl_y = body_y2 + 20  # Ниже корпуса
         self.wheel_rl_rect = self.canvas.create_rectangle(
             rl_x, rl_y, rl_x + wheel_w, rl_y + wheel_h,
             fill=self.LED_OFF_COLOR,
@@ -228,7 +228,7 @@ class RobotVisualizer:
         
         # Правое заднее колесо
         rr_x = body_x2 + 30
-        rr_y = body_y2 - wheel_h - 10
+        rr_y = body_y2 + 20  # Ниже корпуса
         self.wheel_rr_rect = self.canvas.create_rectangle(
             rr_x, rr_y, rr_x + wheel_w, rr_y + wheel_h,
             fill=self.LED_OFF_COLOR,
@@ -245,7 +245,7 @@ class RobotVisualizer:
         
         # Текст "REAR" снизу
         self.canvas.create_text(
-            cx, body_y2 + 40,
+            cx, body_y2 + 80,
             text="↓ REAR ↓",
             fill='#ff0000',
             font=('Arial', 14, 'bold')
