@@ -800,6 +800,336 @@ ros2 run micro_ros_setup build_firmware.sh
 
 ---
 
+## robot_sensor_hub Integration
+
+### Обзор
+
+**robot_sensor_hub** - это реальное внедрение ESP32 сенсорного хаба для rob_box, расположенное в отдельном репозитории:
+
+- **Repository**: https://github.com/krikz/robot_sensor_hub
+- **Branch**: humble
+- **Платформа**: ESP32-C3
+- **Транспорт**: WiFi UDP (micro-ROS over XRCE-DDS)
+
+### Оборудование
+
+| Компонент | Модель | Назначение |
+|-----------|--------|------------|
+| **MCU** | ESP32-C3 | Основной контроллер |
+| **I2C Mux** | TCA9548A (0x70) | Мультиплексор для 8 датчиков |
+| **Temp/Humidity** | AHT30 ×8 | Температура/влажность по каналам |
+| **Load Cell** | HX711 | Взвешивание (весы) |
+| **Fans** | 2× Noctua PWM | Охлаждение с тахометром |
+
+**Распиновка ESP32-C3:**
+```
+GPIO 6  - I2C SCL (TCA9548A)
+GPIO 7  - I2C SDA (TCA9548A)
+GPIO 18 - HX711 DOUT
+GPIO 19 - HX711 SCK
+GPIO 4  - Fan 2 PWM
+GPIO 5  - Fan 1 PWM
+```
+
+### Custom Messages
+
+robot_sensor_hub использует 3 основных сообщения:
+
+**DeviceData.msg** - Данные одного устройства:
+```
+uint8 device_type     # 0=AHT30, 1=HX711, 2=FAN
+uint8 device_id       # ID устройства (канал AHT30, номер вентилятора)
+uint8 data_type       # 1=temp, 2=humidity, 3=weight, 4=speed, 5=rpm
+float32 value         # Значение измерения
+uint8 error_code      # 0=OK, >0=ошибка
+```
+
+**DeviceCommand.msg** - Команда управления:
+```
+uint8 device_type      # Тип устройства
+uint8 device_id        # ID устройства
+uint8 command_code     # 0=SET_SPEED, 1=TARE_SCALE
+float32 param_1        # Параметр 1
+float32 param_2        # Параметр 2
+```
+
+**DeviceSnapshot.msg** - Снимок всех датчиков:
+```
+int64 timestamp           # Временная метка (наносекунды)
+DeviceData[] devices      # Массив данных устройств
+```
+
+### Типы устройств
+
+```c
+#define DEVICE_TYPE_AHT30 0  // Температура/влажность
+#define DEVICE_TYPE_HX711 1  // Весы (load cell)
+#define DEVICE_TYPE_FAN   2  // Вентиляторы PWM
+```
+
+### Типы данных
+
+```c
+#define DATA_TYPE_TEMPERATURE 1  // °C
+#define DATA_TYPE_HUMIDITY    2  // %
+#define DATA_TYPE_WEIGHT      3  // граммы/кг
+#define DATA_TYPE_SPEED       4  // 0.0-1.0 (PWM duty)
+#define DATA_TYPE_RPM         5  // обороты/мин
+```
+
+### ROS2 Topics
+
+**Publishers (ESP32 → ROS2):**
+```bash
+/device/snapshot  # robot_sensor_hub_msg/DeviceSnapshot
+# Публикуется каждую секунду, содержит:
+# - AHT30 данные: temp + humidity × 8 каналов (до 16 значений)
+# - HX711 данные: weight (1 значение)
+# - Fan данные: speed + rpm × 2 вентилятора (4 значения)
+# Итого: до 21 DeviceData в одном snapshot
+```
+
+**Subscribers (ROS2 → ESP32):**
+```bash
+/device/command   # robot_sensor_hub_msg/DeviceCommand
+# Команды управления:
+# - SET_SPEED для вентиляторов (device_type=2, command_code=0)
+# - TARE_SCALE для весов (device_type=1, command_code=1)
+```
+
+### Примеры использования
+
+**Подписаться на все данные датчиков:**
+```bash
+ros2 topic echo /device/snapshot robot_sensor_hub_msg/msg/DeviceSnapshot
+```
+
+**Установить скорость вентилятора 1 на 75%:**
+```bash
+ros2 topic pub --once /device/command robot_sensor_hub_msg/msg/DeviceCommand \
+  "{device_type: 2, device_id: 0, command_code: 0, param_1: 0.75, param_2: 0.0}"
+```
+
+**Обнулить весы (tare):**
+```bash
+ros2 topic pub --once /device/command robot_sensor_hub_msg/msg/DeviceCommand \
+  "{device_type: 1, device_id: 0, command_code: 1, param_1: 0.0, param_2: 0.0}"
+```
+
+**Фильтровать данные в Python:**
+```python
+import rclpy
+from rclpy.node import Node
+from robot_sensor_hub_msg.msg import DeviceSnapshot
+
+class SensorFilter(Node):
+    def __init__(self):
+        super().__init__('sensor_filter')
+        self.sub = self.create_subscription(
+            DeviceSnapshot,
+            '/device/snapshot',
+            self.snapshot_callback,
+            10
+        )
+    
+    def snapshot_callback(self, msg):
+        # Фильтрация температур
+        temps = [d.value for d in msg.devices 
+                 if d.device_type == 0 and d.data_type == 1]
+        
+        # Фильтрация влажности
+        hums = [d.value for d in msg.devices 
+                if d.device_type == 0 and d.data_type == 2]
+        
+        # Вес
+        weights = [d.value for d in msg.devices 
+                   if d.device_type == 1 and d.data_type == 3]
+        
+        self.get_logger().info(
+            f"Temps: {temps}, Hums: {hums}, Weight: {weights}"
+        )
+
+rclpy.init()
+node = SensorFilter()
+rclpy.spin(node)
+```
+
+### Сборка custom messages в rob_box
+
+Custom messages уже интегрированы в micro-ros-agent контейнер:
+
+**Структура пакета:**
+```
+src/robot_sensor_hub_msg/
+├── CMakeLists.txt
+├── package.xml
+└── msg/
+    ├── DeviceData.msg
+    ├── DeviceCommand.msg
+    └── DeviceSnapshot.msg
+```
+
+**Dockerfile автоматически:**
+1. Копирует `src/robot_sensor_hub_msg` в `/ws/src/`
+2. Запускает `colcon build --packages-select robot_sensor_hub_msg`
+3. Добавляет `source /ws/install/setup.bash` в ENTRYPOINT
+
+**Проверка после сборки:**
+```bash
+# Пересобрать micro-ros-agent образ
+cd docker/main
+docker-compose build micro-ros-agent
+
+# Проверить наличие сообщений
+docker run --rm ghcr.io/krikz/rob_box:micro-ros-agent-humble-latest \
+  ros2 interface list | grep robot_sensor_hub
+
+# Должно вывести:
+# robot_sensor_hub_msg/msg/DeviceCommand
+# robot_sensor_hub_msg/msg/DeviceData
+# robot_sensor_hub_msg/msg/DeviceSnapshot
+```
+
+### Сборка ESP32 firmware
+
+**Репозиторий robot_sensor_hub содержит:**
+```
+robot_sensor_hub/
+├── robot_sensor_hub/              # ESP-IDF версия (основная)
+│   ├── main/
+│   │   ├── main.c                # Основной код
+│   │   └── sensors/              # Драйверы датчиков
+│   ├── components/
+│   │   └── micro_ros_espidf_component/
+│   ├── generate_msgs.sh          # Генерация заголовков сообщений
+│   ├── finalize_micro_ros.sh     # Обновление libmicroros.a
+│   └── sdkconfig                 # ESP-IDF конфигурация
+├── robot_sensor_hub_msg/         # ROS2 messages package
+│   ├── msg/
+│   ├── CMakeLists.txt
+│   └── package.xml
+└── src/                          # Arduino/PlatformIO версия (альтернатива)
+```
+
+**Шаги сборки (ESP-IDF):**
+
+1. **Установка micro-ROS для ESP-IDF:**
+```bash
+cd ~/
+git clone https://github.com/krikz/robot_sensor_hub.git
+cd robot_sensor_hub/robot_sensor_hub
+
+# Клонировать micro-ROS component
+git clone -b humble https://github.com/micro-ROS/micro_ros_espidf_component.git \
+  components/micro_ros_espidf_component
+```
+
+2. **Генерация custom messages:**
+```bash
+# Убедиться, что ROS2 workspace с robot_sensor_hub_msg доступен
+cd ~/robot_sensor_hub/robot_sensor_hub
+./generate_msgs.sh
+
+# Проверка
+ls components/micro_ros_espidf_component/include/robot_sensor_hub/msg/
+# Должны быть: device_data.h, device_command.h, device_snapshot.h
+```
+
+3. **Финализация libmicroros.a:**
+```bash
+./finalize_micro_ros.sh
+
+# Проверка символов
+riscv32-esp-elf-nm components/micro_ros_espidf_component/libmicroros.a | \
+  grep robot_sensor_hub
+```
+
+4. **Конфигурация WiFi (для UDP transport):**
+```bash
+idf.py menuconfig
+
+# micro-ROS Settings ->
+#   micro-ROS middleware: micro-ROS over XRCE-DDS (UDP)
+#   micro-ROS Agent IP: 192.168.1.100  (Main Pi IP)
+#   micro-ROS Agent Port: 8888
+
+# WiFi Configuration ->
+#   SSID: ваш_wifi
+#   Password: пароль
+```
+
+5. **Сборка и прошивка:**
+```bash
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
+```
+
+**Вывод при успешном запуске:**
+```
+I (XXX) sensor_hub: Starting robot_sensor_hub...
+I (XXX) sensor_hub: Initializing i2cdev driver...
+I (XXX) AHT30: Initializing TCA9548A and AHT30 sensors...
+I (XXX) AHT30: AHT30 detected on channel 0
+I (XXX) AHT30: AHT30 detected on channel 1
+...
+I (XXX) HX711: Initializing HX711...
+I (XXX) HX711: HX711 initialized
+I (XXX) sensor_hub: micro-ROS node created
+I (XXX) sensor_hub: Waiting for micro-ROS agent...
+I (XXX) sensor_hub: Connected to micro-ROS agent!
+I (XXX) sensor_hub: Published snapshot with 13 devices
+```
+
+### Интеграция с Navigation Stack
+
+robot_sensor_hub может использоваться для:
+
+**1. Emergency Stop (аварийная остановка):**
+```python
+# Мониторинг температуры двигателей
+def snapshot_callback(self, msg):
+    motor_temps = [d.value for d in msg.devices 
+                   if d.device_type == 0 and d.device_id in [0, 1]]
+    
+    if any(t > 85.0 for t in motor_temps):  # > 85°C
+        self.get_logger().error("Motor overheating!")
+        self.cmd_vel_pub.publish(Twist())  # Stop robot
+        # Send emergency stop to nav2
+```
+
+**2. Load Monitoring (контроль нагрузки):**
+```python
+# Отслеживание изменения веса
+def snapshot_callback(self, msg):
+    weights = [d.value for d in msg.devices if d.device_type == 1]
+    if weights:
+        weight_change = weights[0] - self.prev_weight
+        if abs(weight_change) > 5.0:  # > 5 кг изменение
+            self.get_logger().warn(f"Weight changed: {weight_change} kg")
+```
+
+**3. Adaptive Cooling (адаптивное охлаждение):**
+```python
+# Управление вентиляторами на основе температуры
+def snapshot_callback(self, msg):
+    temps = [d.value for d in msg.devices if d.data_type == 1]
+    if temps:
+        max_temp = max(temps)
+        # Map temperature to fan speed (linear)
+        fan_speed = max(0.3, min(1.0, (max_temp - 40.0) / 40.0))
+        
+        # Set both fans
+        for fan_id in [0, 1]:
+            cmd = DeviceCommand()
+            cmd.device_type = 2  # FAN
+            cmd.device_id = fan_id
+            cmd.command_code = 0  # SET_SPEED
+            cmd.param_1 = fan_speed
+            self.command_pub.publish(cmd)
+```
+
+---
+
 ## Дополнительные ресурсы
 
 **Официальная документация:**
@@ -814,7 +1144,8 @@ ros2 run micro_ros_setup build_firmware.sh
 **rob_box specific:**
 - `docker/main/micro_ros_agent/` - Agent Dockerfile
 - `docker/main/scripts/micro_ros_agent/` - Startup scripts
-- Sensor Hub repo: (TODO: создать отдельный репозиторий)
+- `src/robot_sensor_hub_msg/` - Custom messages package
+- robot_sensor_hub repo: https://github.com/krikz/robot_sensor_hub (branch: humble)
 
 ---
 

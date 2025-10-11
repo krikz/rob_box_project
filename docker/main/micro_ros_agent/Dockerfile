@@ -20,6 +20,20 @@ RUN apt-get update && apt-get install -y \
     screen \
     && rm -rf /var/lib/apt/lists/*
 
+# Создание рабочего пространства для custom messages
+WORKDIR /ws
+
+# Копирование пакета custom messages
+COPY src/robot_sensor_hub_msg /ws/src/robot_sensor_hub_msg
+
+# Сборка custom messages
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build --packages-select robot_sensor_hub_msg && \
+    rm -rf build log
+
+# Источник custom messages в bashrc для всех сессий
+RUN echo "source /ws/install/setup.bash" >> /root/.bashrc
+
 WORKDIR /workspace
 
 # Healthcheck - проверка что agent запущен
@@ -27,7 +41,7 @@ WORKDIR /workspace
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD pgrep -f "micro_ros_agent" || exit 1
 
-# Entry point
-ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/${ROS_DISTRO}/setup.bash && exec \"$@\"", "--"]
+# Entry point - source custom messages and ROS
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/${ROS_DISTRO}/setup.bash && source /ws/install/setup.bash && exec \"$@\"", "--"]
 
 CMD ["bash"]
