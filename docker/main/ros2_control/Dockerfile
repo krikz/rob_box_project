@@ -42,6 +42,11 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-ros2controlcli \
     && rm -rf /var/lib/apt/lists/*
 
+# DEBUG: Проверяем что установлено
+RUN echo "=== Checking ROS2 installation ===" && \
+    find /opt/ros/${ROS_DISTRO}/lib -name "*builtin_interfaces*" -type f | head -20 && \
+    ls -la /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ || true
+
 # Рабочая директория
 WORKDIR /ws
 RUN mkdir -p src
