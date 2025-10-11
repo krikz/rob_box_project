@@ -1,0 +1,86 @@
+# Talking Animation (Bender-style)
+name: "talking"
+description: "Robot speaking with Bender-style rectangular mouth animation"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 800
+loop: true
+fps: 10
+
+# Audio reactive settings
+audio_reactive: true
+audio_source: "system_audio_output"  # Monitor audio output
+audio_threshold: 0.3  # Volume threshold to trigger animation (0.0-1.0)
+audio_smoothing: 0.2  # Smoothing factor for volume changes
+
+# Panels
+panels:
+  # Eyes stay normal (cyan like Bender)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fl_normal.png"
+        duration_ms: 800
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_fr_normal.png"
+        duration_ms: 800
+
+  # Rear wheels off
+  - logical_group: "wheels_rear"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/wheel_rl_talk_off.png"
+        duration_ms: 800
+
+  # Mouth animation (8 frames - synchronized with audio)
+  # When audio_reactive is true, frame selection is based on audio volume
+  # Higher volume = more open mouth
+  - logical_group: "main_display"
+    offset_ms: 0
+    audio_controlled: true  # This panel responds to audio level
+    frames:
+      # Frame progression based on volume:
+      # 0.0-0.1: closed
+      # 0.1-0.3: slightly open
+      # 0.3-0.5: half open
+      # 0.5-0.7: wide open
+      # Then back down (closing)
+      - image: "frames/emotions/mouth_talk_01_closed.png"
+        duration_ms: 100
+        audio_range: [0.0, 0.1]
+      - image: "frames/emotions/mouth_talk_02_open1.png"
+        duration_ms: 100
+        audio_range: [0.1, 0.3]
+      - image: "frames/emotions/mouth_talk_03_open2.png"
+        duration_ms: 100
+        audio_range: [0.3, 0.5]
+      - image: "frames/emotions/mouth_talk_04_open3.png"
+        duration_ms: 100
+        audio_range: [0.5, 1.0]
+      - image: "frames/emotions/mouth_talk_05_open2.png"
+        duration_ms: 100
+        audio_range: [0.3, 0.5]
+      - image: "frames/emotions/mouth_talk_06_open1.png"
+        duration_ms: 100
+        audio_range: [0.1, 0.3]
+      - image: "frames/emotions/mouth_talk_07_closed.png"
+        duration_ms: 100
+        audio_range: [0.0, 0.1]
+      - image: "frames/emotions/mouth_talk_08_open1.png"
+        duration_ms: 100
+        audio_range: [0.1, 0.3]
+
+# Metadata
+metadata:
+  priority: "normal"
+  category: "emotions"
+  tags: ["talking", "speaking", "audio", "bender", "mouth", "reactive"]
+  audio_features:
+    - "volume_reactive"
+    - "real_time"
+    - "lip_sync"

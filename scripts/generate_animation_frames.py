@@ -696,6 +696,55 @@ class FrameGenerator:
             img = self._create_checkmark(self.DISPLAY_SIZE, i)
             self._save_frame(img, f"checkmark_{i+1:02d}.png", subdir)
     
+    def generate_talking(self):
+        """Generate talking/speaking animation frames (Bender-style mouth)"""
+        print("\n=== Generating talking ===")
+        subdir = "emotions"
+        
+        # Eyes stay normal (dim cyan like Bender)
+        bender_eye = (0, 200, 200)
+        for suffix in ['fl', 'fr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, bender_eye,
+                                  f"eye_{suffix}_normal.png", subdir)
+        
+        # Rear wheels off
+        for suffix in ['rl', 'rr']:
+            self.create_solid_frame(self.HEADLIGHT_SIZE, self.BLACK,
+                                  f"wheel_{suffix}_talk_off.png", subdir)
+        
+        # Mouth animation (8 frames - various open positions)
+        # Frame 1: Closed
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 0)
+        self._save_frame(img, "mouth_talk_01_closed.png", subdir)
+        
+        # Frame 2: Slightly open
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 1)
+        self._save_frame(img, "mouth_talk_02_open1.png", subdir)
+        
+        # Frame 3: Half open
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 2)
+        self._save_frame(img, "mouth_talk_03_open2.png", subdir)
+        
+        # Frame 4: Wide open
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 3)
+        self._save_frame(img, "mouth_talk_04_open3.png", subdir)
+        
+        # Frame 5: Half open (closing)
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 2)
+        self._save_frame(img, "mouth_talk_05_open2.png", subdir)
+        
+        # Frame 6: Slightly open
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 1)
+        self._save_frame(img, "mouth_talk_06_open1.png", subdir)
+        
+        # Frame 7: Closed
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 0)
+        self._save_frame(img, "mouth_talk_07_closed.png", subdir)
+        
+        # Frame 8: Slightly open again
+        img = self._create_bender_mouth(self.DISPLAY_SIZE, 1)
+        self._save_frame(img, "mouth_talk_08_open1.png", subdir)
+    
     # Helper methods for new patterns
     
     def _create_speed_lines(self, size: tuple, frame: int):
@@ -938,6 +987,58 @@ class FrameGenerator:
         
         return img
     
+    def _create_bender_mouth(self, size: tuple, openness: int):
+        """Create Bender-style rectangular mouth
+        
+        Args:
+            size: Display size (width, height)
+            openness: 0 (closed) to 3 (wide open)
+        """
+        width, height = size
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Mouth color (white/gray like Bender's teeth)
+        mouth_color = (200, 200, 200)
+        jaw_color = (150, 150, 150)
+        
+        if openness == 0:
+            # Closed - just a horizontal line
+            for x in range(5, 20):
+                img[2, x] = jaw_color
+        
+        elif openness == 1:
+            # Slightly open - 2 pixel high rectangle
+            for y in range(2, 4):
+                for x in range(5, 20):
+                    if y == 2 or y == 3:
+                        img[y, x] = mouth_color if y == 2 else jaw_color
+        
+        elif openness == 2:
+            # Half open - 3 pixel high rectangle
+            for y in range(1, 4):
+                for x in range(5, 20):
+                    if y == 1:
+                        img[y, x] = mouth_color
+                    elif y == 2:
+                        img[y, x] = mouth_color
+                    else:
+                        img[y, x] = jaw_color
+        
+        elif openness >= 3:
+            # Wide open - full height rectangle
+            for y in range(1, 5):
+                for x in range(5, 20):
+                    if y == 1 or y == 2:
+                        img[y, x] = mouth_color
+                    else:
+                        img[y, x] = jaw_color
+            
+            # Add "teeth" effect
+            for x in range(6, 19, 3):
+                img[2, x] = (255, 255, 255)
+        
+        return img
+    
     def generate_all(self):
         """Generate all animation frames"""
         print("Generating all LED matrix animation frames...")
@@ -965,6 +1066,7 @@ class FrameGenerator:
         self.generate_low_battery()
         self.generate_thinking()
         self.generate_victory()
+        self.generate_talking()
         
         print("\n✅ All frames generated successfully!")
         print(f"Output directory: {self.output_dir}")
@@ -984,7 +1086,7 @@ def main():
         choices=['police', 'road_service', 'idle', 'charging', 'happy', 
                 'turn_left', 'ambulance', 'fire_truck', 'turn_right', 'braking',
                 'accelerating', 'error', 'sad', 'angry', 'surprised', 'sleep',
-                'wakeup', 'low_battery', 'thinking', 'victory', 'all'],
+                'wakeup', 'low_battery', 'thinking', 'victory', 'talking', 'all'],
         default='all',
         help='Which animation to generate'
     )
@@ -1014,6 +1116,7 @@ def main():
         'low_battery': generator.generate_low_battery,
         'thinking': generator.generate_thinking,
         'victory': generator.generate_victory,
+        'talking': generator.generate_talking,
     }
     
     if args.animation == 'all':

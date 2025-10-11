@@ -135,7 +135,7 @@ class RobotVisualizer:
         
         # Корпус робота (прямоугольник)
         body_w = 300
-        body_h = 200
+        body_h = 250
         body_x1 = cx - body_w // 2
         body_y1 = cy - body_h // 2
         body_x2 = cx + body_w // 2
@@ -150,105 +150,114 @@ class RobotVisualizer:
         
         # Текст "FRONT" сверху
         self.canvas.create_text(
-            cx, body_y1 - 20,
-            text="FRONT",
-            fill='white',
-            font=('Arial', 12, 'bold')
+            cx, body_y1 - 40,
+            text="↑ FRONT ↑",
+            fill='#00ff00',
+            font=('Arial', 14, 'bold')
         )
         
-        # Передние колёса (сверху)
+        # Передние колёса (сверху, ближе к краям)
         # Левое переднее колесо
-        fl_x = body_x1 - wheel_w - 20
-        fl_y = body_y1 + 20
+        fl_x = body_x1 - wheel_w - 30
+        fl_y = body_y1 + 10
         self.wheel_fl_rect = self.canvas.create_rectangle(
             fl_x, fl_y, fl_x + wheel_w, fl_y + wheel_h,
             fill=self.LED_OFF_COLOR,
-            outline=self.BORDER_COLOR,
-            width=2
+            outline='#00ff00',
+            width=3
         )
         self.wheel_fl_leds = self._create_led_grid(fl_x, fl_y, *self.WHEEL_SIZE)
         self.canvas.create_text(
             fl_x + wheel_w // 2, fl_y - 15,
-            text="FL",
-            fill='#888888',
-            font=('Arial', 10)
+            text="FL (8×8)",
+            fill='#00ff00',
+            font=('Arial', 11, 'bold')
         )
         
         # Правое переднее колесо
-        fr_x = body_x2 + 20
-        fr_y = body_y1 + 20
+        fr_x = body_x2 + 30
+        fr_y = body_y1 + 10
         self.wheel_fr_rect = self.canvas.create_rectangle(
             fr_x, fr_y, fr_x + wheel_w, fr_y + wheel_h,
             fill=self.LED_OFF_COLOR,
-            outline=self.BORDER_COLOR,
-            width=2
+            outline='#00ff00',
+            width=3
         )
         self.wheel_fr_leds = self._create_led_grid(fr_x, fr_y, *self.WHEEL_SIZE)
         self.canvas.create_text(
             fr_x + wheel_w // 2, fr_y - 15,
-            text="FR",
-            fill='#888888',
-            font=('Arial', 10)
+            text="FR (8×8)",
+            fill='#00ff00',
+            font=('Arial', 11, 'bold')
         )
         
         # Главный дисплей (рот) - между передними колёсами
         mouth_x = cx - display_w // 2
-        mouth_y = body_y1 - display_h - 30
+        mouth_y = body_y1 - display_h - 50
         self.display_rect = self.canvas.create_rectangle(
             mouth_x, mouth_y, mouth_x + display_w, mouth_y + display_h,
             fill=self.LED_OFF_COLOR,
-            outline=self.BORDER_COLOR,
-            width=2
+            outline='#ffff00',
+            width=3
         )
         self.display_leds = self._create_led_grid(mouth_x, mouth_y, *self.DISPLAY_SIZE)
         self.canvas.create_text(
             mouth_x + display_w // 2, mouth_y - 15,
-            text="MAIN DISPLAY (mouth)",
-            fill='#888888',
-            font=('Arial', 10)
+            text="MOUTH (25×5)",
+            fill='#ffff00',
+            font=('Arial', 11, 'bold')
         )
         
-        # Задние колёса (снизу)
+        # Задние колёса (снизу, дальше от передних)
         # Левое заднее колесо
-        rl_x = body_x1 - wheel_w - 20
-        rl_y = body_y2 - wheel_h - 20
+        rl_x = body_x1 - wheel_w - 30
+        rl_y = body_y2 - wheel_h - 10
         self.wheel_rl_rect = self.canvas.create_rectangle(
             rl_x, rl_y, rl_x + wheel_w, rl_y + wheel_h,
             fill=self.LED_OFF_COLOR,
-            outline=self.BORDER_COLOR,
-            width=2
+            outline='#ff0000',
+            width=3
         )
         self.wheel_rl_leds = self._create_led_grid(rl_x, rl_y, *self.WHEEL_SIZE)
         self.canvas.create_text(
             rl_x + wheel_w // 2, rl_y + wheel_h + 15,
-            text="RL",
-            fill='#888888',
-            font=('Arial', 10)
+            text="RL (8×8)",
+            fill='#ff0000',
+            font=('Arial', 11, 'bold')
         )
         
         # Правое заднее колесо
-        rr_x = body_x2 + 20
-        rr_y = body_y2 - wheel_h - 20
+        rr_x = body_x2 + 30
+        rr_y = body_y2 - wheel_h - 10
         self.wheel_rr_rect = self.canvas.create_rectangle(
             rr_x, rr_y, rr_x + wheel_w, rr_y + wheel_h,
             fill=self.LED_OFF_COLOR,
-            outline=self.BORDER_COLOR,
-            width=2
+            outline='#ff0000',
+            width=3
         )
         self.wheel_rr_leds = self._create_led_grid(rr_x, rr_y, *self.WHEEL_SIZE)
         self.canvas.create_text(
             rr_x + wheel_w // 2, rr_y + wheel_h + 15,
-            text="RR",
-            fill='#888888',
-            font=('Arial', 10)
+            text="RR (8×8)",
+            fill='#ff0000',
+            font=('Arial', 11, 'bold')
         )
         
         # Текст "REAR" снизу
         self.canvas.create_text(
-            cx, body_y2 + 20,
-            text="REAR",
+            cx, body_y2 + 40,
+            text="↓ REAR ↓",
+            fill='#ff0000',
+            font=('Arial', 14, 'bold')
+        )
+        
+        # Легенда
+        self.canvas.create_text(
+            50, 30,
+            text="4 WHEEL MATRICES",
             fill='white',
-            font=('Arial', 12, 'bold')
+            font=('Arial', 12, 'bold'),
+            anchor='w'
         )
     
     def _create_led_grid(self, x, y, width, height):
