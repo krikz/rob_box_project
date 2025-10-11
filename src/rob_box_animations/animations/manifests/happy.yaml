@@ -1,0 +1,59 @@
+# Happy Emotion Animation
+name: "happy"
+description: "Happy emotion with smile and bright eyes"
+version: "1.0"
+author: "rob_box"
+
+duration_ms: 2000
+loop: true
+fps: 10
+
+fade_in_ms: 200
+fade_out_ms: 200
+
+panels:
+  # Front headlights - bright happy eyes
+  - logical_group: "headlight_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_left_happy_01.png"
+        duration_ms: 1000
+      - image: "frames/emotions/eye_left_happy_blink.png"
+        duration_ms: 100
+      - image: "frames/emotions/eye_left_happy_01.png"
+        duration_ms: 900
+
+  - logical_group: "headlight_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/eye_right_happy_01.png"
+        duration_ms: 1000
+      - image: "frames/emotions/eye_right_happy_blink.png"
+        duration_ms: 100
+      - image: "frames/emotions/eye_right_happy_01.png"
+        duration_ms: 900
+
+  # Rear headlights - off
+  - logical_group: "headlights_rear"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/rear_off.png"
+        duration_ms: 2000
+
+  # Main display - big smile
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/emotions/mouth_smile_01.png"
+        duration_ms: 100
+      - image: "frames/emotions/mouth_smile_02.png"
+        duration_ms: 100
+      - image: "frames/emotions/mouth_smile_03.png"
+        duration_ms: 1700
+      - image: "frames/emotions/mouth_smile_02.png"
+        duration_ms: 100
+
+metadata:
+  priority: "normal"
+  category: "emotion"
+  tags: ["happy", "smile", "positive", "emotion"]

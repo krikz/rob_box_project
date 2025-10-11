@@ -1,0 +1,67 @@
+# Idle Animation - Robot in standby mode
+name: "idle"
+description: "Idle state with soft breathing effect"
+version: "1.0"
+author: "rob_box"
+
+duration_ms: 3000
+loop: true
+fps: 15
+
+fade_in_ms: 500
+fade_out_ms: 500
+
+panels:
+  # Front headlights - soft white breathing
+  - logical_group: "headlights_front"
+    offset_ms: 0
+    frames:
+      - image: "frames/idle/eyes_01.png"  # Dim
+        duration_ms: 200
+      - image: "frames/idle/eyes_02.png"
+        duration_ms: 200
+      - image: "frames/idle/eyes_03.png"
+        duration_ms: 200
+      - image: "frames/idle/eyes_04.png"
+        duration_ms: 200
+      - image: "frames/idle/eyes_05.png"  # Bright
+        duration_ms: 200
+      - image: "frames/idle/eyes_04.png"
+        duration_ms: 200
+      - image: "frames/idle/eyes_03.png"
+        duration_ms: 200
+      - image: "frames/idle/eyes_02.png"
+        duration_ms: 200
+      - image: "frames/idle/eyes_01.png"  # Dim
+        duration_ms: 1400
+
+  # Rear headlights - dim red glow
+  - logical_group: "headlights_rear"
+    offset_ms: 0
+    frames:
+      - image: "frames/idle/rear_glow.png"
+        duration_ms: 3000
+
+  # Main display - slow mouth open/close
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/idle/mouth_closed.png"
+        duration_ms: 1000
+      - image: "frames/idle/mouth_01.png"
+        duration_ms: 200
+      - image: "frames/idle/mouth_02.png"
+        duration_ms: 200
+      - image: "frames/idle/mouth_03.png"  # Open
+        duration_ms: 400
+      - image: "frames/idle/mouth_02.png"
+        duration_ms: 200
+      - image: "frames/idle/mouth_01.png"
+        duration_ms: 200
+      - image: "frames/idle/mouth_closed.png"
+        duration_ms: 800
+
+metadata:
+  priority: "low"
+  category: "state"
+  tags: ["idle", "standby", "breathing", "calm"]

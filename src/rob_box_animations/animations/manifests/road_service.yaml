@@ -1,0 +1,153 @@
+# Road Service Yellow Beacon Animation
+name: "road_service"
+description: "Road service yellow rotating beacon"
+version: "1.0"
+author: "rob_box"
+
+duration_ms: 2000
+loop: true
+fps: 20
+
+fade_in_ms: 200
+fade_out_ms: 200
+
+panels:
+  # Front headlights - rotating yellow beacon effect
+  - logical_group: "headlights_front"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/beacon_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_20.png"
+        duration_ms: 100
+
+  # Rear headlights - same beacon
+  - logical_group: "headlights_rear"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/beacon_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/beacon_20.png"
+        duration_ms: 100
+
+  # Main display - scrolling text
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/road_service/text_01.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_02.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_03.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_04.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_05.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_06.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_07.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_08.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_09.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_10.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_11.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_12.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_13.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_14.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_15.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_16.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_17.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_18.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_19.png"
+        duration_ms: 100
+      - image: "frames/road_service/text_20.png"
+        duration_ms: 100
+
+metadata:
+  priority: "high"
+  category: "emergency"
+  tags: ["road_service", "emergency", "yellow", "beacon", "rotating"]

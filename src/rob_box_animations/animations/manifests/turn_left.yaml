@@ -1,0 +1,60 @@
+# Turn Left Navigation Animation
+name: "turn_left"
+description: "Left turn signal with arrow"
+version: "1.0"
+author: "rob_box"
+
+duration_ms: 1000
+loop: true
+fps: 10
+
+panels:
+  # Front left headlight - orange flashing
+  - logical_group: "headlight_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/turn_left_on.png"
+        duration_ms: 500
+      - image: "frames/navigation/turn_left_off.png"
+        duration_ms: 500
+
+  # Front right headlight - dim white
+  - logical_group: "headlight_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/front_dim.png"
+        duration_ms: 1000
+
+  # Rear left headlight - orange flashing
+  - logical_group: "headlight_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/turn_left_on.png"
+        duration_ms: 500
+      - image: "frames/navigation/turn_left_off.png"
+        duration_ms: 500
+
+  # Rear right headlight - red glow
+  - logical_group: "headlight_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/rear_glow.png"
+        duration_ms: 1000
+
+  # Main display - left arrow
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/navigation/arrow_left_01.png"
+        duration_ms: 250
+      - image: "frames/navigation/arrow_left_02.png"
+        duration_ms: 250
+      - image: "frames/navigation/arrow_left_03.png"
+        duration_ms: 250
+      - image: "frames/navigation/arrow_left_04.png"
+        duration_ms: 250
+
+metadata:
+  priority: "normal"
+  category: "navigation"
+  tags: ["turn", "left", "navigation", "signal", "orange"]
