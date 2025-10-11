@@ -1,0 +1,116 @@
+# LED Matrix Compositor Configuration
+# Конфигурация композитора для объединения физических LED панелей
+# в логические группы для Rob Box
+#
+# Физическое подключение (цепочка через SPI):
+#   Panel 0-3: 4× 8×8 панели (фары) = 256 LEDs
+#   Panel 4-8: 5× 5×5 панели (main_display) = 125 LEDs
+#   Total: 381 LEDs
+
+led_matrix_compositor:
+  ros__parameters:
+    # Физические панели (в порядке подключения в цепочке)
+    physical_panels:
+      # Передняя левая фара 8×8
+      - width: 8
+        height: 8
+        snake_connection: true  # Змейка внутри панели
+        
+      # Передняя правая фара 8×8
+      - width: 8
+        height: 8
+        snake_connection: true
+        
+      # Задняя левая фара 8×8
+      - width: 8
+        height: 8
+        snake_connection: true
+        
+      # Задняя правая фара 8×8
+      - width: 8
+        height: 8
+        snake_connection: true
+        
+      # Main display: 5 панелей 5×5 соединенных в линию (5×25)
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+    
+    # Логические группы (как приложения обращаются к панелям)
+    logical_groups:
+      # Отдельные фары (управляются индивидуально)
+      - name: "headlight_front_left"
+        physical_indices: [0]       # Panel 0
+        arrangement: [1, 1]          # 1×1 панель
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+        
+      - name: "headlight_front_right"
+        physical_indices: [1]       # Panel 1
+        arrangement: [1, 1]
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+        
+      - name: "headlight_rear_left"
+        physical_indices: [2]       # Panel 2
+        arrangement: [1, 1]
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+        
+      - name: "headlight_rear_right"
+        physical_indices: [3]       # Panel 3
+        arrangement: [1, 1]
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+        
+      # Главный дисплей: 5 панелей объединены горизонтально
+      - name: "main_display"
+        physical_indices: [4, 5, 6, 7, 8]  # Panels 4-8
+        arrangement: [5, 1]                 # 5 панелей в ряд, 1 ряд
+        flip_x: false
+        flip_y: true                        # Перевернуть по Y для правильной ориентации
+        snake_arrangement: false            # Панели соединены без змейки
+        
+      # Передние фары как группа (для синхронных эффектов)
+      - name: "headlights_front"
+        physical_indices: [0, 1]            # Panels 0-1
+        arrangement: [2, 1]                 # 2 панели в ряд
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+        
+      # Задние фары как группа
+      - name: "headlights_rear"
+        physical_indices: [2, 3]            # Panels 2-3
+        arrangement: [2, 1]
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+        
+      # Все фары вместе
+      - name: "headlights_all"
+        physical_indices: [0, 1, 2, 3]     # Panels 0-3
+        arrangement: [2, 2]                 # 2×2 сетка
+        flip_x: false
+        flip_y: false
+        snake_arrangement: false
+    
+    # Топики
+    output_topic: 'led_matrix/data'        # Выход в драйвер
+    input_topic: 'panel_image'             # Вход от приложений (sensor_msgs/Image)
