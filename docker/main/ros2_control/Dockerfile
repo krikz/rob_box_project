@@ -21,6 +21,9 @@ RUN apt-get update && apt-get install -y \
     can-utils \
     iproute2 \
     net-tools \
+    # ROS2 базовая инфраструктура (КРИТИЧНО - без этого не соберутся custom messages!)
+    ros-${ROS_DISTRO}-ament-cmake \
+    ros-${ROS_DISTRO}-ament-cmake-ros \
     # ROS2 Control
     ros-${ROS_DISTRO}-ros2-control \
     ros-${ROS_DISTRO}-ros2-controllers \
@@ -41,6 +44,8 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-introspection-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-introspection-cpp \
     # Контроллеры
     ros-${ROS_DISTRO}-diff-drive-controller \
     ros-${ROS_DISTRO}-joint-state-broadcaster \
