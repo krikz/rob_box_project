@@ -12,8 +12,8 @@ fade_in_ms: 200
 fade_out_ms: 200
 
 panels:
-  # Front headlights - rotating yellow beacon effect
-  - logical_group: "headlights_front"
+  # Front wheels - rotating yellow beacon effect
+  - logical_group: "wheels_front"
     offset_ms: 0
     frames:
       - image: "frames/road_service/beacon_01.png"
@@ -57,8 +57,8 @@ panels:
       - image: "frames/road_service/beacon_20.png"
         duration_ms: 100
 
-  # Rear headlights - same beacon
-  - logical_group: "headlights_rear"
+  # Rear wheels - same beacon
+  - logical_group: "wheels_rear"
     offset_ms: 0
     frames:
       - image: "frames/road_service/beacon_01.png"

@@ -12,8 +12,8 @@ fade_in_ms: 300
 fade_out_ms: 0
 
 panels:
-  # Front headlights - green level indicator
-  - logical_group: "headlights_front"
+  # Front wheels - green level indicator
+  - logical_group: "wheels_front"
     offset_ms: 0
     frames:
       - image: "frames/charging/level_00.png"
@@ -49,8 +49,8 @@ panels:
       - image: "frames/charging/level_15.png"  # Full
         duration_ms: 250
 
-  # Rear headlights - off during charging
-  - logical_group: "headlights_rear"
+  # Rear wheels - off during charging
+  - logical_group: "wheels_rear"
     offset_ms: 0
     frames:
       - image: "frames/charging/rear_off.png"

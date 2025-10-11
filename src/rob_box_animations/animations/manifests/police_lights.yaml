@@ -15,8 +15,8 @@ fade_out_ms: 100
 
 # Panels
 panels:
-  # Front left headlight (alternates blue -> red)
-  - logical_group: "headlight_front_left"
+  # Front left wheel (alternates blue -> red)
+  - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
       - image: "frames/police/front_left_blue.png"
@@ -36,8 +36,8 @@ panels:
       - image: "frames/police/front_left_off.png"
         duration_ms: 250
 
-  # Front right headlight (alternates red -> blue, offset)
-  - logical_group: "headlight_front_right"
+  # Front right wheel (alternates red -> blue, offset)
+  - logical_group: "wheel_front_right"
     offset_ms: 500
     frames:
       - image: "frames/police/front_right_blue.png"
@@ -58,7 +58,7 @@ panels:
         duration_ms: 250
 
   # Rear left (red flashing)
-  - logical_group: "headlight_rear_left"
+  - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
       - image: "frames/police/rear_red.png"
@@ -71,7 +71,7 @@ panels:
         duration_ms: 700
 
   # Rear right (blue flashing)
-  - logical_group: "headlight_rear_right"
+  - logical_group: "wheel_rear_right"
     offset_ms: 500
     frames:
       - image: "frames/police/rear_blue.png"

@@ -50,29 +50,29 @@ led_matrix_compositor:
     
     # Логические группы (как приложения обращаются к панелям)
     logical_groups:
-      # Отдельные фары (управляются индивидуально)
-      - name: "headlight_front_left"
+      # Отдельные матрицы на колёсах (управляются индивидуально)
+      - name: "wheel_front_left"
         physical_indices: [0]       # Panel 0
         arrangement: [1, 1]          # 1×1 панель
         flip_x: false
         flip_y: false
         snake_arrangement: false
         
-      - name: "headlight_front_right"
+      - name: "wheel_front_right"
         physical_indices: [1]       # Panel 1
         arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
         
-      - name: "headlight_rear_left"
+      - name: "wheel_rear_left"
         physical_indices: [2]       # Panel 2
         arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
         
-      - name: "headlight_rear_right"
+      - name: "wheel_rear_right"
         physical_indices: [3]       # Panel 3
         arrangement: [1, 1]
         flip_x: false
@@ -87,24 +87,24 @@ led_matrix_compositor:
         flip_y: true                        # Перевернуть по Y для правильной ориентации
         snake_arrangement: false            # Панели соединены без змейки
         
-      # Передние фары как группа (для синхронных эффектов)
-      - name: "headlights_front"
+      # Передние колёса как группа (для синхронных эффектов)
+      - name: "wheels_front"
         physical_indices: [0, 1]            # Panels 0-1
         arrangement: [2, 1]                 # 2 панели в ряд
         flip_x: false
         flip_y: false
         snake_arrangement: false
         
-      # Задние фары как группа
-      - name: "headlights_rear"
+      # Задние колёса как группа
+      - name: "wheels_rear"
         physical_indices: [2, 3]            # Panels 2-3
         arrangement: [2, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
         
-      # Все фары вместе
-      - name: "headlights_all"
+      # Все колёса вместе
+      - name: "wheels_all"
         physical_indices: [0, 1, 2, 3]     # Panels 0-3
         arrangement: [2, 2]                 # 2×2 сетка
         flip_x: false

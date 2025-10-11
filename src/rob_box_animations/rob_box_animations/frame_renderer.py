@@ -146,13 +146,13 @@ class FrameRenderer:
 
 # Panel size definitions
 PANEL_SIZES = {
-    'headlight_front_left': (8, 8),
-    'headlight_front_right': (8, 8),
-    'headlight_rear_left': (8, 8),
-    'headlight_rear_right': (8, 8),
-    'headlights_front': (16, 8),
-    'headlights_rear': (16, 8),
-    'headlights_all': (16, 16),
+    'wheel_front_left': (8, 8),
+    'wheel_front_right': (8, 8),
+    'wheel_rear_left': (8, 8),
+    'wheel_rear_right': (8, 8),
+    'wheels_front': (16, 8),
+    'wheels_rear': (16, 8),
+    'wheels_all': (16, 16),
     'main_display': (25, 5),  # Width × Height (landscape)
 }
 

@@ -12,8 +12,8 @@ fade_in_ms: 500
 fade_out_ms: 500
 
 panels:
-  # Front headlights - soft white breathing
-  - logical_group: "headlights_front"
+  # Front wheels - soft white breathing
+  - logical_group: "wheels_front"
     offset_ms: 0
     frames:
       - image: "frames/idle/eyes_01.png"  # Dim
@@ -35,8 +35,8 @@ panels:
       - image: "frames/idle/eyes_01.png"  # Dim
         duration_ms: 1400
 
-  # Rear headlights - dim red glow
-  - logical_group: "headlights_rear"
+  # Rear wheels - dim red glow
+  - logical_group: "wheels_rear"
     offset_ms: 0
     frames:
       - image: "frames/idle/rear_glow.png"
