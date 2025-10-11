@@ -1,0 +1,155 @@
+# robot_controller.yaml - ros2_control Controller Configuration
+#
+# Конфигурация diff_drive_controller для Rob Box
+# Управление 4-колесным роботом через VESC Nexus hardware interface
+
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz - должна совпадать с publish_rate в VESC config
+    
+    # Список активных контроллеров
+    use_sim_time: false
+    
+    # Diff Drive Controller для управления движением
+    diff_drive_controller:
+      type: diff_drive_controller/DiffDriveController
+    
+    # Joint State Broadcaster для публикации состояния джоинтов
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+# ═══════════════════════════════════════════════════════════════════
+# Diff Drive Controller Configuration
+# ═══════════════════════════════════════════════════════════════════
+diff_drive_controller:
+  ros__parameters:
+    # ───────────────────────────────────────────────────────────────
+    # Wheel Configuration
+    # ───────────────────────────────────────────────────────────────
+    
+    # Левые колеса (управляются как группа)
+    left_wheel_names:
+      - front_left_wheel_joint
+      - rear_left_wheel_joint
+    
+    # Правые колеса (управляются как группа)
+    right_wheel_names:
+      - front_right_wheel_joint
+      - rear_right_wheel_joint
+    
+    # Количество колес с каждой стороны
+    wheels_per_side: 2
+    
+    # ───────────────────────────────────────────────────────────────
+    # Robot Geometry
+    # ⚠️ TODO: Обновить значения из Fusion 360!
+    # ───────────────────────────────────────────────────────────────
+    
+    # Расстояние между левыми и правыми колесами (м)
+    # Измерение: от центра левого колеса до центра правого
+    wheel_separation: 0.380
+    
+    # Радиус колеса (м)
+    wheel_radius: 0.115
+    
+    # Множитель для компенсации проскальзывания (опционально)
+    # wheel_separation_multiplier: 1.0
+    # wheel_radius_multiplier: 1.0
+    
+    # ───────────────────────────────────────────────────────────────
+    # Publishing Configuration
+    # ───────────────────────────────────────────────────────────────
+    
+    # Частота публикации odometry и TF
+    publish_rate: 50.0
+    
+    # Публикация одометрии в /odom
+    odom_frame_id: odom
+    base_frame_id: base_link
+    
+    # Публикация TF трансформации odom → base_link
+    enable_odom_tf: true
+    
+    # Ковариация одометрии (неопределенность)
+    pose_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
+    twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
+    
+    # ───────────────────────────────────────────────────────────────
+    # Command Configuration
+    # ───────────────────────────────────────────────────────────────
+    
+    # Таймаут команды (сек)
+    # Робот остановится если не получит cmd_vel в течение этого времени
+    cmd_vel_timeout: 0.5
+    
+    # Использовать stamped Twist или обычный
+    use_stamped_vel: false
+    
+    # Открытый/закрытый цикл управления
+    open_loop: false
+    
+    # ───────────────────────────────────────────────────────────────
+    # Velocity Limits
+    # ───────────────────────────────────────────────────────────────
+    
+    # Линейная скорость (м/с)
+    linear:
+      x:
+        has_velocity_limits: true
+        has_acceleration_limits: true
+        has_jerk_limits: false
+        max_velocity: 2.0           # м/с (~7.2 км/ч максимум)
+        min_velocity: -2.0          # Назад
+        max_acceleration: 1.0       # м/с²
+        min_acceleration: -1.0
+        max_jerk: 0.0
+        min_jerk: 0.0
+    
+    # Угловая скорость (рад/с)
+    angular:
+      z:
+        has_velocity_limits: true
+        has_acceleration_limits: true
+        has_jerk_limits: false
+        max_velocity: 3.0           # рад/с (~172°/с)
+        min_velocity: -3.0
+        max_acceleration: 2.0       # рад/с²
+        min_acceleration: -2.0
+        max_jerk: 0.0
+        min_jerk: 0.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Joint State Broadcaster Configuration
+# ═══════════════════════════════════════════════════════════════════
+joint_state_broadcaster:
+  ros__parameters:
+    # Публикует состояние всех джоинтов в /joint_states
+    # Используется robot_state_publisher для TF
+    type: joint_state_broadcaster/JointStateBroadcaster
+
+# ═══════════════════════════════════════════════════════════════════
+# NOTES
+# ═══════════════════════════════════════════════════════════════════
+#
+# 1. Wheel Names:
+#    - Должны точно совпадать с именами в URDF rob_box_ros2_control.xacro
+#    - front_left_wheel_joint, front_right_wheel_joint, etc.
+#
+# 2. Geometry Parameters:
+#    - wheel_separation: критичный параметр для точности поворотов
+#    - wheel_radius: критичный параметр для точности линейной скорости
+#    - Обновить из FUSION360_MEASUREMENTS.md после измерений
+#
+# 3. Velocity Limits:
+#    - Установлены консервативно для безопасности
+#    - Увеличить после тестирования на реальном роботе
+#    - Учесть максимальную скорость VESC моторов
+#
+# 4. Open Loop vs Closed Loop:
+#    - open_loop: false - использует feedback от энкодеров (VESC tachometer)
+#    - Для лучшей точности оставить false
+#
+# 5. Testing:
+#    - Начать с малых max_velocity (0.5 м/с)
+#    - Проверить направление вращения колес
+#    - Калибровать wheel_separation и wheel_radius

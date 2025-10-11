@@ -1,0 +1,164 @@
+# controller_manager.yaml - Конфигурация для ROS2 Control Manager
+#
+# Controller Manager управляет всеми контроллерами робота и загружает
+# hardware interface плагины (в нашем случае VescSystemHardwareInterface)
+
+controller_manager:
+  ros__parameters:
+    # Частота обновления controller manager (Hz)
+    update_rate: 50  # 50 Hz = 20ms cycle time
+    
+    # Список контроллеров для автозапуска
+    # Они будут загружены и активированы при старте
+    controller_names:
+      - joint_state_broadcaster
+      - diff_drive_controller
+    
+    # ═══════════════════════════════════════════════════════════════
+    # Joint State Broadcaster
+    # ═══════════════════════════════════════════════════════════════
+    # Публикует состояние всех joints (position, velocity) в топик /joint_states
+    # robot_state_publisher подписывается на этот топик для обновления TF
+    
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    
+    # ═══════════════════════════════════════════════════════════════
+    # Diff Drive Controller
+    # ═══════════════════════════════════════════════════════════════
+    # Преобразует команды /cmd_vel (Twist) в команды для колес
+    # Вычисляет одометрию и публикует /odom и TF odom→base_link
+    
+    diff_drive_controller:
+      type: diff_drive_controller/DiffDriveController
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Diff Drive Controller Configuration
+# ═══════════════════════════════════════════════════════════════════
+diff_drive_controller:
+  ros__parameters:
+    # ───────────────────────────────────────────────────────────────
+    # Wheel Configuration
+    # ───────────────────────────────────────────────────────────────
+    # Имена joints для левых колес (из URDF)
+    left_wheel_names:
+      - front_left_wheel_joint
+      - rear_left_wheel_joint
+    
+    # Имена joints для правых колес (из URDF)
+    right_wheel_names:
+      - front_right_wheel_joint
+      - rear_right_wheel_joint
+    
+    # ✅ Параметры получены из Fusion 360 URDF (2025-10-11)
+    # Подтверждены ручными измерениями: база 390мм, колея 289мм
+    
+    # Расстояние между центрами левых и правых колес (база робота) в метрах
+    # Для rocker-bogie это расстояние по оси X между левой и правой группой
+    wheel_separation: 0.390  # 390 мм (база: left↔right по X)
+    
+    # Радиус колеса в метрах (подтверждено из STL анализа)
+    wheel_radius: 0.115  # 115 мм (10" колеса от электросамоката)
+    
+    # Количество колес с каждой стороны
+    wheels_per_side: 2
+    
+    # ───────────────────────────────────────────────────────────────
+    # Odometry Configuration
+    # ───────────────────────────────────────────────────────────────
+    # Опубликовывать TF трансформацию odom → base_link
+    enable_odom_tf: true
+    
+    # Frame IDs для одометрии
+    odom_frame_id: odom
+    base_frame_id: base_link
+    
+    # Использовать только реальные колеса (не виртуальные)
+    open_loop: false
+    
+    # Публиковать одометрию
+    publish_rate: 50.0  # Hz
+    
+    # ───────────────────────────────────────────────────────────────
+    # Velocity Commands
+    # ───────────────────────────────────────────────────────────────
+    # Подписываться на /cmd_vel (а не /cmd_vel_stamped)
+    use_stamped_vel: false
+    
+    # Таймаут команды - остановка если нет команд
+    cmd_vel_timeout: 0.5  # seconds
+    
+    # ───────────────────────────────────────────────────────────────
+    # Velocity Limits
+    # ───────────────────────────────────────────────────────────────
+    # Линейная скорость (вперед/назад)
+    linear.x.has_velocity_limits: true
+    linear.x.max_velocity: 1.5        # m/s (TODO: настроить после тестов)
+    linear.x.min_velocity: -1.5       # m/s
+    linear.x.has_acceleration_limits: true
+    linear.x.max_acceleration: 1.0    # m/s²
+    linear.x.min_acceleration: -1.0   # m/s²
+    linear.x.has_jerk_limits: false
+    
+    # Угловая скорость (повороты)
+    angular.z.has_velocity_limits: true
+    angular.z.max_velocity: 2.0       # rad/s (TODO: настроить после тестов)
+    angular.z.min_velocity: -2.0      # rad/s
+    angular.z.has_acceleration_limits: true
+    angular.z.max_acceleration: 1.5   # rad/s²
+    angular.z.min_acceleration: -1.5  # rad/s²
+    angular.z.has_jerk_limits: false
+    
+    # ───────────────────────────────────────────────────────────────
+    # Advanced Settings
+    # ───────────────────────────────────────────────────────────────
+    # Позиционный режим (используем velocity control для VESC)
+    position_feedback: false
+    
+    # Опубликовывать limited velocity
+    publish_limited_velocity: true
+    
+    # Опубликовывать wheel TF (отключено, т.к. robot_state_publisher делает это)
+    publish_wheel_data: false
+    
+    # Velocity rolling window (фильтр скорости)
+    velocity_rolling_window_size: 10
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Joint State Broadcaster Configuration
+# ═══════════════════════════════════════════════════════════════════
+joint_state_broadcaster:
+  ros__parameters:
+    # Дополнительные параметры (обычно не требуются)
+    # Broadcaster автоматически публикует все joint states из hardware interface
+    pass
+
+
+# ═══════════════════════════════════════════════════════════════════
+# NOTES
+# ═══════════════════════════════════════════════════════════════════
+#
+# 1. Hardware Interface (VescSystemHardwareInterface):
+#    - Конфигурируется через URDF (см. rob_box_ros2_control.xacro)
+#    - Параметры CAN, motor poles, radius задаются на уровне каждого joint
+#
+# 2. Wheel Geometry:
+#    - wheel_separation: КРИТИЧНО для точных поворотов
+#    - wheel_radius: КРИТИЧНО для точной одометрии
+#    - Измерьте реальные значения и обновите этот файл!
+#
+# 3. Velocity Limits:
+#    - Начните с консервативных значений
+#    - Постепенно увеличивайте после тестирования
+#    - Проверьте максимальную скорость VESC
+#
+# 4. Topics:
+#    - Входящие: /cmd_vel (geometry_msgs/Twist)
+#    - Исходящие: /odom (nav_msgs/Odometry), /tf, /joint_states
+#
+# 5. Testing:
+#    - Проверка контроллеров: ros2 control list_controllers
+#    - Телеоп: ros2 run teleop_twist_keyboard teleop_twist_keyboard
+#    - Одометрия: ros2 topic echo /odom
