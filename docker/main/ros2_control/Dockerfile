@@ -16,12 +16,15 @@ LABEL org.opencontainers.image.description="Controller Manager with VescSystemHa
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Установка ROS2 Control и зависимостей
+# КРИТИЧНО: Базовый образ слишком минимальный, устанавливаем ros-base для всех библиотек
 RUN apt-get update && apt-get install -y \
+    # ROS2 Base - содержит ВСЕ необходимые библиотеки для компиляции
+    ros-${ROS_DISTRO}-ros-base \
     # CAN утилиты
     can-utils \
     iproute2 \
     net-tools \
-    # ROS2 базовая инфраструктура (КРИТИЧНО - без этого не соберутся custom messages!)
+    # ROS2 базовая инфраструктура
     ros-${ROS_DISTRO}-ament-cmake \
     ros-${ROS_DISTRO}-ament-cmake-ros \
     # ROS2 Control
@@ -30,22 +33,6 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-controller-manager \
     ros-${ROS_DISTRO}-hardware-interface \
     ros-${ROS_DISTRO}-pluginlib \
-    # Базовые ROS2 интерфейсы (КРИТИЧНО для компиляции!)
-    ros-${ROS_DISTRO}-builtin-interfaces \
-    ros-${ROS_DISTRO}-std-msgs \
-    ros-${ROS_DISTRO}-geometry-msgs \
-    ros-${ROS_DISTRO}-sensor-msgs \
-    # rosidl для компиляции кастомных сообщений (ПОЛНЫЙ набор)
-    ros-${ROS_DISTRO}-rosidl-default-runtime \
-    ros-${ROS_DISTRO}-rosidl-default-generators \
-    ros-${ROS_DISTRO}-rosidl-generator-c \
-    ros-${ROS_DISTRO}-rosidl-generator-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-introspection-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-introspection-cpp \
     # Контроллеры
     ros-${ROS_DISTRO}-diff-drive-controller \
     ros-${ROS_DISTRO}-joint-state-broadcaster \
