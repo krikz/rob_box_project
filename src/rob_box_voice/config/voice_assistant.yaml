@@ -23,11 +23,25 @@
 
     # ========== TTS Node ==========
     tts_node:
-      provider: "yandex"          # "yandex" или "coqui"
-      # Yandex TTS settings
-      voice: "anton"              # Мужской голос (протестирован в прототипе)
-      speed: 0.4                  # Скорость речи (0.1-3.0)
-      emotion: "neutral"          # neutral/good/evil
+      provider: "silero"          # "silero", "yandex" или "coqui"
+      
+      # Silero TTS v4 settings (рекомендуется для offline)
+      silero:
+        model_path: "/models/silero_v4_ru.pt"  # Путь к модели
+        speaker: "aidar"          # Голоса: aidar (М), baya (М), kseniya (Ж), xenia (Ж)
+        sample_rate: 48000        # Hz (24000/48000)
+        threads: 4                # CPU threads (оптимально для Pi 5)
+        # SSML настройки для изменения голоса
+        pitch: "medium"           # x-low/low/medium/high/x-high
+        rate: "medium"            # x-slow/slow/medium/fast/x-fast
+        use_ssml: true            # Использовать SSML для всех фраз
+      
+      # Yandex TTS settings (fallback, требует API key)
+      yandex:
+        voice: "anton"            # Мужской голос
+        speed: 0.4                # Скорость речи (0.1-3.0)
+        emotion: "neutral"        # neutral/good/evil
+      
       # Кэширование
       cache_dir: "~/.cache/rob_box_voice/tts"
       pregenerate: true           # Генерировать системные фразы при старте

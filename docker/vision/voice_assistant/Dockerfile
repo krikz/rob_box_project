@@ -70,9 +70,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     grpcio \
     grpcio-tools \
     protobuf \
-    # TTS: Piper (offline, fast, high quality)
-    piper-tts \
-    # TTS: Silero (offline, alternative)
+    # TTS: Silero v4 (offline, fast, high quality, SSML support)
     torch==2.1.0 \
     torchaudio==2.1.0 \
     omegaconf \
@@ -117,17 +115,11 @@ RUN mkdir -p /models && \
         https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     rm /tmp/vosk-model.zip && \
-    # Piper TTS: Russian Dmitri voice (63 MB, neural TTS)
-    wget -q -O /models/ru_RU-dmitri-medium.onnx \
-        https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-dmitri-medium.onnx && \
-    wget -q -O /models/ru_RU-dmitri-medium.onnx.json \
-        https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-dmitri-medium.onnx.json && \
-    # Piper TTS: Russian Irina voice (alternative, female)
-    wget -q -O /models/ru_RU-irina-medium.onnx \
-        https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-irina-medium.onnx && \
-    wget -q -O /models/ru_RU-irina-medium.onnx.json \
-        https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-irina-medium.onnx.json && \
-    echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Piper (126 MB)"
+    # Silero TTS v4: Russian model (100 MB, neural TTS, 4 voices, SSML support)
+    # Голоса: aidar (нейтральный М), baya (спокойный М), kseniya (нейтральный Ж), xenia (энергичный Ж)
+    wget -q -O /models/silero_v4_ru.pt \
+        https://models.silero.ai/models/tts/ru/v4_ru.pt && \
+    echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
 
 # Установка ROS зависимостей через rosdep
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
