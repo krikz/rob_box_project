@@ -136,7 +136,7 @@ class SSMLProcessor:
     @staticmethod
     def has_ssml_tags(text: str) -> bool:
         """Проверяет есть ли в тексте SSML теги"""
-        return bool(re.search(r'<(speak|prosody|break)', text))
+        return bool(re.search(r'<(speak|break)', text))
 
 
 class CommandExecutor:
