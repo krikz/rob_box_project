@@ -38,23 +38,24 @@ class SileroTTS:
         self.model.to(self.device)
         print("✅ Silero TTS загружен\n")
     
-    def synthesize_and_play(self, text: str, speaker: str = 'aidar', 
-                           rate: str = 'x-slow', pitch: str = 'medium'):
+    def synthesize_and_play(self, text: str, speaker: str = 'aidar'):
         """
         Синтезирует и воспроизводит речь
         
         Args:
             text: Нормализованный текст для озвучивания
             speaker: aidar, baya, kseniya, xenia
-            rate: x-slow, slow, medium, fast, x-fast
-            pitch: x-low, low, medium, high, x-high
+        
+        Примечание: 
+        - Скорость контролируется через pitch shift (бурундук 2.0x)
+        - Базовая скорость синтеза нормальная, но воспроизведение 2x быстрее
         """
         if not text.strip():
             return
         
         print(f"🔊 Говорю: {text}")
         
-        # Синтез
+        # Синтез с базовыми параметрами
         audio = self.model.apply_tts(
             text=text,
             speaker=speaker,
@@ -73,9 +74,9 @@ class SileroTTS:
         else:
             playback_rate = self.sample_rate
         
-        # Воспроизводим
+        # Воспроизводим и ЖДЁМ ОКОНЧАНИЯ
         sd.play(audio_np, playback_rate)
-        sd.wait()
+        sd.wait()  # Критично! Без этого фразы обрубаются
         print()
 
 
@@ -213,17 +214,20 @@ class RobboxChat:
         print(f"🤖 ROBBOX [{emoji} {result['emotion']}]:")
         print("="*60)
         
+        # Используем оптимальный голос
+        speaker = 'aidar'  # Мужской голос, лучше всего звучит с бурундуком
+        
         # Если есть SSML chunks с паузами
         if result['ssml_chunks']:
             for text, pause_ms in result['ssml_chunks']:
-                self.tts.synthesize_and_play(text)
+                self.tts.synthesize_and_play(text, speaker=speaker)
                 if pause_ms:
                     print(f"⏸️  Пауза {pause_ms}ms...")
                     time.sleep(pause_ms / 1000.0)
         else:
             # Озвучиваем обычные фразы
             for phrase in result['phrases']:
-                self.tts.synthesize_and_play(phrase)
+                self.tts.synthesize_and_play(phrase, speaker=speaker)
         
         print("="*60)
         print()
