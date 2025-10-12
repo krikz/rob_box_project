@@ -10,12 +10,11 @@
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
 
-ARG ROS_DISTRO=humble
-ARG IMAGE_TAG=latest
-ARG BASE_IMAGE_PREFIX=ghcr.io/krikz/rob_box_base
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
+# Версия сборки для инвалидации кеша при изменении зависимостей
+ARG BUILD_VERSION=2025-10-12-rtabmap
 
-# Используем rtabmap базовый образ (включает ROS2 + Zenoh + RTABMap)
-FROM ${BASE_IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-${IMAGE_TAG}
+FROM ${BASE_IMAGE}
 
 # Метаданные
 LABEL org.opencontainers.image.title="Voice Assistant System for Vision Pi"
