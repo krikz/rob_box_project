@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y \
     git \
     wget \
     curl \
+    unzip \
     # ROS2 зависимости
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
