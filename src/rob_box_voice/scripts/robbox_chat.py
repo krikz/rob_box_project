@@ -54,11 +54,13 @@ class SileroTTS:
         
         print(f"🔊 Говорю: {text}")
         
-        # Синтез
+        # Синтез с оптимальными параметрами
         audio = self.model.apply_tts(
             text=text,
             speaker=speaker,
             sample_rate=self.sample_rate,
+            rate=rate,
+            pitch=pitch,
             put_accent=True,
             put_yo=True
         )
@@ -73,9 +75,9 @@ class SileroTTS:
         else:
             playback_rate = self.sample_rate
         
-        # Воспроизводим
+        # Воспроизводим и ЖДЁМ ОКОНЧАНИЯ
         sd.play(audio_np, playback_rate)
-        sd.wait()
+        sd.wait()  # Критично! Без этого фразы обрубаются
         print()
 
 
@@ -213,17 +215,22 @@ class RobboxChat:
         print(f"🤖 ROBBOX [{emoji} {result['emotion']}]:")
         print("="*60)
         
+        # Используем оптимальные параметры для всех фраз
+        speaker = 'aidar'      # Мужской голос
+        rate = 'x-slow'        # Медленная речь (важно для бурундука)
+        pitch = 'medium'       # Средний тон
+        
         # Если есть SSML chunks с паузами
         if result['ssml_chunks']:
             for text, pause_ms in result['ssml_chunks']:
-                self.tts.synthesize_and_play(text)
+                self.tts.synthesize_and_play(text, speaker=speaker, rate=rate, pitch=pitch)
                 if pause_ms:
                     print(f"⏸️  Пауза {pause_ms}ms...")
                     time.sleep(pause_ms / 1000.0)
         else:
             # Озвучиваем обычные фразы
             for phrase in result['phrases']:
-                self.tts.synthesize_and_play(phrase)
+                self.tts.synthesize_and_play(phrase, speaker=speaker, rate=rate, pitch=pitch)
         
         print("="*60)
         print()
