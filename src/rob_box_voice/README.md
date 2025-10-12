@@ -6,11 +6,20 @@ AI Voice Assistant для автономного ровера РОББОКС с 
 
 Модульная ROS2 система голосового управления роботом с интеграцией:
 - **ReSpeaker Mic Array v2.0** — захват аудио, VAD, DOA, LED индикация
-- **Yandex SpeechKit / Whisper** — распознавание речи (STT)
-- **Yandex Cloud TTS / Coqui** — синтез речи (TTS)
-- **DeepSeek / Local LLM** — диалоговый AI агент
+- **STT (Speech-to-Text):**
+  - **Vosk** (offline, fast, real-time) — основной выбор
+  - **Whisper** (offline, high accuracy) — альтернатива
+  - **Yandex SpeechKit** (online, fallback) — для сложных случаев
+- **TTS (Text-to-Speech):**
+  - **Piper** (offline, neural TTS, high quality) — основной выбор
+  - **Silero** (offline, multiple voices) — альтернатива
+  - **Yandex Cloud TTS** (online, fallback) — для важных сообщений
+- **Dialogue:**
+  - **DeepSeek** / **Local LLM** — диалоговый AI агент
 - **sound_pack** — звуковые эффекты
 - **rob_box_animations** — визуальные анимации
+
+**🎯 Основная стратегия:** Offline-First с fallback на облачные сервисы при необходимости.
 
 ## Архитектура
 
@@ -81,6 +90,51 @@ source install/setup.bash
 
 ## Конфигурация
 
+### 🎯 Рекомендуемая настройка (Offline-First)
+
+Для максимальной автономности и минимальной зависимости от интернета:
+
+```yaml
+# config/voice_assistant.yaml
+
+stt_node:
+  provider: "vosk"  # Основной: быстрый, offline
+  vosk:
+    model_path: "/models/vosk-model-small-ru-0.22"  # 45 MB
+    confidence_threshold: 0.7
+  
+  # Fallback для низкой уверенности
+  fallback_provider: "yandex"
+  yandex:
+    use_when_confidence_below: 0.7
+
+tts_node:
+  provider: "piper"  # Основной: качественный, offline
+  piper:
+    model_path: "/models/ru_RU-dmitri-medium.onnx"  # 63 MB
+    voice_speed: 1.0
+  
+  # Fallback для важных сообщений
+  fallback_provider: "yandex"
+  yandex:
+    use_for_important: true
+
+dialogue_node:
+  llm_provider: "deepseek"  # или "local" для полного offline
+```
+
+**Memory footprint:**
+- Vosk STT: ~500 MB
+- Piper TTS: ~100 MB
+- Total: ~1.5 GB (fits в 2GB budget ✅)
+
+**Latency:**
+- STT: <1s (real-time)
+- TTS: <0.5s
+- Total: ~1.5s (отлично для робота!)
+
+---
+
 ### Основные параметры
 
 Файл `config/voice_assistant.yaml`:
@@ -101,15 +155,15 @@ dialogue_node:
   history_size: 10
 
 stt_node:
-  provider: "yandex"  # или "whisper"
+  provider: "vosk"  # vosk | whisper | yandex
   language: "ru-RU"
   
 tts_node:
-  provider: "yandex"  # или "coqui"
-  voice: "anton"
-  speed: 0.4
-  cache_dir: "~/.cache/rob_box_voice/tts"
-  pregenerate: true
+  provider: "piper"  # piper | silero | yandex
+  voice: "dmitri"  # dmitri (male) | irina (female)
+  speed: 1.0
+  cache_dir: "/cache/tts"
+  cache_enabled: true
 
 led_node:
   brightness: 16  # 0-31

@@ -13,7 +13,15 @@
   - ROS2 Humble + Zenoh middleware
   - Audio libraries (PyAudio, PortAudio, ALSA)
   - ReSpeaker drivers (usb_4_mic_array, pixel_ring)
-  - Python зависимости для STT/TTS/LLM
+  - **STT (Offline-First):**
+    - Vosk (vosk-model-small-ru-0.22, 45 MB) - основной
+    - Whisper base (74 MB) - альтернатива
+    - Yandex SpeechKit - fallback
+  - **TTS (Offline-First):**
+    - Piper (ru_RU-dmitri-medium, 63 MB) - основной
+    - Piper (ru_RU-irina-medium, 63 MB) - женский голос
+    - Silero TTS (torch-based) - альтернатива
+    - Yandex Cloud TTS - fallback
   - rob_box_voice package (7 nodes)
   - rob_box_animations package
   - USB udev rules для ReSpeaker
@@ -216,12 +224,18 @@ Vision Pi (Raspberry Pi 5)
 
 ## Ресурсы
 
-- Architecture: `docs/development/VOICE_ASSISTANT_ARCHITECTURE.md`
-- Hardware: `docs/HARDWARE.md` (section 3.4)
-- Package: `src/rob_box_voice/README.md`
-- Install: `src/rob_box_voice/INSTALL.md`
-- Docker: `docker/vision/README.md`
-- Deploy: `docker/vision/DEPLOYMENT.md`
+- **Architecture:** `docs/development/VOICE_ASSISTANT_ARCHITECTURE.md`
+- **STT/TTS Research:** `docs/development/STT_TTS_RESEARCH.md` 📚 **NEW!**
+  - Сравнение локальных и облачных решений для русского языка
+  - Рекомендации: Vosk + Piper (offline-first)
+  - Memory budget: ~1.5GB (fits в 2GB ✅)
+  - ROS2 интеграция примеры
+- **Hardware:** `docs/HARDWARE.md` (section 3.4)
+- **Package:** `src/rob_box_voice/README.md`
+- **Install:** `src/rob_box_voice/INSTALL.md`
+- **Docker:** `docker/vision/README.md`
+- **Deploy:** `docker/vision/DEPLOYMENT.md`
+- **CI/CD:** `docs/CI_CD_PIPELINE.md`
 
 ---
 

@@ -47,9 +47,25 @@
     
     # ===== STT Node (Speech-to-Text) =====
     stt_node:
-      provider: "yandex"  # yandex | google | whisper
+      provider: "vosk"  # vosk | whisper | yandex | google
       
-      # Yandex Cloud settings
+      # Vosk (RECOMMENDED: Fast, offline, real-time)
+      vosk:
+        model_path: "/models/vosk-model-small-ru-0.22"
+        confidence_threshold: 0.7  # Если ниже - fallback на Yandex
+        sample_rate: 16000
+      
+      # Whisper (Alternative: Better accuracy, slower)
+      whisper:
+        model: "base"  # tiny | base | small | medium | large
+        device: "cpu"
+        language: "ru"
+        # Model size comparison:
+        # tiny: 39MB, 70% accuracy, <1s
+        # base: 74MB, 80% accuracy, 1-2s (RECOMMENDED)
+        # small: 244MB, 85% accuracy, 2-3s
+      
+      # Yandex Cloud (Fallback for low confidence)
       yandex:
         folder_id: "YOUR_FOLDER_ID"  # Заменить!
         api_key: "YOUR_API_KEY"      # Заменить!
@@ -57,18 +73,27 @@
         model: "general"  # general | general:rc | general:deprecated
         audio_encoding: "LINEAR16_PCM"
         sample_rate: 16000
-        
-      # Whisper local (альтернатива)
-      whisper:
-        model: "base"  # tiny | base | small | medium | large
-        device: "cpu"
-        language: "ru"
+        use_when_confidence_below: 0.7  # Fallback trigger
     
     # ===== TTS Node (Text-to-Speech) =====
     tts_node:
-      provider: "yandex"  # yandex | google | local
+      provider: "piper"  # piper | silero | yandex | google
       
-      # Yandex Cloud settings
+      # Piper TTS (RECOMMENDED: Fast, high quality, offline)
+      piper:
+        model_path: "/models/ru_RU-dmitri-medium.onnx"
+        voice_speed: 1.0  # 0.5-2.0
+        # Alternative voices:
+        # ru_RU-dmitri-medium (male, clear)
+        # ru_RU-irina-medium (female, warm)
+      
+      # Silero TTS (Alternative: More voices, slower)
+      silero:
+        speaker: "baya"  # aidar (male) | baya (female) | kseniya | xenia
+        sample_rate: 48000
+        device: "cpu"
+      
+      # Yandex Cloud (Fallback: Best quality with emotions)
       yandex:
         folder_id: "YOUR_FOLDER_ID"  # Заменить!
         api_key: "YOUR_API_KEY"      # Заменить!
@@ -77,6 +102,7 @@
         speed: 0.4  # 0.1-3.0 (медленнее для робота)
         format: "lpcm"
         sample_rate: 16000
+        use_for_important: true  # Использовать для важных сообщений
         
       # Кэш
       cache_enabled: true
