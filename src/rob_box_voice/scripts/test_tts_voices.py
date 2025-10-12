@@ -84,16 +84,16 @@ PIPER_VOICES = {
     "dmitri": {
         "name": "Dmitri (male)",
         "quality": "medium",
-        "url": "https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-dmitri-medium.onnx",
-        "config_url": "https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-dmitri-medium.onnx.json",
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx.json",
         "size_mb": 63,
         "description": "Чёткий мужской голос, спокойный"
     },
     "irina": {
         "name": "Irina (female)",
         "quality": "medium",
-        "url": "https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-irina-medium.onnx",
-        "config_url": "https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-irina-medium.onnx.json",
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx.json",
         "size_mb": 63,
         "description": "Тёплый женский голос, дружелюбный"
     }
@@ -211,11 +211,12 @@ SILERO_VOICES = {
 
 
 def download_silero_model(models_dir: Path) -> bool:
-    """Скачать модель Silero (однократно для всех голосов)"""
+    """Скачать модель Silero v4 (используем прямую загрузку файла)"""
     try:
         import torch
+        import urllib.request
         
-        model_path = models_dir / "silero_model_v4.pt"
+        model_path = models_dir / "v4_ru.pt"
         
         if model_path.exists():
             print_info("Модель Silero v4 уже скачана")
@@ -224,20 +225,28 @@ def download_silero_model(models_dir: Path) -> bool:
         print_info("Скачиваю модель Silero v4 (~100 MB, может занять время)...")
         print_info("v4 - последняя версия с улучшенным качеством и скоростью")
         
-        # Загрузить модель из torch hub (v4)
-        model, _ = torch.hub.load(
-            repo_or_dir='snakers4/silero-models',
-            model='silero_tts',
-            language='ru',
-            speaker='v4_ru'
-        )
+        # Скачать модель напрямую с GitHub
+        url = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
         
-        # Сохранить модель
-        torch.save(model, model_path)
+        print_info(f"Загрузка с {url}...")
+        
+        # Функция для отображения прогресса
+        def show_progress(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            percent = min(100, int(downloaded * 100 / total_size))
+            mb_downloaded = downloaded / 1024 / 1024
+            mb_total = total_size / 1024 / 1024
+            print(f"\r  Загружено: {mb_downloaded:.1f}/{mb_total:.1f} MB ({percent}%)", end='', flush=True)
+        
+        urllib.request.urlretrieve(url, model_path, show_progress)
+        print()  # Новая строка после прогресс-бара
         
         print_success("Модель Silero v4 скачана")
         return True
         
+    except Exception as e:
+        print_error(f"Ошибка при скачивании Silero: {e}")
+        return False
     except Exception as e:
         print_error(f"Ошибка при скачивании Silero: {e}")
         return False
@@ -267,9 +276,10 @@ def test_silero_voice(voice_id: str, models_dir: Path, text: str, speed: float =
         device = torch.device('cpu')
         torch.set_num_threads(4)  # Используем 4 потока для Pi 5
         
-        # Загрузить модель
-        model_path = models_dir / "silero_model_v4.pt"
-        model = torch.load(model_path, map_location=device)
+        # Загрузить модель (v4 использует torch.package)
+        model_path = models_dir / "v4_ru.pt"
+        print_info("Загружаю модель (torch.package)...")
+        model = torch.package.PackageImporter(str(model_path)).load_pickle("tts_models", "model")
         model.to(device)
         
         print_info("Модель загружена, начинаю синтез...")
