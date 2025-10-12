@@ -14,7 +14,8 @@ ARG ROS_DISTRO=humble
 ARG IMAGE_TAG=latest
 ARG BASE_IMAGE_PREFIX=ghcr.io/krikz/rob_box_base
 
-FROM ${BASE_IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-${IMAGE_TAG}
+# Используем rtabmap базовый образ (включает ROS2 + Zenoh + RTABMap)
+FROM ${BASE_IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-${IMAGE_TAG}
 
 # Метаданные
 LABEL org.opencontainers.image.title="Voice Assistant System for Vision Pi"
