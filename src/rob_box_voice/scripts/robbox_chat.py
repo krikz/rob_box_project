@@ -217,15 +217,15 @@ class RobboxChat:
         # Используем оптимальный голос
         speaker = 'aidar'  # Мужской голос, лучше всего звучит с бурундуком
         
-        # Если есть SSML chunks с паузами
+        # Если есть SSML chunks с паузами - используем ИХ (приоритет)
         if result['ssml_chunks']:
             for text, pause_ms in result['ssml_chunks']:
                 self.tts.synthesize_and_play(text, speaker=speaker)
                 if pause_ms:
                     print(f"⏸️  Пауза {pause_ms}ms...")
                     time.sleep(pause_ms / 1000.0)
-        else:
-            # Озвучиваем обычные фразы
+        # Иначе озвучиваем обычные фразы
+        elif result['phrases']:
             for phrase in result['phrases']:
                 self.tts.synthesize_and_play(phrase, speaker=speaker)
         
