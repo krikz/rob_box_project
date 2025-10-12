@@ -64,39 +64,25 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep и сборка пакетов
-# ВАЖНО: Объединяем rosdep update и сборку в один слой для избежания кеш-проблем
-# Пропускаем GUI пакеты (rviz2, joint-state-publisher-gui) и serial-driver (для vesc_nexus они опциональны)
+# КРИТИЧЕСКАЯ ПРОБЛЕМА: setup.sh не экспортирует CMAKE_PREFIX_PATH в non-interactive mode
+# Решение: явно экспортируем все необходимые переменные окружения
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /root/.ros/rosdep && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
-    # ДИАГНОСТИКА: Проверяем пути библиотек для ARM64
-    echo "=== Architecture and library paths ===" && \
-    dpkg --print-architecture && \
-    echo "=== Searching for builtin_interfaces libraries ===" && \
-    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*.so" 2>/dev/null | head -20 && \
-    find /usr/lib -name "*builtin_interfaces*.so" 2>/dev/null | head -20 && \
-    echo "=== LD_LIBRARY_PATH ===" && \
-    echo $LD_LIBRARY_PATH && \
-    echo "=== CMAKE_PREFIX_PATH ===" && \
+    # ЯВНАЯ установка CMAKE_PREFIX_PATH (критично для поиска библиотек)
+    export CMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}:${CMAKE_PREFIX_PATH} && \
+    export LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH} && \
+    echo "=== CMAKE_PREFIX_PATH after export ===" && \
     echo $CMAKE_PREFIX_PATH && \
-    # Пробуем установить недостающие dev пакеты явно
-    apt-get update && apt-get install -y \
-        ros-${ROS_DISTRO}-builtin-interfaces \
-        ros-${ROS_DISTRO}-rosidl-default-runtime \
-        ros-${ROS_DISTRO}-rosidl-default-generators \
-    && rm -rf /var/lib/apt/lists/* && \
-    # Проверяем после установки
-    echo "=== After explicit install ===" && \
-    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*rosidl_generator_c.so" 2>/dev/null && \
-    # Собираем с явными путями
     colcon build \
     --packages-select vesc_msgs vesc_nexus rob_box_description \
     --symlink-install \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+      -DCMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
