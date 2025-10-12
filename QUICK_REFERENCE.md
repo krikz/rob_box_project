@@ -1,142 +1,352 @@
-# Rob Box - Quick Reference
-**Обновлено:** 2025-10-11
+# Краткий справочник РОББОКС
 
-## ⚙️ Параметры робота
+<div align="center">
+  <strong>Быстрый доступ ко всем командам и настройкам</strong>
+  <br>
+  <sub>Версия: 1.0.0 | Дата: 2025-10-12</sub>
+</div>
 
-```yaml
-# Геометрия
-wheel_separation: 0.390 м  # База (left↔right по X)
-wheel_radius: 0.115 м      # Радиус колеса
-track: 0.289 м             # Колея (front↔rear по Y)
+---
 
-# Колеса (CAN IDs для VESC)
-front_left:  49   # X= 0.195, Y=-0.146
-front_right: 124  # X=-0.196, Y=-0.145
-rear_left:   81   # X= 0.195, Y= 0.144
-rear_right:  94   # X=-0.195, Y= 0.144
+## 🚀 Быстрый старт
 
-# Сенсоры (относительно base_link)
-lidar:     X=-0.0003, Y=0.171, Z=0.477
-oak_d:     X=-0.0002, Y=0.116, Z=0.460
-rpi_cam:   X= 0.065,  Y=0.171, Z=0.462
+### Main Pi
+
+```bash
+# Переход в папку проекта
+cd /opt/rob_box_project/docker/main
+
+# Запуск всех сервисов
+docker compose up -d
+
+# Проверка статуса
+docker compose ps
+
+# Просмотр логов
+docker compose logs -f rtabmap
 ```
+
+### Vision Pi
+
+```bash
+# Переход в папку проекта
+cd /opt/rob_box_project/docker/vision
+
+# Запуск всех сервисов
+docker compose up -d
+
+# Проверка статуса
+docker compose ps
+
+# Просмотр логов
+docker compose logs -f oak-d
+```
+
+---
+
+## 📡 Сетевая конфигурация
+
+| Устройство | Ethernet (данные) | WiFi (управление) |
+|------------|-------------------|-------------------|
+| **Main Pi** | 10.1.1.10 | 10.1.1.20 |
+| **Vision Pi** | 10.1.1.11 | 10.1.1.21 |
+| **Host PC** | — | 10.1.1.5 |
+
+**SSH подключение**:
+```bash
+ssh ubuntu@10.1.1.20  # Main Pi
+ssh ubuntu@10.1.1.21  # Vision Pi
+```
+
+---
 
 ## 🐳 Docker команды
 
 ```bash
-# Main Robot (ros2_control + vesc_nexus)
-cd docker/main
-docker compose up -d
+# Остановка всех контейнеров
+docker compose down
 
-# Vision (cameras + lidar)
-cd docker/vision
-docker compose up -d
+# Перезапуск конкретного сервиса
+docker compose restart rtabmap
 
-# Логи
-docker compose logs -f ros2-control-manager
-docker compose logs -f robot-state-publisher
+# Обновление образов
+docker compose pull
+
+# Просмотр логов
+docker compose logs -f [service_name]
+
+# Вход в контейнер
+docker exec -it [container_name] bash
+
+# Очистка старых образов
+docker system prune -a
 ```
-
-## 🔧 ROS2 команды
-
-```bash
-# Проверить топики
-ros2 topic list
-ros2 topic echo /joint_states
-ros2 topic echo /odom
-
-# Управление
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.5}, angular: {z: 0.0}}"
-
-# TF дерево
-ros2 run tf2_tools view_frames
-evince frames.pdf
-
-# Controller manager
-ros2 control list_controllers
-ros2 control load_controller diff_drive_controller
-ros2 control switch_controllers --activate diff_drive_controller
-```
-
-## 📂 Важные файлы
-
-```
-FROM_FUSION_360/urdf/URDF_ROBBOX.xacro  # Fusion 360 экспорт ✅
-src/rob_box_description/urdf/
-  ├── rob_box_main.xacro                # Главный URDF
-  ├── rob_box_ros2_control.xacro        # ros2_control блок
-  └── sensors/rob_box_sensors.xacro     # Сенсоры
-
-docker/main/config/controllers/
-  └── controller_manager.yaml           # Конфиг контроллеров ✅
-
-docker/main/ros2_control/Dockerfile     # Controller manager
-docker/main/scripts/ros2_control/
-  └── start_ros2_control.sh             # Startup script
-```
-
-## 🔌 CAN интерфейс
-
-```bash
-# Настройка CAN (Main Pi)
-sudo docker/scripts/setup_can0.sh
-
-# Проверка
-ip link show can0
-candump can0
-
-# Отправка тестовой команды
-cansend can0 031#1122334455667788
-```
-
-## 📊 Monitoring
-
-```bash
-# System resources
-htop
-docker stats
-
-# CAN traffic
-candump can0 -c  # с временными метками
-
-# ROS2 graph
-rqt_graph
-
-# Параметры контроллера
-ros2 param list /diff_drive_controller
-ros2 param get /diff_drive_controller wheel_separation
-```
-
-## 🐛 Troubleshooting
-
-```bash
-# VESC не отвечает
-sudo ip link set can0 down
-sudo ip link set can0 up type can bitrate 500000
-
-# Controller не загружается
-ros2 control list_hardware_interfaces
-cat /var/log/ros2_control.log
-
-# TF проблемы
-ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_tools view_frames
-```
-
-## 📝 Документация
-
-- `FUSION360_FINAL_MEASUREMENTS.md` - Финальные измерения
-- `ROS2_CONTROL_ARCHITECTURE.md` - Архитектура ros2_control
-- `VESC_INTEGRATION_PROGRESS.md` - Прогресс интеграции
-- `docs/guides/POWER_MANAGEMENT.md` - Управление питанием
-
-## 🎯 Следующие шаги
-
-1. Адаптировать rob_box_main.xacro под новые координаты
-2. Добавить ros2-control-manager в docker-compose.yaml
-3. Протестировать на железе с CAN Shield
-4. Калибровка diff_drive_controller
 
 ---
-**Создано:** GitHub Copilot
-**Проект:** https://github.com/krikz/rob_box_project
+
+## 🤖 ROS 2 команды
+
+### Просмотр топиков/нод
+
+```bash
+# Список нод
+docker exec -it zenoh-router ros2 node list
+
+# Список топиков
+docker exec -it zenoh-router ros2 topic list
+
+# Echo топика
+docker exec -it zenoh-router ros2 topic echo /scan
+
+# Частота топика
+docker exec -it zenoh-router ros2 topic hz /scan
+
+# Информация о топике
+docker exec -it zenoh-router ros2 topic info /scan
+```
+
+### Управление роботом
+
+```bash
+# Управление с клавиатуры (teleop)
+docker exec -it twist-mux ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
+# Отправка одной команды
+docker exec -it twist-mux ros2 topic pub --once /cmd_vel geometry_msgs/Twist \
+  "{linear: {x: 0.5}, angular: {z: 0.0}}"
+```
+
+### LED анимации
+
+```bash
+# Список анимаций
+docker exec -it animation-player ros2 service call /animation_player/list_animations std_srvs/srv/Trigger
+
+# Загрузить анимацию
+docker exec -it animation-player ros2 service call /animation_player/load_animation std_msgs/srv/String \
+  "data: 'police_lights'"
+
+# Запуск
+docker exec -it animation-player ros2 service call /animation_player/play std_srvs/srv/Trigger
+
+# Стоп
+docker exec -it animation-player ros2 service call /animation_player/stop std_srvs/srv/Trigger
+```
+
+---
+
+## 🗺️ SLAM и навигация
+
+### RTAB-Map
+
+```bash
+# Просмотр карты
+docker exec -it rtabmap ros2 topic echo /map --once
+
+# Сброс базы данных (новая карта)
+docker exec -it rtabmap rm -rf /root/.ros/rtabmap/*
+
+# Просмотр статистики
+docker exec -it rtabmap ros2 topic echo /rtabmap/info --once
+```
+
+### LiDAR
+
+```bash
+# Проверка LiDAR
+docker exec -it lslidar ros2 topic hz /scan
+
+# Просмотр сканов
+docker exec -it lslidar ros2 topic echo /scan --once
+```
+
+---
+
+## 🔧 Диагностика
+
+### Проверка Zenoh
+
+```bash
+# Проверка роутера
+curl http://10.1.1.10:8000/@/local/router
+
+# Просмотр сессий
+curl http://10.1.1.10:8000/@/local/sessions
+```
+
+### Проверка CAN шины (VESC)
+
+```bash
+# Поднять CAN интерфейс
+sudo ip link set can0 up type can bitrate 500000
+
+# Проверка CAN трафика
+candump can0
+
+# Отправка тестового сообщения
+cansend can0 123#DEADBEEF
+```
+
+### Проверка сенсоров ESP32
+
+```bash
+# Просмотр данных от всех сенсоров
+docker exec -it micro-ros-agent ros2 topic echo /device/snapshot
+
+# Управление вентилятором
+docker exec -it micro-ros-agent ros2 topic pub --once /device/command \
+  robot_sensor_hub_msg/msg/DeviceCommand \
+  "{device_type: 2, device_id: 0, command_code: 0, param_1: 0.75, param_2: 0.0}"
+```
+
+---
+
+## 🎨 Визуализация
+
+### RViz2
+
+```bash
+# Запуск RViz на хост-системе
+ros2 launch rob_box_bringup display.launch.py
+
+# Добавить топики:
+# - /scan (LaserScan)
+# - /map (Map)
+# - /camera/color/image_raw (Image)
+# - /rtabmap/cloud_map (PointCloud2)
+```
+
+### Foxglove Studio
+
+1. Открыть Foxglove Studio
+2. Подключиться к `ws://10.1.1.10:8765`
+3. Добавить панели: Image, Map, 3D, Plot
+
+---
+
+## 📊 Мониторинг
+
+### CPU/RAM
+
+```bash
+# Нагрузка на Pi
+htop
+
+# Docker статистика
+docker stats
+
+# Температура CPU
+vcgencmd measure_temp
+```
+
+### Сеть
+
+```bash
+# Проверка Ethernet
+ip addr show eth0
+
+# Скорость интерфейса
+ethtool eth0 | grep Speed
+
+# Сетевой трафик
+iftop -i eth0
+```
+
+---
+
+## 🔄 Обновление системы
+
+### Обновление Docker образов
+
+```bash
+# Main Pi
+cd /opt/rob_box_project/docker/main
+docker compose pull
+docker compose up -d
+
+# Vision Pi
+cd /opt/rob_box_project/docker/vision
+docker compose pull
+docker compose up -d
+```
+
+### Обновление конфигураций
+
+```bash
+# После изменения config/*.yaml просто перезапустить контейнер
+docker compose restart [service_name]
+
+# Пересборка образа НЕ требуется!
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+### Контейнер не запускается
+
+```bash
+# Проверить логи
+docker compose logs [service_name]
+
+# Проверить зависимости
+docker compose config
+
+# Удалить и пересоздать
+docker compose down
+docker compose up -d
+```
+
+### Zenoh не подключается
+
+```bash
+# Проверить firewall
+sudo ufw status
+
+# Проверить роутер
+curl http://10.1.1.10:8000/@/local/router
+
+# Перезапустить роутер
+docker compose restart zenoh-router
+```
+
+### LiDAR не работает
+
+```bash
+# Проверить IP адрес LiDAR
+ping 192.168.1.200
+
+# Проверить UDP порт
+sudo tcpdump -i eth0 port 2368
+
+# Перезапустить драйвер
+docker compose restart lslidar
+```
+
+---
+
+## 📚 Документация
+
+- **[README.md](../README.md)** — Главная страница проекта
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Системная архитектура
+- **[HARDWARE.md](HARDWARE.md)** — Аппаратное обеспечение
+- **[SOFTWARE.md](SOFTWARE.md)** — Программное обеспечение
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Развёртывание системы
+- **[API_REFERENCE.md](API_REFERENCE.md)** — Справочник API
+- **[CONTRIBUTING.md](../CONTRIBUTING.md)** — Участие в проекте
+
+---
+
+## 🔗 Полезные ссылки
+
+- GitHub: https://github.com/krikz/rob_box_project
+- Docker Registry: https://ghcr.io/krikz/rob_box
+- ROS 2 Humble Docs: https://docs.ros.org/en/humble/
+- Zenoh: https://zenoh.io/
+- RTAB-Map: http://introlab.github.io/rtabmap/
+
+---
+
+<div align="center">
+  <sub>Последнее обновление: 2025-10-12 | Версия: 1.0.0</sub>
+</div>
