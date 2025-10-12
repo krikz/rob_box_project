@@ -4,13 +4,13 @@
 # VESC Nexus работает как hardware_interface плагин внутри controller_manager,
 # а НЕ как отдельная нода!
 
-ARG ROS_DISTRO=humble
-ARG IMAGE_TAG=latest
-ARG BASE_IMAGE_PREFIX=ghcr.io/krikz/rob_box_base
+# ВАЖНО: Используем rtabmap базовый образ вместо минимального ros2-zenoh
+# rtabmap базируется на полном ROS2 с всеми необходимыми библиотеками для компиляции
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
 # Версия сборки для инвалидации кеша при изменении зависимостей
-ARG BUILD_VERSION=2025-10-12
+ARG BUILD_VERSION=2025-10-12-rtabmap
 
-FROM ${BASE_IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-${IMAGE_TAG}
+FROM ${BASE_IMAGE}
 
 # Метаданные
 LABEL org.opencontainers.image.title="ROS2 Control Manager with VESC"
@@ -22,34 +22,26 @@ ARG BUILD_VERSION
 RUN echo "Build version: ${BUILD_VERSION}"
 
 # Установка ROS2 Control и зависимостей
-# КРИТИЧНО: Базовый образ слишком минимальный, устанавливаем ros-base для всех библиотек
-# Очищаем apt кеш и устанавливаем все за один RUN для согласованности слоев
-RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/* && \
-    apt-get update && apt-get install -y \
-    # ROS2 Base - содержит ВСЕ необходимые библиотеки для компиляции
-    ros-${ROS_DISTRO}-ros-base \
+# Базовый образ rtabmap уже содержит полный ROS2, нужны только Control пакеты
+RUN apt-get update && apt-get install -y \
     # CAN утилиты
     can-utils \
     iproute2 \
     net-tools \
-    # ROS2 базовая инфраструктура
-    ros-${ROS_DISTRO}-ament-cmake \
-    ros-${ROS_DISTRO}-ament-cmake-ros \
-    # ROS2 Control
-    ros-${ROS_DISTRO}-ros2-control \
-    ros-${ROS_DISTRO}-ros2-controllers \
-    ros-${ROS_DISTRO}-controller-manager \
-    ros-${ROS_DISTRO}-hardware-interface \
-    ros-${ROS_DISTRO}-pluginlib \
+    # ROS2 Control (ros-base уже в базовом образе)
+    ros-humble-ros2-control \
+    ros-humble-ros2-controllers \
+    ros-humble-controller-manager \
+    ros-humble-hardware-interface \
+    ros-humble-pluginlib \
     # Контроллеры
-    ros-${ROS_DISTRO}-diff-drive-controller \
-    ros-${ROS_DISTRO}-joint-state-broadcaster \
-    ros-${ROS_DISTRO}-joint-trajectory-controller \
+    ros-humble-diff-drive-controller \
+    ros-humble-joint-state-broadcaster \
+    ros-humble-joint-trajectory-controller \
     # Утилиты
-    ros-${ROS_DISTRO}-xacro \
-    ros-${ROS_DISTRO}-ros2controlcli \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+    ros-humble-xacro \
+    ros-humble-ros2controlcli \
+    && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория
 WORKDIR /ws
@@ -64,42 +56,19 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep и сборка пакетов
-# КРИТИЧЕСКАЯ ПРОБЛЕМА: CMake конфиг builtin_interfaces сломан на ARM64
-# Решение: проверяем CMake конфиг и пытаемся починить
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    rm -rf /root/.ros/rosdep && \
+RUN . /opt/ros/humble/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
-    # Проверяем сломанный CMake конфиг
-    echo "=== Checking CMake config file ===" && \
-    cat /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake && \
-    echo "=== Actual library location ===" && \
-    ls -la /opt/ros/${ROS_DISTRO}/lib/libbuiltin_interfaces*.so && \
-    # WORKAROUND: Пытаемся создать симлинки без префикса lib
-    cd /opt/ros/${ROS_DISTRO}/lib && \
-    for lib in libbuiltin_interfaces*.so; do \
-        target="${lib#lib}"; \
-        if [ ! -e "$target" ]; then \
-            ln -sf "$lib" "$target" || true; \
-        fi \
-    done && \
-    echo "=== Created symlinks ===" && \
-    ls -la /opt/ros/${ROS_DISTRO}/lib/*builtin_interfaces*.so | head -20 && \
-    cd /ws && \
-    # Теперь пробуем собрать
-    export CMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}:${CMAKE_PREFIX_PATH} && \
-    export LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH} && \
     colcon build \
     --packages-select vesc_msgs vesc_nexus rob_box_description \
     --symlink-install \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-      -DCMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Source workspace
-RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
     echo "source /ws/install/setup.bash" >> /root/.bashrc
 
 # ROS2 и Zenoh environment variables
