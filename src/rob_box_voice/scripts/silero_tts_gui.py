@@ -81,24 +81,30 @@ class SileroTTSGUI:
     }
     
     # Имперский марш (Imperial March) - мелодия через SSML
-    # Ноты: G G G Eb-Bb G | Eb-Bb G | (основная тема)
-    # Используем "дам" для имитации нот с разным pitch
-    IMPERIAL_MARCH_SSML = '''<speak>
-<prosody pitch="medium" rate="slow">Дам</prosody><break time="500ms"/>
-<prosody pitch="medium" rate="slow">Дам</prosody><break time="500ms"/>
-<prosody pitch="medium" rate="slow">Дам</prosody><break time="500ms"/>
-<prosody pitch="low" rate="slow">Да-ам</prosody><break time="300ms"/>
-<prosody pitch="high" rate="medium">Дам</prosody><break time="200ms"/>
-<prosody pitch="medium" rate="slow">Дам</prosody><break time="500ms"/>
-<prosody pitch="low" rate="slow">Да-ам</prosody><break time="300ms"/>
-<prosody pitch="high" rate="medium">Дам</prosody><break time="200ms"/>
-<prosody pitch="medium" rate="slow">Дам</prosody><break time="1s"/>
-<prosody pitch="x-high" rate="medium">Дам Дам Дам</prosody><break time="300ms"/>
-<prosody pitch="high" rate="medium">Да-ам Дам</prosody><break time="300ms"/>
-<prosody pitch="medium" rate="slow">Дам</prosody><break time="300ms"/>
-<prosody pitch="low" rate="slow">Да-ам</prosody><break time="300ms"/>
-<prosody pitch="high" rate="medium">Дам</prosody><break time="200ms"/>
-<prosody pitch="medium" rate="slow">Дам</prosody>
+    # Используем только поддерживаемые Silero значения: x-low, low, medium, high, x-high
+    # Ноты: G(medium) G(medium) G(medium) | Eb(low) Bb(high) G(medium)
+    # Более выраженная мелодия с правильными паузами
+    IMPERIAL_MARCH_TEMPLATE = '''<speak>
+<prosody rate="{base_rate}">
+<prosody pitch="medium">Дан</prosody><break time="600ms"/>
+<prosody pitch="medium">Дан</prosody><break time="600ms"/>
+<prosody pitch="medium">Дан</prosody><break time="800ms"/>
+<prosody pitch="low">Дааа</prosody><break time="350ms"/>
+<prosody pitch="high">ан</prosody><break time="150ms"/>
+<prosody pitch="medium">Дан</prosody><break time="800ms"/>
+<prosody pitch="low">Дааа</prosody><break time="350ms"/>
+<prosody pitch="high">ан</prosody><break time="150ms"/>
+<prosody pitch="medium">Дан</prosody><break time="1400ms"/>
+<prosody pitch="x-high">Дан</prosody><break time="600ms"/>
+<prosody pitch="x-high">Дан</prosody><break time="600ms"/>
+<prosody pitch="x-high">Дан</prosody><break time="800ms"/>
+<prosody pitch="high">Дааа</prosody><break time="350ms"/>
+<prosody pitch="x-high">ан</prosody><break time="150ms"/>
+<prosody pitch="medium">Дан</prosody><break time="800ms"/>
+<prosody pitch="low">Дааа</prosody><break time="350ms"/>
+<prosody pitch="high">ан</prosody><break time="150ms"/>
+<prosody pitch="medium">Дан</prosody>
+</prosody>
 </speak>'''
     
     def __init__(self, root: tk.Tk):
@@ -621,15 +627,21 @@ class SileroTTSGUI:
             self.status_label.config(text="🎵 Синтез Имперского марша...")
             self.root.update()
             
-            # Показываем SSML в редакторе
-            self.ssml_editor.delete("1.0", tk.END)
-            self.ssml_editor.insert("1.0", self.IMPERIAL_MARCH_SSML)
+            # Генерируем SSML с текущими настройками rate
+            # Pitch управляется внутри мелодии (x-low, low, medium, high, x-high)
+            imperial_march_ssml = self.IMPERIAL_MARCH_TEMPLATE.format(
+                base_rate=self.config["rate"]
+            )
+            
+            # Показываем информацию (БЕЗ записи в редактор!)
+            info_text = f"🎵 Воспроизведение с настройками:\n• Голос: {self.config['speaker']}\n• Base Rate: {self.config['rate']}"
+            print(info_text)
             
             # Синтез
             start_time = time.time()
             
             audio = self.model.apply_tts(
-                ssml_text=self.IMPERIAL_MARCH_SSML,
+                ssml_text=imperial_march_ssml,
                 speaker=self.config["speaker"],
                 sample_rate=self.config["sample_rate"]
             )
@@ -661,14 +673,24 @@ class SileroTTSGUI:
             sd.wait()
             
             self.status_label.config(text="✅ Имперский марш завершён! May the Force be with you!")
-            messagebox.showinfo("🎵 Имперский марш", 
-                              f"Демонстрация SSML возможностей:\n\n"
-                              f"• Изменение pitch (x-low → x-high)\n"
-                              f"• Изменение rate (slow → fast)\n"
-                              f"• Паузы между нотами (200-1000ms)\n\n"
-                              f"Синтез: {synthesis_time:.2f}s\n"
-                              f"Аудио: {audio_duration:.2f}s\n"
-                              f"RTF: {rtf:.2f} ({'⚡ Быстрее realtime!' if rtf < 1.0 else '⏱️'})")
+            
+            # Показываем SSML в окне (опционально - если пользователь хочет посмотреть)
+            show_ssml = messagebox.askyesno("🎵 Имперский марш", 
+                              f"Воспроизведение завершено!\n\n"
+                              f"Настройки:\n"
+                              f"• Голос: {self.VOICES[self.config['speaker']]}\n"
+                              f"• Base Rate: {self.config['rate']}\n"
+                              f"• Pitch: фиксированный (x-low → x-high в мелодии)\n\n"
+                              f"Производительность:\n"
+                              f"• Синтез: {synthesis_time:.2f}s\n"
+                              f"• Аудио: {audio_duration:.2f}s\n"
+                              f"• RTF: {rtf:.2f} ({'⚡ Быстрее realtime!' if rtf < 1.0 else '⏱️'})\n\n"
+                              f"Показать SSML код в редакторе?")
+            
+            if show_ssml:
+                # Только если пользователь хочет - показываем SSML
+                self.ssml_editor.delete("1.0", tk.END)
+                self.ssml_editor.insert("1.0", imperial_march_ssml)
             
         except Exception as e:
             error_msg = f"Ошибка воспроизведения: {e}"
