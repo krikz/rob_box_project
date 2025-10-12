@@ -71,12 +71,21 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
+    # Диагностика: проверяем наличие критичных библиотек
+    echo "=== Checking builtin_interfaces libraries ===" && \
+    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*rosidl_generator_c*" -o -name "libbuiltin_interfaces*" | head -20 && \
+    ls -la /opt/ros/${ROS_DISTRO}/lib/ | grep builtin || echo "No builtin libs in /opt/ros/humble/lib" && \
+    # Проверяем CMAKE конфиг
+    echo "=== Checking builtin_interfaces CMake config ===" && \
+    cat /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -60 && \
+    # Пытаемся собрать с явной установкой CMAKE_PREFIX_PATH
     colcon build \
     --packages-select vesc_msgs vesc_nexus rob_box_description \
     --symlink-install \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+      -DCMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
