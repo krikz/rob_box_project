@@ -1,0 +1,20 @@
+# Python dependencies для rob_box_voice
+
+# Аудио
+pyaudio>=0.2.11
+sounddevice>=0.4.6
+numpy>=1.21.0
+
+# USB интерфейс для ReSpeaker
+pyusb>=1.2.1
+
+# Yandex Cloud APIs
+grpcio>=1.51.0
+grpcio-tools>=1.51.0
+protobuf>=3.20.0
+
+# DeepSeek / OpenAI compatible API
+openai>=1.0.0
+
+# Утилиты
+pyyaml>=6.0
