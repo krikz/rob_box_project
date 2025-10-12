@@ -1,0 +1,168 @@
+/**:
+  ros__parameters:
+    # ===== Audio Node =====
+    audio_node:
+      # Устройство
+      device_name: "ReSpeaker"  # Автопоиск по имени
+      sample_rate: 16000
+      channels: 1  # 1-channel firmware с AEC
+      chunk_size: 512
+      format: "PCM16"
+      
+      # VAD параметры
+      vad_threshold: 500  # ReSpeaker builtin VAD (0-1000)
+      vad_debounce_ms: 300
+      
+      # DoA (Direction of Arrival)
+      publish_doa: true
+      doa_rate_hz: 5.0
+      
+      # ReSpeaker USB tuning
+      respeaker_params:
+        AGCONOFF: 3  # AGC: 0=off, 1-3=levels
+        AGCMAXGAIN: 30  # Max AGC gain (dB)
+        AGCDESIREDLEVEL: 10  # Target level
+        VOICEACTIVITY: 1  # VAD: 1=enable
+        SPEECH_DETECTED: 1  # Use built-in VAD
+    
+    # ===== LED Node =====
+    led_node:
+      # Режимы работы
+      auto_mode: true  # Автопереключение по /voice/state
+      brightness: 16  # 0-31
+      
+      # Цвета для состояний
+      colors:
+        idle:       [0, 50, 100]   # Голубой
+        listening:  [0, 255, 0]    # Зелёный
+        thinking:   [100, 0, 200]  # Фиолетовый
+        speaking:   [255, 100, 0]  # Оранжевый
+        error:      [255, 0, 0]    # Красный
+        success:    [0, 255, 50]   # Салатовый
+        wake:       [255, 255, 0]  # Жёлтый (wake word)
+      
+      # Эффекты
+      use_direction: true  # Направление DoA для спин/wipe
+      effect_speed: 0.1  # Скорость анимации
+    
+    # ===== STT Node (Speech-to-Text) =====
+    stt_node:
+      provider: "yandex"  # yandex | google | whisper
+      
+      # Yandex Cloud settings
+      yandex:
+        folder_id: "YOUR_FOLDER_ID"  # Заменить!
+        api_key: "YOUR_API_KEY"      # Заменить!
+        language: "ru-RU"
+        model: "general"  # general | general:rc | general:deprecated
+        audio_encoding: "LINEAR16_PCM"
+        sample_rate: 16000
+        
+      # Whisper local (альтернатива)
+      whisper:
+        model: "base"  # tiny | base | small | medium | large
+        device: "cpu"
+        language: "ru"
+    
+    # ===== TTS Node (Text-to-Speech) =====
+    tts_node:
+      provider: "yandex"  # yandex | google | local
+      
+      # Yandex Cloud settings
+      yandex:
+        folder_id: "YOUR_FOLDER_ID"  # Заменить!
+        api_key: "YOUR_API_KEY"      # Заменить!
+        voice: "anton"  # anton | alena | oksana | jane
+        emotion: "neutral"  # neutral | good | evil
+        speed: 0.4  # 0.1-3.0 (медленнее для робота)
+        format: "lpcm"
+        sample_rate: 16000
+        
+      # Кэш
+      cache_enabled: true
+      cache_dir: "/cache/tts"
+      cache_max_size_mb: 500
+    
+    # ===== Dialogue Node (LLM) =====
+    dialogue_node:
+      provider: "deepseek"  # deepseek | openai | ollama
+      
+      # DeepSeek API
+      deepseek:
+        api_key: "YOUR_DEEPSEEK_API_KEY"  # Заменить!
+        base_url: "https://api.deepseek.com"
+        model: "deepseek-chat"
+        temperature: 0.7
+        max_tokens: 500  # Ограничение для робота
+        stream: true
+        
+      # Промпт система
+      system_prompt_file: "/ws/install/rob_box_voice/share/rob_box_voice/prompts/master_prompt.txt"
+      context_window: 10  # Последние N сообщений
+      
+      # Тайминги
+      response_timeout_sec: 30.0
+      stream_chunk_timeout_sec: 5.0
+    
+    # ===== Sound Node (Аудио эффекты) =====
+    sound_node:
+      sound_pack_dir: "/ws/sound_pack"
+      
+      # Громкость
+      volume: 0.7  # 0.0-1.0
+      
+      # Звуки для событий
+      sounds:
+        wake: "cute.mp3"
+        listening: "talk_1.mp3"
+        thinking: "thinking.mp3"
+        speaking: "talk_2.mp3"
+        success: "very_cute.mp3"
+        error: "confused.mp3"
+        angry: "angry_1.mp3"
+        surprise: "surprise.mp3"
+      
+      # Случайность (0.0-1.0, вероятность воспроизведения)
+      play_probability:
+        listening: 0.3
+        thinking: 0.5
+        speaking: 0.2
+    
+    # ===== Command Node (Управление роботом) =====
+    command_node:
+      # Подписки на топики
+      subscriptions:
+        odometry: "/odom"
+        battery: "/battery_state"
+        scan: "/scan"
+        
+      # Публикации
+      publishers:
+        cmd_vel: "/cmd_vel"
+        goal_pose: "/goal_pose"
+        
+      # Лимиты скорости
+      max_linear_speed: 0.3  # м/с
+      max_angular_speed: 1.0  # рад/с
+      
+      # Команды движения
+      command_timeout_sec: 0.5  # Таймаут для cmd_vel
+      
+      # Парсинг команд
+      commands:
+        - pattern: "вперед|forward"
+          action: "move_forward"
+          params: {distance: 0.5}
+        - pattern: "назад|back"
+          action: "move_backward"
+          params: {distance: 0.5}
+        - pattern: "налево|left"
+          action: "turn_left"
+          params: {angle: 90}
+        - pattern: "направо|right"
+          action: "turn_right"
+          params: {angle: 90}
+        - pattern: "стоп|stop"
+          action: "stop"
+        - pattern: "домой|go home"
+          action: "return_home"
