@@ -71,21 +71,32 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
-    # Диагностика: проверяем наличие критичных библиотек
-    echo "=== Checking builtin_interfaces libraries ===" && \
-    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*rosidl_generator_c*" -o -name "libbuiltin_interfaces*" | head -20 && \
-    ls -la /opt/ros/${ROS_DISTRO}/lib/ | grep builtin || echo "No builtin libs in /opt/ros/humble/lib" && \
-    # Проверяем CMAKE конфиг
-    echo "=== Checking builtin_interfaces CMake config ===" && \
-    cat /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -60 && \
-    # Пытаемся собрать с явной установкой CMAKE_PREFIX_PATH
+    # ДИАГНОСТИКА: Проверяем пути библиотек для ARM64
+    echo "=== Architecture and library paths ===" && \
+    dpkg --print-architecture && \
+    echo "=== Searching for builtin_interfaces libraries ===" && \
+    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*.so" 2>/dev/null | head -20 && \
+    find /usr/lib -name "*builtin_interfaces*.so" 2>/dev/null | head -20 && \
+    echo "=== LD_LIBRARY_PATH ===" && \
+    echo $LD_LIBRARY_PATH && \
+    echo "=== CMAKE_PREFIX_PATH ===" && \
+    echo $CMAKE_PREFIX_PATH && \
+    # Пробуем установить недостающие dev пакеты явно
+    apt-get update && apt-get install -y \
+        ros-${ROS_DISTRO}-builtin-interfaces \
+        ros-${ROS_DISTRO}-rosidl-default-runtime \
+        ros-${ROS_DISTRO}-rosidl-default-generators \
+    && rm -rf /var/lib/apt/lists/* && \
+    # Проверяем после установки
+    echo "=== After explicit install ===" && \
+    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*rosidl_generator_c.so" 2>/dev/null && \
+    # Собираем с явными путями
     colcon build \
     --packages-select vesc_msgs vesc_nexus rob_box_description \
     --symlink-install \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-      -DCMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
