@@ -1,0 +1,171 @@
+name: Auto-merge feature branches to develop
+
+# Автоматическое слияние feature веток в develop после успешной сборки
+# Срабатывает при пуше в feature/* ветки
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'feat/**'
+
+jobs:
+  # Шаг 1: Определяем что менялось
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      vision_changed: ${{ steps.changes.outputs.vision }}
+      main_changed: ${{ steps.changes.outputs.main }}
+      docs_changed: ${{ steps.changes.outputs.docs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: changes
+        run: |
+          # Проверяем изменения относительно develop
+          git fetch origin develop
+          
+          if git diff --name-only origin/develop HEAD | grep -q "^docker/vision/"; then
+            echo "vision=true" >> $GITHUB_OUTPUT
+          else
+            echo "vision=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if git diff --name-only origin/develop HEAD | grep -q "^docker/main/"; then
+            echo "main=true" >> $GITHUB_OUTPUT
+          else
+            echo "main=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if git diff --name-only origin/develop HEAD | grep -q "^docs/"; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          else
+            echo "docs=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Шаг 2: Сборка Vision Pi сервисов (если были изменения)
+  build-vision:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.vision_changed == 'true'
+    uses: ./.github/workflows/build-vision-services.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  # Шаг 3: Сборка Main Pi сервисов (если были изменения)
+  build-main:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.main_changed == 'true'
+    uses: ./.github/workflows/build-main-services.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  # Шаг 4: Автомердж в develop после успешной сборки
+  auto-merge-to-develop:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-vision, build-main]
+    # Запускаем если хотя бы одна сборка прошла успешно (или не запускалась)
+    if: |
+      always() && 
+      (needs.build-vision.result == 'success' || needs.build-vision.result == 'skipped') &&
+      (needs.build-main.result == 'success' || needs.build-main.result == 'skipped')
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get branch name
+        id: branch
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          echo "name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "Current branch: $BRANCH_NAME"
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+      - name: Merge feature branch to develop
+        id: merge
+        run: |
+          FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
+          echo "🔀 Merging $FEATURE_BRANCH to develop..."
+          
+          # Переключаемся на develop
+          git fetch origin develop
+          git checkout develop
+          git pull origin develop
+          
+          # Мержим feature ветку
+          if git merge --no-ff origin/$FEATURE_BRANCH -m "feat: auto-merge $FEATURE_BRANCH to develop after successful build"; then
+            echo "✅ Merge successful"
+            echo "merged=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Merge conflict detected"
+            echo "merged=false" >> $GITHUB_OUTPUT
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Push to develop
+        if: steps.merge.outputs.merged == 'true'
+        run: |
+          git push origin develop
+          echo "✅ Successfully pushed to develop!"
+
+      - name: Delete feature branch (optional)
+        if: steps.merge.outputs.merged == 'true'
+        run: |
+          FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
+          echo "🗑️ Deleting merged feature branch: $FEATURE_BRANCH"
+          git push origin --delete $FEATURE_BRANCH || echo "⚠️ Failed to delete remote branch"
+
+      - name: Success notification
+        if: steps.merge.outputs.merged == 'true'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Feature branch auto-merged to develop!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Branch: ${{ steps.branch.outputs.name }} → develop"
+          echo "Commit: $(git rev-parse develop)"
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo ""
+          echo "Changes merged:"
+          if [ "${{ needs.detect-changes.outputs.vision_changed }}" == "true" ]; then
+            echo "  ✓ Vision Pi services"
+          fi
+          if [ "${{ needs.detect-changes.outputs.main_changed }}" == "true" ]; then
+            echo "  ✓ Main Pi services"
+          fi
+          if [ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]; then
+            echo "  ✓ Documentation"
+          fi
+
+      - name: Merge conflict notification
+        if: steps.merge.outputs.merged == 'false'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⚠️ Auto-merge failed due to conflicts!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Please merge manually:"
+          echo "  git checkout develop"
+          echo "  git pull"
+          echo "  git merge ${{ steps.branch.outputs.name }}"
+          echo "  # resolve conflicts"
+          echo "  git push origin develop"
+          exit 1

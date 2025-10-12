@@ -1,0 +1,12 @@
+# Зависимости для Silero TTS GUI
+# Графический настройщик голоса
+
+# Основные зависимости
+torch==2.1.0
+torchaudio==2.1.0
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# GUI (обычно уже установлен с Python)
+# tkinter - встроен в Python, но на Linux может потребоваться:
+# sudo apt-get install python3-tk

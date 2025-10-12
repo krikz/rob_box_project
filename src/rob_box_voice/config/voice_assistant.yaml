@@ -1,0 +1,132 @@
+# Voice Assistant Configuration for ROBBOX
+
+/**:
+  ros__parameters:
+    # ========== Audio Node ==========
+    audio_node:
+      sample_rate: 16000          # Hz (ReSpeaker max)
+      channels: 1                 # обработанный канал из 1_channel_firmware
+      chunk_size: 1024            # frames per buffer
+      vad_threshold: 3.5          # dB (GAMMAVAD_SR parameter)
+      publish_rate: 10            # Hz для VAD/DOA topics
+      device_index: -1            # -1 = auto-detect ReSpeaker
+      device_name: "ReSpeaker 4 Mic Array"
+
+    # ========== STT Node ==========
+    stt_node:
+      provider: "yandex"          # "yandex" или "whisper"
+      language: "ru-RU"
+      model: "general"            # Yandex: "general" или "general:rc"
+      # Whisper settings (если provider="whisper")
+      whisper_model: "base"       # tiny/base/small/medium/large
+      whisper_device: "cpu"       # cpu/cuda
+
+    # ========== TTS Node ==========
+    tts_node:
+      provider: "silero"          # "silero", "yandex" или "coqui"
+      
+      # Silero TTS v4 settings (рекомендуется для offline)
+      silero:
+        model_path: "/models/silero_v4_ru.pt"  # Путь к модели
+        speaker: "aidar"          # Голоса: aidar (М), baya (М), kseniya (Ж), xenia (Ж)
+        sample_rate: 48000        # Hz (24000/48000)
+        threads: 4                # CPU threads (оптимально для Pi 5)
+        # SSML настройки для изменения голоса
+        pitch: "medium"           # x-low/low/medium/high/x-high
+        rate: "medium"            # x-slow/slow/medium/fast/x-fast
+        use_ssml: true            # Использовать SSML для всех фраз
+      
+      # Yandex TTS settings (fallback, требует API key)
+      yandex:
+        voice: "anton"            # Мужской голос
+        speed: 0.4                # Скорость речи (0.1-3.0)
+        emotion: "neutral"        # neutral/good/evil
+      
+      # Кэширование
+      cache_dir: "~/.cache/rob_box_voice/tts"
+      pregenerate: true           # Генерировать системные фразы при старте
+      cache_enabled: true
+
+    # ========== Dialogue Node ==========
+    dialogue_node:
+      # Активация
+      activation_phrases:
+        - "роббокс"
+        - "робокс"
+        - "робо"
+        - "робот"
+      
+      # Таймауты
+      silence_timeout: 3.5        # секунды тишины → конец вопроса
+      max_question_time: 20.0     # максимальное время накопления вопроса
+      
+      # LLM
+      llm_provider: "deepseek"    # "deepseek" или "local" (Ollama)
+      model: "deepseek-chat"      # Или "llama3" для local
+      
+      # История
+      history_size: 10            # пар user/assistant (20 сообщений)
+      
+      # Streaming
+      streaming: true             # Потоковый вывод LLM
+      sentence_split: true        # Разбивать на предложения для TTS
+
+    # ========== Sound Node ==========
+    sound_node:
+      # Устройство вывода
+      output_device: "plughw:CARD=ArrayUAC10,DEV=0"  # ReSpeaker 3.5mm jack
+      output_device_name: "ReSpeaker 4 Mic Array"
+      
+      # Пути
+      sound_pack_dir: "~/rob_box_project/sound_pack"
+      
+      # Синхронизация с анимациями
+      trigger_animations: true
+      animation_topic: "/animations/trigger"
+
+    # ========== LED Node ==========
+    led_node:
+      brightness: 16              # 0-31 (0x00-0x1F)
+      auto_mode: true             # Автосмена по /voice/state
+      
+      # Цвета для режимов (RGB, 0-255)
+      colors:
+        idle: [0, 0, 0]           # Выключен
+        listening: [0, 255, 0]    # Зелёный
+        thinking: [0, 0, 255]     # Синий
+        speaking: [0, 255, 255]   # Голубой
+        error: [255, 0, 0]        # Красный
+
+    # ========== Command Node ==========
+    command_node:
+      # Включить выполнение команд (для безопасности можно отключить)
+      commands_enabled: true
+      
+      # Максимальные значения для безопасности
+      max_linear_speed: 1.0       # м/с
+      max_angular_speed: 1.57     # рад/с (90°/с)
+      
+      # Nav2 интеграция
+      nav2_enabled: true
+      nav2_timeout: 300.0         # секунды
+
+# ========== System Phrases (для кэша) ==========
+system_phrases:
+  - "Слушаю"
+  - "Дай подумаю"
+  - "Готово"
+  - "Не понял"
+  - "Повторите пожалуйста"
+  - "Выполняю"
+  - "Остановился"
+  - "Еду вперёд"
+  - "Поворачиваю"
+  - "Поворачиваю налево"
+  - "Поворачиваю направо"
+  - "Приехал"
+  - "Препятствие обнаружено"
+  - "Батарея разряжена"
+  - "Заряд батареи низкий"
+  - "Не могу выполнить команду"
+  - "Что-то пошло не так"
+  - "Сервис недоступен"

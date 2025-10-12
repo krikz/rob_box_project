@@ -1,6 +1,6 @@
 name: Auto-merge develop to main
 
-# Автоматическое слияние develop в main после успешной сборки
+# Автоматическое слияние develop в main после успешной сборки ВСЕХ сервисов
 # Срабатывает только при пуше в develop
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - develop
 
 jobs:
-  # Шаг 1: Проверяем что все образы собираются
+  # Шаг 1: Проверяем что ВСЕ образы собираются успешно
   build-and-test:
     uses: ./.github/workflows/build-all.yml
     secrets: inherit
@@ -16,7 +16,7 @@ jobs:
       contents: read
       packages: write
 
-  # Шаг 2: Если сборка успешна, мержим в main
+  # Шаг 2: Если ВСЕ сборки успешны, мержим в main
   auto-merge:
     runs-on: ubuntu-latest
     needs: build-and-test
@@ -37,24 +37,82 @@ jobs:
           git config user.email "actions@github.com"
 
       - name: Merge develop to main
+        id: merge
         run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔀 Merging develop to main..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          
+          git fetch origin main
           git checkout main
-          git merge --no-ff develop -m "chore: auto-merge develop to main after successful build"
+          git pull origin main
+          
+          if git merge --no-ff develop -m "chore: auto-merge develop to main after successful build"; then
+            echo "merged=true" >> $GITHUB_OUTPUT
+            echo "✅ Merge successful"
+          else
+            echo "merged=false" >> $GITHUB_OUTPUT
+            echo "❌ Merge conflict detected"
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Push to main
+        if: steps.merge.outputs.merged == 'true'
+        run: |
           git push origin main
+          echo "✅ Successfully pushed to main!"
+
+      - name: Create release tag (optional)
+        if: steps.merge.outputs.merged == 'true'
+        run: |
+          # Создаём тег с датой
+          TAG="release-$(date -u '+%Y%m%d-%H%M%S')"
+          git tag -a "$TAG" -m "Automated release from develop to main"
+          git push origin "$TAG"
+          echo "📦 Created release tag: $TAG"
 
       - name: Success notification
+        if: steps.merge.outputs.merged == 'true'
         run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "✅ Successfully merged develop to main!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "Branch: develop → main"
           echo "Commit: $(git rev-parse HEAD)"
+          echo "Tag: release-$(date -u '+%Y%m%d-%H%M%S')"
           echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo ""
+          echo "All services built successfully:"
+          echo "  ✓ Vision Pi services (oak-d, lslidar, apriltag, led-matrix, voice-assistant)"
+          echo "  ✓ Main Pi services (micro-ros-agent, zenoh-router)"
+          echo "  ✓ Base images (ros2-zenoh)"
+          echo ""
+          echo "Images will be available with tags:"
+          echo "  - *-humble-latest (production)"
 
-  # Шаг 3: Собираем main branch для проверки
+      - name: Merge conflict notification
+        if: steps.merge.outputs.merged == 'false'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⚠️ Auto-merge failed due to conflicts!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Please merge manually:"
+          echo "  git checkout main"
+          echo "  git pull"
+          echo "  git merge develop"
+          echo "  # resolve conflicts"
+          echo "  git push origin main"
+          exit 1
+
+  # Шаг 3: Собираем main branch с тегом 'latest'
   build-main:
     runs-on: ubuntu-latest
     needs: auto-merge
+    if: always() && needs.auto-merge.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -67,5 +125,15 @@ jobs:
 
       - name: Trigger main build
         run: |
-          echo "🚀 Main branch updated, build will be triggered automatically"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Main branch updated, build triggered"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
           echo "Main branch is now at: $(git rev-parse HEAD)"
+          echo "Docker images will be built with '-latest' tags"
+          echo ""
+          echo "Available at:"
+          echo "  ghcr.io/krikz/rob_box:voice-assistant-humble-latest"
+          echo "  ghcr.io/krikz/rob_box:oak-d-humble-latest"
+          echo "  ghcr.io/krikz/rob_box:lslidar-humble-latest"
+          echo "  # ... and all other services"

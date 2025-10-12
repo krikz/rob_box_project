@@ -19,7 +19,7 @@ ament_python_install_package(${PROJECT_NAME})
 # Install Python executables
 install(PROGRAMS
   scripts/animation_player_node.py
-  scripts/animation_manager_node.py
+  scripts/audio_reactive_animation_node.py
   scripts/animation_test.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -36,11 +36,7 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
-# Install config files
-install(DIRECTORY
-  config/
-  DESTINATION share/${PROJECT_NAME}/config
-)
+# Note: config directory removed as it doesn't exist
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

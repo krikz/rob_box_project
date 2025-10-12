@@ -118,3 +118,43 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+
+  voice-assistant:
+    # Image tags:
+    # - ghcr.io/krikz/rob_box:voice-assistant-humble-latest (main branch)
+    # - ghcr.io/krikz/rob_box:voice-assistant-humble-dev (develop branch)
+    # Built via GitHub Actions: .github/workflows/build-vision-services.yml
+    image: ghcr.io/krikz/rob_box:voice-assistant-humble-latest
+    container_name: voice-assistant
+    network_mode: host
+    privileged: true  # Для доступа к USB audio и ReSpeaker
+    devices:
+      - /dev/snd:/dev/snd  # ALSA audio devices
+      - /dev/bus/usb:/dev/bus/usb  # USB для ReSpeaker
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      # Audio settings
+      - ALSA_CARD=ReSpeaker
+      - TTS_CACHE_DIR=/cache/tts
+      # Python для audio
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./config:/config/shared:ro
+      - ./config/voice:/config/voice:ro
+      - ./scripts:/scripts:ro
+      - /dev/shm:/dev/shm
+      # Кэш для TTS (persistent)
+      - ./cache/tts:/cache/tts
+      # Sound pack
+      - ../../sound_pack:/ws/sound_pack:ro
+    mem_limit: 2g  # Voice Assistant + Animations
+    memswap_limit: 2.5g
+    command: ["/scripts/start_voice_assistant.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped

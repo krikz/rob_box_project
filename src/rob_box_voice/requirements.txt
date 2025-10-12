@@ -1,0 +1,42 @@
+# Python dependencies для rob_box_voice
+
+# === Аудио ===
+pyaudio>=0.2.11
+sounddevice>=0.4.6
+numpy>=1.21.0
+
+# === USB интерфейс для ReSpeaker ===
+pyusb>=1.2.1
+
+# === STT (Speech-to-Text) ===
+# Vosk - Fast, offline, real-time (RECOMMENDED)
+vosk>=0.3.45
+
+# Whisper - High accuracy, offline (alternative)
+openai-whisper>=20230314
+faster-whisper>=0.9.0  # Faster inference via CTranslate2
+
+# Yandex Cloud STT (fallback, online)
+grpcio>=1.51.0
+grpcio-tools>=1.51.0
+protobuf>=3.20.0
+
+# === TTS (Text-to-Speech) ===
+# Piper - Fast, high quality, offline (RECOMMENDED)
+piper-tts>=1.2.0
+
+# Silero - Alternative offline TTS with multiple voices
+torch>=2.0.0  # CPU only for ARM64
+torchaudio>=2.0.0
+omegaconf>=2.3.0
+
+# Yandex Cloud TTS (fallback, online)
+# Uses same grpcio deps as STT
+
+# === Dialogue & LLM ===
+# DeepSeek / OpenAI compatible API
+openai>=1.0.0
+
+# === Утилиты ===
+pyyaml>=6.0
+requests>=2.28.0
