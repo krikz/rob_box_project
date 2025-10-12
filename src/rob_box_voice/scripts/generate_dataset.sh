@@ -114,12 +114,17 @@ echo ""
 
 VOICE_DATASET_DIR="$HOME/robbox_tts_training/datasets/$DATASET_NAME"
 
+# Настройки TTS (точные значения из вашего скрипта)
+echo "Настройки Yandex TTS v3:"
+echo "  Voice: anton (только v3!)"
+echo "  Speed: 0.4 (медленная чёткая речь)"
+echo ""
+
 python3 record_yandex_voice.py \
     --input "$SENTENCES_FILE" \
     --output "$VOICE_DATASET_DIR" \
     --voice anton \
-    --emotion neutral \
-    --speed 1.0 \
+    --speed 0.4 \
     --delay 1.5
 
 if [ $? -ne 0 ]; then
