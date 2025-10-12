@@ -64,18 +64,32 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep и сборка пакетов
-# КРИТИЧЕСКАЯ ПРОБЛЕМА: setup.sh не экспортирует CMAKE_PREFIX_PATH в non-interactive mode
-# Решение: явно экспортируем все необходимые переменные окружения
+# КРИТИЧЕСКАЯ ПРОБЛЕМА: CMake конфиг builtin_interfaces сломан на ARM64
+# Решение: проверяем CMake конфиг и пытаемся починить
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /root/.ros/rosdep && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
-    # ЯВНАЯ установка CMAKE_PREFIX_PATH (критично для поиска библиотек)
+    # Проверяем сломанный CMake конфиг
+    echo "=== Checking CMake config file ===" && \
+    cat /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake && \
+    echo "=== Actual library location ===" && \
+    ls -la /opt/ros/${ROS_DISTRO}/lib/libbuiltin_interfaces*.so && \
+    # WORKAROUND: Пытаемся создать симлинки без префикса lib
+    cd /opt/ros/${ROS_DISTRO}/lib && \
+    for lib in libbuiltin_interfaces*.so; do \
+        target="${lib#lib}"; \
+        if [ ! -e "$target" ]; then \
+            ln -sf "$lib" "$target" || true; \
+        fi \
+    done && \
+    echo "=== Created symlinks ===" && \
+    ls -la /opt/ros/${ROS_DISTRO}/lib/*builtin_interfaces*.so | head -20 && \
+    cd /ws && \
+    # Теперь пробуем собрать
     export CMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}:${CMAKE_PREFIX_PATH} && \
     export LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH} && \
-    echo "=== CMAKE_PREFIX_PATH after export ===" && \
-    echo $CMAKE_PREFIX_PATH && \
     colcon build \
     --packages-select vesc_msgs vesc_nexus rob_box_description \
     --symlink-install \
