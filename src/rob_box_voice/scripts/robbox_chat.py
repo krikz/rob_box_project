@@ -46,22 +46,27 @@ class SileroTTS:
             text: Нормализованный текст для озвучивания
             speaker: aidar, baya, kseniya, xenia
         
-        Примечание: 
-        - Скорость контролируется через pitch shift (бурундук 2.0x)
-        - Базовая скорость синтеза нормальная, но воспроизведение 2x быстрее
+        Оптимальные параметры для ROBBOX:
+        - speaker: aidar
+        - pitch: medium
+        - rate: x-slow (компенсирует pitch shift 2.0x)
+        - sample_rate: 24000 Hz → 48000 Hz с бурундуком
         """
         if not text.strip():
             return
         
         print(f"🔊 Говорю: {text}")
         
-        # Синтез с базовыми параметрами
+        # Оборачиваем текст в SSML с оптимальными параметрами
+        # rate="x-slow" чтобы после pitch shift 2x было нормально
+        # pitch="medium" для среднего тона
+        ssml_text = f'<speak><prosody rate="x-slow" pitch="medium">{text}</prosody></speak>'
+        
+        # Синтез через SSML (поддерживает prosody теги!)
         audio = self.model.apply_tts(
-            text=text,
+            ssml_text=ssml_text,
             speaker=speaker,
-            sample_rate=self.sample_rate,
-            put_accent=True,
-            put_yo=True
+            sample_rate=self.sample_rate
         )
         
         # Конвертируем в numpy
@@ -70,7 +75,7 @@ class SileroTTS:
         # Воспроизведение с pitch shift (бурундук)
         if self.chipmunk_mode:
             playback_rate = self.sample_rate * 2  # 24000 → 48000 (2x pitch shift)
-            print("🐿️  Режим 'Бурундук': pitch shift 2.0x")
+            print("🐿️  Режим 'Бурундук': pitch shift 2.0x (rate=x-slow + pitch=medium)")
         else:
             playback_rate = self.sample_rate
         
