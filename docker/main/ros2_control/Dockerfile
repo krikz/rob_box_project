@@ -7,6 +7,8 @@
 ARG ROS_DISTRO=humble
 ARG IMAGE_TAG=latest
 ARG BASE_IMAGE_PREFIX=ghcr.io/krikz/rob_box_base
+# Версия сборки для инвалидации кеша при изменении зависимостей
+ARG BUILD_VERSION=2025-10-12
 
 FROM ${BASE_IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-${IMAGE_TAG}
 
@@ -15,9 +17,16 @@ LABEL org.opencontainers.image.title="ROS2 Control Manager with VESC"
 LABEL org.opencontainers.image.description="Controller Manager with VescSystemHardwareInterface for 4-wheel robot"
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
+# Принудительная инвалидация кеша для слоев установки
+ARG BUILD_VERSION
+RUN echo "Build version: ${BUILD_VERSION}"
+
 # Установка ROS2 Control и зависимостей
 # КРИТИЧНО: Базовый образ слишком минимальный, устанавливаем ros-base для всех библиотек
-RUN apt-get update && apt-get install -y \
+# Очищаем apt кеш и устанавливаем все за один RUN для согласованности слоев
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* && \
+    apt-get update && apt-get install -y \
     # ROS2 Base - содержит ВСЕ необходимые библиотеки для компиляции
     ros-${ROS_DISTRO}-ros-base \
     # CAN утилиты
@@ -40,12 +49,7 @@ RUN apt-get update && apt-get install -y \
     # Утилиты
     ros-${ROS_DISTRO}-xacro \
     ros-${ROS_DISTRO}-ros2controlcli \
-    && rm -rf /var/lib/apt/lists/*
-
-# DEBUG: Проверяем что установлено
-RUN echo "=== Checking ROS2 installation ===" && \
-    find /opt/ros/${ROS_DISTRO}/lib -name "*builtin_interfaces*" -type f | head -20 && \
-    ls -la /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ || true
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # Рабочая директория
 WORKDIR /ws
@@ -59,15 +63,14 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 # Копируем rob_box_description (URDF с ros2_control блоком)
 COPY src/rob_box_description /ws/src/rob_box_description
 
-# Установка зависимостей через rosdep
+# Установка зависимостей через rosdep и сборка пакетов
+# ВАЖНО: Объединяем rosdep update и сборку в один слой для избежания кеш-проблем
 # Пропускаем GUI пакеты (rviz2, joint-state-publisher-gui) и serial-driver (для vesc_nexus они опциональны)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    rm -rf /root/.ros/rosdep && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
-        --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" || true
-
-# Сборка пакетов
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+        --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
     colcon build \
     --packages-select vesc_msgs vesc_nexus rob_box_description \
     --symlink-install \
