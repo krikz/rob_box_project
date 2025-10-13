@@ -14,9 +14,15 @@
 
     # ========== STT Node ==========
     stt_node:
-      provider: "yandex"          # "yandex" или "whisper"
+      # Vosk settings (Phase 3)
+      model_path: "/models/vosk-model-small-ru-0.22"
+      sample_rate: 16000          # Hz (должен совпадать с audio_node)
+      vad_timeout: 1.5            # Секунды тишины до отправки результата
+      min_speech_duration: 0.5    # Минимальная длина речи (секунды)
+      
+      # Legacy settings (для будущей поддержки других STT)
+      provider: "vosk"            # "vosk", "whisper" или "yandex"
       language: "ru-RU"
-      model: "general"            # Yandex: "general" или "general:rc"
       # Whisper settings (если provider="whisper")
       whisper_model: "base"       # tiny/base/small/medium/large
       whisper_device: "cpu"       # cpu/cuda
@@ -73,12 +79,11 @@
 
     # ========== Sound Node ==========
     sound_node:
-      # Устройство вывода
-      output_device: "plughw:CARD=ArrayUAC10,DEV=0"  # ReSpeaker 3.5mm jack
-      output_device_name: "ReSpeaker 4 Mic Array"
-      
       # Пути
       sound_pack_dir: "~/rob_box_project/sound_pack"
+      
+      # Громкость (dB adjustment, 0 = без изменений)
+      volume_db: 0                # +6 = громче, -6 = тише
       
       # Синхронизация с анимациями
       trigger_animations: true
@@ -99,16 +104,26 @@
 
     # ========== Command Node ==========
     command_node:
-      # Включить выполнение команд (для безопасности можно отключить)
-      commands_enabled: true
+      # Распознавание команд
+      confidence_threshold: 0.7   # Минимальная уверенность
       
-      # Максимальные значения для безопасности
-      max_linear_speed: 1.0       # м/с
-      max_angular_speed: 1.57     # рад/с (90°/с)
+      # Включить модули
+      enable_navigation: true     # Nav2 команды
+      enable_follow: false        # Следование (Phase 6)
+      enable_vision: false        # Зрение (Phase 6)
       
       # Nav2 интеграция
       nav2_enabled: true
       nav2_timeout: 300.0         # секунды
+      
+      # Предопределённые waypoints (можно задать свои)
+      waypoints:
+        дом:       {x: 0.0, y: 0.0, theta: 0.0}
+        кухня:     {x: 2.0, y: 1.0, theta: 0.0}
+        гостиная:  {x: 3.0, y: 2.0, theta: 1.57}
+        точка_1:   {x: 1.0, y: 0.0, theta: 0.0}
+        точка_2:   {x: 2.0, y: 0.0, theta: 0.0}
+        точка_3:   {x: 3.0, y: 0.0, theta: 0.0}
 
 # ========== System Phrases (для кэша) ==========
 system_phrases:
