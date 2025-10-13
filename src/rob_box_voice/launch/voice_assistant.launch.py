@@ -115,7 +115,20 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
-    # === Sound Node (Phase 4: TODO) ===
+    # === Sound Node (Phase 4: Sound Effects) ===
+    sound_node = Node(
+        package='rob_box_voice',
+        executable='sound_node',
+        name='sound_node',
+        namespace=namespace,
+        parameters=[config_file],
+        output='screen',
+        respawn=True,
+        respawn_delay=3.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+    
+    # === Command Node (Phase 5: TODO) ===
     # sound_node = Node(
     #     package='rob_box_voice',
     #     executable='sound_node',
@@ -148,8 +161,8 @@ def generate_launch_description():
         dialogue_node,  # ✅ Phase 2: DeepSeek streaming
         tts_node,       # ✅ Phase 2: Silero TTS
         stt_node,       # ✅ Phase 3: Vosk STT
-        # TODO Phase 4-5:
-        # sound_node,
+        sound_node,     # ✅ Phase 4: Sound Effects
+        # TODO Phase 5:
         # command_node,
     ])
 
