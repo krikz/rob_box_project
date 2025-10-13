@@ -79,12 +79,11 @@
 
     # ========== Sound Node ==========
     sound_node:
-      # Устройство вывода
-      output_device: "plughw:CARD=ArrayUAC10,DEV=0"  # ReSpeaker 3.5mm jack
-      output_device_name: "ReSpeaker 4 Mic Array"
-      
       # Пути
       sound_pack_dir: "~/rob_box_project/sound_pack"
+      
+      # Громкость (dB adjustment, 0 = без изменений)
+      volume_db: 0                # +6 = громче, -6 = тише
       
       # Синхронизация с анимациями
       trigger_animations: true

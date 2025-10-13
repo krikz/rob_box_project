@@ -80,6 +80,9 @@ class DialogueNode(Node):
         # Публикация ответов (JSON chunks)
         self.response_pub = self.create_publisher(String, '/voice/dialogue/response', 10)
         
+        # Публикация звуковых триггеров (Phase 4)
+        self.sound_trigger_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
+        
         self.get_logger().info('✅ DialogueNode инициализирован')
         self.get_logger().info(f'  Model: {self.model}')
         self.get_logger().info(f'  Temperature: {self.temperature}')
@@ -121,6 +124,9 @@ class DialogueNode(Node):
         # Ограничиваем историю (последние 10 сообщений)
         if len(self.conversation_history) > 10:
             self.conversation_history = self.conversation_history[-10:]
+        
+        # Триггер звука "thinking" (Phase 4)
+        self._trigger_sound('thinking')
         
         # Запрос к DeepSeek (streaming)
         self._ask_deepseek_streaming()
@@ -209,6 +215,16 @@ class DialogueNode(Node):
             
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка DeepSeek: {e}')
+    
+    def _trigger_sound(self, sound_name: str):
+        """Триггер звукового эффекта (Phase 4)"""
+        try:
+            msg = String()
+            msg.data = sound_name
+            self.sound_trigger_pub.publish(msg)
+            self.get_logger().debug(f'🔔 Триггер звука: {sound_name}')
+        except Exception as e:
+            self.get_logger().warn(f'⚠️ Ошибка триггера звука: {e}')
 
 
 def main(args=None):

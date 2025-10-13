@@ -41,8 +41,9 @@ setup(
             'tts_node = rob_box_voice.tts_node:main',
             # Phase 3: STT (Speech-to-Text)
             'stt_node = rob_box_voice.stt_node:main',
-            # TODO: Реализовать в Phase 4-6
-            # 'sound_node = rob_box_voice.sound_node:main',
+            # Phase 4: Sound Effects
+            'sound_node = rob_box_voice.sound_node:main',
+            # TODO: Реализовать в Phase 5-6
             # 'command_node = rob_box_voice.command_node:main',
         ],
     },
