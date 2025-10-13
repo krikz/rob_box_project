@@ -123,8 +123,11 @@ services:
     # Image tags:
     # - ghcr.io/krikz/rob_box:voice-assistant-humble-latest (main branch)
     # - ghcr.io/krikz/rob_box:voice-assistant-humble-dev (develop branch)
+    # - ghcr.io/krikz/rob_box:voice-assistant-humble-test (feature/* branches)
     # Built via GitHub Actions: .github/workflows/build-vision-services.yml
-    image: ghcr.io/krikz/rob_box:voice-assistant-humble-latest
+    image: ghcr.io/krikz/rob_box:voice-assistant-humble-test
+    # После мерджа в develop поменяй на: voice-assistant-humble-dev
+    # После мерджа в main поменяй на: voice-assistant-humble-latest
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
