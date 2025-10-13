@@ -36,11 +36,12 @@ setup(
         'console_scripts': [
             'audio_node = rob_box_voice.audio_node:main',
             'led_node = rob_box_voice.led_node:main',
-            # Реализованные ноды (Phase 2)
+            # Phase 2: Dialogue + TTS
             'dialogue_node = rob_box_voice.dialogue_node:main',
             'tts_node = rob_box_voice.tts_node:main',
-            # TODO: Реализовать в Phase 3-6
-            # 'stt_node = rob_box_voice.stt_node:main',
+            # Phase 3: STT (Speech-to-Text)
+            'stt_node = rob_box_voice.stt_node:main',
+            # TODO: Реализовать в Phase 4-6
             # 'sound_node = rob_box_voice.sound_node:main',
             # 'command_node = rob_box_voice.command_node:main',
         ],

@@ -14,9 +14,15 @@
 
     # ========== STT Node ==========
     stt_node:
-      provider: "yandex"          # "yandex" или "whisper"
+      # Vosk settings (Phase 3)
+      model_path: "/models/vosk-model-small-ru-0.22"
+      sample_rate: 16000          # Hz (должен совпадать с audio_node)
+      vad_timeout: 1.5            # Секунды тишины до отправки результата
+      min_speech_duration: 0.5    # Минимальная длина речи (секунды)
+      
+      # Legacy settings (для будущей поддержки других STT)
+      provider: "vosk"            # "vosk", "whisper" или "yandex"
       language: "ru-RU"
-      model: "general"            # Yandex: "general" или "general:rc"
       # Whisper settings (если provider="whisper")
       whisper_model: "base"       # tiny/base/small/medium/large
       whisper_device: "cpu"       # cpu/cuda
