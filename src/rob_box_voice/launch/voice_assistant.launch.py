@@ -102,17 +102,18 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
-    # === STT Node (Phase 3: TODO - Vosk/Whisper) ===
-    # stt_node = Node(
-    #     package='rob_box_voice',
-    #     executable='stt_node',
-    #     name='stt_node',
-    #     namespace=namespace,
-    #     parameters=[config_file],
-    #     output='screen',
-    #     respawn=True,
-    #     respawn_delay=5.0
-    # )
+    # === STT Node (Phase 3: Vosk offline recognition) ===
+    stt_node = Node(
+        package='rob_box_voice',
+        executable='stt_node',
+        name='stt_node',
+        namespace=namespace,
+        parameters=[config_file],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
     
     # === Sound Node (Phase 4: TODO) ===
     # sound_node = Node(
@@ -146,8 +147,8 @@ def generate_launch_description():
         animation_node,
         dialogue_node,  # ✅ Phase 2: DeepSeek streaming
         tts_node,       # ✅ Phase 2: Silero TTS
-        # TODO Phase 3-5:
-        # stt_node,
+        stt_node,       # ✅ Phase 3: Vosk STT
+        # TODO Phase 4-5:
         # sound_node,
         # command_node,
     ])
