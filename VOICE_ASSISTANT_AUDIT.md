@@ -44,15 +44,17 @@ rob_box_voice/
 ```python
 'console_scripts': [
     'audio_node = rob_box_voice.audio_node:main',
-    'stt_node = rob_box_voice.stt_node:main',
-    'tts_node = rob_box_voice.tts_node:main',
-    'dialogue_node = rob_box_voice.dialogue_node:main',
-    'sound_node = rob_box_voice.sound_node:main',
     'led_node = rob_box_voice.led_node:main',
-    'command_node = rob_box_voice.command_node:main',
+    # Реализованные ноды (Phase 2)
+    'dialogue_node = rob_box_voice.dialogue_node:main',  # ✅ NEW!
+    'tts_node = rob_box_voice.tts_node:main',            # ✅ NEW!
+    # TODO: Реализовать в Phase 3-5
+    # 'stt_node = rob_box_voice.stt_node:main',
+    # 'sound_node = rob_box_voice.sound_node:main',
+    # 'command_node = rob_box_voice.command_node:main',
 ],
 ```
-✅ **Все ноды прописаны корректно**
+✅ **2 ноды реализованы (dialogue + tts), 3 TODO (stt + sound + command)**
 
 **Data files в setup.py:**
 ```python
@@ -319,13 +321,13 @@ exec ros2 launch rob_box_voice voice_assistant.launch.py \
 audio_node              ✅ ReSpeaker capture + VAD + DoA
 led_node                ✅ ReSpeaker 12 RGB LED control
 voice_animation_player  ✅ LED matrix animations (rob_box_animations)
+dialogue_node           ✅ DeepSeek streaming + accent_replacer (Phase 2)
+tts_node                ✅ Silero TTS v4 с бурундуком (Phase 2)
 
 # Закомментированные ноды (пока не реализованы)
-# stt_node              ⏳ Speech-to-Text
-# tts_node              ⏳ Text-to-Speech
-# dialogue_node         ⏳ LLM диалоги (DeepSeek)
-# command_node          ⏳ Команды робота
-# sound_node            ⏳ Sound effects
+# stt_node              ⏳ Speech-to-Text (Phase 3)
+# sound_node            ⏳ Sound effects (Phase 4)
+# command_node          ⏳ Команды робота (Phase 5)
 ```
 
 **Параметры анимаций:**

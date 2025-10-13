@@ -35,12 +35,14 @@ setup(
     entry_points={
         'console_scripts': [
             'audio_node = rob_box_voice.audio_node:main',
-            'stt_node = rob_box_voice.stt_node:main',
-            'tts_node = rob_box_voice.tts_node:main',
-            'dialogue_node = rob_box_voice.dialogue_node:main',
-            'sound_node = rob_box_voice.sound_node:main',
             'led_node = rob_box_voice.led_node:main',
-            'command_node = rob_box_voice.command_node:main',
+            # Реализованные ноды (Phase 2)
+            'dialogue_node = rob_box_voice.dialogue_node:main',
+            'tts_node = rob_box_voice.tts_node:main',
+            # TODO: Реализовать в Phase 3-6
+            # 'stt_node = rob_box_voice.stt_node:main',
+            # 'sound_node = rob_box_voice.sound_node:main',
+            # 'command_node = rob_box_voice.command_node:main',
         ],
     },
 )
