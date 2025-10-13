@@ -76,7 +76,33 @@ def generate_launch_description():
         respawn_delay=3.0
     )
     
-    # === STT Node (пока закомментирован) ===
+    # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
+    dialogue_node = Node(
+        package='rob_box_voice',
+        executable='dialogue_node',
+        name='dialogue_node',
+        namespace=namespace,
+        parameters=[config_file],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+    
+    # === TTS Node (Phase 2: Silero TTS v4 с бурундуком) ===
+    tts_node = Node(
+        package='rob_box_voice',
+        executable='tts_node',
+        name='tts_node',
+        namespace=namespace,
+        parameters=[config_file],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+    
+    # === STT Node (Phase 3: TODO - Vosk/Whisper) ===
     # stt_node = Node(
     #     package='rob_box_voice',
     #     executable='stt_node',
@@ -88,31 +114,7 @@ def generate_launch_description():
     #     respawn_delay=5.0
     # )
     
-    # === TTS Node (пока закомментирован) ===
-    # tts_node = Node(
-    #     package='rob_box_voice',
-    #     executable='tts_node',
-    #     name='tts_node',
-    #     namespace=namespace,
-    #     parameters=[config_file],
-    #     output='screen',
-    #     respawn=True,
-    #     respawn_delay=5.0
-    # )
-    
-    # === Dialogue Node (пока закомментирован) ===
-    # dialogue_node = Node(
-    #     package='rob_box_voice',
-    #     executable='dialogue_node',
-    #     name='dialogue_node',
-    #     namespace=namespace,
-    #     parameters=[config_file],
-    #     output='screen',
-    #     respawn=True,
-    #     respawn_delay=5.0
-    # )
-    
-    # === Sound Node (пока закомментирован) ===
+    # === Sound Node (Phase 4: TODO) ===
     # sound_node = Node(
     #     package='rob_box_voice',
     #     executable='sound_node',
@@ -124,7 +126,7 @@ def generate_launch_description():
     #     respawn_delay=3.0
     # )
     
-    # === Command Node (пока закомментирован) ===
+    # === Command Node (Phase 5: TODO) ===
     # command_node = Node(
     #     package='rob_box_voice',
     #     executable='command_node',
@@ -142,10 +144,11 @@ def generate_launch_description():
         audio_node,
         led_node,
         animation_node,
-        # Раскомментировать по мере реализации:
+        dialogue_node,  # ✅ Phase 2: DeepSeek streaming
+        tts_node,       # ✅ Phase 2: Silero TTS
+        # TODO Phase 3-5:
         # stt_node,
-        # tts_node,
-        # dialogue_node,
         # sound_node,
         # command_node,
     ])
+
