@@ -136,6 +136,7 @@ services:
       - /dev/bus/usb:/dev/bus/usb  # USB для ReSpeaker
     environment:
       - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble  # Для source /opt/ros/$ROS_DISTRO/setup.bash
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
