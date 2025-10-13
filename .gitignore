@@ -40,12 +40,6 @@ log/
 .env
 docker-compose.override.yml
 
-# Secrets (API keys, credentials)
-*.secrets
-.env.secrets
-**/secrets/
-**/.env.local
-
 # Temporary files
 *.tmp
 *.bak

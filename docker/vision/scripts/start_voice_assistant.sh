@@ -54,17 +54,15 @@ fi
 
 echo ""
 echo "=========================================="
-echo "  Запуск Voice Assistant Nodes (Headless)"
+echo "  Запуск Voice Assistant Nodes"
 echo "=========================================="
 
-# Запуск через headless launch file (без animation_player_node)
-# Animation player запускается отдельно на Main Pi
+# Запуск через launch file
 if [ -f /config/voice/voice_assistant.yaml ]; then
     echo "Используется конфигурация: /config/voice/voice_assistant.yaml"
-    echo "Используется headless launch (без animation_player_node)"
-    exec ros2 launch /config/voice/voice_assistant_headless.launch.py \
+    exec ros2 launch rob_box_voice voice_assistant.launch.py \
         config_file:=/config/voice/voice_assistant.yaml
 else
     echo "Используется конфигурация по умолчанию"
-    exec ros2 launch /config/voice/voice_assistant_headless.launch.py
+    exec ros2 launch rob_box_voice voice_assistant.launch.py
 fi

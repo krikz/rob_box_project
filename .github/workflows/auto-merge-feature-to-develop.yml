@@ -126,16 +126,12 @@ jobs:
           git push origin develop
           echo "✅ Successfully pushed to develop!"
 
-      # NOTE: Feature branch deletion disabled
-      # Developer should manually delete feature branches after verification
-      # This prevents accidental deletion of work-in-progress branches
-      #
-      # - name: Delete feature branch (optional)
-      #   if: steps.merge.outputs.merged == 'true'
-      #   run: |
-      #     FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
-      #     echo "🗑️ Deleting merged feature branch: $FEATURE_BRANCH"
-      #     git push origin --delete $FEATURE_BRANCH || echo "⚠️ Failed to delete remote branch"
+      - name: Delete feature branch (optional)
+        if: steps.merge.outputs.merged == 'true'
+        run: |
+          FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
+          echo "🗑️ Deleting merged feature branch: $FEATURE_BRANCH"
+          git push origin --delete $FEATURE_BRANCH || echo "⚠️ Failed to delete remote branch"
 
       - name: Success notification
         if: steps.merge.outputs.merged == 'true'

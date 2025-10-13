@@ -17,7 +17,7 @@ setup(
             glob('launch/*.launch.py')),
         # Config files
         (os.path.join('share', package_name, 'config'),
-            glob('config/*.yaml') + glob('config/*.json')),
+            glob('config/*.yaml')),
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             glob('prompts/*.txt') + glob('prompts/*.yaml')),
@@ -35,15 +35,11 @@ setup(
     entry_points={
         'console_scripts': [
             'audio_node = rob_box_voice.audio_node:main',
-            'led_node = rob_box_voice.led_node:main',
-            # Phase 2: Dialogue + TTS
-            'dialogue_node = rob_box_voice.dialogue_node:main',
-            'tts_node = rob_box_voice.tts_node:main',
-            # Phase 3: STT (Speech-to-Text)
             'stt_node = rob_box_voice.stt_node:main',
-            # Phase 4: Sound Effects
+            'tts_node = rob_box_voice.tts_node:main',
+            'dialogue_node = rob_box_voice.dialogue_node:main',
             'sound_node = rob_box_voice.sound_node:main',
-            # Phase 5: Command Recognition
+            'led_node = rob_box_voice.led_node:main',
             'command_node = rob_box_voice.command_node:main',
         ],
     },

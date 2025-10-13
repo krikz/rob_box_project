@@ -124,8 +124,7 @@ class SileroTTSGUI:
             "rate": "medium",
             "sample_rate": 48000,
             "threads": 4,
-            "use_ssml": True,
-            "chipmunk_mode": False  # 🐿️ Режим "Бурундук" по умолчанию выключен
+            "use_ssml": True
         }
         
         # Статистика
@@ -212,18 +211,6 @@ class SileroTTSGUI:
         
         ttk.Label(tech_frame, text="(оптимально 4 для Pi 5)").grid(
             row=1, column=2, sticky=tk.W, padx=10)
-        
-        # 🐿️ Режим "Бурундук" (Pitch Shift 2.0x)
-        ttk.Label(tech_frame, text="🐿️ Эффект 'Бурундук':").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.chipmunk_var = tk.BooleanVar(value=self.config.get("chipmunk_mode", False))
-        chipmunk_cb = ttk.Checkbutton(tech_frame, text="Включить (pitch shift 2.0x, как на ROBBOX)", 
-                                      variable=self.chipmunk_var, 
-                                      command=self.on_chipmunk_change)
-        chipmunk_cb.grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=5)
-        
-        ttk.Label(tech_frame, text="Голос выше и быстрее за счёт воспроизведения на 2x частоте", 
-                 font=("Arial", 8), foreground="gray").grid(
-            row=3, column=0, columnspan=3, sticky=tk.W, pady=2)
         
         # ========== Секция 4: Текст для синтеза ==========
         text_frame = ttk.LabelFrame(main_frame, text="Текст для синтеза", padding="10")
@@ -382,24 +369,6 @@ class SileroTTSGUI:
             torch.set_num_threads(self.config["threads"])
         self.status_label.config(text=f"CPU Threads: {self.config['threads']}")
     
-    def on_chipmunk_change(self):
-        """Обработчик включения/выключения режима 'Бурундук'"""
-        self.config["chipmunk_mode"] = self.chipmunk_var.get()
-        status = "включен" if self.config["chipmunk_mode"] else "отключен"
-        self.status_label.config(text=f"🐿️ Режим 'Бурундук' {status} (pitch shift 2.0x)")
-        
-        if self.config["chipmunk_mode"]:
-            messagebox.showinfo(
-                "Режим 'Бурундук' 🐿️", 
-                "Включен эффект pitch shift 2.0x!\n\n"
-                "Голос будет воспроизводиться:\n"
-                "• В 2 раза быстрее\n"
-                "• На октаву выше\n\n"
-                "Это создаёт характерный звук ROBBOX робота,\n"
-                "который получается из-за воспроизведения\n"
-                "на удвоенной частоте (24000→48000 Hz)."
-            )
-    
     def load_example_text(self, example_name: str):
         """Загрузка примера текста"""
         text = self.EXAMPLE_TEXTS.get(example_name, "")
@@ -493,25 +462,10 @@ class SileroTTSGUI:
             self.status_label.config(text="Воспроизведение...")
             self.root.update()
             
-            # 🐿️ Режим "Бурундук" - pitch shift 2.0x
-            if self.config.get("chipmunk_mode", False):
-                # Воспроизводим на удвоенной частоте (как в скрипте ROBBOX)
-                original_rate = self.config["sample_rate"]
-                playback_rate = original_rate * 2  # Pitch shift 2.0x
-                
-                self.status_label.config(text=f"🐿️ Воспроизведение с pitch shift {original_rate}→{playback_rate} Hz...")
-                self.root.update()
-                
-                sd.play(audio_np, playback_rate)
-                sd.wait()
-                
-                self.status_label.config(text="✅ Готово! (режим 'Бурундук' 🐿️)")
-            else:
-                # Обычное воспроизведение
-                sd.play(audio_np, self.config["sample_rate"])
-                sd.wait()
-                
-                self.status_label.config(text="✅ Готово!")
+            sd.play(audio_np, self.config["sample_rate"])
+            sd.wait()
+            
+            self.status_label.config(text="✅ Готово!")
             
         except Exception as e:
             error_msg = f"Ошибка синтеза: {e}"

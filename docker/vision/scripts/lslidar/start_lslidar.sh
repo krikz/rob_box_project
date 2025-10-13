@@ -29,5 +29,4 @@ echo "Starting LSLIDAR N10 driver..."
 
 # Запуск LSLIDAR драйвера (headless режим, без RViz2)
 # LiDAR подключен к Vision Pi через USB/Serial
-# Используем кастомный headless launch файл без RViz2
-exec ros2 launch /config/lslidar/lslidar_headless_launch.py
+exec ros2 launch lslidar_driver lslidar_launch.py
