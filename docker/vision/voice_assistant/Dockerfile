@@ -49,6 +49,7 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-audio-common-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
@@ -133,6 +134,9 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# Установка accent_replacer в Python path
+RUN cp /ws/src/rob_box_voice/scripts/accent_replacer.py /usr/local/lib/python3.10/dist-packages/
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
