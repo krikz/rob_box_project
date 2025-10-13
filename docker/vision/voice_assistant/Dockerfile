@@ -84,9 +84,8 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 WORKDIR /ws
 RUN mkdir -p src
 
-# Копируем пакеты
+# Копируем пакеты (только rob_box_voice, без animations - они на Main Pi)
 COPY src/rob_box_voice /ws/src/rob_box_voice
-COPY src/rob_box_animations /ws/src/rob_box_animations
 COPY sound_pack /ws/sound_pack
 
 # Установка ReSpeaker драйверов (usb_4_mic_array и pixel_ring)
@@ -126,10 +125,10 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
 
-# Сборка пакетов
+# Сборка пакетов (только rob_box_voice, без animations - они на Main Pi)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_voice rob_box_animations \
+    --packages-select rob_box_voice \
     --symlink-install \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
@@ -154,9 +153,9 @@ ENV ALSA_CARD=ArrayUAC10
 ENV SOUND_PACK_DIR=/ws/sound_pack
 ENV TTS_CACHE_DIR=/config/voice/tts_cache
 
-# Проверка доступности нод
+# Проверка доступности нод (только audio_node, без animation_player)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD ros2 node list | grep -q "audio_node\|animation_player" || exit 1
+    CMD ros2 node list | grep -q "audio_node" || exit 1
 
 # Точка входа
 ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]
