@@ -49,7 +49,6 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    ros-${ROS_DISTRO}-audio-common-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
@@ -89,6 +88,11 @@ RUN mkdir -p src
 COPY src/rob_box_voice /ws/src/rob_box_voice
 COPY sound_pack /ws/sound_pack
 
+# Клонируем audio_common для audio_common_msgs (нет в apt для Humble)
+RUN cd /ws/src && \
+    git clone -b humble https://github.com/ros-drivers/audio_common.git && \
+    echo "✅ audio_common cloned (audio_common_msgs included)"
+
 # Установка ReSpeaker драйверов (usb_4_mic_array и pixel_ring)
 RUN cd /tmp && \
     git clone https://github.com/respeaker/usb_4_mic_array.git && \
@@ -126,10 +130,10 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
 
-# Сборка пакетов (только rob_box_voice, без animations - они на Main Pi)
+# Сборка пакетов (audio_common_msgs + rob_box_voice)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_voice \
+    --packages-select audio_common_msgs rob_box_voice \
     --symlink-install \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
