@@ -1,12 +1,12 @@
-# Voice Assistant Build Fix - audio_common Branch Issue
+# Voice Assistant Build Fix - audio_common Issues
 
 **Дата:** 2025-10-13  
 **Ветка:** `feature/voice-assistant`  
-**Коммит:** `8ef5a9e`
+**Коммиты:** `8ef5a9e`, `f3101c8`
 
 ---
 
-## Проблема
+## Проблема #1: Несуществующая ветка humble
 
 ### Симптомы
 ```
@@ -28,47 +28,86 @@ refs/heads/ros2          # ROS2 ✅
 
 **Вывод:** Ветки `humble` не существует!
 
+### Решение #1
+
+**Было:**
+```dockerfile
+RUN cd /ws/src && \
+    git clone -b humble https://github.com/ros-drivers/audio_common.git
+```
+
+**Стало:**
+```dockerfile
+RUN cd /ws/src && \
+    git clone -b ros2 https://github.com/ros-drivers/audio_common.git
+```
+
+**Коммит:** `8ef5a9e`
+
 ---
 
-## Решение
+## Проблема #2: Ненужные зависимости GStreamer
 
-### Исправление в Dockerfile
+### Симптомы
+```
+#19 97.02 ERROR: the following rosdeps failed to install
+#19 97.02   apt: command [apt-get install -y libgstreamer1.0-dev] failed
+#19 97.02   apt: command [apt-get install -y festival] failed
+#19 97.02   apt: command [apt-get install -y festvox-kallpc16k] failed
+#19 97.02   apt: Failed to detect successful installation of [festvox-kallpc16k]
 
-**Было:**
-```dockerfile
-RUN cd /ws/src && \
-    git clone -b humble https://github.com/ros-drivers/audio_common.git && \
-    echo "✅ audio_common cloned (audio_common_msgs included)"
+#20 15.50 CMake Error: Package 'rcutils' exports the library 'rcutils' which couldn't be found
+#20 15.50 Failed   <<< audio_common_msgs [10.2s, exited with code 1]
 ```
 
-**Стало:**
+### Причина
+
+Репозиторий `audio_common` (ветка ros2) содержит несколько пакетов:
+
+```
+audio_common/
+├── audio_common_msgs     ← НАМ НУЖЕН ТОЛЬКО ЭТОТ!
+├── audio_capture         ← использует GStreamer
+├── audio_play            ← использует GStreamer  
+└── sound_play            ← использует festival (TTS)
+```
+
+Когда `rosdep` обрабатывает всю директорию `src/`, он пытается установить зависимости ВСЕХ пакетов из `audio_common`, включая:
+- GStreamer (для audio_capture/audio_play)
+- festival + festvox-kallpc16k (для sound_play TTS)
+
+**Проблемы:**
+1. `festvox-kallpc16k` недоступен в Ubuntu ARM64 репозиториях
+2. GStreamer нам не нужен (используем pyaudio для захвата)
+3. festival нам не нужен (используем Silero TTS)
+
+### Решение #2
+
+**Извлекаем только audio_common_msgs:**
+
 ```dockerfile
 # Клонируем audio_common для audio_common_msgs (пакет недоступен через apt для Humble)
-# Используем ветку ros2 (ветки humble не существует в репозитории)
+# Используем ветку ros2, но удаляем ненужные пакеты чтобы избежать зависимостей GStreamer/festival
 RUN cd /ws/src && \
-    git clone -b ros2 https://github.com/ros-drivers/audio_common.git && \
-    echo "✅ audio_common (ros2 branch) cloned - includes audio_common_msgs"
+    git clone -b ros2 --depth 1 https://github.com/ros-drivers/audio_common.git && \
+    cd audio_common && \
+    # Оставляем только audio_common_msgs, удаляем остальные пакеты
+    find . -maxdepth 1 -type d ! -name '.' ! -name '.git' ! -name 'audio_common_msgs' -exec rm -rf {} + && \
+    echo "✅ audio_common_msgs extracted from ros2 branch"
 ```
 
-### Обновление команды сборки
+**Устанавливаем rosdeps только для наших пакетов:**
 
-**Было:**
 ```dockerfile
+# Установка ROS зависимостей через rosdep (игнорируем ошибки для audio_common)
+# audio_common_msgs имеет минимальные зависимости, но rosdep может жаловаться на недоступные пакеты
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build \
-    --packages-select rob_box_voice rob_box_animations \
-    ...
+    rosdep update && \
+    # Устанавливаем зависимости только для rob_box_voice и rob_box_animations
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
 ```
 
-**Стало:**
-```dockerfile
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build \
-    --packages-select audio_common_msgs rob_box_voice rob_box_animations \
-    ...
-```
-
-Явно указываем `audio_common_msgs` чтобы убедиться что пакет собран перед `rob_box_voice`.
+**Коммит:** `f3101c8`
 
 ---
 
