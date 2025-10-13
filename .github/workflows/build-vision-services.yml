@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - develop        # Автосборка при пуше в develop
+      - 'feature/**'   # Автосборка для feature веток (для тестирования)
     paths:
       - 'docker/vision/**'
       - '.github/workflows/build-vision-services.yml'
@@ -35,6 +36,9 @@ jobs:
             BRANCH_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             BRANCH_TAG="dev"
+          elif [[ "$BRANCH_NAME" == feature/* ]]; then
+            # Feature ветки получают тег 'test'
+            BRANCH_TAG="test"
           elif [[ "$BRANCH_NAME" == release/* ]]; then
             VERSION="${BRANCH_NAME#release/}"
             BRANCH_TAG="rc-${VERSION}"
