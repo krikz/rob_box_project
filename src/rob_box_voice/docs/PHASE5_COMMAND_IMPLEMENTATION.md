@@ -135,6 +135,57 @@ waypoints:
 
 ## Nav2 Integration
 
+### Архитектура команд скорости
+
+**⚠️ ВАЖНО**: Command Node НЕ публикует напрямую в `/cmd_vel`!
+
+**Поток команд**:
+```
+Voice → STT → Command Node → Nav2 Action Client
+                                   ↓
+                            NavigateToPose
+                                   ↓
+                            Nav2 Controller
+                                   ↓
+                              /cmd_vel (topic)
+                                   ↓
+                            🎮 twist_mux (приоритизация)
+                                   ↓
+                         /diff_cont/cmd_vel_unstamped
+                                   ↓
+                            ros2_control → Моторы
+```
+
+### Twist Mux - Приоритеты команд
+
+**Конфигурация** (`docker/main/config/twist_mux/twist_mux.yaml`):
+
+| Источник | Topic | Priority | Timeout | Описание |
+|----------|-------|----------|---------|----------|
+| 🚨 Emergency | `/cmd_vel_emergency` | **255** | 0.1s | Экстренная остановка |
+| 🎮 Joystick | `/cmd_vel_joy` | **100** | 0.5s | Ручное управление (джойстик) |
+| 🖥️ Web UI | `/cmd_vel_web` | **50** | 1.0s | Веб-интерфейс |
+| 🤖 Nav2 | `/cmd_vel` | **10** | 0.5s | Автономная навигация |
+
+**Логика приоритетов**:
+- **Joystick активен** → Nav2 блокируется (человек > автономия)
+- **Joystick неактивен** → Nav2 может управлять
+- **Emergency stop** → блокирует всё
+
+**Пример сценария**:
+```
+1. Robot говорит: "Иду к кухня"
+2. Nav2 публикует в /cmd_vel (priority 10)
+3. Twist Mux пропускает команды → моторы
+4. Пользователь берёт джойстик
+5. Джойстик публикует в /cmd_vel_joy (priority 100)
+6. Twist Mux переключается → Nav2 блокируется
+7. Робот останавливается, ручное управление
+8. Джойстик отпущен (timeout 0.5s)
+9. Twist Mux возвращает управление Nav2
+10. Робот продолжает навигацию к кухне
+```
+
 ### NavigateToPose Action
 
 **Процесс навигации**:
@@ -162,6 +213,8 @@ waypoints:
    - Success: "Прибыл в точку назначения"
    - Failure: "Не могу выполнить навигацию"
    - Cancel: "Остановился"
+
+**Важно**: Command Node только отправляет цели Nav2. Реальное управление моторами делает Nav2 через twist_mux
 
 ### Coordinate Systems
 
@@ -194,7 +247,17 @@ User Speech → STT → Command Node → Nav2
                 ↓                     ↓
          Dialogue Node ← Feedback ←─┘
                 ↓
-              TTS → Speech
+              TTS → Speech + Audio-Reactive Animations
+                         ↓
+                   🎤 Audio Output
+                         ↓
+              audio_reactive_animation_node
+                         ↓
+                   /audio/level (Float32)
+                         ↓
+              animation_player_node
+                         ↓
+                   👄 Mouth Animation (lip-sync)
 ```
 
 **Пример диалога**:
@@ -203,10 +266,96 @@ User Speech → STT → Command Node → Nav2
 2. **STT**: "двигайся к точке три"
 3. **Command**: Intent=NAVIGATE, waypoint="точка 3"
 4. **Feedback**: "Иду к точка 3" → TTS
-5. **Nav2**: NavigateToPose(x=3.0, y=0.0)
-6. *[робот едет]*
-7. **Nav2 Result**: SUCCESS
-8. **Feedback**: "Прибыл в точку назначения" → TTS
+5. **TTS**: Синтез речи → `/voice/audio/speech`
+6. **Audio Reactive Node**: Мониторинг звуковой карты → `/audio/level`
+7. **Animation Player**: Mouth frames (0-11) в зависимости от громкости
+8. **Nav2**: NavigateToPose(x=3.0, y=0.0)
+9. *[робот едет, рот двигается при речи]*
+10. **Nav2 Result**: SUCCESS
+11. **Feedback**: "Прибыл в точку назначения" → TTS + Mouth Animation
+
+### Audio-Reactive Animations
+
+**Система синхронизации рта робота с речью**:
+
+**Компоненты**:
+- `audio_reactive_animation_node.py` - Мониторинг аудио выхода (PyAudio)
+- `animation_player_node` - Выбор кадра анимации по уровню громкости
+- `talking.yaml` - Манифест с 12 кадрами mouth animation
+
+**Алгоритм**:
+1. PyAudio захватывает аудио выход системы (loopback/stereo mix)
+2. Вычисляется RMS громкость
+3. Применяется сглаживание (smoothing)
+4. Публикуется в `/audio/level` (0.0-1.0)
+5. Animation player выбирает кадр: `frame = int(audio_level * 11)`
+6. LED матрица отображает рот (открытый/закрытый)
+
+**Конфигурация** (`animations/manifests/talking.yaml`):
+```yaml
+mouth_panel:
+  audio_controlled: true  # Реактивность на звук
+  frames:
+    - frame_0.png  # Рот закрыт (audio_level = 0.0)
+    - frame_1.png  # Чуть приоткрыт
+    ...
+    - frame_11.png # Широко открыт (audio_level = 1.0)
+```
+
+**Результат**: Рот робота открывается/закрывается синхронно с речью (эффект как у Bender из Futurama)
+
+### Emotion-Based Animations
+
+**Система эмоциональных анимаций** (будущая интеграция):
+
+**DeepSeek Response JSON** (текущий формат):
+```json
+{
+  "chunk": 1,
+  "ssml": "<speak>Текст</speak>",
+  "emotion": "happy"  ← Поле эмоции (опционально)
+}
+```
+
+**Поддерживаемые эмоции**:
+- `neutral` - Нейтральное состояние (eyes_neutral.yaml)
+- `happy` - Радость (happy.yaml + sound: cute/very_cute)
+- `sad` - Грусть (sad.yaml)
+- `thinking` - Размышление (thinking.yaml + sound: thinking)
+- `alert` - Тревога (alert.yaml)
+- `angry` - Злость (angry.yaml + sound: angry_1/angry_2)
+- `surprised` - Удивление (surprised.yaml + sound: surprise)
+
+**TODO - Интеграция с dialogue_node**:
+```python
+def dialogue_callback(self, msg: String):
+    chunk_data = json.loads(msg.data)
+    
+    # Текущее: только TTS
+    ssml = chunk_data['ssml']
+    self.tts_pub.publish(ssml)
+    
+    # TODO: Триггер анимации по эмоции
+    if 'emotion' in chunk_data:
+        emotion = chunk_data['emotion']
+        self._trigger_animation(emotion)  # → /animations/trigger
+        self._trigger_sound(emotion)      # → /voice/sound/trigger
+```
+
+**Планируемый поток**:
+```
+DeepSeek → {"emotion": "happy"}
+    ↓
+dialogue_node
+    ↓
+    ├→ TTS (speech)
+    ├→ /animations/trigger ("happy")
+    └→ /voice/sound/trigger ("cute")
+         ↓
+    Animation Player + Sound Node
+         ↓
+    😊 Робот улыбается + звук радости
+```
 
 ### Command Confirmation
 
@@ -358,29 +507,88 @@ docker-compose up -d nav2
 
 **Причины**:
 1. Nav2 не запущен
-2. Карта не загружена (/map topic missing)
-3. Локализация не работает (/odom missing)
-4. Twist Mux блокирует команды
+2. Карта не загружена (`/map` topic missing)
+3. Локализация не работает (`/odom` missing)
+4. **Twist Mux блокирует команды** (джойстик активен)
+5. ros2_control не запущен
 
 **Диагностика**:
 ```bash
-# Проверить топики
+# 1. Проверить топики
 ros2 topic list | grep -E "/map|/odom|/cmd_vel"
 
-# Проверить Nav2 ноды
+# 2. Проверить Nav2 ноды
 ros2 node list | grep -E "controller|planner|navigator"
 
-# Проверить Twist Mux
-ros2 topic echo /cmd_vel
+# 3. Проверить Twist Mux (ВАЖНО!)
+ros2 topic echo /cmd_vel                    # Nav2 output
+ros2 topic echo /diff_cont/cmd_vel_unstamped # Twist Mux output
+ros2 topic echo /cmd_vel_joy                # Joystick (может блокировать!)
+
+# 4. Проверить приоритеты
+ros2 param get /twist_mux topics
+
+# 5. Проверить активные топики Twist Mux
+ros2 topic hz /cmd_vel_joy    # Если >0 Hz → джойстик блокирует Nav2!
 ```
 
 **Решение**:
 ```bash
-# Запустить полный стек
+# 1. Запустить полный стек
 docker-compose up -d rtabmap nav2 ros2-control twist-mux
 
-# Проверить приоритеты Twist Mux
-ros2 param list /twist_mux
+# 2. Убедиться, что джойстик НЕ публикует команды
+ros2 topic hz /cmd_vel_joy  # Должно быть 0 Hz или "no messages"
+
+# 3. Проверить что Nav2 публикует
+ros2 topic hz /cmd_vel  # Должно быть ~10-20 Hz во время навигации
+
+# 4. Проверить что Twist Mux пропускает команды
+ros2 topic hz /diff_cont/cmd_vel_unstamped  # Должно быть ~10-20 Hz
+
+# 5. Если джойстик блокирует - подождать timeout (0.5s)
+# Или перезапустить twist-mux:
+docker restart twist-mux
+```
+
+### Проблема: Mouth animation не синхронизирована
+
+**Причины**:
+1. `audio_reactive_animation_node` не запущен
+2. PyAudio не может захватить аудио выход
+3. Неправильный аудио девайс
+4. `audio_controlled: false` в манифесте
+
+**Диагностика**:
+```bash
+# 1. Проверить ноду
+ros2 node list | grep audio_reactive
+
+# 2. Проверить топик уровня звука
+ros2 topic hz /audio/level  # Должно быть ~20-50 Hz
+
+# 3. Проверить PyAudio devices
+python3 -c "import pyaudio; pa = pyaudio.PyAudio(); \
+    print([pa.get_device_info_by_index(i) for i in range(pa.get_device_count())])"
+
+# 4. Проверить манифест
+grep "audio_controlled" src/rob_box_animations/animations/manifests/talking.yaml
+```
+
+**Решение**:
+```bash
+# 1. Запустить audio reactive node
+ros2 run rob_box_animations audio_reactive_animation_node
+
+# 2. Включить loopback на звуковой карте (Linux)
+pactl load-module module-loopback
+
+# 3. Указать правильный device в параметрах
+ros2 param set /audio_reactive_animation_node audio_device_index 2
+
+# 4. Проверить что манифест talking.yaml имеет:
+# mouth_panel:
+#   audio_controlled: true
 ```
 
 ## Future Enhancements
@@ -443,10 +651,130 @@ Robot: "Иду к офис" → NavigateToPose(saved_coords)
 - [Nav2 Actions](https://navigation.ros.org/tutorials/docs/using_plugins.html)
 - [ROS2 Action Clients](https://docs.ros.org/en/humble/Tutorials/Intermediate/Writing-an-Action-Server-Client/Py.html)
 - [Regex in Python](https://docs.python.org/3/library/re.html)
+- [Twist Mux Documentation](http://wiki.ros.org/twist_mux)
+- [Audio-Reactive Animations](../../rob_box_animations/AUDIO_REACTIVE.md)
 - [Phase 3: STT](PHASE3_STT_IMPLEMENTATION.md)
 - [Phase 4: Sound](PHASE4_SOUND_IMPLEMENTATION.md)
 
+## Архитектура полного цикла
+
+### Voice Command → Robot Motion (полный поток)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    USER SPEAKS                              │
+│              "Двигайся к точке три"                         │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ↓
+┌─────────────────────────────────────────────────────────────┐
+│  🎤 AUDIO NODE (Phase 1)                                    │
+│  - Captures microphone → /voice/audio/recording             │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ↓
+┌─────────────────────────────────────────────────────────────┐
+│  🗣️ STT NODE (Phase 3)                                      │
+│  - Vosk → "двигайся к точке три" → /voice/stt/result       │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ↓
+┌─────────────────────────────────────────────────────────────┐
+│  🎯 COMMAND NODE (Phase 5) ← YOU ARE HERE                   │
+│  - Intent: NAVIGATE                                         │
+│  - Entity: waypoint="точка 3"                               │
+│  - Lookup: {x: 3.0, y: 0.0, theta: 0.0}                     │
+│  - Send Nav2 Goal (NavigateToPose Action)                   │
+│  - Feedback → /voice/command/feedback: "Иду к точка 3"      │
+└────────────┬───────────────────────────────┬────────────────┘
+             │                               │
+             ↓                               ↓
+┌────────────────────────┐    ┌──────────────────────────────┐
+│  💬 DIALOGUE NODE      │    │  🤖 NAV2 STACK               │
+│  (Phase 2)             │    │  - Planner: A* path          │
+│  Receives feedback     │    │  - Controller: DWB           │
+│  → TTS                 │    │  - Costmaps: obstacles       │
+└─────────┬──────────────┘    │  - Publishes: /cmd_vel       │
+          │                   └─────────┬────────────────────┘
+          ↓                             │
+┌─────────────────────────┐             ↓
+│  🔊 TTS NODE (Phase 2)  │   ┌──────────────────────────────┐
+│  - Silero TTS           │   │  🎮 TWIST MUX                │
+│  - "Иду к точка 3"      │   │  Input priorities:           │
+│  - Audio output         │   │  1. Emergency (255)          │
+└─────────┬───────────────┘   │  2. Joystick (100) ← blocks  │
+          │                   │  3. Web UI (50)              │
+          ↓                   │  4. Nav2 (10) ← /cmd_vel     │
+┌─────────────────────────┐   │  Output:                     │
+│  🎤 AUDIO REACTIVE NODE │   │  → /diff_cont/cmd_vel        │
+│  - Monitors sound card  │   └─────────┬────────────────────┘
+│  - RMS volume           │             │
+│  - /audio/level (0-1)   │             ↓
+└─────────┬───────────────┘   ┌──────────────────────────────┐
+          │                   │  ⚙️ ROS2_CONTROL             │
+          ↓                   │  - diff_drive_controller     │
+┌─────────────────────────┐   │  - Odometry /odom            │
+│  🎨 ANIMATION PLAYER    │   │  - Forwards to VESC          │
+│  - Frame = level * 11   │   └─────────┬────────────────────┘
+│  - Mouth open/close     │             │
+│  - LED matrix update    │             ↓
+└─────────────────────────┘   ┌──────────────────────────────┐
+                              │  🔧 VESC MOTOR CONTROLLERS   │
+                              │  - 4x motors (4WD)           │
+                              │  - Differential drive        │
+                              │  - Robot moves to (3.0, 0.0) │
+                              └──────────────────────────────┘
+```
+
+### Эмоции в будущем (Phase 6)
+
+**Планируемый поток**:
+
+1. **DeepSeek Response** включает `emotion`:
+   ```json
+   {"chunk": 1, "ssml": "Отлично!", "emotion": "happy"}
+   ```
+
+2. **Dialogue Node** распознаёт эмоцию:
+   ```python
+   if 'emotion' in chunk_data:
+       self._trigger_animation(chunk_data['emotion'])  # → /animations/trigger
+       self._trigger_sound_by_emotion(chunk_data['emotion'])  # → /voice/sound/trigger
+   ```
+
+3. **Animation Player** запускает эмоциональную анимацию:
+   - `happy.yaml` → 😊 улыбается
+   - `sad.yaml` → 😢 грустит
+   - `angry.yaml` → 😠 злится
+   - `thinking.yaml` → 🤔 размышляет
+
+4. **Sound Node** воспроизводит соответствующий звук:
+   - `happy` → `cute.mp3` или `very_cute.mp3`
+   - `angry` → `angry_1.mp3` или `angry_2.mp3`
+   - `thinking` → `thinking.mp3`
+   - `confused` → `confused.mp3`
+
+**Mapping эмоций** (из Phase 4):
+```python
+emotion_to_sound = {
+    'happy': ['cute', 'very_cute'],       # Random choice
+    'sad': ['confused'],
+    'angry': ['angry_1', 'angry_2'],
+    'thinking': ['thinking'],
+    'surprised': ['surprise']
+}
+
+emotion_to_animation = {
+    'happy': 'happy',
+    'sad': 'sad',
+    'angry': 'angry',
+    'thinking': 'thinking',
+    'surprised': 'surprised',
+    'neutral': 'eyes_neutral'
+}
+```
+
 ---
 
-**Status**: ✅ Phase 5 Complete  
-**Next**: Phase 6 - Advanced Features (Vision, Following, Multi-step)
+**Status**: ✅ Phase 5 Complete (Command Recognition + Nav2 + Twist Mux)  
+**Next**: Phase 6 - Emotion Integration + Advanced Features (Vision, Following, Multi-step)
