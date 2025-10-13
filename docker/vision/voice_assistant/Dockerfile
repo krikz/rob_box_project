@@ -90,10 +90,13 @@ COPY src/rob_box_animations /ws/src/rob_box_animations
 COPY sound_pack /ws/sound_pack
 
 # Клонируем audio_common для audio_common_msgs (пакет недоступен через apt для Humble)
-# Используем ветку ros2 (ветки humble не существует в репозитории)
+# Используем ветку ros2, но удаляем ненужные пакеты чтобы избежать зависимостей GStreamer/festival
 RUN cd /ws/src && \
-    git clone -b ros2 https://github.com/ros-drivers/audio_common.git && \
-    echo "✅ audio_common (ros2 branch) cloned - includes audio_common_msgs"
+    git clone -b ros2 --depth 1 https://github.com/ros-drivers/audio_common.git && \
+    cd audio_common && \
+    # Оставляем только audio_common_msgs, удаляем остальные пакеты
+    find . -maxdepth 1 -type d ! -name '.' ! -name '.git' ! -name 'audio_common_msgs' -exec rm -rf {} + && \
+    echo "✅ audio_common_msgs extracted from ros2 branch"
 
 # Установка ReSpeaker драйверов (usb_4_mic_array и pixel_ring)
 RUN cd /tmp && \
@@ -127,10 +130,12 @@ RUN mkdir -p /models && \
         https://models.silero.ai/models/tts/ru/v4_ru.pt && \
     echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
 
-# Установка ROS зависимостей через rosdep
+# Установка ROS зависимостей через rosdep (игнорируем ошибки для audio_common)
+# audio_common_msgs имеет минимальные зависимости, но rosdep может жаловаться на недоступные пакеты
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src --ignore-src -r -y || true
+    # Устанавливаем зависимости только для rob_box_voice и rob_box_animations
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
 
 # Сборка пакетов (включая audio_common_msgs для зависимостей rob_box_voice)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
