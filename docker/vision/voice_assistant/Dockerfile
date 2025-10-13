@@ -49,14 +49,10 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    # ROS2 runtime библиотеки для colcon build
-    ros-${ROS_DISTRO}-rcutils \
-    ros-${ROS_DISTRO}-rosidl-runtime-c \
-    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    # ROS2 development packages для компиляции message пакетов
+    # Требуется для audio_common_msgs и других custom messages
+    ros-${ROS_DISTRO}-ament-cmake \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     && rm -rf /var/lib/apt/lists/*
 
