@@ -43,8 +43,8 @@ setup(
             'stt_node = rob_box_voice.stt_node:main',
             # Phase 4: Sound Effects
             'sound_node = rob_box_voice.sound_node:main',
-            # TODO: Реализовать в Phase 5-6
-            # 'command_node = rob_box_voice.command_node:main',
+            # Phase 5: Command Recognition
+            'command_node = rob_box_voice.command_node:main',
         ],
     },
 )

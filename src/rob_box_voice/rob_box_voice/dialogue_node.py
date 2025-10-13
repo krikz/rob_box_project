@@ -77,6 +77,14 @@ class DialogueNode(Node):
             10
         )
         
+        # Подписка на feedback от command_node (Phase 5)
+        self.command_feedback_sub = self.create_subscription(
+            String,
+            '/voice/command/feedback',
+            self.command_feedback_callback,
+            10
+        )
+        
         # Публикация ответов (JSON chunks)
         self.response_pub = self.create_publisher(String, '/voice/dialogue/response', 10)
         
@@ -225,6 +233,23 @@ class DialogueNode(Node):
             self.get_logger().debug(f'🔔 Триггер звука: {sound_name}')
         except Exception as e:
             self.get_logger().warn(f'⚠️ Ошибка триггера звука: {e}')
+    
+    def command_feedback_callback(self, msg: String):
+        """Обработка feedback от command_node (Phase 5)"""
+        feedback = msg.data.strip()
+        if not feedback:
+            return
+        
+        self.get_logger().info(f'📢 Command feedback: {feedback}')
+        
+        # Отправить feedback в TTS (напрямую в response)
+        response_json = {
+            "ssml": f"<speak>{feedback}</speak>"
+        }
+        
+        response_msg = String()
+        response_msg.data = json.dumps(response_json, ensure_ascii=False)
+        self.response_pub.publish(response_msg)
 
 
 def main(args=None):
