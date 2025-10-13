@@ -125,10 +125,13 @@ class TextNormalizer:
         # 4. Заменяем технические термины
         text = self.replace_tech_terms(text)
         
-        # 5. Конвертируем числа в слова
+        # 5. Конвертируем латинские буквы в их русское произношение
+        text = self.latin_letters_to_russian(text)
+        
+        # 6. Конвертируем числа в слова
         text = self.numbers_to_words(text)
         
-        # 6. Убираем лишние пробелы
+        # 7. Убираем лишние пробелы
         text = re.sub(r'\s+', ' ', text).strip()
         
         return text
@@ -175,7 +178,31 @@ class TextNormalizer:
         
         for english, russian in sorted_terms:
             # Word boundary для точной замены
-            text = re.sub(r'\b' + re.escape(english) + r'\b', russian, text)
+            text = re.sub(rf'\b{re.escape(english)}\b', russian, text, flags=re.IGNORECASE)
+        
+        return text
+    
+    def latin_letters_to_russian(self, text: str) -> str:
+        """
+        Конвертирует латинские буквы в их русское произношение
+        Обрабатывает отдельные буквы (например, "A, B, C" → "эй, би, си")
+        """
+        # Словарь произношения латинских букв по-русски
+        LATIN_LETTERS = {
+            'A': 'эй', 'B': 'би', 'C': 'си', 'D': 'ди', 'E': 'и',
+            'F': 'эф', 'G': 'джи', 'H': 'эйч', 'I': 'ай', 'J': 'джей',
+            'K': 'кей', 'L': 'эл', 'M': 'эм', 'N': 'эн', 'O': 'оу',
+            'P': 'пи', 'Q': 'кью', 'R': 'ар', 'S': 'эс', 'T': 'ти',
+            'U': 'ю', 'V': 'ви', 'W': 'дабл ю', 'X': 'экс', 'Y': 'уай', 'Z': 'зет'
+        }
+        
+        def replace_letter(match):
+            letter = match.group(0).upper()
+            return LATIN_LETTERS.get(letter, letter.lower())
+        
+        # Заменяем отдельные латинские буквы (с пробелами/запятыми вокруг или в начале/конце)
+        # Паттерн: буква стоит отдельно (не часть слова)
+        text = re.sub(r'(?<![a-zA-Z])([a-zA-Z])(?![a-zA-Z])', replace_letter, text)
         
         return text
     
