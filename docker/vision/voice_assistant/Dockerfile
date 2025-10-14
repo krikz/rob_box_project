@@ -64,6 +64,7 @@ RUN apt-get install -y --reinstall \
     && rm -rf /var/lib/apt/lists/*
 RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
 RUN cat /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
+RUN test -f /opt/ros/humble/share/rcutils/cmake/rcutilsTargets.cmake && echo "✅ rcutilsTargets.cmake exists"
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
