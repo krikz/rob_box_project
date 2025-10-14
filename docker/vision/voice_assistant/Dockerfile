@@ -61,8 +61,14 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-rcutils-dev \
+    ros-${ROS_DISTRO}-rosidl-runtime-c-dev \
+    ros-${ROS_DISTRO}-rosidl-runtime-cpp-dev \
+    ros-${ROS_DISTRO}-std-msgs-dev \
+    ros-${ROS_DISTRO}-sensor-msgs-dev \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
     && rm -rf /var/lib/apt/lists/*
-RUN find /opt -name "*.so" | grep -E "(rcutils|rosidl)" | head -10
+RUN find /opt/ros -name "*.so" | grep -E "(rcutils|rosidl)" | head -10
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
