@@ -63,7 +63,7 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     && rm -rf /var/lib/apt/lists/*
 RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
-RUN grep -A2 -B2 "rcutils_LIBRARY_DIRS" /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
+RUN cat /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
