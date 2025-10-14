@@ -61,13 +61,6 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
-    # ROS2 DEV (обязательно для colcon build!)
-    ros-humble-rcutils-dev \
-    ros-humble-rosidl-runtime-c-dev \
-    ros-humble-rosidl-runtime-cpp-dev \
-    ros-humble-std-msgs-dev \
-    ros-humble-sensor-msgs-dev \
-    ros-humble-rosidl-default-generators \
     && rm -rf /var/lib/apt/lists/*
 RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
 RUN cat /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
