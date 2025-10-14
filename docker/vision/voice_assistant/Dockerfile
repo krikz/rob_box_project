@@ -126,10 +126,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --retries 5 --timeout 60 httpx
 
-# pydantic-core 2.41.3 имеет битый wheel для ARM64 на PyPI
-# Используем более старую стабильную версию 2.27.0
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 "pydantic-core==2.27.0"
+# pydantic-core часто падает с zlib error - используем --no-cache-dir для принудительного re-download
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 pydantic-core
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --retries 5 --timeout 60 pydantic
