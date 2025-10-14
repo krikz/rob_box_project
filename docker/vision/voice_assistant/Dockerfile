@@ -67,43 +67,53 @@ RUN apt-get update && apt-get install -y \
 
 # Установка Python библиотек для голосового ассистента
 # Разбито на этапы для избежания проблем с коррумпированными downloads
-RUN pip3 install --no-cache-dir --upgrade pip
+# Используем --retries для повторных попыток при сетевых ошибках
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 --upgrade pip
 
 # Базовые библиотеки (маленькие пакеты)
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     pyyaml \
     requests \
     pyusb \
     omegaconf
 
 # Аудио библиотеки
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     pyaudio \
     sounddevice \
     soundfile
 
 # Numpy отдельно (часто конфликтует)
-RUN pip3 install --no-cache-dir numpy
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 numpy
 
 # PyTorch (большой пакет, отдельно)
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     torch==2.1.0 \
     torchaudio==2.1.0
 
 # STT движки
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     vosk \
     openai-whisper \
     faster-whisper
 
 # gRPC для Yandex Cloud STT
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     grpcio \
     grpcio-tools \
     protobuf
 
-# OpenAI API для диалогов
-RUN pip3 install --no-cache-dir openai
+# OpenAI API для диалогов 
+# Разбиваем на микро-шаги из-за zlib decompression errors
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 typing-inspection
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 sniffio
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 h11
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 httpcore
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 anyio
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 httpx
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 pydantic-core
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 pydantic
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 openai
 
 # Рабочая директория
 WORKDIR /ws
