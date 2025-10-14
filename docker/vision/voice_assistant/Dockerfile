@@ -66,44 +66,33 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
-# Разбито на этапы для избежания проблем с коррумпированными downloads
-RUN pip3 install --no-cache-dir --upgrade pip
-
-# Базовые библиотеки (маленькие пакеты)
-RUN pip3 install --no-cache-dir \
-    pyyaml \
-    requests \
-    pyusb \
-    omegaconf
-
-# Аудио библиотеки
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir \
+    # Аудио
     pyaudio \
     sounddevice \
-    soundfile
-
-# Numpy отдельно (часто конфликтует)
-RUN pip3 install --no-cache-dir numpy
-
-# PyTorch (большой пакет, отдельно)
-RUN pip3 install --no-cache-dir \
-    torch==2.1.0 \
-    torchaudio==2.1.0
-
-# STT движки
-RUN pip3 install --no-cache-dir \
+    soundfile \
+    numpy \
+    # USB интерфейс для ReSpeaker
+    pyusb \
+    # STT: Vosk (offline, fast)
     vosk \
+    # STT: Whisper (offline, high accuracy)
     openai-whisper \
-    faster-whisper
-
-# gRPC для Yandex Cloud STT
-RUN pip3 install --no-cache-dir \
+    faster-whisper \
+    # STT: Yandex Cloud (fallback)
     grpcio \
     grpcio-tools \
-    protobuf
-
-# OpenAI API для диалогов
-RUN pip3 install --no-cache-dir openai
+    protobuf \
+    # TTS: Silero v4 (offline, fast, high quality, SSML support)
+    torch==2.1.0 \
+    torchaudio==2.1.0 \
+    omegaconf \
+    # Dialogue: DeepSeek / OpenAI compatible API
+    openai \
+    # Утилиты
+    pyyaml \
+    requests
 
 # Рабочая директория
 WORKDIR /ws
