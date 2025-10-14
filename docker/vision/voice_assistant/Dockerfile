@@ -125,8 +125,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --retries 5 --timeout 60 anyio
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --retries 5 --timeout 60 httpx
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 pydantic-core
+
+# pydantic-core часто падает с zlib error - используем --no-cache-dir для принудительного re-download
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 pydantic-core
+
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --retries 5 --timeout 60 pydantic
 RUN --mount=type=cache,target=/root/.cache/pip \
