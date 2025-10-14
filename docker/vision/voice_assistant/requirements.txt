@@ -1,16 +1,16 @@
 # Python dependencies for Voice Assistant (rob_box_voice)
 # Оптимизировано для ARM64 (Raspberry Pi 5)
+# Только реально используемые пакеты!
 
 # =============================================================================
-# Base utilities (small packages, install first)
+# Base utilities
 # =============================================================================
 pyyaml
 requests
-pyusb
 omegaconf
 
 # =============================================================================
-# Audio processing (install before ML packages to avoid conflicts)
+# Audio processing
 # =============================================================================
 pyaudio
 sounddevice
@@ -18,32 +18,33 @@ soundfile
 numpy<2.0.0
 
 # =============================================================================
-# Machine Learning (PyTorch - large package, ~1GB)
+# USB interface for ReSpeaker (used in audio_node.py)
+# =============================================================================
+pyusb
+
+# =============================================================================
+# Machine Learning (PyTorch for Silero TTS)
 # Fixed version for ARM64 compatibility
 # =============================================================================
 torch==2.1.0
 torchaudio==2.1.0
 
 # =============================================================================
-# Speech-to-Text engines
+# Speech-to-Text: Vosk (offline, lightweight Russian STT)
+# Used in: rob_box_voice/stt_node.py
 # =============================================================================
-# Vosk - lightweight offline STT (Russian support)
 vosk
 
-# OpenAI Whisper - high accuracy STT (requires more RAM)
-openai-whisper
-
-# Faster Whisper - optimized version (CTranslate2)
-faster-whisper
-
 # =============================================================================
-# gRPC for Yandex Cloud STT (optional cloud fallback)
+# gRPC for Yandex Cloud STT fallback (online)
+# Used in: scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
 # =============================================================================
 grpcio
 grpcio-tools
 protobuf
 
 # =============================================================================
-# Dialogue system (OpenAI-compatible API for DeepSeek)
+# Dialogue system: OpenAI-compatible API for DeepSeek
+# Used in: rob_box_voice/dialogue_node.py
 # =============================================================================
 openai
