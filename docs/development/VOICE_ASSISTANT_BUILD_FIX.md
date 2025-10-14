@@ -256,5 +256,69 @@ git ls-remote --heads <repository_url> <branch_name>
 
 ---
 
+## UPDATE 2025-10-14: Анализ циклических попыток фикса
+
+### 🔴 Проблема: Ходили по кругу!
+
+**История попыток исправления rcutils (хронология):**
+
+1. **c15c427** (2025-10-13 19:25) - Попытка #1
+   - Добавили 8 `ros-humble-*` пакетов
+   - Результат: **FAILED** - та же ошибка rcutils
+
+2. **64eccde** (2025-10-14 ~02:00) - Попытка #2  
+   - **УДАЛИЛИ** все 7 runtime библиотек из попытки #1
+   - Заменили на `ament-cmake` + `rosidl-default-generators`
+   - Результат: **FAILED** - та же ошибка rcutils
+
+3. **c5365e9** (2025-10-14 ~10:00) - Попытка #3
+   - Добавили 6 `lib*-dev` пакетов (librcutils-dev и т.д.)
+   - Результат: наверное **FAILED**
+
+4. **9c163e1** (2025-10-14 ~15:00) - Попытка #4 ✅
+   - **ОБЪЕДИНИЛИ** подходы #1 и #2
+   - `ament-cmake` + `rosidl-default-generators` (для build)
+   - + ВСЕ `ros-humble-rosidl-*` пакеты (для runtime)
+   - Результат: **ожидаем CI/CD**
+
+### Анализ ошибки
+
+**Ключевое понимание:**
+```bash
+# ❌ НЕПРАВИЛЬНО (попытка #3)
+librcutils-dev           # Ubuntu system package
+librosidl-runtime-c-dev  # Ubuntu system package
+
+# ✅ ПРАВИЛЬНО (попытка #4)
+ros-humble-rcutils                      # ROS2 package с librcutils.so
+ros-humble-rosidl-runtime-c             # ROS2 package с librosidl_runtime_c.so
+ros-humble-rosidl-typesupport-c         # ROS2 type support
+```
+
+**Почему не сработали попытки #1-#3:**
+
+- Попытка #1: Добавили runtime, но не добавили **ament-cmake** (нужен для colcon build)
+- Попытка #2: Добавили ament-cmake, но **удалили** runtime библиотеки
+- Попытка #3: Пытались использовать Ubuntu `lib*-dev` вместо ROS2 `ros-humble-*`
+
+**Правильное решение:**
+- `ros-humble-ament-cmake` - для colcon build
+- `ros-humble-rosidl-default-generators` - для message generation  
+- `ros-humble-rcutils` - для librcutils.so
+- `ros-humble-rosidl-runtime-*` - для runtime библиотек
+- `ros-humble-rosidl-typesupport-*` - для type support
+
+### Если попытка #4 не сработает
+
+Значит проблема в **базовом образе** `ghcr.io/krikz/rob_box_base:rtabmap`.
+
+**Варианты решения:**
+1. Пересобрать base образ с полным `ros-humble-ros-base`
+2. Использовать `ros:humble-ros-base` вместо custom base
+3. Добавить pre-build stage для audio_common_msgs
+
+---
+
 **Prepared by:** AI Agent  
-**Reviewed by:** krikz
+**Reviewed by:** krikz  
+**Last Updated:** 2025-10-14 (после анализа циклических попыток)
