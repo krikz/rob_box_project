@@ -54,6 +54,13 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-ament-cmake \
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
+    # Дополнительные dev библиотеки которых нет в базовом образе
+    librcutils-dev \
+    librosidl-runtime-c-dev \
+    librosidl-typesupport-c-dev \
+    librosidl-typesupport-cpp-dev \
+    librosidl-typesupport-fastrtps-c-dev \
+    librosidl-typesupport-fastrtps-cpp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
