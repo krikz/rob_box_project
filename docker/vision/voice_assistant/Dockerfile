@@ -64,7 +64,7 @@ RUN apt-get update && apt-get install -y \
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
 # ВАЖНО: setuptools <80 требуется для совместимости с colcon-core и antlr4-python3-runtime
-RUN pip3 install --no-cache-dir --upgrade pip "setuptools<80,>=59.6.0" wheel
+RUN pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel
 
 # Копируем requirements.txt
 COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
