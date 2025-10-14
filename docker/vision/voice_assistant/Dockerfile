@@ -61,33 +61,18 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir \
-    # Аудио
-    pyaudio \
-    sounddevice \
-    soundfile \
-    numpy \
-    # USB интерфейс для ReSpeaker
-    pyusb \
-    # STT: Vosk (offline, fast)
-    vosk \
-    # STT: Whisper (offline, high accuracy)
-    openai-whisper \
-    faster-whisper \
-    # STT: Yandex Cloud (fallback)
-    grpcio \
-    grpcio-tools \
-    protobuf \
-    # TTS: Silero v4 (offline, fast, high quality, SSML support)
-    torch==2.1.0 \
-    torchaudio==2.1.0 \
-    omegaconf \
-    # Dialogue: DeepSeek / OpenAI compatible API
-    openai \
-    # Утилиты
-    pyyaml \
-    requests
+# Используем requirements.txt для лучшего кеширования и управления зависимостями
+# BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+# Копируем requirements.txt
+COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
+
+# Устанавливаем все зависимости одной командой
+# BuildKit cache mount сохраняет загруженные пакеты между сборками
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip3 install -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
 
 # Рабочая директория
 WORKDIR /ws

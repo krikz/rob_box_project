@@ -1,0 +1,49 @@
+# Python dependencies for Voice Assistant (rob_box_voice)
+# Оптимизировано для ARM64 (Raspberry Pi 5)
+
+# =============================================================================
+# Base utilities (small packages, install first)
+# =============================================================================
+pyyaml
+requests
+pyusb
+omegaconf
+
+# =============================================================================
+# Audio processing (install before ML packages to avoid conflicts)
+# =============================================================================
+pyaudio
+sounddevice
+soundfile
+numpy<2.0.0
+
+# =============================================================================
+# Machine Learning (PyTorch - large package, ~1GB)
+# Fixed version for ARM64 compatibility
+# =============================================================================
+torch==2.1.0
+torchaudio==2.1.0
+
+# =============================================================================
+# Speech-to-Text engines
+# =============================================================================
+# Vosk - lightweight offline STT (Russian support)
+vosk
+
+# OpenAI Whisper - high accuracy STT (requires more RAM)
+openai-whisper
+
+# Faster Whisper - optimized version (CTranslate2)
+faster-whisper
+
+# =============================================================================
+# gRPC for Yandex Cloud STT (optional cloud fallback)
+# =============================================================================
+grpcio
+grpcio-tools
+protobuf
+
+# =============================================================================
+# Dialogue system (OpenAI-compatible API for DeepSeek)
+# =============================================================================
+openai
