@@ -43,6 +43,9 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get install -y --reinstall \
     # ROS2 зависимости
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
@@ -59,35 +62,21 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     && rm -rf /var/lib/apt/lists/*
-
+RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
 # Установка Python библиотек для голосового ассистента
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir \
-    # Аудио
-    pyaudio \
-    sounddevice \
-    soundfile \
-    numpy \
-    # USB интерфейс для ReSpeaker
-    pyusb \
-    # STT: Vosk (offline, fast)
-    vosk \
-    # STT: Whisper (offline, high accuracy)
-    openai-whisper \
-    faster-whisper \
-    # STT: Yandex Cloud (fallback)
-    grpcio \
-    grpcio-tools \
-    protobuf \
-    # TTS: Silero v4 (offline, fast, high quality, SSML support)
-    torch==2.1.0 \
-    torchaudio==2.1.0 \
-    omegaconf \
-    # Dialogue: DeepSeek / OpenAI compatible API
-    openai \
-    # Утилиты
-    pyyaml \
-    requests
+# Используем requirements.txt для лучшего кеширования и управления зависимостями
+# BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
+# ВАЖНО: setuptools <80 требуется для совместимости с colcon-core и antlr4-python3-runtime
+RUN pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel
+
+# Копируем requirements.txt
+COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
+
+# Устанавливаем все зависимости одной командой
+# BuildKit cache mount сохраняет загруженные пакеты между сборками
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip3 install -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
 
 # Рабочая директория
 WORKDIR /ws
@@ -130,13 +119,13 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
 RUN mkdir -p /models && \
     # Vosk STT: Russian small model (45 MB, fast)
     wget -q -O /tmp/vosk-model.zip \
-        https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
+    https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     rm /tmp/vosk-model.zip && \
     # Silero TTS v4: Russian model (100 MB, neural TTS, 4 voices, SSML support)
     # Голоса: aidar (нейтральный М), baya (спокойный М), kseniya (нейтральный Ж), xenia (энергичный Ж)
     wget -q -O /models/silero_v4_ru.pt \
-        https://models.silero.ai/models/tts/ru/v4_ru.pt && \
+    https://models.silero.ai/models/tts/ru/v4_ru.pt && \
     echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
 
 # Установка ROS зависимостей через rosdep (игнорируем ошибки для audio_common)
@@ -152,8 +141,8 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     --packages-select audio_common_msgs rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
