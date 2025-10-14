@@ -63,7 +63,8 @@ RUN apt-get update && apt-get install -y \
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
-RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+# ВАЖНО: setuptools <80 требуется для совместимости с colcon-core и antlr4-python3-runtime
+RUN pip3 install --no-cache-dir --upgrade pip "setuptools<80,>=59.6.0" wheel
 
 # Копируем requirements.txt
 COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
