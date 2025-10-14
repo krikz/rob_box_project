@@ -68,69 +68,52 @@ RUN apt-get update && apt-get install -y \
 # Установка Python библиотек для голосового ассистента
 # Разбито на этапы для избежания проблем с коррумпированными downloads
 # Используем --retries для повторных попыток при сетевых ошибках
-# Используем BuildKit cache mount для pip чтобы избежать повторных downloads
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 --upgrade pip
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 --upgrade pip
 
 # Базовые библиотеки (маленькие пакеты)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     pyyaml \
     requests \
     pyusb \
     omegaconf
 
 # Аудио библиотеки
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     pyaudio \
     sounddevice \
     soundfile
 
 # Numpy отдельно (часто конфликтует)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 numpy
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 numpy
 
 # PyTorch (большой пакет, отдельно)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     torch==2.1.0 \
     torchaudio==2.1.0
 
 # STT движки
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     vosk \
     openai-whisper \
     faster-whisper
 
 # gRPC для Yandex Cloud STT
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 \
     grpcio \
     grpcio-tools \
     protobuf
 
 # OpenAI API для диалогов 
 # Разбиваем на микро-шаги из-за zlib decompression errors
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 typing-inspection
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 sniffio
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 h11
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 httpcore
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 anyio
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 httpx
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 pydantic-core
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 pydantic
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --retries 5 --timeout 60 openai
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 typing-inspection
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 sniffio
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 h11
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 httpcore
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 anyio
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 httpx
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 pydantic-core
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 pydantic
+RUN pip3 install --no-cache-dir --retries 5 --timeout 60 openai
 
 # Рабочая директория
 WORKDIR /ws
