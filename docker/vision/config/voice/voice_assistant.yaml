@@ -215,5 +215,7 @@
             angle: 90.0
         - pattern: "стоп|stop"
           action: "stop"
+          params: null
         - pattern: "домой|go home"
           action: "return_home"
+          params: null
