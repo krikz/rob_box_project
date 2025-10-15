@@ -9,7 +9,7 @@
 #   - ReSpeaker Mic Array v2.0 (USB, 4 микрофона, 12× RGB LED)
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 # Версия сборки для инвалидации кеша при изменении зависимостей
 ARG BUILD_VERSION=2025-10-12-rtabmap
 
@@ -63,6 +63,8 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     && rm -rf /var/lib/apt/lists/*
 RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
+RUN cat /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
+
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
