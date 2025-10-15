@@ -154,16 +154,21 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 \
 | **Username** | ros2 | ros2 |
 | **Password** | open | open |
 
+**⚠️ ВАЖНО ДЛЯ АГЕНТОВ**: Всегда используй `sshpass -p 'open'` для неинтерактивных SSH команд!
+
 ### SSH подключение
 
 ```bash
-# Из Windows (PowerShell) с использованием sshpass через WSL
-wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21  # Vision Pi
-wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20  # Main Pi
+# ⚠️ ВСЕГДА используй sshpass для автоматизации!
+# Vision Pi
+sshpass -p 'open' ssh ros2@10.1.1.11
 
-# Прямое SSH подключение (если требуется интерактивный доступ)
-ssh ros2@10.1.1.21  # Vision Pi
-ssh ros2@10.1.1.20  # Main Pi
+# Main Pi  
+sshpass -p 'open' ssh ros2@10.1.1.20
+
+# Выполнение команд без интерактивного входа
+sshpass -p 'open' ssh ros2@10.1.1.11 'docker ps'
+sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs rtabmap'
 ```
 
 ### Выполнение команд на удаленных Pi
