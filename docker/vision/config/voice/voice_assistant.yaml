@@ -1,39 +1,5 @@
 /**:
   ros__parameters:
-    # ===      # Цвета для состояний
-      colors:
-        idle:
-          - 0.0
-          - 50.0
-          - 100.0
-        listening:
-          - 0.0
-          - 255.0
-          - 0.0
-        thinking:
-          - 100.0
-          - 0.0
-          - 200.0
-        speaking:
-          - 255.0
-          - 100.0
-          - 0.0
-        error:
-          - 255.0
-          - 0.0
-          - 0.0
-        success:
-          - 0.0
-          - 255.0
-          - 50.0
-        wake:
-          - 255.0
-          - 255.0
-          - 0.0
-      
-      # Эффекты
-      use_direction: true  # Направление DoA для спин/wipe
-    
     # ===== Audio Node =====
     audio_node:
       # Устройство
@@ -67,13 +33,34 @@
       
       # Цвета для состояний
       colors:
-        idle:       [0.0, 50.0, 100.0]   # Голубой
-        listening:  [0.0, 255.0, 0.0]    # Зелёный
-        thinking:   [100.0, 0.0, 200.0]  # Фиолетовый
-        speaking:   [255.0, 100.0, 0.0]  # Оранжевый
-        error:      [255.0, 0.0, 0.0]    # Красный
-        success:    [0.0, 255.0, 50.0]   # Салатовый
-        wake:       [255.0, 255.0, 0.0]  # Жёлтый (wake word)
+        idle:
+          - 0
+          - 50
+          - 100
+        listening:
+          - 0
+          - 255
+          - 0
+        thinking:
+          - 100
+          - 0
+          - 200
+        speaking:
+          - 255
+          - 100
+          - 0
+        error:
+          - 255
+          - 0
+          - 0
+        success:
+          - 0
+          - 255
+          - 50
+        wake:
+          - 255
+          - 255
+          - 0
       
       # Эффекты
       use_direction: true  # Направление DoA для спин/wipe
@@ -214,29 +201,21 @@
           action: "move_forward"
           params:
             distance: 0.5
-            angle: 0.0
         - pattern: "назад|back"
           action: "move_backward"
           params:
             distance: 0.5
-            angle: 0.0
         - pattern: "налево|left"
           action: "turn_left"
           params:
-            distance: 0.0
             angle: 90.0
         - pattern: "направо|right"
           action: "turn_right"
           params:
-            distance: 0.0
             angle: 90.0
         - pattern: "стоп|stop"
           action: "stop"
-          params:
-            distance: 0.0
-            angle: 0.0
+          params: null
         - pattern: "домой|go home"
           action: "return_home"
-          params:
-            distance: 0.0
-            angle: 0.0
+          params: null
