@@ -282,7 +282,7 @@ grep -A 10 "volumes:" docker/*/docker-compose.yaml
 
 См. также:
 - **[DOCKER_STANDARDS.md](DOCKER_STANDARDS.md)** - Стандарты Docker Compose
-- **[ARCHITECTURE.md](../reference/ARCHITECTURE.md)** - Архитектура проекта
+- **[ARCHITECTURE.md](../reference/SYSTEM_OVERVIEW.md)** - Архитектура проекта
 - **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - Руководство для AI агентов (содержит эти правила)
 
 ---

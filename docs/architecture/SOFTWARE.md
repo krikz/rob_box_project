@@ -801,7 +801,7 @@ docker/main/config/
 
 ## 📚 Связанные документы
 
-- [Архитектура системы](ARCHITECTURE.md)
+- [Архитектура системы](SYSTEM_OVERVIEW.md)
 - [Аппаратное обеспечение](HARDWARE.md)
 - [API Reference](API_REFERENCE.md)
 - [Deployment Guide](DEPLOYMENT.md)

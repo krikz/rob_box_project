@@ -110,7 +110,7 @@ permissions:
 
 ## Documentation
 
-Полная документация: [`../docs/CI_CD_PIPELINE.md`](../docs/CI_CD_PIPELINE.md)
+Полная документация: [`../docs/CI_CD_PIPELINE.md`](../CI_CD_PIPELINE.md)
 
 ## Monitoring
 

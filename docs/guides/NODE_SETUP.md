@@ -239,17 +239,17 @@ sudo reboot
 
 ## 📚 Дополнительная документация
 
-- [CI/CD Pipeline](../docs/CI_CD_PIPELINE.md)
-- [Vision Pi Network Setup](../docs/guides/VISION_PI_NETWORK_SETUP.md)
-- [Docker Architecture](../docs/architecture/DOCKER_ARCHITECTURE.md)
+- [CI/CD Pipeline](../CI_CD_PIPELINE.md)
+- [Vision Pi Network Setup](VISION_PI_NETWORK_SETUP.md)
+- [Docker Architecture](../architecture/SYSTEM_OVERVIEW.md)
 
 ## 🤝 Contributing
 
-См. [CONTRIBUTING.md](../CONTRIBUTING.md)
+См. [CONTRIBUTING.md](../../CONTRIBUTING.md)
 
 ## 📄 License
 
-MIT License - см. [LICENSE](../LICENSE)
+MIT License - см. [LICENSE](../../../LICENSE)
 
 ---
 

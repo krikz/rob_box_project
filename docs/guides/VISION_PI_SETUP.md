@@ -333,10 +333,10 @@ grep robbox-motd ~/.bashrc
 
 ## 📝 Дополнительная документация
 
-- [QUICK_START.md](../docs/guides/QUICK_START.md) - Быстрый старт
-- [VISION_PI_DEPLOYMENT.md](../docs/deployment/VISION_PI_DEPLOYMENT.md) - Развёртывание Vision Pi
-- [RASPBERRY_PI_USB_POWER_FIX.md](../docs/guides/RASPBERRY_PI_USB_POWER_FIX.md) - Увеличение USB тока
-- [TROUBLESHOOTING.md](../docs/guides/TROUBLESHOOTING.md) - Решение проблем
+- [QUICK_START.md](../guides/QUICK_START.md) - Быстрый старт
+- [VISION_PI_DEPLOYMENT.md](../deployment/VISION_PI_DEPLOYMENT.md) - Развёртывание Vision Pi
+- [RASPBERRY_PI_USB_POWER_FIX.md](../guides/RASPBERRY_PI_USB_POWER_FIX.md) - Увеличение USB тока
+- [TROUBLESHOOTING.md](../guides/TROUBLESHOOTING.md) - Решение проблем
 
 ## 🎯 Следующие шаги
 

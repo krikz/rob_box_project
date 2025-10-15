@@ -351,5 +351,5 @@ krikz @ РОББОКС Project
 ## См. также
 
 - [Документация ReSpeaker](https://wiki.seeedstudio.com/ReSpeaker_Mic_Array_v2.0/)
-- [Архитектура системы](../../docs/development/VOICE_ASSISTANT_ARCHITECTURE.md)
-- [Спецификация hardware](../../docs/HARDWARE.md#34-respeaker-microphone-array-v20)
+- [Архитектура системы](../../development/VOICE_ASSISTANT_SYSTEM_OVERVIEW.md)
+- [Спецификация hardware](../../architecture/HARDWARE.md#34-respeaker-microphone-array-v20)
