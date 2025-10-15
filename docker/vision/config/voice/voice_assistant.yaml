@@ -195,35 +195,11 @@
       # Команды движения
       command_timeout_sec: 0.5  # Таймаут для cmd_vel
       
-      # Парсинг команд
-      commands:
-        - pattern: "вперед|forward"
-          action: "move_forward"
-          params:
-            distance: 0.5
-            angle: 0.0
-        - pattern: "назад|back"
-          action: "move_backward"
-          params:
-            distance: 0.5
-            angle: 0.0
-        - pattern: "налево|left"
-          action: "turn_left"
-          params:
-            distance: 0.0
-            angle: 90.0
-        - pattern: "направо|right"
-          action: "turn_right"
-          params:
-            distance: 0.0
-            angle: 90.0
-        - pattern: "стоп|stop"
-          action: "stop"
-          params:
-            distance: 0.0
-            angle: 0.0
-        - pattern: "домой|go home"
-          action: "return_home"
-          params:
-            distance: 0.0
-            angle: 0.0
+      # Парсинг команд (список строк pattern|action|params через разделитель)
+      command_patterns:
+        - "вперед|forward|move_forward|0.5|0.0"
+        - "назад|back|move_backward|0.5|0.0"
+        - "налево|left|turn_left|0.0|90.0"
+        - "направо|right|turn_right|0.0|90.0"
+        - "стоп|stop|stop|0.0|0.0"
+        - "домой|go home|return_home|0.0|0.0"
