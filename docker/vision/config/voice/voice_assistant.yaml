@@ -190,7 +190,7 @@
           params: {value: 90.0}
         - pattern: "стоп|stop"
           action: "stop"
-          params: {}
+          params: {value: null}
         - pattern: "домой|go home"
           action: "return_home"
-          params: {}
+          params: {value: null}
