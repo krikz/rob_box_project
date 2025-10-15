@@ -79,8 +79,12 @@ class TTSNode(Node):
             10
         )
         
-        # Публикация аудио
+        # Публикация аудио и состояния
         self.audio_pub = self.create_publisher(AudioData, '/voice/audio/speech', 10)
+        self.state_pub = self.create_publisher(String, '/voice/tts/state', 10)
+        
+        # Публикуем начальное состояние
+        self.publish_state('ready')
         
         self.get_logger().info('✅ TTSNode инициализирован')
         self.get_logger().info(f'  Speaker: {self.speaker}')
@@ -139,6 +143,9 @@ class TTSNode(Node):
         
         try:
             # Синтез
+            self.publish_state('synthesizing')
+            self.get_logger().info('🔊 Синтезирую речь...')
+            
             audio = self.model.apply_tts(
                 ssml_text=ssml_text,
                 speaker=self.speaker,
@@ -152,14 +159,32 @@ class TTSNode(Node):
             self._publish_audio(audio_np)
             
             # Воспроизводим локально (для тестирования)
+            self.publish_state('playing')
+            
             if self.chipmunk_mode:
                 playback_rate = int(self.sample_rate * self.pitch_shift)
                 self.get_logger().info(f'🐿️  Бурундук режим: {self.pitch_shift}x')
             else:
                 playback_rate = self.sample_rate
             
-            sd.play(audio_np, playback_rate)
+            # Снижаем громкость до 24%
+            audio_np_quiet = audio_np * 0.24
+            
+            # Добавляем 200ms тишины в начало и конец чтобы убрать белый шум
+            silence_samples = int(playback_rate * 0.2)  # 200ms
+            silence = np.zeros(silence_samples, dtype=audio_np_quiet.dtype)
+            audio_with_silence = np.concatenate([silence, audio_np_quiet, silence])
+            
+            # Блокирующее воспроизведение
+            sd.play(audio_with_silence, playback_rate, blocking=True)
+            
+            # Принудительно останавливаем устройство и очищаем буферы
+            sd.stop()
             sd.wait()
+            
+            # Закончили воспроизведение
+            self.publish_state('ready')
+            self.get_logger().info('✅ Воспроизведение завершено')
             
         except Exception as e:
             self.get_logger().error(f'❌ Synthesis error: {e}')
@@ -173,6 +198,12 @@ class TTSNode(Node):
         msg.data = audio_int16.tobytes()
         
         self.audio_pub.publish(msg)
+    
+    def publish_state(self, state: str):
+        """Публикация состояния TTS"""
+        msg = String()
+        msg.data = state
+        self.state_pub.publish(msg)
 
 
 def main(args=None):

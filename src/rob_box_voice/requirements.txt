@@ -4,9 +4,12 @@
 pyaudio>=0.2.11
 sounddevice>=0.4.6
 numpy>=1.21.0
+pydub>=0.25.1  # MP3 processing для sound effects
 
 # === USB интерфейс для ReSpeaker ===
 pyusb>=1.2.1
+pixel-ring>=0.1.0  # LED control для ReSpeaker
+spidev>=3.5  # SPI interface для pixel_ring
 
 # === STT (Speech-to-Text) ===
 # Vosk - Fast, offline, real-time (RECOMMENDED)

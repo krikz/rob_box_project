@@ -26,7 +26,7 @@ class SoundNode(Node):
         
         # Параметры
         self.declare_parameter('sound_pack_dir', '~/rob_box_project/sound_pack')
-        self.declare_parameter('volume_db', 0)  # Регулировка громкости (dB)
+        self.declare_parameter('volume_db', -12.0)  # Регулировка громкости (dB), -12dB ≈ 24% громкости
         self.declare_parameter('trigger_animations', True)
         self.declare_parameter('animation_topic', '/animations/trigger')
         

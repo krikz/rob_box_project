@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
 STTNode - Speech-to-Text с Vosk
-Подписывается: /audio/audio (AudioData), /audio/vad (Bool)
-Публикует: /voice/stt/result (String), /voice/stt/partial (String)
+Подписывается: /audio/speech_audio (AudioData)
+Публикует: /voice/stt/result (String)
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from std_msgs.msg import Bool, String
+from std_msgs.msg import String
 from audio_common_msgs.msg import AudioData
 
-import wave
-import io
 import json
 from typing import Optional
 from vosk import Model, KaldiRecognizer
@@ -27,13 +25,9 @@ class STTNode(Node):
         # Параметры
         self.declare_parameter('model_path', '/models/vosk-model-small-ru-0.22')
         self.declare_parameter('sample_rate', 16000)
-        self.declare_parameter('vad_timeout', 1.5)  # Секунды тишины до отправки результата
-        self.declare_parameter('min_speech_duration', 0.5)  # Минимальная длина речи
         
         self.model_path = self.get_parameter('model_path').value
         self.sample_rate = self.get_parameter('sample_rate').value
-        self.vad_timeout = self.get_parameter('vad_timeout').value
-        self.min_speech_duration = self.get_parameter('min_speech_duration').value
         
         # QoS для аудио потока
         audio_qos = QoSProfile(
@@ -42,23 +36,24 @@ class STTNode(Node):
             depth=10
         )
         
-        # Subscribers
+        # Subscriber - слушаем только speech_audio (уже готовые фразы)
         self.audio_sub = self.create_subscription(
             AudioData,
-            '/audio/audio',
-            self.audio_callback,
+            '/audio/speech_audio',
+            self.speech_audio_callback,
             audio_qos
         )
-        self.vad_sub = self.create_subscription(
-            Bool,
-            '/audio/vad',
-            self.vad_callback,
+        
+        # Подписка на состояние TTS (чтобы не слышать себя)
+        self.tts_state_sub = self.create_subscription(
+            String,
+            '/voice/tts/state',
+            self.tts_state_callback,
             10
         )
         
         # Publishers
         self.result_pub = self.create_publisher(String, '/voice/stt/result', 10)
-        self.partial_pub = self.create_publisher(String, '/voice/stt/partial', 10)
         self.state_pub = self.create_publisher(String, '/voice/stt/state', 10)
         
         # Vosk модель и распознаватель
@@ -66,10 +61,7 @@ class STTNode(Node):
         self.recognizer: Optional[KaldiRecognizer] = None
         
         # Состояние
-        self.is_speech_active = False
-        self.speech_start_time: Optional[float] = None
-        self.silence_start_time: Optional[float] = None
-        self.audio_buffer = bytearray()
+        self.is_robot_speaking = False  # Флаг: робот говорит (не слушать!)
         
         # Инициализация
         self.get_logger().info('STTNode инициализирован')
@@ -88,96 +80,62 @@ class STTNode(Node):
             self.get_logger().error(f'❌ Ошибка загрузки Vosk: {e}')
             self.publish_state('error')
     
-    def vad_callback(self, msg: Bool):
-        """Обработка VAD (Voice Activity Detection)"""
-        current_time = self.get_clock().now().nanoseconds / 1e9
-        
-        if msg.data:  # Речь обнаружена
-            if not self.is_speech_active:
-                # Начало речи
-                self.is_speech_active = True
-                self.speech_start_time = current_time
-                self.silence_start_time = None
-                self.get_logger().info('🎙️ Начало речи')
-                self.publish_state('listening')
-            else:
-                # Продолжение речи - сброс таймера тишины
-                self.silence_start_time = None
-        else:  # Тишина
-            if self.is_speech_active:
-                if self.silence_start_time is None:
-                    # Начало тишины
-                    self.silence_start_time = current_time
-                else:
-                    # Проверка таймаута тишины
-                    silence_duration = current_time - self.silence_start_time
-                    if silence_duration >= self.vad_timeout:
-                        # Конец речи - отправка результата
-                        self.finalize_recognition()
+    def tts_state_callback(self, msg: String):
+        """Отслеживание состояния TTS - не слушать когда робот говорит!"""
+        if msg.data in ['synthesizing', 'playing']:
+            if not self.is_robot_speaking:
+                self.get_logger().info('🔇 Робот говорит - распознавание отключено')
+                self.is_robot_speaking = True
+        elif msg.data in ['ready', 'idle']:
+            if self.is_robot_speaking:
+                self.get_logger().info('🎙️ Робот замолчал - распознавание включено')
+                self.is_robot_speaking = False
     
-    def audio_callback(self, msg: AudioData):
-        """Обработка аудио потока"""
-        if not self.is_speech_active or self.recognizer is None:
-            return
-        
-        # Добавить аудио в буфер
-        self.audio_buffer.extend(msg.data)
-        
-        # Отправить аудио в Vosk для распознавания
-        if self.recognizer.AcceptWaveform(bytes(msg.data)):
-            # Финальный результат (конец фразы)
-            result = json.loads(self.recognizer.Result())
-            text = result.get('text', '').strip()
-            if text:
-                self.get_logger().info(f'📝 Финальный результат: {text}')
-                self.publish_result(text)
-        else:
-            # Частичный результат (во время речи)
-            partial = json.loads(self.recognizer.PartialResult())
-            text = partial.get('partial', '').strip()
-            if text:
-                self.get_logger().debug(f'📝 Частичный: {text}')
-                self.publish_partial(text)
-    
-    def finalize_recognition(self):
-        """Завершение распознавания и отправка финального результата"""
+    def speech_audio_callback(self, msg: AudioData):
+        """
+        Обработка готовых фраз от audio_node
+        Вызывается только когда есть законченная фраза речи
+        """
         if self.recognizer is None:
             return
         
-        # Проверка минимальной длины речи
-        current_time = self.get_clock().now().nanoseconds / 1e9
-        if self.speech_start_time is not None:
-            speech_duration = current_time - self.speech_start_time
-            if speech_duration < self.min_speech_duration:
-                self.get_logger().info(f'⚠️ Речь слишком короткая ({speech_duration:.2f}s), игнорирую')
-                self.reset_recognition()
-                return
+        # НЕ СЛУШАТЬ когда робот говорит (самовозбуждение!)
+        if self.is_robot_speaking:
+            self.get_logger().info('🔇 Игнор: робот говорит')
+            return
         
-        # Получить финальный результат
-        final_result = json.loads(self.recognizer.FinalResult())
-        text = final_result.get('text', '').strip()
+        # Конвертируем список в bytes
+        audio_bytes = bytes(msg.data)
+        duration = len(audio_bytes) / (self.sample_rate * 2)  # 16-bit = 2 bytes
         
-        if text:
-            self.get_logger().info(f'✅ Финальный результат: "{text}"')
-            self.publish_result(text)
+        self.get_logger().info(f'🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)')
+        self.publish_state('recognizing')
+        
+        # Отправить весь аудио буфер в Vosk
+        if self.recognizer.AcceptWaveform(audio_bytes):
+            result = json.loads(self.recognizer.Result())
         else:
-            self.get_logger().info('⚠️ Пустой результат распознавания')
+            result = json.loads(self.recognizer.FinalResult())
         
-        self.reset_recognition()
-    
-    def reset_recognition(self):
-        """Сброс состояния распознавания"""
-        self.is_speech_active = False
-        self.speech_start_time = None
-        self.silence_start_time = None
-        self.audio_buffer.clear()
+        text = result.get('text', '').strip()
         
-        # Сброс распознавателя для новой фразы
-        if self.recognizer is not None:
-            self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
-            self.recognizer.SetWords(True)
+        self.get_logger().info(f'🔍 Vosk результат: "{text}" (длина={len(text)})')
         
-        self.publish_state('ready')
+        # Сбросить распознаватель для следующей фразы
+        self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
+        self.recognizer.SetWords(True)
+        
+        # ФИЛЬТР: игнорируем слишком короткие слова (шум типа "и и")
+        if text and len(text) >= 3:
+            self.get_logger().info(f'✅ ПРИНЯТО: {text}')
+            self.publish_result(text)
+            self.publish_state('ready')
+        elif text:
+            self.get_logger().warn(f'❌ ОТКЛОНЕНО (короткое): "{text}"')
+            self.publish_state('ready')
+        else:
+            self.get_logger().warn(f'❌ ОТКЛОНЕНО (пустое)')
+            self.publish_state('ready')
     
     def publish_result(self, text: str):
         """Публикация финального результата распознавания"""
@@ -185,12 +143,6 @@ class STTNode(Node):
         msg.data = text
         self.result_pub.publish(msg)
         self.get_logger().info(f'📤 Опубликовал результат: {text}')
-    
-    def publish_partial(self, text: str):
-        """Публикация частичного результата"""
-        msg = String()
-        msg.data = text
-        self.partial_pub.publish(msg)
     
     def publish_state(self, state: str):
         """Публикация состояния ноды"""
