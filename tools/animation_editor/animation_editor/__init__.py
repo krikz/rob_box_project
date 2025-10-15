@@ -9,9 +9,10 @@ __version__ = "1.0.0"
 __author__ = "rob_box team"
 
 from .app import AnimationEditorApp
-from .models import Animation, Frame, Panel
+from .models import Animation, Frame, Panel, Keyframe, KeyframeAnimation
 from .canvas import RobotCanvas
 from .timeline import Timeline
+from .timeline_v2 import TimelineV2
 from .palette import ColorPalette
 
 __all__ = [
@@ -19,7 +20,10 @@ __all__ = [
     'Animation',
     'Frame',
     'Panel',
+    'Keyframe',
+    'KeyframeAnimation',
     'RobotCanvas',
     'Timeline',
+    'TimelineV2',
     'ColorPalette',
 ]
