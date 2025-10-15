@@ -415,13 +415,18 @@ echo ""
 echo -e "\${CYAN}═══════════════════════════════════════════════════════════════\${NC}"
 echo -e "\${CYAN}Quick Commands:\${NC}"
 if [ -n "$DOCKER_COMPOSE_DIR" ]; then
-    echo -e "  \${BLUE}cd $DOCKER_COMPOSE_DIR\${NC}"
-    echo -e "  \${BLUE}docker compose ps\${NC}                    - Check containers status"
-    echo -e "  \${BLUE}docker compose logs -f\${NC}               - View all container logs"
-    echo -e "  \${BLUE}docker compose restart\${NC}               - Restart all containers"
+    echo -e "  \${BLUE}rbstatus\${NC}          - Check containers status"
+    echo -e "  \${BLUE}rblogs\${NC}            - View all container logs"
+    echo -e "  \${BLUE}rbrestart\${NC}         - Restart all containers"
+    echo -e "  \${BLUE}rbupdate\${NC}          - Full update (stop → git pull → docker pull → start)"
+    echo -e "  \${BLUE}rbhealth\${NC}          - Complete system health check"
+    echo -e "  \${BLUE}rbdebug\${NC}           - Show logs of failing containers"
 else
-    echo -e "  \${BLUE}cd ~/rob_box_project\${NC}                 - Go to project directory"
+    echo -e "  \${BLUE}rbcd\${NC}              - Go to project directory"
+    echo -e "  \${BLUE}rbgit\${NC}             - Check git status"
 fi
+echo ""
+echo -e "\${CYAN}More aliases:\${NC} Type \${GREEN}rbalias\${NC} to see all available commands"
 echo -e "\${CYAN}═══════════════════════════════════════════════════════════════\${NC}"
 echo ""
 MOTDEOF
@@ -443,6 +448,44 @@ MOTDEOF
     fi
     
     log_success "Кастомный MOTD настроен!"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# УСТАНОВКА РОББОКС BASH ALIASES
+# ═══════════════════════════════════════════════════════════════════════════
+
+install_robbox_aliases() {
+    log_step "Установка РОББОКС Bash Aliases"
+    
+    ALIASES_FILE="$HOME/rob_box_project/scripts/robbox_aliases.sh"
+    
+    # Проверка существования файла
+    if [ ! -f "$ALIASES_FILE" ]; then
+        log_warning "Файл алиасов не найден: $ALIASES_FILE"
+        log_warning "Пропускаю установку алиасов..."
+        return
+    fi
+    
+    # Проверка, не установлены ли уже
+    if grep -q "robbox_aliases.sh" "$HOME/.bashrc"; then
+        log_success "РОББОКС aliases уже установлены!"
+        return
+    fi
+    
+    log_info "Добавление РОББОКС aliases в .bashrc..."
+    
+    cat >> "$HOME/.bashrc" << 'ALIASEOF'
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🤖 РОББОКС Bash Aliases
+# ═══════════════════════════════════════════════════════════════════════════
+if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/robbox_aliases.sh
+fi
+ALIASEOF
+    
+    log_success "РОББОКС aliases установлены!"
+    log_info "Будут доступны после перелогина или команды: source ~/.bashrc"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -611,18 +654,24 @@ print_summary() {
         echo ""
     fi
     
+    echo -e "${BLUE}2. РОББОКС алиасы будут доступны после перелогина${NC}"
+    echo -e "   Или выполните: ${CYAN}source ~/.bashrc${NC}"
+    echo -e "   Посмотреть список: ${CYAN}rbalias${NC}"
+    echo ""
+    
     if [ -n "$DOCKER_COMPOSE_DIR" ]; then
-        echo -e "${BLUE}2. Логин в GitHub Container Registry:${NC}"
+        echo -e "${BLUE}3. Логин в GitHub Container Registry:${NC}"
         echo -e "   ${CYAN}echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin${NC}"
         echo ""
-        echo -e "${BLUE}3. Запуск Docker контейнеров:${NC}"
+        echo -e "${BLUE}4. Запуск Docker контейнеров:${NC}"
         echo -e "   ${CYAN}cd $DOCKER_COMPOSE_DIR${NC}"
-        echo -e "   ${CYAN}docker compose pull${NC}   # Скачать образы"
-        echo -e "   ${CYAN}docker compose up -d${NC}  # Запустить контейнеры"
+        echo -e "   ${CYAN}docker compose pull${NC}   # или просто ${CYAN}rbpull${NC}"
+        echo -e "   ${CYAN}docker compose up -d${NC}  # или просто ${CYAN}rbstart${NC}"
         echo ""
-        echo -e "${BLUE}4. Проверка статуса:${NC}"
-        echo -e "   ${CYAN}docker compose ps${NC}"
-        echo -e "   ${CYAN}docker compose logs -f${NC}"
+        echo -e "${BLUE}5. Проверка статуса:${NC}"
+        echo -e "   ${CYAN}rbstatus${NC}     # docker compose ps"
+        echo -e "   ${CYAN}rblogs${NC}       # docker compose logs -f"
+        echo -e "   ${CYAN}rbhealth${NC}     # полная проверка системы"
     fi
     
     echo ""
@@ -653,6 +702,7 @@ main() {
     
     # Настройка узла
     setup_motd
+    install_robbox_aliases
     setup_autostart
     setup_node_specific
     
