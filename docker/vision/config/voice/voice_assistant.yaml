@@ -178,16 +178,16 @@
       commands:
         - pattern: "вперед|forward"
           action: "move_forward"
-          params: {distance: 0.5}
+          params: {value: 0.5}
         - pattern: "назад|back"
           action: "move_backward"
-          params: {distance: 0.5}
+          params: {value: 0.5}
         - pattern: "налево|left"
           action: "turn_left"
-          params: {angle: 90.0}
+          params: {value: 90.0}
         - pattern: "направо|right"
           action: "turn_right"
-          params: {angle: 90.0}
+          params: {value: 90.0}
         - pattern: "стоп|stop"
           action: "stop"
           params: {}
