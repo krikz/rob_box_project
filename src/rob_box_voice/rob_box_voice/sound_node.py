@@ -10,12 +10,36 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 import os
+import sys
 import random
 import threading
 from typing import Dict, List, Optional
+from contextlib import contextmanager
 from pydub import AudioSegment
 from pydub.playback import play
 import io
+
+
+@contextmanager
+def ignore_stderr(enable=True):
+    """Подавить ALSA ошибки от PyAudio (как в audio_node)"""
+    if enable:
+        devnull = None
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            stderr = os.dup(2)
+            sys.stderr.flush()
+            os.dup2(devnull, 2)
+            try:
+                yield
+            finally:
+                os.dup2(stderr, 2)
+                os.close(stderr)
+        finally:
+            if devnull is not None:
+                os.close(devnull)
+    else:
+        yield
 
 
 class SoundNode(Node):
@@ -26,7 +50,7 @@ class SoundNode(Node):
         
         # Параметры
         self.declare_parameter('sound_pack_dir', '~/rob_box_project/sound_pack')
-        self.declare_parameter('volume_db', 0)  # Регулировка громкости (dB)
+        self.declare_parameter('volume_db', -12.0)  # Регулировка громкости (dB), -12dB ≈ 24% громкости
         self.declare_parameter('trigger_animations', True)
         self.declare_parameter('animation_topic', '/animations/trigger')
         
@@ -167,9 +191,10 @@ class SoundNode(Node):
             if self.trigger_animations:
                 self.trigger_animation(trigger)
             
-            # Воспроизведение
+            # Воспроизведение (с подавлением ALSA ошибок)
             audio = self.sounds[sound_name]
-            play(audio)
+            with ignore_stderr(enable=True):
+                play(audio)
             
             self.get_logger().info(f'✅ Завершено: {sound_name}')
             

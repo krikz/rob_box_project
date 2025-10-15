@@ -63,7 +63,7 @@ def generate_launch_description():
     # === Animation Player Node ===
     animation_node = Node(
         package='rob_box_animations',
-        executable='animation_player_node',
+        executable='animation_player_node.py',
         name='voice_animation_player',
         namespace=namespace,
         parameters=[{
@@ -140,8 +140,6 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
-    return LaunchDescription([
     
     # === Command Node (Phase 5: TODO) ===
     # sound_node = Node(
