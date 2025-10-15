@@ -184,10 +184,10 @@
           params: {distance: 0.5}
         - pattern: "налево|left"
           action: "turn_left"
-          params: {angle: 90}
+          params: {angle: 90.0}
         - pattern: "направо|right"
           action: "turn_right"
-          params: {angle: 90}
+          params: {angle: 90.0}
         - pattern: "стоп|stop"
           action: "stop"
         - pattern: "домой|go home"
