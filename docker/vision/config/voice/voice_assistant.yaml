@@ -29,7 +29,12 @@
         wake:
           - 255.0
           - 255.0
-          - 0.0Node =====
+          - 0.0
+      
+      # Эффекты
+      use_direction: true  # Направление DoA для спин/wipe
+    
+    # ===== Audio Node =====
     audio_node:
       # Устройство
       device_name: "ReSpeaker"  # Автопоиск по имени
