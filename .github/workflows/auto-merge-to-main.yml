@@ -1,15 +1,38 @@
 name: Auto-merge develop to main
 
 # Автоматическое слияние develop в main после успешной сборки ВСЕХ сервисов
-# Срабатывает только при пуше в develop
+# Срабатывает:
+#   1. При пуше в develop (ручной пуш)
+#   2. После успешного автомерджа из feature ветки
 on:
   push:
     branches:
       - develop
+  workflow_run:
+    workflows: ["Auto-merge feature branches to develop"]
+    types:
+      - completed
+    branches:
+      - develop
 
 jobs:
+  # Шаг 0: Проверка что предыдущий workflow завершился успешно (для workflow_run)
+  check-previous-run:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    steps:
+      - name: Check workflow run status
+        run: |
+          if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+            echo "❌ Previous workflow failed, skipping auto-merge"
+            exit 1
+          fi
+          echo "✅ Previous workflow succeeded, continuing..."
+
   # Шаг 1: Проверяем что ВСЕ образы собираются успешно
   build-and-test:
+    needs: [check-previous-run]
+    if: always() && (needs.check-previous-run.result == 'success' || needs.check-previous-run.result == 'skipped')
     uses: ./.github/workflows/build-all.yml
     secrets: inherit
     permissions:
