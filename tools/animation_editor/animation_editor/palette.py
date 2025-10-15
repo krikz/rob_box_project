@@ -52,17 +52,69 @@ class ColorPalette(tk.Frame):
     
     def _create_widgets(self):
         """Создать виджеты"""
+        print("        ColorPalette._create_widgets: START")
+        
+        print("          Configuring frame...")
         self.configure(bg='#2a2a2a', relief=tk.RAISED, borderwidth=2)
         
+        print("          Creating title...")
         # Заголовок
         title = tk.Label(
             self,
-            text="🎨 COLOR PALETTE",
+            text="COLOR PALETTE",  # Убрали emoji
             bg='#2a2a2a',
-            fg='white',
-            font=('Arial', 11, 'bold')
+            fg='white'
         )
         title.pack(pady=5)
+        print("          Title OK")
+        
+        print("          Creating current color canvas...")
+        # Текущий цвет (упрощённая версия)
+        self.current_color_canvas = tk.Canvas(
+            self,
+            width=60,
+            height=60,
+            bg='white',
+            highlightthickness=2,
+            highlightbackground='#555555'
+        )
+        self.current_color_canvas.pack(pady=5)
+        print("          Current color canvas OK")
+        
+        print("          Creating RGB label...")
+        self.rgb_label = tk.Label(
+            self,
+            text="RGB: 255,255,255",
+            bg='#2a2a2a',
+            fg='#aaaaaa'
+        )
+        self.rgb_label.pack(pady=5)
+        print("          RGB label OK")
+        
+        print("          Creating preset buttons...")
+        # Preset colors (упрощённый - только 4 цвета)
+        presets_frame = tk.Frame(self, bg='#2a2a2a')
+        presets_frame.pack(padx=5, pady=5)
+        
+        basic_colors = [
+            ('White', '#FFFFFF', (255, 255, 255)),
+            ('Red', '#FF0000', (255, 0, 0)),
+            ('Green', '#00FF00', (0, 255, 0)),
+            ('Blue', '#0000FF', (0, 0, 255)),
+        ]
+        
+        for i, (name, hex_color, rgb) in enumerate(basic_colors):
+            btn = tk.Button(
+                presets_frame,
+                bg=hex_color,
+                width=3,
+                height=1,
+                command=lambda c=rgb: self.set_color(c)
+            )
+            btn.grid(row=0, column=i, padx=2, pady=2)
+        
+        print("          Preset buttons OK")
+        print("        ColorPalette._create_widgets: DONE")
         
         # Текущий цвет (большой квадрат)
         current_frame = tk.Frame(self, bg='#2a2a2a')

@@ -7,10 +7,10 @@ from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
 from typing import Optional
 
-from .models import Animation, Frame
+from .models import KeyframeAnimation, Keyframe, Frame
 from .canvas import RobotCanvas
-from .timeline import Timeline
-from .palette import ColorPalette
+from .timeline_v2 import TimelineV2
+from .palette_simple import ColorPalette
 
 
 class AnimationEditorApp:
@@ -27,10 +27,14 @@ class AnimationEditorApp:
         self.root = root
         self.animations_dir = animations_dir
         
-        # Текущая анимация
-        self.animation: Optional[Animation] = None
+        # Текущая анимация (новая архитектура с ключевыми кадрами)
+        self.animation: Optional[KeyframeAnimation] = None
         self.animation_file: Optional[Path] = None
         self.is_modified = False
+        
+        # Playback control
+        self._playback_after_id: Optional[str] = None
+        self._is_playing = False
         
         # Настройка окна
         self.root.title("rob_box LED Animation Editor")
@@ -125,16 +129,17 @@ class AnimationEditorApp:
         
         self._create_properties_panel(right_panel)
         
-        # Нижняя панель - Timeline
-        bottom_panel = tk.Frame(main_container, bg='#1e1e1e', height=200)
+        # Нижняя панель - Timeline v2 (уменьшена, т.к. чекбоксы в правой панели)
+        bottom_panel = tk.Frame(main_container, bg='#1e1e1e', height=180)
         bottom_panel.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
         bottom_panel.pack_propagate(False)
         
-        self.timeline = Timeline(
+        self.timeline = TimelineV2(
             bottom_panel,
             animation=self.animation,
-            on_frame_select=self._on_frame_select,
-            on_frame_change=self._on_frame_change
+            on_time_change=self._on_time_change,
+            on_keyframe_change=self._on_keyframe_change,
+            panel_checkboxes_container=self.panel_checkboxes_container
         )
         self.timeline.pack(fill=tk.BOTH, expand=True)
         
@@ -283,6 +288,19 @@ class AnimationEditorApp:
             anchor=tk.W
         )
         self.info_text.pack(padx=10, pady=10, fill=tk.X)
+        
+        # ACTIVE PANELS - Чекбоксы панелей (перемещены сюда из Timeline)
+        panels_frame = tk.LabelFrame(
+            props_frame,
+            text="🎨 Active Panels",
+            bg='#2a2a2a',
+            fg='#00ff00',
+            font=('Arial', 10, 'bold')
+        )
+        panels_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Хранилища для чекбоксов (будут заполнены timeline)
+        self.panel_checkboxes_container = panels_frame
     
     def _new_animation(self):
         """Создать новую анимацию"""
@@ -296,9 +314,13 @@ class AnimationEditorApp:
             elif result is None:
                 return
         
-        self.animation = Animation(name="untitled", description="New animation")
+        # Создать новую анимацию с ключевыми кадрами
+        self.animation = KeyframeAnimation(name="untitled", description="New animation")
         self.animation_file = None
         self.is_modified = False
+        
+        # Обновить timeline
+        self.timeline.set_animation(self.animation)
         
         # Обновить GUI
         self._update_gui()
@@ -308,7 +330,18 @@ class AnimationEditorApp:
     
     def _open_animation(self):
         """Открыть анимацию"""
+        if self.is_modified:
+            result = messagebox.askyesnocancel(
+                "Unsaved Changes",
+                "Save changes to current animation?"
+            )
+            if result is True:
+                self._save_animation()
+            elif result is None:
+                return
+        
         manifests_dir = self.animations_dir / 'manifests'
+        manifests_dir.mkdir(parents=True, exist_ok=True)
         
         filename = filedialog.askopenfilename(
             title="Open Animation",
@@ -316,25 +349,46 @@ class AnimationEditorApp:
             filetypes=[("YAML files", "*.yaml"), ("All files", "*.*")]
         )
         
-        if not filename:
-            return
-        
+        if filename:
+            self._load_from_file(Path(filename))
+    
+    def _load_from_file(self, filepath: Path):
+        """Загрузить анимацию из файла"""
         try:
-            self.animation = Animation.load_from_manifest(
-                Path(filename),
-                self.animations_dir
-            )
-            self.animation_file = Path(filename)
+            # Загрузить анимацию (поддерживает оба формата)
+            self.animation = KeyframeAnimation.load_from_manifest(filepath, self.animations_dir)
+            self.animation_file = filepath
             self.is_modified = False
             
             # Обновить GUI
-            self._update_gui()
-            self._update_title()
+            self.name_entry.delete(0, tk.END)
+            self.name_entry.insert(0, self.animation.name)
             
-            self.status_bar.config(text=f"Opened: {self.animation.name}")
-        
+            self.desc_entry.delete(0, tk.END)
+            self.desc_entry.insert(0, self.animation.description)
+            
+            self.fps_var.set(self.animation.fps)
+            self.loop_var.set(self.animation.loop)
+            
+            # Обновить timeline
+            self.timeline.set_animation(self.animation)
+            
+            # Обновить canvas
+            self._refresh_canvas()
+            
+            # Обновить info
+            self._update_info()
+            
+            # Обновить заголовок
+            self.anim_name_label.config(text=f"📁 {self.animation.name}")
+            self.status_bar.config(text=f"Loaded: {filepath.name}")
+            
+            messagebox.showinfo("Success", f"Animation '{self.animation.name}' loaded successfully!\n\nKeyframes: {len(self.animation.keyframes)}")
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to open animation:\n{e}")
+            messagebox.showerror("Error", f"Failed to load animation:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def _save_animation(self):
         """Сохранить анимацию"""
@@ -400,9 +454,63 @@ class AnimationEditorApp:
             self.is_modified = True
     
     def _play_animation(self):
-        """Воспроизвести анимацию (заглушка)"""
-        # TODO: Implement animation playback
-        messagebox.showinfo("Play Animation", "Animation playback not yet implemented")
+        """Воспроизвести анимацию (preview)"""
+        if self._is_playing:
+            # Если уже играет, остановить
+            self._stop_playback()
+            return
+        
+        if not self.animation:
+            messagebox.showwarning("Warning", "No animation to play")
+            return
+        
+        # В новой архитектуре играем все активные панели
+        if not self.animation.keyframes:
+            messagebox.showwarning("Warning", "No keyframes to play")
+            return
+        
+        # Запустить проигрывание
+        self._is_playing = True
+        self.status_bar.config(text="Playing animation...")
+        self._play_keyframes(0)
+    
+    def _play_keyframes(self, time_ms: int):
+        """Проигрывать анимацию по времени"""
+        if not self._is_playing:
+            return
+        
+        if time_ms >= self.animation.duration_ms:
+            # Если loop включен, начать сначала
+            if self.animation.loop:
+                time_ms = 0
+            else:
+                self._is_playing = False
+                self.status_bar.config(text="Playback finished")
+                return
+        
+        # Получить состояние всех панелей в текущий момент
+        panel_states = self.animation.get_state_at_time(time_ms)
+        
+        # Обновить canvas
+        for panel_name, frame in panel_states.items():
+            self.canvas.update_panel_from_frame(panel_name, frame)
+        
+        self.status_bar.config(text=f"Playing: {time_ms} / {self.animation.duration_ms} ms")
+        
+        # Следующий кадр через 1000/fps миллисекунд
+        delay_ms = int(1000 / self.animation.fps)
+        self._playback_after_id = self.root.after(
+            delay_ms,
+            lambda: self._play_keyframes(time_ms + delay_ms)
+        )
+    
+    def _stop_playback(self):
+        """Остановить воспроизведение"""
+        if self._playback_after_id:
+            self.root.after_cancel(self._playback_after_id)
+            self._playback_after_id = None
+        self._is_playing = False
+        self.status_bar.config(text="Playback stopped")
     
     def _show_about(self):
         """Показать информацию о программе"""
@@ -414,7 +522,17 @@ class AnimationEditorApp:
     
     def _on_pixel_click(self, panel_name: str, x: int, y: int):
         """Обработка клика на пиксель"""
-        frame = self.timeline.get_current_frame()
+        keyframe = self.timeline.get_current_keyframe()
+        if not keyframe:
+            return
+        
+        # Проверить что панель активна
+        if not keyframe.is_panel_active(panel_name):
+            self.status_bar.config(text=f"Panel '{panel_name}' is not active. Enable it first!")
+            return
+        
+        # Получить frame панели
+        frame = keyframe.get_panel_state(panel_name)
         if not frame:
             return
         
@@ -427,34 +545,38 @@ class AnimationEditorApp:
         # Обновить canvas
         self.canvas.set_pixel_color(panel_name, x, y, color)
         
-        # Обновить timeline preview
-        self.timeline.refresh()
-        
         self.is_modified = True
+        self.status_bar.config(text=f"Pixel set: {panel_name} ({x},{y}) = {color}")
     
     def _on_color_change(self, color):
         """Обработка изменения цвета"""
         pass  # Цвет уже обновлён в палитре
     
-    def _on_frame_select(self, panel_name: str, frame_index: int):
-        """Обработка выбора кадра"""
+    def _on_time_change(self, time_ms: int):
+        """Обработка изменения времени на timeline"""
         if not self.animation:
             return
         
-        panel = self.animation.panels[panel_name]
-        if frame_index < len(panel.frames):
-            frame = panel.frames[frame_index]
-            
-            # Обновить canvas
-            self.canvas.set_selected_panel(panel_name)
+        # Получить состояние всех панелей в текущий момент
+        panel_states = self.animation.get_state_at_time(time_ms)
+        
+        # Обновить canvas
+        for panel_name, frame in panel_states.items():
             self.canvas.update_panel_from_frame(panel_name, frame)
-            
-            self.status_bar.config(text=f"Selected: {panel_name} frame #{frame_index}")
+        
+        self.status_bar.config(text=f"Time: {time_ms} ms")
     
-    def _on_frame_change(self):
-        """Обработка изменения кадров"""
+    def _on_keyframe_change(self):
+        """Обработка изменения ключевых кадров"""
         self.is_modified = True
         self._update_info()
+        
+        # Обновить canvas с текущим ключевым кадром
+        keyframe = self.timeline.get_current_keyframe()
+        if keyframe:
+            for panel_name, frame in keyframe.panel_states.items():
+                if keyframe.is_panel_active(panel_name):
+                    self.canvas.update_panel_from_frame(panel_name, frame)
     
     def _on_property_change(self):
         """Обработка изменения свойств"""
@@ -462,11 +584,13 @@ class AnimationEditorApp:
         self._update_title()
     
     def _refresh_canvas(self):
-        """Обновить canvas"""
-        if self.timeline.selected_panel:
-            frame = self.timeline.get_current_frame()
-            if frame:
-                self.canvas.update_panel_from_frame(self.timeline.selected_panel, frame)
+        """Обновить canvas - показать все активные панели текущего keyframe"""
+        keyframe = self.timeline.get_current_keyframe()
+        if keyframe:
+            for panel_name, frame in keyframe.panel_states.items():
+                if keyframe.is_panel_active(panel_name):
+                    self.canvas.update_panel_from_frame(panel_name, frame)
+
     
     def _update_gui(self):
         """Обновить весь GUI"""
@@ -494,11 +618,12 @@ class AnimationEditorApp:
         if not self.animation:
             return
         
-        total_frames = sum(len(p.frames) for p in self.animation.panels.values())
+        # Для KeyframeAnimation считаем ключевые кадры
+        total_keyframes = len(self.animation.keyframes)
         duration = self.animation.duration_ms
         
         info = (
-            f"Total frames: {total_frames}\n"
+            f"Keyframes: {total_keyframes}\n"
             f"Duration: {duration}ms ({duration/1000:.2f}s)\n"
             f"FPS: {self.animation.fps}\n"
             f"Loop: {'Yes' if self.animation.loop else 'No'}"
@@ -520,6 +645,9 @@ class AnimationEditorApp:
     
     def _on_closing(self):
         """Обработка закрытия окна"""
+        # Остановить воспроизведение если активно
+        self._stop_playback()
+        
         if self.is_modified:
             result = messagebox.askyesnocancel(
                 "Unsaved Changes",

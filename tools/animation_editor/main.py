@@ -28,8 +28,7 @@ def main():
     # Проверить директорию
     animations_dir = Path(args.animations_dir)
     if not animations_dir.exists():
-        print(f"Error: Animations directory not found: {animations_dir}")
-        print("Creating directory...")
+        print(f"Creating animations directory: {animations_dir}")
         animations_dir.mkdir(parents=True, exist_ok=True)
         (animations_dir / 'manifests').mkdir(exist_ok=True)
         (animations_dir / 'frames').mkdir(exist_ok=True)
@@ -38,8 +37,14 @@ def main():
     root = tk.Tk()
     
     # Создать и запустить приложение
-    app = AnimationEditorApp(root, animations_dir)
-    app.run()
+    try:
+        app = AnimationEditorApp(root, animations_dir)
+        app.run()
+    except Exception as e:
+        print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
     
     return 0
 

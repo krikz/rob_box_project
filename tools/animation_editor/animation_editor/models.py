@@ -37,13 +37,21 @@ class Frame:
             return self.image.shape[0]
         return 0
     
-    def load_image(self):
-        """Загрузить изображение из файла"""
-        if self.image_path and self.image_path.exists():
-            img = Image.open(self.image_path)
+    def load_image(self, path: Optional[Path] = None):
+        """
+        Загрузить изображение из файла
+        
+        Args:
+            path: Путь к файлу (если None, использует self.image_path)
+        """
+        image_path = path or self.image_path
+        if image_path and image_path.exists():
+            img = Image.open(image_path)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             self.image = np.array(img)
+            if path:
+                self.image_path = path
     
     def save_image(self, path: Path):
         """Сохранить изображение в файл"""
@@ -268,3 +276,313 @@ class Animation:
         frame = Frame(duration_ms=int(1000 / self.fps))
         frame.resize(width, height)
         return frame
+
+
+@dataclass
+class Keyframe:
+    """
+    Ключевой кадр - момент времени с состоянием всех панелей
+    """
+    time_ms: int  # Время в миллисекундах от начала анимации
+    panel_states: Dict[str, Frame] = field(default_factory=dict)  # Состояние каждой панели
+    active_panels: Dict[str, bool] = field(default_factory=dict)  # Какие панели активны
+    
+    def set_panel_state(self, panel_name: str, frame: Frame, active: bool = True):
+        """Установить состояние панели"""
+        self.panel_states[panel_name] = frame
+        self.active_panels[panel_name] = active
+    
+    def get_panel_state(self, panel_name: str) -> Optional[Frame]:
+        """Получить состояние панели"""
+        return self.panel_states.get(panel_name)
+    
+    def is_panel_active(self, panel_name: str) -> bool:
+        """Проверить активна ли панель"""
+        return self.active_panels.get(panel_name, False)
+    
+    def copy(self) -> 'Keyframe':
+        """Создать копию ключевого кадра"""
+        kf = Keyframe(time_ms=self.time_ms)
+        for panel_name, frame in self.panel_states.items():
+            kf.panel_states[panel_name] = frame.copy()
+            kf.active_panels[panel_name] = self.active_panels.get(panel_name, False)
+        return kf
+
+
+class KeyframeAnimation:
+    """
+    Анимация на основе ключевых кадров
+    Более современный подход - единая временная шкала
+    """
+    def __init__(self, name: str = "Untitled", description: str = ""):
+        self.name = name
+        self.description = description
+        self.keyframes: List[Keyframe] = []
+        self.duration_ms: int = 1000  # Общая длительность
+        self.fps: int = 10
+        self.loop: bool = False
+        
+        # Создать первый ключевой кадр
+        self.add_keyframe(0)
+    
+    def add_keyframe(self, time_ms: int) -> Keyframe:
+        """Добавить ключевой кадр"""
+        kf = Keyframe(time_ms=time_ms)
+        
+        # Инициализировать все стандартные панели
+        for panel_name in ['wheel_front_left', 'wheel_front_right', 
+                          'wheel_rear_left', 'wheel_rear_right', 'main_display']:
+            width, height = Animation.PANEL_SIZES.get(panel_name, (8, 8))
+            frame = Frame()
+            frame.resize(width, height)
+            kf.set_panel_state(panel_name, frame, active=False)
+        
+        self.keyframes.append(kf)
+        self.keyframes.sort(key=lambda k: k.time_ms)
+        return kf
+    
+    def remove_keyframe(self, keyframe: Keyframe):
+        """Удалить ключевой кадр"""
+        if keyframe in self.keyframes and len(self.keyframes) > 1:
+            self.keyframes.remove(keyframe)
+    
+    def get_keyframe_at(self, time_ms: int) -> Optional[Keyframe]:
+        """Получить ключевой кадр в конкретный момент времени"""
+        for kf in self.keyframes:
+            if kf.time_ms == time_ms:
+                return kf
+        return None
+    
+    def get_nearest_keyframe(self, time_ms: int) -> Optional[Keyframe]:
+        """Получить ближайший ключевой кадр"""
+        if not self.keyframes:
+            return None
+        return min(self.keyframes, key=lambda kf: abs(kf.time_ms - time_ms))
+    
+    def get_state_at_time(self, time_ms: int) -> Dict[str, Frame]:
+        """
+        Получить состояние всех панелей в конкретный момент времени
+        (интерполяция между ключевыми кадрами)
+        """
+        if not self.keyframes:
+            return {}
+        
+        # Найти ближайший предыдущий ключевой кадр
+        prev_kf = None
+        for kf in reversed(self.keyframes):
+            if kf.time_ms <= time_ms:
+                prev_kf = kf
+                break
+        
+        if not prev_kf:
+            prev_kf = self.keyframes[0]
+        
+        # Вернуть состояние активных панелей
+        result = {}
+        for panel_name, frame in prev_kf.panel_states.items():
+            if prev_kf.is_panel_active(panel_name):
+                result[panel_name] = frame
+        
+        return result
+
+    def save_to_manifest(self, manifest_path: Path, frames_dir: Path):
+        """Сохранить keyframe-анимацию в manifest файл"""
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        
+        manifest = {
+            'name': self.name,
+            'description': self.description,
+            'duration_ms': self.duration_ms,
+            'fps': self.fps,
+            'loop': self.loop,
+            'format': 'keyframe',  # Маркер нового формата
+            'keyframes': []
+        }
+        
+        # Сохранить ключевые кадры
+        for kf_idx, kf in enumerate(self.keyframes):
+            kf_data = {
+                'time_ms': kf.time_ms,
+                'panels': []
+            }
+            
+            # Сохранить состояние каждой панели
+            for panel_name, frame in kf.panel_states.items():
+                if not kf.is_panel_active(panel_name):
+                    continue  # Пропустить неактивные панели
+                
+                # Имя файла: keyframe_панель_индекс
+                frame_filename = f"kf{kf_idx:03d}_{panel_name}.png"
+                frame_path = frames_dir / frame_filename
+                
+                # Сохранить изображение
+                frame.save_image(frame_path)
+                
+                # Относительный путь
+                relative_path = f"frames/{self.name}/{frame_filename}"
+                
+                panel_data = {
+                    'panel': panel_name,
+                    'image': relative_path,
+                    'active': True
+                }
+                
+                kf_data['panels'].append(panel_data)
+            
+            manifest['keyframes'].append(kf_data)
+        
+        # Сохранить manifest
+        with open(manifest_path, 'w') as f:
+            yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
+    
+    @classmethod
+    def load_from_manifest(cls, manifest_path: Path, animations_dir: Path) -> 'KeyframeAnimation':
+        """
+        Загрузить keyframe-анимацию из manifest файла
+        Поддерживает как новый keyframe формат, так и старый frame-based формат
+        """
+        with open(manifest_path, 'r') as f:
+            data = yaml.safe_load(f)
+        
+        name = data.get('name', 'Untitled')
+        description = data.get('description', '')
+        
+        # Проверить формат
+        if data.get('format') == 'keyframe':
+            # Новый keyframe-based формат
+            return cls._load_keyframe_format(data, animations_dir)
+        else:
+            # Старый frame-based формат - конвертировать
+            return cls._convert_from_animation(data, animations_dir)
+    
+    @classmethod
+    def _load_keyframe_format(cls, data: dict, animations_dir: Path) -> 'KeyframeAnimation':
+        """Загрузить из нового keyframe формата"""
+        anim = cls.__new__(cls)  # Создать без вызова __init__
+        anim.name = data.get('name', 'Untitled')
+        anim.description = data.get('description', '')
+        anim.duration_ms = data.get('duration_ms', 1000)
+        anim.fps = data.get('fps', 10)
+        anim.loop = data.get('loop', False)
+        anim.keyframes = []
+        
+        # Загрузить ключевые кадры
+        for kf_data in data.get('keyframes', []):
+            time_ms = kf_data.get('time_ms', 0)
+            kf = Keyframe(time_ms=time_ms)
+            
+            # Инициализировать все панели пустыми кадрами
+            for panel_name in ['wheel_front_left', 'wheel_front_right',
+                              'wheel_rear_left', 'wheel_rear_right', 'main_display']:
+                width, height = Animation.PANEL_SIZES.get(panel_name, (8, 8))
+                frame = Frame()
+                frame.resize(width, height)
+                kf.set_panel_state(panel_name, frame, active=False)
+            
+            # Загрузить состояние активных панелей
+            for panel_data in kf_data.get('panels', []):
+                panel_name = panel_data.get('panel')
+                image_path = animations_dir / panel_data['image']
+                
+                frame = Frame()
+                frame.load_image(image_path)
+                
+                is_active = panel_data.get('active', True)
+                kf.set_panel_state(panel_name, frame, active=is_active)
+            
+            anim.keyframes.append(kf)
+        
+        # Если нет ключевых кадров, создать дефолтный
+        if not anim.keyframes:
+            anim.add_keyframe(0)
+        
+        return anim
+    
+    @classmethod
+    def _convert_from_animation(cls, data: dict, animations_dir: Path) -> 'KeyframeAnimation':
+        """
+        Конвертировать из старого Animation формата в KeyframeAnimation
+        Создает ключевые кадры из последовательности кадров
+        """
+        anim = cls.__new__(cls)
+        anim.name = data.get('name', 'Untitled')
+        anim.description = data.get('description', '')
+        anim.fps = data.get('fps', 10)
+        anim.loop = data.get('loop', False)
+        anim.keyframes = []
+        
+        # Собрать информацию о всех панелях
+        panels_info = {}
+        for panel_data in data.get('panels', []):
+            logical_group = panel_data.get('logical_group')
+            offset_ms = panel_data.get('offset_ms', 0)
+            frames = panel_data.get('frames', [])
+            
+            panels_info[logical_group] = {
+                'offset_ms': offset_ms,
+                'frames': frames
+            }
+        
+        # Вычислить общую длительность
+        max_duration = 0
+        for panel_name, info in panels_info.items():
+            panel_duration = info['offset_ms']
+            for frame_data in info['frames']:
+                panel_duration += frame_data.get('duration_ms', 100)
+            max_duration = max(max_duration, panel_duration)
+        
+        anim.duration_ms = max_duration if max_duration > 0 else 1000
+        
+        # Создать ключевые кадры для каждого уникального момента времени
+        time_points = set([0])  # Всегда есть начальный кадр
+        
+        for panel_name, info in panels_info.items():
+            current_time = info['offset_ms']
+            for frame_data in info['frames']:
+                time_points.add(current_time)
+                current_time += frame_data.get('duration_ms', 100)
+        
+        time_points = sorted(time_points)
+        
+        # Создать ключевые кадры
+        for time_ms in time_points:
+            if time_ms > anim.duration_ms:
+                break
+            
+            kf = Keyframe(time_ms=time_ms)
+            
+            # Для каждой панели определить какой кадр показывать в этот момент
+            for panel_name in ['wheel_front_left', 'wheel_front_right',
+                              'wheel_rear_left', 'wheel_rear_right', 'main_display']:
+                width, height = Animation.PANEL_SIZES.get(panel_name, (8, 8))
+                frame = Frame()
+                frame.resize(width, height)
+                
+                # Найти соответствующий кадр из старой анимации
+                if panel_name in panels_info:
+                    info = panels_info[panel_name]
+                    current_time = info['offset_ms']
+                    
+                    for frame_data in info['frames']:
+                        frame_end = current_time + frame_data.get('duration_ms', 100)
+                        if current_time <= time_ms < frame_end:
+                            # Это нужный кадр
+                            image_path = animations_dir / frame_data['image']
+                            if image_path.exists():
+                                frame.load_image(image_path)
+                            kf.set_panel_state(panel_name, frame, active=True)
+                            break
+                        current_time = frame_end
+                    else:
+                        # Кадр не найден, оставить пустым
+                        kf.set_panel_state(panel_name, frame, active=False)
+                else:
+                    kf.set_panel_state(panel_name, frame, active=False)
+            
+            anim.keyframes.append(kf)
+        
+        # Если нет ключевых кадров, создать дефолтный
+        if not anim.keyframes:
+            anim.add_keyframe(0)
+        
+        return anim
