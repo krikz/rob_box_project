@@ -27,7 +27,7 @@ AI голосовой ассистент с DeepSeek, Vosk STT, Silero TTS.
 Система LED анимаций для WS2812B матриц.
 
 ### Основные документы:
-- [**README.md**](../../src/rob_box_animations/README.md) - Обзор пакета
+- [**README.md**](../README.md) - Обзор пакета
 - [**ANIMATIONS.md**](../../src/rob_box_animations/docs/ANIMATIONS.md) - Полная документация системы
 - [**AUDIO_REACTIVE.md**](../../src/rob_box_animations/AUDIO_REACTIVE.md) - Аудио-реактивные анимации
 

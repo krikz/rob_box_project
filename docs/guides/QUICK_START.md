@@ -328,12 +328,12 @@ docker compose restart lslidar
 ## 📚 Документация
 
 - **[README.md](../README.md)** — Главная страница проекта
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Системная архитектура
+- **[ARCHITECTURE.md](SYSTEM_OVERVIEW.md)** — Системная архитектура
 - **[HARDWARE.md](HARDWARE.md)** — Аппаратное обеспечение
 - **[SOFTWARE.md](SOFTWARE.md)** — Программное обеспечение
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** — Развёртывание системы
 - **[API_REFERENCE.md](API_REFERENCE.md)** — Справочник API
-- **[CONTRIBUTING.md](../CONTRIBUTING.md)** — Участие в проекте
+- **[CONTRIBUTING.md](../../../CONTRIBUTING.md)** — Участие в проекте
 
 ---
 

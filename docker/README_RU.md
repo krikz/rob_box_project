@@ -6,13 +6,13 @@
 - **[POWER_MANAGEMENT.md](POWER_MANAGEMENT.md)** - Управление питанием Raspberry Pi 5
 - **[POWER_MONITORING_SCRIPTS.md](POWER_MONITORING_SCRIPTS.md)** - Скрипты мониторинга питания и USB
 - **[OPTIMIZATION_README.md](OPTIMIZATION_README.md)** - Детальная оптимизация системы
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Архитектура проекта
+- **[ARCHITECTURE.md](SYSTEM_OVERVIEW.md)** - Архитектура проекта
 - **[DOCKER_STANDARDS.md](DOCKER_STANDARDS.md)** - Стандарты Docker Compose
 
 ### Для разработчиков
 - **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - Руководство для AI агентов
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Решение проблем
-- **[CONTRIBUTING.md](../CONTRIBUTING.md)** - Участие в проекте
+- **[CONTRIBUTING.md](../../../CONTRIBUTING.md)** - Участие в проекте
 
 ---
 

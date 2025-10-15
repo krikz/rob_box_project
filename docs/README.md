@@ -61,7 +61,7 @@
 ## 🔗 Связанные документы
 
 - [**README.md**](../README.md) - Главная страница проекта
-- [**CONTRIBUTING.md**](../CONTRIBUTING.md) - Правила участия в разработке
+- [**CONTRIBUTING.md**](../../../CONTRIBUTING.md) - Правила участия в разработке
 - [**.github/workflows/**](../.github/workflows/) - GitHub Actions workflows
 - [**docker/**](../docker/) - Docker конфигурации
 
