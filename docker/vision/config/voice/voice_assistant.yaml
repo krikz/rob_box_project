@@ -190,5 +190,7 @@
           params: {angle: 90.0}
         - pattern: "стоп|stop"
           action: "stop"
+          params: {}
         - pattern: "домой|go home"
           action: "return_home"
+          params: {}
