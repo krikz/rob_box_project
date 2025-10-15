@@ -201,21 +201,29 @@
           action: "move_forward"
           params:
             distance: 0.5
+            angle: 0.0
         - pattern: "назад|back"
           action: "move_backward"
           params:
             distance: 0.5
+            angle: 0.0
         - pattern: "налево|left"
           action: "turn_left"
           params:
+            distance: 0.0
             angle: 90.0
         - pattern: "направо|right"
           action: "turn_right"
           params:
+            distance: 0.0
             angle: 90.0
         - pattern: "стоп|stop"
           action: "stop"
-          params: null
+          params:
+            distance: 0.0
+            angle: 0.0
         - pattern: "домой|go home"
           action: "return_home"
-          params: null
+          params:
+            distance: 0.0
+            angle: 0.0
