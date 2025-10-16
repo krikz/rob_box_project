@@ -195,8 +195,15 @@ class SoundNode(Node):
             if self.trigger_animations:
                 self.trigger_animation(trigger)
             
-            # Воспроизведение (с подавлением ALSA ошибок)
+            # Получить аудио
             audio = self.sounds[sound_name]
+            
+            # Ресемплинг в 44100 Hz если нужно (pydub/PyAudio стандарт)
+            if audio.frame_rate != 44100:
+                self.get_logger().debug(f'Ресемплинг {audio.frame_rate} Hz → 44100 Hz')
+                audio = audio.set_frame_rate(44100)
+            
+            # Воспроизведение (с подавлением ALSA ошибок)
             with ignore_stderr(enable=True):
                 play(audio)
             
