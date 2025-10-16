@@ -9,7 +9,7 @@
 #   - ReSpeaker Mic Array v2.0 (USB, 4 микрофона, 12× RGB LED)
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box:nav2-humble-latest
 # Версия сборки для инвалидации кеша при изменении зависимостей
 ARG BUILD_VERSION=2025-10-12-rtabmap
 
@@ -52,7 +52,6 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    ros-${ROS_DISTRO}-nav2-msgs \
     # ROS2 runtime библиотеки для colcon build
     ros-${ROS_DISTRO}-rcutils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \
