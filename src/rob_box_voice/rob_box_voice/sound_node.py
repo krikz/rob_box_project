@@ -49,13 +49,17 @@ class SoundNode(Node):
         super().__init__('sound_node')
         
         # Параметры
-        self.declare_parameter('sound_pack_dir', '~/rob_box_project/sound_pack')
+        self.declare_parameter('sound_pack_dir', '/ws/sound_pack')  # Docker path по умолчанию
         self.declare_parameter('volume_db', -12.0)  # Регулировка громкости (dB), -12dB ≈ 24% громкости
         self.declare_parameter('trigger_animations', True)
         self.declare_parameter('animation_topic', '/animations/trigger')
         
         sound_pack_dir = self.get_parameter('sound_pack_dir').value
-        self.sound_pack_dir = os.path.expanduser(sound_pack_dir)
+        # Expand ~ только если это локальный путь (не /ws/...)
+        if sound_pack_dir.startswith('~'):
+            self.sound_pack_dir = os.path.expanduser(sound_pack_dir)
+        else:
+            self.sound_pack_dir = sound_pack_dir
         self.volume_db = self.get_parameter('volume_db').value
         self.trigger_animations = self.get_parameter('trigger_animations').value
         self.animation_topic = self.get_parameter('animation_topic').value
