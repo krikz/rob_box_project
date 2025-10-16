@@ -91,6 +91,9 @@ class DialogueNode(Node):
         # Публикация звуковых триггеров (Phase 4)
         self.sound_trigger_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
         
+        # Флаг что dialogue_node обработал запрос (чтобы игнорировать command feedback)
+        self.dialogue_in_progress = False
+        
         self.get_logger().info('✅ DialogueNode инициализирован')
         self.get_logger().info(f'  Model: {self.model}')
         self.get_logger().info(f'  Temperature: {self.temperature}')
@@ -122,6 +125,9 @@ class DialogueNode(Node):
             return
         
         self.get_logger().info(f'👤 User: {user_message}')
+        
+        # Устанавливаем флаг что dialogue обрабатывает запрос
+        self.dialogue_in_progress = True
         
         # Добавляем в историю
         self.conversation_history.append({
@@ -221,8 +227,13 @@ class DialogueNode(Node):
             
             self.get_logger().info(f'✅ DeepSeek ответил ({chunk_count} chunks)')
             
+            # Сбрасываем флаг после успешного ответа
+            self.dialogue_in_progress = False
+            
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка DeepSeek: {e}')
+            # Сбрасываем флаг даже при ошибке
+            self.dialogue_in_progress = False
     
     def _trigger_sound(self, sound_name: str):
         """Триггер звукового эффекта (Phase 4)"""
@@ -238,6 +249,11 @@ class DialogueNode(Node):
         """Обработка feedback от command_node (Phase 5)"""
         feedback = msg.data.strip()
         if not feedback:
+            return
+        
+        # Игнорируем feedback если dialogue уже обработал запрос
+        if self.dialogue_in_progress:
+            self.get_logger().debug(f'🔇 Игнор command feedback (dialogue in progress): {feedback}')
             return
         
         self.get_logger().info(f'📢 Command feedback: {feedback}')
