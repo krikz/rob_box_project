@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements и устанавливаем
-COPY requirements.txt /tmp/perception_requirements.txt
+COPY docker/vision/perception/requirements.txt /tmp/perception_requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/perception_requirements.txt
 
 # Версия пакета
