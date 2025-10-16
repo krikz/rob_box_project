@@ -39,6 +39,7 @@ def generate_launch_description():
                 'dialogue_timeout': 10.0,  # 10 сек - тайм-аут диалога
                 'memory_window': 60,  # 60 сек - окно короткой памяти
                 'enable_speech': True,  # Включить речь робота
+                'system_prompt_file': 'reflection_prompt.txt',  # Файл с system prompt
             }],
             # Используем переменные окружения из .env.secrets
             # (DEEPSEEK_API_KEY уже должен быть в окружении)

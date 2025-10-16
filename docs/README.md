@@ -47,6 +47,8 @@
 - [**RASPBERRY_PI_USB_POWER_FIX.md**](guides/RASPBERRY_PI_USB_POWER_FIX.md) - Исправление USB питания
 - [**VISUALIZATION.md**](guides/VISUALIZATION.md) - Визуализация в RViz2
 - [**TROUBLESHOOTING.md**](guides/TROUBLESHOOTING.md) - Решение проблем
+- [**ANIMATION_EDITOR.md**](guides/ANIMATION_EDITOR.md) - Редактор LED анимаций
+- [**HEALTH_MONITORING.md**](guides/HEALTH_MONITORING.md) - 🏥 Мониторинг здоровья системы
 
 ### 📊 [reports/](reports/) - Отчёты и аудиты
 Технические отчёты, аудиты, итоги сессий.

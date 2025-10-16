@@ -14,6 +14,9 @@ setup(
         ('share/' + package_name, ['package.xml']),
         # Установка launch файлов
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        # Prompts
+        (os.path.join('share', package_name, 'prompts'),
+            glob('prompts/*.txt')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +29,7 @@ setup(
         'console_scripts': [
             'reflection_node = rob_box_perception.reflection_node:main',
             'vision_stub_node = rob_box_perception.vision_stub_node:main',
+            'health_monitor = rob_box_perception.health_monitor:main',
         ],
     },
 )
