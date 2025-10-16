@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-STTNode - Speech-to-Text с Vosk
+STTNode - Speech-to-Text с Yandex STT gRPC v3 (primary) + Vosk (fallback)
 Подписывается: /audio/speech_audio (AudioData)
 Публикует: /voice/stt/result (String)
 """
@@ -12,22 +12,46 @@ from std_msgs.msg import String
 from audio_common_msgs.msg import AudioData
 
 import json
+import os
 from typing import Optional
 from vosk import Model, KaldiRecognizer
+import grpc
+import numpy as np
+
+# Yandex Cloud STT API v3 (gRPC)
+try:
+    from yandex.cloud.ai.stt.v3 import stt_pb2, stt_service_pb2_grpc
+    YANDEX_GRPC_AVAILABLE = True
+except ImportError:
+    YANDEX_GRPC_AVAILABLE = False
+    print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Vosk.")
 
 
 class STTNode(Node):
-    """Нода для распознавания речи с помощью Vosk"""
+    """Нода для распознавания речи: Yandex STT gRPC v3 (primary) + Vosk (fallback)"""
     
     def __init__(self):
         super().__init__('stt_node')
         
-        # Параметры
+        # Параметры Vosk (fallback)
         self.declare_parameter('model_path', '/models/vosk-model-small-ru-0.22')
         self.declare_parameter('sample_rate', 16000)
         
         self.model_path = self.get_parameter('model_path').value
         self.sample_rate = self.get_parameter('sample_rate').value
+        
+        # Параметры Yandex STT (primary)
+        self.declare_parameter('yandex_api_key', '')
+        self.declare_parameter('yandex_language', 'ru-RU')
+        self.declare_parameter('yandex_model', 'general')
+        
+        self.yandex_api_key = self.get_parameter('yandex_api_key').value or os.environ.get('YANDEX_API_KEY', '')
+        self.yandex_language = self.get_parameter('yandex_language').value
+        self.yandex_model = self.get_parameter('yandex_model').value
+        
+        # Yandex gRPC клиент
+        self.yandex_channel = None
+        self.yandex_stub = None
         
         # QoS для аудио потока
         audio_qos = QoSProfile(
@@ -65,16 +89,39 @@ class STTNode(Node):
         
         # Инициализация
         self.get_logger().info('STTNode инициализирован')
+        self.initialize_yandex()
         self.initialize_vosk()
     
+    def initialize_yandex(self):
+        """Инициализация Yandex STT gRPC v3"""
+        if not YANDEX_GRPC_AVAILABLE:
+            self.get_logger().warn('⚠️  Yandex Cloud ML SDK недоступен, используем только Vosk')
+            return
+        
+        if not self.yandex_api_key:
+            self.get_logger().warn('⚠️  YANDEX_API_KEY не задан, используем только Vosk')
+            return
+        
+        try:
+            self.get_logger().info('🔌 Подключение к Yandex STT gRPC v3...')
+            self.yandex_channel = grpc.secure_channel(
+                'stt.api.cloud.yandex.net:443',
+                grpc.ssl_channel_credentials()
+            )
+            self.yandex_stub = stt_service_pb2_grpc.RecognizerStub(self.yandex_channel)
+            self.get_logger().info(f'✅ Yandex STT gRPC v3 инициализирован (язык: {self.yandex_language})')
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка инициализации Yandex STT: {e}')
+            self.yandex_stub = None
+    
     def initialize_vosk(self):
-        """Загрузка Vosk модели"""
+        """Загрузка Vosk модели (fallback)"""
         try:
             self.get_logger().info(f'Загрузка Vosk модели из {self.model_path}...')
             self.model = Model(self.model_path)
             self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
             self.recognizer.SetWords(True)  # Получать разметку по словам
-            self.get_logger().info('✓ Vosk модель загружена')
+            self.get_logger().info('✅ Vosk модель загружена (fallback)')
             self.publish_state('ready')
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка загрузки Vosk: {e}')
@@ -94,11 +141,8 @@ class STTNode(Node):
     def speech_audio_callback(self, msg: AudioData):
         """
         Обработка готовых фраз от audio_node
-        Вызывается только когда есть законченная фраза речи
+        Пробуем Yandex STT → если не работает, используем Vosk
         """
-        if self.recognizer is None:
-            return
-        
         # НЕ СЛУШАТЬ когда робот говорит (самовозбуждение!)
         if self.is_robot_speaking:
             self.get_logger().info('🔇 Игнор: робот говорит')
@@ -111,21 +155,24 @@ class STTNode(Node):
         self.get_logger().info(f'🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)')
         self.publish_state('recognizing')
         
-        # Отправить весь аудио буфер в Vosk
-        if self.recognizer.AcceptWaveform(audio_bytes):
-            result = json.loads(self.recognizer.Result())
-        else:
-            result = json.loads(self.recognizer.FinalResult())
+        text = None
         
-        text = result.get('text', '').strip()
+        # 1. Попытка Yandex STT (primary)
+        if self.yandex_stub:
+            try:
+                text = self._recognize_yandex(audio_bytes)
+                if text:
+                    self.get_logger().info(f'✅ Yandex STT: "{text}"')
+            except Exception as e:
+                self.get_logger().error(f'⚠️  Yandex STT ошибка: {e}, fallback на Vosk')
         
-        self.get_logger().info(f'🔍 Vosk результат: "{text}" (длина={len(text)})')
+        # 2. Fallback на Vosk если Yandex не сработал
+        if not text and self.recognizer:
+            text = self._recognize_vosk(audio_bytes)
+            if text:
+                self.get_logger().info(f'✅ Vosk (fallback): "{text}"')
         
-        # Сбросить распознаватель для следующей фразы
-        self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
-        self.recognizer.SetWords(True)
-        
-        # ФИЛЬТР: игнорируем слишком короткие слова (шум типа "и и")
+        # Публикация результата
         if text and len(text) >= 3:
             self.get_logger().info(f'✅ ПРИНЯТО: {text}')
             self.publish_result(text)
@@ -136,6 +183,69 @@ class STTNode(Node):
         else:
             self.get_logger().warn(f'❌ ОТКЛОНЕНО (пустое)')
             self.publish_state('ready')
+    
+    def _recognize_yandex(self, audio_bytes: bytes) -> Optional[str]:
+        """
+        Распознавание через Yandex Cloud STT gRPC v3 (RecognizeFile API)
+        """
+        # Создаём запрос на распознавание
+        recognize_request = stt_pb2.RecognizeFileRequest(
+            # content - прямо bytes
+            content=audio_bytes,
+            # recognition_model содержит все настройки включая audio_format
+            recognition_model=stt_pb2.RecognitionModelOptions(
+                model=self.yandex_model,
+                audio_format=stt_pb2.AudioFormatOptions(
+                    raw_audio=stt_pb2.RawAudio(
+                        audio_encoding=stt_pb2.RawAudio.LINEAR16_PCM,
+                        sample_rate_hertz=self.sample_rate,
+                        audio_channel_count=1
+                    )
+                ),
+                language_restriction=stt_pb2.LanguageRestrictionOptions(
+                    restriction_type=stt_pb2.LanguageRestrictionOptions.WHITELIST,
+                    language_code=[self.yandex_language]
+                ),
+                audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME
+            )
+        )
+        
+        # Выполняем запрос с авторизацией
+        response = self.yandex_stub.RecognizeFile(
+            recognize_request,
+            metadata=(('authorization', f'Api-Key {self.yandex_api_key}'),)
+        )
+        
+        # Извлекаем текст из ответа
+        # RecognizeFileResponse содержит text или chunks с alternatives
+        if response:
+            # Попытка 1: text напрямую
+            if hasattr(response, 'text') and response.text:
+                return response.text.strip()
+            # Попытка 2: chunks[].alternatives[].text
+            if hasattr(response, 'chunks') and len(response.chunks) > 0:
+                for chunk in response.chunks:
+                    if hasattr(chunk, 'alternatives') and len(chunk.alternatives) > 0:
+                        text = chunk.alternatives[0].text.strip()
+                        if text:
+                            return text
+        
+        return None
+    
+    def _recognize_vosk(self, audio_bytes: bytes) -> Optional[str]:
+        """Распознавание через Vosk (fallback)"""
+        if self.recognizer.AcceptWaveform(audio_bytes):
+            result = json.loads(self.recognizer.Result())
+        else:
+            result = json.loads(self.recognizer.FinalResult())
+        
+        text = result.get('text', '').strip()
+        
+        # Сбросить распознаватель для следующей фразы
+        self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
+        self.recognizer.SetWords(True)
+        
+        return text
     
     def publish_result(self, text: str):
         """Публикация финального результата распознавания"""
