@@ -43,6 +43,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     unzip \
+    usbutils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get install -y --reinstall \
