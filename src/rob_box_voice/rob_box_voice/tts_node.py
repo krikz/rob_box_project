@@ -185,6 +185,7 @@ class TTSNode(Node):
             
             # Конвертируем в numpy
             audio_np = audio.numpy()
+            self.get_logger().info(f'✅ Синтез успешен: {len(audio_np)} samples @ {self.sample_rate} Hz')
             
             # Публикуем в ROS topic
             self._publish_audio(audio_np)
@@ -192,19 +193,36 @@ class TTSNode(Node):
             # Воспроизводим локально (для тестирования)
             self.publish_state('playing')
             
+            # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
+            # Ресемплинг для chipmunk mode или для ReSpeaker
             if self.chipmunk_mode:
                 playback_rate = int(self.sample_rate * self.pitch_shift)
-                self.get_logger().info(f'🐿️  Бурундук режим: {self.pitch_shift}x')
+                self.get_logger().info(f'🐿️  Бурундук режим: {self.pitch_shift}x → {playback_rate} Hz')
+                # Ресемплинг до 16kHz для ReSpeaker
+                import scipy.signal
+                target_rate = 16000
+                num_samples = int(len(audio_np) * target_rate / playback_rate)
+                audio_resampled = scipy.signal.resample(audio_np, num_samples)
+                playback_rate = target_rate
             else:
-                playback_rate = self.sample_rate
+                # Обычный режим: ресемплинг с 24kHz на 16kHz
+                import scipy.signal
+                target_rate = 16000
+                num_samples = int(len(audio_np) * target_rate / self.sample_rate)
+                audio_resampled = scipy.signal.resample(audio_np, num_samples)
+                playback_rate = target_rate
+                self.get_logger().info(f'🔄 Ресемплинг: {self.sample_rate} Hz → {target_rate} Hz')
             
             # Применяем громкость из параметра (dB → линейный множитель)
-            audio_np_adjusted = audio_np * self.volume_gain
+            audio_np_adjusted = audio_resampled * self.volume_gain
+            
+            # Конвертируем моно → стерео (ReSpeaker требует 2 канала!)
+            audio_stereo = np.column_stack((audio_np_adjusted, audio_np_adjusted))
+            self.get_logger().info(f'🔊 Воспроизведение: {len(audio_stereo)} frames, {playback_rate} Hz, стерео')
             
             # Блокирующее воспроизведение (с подавлением ALSA ошибок)
-            # БЕЗ тишины в начале/конце - она только усиливает белый шум!
             with ignore_stderr(enable=True):
-                sd.play(audio_np_adjusted, playback_rate, blocking=True)
+                sd.play(audio_stereo, playback_rate, device=1, blocking=True)
                 
                 # Принудительно останавливаем устройство и очищаем буферы
                 sd.stop()
