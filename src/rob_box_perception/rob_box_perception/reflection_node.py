@@ -31,6 +31,12 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 # TODO: Добавить импорты для AprilTag и DeviceSnapshot когда понадобятся
 # from apriltag_msgs.msg import AprilTagDetectionArray
 # from robot_sensor_hub_msg.msg import DeviceSnapshot
@@ -141,8 +147,43 @@ class ReflectionNode(Node):
         
         # ============ DeepSeek API клиент ============
         self.deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
+        self.deepseek_client = None
+        
         if not self.deepseek_api_key:
             self.get_logger().warn('⚠️  DEEPSEEK_API_KEY не найден! Используется заглушка.')
+        elif not OPENAI_AVAILABLE:
+            self.get_logger().warn('⚠️  OpenAI библиотека не установлена! pip install openai')
+        else:
+            try:
+                self.deepseek_client = OpenAI(
+                    api_key=self.deepseek_api_key,
+                    base_url="https://api.deepseek.com"
+                )
+                self.get_logger().info('✅ DeepSeek API клиент инициализирован')
+            except Exception as e:
+                self.get_logger().error(f'❌ Ошибка инициализации DeepSeek: {e}')
+        
+        # Системный промпт для размышлений
+        self.system_prompt = """Ты - внутренний голос робота РобБокс. 
+
+Твоя задача:
+1. Анализировать контекст (датчики, камера, позиция, память)
+2. Генерировать внутренние мысли (рефлексия, гипотезы, наблюдения)
+3. РЕШАТЬ: говорить вслух или молчать
+
+Правила речи:
+- Говори ТОЛЬКО если есть важная информация или вопрос
+- НЕ болтай просто так
+- НЕ комментируй очевидное ("я стою", "я вижу стену")
+- Говори при: низкой батарее, обнаружении человека, важном событии
+- Будь лаконичным и дружелюбным
+
+Формат ответа JSON:
+{
+  "thought": "внутренняя мысль для логов",
+  "should_speak": true/false,
+  "speech": "текст для произнесения (если should_speak=true)"
+}"""
         
         self.get_logger().info('🧠 Reflection Node запущен')
         self.get_logger().info(f'   Частота размышлений: {self.reflection_rate} Hz')
@@ -333,13 +374,86 @@ class ReflectionNode(Node):
         Returns:
             (internal_thought, should_speak, speech_text)
         """
-        if not self.deepseek_api_key:
+        if not self.deepseek_client:
             # Заглушка без API
             return self._stub_analyze(context)
         
-        # TODO: Реальный вызов DeepSeek API
-        # Пока используем заглушку
-        return self._stub_analyze(context)
+        try:
+            # Формируем контекст для промпта
+            context_text = self._format_context_for_prompt(context)
+            
+            # Вызов DeepSeek API
+            response = self.deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": context_text}
+                ],
+                temperature=0.7,
+                max_tokens=200,
+                response_format={"type": "json_object"}
+            )
+            
+            # Парсим ответ
+            result = json.loads(response.choices[0].message.content)
+            
+            thought = result.get('thought', '')
+            should_speak = result.get('should_speak', False)
+            speech_text = result.get('speech', '')
+            
+            self.get_logger().debug(f'🤖 DeepSeek: thought="{thought}", speak={should_speak}')
+            
+            return thought, should_speak, speech_text
+            
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка DeepSeek API: {e}')
+            return self._stub_analyze(context)
+    
+    def _format_context_for_prompt(self, context: Dict) -> str:
+        """Форматирование контекста для промпта"""
+        lines = [
+            "=== ТЕКУЩИЙ КОНТЕКСТ РОБОТА ===",
+            ""
+        ]
+        
+        # Vision
+        if context.get('vision'):
+            vision = context['vision']
+            lines.append(f"📸 Камера: {vision.get('description', 'N/A')}")
+            if vision.get('objects'):
+                lines.append(f"   Объекты: {vision['objects']}")
+        else:
+            lines.append("📸 Камера: нет данных")
+        
+        # AprilTags
+        if context.get('apriltags') and len(context['apriltags']) > 0:
+            lines.append(f"🏷️  AprilTag маркеры: {context['apriltags']}")
+        
+        # Позиция
+        if context.get('pose'):
+            pos = context['pose']
+            lines.append(f"📍 Позиция на карте: ({pos['x']:.2f}, {pos['y']:.2f})")
+        
+        # Движение
+        if context.get('moving'):
+            lines.append("🚗 Статус: Еду")
+        else:
+            lines.append("🚗 Статус: Стою на месте")
+        
+        # Сенсоры
+        if context.get('sensors'):
+            sensors = context['sensors']
+            battery = sensors.get('battery', 'N/A')
+            temp = sensors.get('temperature', 'N/A')
+            lines.append(f"🔋 Батарея: {battery}V")
+            lines.append(f"🌡️  Температура: {temp}°C")
+        
+        # Память
+        lines.append("")
+        lines.append("=== НЕДАВНИЕ СОБЫТИЯ ===")
+        lines.append(context.get('memory', 'Память пуста'))
+        
+        return '\n'.join(lines)
     
     def _stub_analyze(self, context: Dict) -> tuple[Optional[str], bool, Optional[str]]:
         """Заглушка для анализа (без DeepSeek API)"""
