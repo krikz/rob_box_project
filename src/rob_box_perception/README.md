@@ -113,6 +113,18 @@ AI Agent (DeepSeek) будет:
 - Сообщает пользователю о критичных проблемах
 - Health status: `healthy` | `degraded` | `critical`
 
+**System Prompt:**
+- Загружается из файла: `prompts/reflection_prompt.txt`
+- Можно кастомизировать через параметр `system_prompt_file`
+- Fallback на встроенный промпт если файл не найден
+
+**Параметры:**
+- `reflection_rate` (1.0 Hz) - частота размышлений
+- `dialogue_timeout` (10.0s) - пауза во время диалога
+- `memory_window` (60s) - окно краткосрочной памяти
+- `enable_speech` (true) - включить речь
+- `system_prompt_file` ('reflection_prompt.txt') - файл с промптом
+
 ### health_monitor
 **Статус:** ✅ Утилита для диагностики
 

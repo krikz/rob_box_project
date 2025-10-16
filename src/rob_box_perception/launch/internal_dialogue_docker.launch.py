@@ -19,6 +19,7 @@ def generate_launch_description():
     dialogue_timeout = float(os.getenv('DIALOGUE_TIMEOUT', '10.0'))
     memory_window = int(os.getenv('MEMORY_WINDOW', '60'))
     enable_speech = os.getenv('ENABLE_SPEECH', 'true').lower() == 'true'
+    system_prompt_file = os.getenv('SYSTEM_PROMPT_FILE', 'reflection_prompt.txt')
     
     return LaunchDescription([
         # Reflection Node - главная нода размышлений
@@ -32,6 +33,7 @@ def generate_launch_description():
                 'dialogue_timeout': dialogue_timeout,
                 'memory_window': memory_window,
                 'enable_speech': enable_speech,
+                'system_prompt_file': system_prompt_file,
             }],
         ),
     ])

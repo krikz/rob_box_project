@@ -14,6 +14,9 @@ setup(
         ('share/' + package_name, ['package.xml']),
         # Установка launch файлов
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        # Prompts
+        (os.path.join('share', package_name, 'prompts'),
+            glob('prompts/*.txt')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

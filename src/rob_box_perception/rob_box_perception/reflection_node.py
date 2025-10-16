@@ -54,6 +54,7 @@ class ReflectionNode(Node):
         self.declare_parameter('dialogue_timeout', 10.0)  # секунд - тайм-аут диалога
         self.declare_parameter('memory_window', 60)  # секунд - окно короткой памяти
         self.declare_parameter('enable_speech', True)  # Включить речь робота
+        self.declare_parameter('system_prompt_file', 'reflection_prompt.txt')  # Файл с system prompt
         
         self.reflection_rate = self.get_parameter('reflection_rate').value
         self.dialogue_timeout = self.get_parameter('dialogue_timeout').value
@@ -179,8 +180,33 @@ class ReflectionNode(Node):
             except Exception as e:
                 self.get_logger().error(f'❌ Ошибка инициализации DeepSeek: {e}')
         
-        # Системный промпт для размышлений
-        self.system_prompt = """Ты - внутренний голос робота РобБокс. 
+        # Загрузка системного промпта
+        self.system_prompt = self._load_system_prompt()
+        
+        self.get_logger().info('🧠 Reflection Node запущен')
+        self.get_logger().info(f'   Частота размышлений: {self.reflection_rate} Hz')
+        self.get_logger().info(f'   Тайм-аут диалога: {self.dialogue_timeout} сек')
+        self.get_logger().info(f'   Окно памяти: {self.memory_window} сек')
+    
+    def _load_system_prompt(self) -> str:
+        """Загрузить system prompt из файла"""
+        prompt_file = self.get_parameter('system_prompt_file').value
+        
+        # Ищем в share/rob_box_perception/prompts/
+        from ament_index_python.packages import get_package_share_directory
+        try:
+            pkg_share = get_package_share_directory('rob_box_perception')
+            prompt_path = os.path.join(pkg_share, 'prompts', prompt_file)
+            
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                prompt = f.read()
+            
+            self.get_logger().info(f'✅ Загружен prompt: {prompt_file} ({len(prompt)} байт)')
+            return prompt
+        except Exception as e:
+            self.get_logger().warn(f'⚠️  Не удалось загрузить prompt: {e}')
+            # Fallback на встроенный промпт
+            return """Ты - внутренний голос робота РобБокс. 
 
 Твоя задача:
 1. Анализировать контекст (датчики, камера, позиция, память, здоровье системы)
@@ -208,11 +234,6 @@ class ReflectionNode(Node):
   "should_speak": true/false,
   "speech": "текст для произнесения (если should_speak=true)"
 }"""
-        
-        self.get_logger().info('🧠 Reflection Node запущен')
-        self.get_logger().info(f'   Частота размышлений: {self.reflection_rate} Hz')
-        self.get_logger().info(f'   Тайм-аут диалога: {self.dialogue_timeout} сек')
-        self.get_logger().info(f'   Окно памяти: {self.memory_window} сек')
     
     # ============================================================
     # Callbacks - Восприятие
