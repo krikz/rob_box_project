@@ -52,6 +52,7 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-nav2-msgs \
     # ROS2 runtime библиотеки для colcon build
     ros-${ROS_DISTRO}-rcutils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \

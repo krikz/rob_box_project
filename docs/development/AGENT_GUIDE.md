@@ -187,6 +187,61 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
 
 ---
 
+## 🔒 Управление секретами (API Keys)
+
+### Voice Assistant секреты
+
+Voice Assistant требует API ключи для работы DialogueNode (DeepSeek) и TTSNode (Yandex Cloud).
+
+**⚠️ КРИТИЧЕСКИ ВАЖНО**: API ключи НЕ должны коммититься в git!
+
+### Создание .env.secrets на Vision Pi
+
+Файл `.env.secrets` должен быть создан вручную на Vision Pi:
+
+```bash
+# Подключаемся к Vision Pi
+sshpass -p 'open' ssh ros2@10.1.1.21
+
+# Создаем .env.secrets
+cat > ~/rob_box_project/docker/vision/.env.secrets << 'EOF'
+# 🔒 API Keys для Voice Assistant (НЕ коммитить в git!)
+
+# DeepSeek API (для DialogueNode - LLM диалоги)
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+
+# Yandex Cloud API (для TTSNode - синтез речи)
+YANDEX_API_KEY=your_yandex_api_key_here
+YANDEX_FOLDER_ID=your_yandex_folder_id_here
+EOF
+
+# Проверяем что файл создан
+cat ~/rob_box_project/docker/vision/.env.secrets
+```
+
+**Где взять ключи:**
+- **DeepSeek API**: https://platform.deepseek.com/api_keys
+- **Yandex Cloud**: https://console.cloud.yandex.ru/folders/{folder_id}/iam/service-accounts
+
+**Защита от коммита:**
+- Файл `.env.secrets` добавлен в `docker/vision/.gitignore`
+- docker-compose.yaml использует `env_file: .env.secrets` вместо прямых environment переменных
+
+### Проверка секретов
+
+```bash
+# На Vision Pi - проверить что ключи загружены в контейнер
+sshpass -p 'open' ssh ros2@10.1.1.21 \
+  'docker exec voice-assistant printenv | grep -E "DEEPSEEK|YANDEX"'
+
+# Должен вернуть:
+# DEEPSEEK_API_KEY=sk-...
+# YANDEX_API_KEY=AQVN...
+# YANDEX_FOLDER_ID=aje...
+```
+
+---
+
 ## Инструментарий мониторинга и диагностики
 
 ### 📊 Скрипты мониторинга
