@@ -1,0 +1,254 @@
+name: Lint Code
+
+# Запускаем линтеры перед сборкой Docker образов
+# Цель: поймать проблемы качества кода на ранней стадии
+on:
+  push:
+    branches:
+      - feature/**
+      - develop
+      - main
+    paths:
+      - '**.py'           # Python файлы
+      - '**.yaml'         # YAML конфигурации
+      - '**.yml'          # YAML workflows
+      - '**/Dockerfile'   # Dockerfiles
+      - '.github/workflows/lint.yml'
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  # ============================================================================
+  # Python Linting
+  # ============================================================================
+  python-lint:
+    name: Python Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'  # ROS Humble uses Python 3.10
+          cache: 'pip'
+          
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2
+          
+      - name: Check code formatting with Black
+        run: |
+          echo "::group::Black formatting check"
+          black --check --diff --color \
+            src/rob_box_voice/ \
+            src/rob_box_animations/ \
+            src/led_matrix_driver/ \
+            src/ros2leds/ \
+            tools/animation_editor/ \
+            scripts/ \
+            || echo "::error::Code formatting issues found. Run 'black .' to fix."
+          echo "::endgroup::"
+        continue-on-error: true  # Не блокируем сборку, но показываем проблемы
+          
+      - name: Lint with Flake8
+        run: |
+          echo "::group::Flake8 linting"
+          flake8 \
+            src/rob_box_voice/ \
+            src/rob_box_animations/ \
+            src/led_matrix_driver/ \
+            src/ros2leds/ \
+            tools/animation_editor/ \
+            scripts/ \
+            --max-line-length=120 \
+            --extend-ignore=E203,W503,E501 \
+            --exclude=venv,build,install,log,.git \
+            --statistics \
+            || echo "::warning::Flake8 found issues. Review the output above."
+          echo "::endgroup::"
+        continue-on-error: true
+          
+      - name: Check import sorting with isort
+        run: |
+          echo "::group::isort import check"
+          isort --check-only --diff --color \
+            src/rob_box_voice/ \
+            src/rob_box_animations/ \
+            src/led_matrix_driver/ \
+            src/ros2leds/ \
+            tools/animation_editor/ \
+            scripts/ \
+            --profile black \
+            || echo "::warning::Import sorting issues. Run 'isort .' to fix."
+          echo "::endgroup::"
+        continue-on-error: true
+
+  # ============================================================================
+  # YAML Linting
+  # ============================================================================
+  yaml-lint:
+    name: YAML/Config Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Install yamllint
+        run: |
+          python -m pip install --upgrade pip
+          pip install yamllint==1.35.1
+          
+      - name: Create yamllint config
+        run: |
+          cat > .yamllint.yml << 'EOF'
+          extends: default
+          rules:
+            line-length:
+              max: 120
+              level: warning
+            indentation:
+              spaces: 2
+              indent-sequences: consistent
+            comments:
+              min-spaces-from-content: 1
+            document-start: disable
+            truthy:
+              allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+          ignore: |
+            build/
+            install/
+            log/
+            .git/
+          EOF
+          
+      - name: Lint YAML files
+        run: |
+          echo "::group::yamllint check"
+          yamllint \
+            .github/workflows/ \
+            docker/ \
+            src/*/config/ \
+            src/*/launch/ \
+            -f colored \
+            || echo "::warning::YAML lint issues found. Review output above."
+          echo "::endgroup::"
+        continue-on-error: true
+
+  # ============================================================================
+  # Dockerfile Linting
+  # ============================================================================
+  dockerfile-lint:
+    name: Dockerfile Best Practices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Install hadolint
+        run: |
+          wget -O /tmp/hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          chmod +x /tmp/hadolint
+          sudo mv /tmp/hadolint /usr/local/bin/hadolint
+          
+      - name: Create hadolint config
+        run: |
+          cat > .hadolint.yaml << 'EOF'
+          ignored:
+            - DL3008  # Pin versions in apt-get (too strict for ROS)
+            - DL3009  # Delete apt cache (handled by base images)
+            - DL3015  # Avoid additional packages (yq needed)
+            - SC2086  # Double quote to prevent globbing
+          trustedRegistries:
+            - docker.io
+            - ghcr.io
+          EOF
+          
+      - name: Lint Dockerfiles
+        run: |
+          echo "::group::Hadolint Dockerfile check"
+          find docker/ -name "Dockerfile" -type f | while read dockerfile; do
+            echo "Checking $dockerfile..."
+            hadolint "$dockerfile" \
+              --config .hadolint.yaml \
+              --format json \
+              || echo "::warning file=$dockerfile::Dockerfile issues found"
+          done
+          echo "::endgroup::"
+        continue-on-error: true
+
+  # ============================================================================
+  # Shell Script Linting
+  # ============================================================================
+  shellcheck-lint:
+    name: Shell Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          
+      - name: Lint shell scripts
+        run: |
+          echo "::group::ShellCheck"
+          find . -name "*.sh" -type f \
+            ! -path "./build/*" \
+            ! -path "./install/*" \
+            ! -path "./log/*" \
+            ! -path "./.git/*" \
+            ! -path "./src/vesc_nexus/*" \
+            -exec shellcheck {} + \
+            || echo "::warning::Shell script issues found"
+          echo "::endgroup::"
+        continue-on-error: true
+
+  # ============================================================================
+  # Summary Report
+  # ============================================================================
+  lint-summary:
+    name: Lint Summary
+    runs-on: ubuntu-latest
+    needs: [python-lint, yaml-lint, dockerfile-lint, shellcheck-lint]
+    if: always()
+    steps:
+      - name: Report Status
+        run: |
+          echo "## 📊 Lint Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Python Linting | ${{ needs.python-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| YAML Linting | ${{ needs.yaml-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dockerfile Linting | ${{ needs.dockerfile-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Shell Scripts | ${{ needs.shellcheck-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Note:** Linting jobs are set to \`continue-on-error: true\`" >> $GITHUB_STEP_SUMMARY
+          echo "This means the workflow won't fail, but issues should be reviewed and fixed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔧 Quick Fixes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# Format Python code" >> $GITHUB_STEP_SUMMARY
+          echo "black ." >> $GITHUB_STEP_SUMMARY
+          echo "isort ." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Check before commit" >> $GITHUB_STEP_SUMMARY
+          echo "pre-commit run --all-files" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
