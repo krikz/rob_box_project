@@ -216,6 +216,8 @@ class TTSNode(Node):
             
         except Exception as e:
             self.get_logger().error(f'❌ Synthesis error: {e}')
+            # ВАЖНО: сбрасываем флаг is_speaking при ошибке!
+            self.publish_state('ready')
     
     def _publish_audio(self, audio_np: np.ndarray):
         """Публикует аудио в ROS topic"""
