@@ -1,0 +1,12 @@
+repos:
+  # Detect secrets in code
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: |
+          (?x)^(
+            \.secrets\.baseline|
+            docs/development/AI_DEVELOPMENT_REVIEW\.md
+          )$
