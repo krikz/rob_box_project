@@ -322,6 +322,11 @@ class KeyframeAnimation:
         self.fps: int = 10
         self.loop: bool = False
         
+        # Дополнительные метаданные (опционально)
+        self.version: Optional[str] = None
+        self.author: Optional[str] = None
+        self.metadata: Dict[str, any] = {}  # Для любых других полей
+        
         # Создать первый ключевой кадр
         self.add_keyframe(0)
     
@@ -386,7 +391,7 @@ class KeyframeAnimation:
         return result
 
     def save_to_manifest(self, manifest_path: Path, frames_dir: Path):
-        """Сохранить keyframe-анимацию в manifest файл"""
+        """Сохранить keyframe-анимацию в manifest файл с сохранением метаданных"""
         frames_dir.mkdir(parents=True, exist_ok=True)
         
         manifest = {
@@ -396,8 +401,21 @@ class KeyframeAnimation:
             'fps': self.fps,
             'loop': self.loop,
             'format': 'keyframe',  # Маркер нового формата
-            'keyframes': []
         }
+        
+        # Добавить опциональные метаданные если они есть
+        if self.version:
+            manifest['version'] = self.version
+        if self.author:
+            manifest['author'] = self.author
+        
+        # Добавить любые дополнительные метаданные
+        for key, value in self.metadata.items():
+            if key not in manifest:  # Не перезаписывать основные поля
+                manifest[key] = value
+        
+        # Добавить keyframes
+        manifest['keyframes'] = []
         
         # Сохранить ключевые кадры
         for kf_idx, kf in enumerate(self.keyframes):
@@ -466,6 +484,18 @@ class KeyframeAnimation:
         anim.loop = data.get('loop', False)
         anim.keyframes = []
         
+        # Загрузить опциональные метаданные
+        anim.version = data.get('version')
+        anim.author = data.get('author')
+        
+        # Сохранить дополнительные поля в metadata
+        anim.metadata = {}
+        skip_keys = {'name', 'description', 'duration_ms', 'fps', 'loop', 'format', 
+                     'keyframes', 'panels', 'version', 'author'}
+        for key, value in data.items():
+            if key not in skip_keys:
+                anim.metadata[key] = value
+        
         # Загрузить ключевые кадры
         for kf_data in data.get('keyframes', []):
             time_ms = kf_data.get('time_ms', 0)
@@ -503,6 +533,7 @@ class KeyframeAnimation:
         """
         Конвертировать из старого Animation формата в KeyframeAnimation
         Создает ключевые кадры из последовательности кадров
+        Сохраняет все метаданные из оригинального файла
         """
         anim = cls.__new__(cls)
         anim.name = data.get('name', 'Untitled')
@@ -510,6 +541,18 @@ class KeyframeAnimation:
         anim.fps = data.get('fps', 10)
         anim.loop = data.get('loop', False)
         anim.keyframes = []
+        
+        # Сохранить метаданные из старого файла
+        anim.version = data.get('version')
+        anim.author = data.get('author')
+        
+        # Сохранить любые дополнительные поля
+        anim.metadata = {}
+        skip_keys = {'name', 'description', 'duration_ms', 'fps', 'loop', 'format', 
+                     'keyframes', 'panels', 'version', 'author'}
+        for key, value in data.items():
+            if key not in skip_keys:
+                anim.metadata[key] = value
         
         # Собрать информацию о всех панелях
         panels_info = {}
