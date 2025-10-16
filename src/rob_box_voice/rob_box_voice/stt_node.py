@@ -186,51 +186,79 @@ class STTNode(Node):
     
     def _recognize_yandex(self, audio_bytes: bytes) -> Optional[str]:
         """
-        Распознавание через Yandex Cloud STT gRPC v3 (RecognizeFile API)
+        Распознавание через Yandex Cloud STT gRPC v3 (Streaming API)
+        Используем streaming для готовой фразы
         """
-        # Создаём запрос на распознавание
-        recognize_request = stt_pb2.RecognizeFileRequest(
-            # content - прямо bytes
-            content=audio_bytes,
-            # recognition_model содержит все настройки включая audio_format
-            recognition_model=stt_pb2.RecognitionModelOptions(
-                model=self.yandex_model,
-                audio_format=stt_pb2.AudioFormatOptions(
-                    raw_audio=stt_pb2.RawAudio(
-                        audio_encoding=stt_pb2.RawAudio.LINEAR16_PCM,
-                        sample_rate_hertz=self.sample_rate,
-                        audio_channel_count=1
+        # Генератор для streaming запроса
+        def gen():
+            # 1. Первым yield отправляем session options
+            recognize_options = stt_pb2.StreamingOptions(
+                recognition_model=stt_pb2.RecognitionModelOptions(
+                    model=self.yandex_model,
+                    audio_format=stt_pb2.AudioFormatOptions(
+                        raw_audio=stt_pb2.RawAudio(
+                            audio_encoding=stt_pb2.RawAudio.LINEAR16_PCM,
+                            sample_rate_hertz=self.sample_rate,
+                            audio_channel_count=1
+                        )
+                    ),
+                    text_normalization=stt_pb2.TextNormalizationOptions(
+                        text_normalization=stt_pb2.TextNormalizationOptions.TEXT_NORMALIZATION_ENABLED,
+                        profanity_filter=False,
+                        literature_text=False
+                    ),
+                    language_restriction=stt_pb2.LanguageRestrictionOptions(
+                        restriction_type=stt_pb2.LanguageRestrictionOptions.WHITELIST,
+                        language_code=[self.yandex_language]
+                    ),
+                    audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME
+                ),
+                # ВАЖНО! Настройка EOU (End of Utterance) - определение конца фразы
+                # Увеличиваем max_pause_between_words_hint_ms чтобы робот не обрывал речь
+                # когда пользователь медленно говорит или делает паузы между словами
+                eou_classifier=stt_pb2.EouClassifierOptions(
+                    default_classifier=stt_pb2.DefaultEouClassifier(
+                        type=stt_pb2.DefaultEouClassifier.DEFAULT,  # Консервативный (DEFAULT) vs быстрый (HIGH)
+                        max_pause_between_words_hint_ms=1200  # 1.2 сек паузы между словами (default ~700ms)
                     )
-                ),
-                language_restriction=stt_pb2.LanguageRestrictionOptions(
-                    restriction_type=stt_pb2.LanguageRestrictionOptions.WHITELIST,
-                    language_code=[self.yandex_language]
-                ),
-                audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME
+                )
             )
-        )
+            yield stt_pb2.StreamingRequest(session_options=recognize_options)
+            
+            # 2. Отправляем аудио данные чанками по 4096 байт
+            chunk_size = 4096
+            for i in range(0, len(audio_bytes), chunk_size):
+                chunk = audio_bytes[i:i + chunk_size]
+                yield stt_pb2.StreamingRequest(chunk=stt_pb2.AudioChunk(data=chunk))
         
-        # Выполняем запрос с авторизацией
-        response = self.yandex_stub.RecognizeFile(
-            recognize_request,
+        # Выполняем streaming запрос
+        responses = self.yandex_stub.RecognizeStreaming(
+            gen(),
             metadata=(('authorization', f'Api-Key {self.yandex_api_key}'),)
         )
         
-        # Извлекаем текст из ответа
-        # RecognizeFileResponse содержит text или chunks с alternatives
-        if response:
-            # Попытка 1: text напрямую
-            if hasattr(response, 'text') and response.text:
-                return response.text.strip()
-            # Попытка 2: chunks[].alternatives[].text
-            if hasattr(response, 'chunks') and len(response.chunks) > 0:
-                for chunk in response.chunks:
-                    if hasattr(chunk, 'alternatives') and len(chunk.alternatives) > 0:
-                        text = chunk.alternatives[0].text.strip()
-                        if text:
-                            return text
+        # Обрабатываем ответы
+        final_text = None
+        for response in responses:
+            event_type = response.WhichOneof('Event')
+            
+            # partial - промежуточные результаты (игнорируем)
+            if event_type == 'partial':
+                continue
+            
+            # final - финальный результат распознавания
+            elif event_type == 'final':
+                if response.final.alternatives:
+                    final_text = response.final.alternatives[0].text
+                    # Продолжаем читать для возможного final_refinement
+            
+            # final_refinement - улучшенный результат с нормализацией
+            elif event_type == 'final_refinement':
+                if response.final_refinement.normalized_text:
+                    final_text = response.final_refinement.normalized_text.alternatives[0].text
+                    break  # Это последний результат
         
-        return None
+        return final_text.strip() if final_text else None
     
     def _recognize_vosk(self, audio_bytes: bytes) -> Optional[str]:
         """Распознавание через Vosk (fallback)"""
