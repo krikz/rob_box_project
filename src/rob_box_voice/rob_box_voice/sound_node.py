@@ -13,10 +13,11 @@ import os
 import sys
 import random
 import threading
+import numpy as np
+import sounddevice as sd
 from typing import Dict, List, Optional
 from contextlib import contextmanager
 from pydub import AudioSegment
-from pydub.playback import play
 import io
 
 
@@ -198,14 +199,27 @@ class SoundNode(Node):
             # Получить аудио
             audio = self.sounds[sound_name]
             
-            # Ресемплинг в 44100 Hz если нужно (pydub/PyAudio стандарт)
-            if audio.frame_rate != 44100:
-                self.get_logger().debug(f'Ресемплинг {audio.frame_rate} Hz → 44100 Hz')
-                audio = audio.set_frame_rate(44100)
+            # ReSpeaker playback требует: 16kHz, stereo (2 channels)
+            # (проверено через /proc/asound/card1/stream0)
+            if audio.frame_rate != 16000:
+                self.get_logger().debug(f'Ресемплинг {audio.frame_rate} Hz → 16000 Hz')
+                audio = audio.set_frame_rate(16000)
             
-            # Воспроизведение (с подавлением ALSA ошибок)
-            with ignore_stderr(enable=True):
-                play(audio)
+            # Конвертация в numpy array
+            samples = np.array(audio.get_array_of_samples())
+            
+            # Mono → Stereo (ReSpeaker требует 2 канала)
+            if audio.channels == 1:
+                samples = np.column_stack((samples, samples))
+            elif audio.channels == 2:
+                samples = samples.reshape((-1, 2))
+            
+            # Нормализация float32
+            samples = samples.astype(np.float32) / 32768.0
+            
+            # Воспроизведение через sounddevice (как в TTS)
+            sd.play(samples, samplerate=16000, device=1)  # device 1 = ReSpeaker
+            sd.wait()
             
             self.get_logger().info(f'✅ Завершено: {sound_name}')
             
