@@ -39,12 +39,14 @@ torchaudio>=2.9.0
 vosk
 
 # =============================================================================
-# gRPC for Yandex Cloud STT fallback (online)
-# Used in: scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
+# gRPC for Yandex Cloud API v3 (STT + TTS)
+# Used in: rob_box_voice/tts_node.py (TTS with anton voice)
+#          scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
 # =============================================================================
 grpcio
 grpcio-tools
 protobuf
+yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 
 # =============================================================================
 # Dialogue system: OpenAI-compatible API for DeepSeek
