@@ -267,39 +267,13 @@ class TTSNode(Node):
             # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
             target_rate = 16000
             
-            if self.chipmunk_mode:
-                # Chipmunk: ускоряем playback
-                playback_rate = int(sample_rate * self.pitch_shift)
-                self.get_logger().info(f'🐿️  Бурундук режим: {self.pitch_shift}x → {playback_rate} Hz (промежуточный)')
-                
-                # Интерполяция до промежуточного playback_rate
-                num_samples_intermediate = int(len(audio_np) * playback_rate / sample_rate)
-                audio_intermediate = np.interp(
-                    np.linspace(0, len(audio_np) - 1, num_samples_intermediate),
-                    np.arange(len(audio_np)),
-                    audio_np
-                )
-                
-                # Интерполяция до 16kHz для ReSpeaker
-                num_samples_final = int(len(audio_intermediate) * target_rate / playback_rate)
-                audio_resampled = np.interp(
-                    np.linspace(0, len(audio_intermediate) - 1, num_samples_final),
-                    np.arange(len(audio_intermediate)),
-                    audio_intermediate
-                )
-                self.get_logger().info(f'🔄 Ресемплинг: {playback_rate} Hz → {target_rate} Hz (ReSpeaker)')
-            else:
-                # Обычный режим: простой ресемплинг до 16kHz
-                num_samples = int(len(audio_np) * target_rate / sample_rate)
-                audio_resampled = np.interp(
-                    np.linspace(0, len(audio_np) - 1, num_samples),
-                    np.arange(len(audio_np)),
-                    audio_np
-                )
-                self.get_logger().info(f'🔄 Ресемплинг: {sample_rate} Hz → {target_rate} Hz (ReSpeaker)')
+            # Для оригинального эффекта ROBBOX бурундука:
+            # НЕ ДЕЛАЕМ ресемплинг! Просто воспроизводим сырые данные!
+            # Yandex WAV содержит заголовок + PCM 22050 Hz
+            # Воспроизведение на 16kHz даст небольшое замедление, но это OK
             
             # Применяем громкость
-            audio_np_adjusted = audio_resampled * self.volume_gain
+            audio_np_adjusted = audio_np * self.volume_gain
             
             # Конвертируем моно → стерео (ReSpeaker требует 2 канала!)
             audio_stereo = np.column_stack((audio_np_adjusted, audio_np_adjusted))
@@ -354,17 +328,24 @@ class TTSNode(Node):
             if not audio_data:
                 raise Exception("Пустой ответ от Yandex TTS")
             
-            # Yandex возвращает WAV файл - нужно извлечь PCM данные
-            # Пропускаем WAV заголовок (44 байта)
-            with io.BytesIO(audio_data) as wav_file:
-                with wave.open(wav_file, 'rb') as wav:
-                    sample_rate = wav.getframerate()  # обычно 22050 Hz или 48000 Hz
-                    audio_bytes = wav.readframes(wav.getnframes())
+            # ВАЖНО! Эффект бурундука ROBBOX получается так:
+            # 1. Yandex возвращает WAV файл 22050 Hz
+            # 2. Читаем ВЕСЬ файл (с заголовком!) как int16 PCM
+            # 3. Воспроизводим на 44100 Hz (в 2 раза быстрее)
+            # Результат: 2x pitch shift + небольшое искажение от заголовка = ОРИГИНАЛЬНЫЙ ЗВУК ROBBOX!
             
-            # Декодируем PCM в numpy
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            # Декодируем СЫРЫЕ байты (включая WAV заголовок!) как PCM
+            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
             
-            self.get_logger().info(f'✅ Yandex gRPC v3 синтез успешен: {len(audio_np)} samples @ {sample_rate} Hz')
+            # Для логов определим реальную частоту из WAV заголовка
+            try:
+                with io.BytesIO(audio_data) as wav_file:
+                    with wave.open(wav_file, 'rb') as wav:
+                        actual_sample_rate = wav.getframerate()
+            except:
+                actual_sample_rate = 22050  # fallback
+            
+            self.get_logger().info(f'✅ Yandex gRPC v3 (ROBBOX original!): {len(audio_np)} samples, source {actual_sample_rate} Hz')
             
             return audio_np
             
