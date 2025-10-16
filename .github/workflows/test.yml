@@ -48,7 +48,7 @@ jobs:
           sudo apt-get install -y \
             python3-pytest \
             python3-pytest-cov \
-            ros-humble-ament-pytest \
+            ros-humble-ament-cmake-pytest \
             ros-humble-launch-testing \
             ros-humble-launch-testing-ament-cmake
           
@@ -56,12 +56,12 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
           
-          # Create workspace
-          mkdir -p ~/test_ws/src
-          cp -r src/* ~/test_ws/src/
+          # Create workspace in runner's working directory
+          mkdir -p ${{ github.workspace }}/test_ws/src
+          cp -r src/* ${{ github.workspace }}/test_ws/src/
           
           # Build packages
-          cd ~/test_ws
+          cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
             --packages-select rob_box_voice rob_box_animations \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
@@ -69,9 +69,9 @@ jobs:
       - name: Run unit tests
         run: |
           source /opt/ros/humble/setup.bash
-          source ~/test_ws/install/setup.bash
+          source ${{ github.workspace }}/test_ws/install/setup.bash
           
-          cd ~/test_ws
+          cd ${{ github.workspace }}/test_ws
           
           # Run tests with colcon
           colcon test \
@@ -83,13 +83,13 @@ jobs:
         if: always()
         run: |
           source /opt/ros/humble/setup.bash
-          cd ~/test_ws
+          cd ${{ github.workspace }}/test_ws
           colcon test-result --all --verbose
           
       - name: Generate coverage report
         if: always()
         run: |
-          cd ~/test_ws
+          cd ${{ github.workspace }}/test_ws
           
           # Find coverage files
           find build -name "*.coverage" -type f
@@ -106,8 +106,8 @@ jobs:
         with:
           name: coverage-report
           path: |
-            ~/test_ws/build/*/coverage.xml
-            ~/test_ws/build/*/htmlcov/
+            ${{ github.workspace }}/test_ws/build/*/coverage.xml
+            ${{ github.workspace }}/test_ws/build/*/htmlcov/
           retention-days: 30
 
   # ============================================================================
@@ -132,18 +132,18 @@ jobs:
       - name: Build workspace
         run: |
           source /opt/ros/humble/setup.bash
-          mkdir -p ~/test_ws/src
-          cp -r src/* ~/test_ws/src/
-          cd ~/test_ws
+          mkdir -p ${{ github.workspace }}/test_ws/src
+          cp -r src/* ${{ github.workspace }}/test_ws/src/
+          cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install
           
       - name: Run integration tests
         run: |
           source /opt/ros/humble/setup.bash
-          source ~/test_ws/install/setup.bash
+          source ${{ github.workspace }}/test_ws/install/setup.bash
           
           # Run tests marked as integration
-          cd ~/test_ws
+          cd ${{ github.workspace }}/test_ws
           colcon test \
             --packages-select rob_box_voice \
             --pytest-args -m integration \
