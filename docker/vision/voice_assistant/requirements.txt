@@ -25,10 +25,12 @@ pyusb
 
 # =============================================================================
 # Machine Learning (PyTorch for Silero TTS)
-# Fixed version for ARM64 compatibility
+# CRITICAL: PyTorch 2.9.0+ required for ARM64 compatibility!
+# PyTorch 2.1.0 has broken MKLDNN matmul primitives on aarch64
+# PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
 # =============================================================================
-torch==2.1.0
-torchaudio==2.1.0
+torch>=2.9.0
+torchaudio>=2.9.0
 
 # =============================================================================
 # Speech-to-Text: Vosk (offline, lightweight Russian STT)
