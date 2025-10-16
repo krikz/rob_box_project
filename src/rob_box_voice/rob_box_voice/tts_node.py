@@ -71,9 +71,9 @@ class TTSNode(Node):
         # Yandex SpeechKit
         self.declare_parameter('yandex_folder_id', '')
         self.declare_parameter('yandex_api_key', '')
-        self.declare_parameter('yandex_voice', 'alena')  # anton, alena, oksana, jane
-        self.declare_parameter('yandex_emotion', 'good')  # neutral, good, evil
-        self.declare_parameter('yandex_speed', 0.9)  # 0.1-3.0
+        self.declare_parameter('yandex_voice', 'anton')  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
+        self.declare_parameter('yandex_emotion', 'neutral')  # neutral, good, evil
+        self.declare_parameter('yandex_speed', 0.4)  # 0.1-3.0 (0.4 = ОРИГИНАЛЬНАЯ СКОРОСТЬ РОББОКСА!)
         
         # Silero TTS (fallback)
         self.declare_parameter('silero_speaker', 'baya')  # aidar (male) | baya (female) | kseniya | xenia
@@ -307,7 +307,7 @@ class TTSNode(Node):
             self.publish_state('ready')
     
     def _synthesize_yandex(self, text: str) -> np.ndarray:
-        """Синтез через Yandex SpeechKit"""
+        """Синтез через Yandex SpeechKit (REST API v1)"""
         headers = {
             'Authorization': f'Api-Key {self.yandex_api_key}'
         }
