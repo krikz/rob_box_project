@@ -1,0 +1,111 @@
+# Pre-commit hooks for rob_box_project
+# Phase 1: Secret detection
+# Phase 2: Code quality (black, flake8, isort, yamllint, shellcheck)
+#
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# Update hooks: pre-commit autoupdate
+
+repos:
+  # ============================================================================
+  # PHASE 1: Security - Secret Detection
+  # ============================================================================
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: |
+          (?x)^(
+            \.secrets\.baseline|
+            docs/development/AI_DEVELOPMENT_REVIEW\.md
+          )$
+
+  # ============================================================================
+  # PHASE 2: Python Code Quality
+  # ============================================================================
+  
+  # Black: Python code formatter
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        name: Format Python code with Black
+        language_version: python3.10
+        args: ['--line-length=120']
+        
+  # isort: Sort Python imports
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: Sort Python imports
+        args: ['--profile', 'black', '--line-length=120']
+        
+  # Flake8: Python linter
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        name: Lint Python with Flake8
+        args: [
+          '--max-line-length=120',
+          '--extend-ignore=E203,W503,E501',
+          '--exclude=venv,build,install,log,.git'
+        ]
+
+  # ============================================================================
+  # PHASE 2: YAML/Config Files
+  # ============================================================================
+  
+  # yamllint: YAML file linter
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        name: Lint YAML files
+        args: ['-c', '.yamllint.yml']
+        
+  # ============================================================================
+  # PHASE 2: Shell Scripts
+  # ============================================================================
+  
+  # shellcheck: Shell script linter
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        name: Check shell scripts
+        args: ['--severity=warning']
+
+  # ============================================================================
+  # PHASE 2: General Fixes
+  # ============================================================================
+  
+  # Fix trailing whitespace
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        args: ['--markdown-linebreak-ext=md']
+        
+      - id: end-of-file-fixer
+        name: Fix end of files
+        
+      - id: check-yaml
+        name: Check YAML syntax
+        args: ['--safe']
+        exclude: '\.yamllint\.yml$'
+        
+      - id: check-added-large-files
+        name: Check for large files
+        args: ['--maxkb=5000']  # 5MB limit
+        
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+        
+      - id: mixed-line-ending
+        name: Fix mixed line endings
+        args: ['--fix=lf']

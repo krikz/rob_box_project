@@ -1,0 +1,33 @@
+# yamllint configuration for rob_box_project
+# Used by both pre-commit and GitHub Actions
+
+extends: default
+
+rules:
+  line-length:
+    max: 120
+    level: warning
+  
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+  
+  comments:
+    min-spaces-from-content: 1
+  
+  document-start: disable
+  
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+  
+  key-duplicates: enable
+  
+  trailing-spaces: enable
+
+ignore: |
+  build/
+  install/
+  log/
+  .git/
+  venv/
+  src/vesc_nexus/
