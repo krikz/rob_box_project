@@ -154,26 +154,9 @@
     # ===== Sound Node (Аудио эффекты) =====
     sound_node:
       sound_pack_dir: "/ws/sound_pack"
-      
-      # Громкость
-      volume: 0.7  # 0.0-1.0
-      
-      # Звуки для событий
-      sounds:
-        wake: "cute.mp3"
-        listening: "talk_1.mp3"
-        thinking: "thinking.mp3"
-        speaking: "talk_2.mp3"
-        success: "very_cute.mp3"
-        error: "confused.mp3"
-        angry: "angry_1.mp3"
-        surprise: "surprise.mp3"
-      
-      # Случайность (0.0-1.0, вероятность воспроизведения)
-      play_probability:
-        listening: 0.3
-        thinking: 0.5
-        speaking: 0.2
+      volume_db: -12.0  # Громкость в dB (-12dB ≈ 24% громкости)
+      trigger_animations: true
+      animation_topic: "/animations/trigger"
     
     # ===== Command Node (Управление роботом) =====
     command_node:
