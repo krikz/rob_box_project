@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'reflection_node = rob_box_perception.reflection_node:main',
             'vision_stub_node = rob_box_perception.vision_stub_node:main',
+            'health_monitor = rob_box_perception.health_monitor:main',
         ],
     },
 )

@@ -30,6 +30,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import Log  # /rosout логи
 
 try:
     from openai import OpenAI
@@ -74,6 +75,13 @@ class ReflectionNode(Node):
         self.current_sensors = None
         self.last_apriltags = []
         
+        # ============ Мониторинг здоровья системы ============
+        self.recent_errors: List[Dict] = []  # Последние ошибки (max 10)
+        self.recent_warnings: List[Dict] = []  # Последние предупреждения (max 5)
+        self.health_issues: List[str] = []  # Текущие проблемы
+        self.last_topic_check = time.time()
+        self.topic_check_interval = 10.0  # Проверять топики каждые 10 секунд
+        
         # ============ Подписки - Vision ============
         self.vision_sub = self.create_subscription(
             String,
@@ -103,6 +111,14 @@ class ReflectionNode(Node):
             '/voice/dialogue/response',
             self.on_robot_response,
             10
+        )
+        
+        # ============ Подписки - Мониторинг системы ============
+        self.rosout_sub = self.create_subscription(
+            Log,
+            '/rosout',
+            self.on_rosout,
+            50  # Большая очередь для логов
         )
         
         # ============ Подписки - Локализация ============
@@ -167,7 +183,7 @@ class ReflectionNode(Node):
         self.system_prompt = """Ты - внутренний голос робота РобБокс. 
 
 Твоя задача:
-1. Анализировать контекст (датчики, камера, позиция, память)
+1. Анализировать контекст (датчики, камера, позиция, память, здоровье системы)
 2. Генерировать внутренние мысли (рефлексия, гипотезы, наблюдения)
 3. РЕШАТЬ: говорить вслух или молчать
 
@@ -176,7 +192,15 @@ class ReflectionNode(Node):
 - НЕ болтай просто так
 - НЕ комментируй очевидное ("я стою", "я вижу стену")
 - Говори при: низкой батарее, обнаружении человека, важном событии
+- ОБЯЗАТЕЛЬНО сообщай о технических проблемах (ошибки, сбои нод, отсутствие данных)
 - Будь лаконичным и дружелюбным
+
+Мониторинг системы:
+- system_health.status: 'healthy' | 'degraded' | 'critical'
+- system_health.issues: список текущих проблем
+- system_health.recent_errors: ошибки от других нод
+- Если status='critical' - ОБЯЗАТЕЛЬНО сообщи пользователю
+- Если много ошибок - предложи помощь
 
 Формат ответа JSON:
 {
@@ -254,6 +278,105 @@ class ReflectionNode(Node):
         
         self.get_logger().info(f'🤖 Робот: "{msg.data}"')
         self.add_to_memory('robot', msg.data)
+    
+    # ============================================================
+    # Callbacks - Мониторинг системы
+    # ============================================================
+    
+    def on_rosout(self, msg: Log):
+        """Получен лог от любой ноды через /rosout"""
+        # Log levels: DEBUG=10, INFO=20, WARN=30, ERROR=40, FATAL=50
+        
+        # Игнорируем свои собственные логи
+        if msg.name == self.get_name():
+            return
+        
+        # Обрабатываем только ERROR и WARN
+        if msg.level >= 40:  # ERROR or FATAL
+            error_info = {
+                'node': msg.name,
+                'level': 'ERROR' if msg.level == 40 else 'FATAL',
+                'message': msg.msg,
+                'timestamp': time.time()
+            }
+            self.recent_errors.append(error_info)
+            
+            # Оставляем только последние 10 ошибок
+            if len(self.recent_errors) > 10:
+                self.recent_errors = self.recent_errors[-10:]
+            
+            self.get_logger().warn(f'⚠️  [{error_info["node"]}] {error_info["level"]}: {msg.msg}')
+            
+            # Критичные ошибки добавляем в память
+            if 'fail' in msg.msg.lower() or 'crash' in msg.msg.lower():
+                self.add_to_memory('system_error', f'{msg.name}: {msg.msg}', important=True)
+        
+        elif msg.level == 30:  # WARN
+            warning_info = {
+                'node': msg.name,
+                'message': msg.msg,
+                'timestamp': time.time()
+            }
+            self.recent_warnings.append(warning_info)
+            
+            # Оставляем только последние 5 предупреждений
+            if len(self.recent_warnings) > 5:
+                self.recent_warnings = self.recent_warnings[-5:]
+    
+    def check_system_health(self) -> Dict:
+        """
+        Проверка здоровья системы
+        
+        Возвращает:
+        {
+            'status': 'healthy' | 'degraded' | 'critical',
+            'issues': List[str],
+            'recent_errors': List[Dict],
+            'recent_warnings': List[Dict]
+        }
+        """
+        issues = []
+        status = 'healthy'
+        
+        # Проверка критичных ошибок за последние 30 секунд
+        recent_critical = [
+            e for e in self.recent_errors
+            if time.time() - e['timestamp'] < 30 and e['level'] == 'FATAL'
+        ]
+        
+        if len(recent_critical) > 0:
+            status = 'critical'
+            issues.append(f'🚨 {len(recent_critical)} критичных ошибок за 30 сек')
+        
+        # Проверка обычных ошибок
+        recent_errors = [
+            e for e in self.recent_errors
+            if time.time() - e['timestamp'] < 60
+        ]
+        
+        if len(recent_errors) >= 5:
+            status = 'degraded' if status == 'healthy' else status
+            issues.append(f'⚠️  {len(recent_errors)} ошибок за последнюю минуту')
+        
+        # Проверка активности важных топиков (каждые 10 секунд)
+        if time.time() - self.last_topic_check >= self.topic_check_interval:
+            self.last_topic_check = time.time()
+            
+            # Проверяем, когда последний раз обновлялись важные данные
+            if self.current_vision is None:
+                issues.append('👁️  Нет данных с камеры')
+                status = 'degraded' if status == 'healthy' else status
+            
+            if self.current_odom is None:
+                issues.append('🚗 Нет одометрии')
+                status = 'degraded' if status == 'healthy' else status
+        
+        return {
+            'status': status,
+            'issues': issues,
+            'recent_errors': self.recent_errors[-3:],  # Последние 3 ошибки
+            'recent_warnings': self.recent_warnings[-2:]  # Последние 2 предупреждения
+        }
     
     # ============================================================
     # Память
@@ -337,6 +460,9 @@ class ReflectionNode(Node):
     
     def build_context(self) -> Optional[Dict]:
         """Собрать текущий контекст из всех источников"""
+        # Проверка здоровья системы
+        health = self.check_system_health()
+        
         context = {
             'timestamp': time.time(),
             'vision': self.current_vision,
@@ -344,7 +470,8 @@ class ReflectionNode(Node):
             'moving': False,
             'sensors': self.current_sensors,
             'apriltags': [tag.id for tag in self.last_apriltags] if hasattr(self, 'last_apriltags') else [],
-            'memory': self.get_memory_context()
+            'memory': self.get_memory_context(),
+            'system_health': health  # Добавляем информацию о здоровье системы
         }
         
         # Позиция
