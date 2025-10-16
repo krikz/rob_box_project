@@ -88,6 +88,12 @@ class TTSNode(Node):
         self.get_logger().info('🔄 Загрузка Silero TTS v4...')
         self.device = torch.device('cpu')
         
+        # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
+        # Из статьи: https://habr.com/ru/companies/timeweb/articles/817929/
+        torch.set_num_threads(4)  # Ограничение потоков для ARM64
+        torch._C._jit_set_profiling_mode(False)  # Отключить JIT профилирование
+        torch.set_grad_enabled(False)  # Отключить градиенты (только inference)
+        
         try:
             self.model, _ = torch.hub.load(
                 repo_or_dir='snakers4/silero-models',
@@ -96,7 +102,7 @@ class TTSNode(Node):
                 speaker='v4_ru'
             )
             self.model.to(self.device)
-            self.get_logger().info('✅ Silero TTS загружен')
+            self.get_logger().info('✅ Silero TTS загружен (ARM64 оптимизация)')
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка загрузки Silero: {e}')
             raise
@@ -195,23 +201,36 @@ class TTSNode(Node):
             
             # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
             # Ресемплинг для chipmunk mode или для ReSpeaker
+            target_rate = 16000  # ReSpeaker требует 16kHz
+            
             if self.chipmunk_mode:
+                # Chipmunk: генерируем 24kHz, ускоряем playback, затем ресемплим до 16kHz
                 playback_rate = int(self.sample_rate * self.pitch_shift)
-                self.get_logger().info(f'🐿️  Бурундук режим: {self.pitch_shift}x → {playback_rate} Hz')
-                # Ресемплинг до 16kHz для ReSpeaker
-                import scipy.signal
-                target_rate = 16000
-                num_samples = int(len(audio_np) * target_rate / playback_rate)
-                audio_resampled = scipy.signal.resample(audio_np, num_samples)
-                playback_rate = target_rate
+                self.get_logger().info(f'🐿️  Бурундук режим: {self.pitch_shift}x → {playback_rate} Hz (промежуточный)')
+                # Сначала интерполяция до промежуточного playback_rate
+                num_samples_intermediate = int(len(audio_np) * playback_rate / self.sample_rate)
+                audio_intermediate = np.interp(
+                    np.linspace(0, len(audio_np) - 1, num_samples_intermediate),
+                    np.arange(len(audio_np)),
+                    audio_np
+                )
+                # Затем интерполяция до 16kHz для ReSpeaker
+                num_samples_final = int(len(audio_intermediate) * target_rate / playback_rate)
+                audio_resampled = np.interp(
+                    np.linspace(0, len(audio_intermediate) - 1, num_samples_final),
+                    np.arange(len(audio_intermediate)),
+                    audio_intermediate
+                )
+                self.get_logger().info(f'🔄 Ресемплинг: {playback_rate} Hz → {target_rate} Hz (ReSpeaker)')
             else:
-                # Обычный режим: ресемплинг с 24kHz на 16kHz
-                import scipy.signal
-                target_rate = 16000
+                # Обычный режим: простой ресемплинг с 24kHz на 16kHz
                 num_samples = int(len(audio_np) * target_rate / self.sample_rate)
-                audio_resampled = scipy.signal.resample(audio_np, num_samples)
-                playback_rate = target_rate
-                self.get_logger().info(f'🔄 Ресемплинг: {self.sample_rate} Hz → {target_rate} Hz')
+                audio_resampled = np.interp(
+                    np.linspace(0, len(audio_np) - 1, num_samples),
+                    np.arange(len(audio_np)),
+                    audio_np
+                )
+                self.get_logger().info(f'🔄 Ресемплинг: {self.sample_rate} Hz → {target_rate} Hz (ReSpeaker)')
             
             # Применяем громкость из параметра (dB → линейный множитель)
             audio_np_adjusted = audio_resampled * self.volume_gain
