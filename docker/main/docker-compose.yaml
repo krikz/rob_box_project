@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Использует переменные из .env файла:
 # - ROS_DISTRO: версия ROS 2 (humble, jazzy, и т.д.)
 # - IMAGE_TAG: тег ветки (latest, dev, rc-X.Y.Z)

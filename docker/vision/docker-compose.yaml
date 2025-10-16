@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
   zenoh-router:
