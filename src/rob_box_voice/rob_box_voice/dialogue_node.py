@@ -88,6 +88,9 @@ class DialogueNode(Node):
         # Публикация ответов (JSON chunks)
         self.response_pub = self.create_publisher(String, '/voice/dialogue/response', 10)
         
+        # Публикация в TTS для синтеза (Phase 6 - добавлено!)
+        self.tts_pub = self.create_publisher(String, '/voice/tts/request', 10)
+        
         # Публикация звуковых триггеров (Phase 4)
         self.sound_trigger_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
         
@@ -210,6 +213,10 @@ class DialogueNode(Node):
                                 response_msg = String()
                                 response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
                                 self.response_pub.publish(response_msg)
+                                
+                                # Публикуем в TTS для синтеза (Phase 6)
+                                self.tts_pub.publish(response_msg)
+                                self.get_logger().info(f'🔊 Отправлено в TTS: chunk {chunk_count}')
                             
                         except json.JSONDecodeError:
                             pass  # Ждём больше данных
