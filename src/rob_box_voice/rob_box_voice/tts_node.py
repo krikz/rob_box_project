@@ -84,6 +84,9 @@ class TTSNode(Node):
         # dB = 20 * log10(gain)  =>  gain = 10^(dB/20)
         self.volume_gain = 10.0 ** (self.volume_db / 20.0)
         
+        # Callback для изменения параметров во время работы
+        self.add_on_set_parameters_callback(self.parameters_callback)
+        
         # Загрузка Silero TTS
         self.get_logger().info('🔄 Загрузка Silero TTS v4...')
         self.device = torch.device('cpu')
@@ -271,6 +274,24 @@ class TTSNode(Node):
         msg = String()
         msg.data = state
         self.state_pub.publish(msg)
+    
+    def parameters_callback(self, params):
+        """Callback для изменения параметров во время работы"""
+        from rcl_interfaces.msg import SetParametersResult
+        
+        for param in params:
+            if param.name == 'volume_db':
+                self.volume_db = param.value
+                self.volume_gain = 10.0 ** (self.volume_db / 20.0)
+                self.get_logger().info(f'🔊 Громкость изменена: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)')
+            elif param.name == 'pitch_shift':
+                self.pitch_shift = param.value
+                self.get_logger().info(f'🐿️ Pitch shift изменён: {self.pitch_shift}x')
+            elif param.name == 'chipmunk_mode':
+                self.chipmunk_mode = param.value
+                self.get_logger().info(f'🐿️ Chipmunk mode: {self.chipmunk_mode}')
+        
+        return SetParametersResult(successful=True)
 
 
 def main(args=None):
