@@ -107,6 +107,124 @@ docker/
 **Перед любыми изменениями Docker конфигурации читай:**
 - `DOCKER_STANDARDS.md` - детальные стандарты, примеры, workflow
 - `BUILD_OPTIMIZATION.md` - правила оптимизации сборки образов
+- `CI_CD_PIPELINE.md` - автоматизация сборки через GitHub Actions
+
+---
+
+## 🚀 CI/CD через GitHub Actions
+
+### Автоматическая сборка Docker образов
+
+**⚠️ ВАЖНО**: Docker образы НЕ собираются локально на Pi! Сборка происходит через GitHub Actions.
+
+### Архитектура workflow
+
+```
+Feature Branch (feature/*)
+         ↓ push
+    GitHub Actions
+         ↓ build changed services
+    Auto-merge → Develop (develop)
+         ↓ push all changes
+    Build ALL services
+         ↓ success
+    Auto-merge → Main (main)
+         ↓
+    Docker Images Published
+    ghcr.io/krikz/rob_box:*-humble-latest
+```
+
+### Workflow файлы
+
+| Workflow | Файл | Назначение |
+|----------|------|------------|
+| **Feature → Develop** | `.github/workflows/auto-merge-feature-to-develop.yml` | Собирает изменённые сервисы, автомерджит в develop |
+| **Develop → Main** | `.github/workflows/auto-merge-to-main.yml` | Собирает ВСЕ сервисы, автомерджит в main |
+| **Vision Services** | `.github/workflows/build-vision-services.yml` | Сборка oak-d, lslidar, apriltag, led-matrix, voice-assistant |
+| **Main Services** | `.github/workflows/build-main-services.yml` | Сборка rtabmap, led-compositor |
+| **Base Images** | `.github/workflows/build-base-images.yml` | Сборка базовых образов (ros2-zenoh) |
+
+### Docker Image Tagging
+
+| Branch | Tag | Использование |
+|--------|-----|---------------|
+| **main** | `*-humble-latest` | Production (стабильная версия) |
+| **develop** | `*-humble-dev` | Development (тестирование) |
+| **feature/*** | `*-humble-test` | Feature testing (текущая разработка) |
+
+**Пример для voice-assistant:**
+- `ghcr.io/krikz/rob_box:voice-assistant-humble-latest` (main)
+- `ghcr.io/krikz/rob_box:voice-assistant-humble-dev` (develop)
+- `ghcr.io/krikz/rob_box:voice-assistant-humble-test` (feature/*)
+
+### Workflow для изменения кода
+
+```bash
+# 1. Создаешь feature ветку
+git checkout -b feature/fix-voice-assistant
+
+# 2. Делаешь изменения (например, в Dockerfile или docker-compose.yaml)
+vim docker/vision/voice_assistant/Dockerfile
+vim docker/vision/docker-compose.yaml
+
+# 3. Коммитишь и пушишь
+git add .
+git commit -m "fix: добавить nav2-msgs для command_node"
+git push origin feature/fix-voice-assistant
+
+# 4. GitHub Actions автоматически:
+#    - Определяет что изменился Vision Pi
+#    - Запускает build-vision-services.yml
+#    - Собирает voice-assistant-humble-test
+#    - Пушит образ в ghcr.io
+#    - Мерджит в develop (если сборка успешна)
+#    - Удаляет feature ветку
+
+# 5. На Vision Pi - обновляешь код и подтягиваешь новый образ
+sshpass -p 'open' ssh ros2@10.1.1.21 \
+  'cd ~/rob_box_project/docker/vision && \
+   git pull && \
+   docker compose pull voice-assistant && \
+   docker compose up -d voice-assistant'
+```
+
+### Мониторинг сборки
+
+**GitHub Actions:**
+- https://github.com/krikz/rob_box_project/actions
+
+**Проверка статуса:**
+```bash
+# Последний workflow run
+gh run list --limit 5
+
+# Логи конкретного workflow
+gh run view <run-id> --log
+```
+
+**Проверка образов:**
+```bash
+# На Vision Pi - проверить какой образ используется
+sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
+
+# Должен показать: ghcr.io/krikz/rob_box  voice-assistant-humble-test
+```
+
+### Когда НЕ нужна пересборка образа
+
+**Изменения БЕЗ rebuild** (применяются мгновенно через volumes):
+- Конфиги: `docker/vision/config/**`
+- Скрипты: `docker/vision/scripts/**`
+- Launch файлы: `docker/vision/config/voice/voice_assistant_headless.launch.py`
+
+**Изменения С rebuild** (требуют GitHub Actions):
+- `Dockerfile` (установка пакетов, зависимостей)
+- `requirements.txt` (Python пакеты)
+- Исходный код ROS пакетов (colcon build)
+
+**Подробности:** См. `docs/CI_CD_PIPELINE.md`
+
+---
 
 ### 🛠️ Работа с Docker на Pi через WSL
 
@@ -183,6 +301,61 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker log
 # Обновление кода и перезапуск
 wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
   'cd ~/rob_box_project/docker/vision && git pull && docker-compose down && docker-compose up -d'
+```
+
+---
+
+## 🔒 Управление секретами (API Keys)
+
+### Voice Assistant секреты
+
+Voice Assistant требует API ключи для работы DialogueNode (DeepSeek) и TTSNode (Yandex Cloud).
+
+**⚠️ КРИТИЧЕСКИ ВАЖНО**: API ключи НЕ должны коммититься в git!
+
+### Создание .env.secrets на Vision Pi
+
+Файл `.env.secrets` должен быть создан вручную на Vision Pi:
+
+```bash
+# Подключаемся к Vision Pi
+sshpass -p 'open' ssh ros2@10.1.1.21
+
+# Создаем .env.secrets
+cat > ~/rob_box_project/docker/vision/.env.secrets << 'EOF'
+# 🔒 API Keys для Voice Assistant (НЕ коммитить в git!)
+
+# DeepSeek API (для DialogueNode - LLM диалоги)
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+
+# Yandex Cloud API (для TTSNode - синтез речи)
+YANDEX_API_KEY=your_yandex_api_key_here
+YANDEX_FOLDER_ID=your_yandex_folder_id_here
+EOF
+
+# Проверяем что файл создан
+cat ~/rob_box_project/docker/vision/.env.secrets
+```
+
+**Где взять ключи:**
+- **DeepSeek API**: https://platform.deepseek.com/api_keys
+- **Yandex Cloud**: https://console.cloud.yandex.ru/folders/{folder_id}/iam/service-accounts
+
+**Защита от коммита:**
+- Файл `.env.secrets` добавлен в `docker/vision/.gitignore`
+- docker-compose.yaml использует `env_file: .env.secrets` вместо прямых environment переменных
+
+### Проверка секретов
+
+```bash
+# На Vision Pi - проверить что ключи загружены в контейнер
+sshpass -p 'open' ssh ros2@10.1.1.21 \
+  'docker exec voice-assistant printenv | grep -E "DEEPSEEK|YANDEX"'
+
+# Должен вернуть:
+# DEEPSEEK_API_KEY=sk-...
+# YANDEX_API_KEY=AQVN...
+# YANDEX_FOLDER_ID=aje...
 ```
 
 ---

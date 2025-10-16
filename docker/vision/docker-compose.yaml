@@ -147,6 +147,8 @@ services:
       - TTS_CACHE_DIR=/cache/tts
       # Python для audio
       - PYTHONUNBUFFERED=1
+    env_file:
+      - .env.secrets  # API keys: DEEPSEEK_API_KEY, YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
       - ./config:/config/shared:ro
       - ./config/voice:/config/voice:ro
