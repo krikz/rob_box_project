@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-TTSNode - Text-to-Speech с YandexSpeechKit + Silero fallback
+TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback
 
 Подписывается на: /voice/dialogue/response (JSON chunks)
 Публикует: /voice/audio/speech (AudioData)
 Использует: 
-  - YandexSpeechKit (primary, онлайн, лучшее качество)
+  - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
 """
 
@@ -22,8 +22,9 @@ import sys
 import os
 from pathlib import Path
 from contextlib import contextmanager
-import requests
-from io import BytesIO
+import grpc
+import io
+import wave
 
 
 @contextmanager
@@ -47,7 +48,7 @@ def ignore_stderr(enable=True):
     else:
         yield
 
-# Импортируем text_normalizer
+# Импортируем text_normalizer и Yandex gRPC
 scripts_path = Path(__file__).parent.parent / 'scripts'
 sys.path.insert(0, str(scripts_path))
 
@@ -57,6 +58,14 @@ except ImportError:
     def normalize_for_tts(text):
         """Fallback если нет normalizer"""
         return text
+
+# Yandex Cloud TTS API v3 (gRPC)
+try:
+    from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc
+    YANDEX_GRPC_AVAILABLE = True
+except ImportError:
+    YANDEX_GRPC_AVAILABLE = False
+    print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Silero fallback.")
 
 
 class TTSNode(Node):
@@ -68,11 +77,9 @@ class TTSNode(Node):
         # Параметры
         self.declare_parameter('provider', 'yandex')  # yandex (primary) | silero (fallback)
         
-        # Yandex SpeechKit
-        self.declare_parameter('yandex_folder_id', '')
+        # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter('yandex_api_key', '')
         self.declare_parameter('yandex_voice', 'anton')  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
-        self.declare_parameter('yandex_emotion', 'neutral')  # neutral, good, evil
         self.declare_parameter('yandex_speed', 0.4)  # 0.1-3.0 (0.4 = ОРИГИНАЛЬНАЯ СКОРОСТЬ РОББОКСА!)
         
         # Silero TTS (fallback)
@@ -88,11 +95,9 @@ class TTSNode(Node):
         # Читаем параметры
         self.provider = self.get_parameter('provider').value
         
-        # Yandex
-        self.yandex_folder_id = self.get_parameter('yandex_folder_id').value or os.getenv('YANDEX_FOLDER_ID', '')
+        # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter('yandex_api_key').value or os.getenv('YANDEX_API_KEY', '')
         self.yandex_voice = self.get_parameter('yandex_voice').value
-        self.yandex_emotion = self.get_parameter('yandex_emotion').value
         self.yandex_speed = self.get_parameter('yandex_speed').value
         
         # Silero
@@ -133,11 +138,19 @@ class TTSNode(Node):
             self.get_logger().error(f'❌ Ошибка загрузки Silero: {e}')
             self.silero_model = None
         
-        # Yandex SpeechKit URL
-        self.yandex_url = 'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize'
-        
-        # Yandex SpeechKit URL
-        self.yandex_url = 'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize'
+        # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
+        self.yandex_channel = None
+        self.yandex_stub = None
+        if YANDEX_GRPC_AVAILABLE and self.yandex_api_key:
+            try:
+                self.yandex_channel = grpc.secure_channel(
+                    'tts.api.cloud.yandex.net:443',
+                    grpc.ssl_channel_credentials()
+                )
+                self.yandex_stub = tts_service_pb2_grpc.SynthesizerStub(self.yandex_channel)
+                self.get_logger().info('✅ Yandex Cloud TTS gRPC v3 подключен')
+            except Exception as e:
+                self.get_logger().warn(f'⚠️  Не удалось подключиться к Yandex gRPC: {e}')
         
         # Подписка на dialogue response
         self.dialogue_sub = self.create_subscription(
@@ -155,16 +168,16 @@ class TTSNode(Node):
         self.publish_state('ready')
         
         self.get_logger().info('✅ TTSNode инициализирован')
-        self.get_logger().info(f'  Provider: Yandex (primary) + Silero (fallback)')
-        self.get_logger().info(f'  Yandex: voice={self.yandex_voice}, emotion={self.yandex_emotion}, speed={self.yandex_speed}')
+        self.get_logger().info(f'  Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero (fallback)')
+        self.get_logger().info(f'  Yandex gRPC v3: voice={self.yandex_voice} (ROBBOX original!), speed={self.yandex_speed}')
         self.get_logger().info(f'  Silero: speaker={self.silero_speaker}, rate={self.silero_sample_rate} Hz')
         self.get_logger().info(f'  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)')
         self.get_logger().info(f'  Chipmunk mode: {self.chipmunk_mode}')
         if self.chipmunk_mode:
             self.get_logger().info(f'  Pitch shift: {self.pitch_shift}x (ускоряем воспроизведение)')
         
-        if not self.yandex_api_key or not self.yandex_folder_id:
-            self.get_logger().warn('⚠️  Yandex credentials не заданы - будет использован только Silero fallback')
+        if not self.yandex_stub:
+            self.get_logger().warn('⚠️  Yandex gRPC не подключен - будет использован только Silero fallback')
     
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от dialogue_node"""
@@ -211,15 +224,15 @@ class TTSNode(Node):
             audio_np = None
             sample_rate = 16000  # Yandex возвращает 16kHz
             
-            if self.yandex_api_key and self.yandex_folder_id:
+            if self.yandex_stub:  # Проверяем что gRPC канал инициализирован
                 try:
                     self.publish_state('synthesizing')
-                    self.get_logger().info('🔊 Синтез через Yandex SpeechKit...')
+                    self.get_logger().info('🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...')
                     audio_np = self._synthesize_yandex(text)
-                    sample_rate = 16000  # Yandex возвращает 16kHz
-                    self.get_logger().info(f'✅ Yandex синтез успешен: {len(audio_np)} samples @ {sample_rate} Hz')
+                    sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
+                    # sample_rate уже получен в _synthesize_yandex, но пока захардкодим
                 except Exception as e:
-                    self.get_logger().warn(f'⚠️  Yandex отвалился: {e}, переключаюсь на Silero fallback')
+                    self.get_logger().warn(f'⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback')
                     audio_np = None
             
             # Fallback на Silero если Yandex не сработал
@@ -307,32 +320,58 @@ class TTSNode(Node):
             self.publish_state('ready')
     
     def _synthesize_yandex(self, text: str) -> np.ndarray:
-        """Синтез через Yandex SpeechKit (REST API v1)"""
-        headers = {
-            'Authorization': f'Api-Key {self.yandex_api_key}'
-        }
+        """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!)"""
+        if not self.yandex_stub:
+            raise Exception("Yandex gRPC stub не инициализирован")
         
-        data = {
-            'text': text,
-            'lang': 'ru-RU',
-            'voice': self.yandex_voice,
-            'emotion': self.yandex_emotion,
-            'speed': self.yandex_speed,
-            'format': 'lpcm',
-            'sampleRateHertz': '16000',
-            'folderId': self.yandex_folder_id
-        }
+        # Создаём запрос как в оригинальном ROBBOX коде
+        request = tts_pb2.UtteranceSynthesisRequest(
+            text=text,
+            output_audio_spec=tts_pb2.AudioFormatOptions(
+                container_audio=tts_pb2.ContainerAudio(
+                    container_audio_type=tts_pb2.ContainerAudio.WAV
+                )
+            ),
+            hints=[
+                tts_pb2.Hints(voice=self.yandex_voice),  # anton!
+                tts_pb2.Hints(speed=self.yandex_speed),  # 0.4
+            ],
+            loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS
+        )
         
-        response = requests.post(self.yandex_url, headers=headers, data=data, timeout=10)
-        
-        if response.status_code != 200:
-            raise Exception(f'Yandex API error: {response.status_code} - {response.text}')
-        
-        # Декодируем LPCM (16-bit signed PCM)
-        audio_bytes = response.content
-        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        return audio_np
+        try:
+            # Отправляем запрос с авторизацией
+            responses = self.yandex_stub.UtteranceSynthesis(
+                request,
+                metadata=(('authorization', f'Api-Key {self.yandex_api_key}'),)
+            )
+            
+            # Собираем аудио данные из стрима
+            audio_data = b""
+            for response in responses:
+                audio_data += response.audio_chunk.data
+            
+            if not audio_data:
+                raise Exception("Пустой ответ от Yandex TTS")
+            
+            # Yandex возвращает WAV файл - нужно извлечь PCM данные
+            # Пропускаем WAV заголовок (44 байта)
+            with io.BytesIO(audio_data) as wav_file:
+                with wave.open(wav_file, 'rb') as wav:
+                    sample_rate = wav.getframerate()  # обычно 22050 Hz или 48000 Hz
+                    audio_bytes = wav.readframes(wav.getnframes())
+            
+            # Декодируем PCM в numpy
+            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            self.get_logger().info(f'✅ Yandex gRPC v3 синтез успешен: {len(audio_np)} samples @ {sample_rate} Hz')
+            
+            return audio_np
+            
+        except grpc.RpcError as e:
+            raise Exception(f'Yandex gRPC error: {e.code()} - {e.details()}')
+        except Exception as e:
+            raise Exception(f'Yandex synthesis error: {e}')
     
     def _publish_audio(self, audio_np: np.ndarray):
         """Публикует аудио в ROS topic"""
