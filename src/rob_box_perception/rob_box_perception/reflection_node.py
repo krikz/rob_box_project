@@ -459,6 +459,7 @@ class ReflectionNode(Node):
         context = self.build_context()
         
         if not context:
+            self.get_logger().debug('⏸️  Нет данных для размышлений')
             return  # Нет данных для размышлений
         
         # Отправляем в DeepSeek для анализа
@@ -469,7 +470,7 @@ class ReflectionNode(Node):
             thought_msg = String()
             thought_msg.data = thought
             self.thought_pub.publish(thought_msg)
-            self.get_logger().debug(f'💭 Мысль: {thought}')
+            self.get_logger().info(f'🧠 Размышление: {thought}')
         
         # Говорим, если решили
         if should_speak and speech_text and self.enable_speech:
@@ -549,7 +550,7 @@ class ReflectionNode(Node):
             should_speak = result.get('should_speak', False)
             speech_text = result.get('speech', '')
             
-            self.get_logger().debug(f'🤖 DeepSeek: thought="{thought}", speak={should_speak}')
+            self.get_logger().info(f'🤖 AI анализ: thought="{thought[:50]}...", speak={should_speak}')
             
             return thought, should_speak, speech_text
             
