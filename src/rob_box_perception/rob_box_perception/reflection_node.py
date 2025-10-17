@@ -398,6 +398,13 @@ class ReflectionNode(Node):
         """Полный контекст для обычного размышления"""
         lines = ["=== ТЕКУЩИЙ КОНТЕКСТ РОБОТА ===", ""]
         
+        # ВАЖНО: Последние мысли (для избежания повторений)
+        if self.recent_thoughts:
+            lines.append("=== МОИ ПОСЛЕДНИЕ МЫСЛИ (для контекста) ===")
+            for i, thought in enumerate(self.recent_thoughts[-5:], 1):  # Последние 5
+                lines.append(f"{i}. {thought}")
+            lines.append("")
+        
         # Vision
         if ctx.vision_context:
             try:
