@@ -115,13 +115,9 @@ COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
 
 # Шаг 5: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
-COPY src/rob_box_animations/resource /ws/src/rob_box_animations/resource
 COPY sound_pack /ws/sound_pack
 
-# Шаг 6: Копируем message definitions (если изменяются - пересобираем)
-COPY src/rob_box_animations/msg /ws/src/rob_box_animations/msg
-
-# Шаг 7: Копируем launch файлы и конфигурации
+# Шаг 6: Копируем launch файлы и конфигурации
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
 COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
 
