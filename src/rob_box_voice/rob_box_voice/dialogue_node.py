@@ -102,6 +102,9 @@ class DialogueNode(Node):
         # Публикация state для других нод (command_node)
         self.state_pub = self.create_publisher(String, '/voice/dialogue/state', 10)
         
+        # Публикация срочных запросов к внутреннему диалогу (reflection)
+        self.reflection_request_pub = self.create_publisher(String, '/perception/user_speech', 10)
+        
         # ============ State Machine ============
         # IDLE -> LISTENING -> DIALOGUE -> SILENCED
         self.state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
@@ -347,6 +350,23 @@ class DialogueNode(Node):
                         # Парсим JSON
                         try:
                             chunk_data = json.loads(json_text)
+                            
+                            # ============ ПРОВЕРКА: ask_reflection команда ============
+                            if 'action' in chunk_data and chunk_data['action'] == 'ask_reflection':
+                                question = chunk_data.get('question', '')
+                                self.get_logger().warn(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
+                                
+                                # Публикуем в /perception/user_speech для reflection_node
+                                reflection_msg = String()
+                                reflection_msg.data = question
+                                self.reflection_request_pub.publish(reflection_msg)
+                                self.get_logger().info(f'  → Запрос отправлен к внутреннему диалогу')
+                                
+                                # Сброс для следующего chunk
+                                current_chunk = ""
+                                in_json = False
+                                brace_count = 0
+                                continue  # Не обрабатываем дальше как обычный chunk
                             
                             # Применяем автоударения
                             if 'ssml' in chunk_data:
