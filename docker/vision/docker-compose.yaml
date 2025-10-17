@@ -198,7 +198,7 @@ services:
       - voice-assistant  # Зависим от voice для TTS
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list | grep -q reflection_node || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'source /ws/install/setup.bash && ros2 node list | grep -q reflection_node'"]
       interval: 15s
       timeout: 5s
       start_period: 20s
