@@ -43,6 +43,8 @@ class DialogueNode(Node):
         self.declare_parameter('temperature', 0.7)
         self.declare_parameter('max_tokens', 500)
         self.declare_parameter('system_prompt_file', 'master_prompt_simple.txt')
+        self.declare_parameter('wake_words', ['робок', 'робот', 'роббокс'])
+        self.declare_parameter('silence_commands', ['помолч', 'замолч', 'хватит'])
         
         api_key = self.get_parameter('api_key').value
         if not api_key:
@@ -112,8 +114,9 @@ class DialogueNode(Node):
         self.last_interaction_time = time.time()
         self.dialogue_timeout = 30.0  # секунд без активности -> IDLE
         
-        # Wake words
-        self.wake_words = ['робок', 'робот', 'роббокс', 'робокос', 'роббос', 'робокс']
+        # Wake words и silence commands из параметров
+        self.wake_words = self.get_parameter('wake_words').value
+        self.silence_commands = self.get_parameter('silence_commands').value
         
         # Флаг что dialogue_node обработал запрос (чтобы игнорировать command feedback)
         self.dialogue_in_progress = False
@@ -123,6 +126,7 @@ class DialogueNode(Node):
         
         self.get_logger().info('✅ DialogueNode инициализирован')
         self.get_logger().info(f'  Wake words: {", ".join(self.wake_words)}')
+        self.get_logger().info(f'  Silence commands: {", ".join(self.silence_commands)}')
         self.get_logger().info(f'  Model: {self.model}')
         self.get_logger().info(f'  Temperature: {self.temperature}')
         self.get_logger().info(f'  Max tokens: {self.max_tokens}')
@@ -165,17 +169,9 @@ class DialogueNode(Node):
     
     def _is_silence_command(self, text: str) -> bool:
         """Проверка: команда замолчать?"""
-        silence_patterns = [
-            r'\bпомолч',
-            r'\bзамолч',
-            r'\bхватит\b',
-            r'\bзакрой',
-            r'\bзаткн',
-            r'\bне\s+меша',
-        ]
-        
-        for pattern in silence_patterns:
-            if re.search(pattern, text):
+        # Используем silence_commands из параметров
+        for command in self.silence_commands:
+            if command in text:
                 return True
         
         return False

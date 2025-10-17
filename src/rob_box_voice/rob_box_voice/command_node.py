@@ -147,9 +147,10 @@ class CommandNode(Node):
         if not text:
             return
         
-        # Игнорировать STT если dialogue активен (LISTENING или DIALOGUE)
+        # ПРИОРИТЕТ: Игнорировать STT если dialogue активен (LISTENING или DIALOGUE)
+        # Проверка ПЕРЕД классификацией и ПЕРЕД любым feedback
         if self.dialogue_state in ['LISTENING', 'DIALOGUE']:
-            self.get_logger().debug(f'🔇 Dialogue активен ({self.dialogue_state}) - command_node игнорирует STT')
+            self.get_logger().debug(f'🔇 Dialogue активен ({self.dialogue_state}) - command_node игнорирует: {text}')
             return
         
         self.get_logger().info(f'🎤 STT: {text}')
@@ -159,7 +160,8 @@ class CommandNode(Node):
         
         if command.intent == IntentType.UNKNOWN:
             self.get_logger().warn(f'⚠️ Неизвестная команда: {text}')
-            self.publish_feedback('Я не понял команду')
+            # Не публикуем feedback для неизвестных команд - пусть тишина
+            # (возможно пользователь обращался не к роботу)
             return
         
         if command.confidence < self.confidence_threshold:
