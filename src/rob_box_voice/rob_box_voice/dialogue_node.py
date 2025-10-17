@@ -99,6 +99,9 @@ class DialogueNode(Node):
         # Публикация control commands в TTS
         self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)
         
+        # Публикация state для других нод (command_node)
+        self.state_pub = self.create_publisher(String, '/voice/dialogue/state', 10)
+        
         # ============ State Machine ============
         # IDLE -> LISTENING -> DIALOGUE -> SILENCED
         self.state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
@@ -195,6 +198,7 @@ class DialogueNode(Node):
         # 3. Перейти в SILENCED на 5 минут
         self.state = 'SILENCED'
         self.silence_until = time.time() + 300  # 5 минут
+        self._publish_state()
         self.get_logger().info('  → State: SILENCED (5 минут)')
         
         # 4. Короткое подтверждение (через TTS напрямую)
@@ -210,6 +214,12 @@ class DialogueNode(Node):
         response_msg.data = json.dumps(response_json, ensure_ascii=False)
         self.response_pub.publish(response_msg)
         self.tts_pub.publish(response_msg)
+    
+    def _publish_state(self):
+        """Публикация текущего состояния dialogue_node"""
+        msg = String()
+        msg.data = self.state
+        self.state_pub.publish(msg)
     
     # ============================================================
     # Main Callback
@@ -249,6 +259,7 @@ class DialogueNode(Node):
             if self._has_wake_word(user_message_lower):
                 self.get_logger().info('👋 Wake word обнаружен → LISTENING')
                 self.state = 'LISTENING'
+                self._publish_state()
                 self.last_interaction_time = time.time()
                 
                 # Убираем wake word из текста
@@ -265,6 +276,7 @@ class DialogueNode(Node):
         
         # ============ State: LISTENING или DIALOGUE ============
         self.state = 'DIALOGUE'
+        self._publish_state()
         self.last_interaction_time = time.time()
         self.dialogue_in_progress = True
         

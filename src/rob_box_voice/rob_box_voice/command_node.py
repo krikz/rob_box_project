@@ -64,9 +64,20 @@ class CommandNode(Node):
             10
         )
         
+        # Subscribe to dialogue state (чтобы не мешать диалогу)
+        self.dialogue_state_sub = self.create_subscription(
+            String,
+            '/voice/dialogue/state',
+            self.dialogue_state_callback,
+            10
+        )
+        
         # Publishers
         self.intent_pub = self.create_publisher(String, '/voice/command/intent', 10)
         self.feedback_pub = self.create_publisher(String, '/voice/command/feedback', 10)
+        
+        # State tracking
+        self.dialogue_state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
         
         # Action clients
         if self.enable_navigation:
@@ -125,10 +136,20 @@ class CommandNode(Node):
             ],
         }
     
+    def dialogue_state_callback(self, msg: String):
+        """Callback для состояния dialogue_node"""
+        self.dialogue_state = msg.data
+        self.get_logger().debug(f'📊 Dialogue state: {self.dialogue_state}')
+    
     def stt_callback(self, msg: String):
         """Обработка распознанной речи"""
         text = msg.data.strip().lower()
         if not text:
+            return
+        
+        # Игнорировать STT если dialogue активен (LISTENING или DIALOGUE)
+        if self.dialogue_state in ['LISTENING', 'DIALOGUE']:
+            self.get_logger().debug(f'🔇 Dialogue активен ({self.dialogue_state}) - command_node игнорирует STT')
             return
         
         self.get_logger().info(f'🎤 STT: {text}')
