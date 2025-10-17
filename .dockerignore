@@ -1,0 +1,58 @@
+# Build artifacts
+build/
+install/
+log/
+.colcon/
+
+# Git
+.git/
+.github/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+*.pyd
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
+*.md
+README*
+CHANGELOG*
+CONTRIBUTING*
+LICENSE*
+
+# Test files
+test/
+*_test.py
+*_test.cpp
+
+# Temporary files
+.DS_Store
+*.tmp
+*.log
+
+# Host-specific
+local_test/
+scripts/
+tools/
+
+# Assets (не нужны в контейнерах)
+assets/
+sound_pack/
+models/
+
+# Docker-specific (не копировать в контейнер)
+docker-compose*.yml
+Dockerfile*
+.dockerignore

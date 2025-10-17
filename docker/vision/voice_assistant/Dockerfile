@@ -46,41 +46,18 @@ RUN apt-get update && apt-get install -y \
     usbutils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get install -y --reinstall \
-    # ROS2 зависимости
-    ros-${ROS_DISTRO}-std-msgs \
-    ros-${ROS_DISTRO}-std-srvs \
-    ros-${ROS_DISTRO}-sensor-msgs \
-    ros-${ROS_DISTRO}-geometry-msgs \
-    ros-${ROS_DISTRO}-nav-msgs \
-    ros-${ROS_DISTRO}-builtin-interfaces \
-    # ROS2 runtime библиотеки для colcon build
-    ros-${ROS_DISTRO}-rcutils \
-    ros-${ROS_DISTRO}-rosidl-runtime-c \
-    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
-    ros-${ROS_DISTRO}-rosidl-default-runtime \
-    ros-${ROS_DISTRO}-rosidl-default-generators \
-    ros-${ROS_DISTRO}-ament-cmake-core \
-    && rm -rf /var/lib/apt/lists/*
-RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
-RUN cat /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
-
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
 # ВАЖНО: setuptools <80 требуется для совместимости с colcon-core и antlr4-python3-runtime
-RUN pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel
 
-# Копируем requirements.txt
+# Копируем requirements.txt ПЕРЕД остальными файлами для лучшего кэширования
 COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
 
-# Устанавливаем все зависимости одной командой
+# Устанавливаем pip, setuptools, wheel и все зависимости одной командой
 # BuildKit cache mount сохраняет загруженные пакеты между сборками
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel && \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
