@@ -47,8 +47,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
-# ТОЧНАЯ КОПИЯ из успешной сборки 80f5938
-RUN apt-get install -y --reinstall \
+# ИСПРАВЛЕНИЕ: добавлены ros-dev-tools и rosidl-default-generators для сборки messages
+# Источник: docs/development/DOCKER_BUILD_FIXES.md (проблема #4)
+RUN apt-get update && apt-get install -y \
+    # ROS2 development tools (для colcon build с custom messages)
+    ros-dev-tools \
     # ROS2 зависимости
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
@@ -63,6 +66,8 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
+    ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     && rm -rf /var/lib/apt/lists/*
 
