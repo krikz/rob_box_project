@@ -378,6 +378,9 @@ class DialogueNode(Node):
                                 chunk_count += 1
                                 self.get_logger().info(f'📤 Chunk {chunk_count}: {ssml[:50]}...')
                                 
+                                # Обновляем время взаимодействия (робот говорит)
+                                self.last_interaction_time = time.time()
+                                
                                 response_msg = String()
                                 response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
                                 self.response_pub.publish(response_msg)
