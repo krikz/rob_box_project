@@ -137,6 +137,12 @@ class ReflectionNode(Node):
             10
         )
         
+        self.sound_pub = self.create_publisher(
+            String,
+            '/voice/sound/trigger',
+            10
+        )
+        
         self.get_logger().info('🧠 Reflection Node v2.0 (Event-Driven) запущен')
         self.get_logger().info(f'   Тайм-аут диалога: {self.dialogue_timeout} сек')
         self.get_logger().info(f'   Срочный ответ: {self.urgent_response_timeout} сек')
@@ -595,6 +601,9 @@ class ReflectionNode(Node):
         msg.data = thought
         self.thought_pub.publish(msg)
         
+        # Триггер звука на основе эмоции
+        self._trigger_sound_for_thought(thought)
+        
         # Сохраняем в историю
         self.recent_thoughts.append(thought)
         if len(self.recent_thoughts) > 10:
@@ -637,6 +646,44 @@ class ReflectionNode(Node):
         self.tts_pub.publish(msg)
         
         self.get_logger().info(f'🗣️  Reflection → TTS: {speech_ssml[:80]}...')
+    
+    # ============================================================
+    # Звуковые эффекты (эмоции)
+    # ============================================================
+    
+    def _trigger_sound_for_thought(self, thought: str):
+        """Триггер звука на основе эмоции размышления"""
+        thought_lower = thought.lower()
+        
+        # Удивление при новой информации
+        if any(word in thought_lower for word in ['удивительно', 'вау', 'неожиданно', 'странно', 'интересно']):
+            self._play_sound('surprise')
+        
+        # Размышление при обдумывании
+        elif any(word in thought_lower for word in ['думаю', 'размышляю', 'анализирую', 'рассматриваю', 'проверяю']):
+            self._play_sound('thinking')
+        
+        # Замешательство при неопределённости
+        elif any(word in thought_lower for word in ['не уверен', 'сложно', 'непонятно', 'затрудняюсь', 'не знаю']):
+            self._play_sound('confused')
+        
+        # Злость при проблемах
+        elif any(word in thought_lower for word in ['ошибка', 'проблема', 'критично', 'degraded', 'сбой', 'авария']):
+            self._play_sound('angry')
+        
+        # Радость при успехе
+        elif any(word in thought_lower for word in ['отлично', 'хорошо', 'успешно', 'готов', 'healthy', 'норма']):
+            self._play_sound('cute')
+    
+    def _play_sound(self, sound_name: str):
+        """Проиграть звуковой эффект"""
+        try:
+            msg = String()
+            msg.data = sound_name
+            self.sound_pub.publish(msg)
+            self.get_logger().debug(f'🎵 Звук: {sound_name}')
+        except Exception as e:
+            self.get_logger().warn(f'⚠️  Ошибка триггера звука: {e}')
 
 
 def main(args=None):

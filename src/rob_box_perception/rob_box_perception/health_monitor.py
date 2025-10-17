@@ -12,6 +12,7 @@ Usage:
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import Log
+from std_msgs.msg import String
 import time
 
 
@@ -21,8 +22,13 @@ class HealthMonitor(Node):
     def __init__(self):
         super().__init__('health_monitor')
         
+        # Параметры
+        self.declare_parameter('enable_sounds', True)
+        self.enable_sounds = self.get_parameter('enable_sounds').value
+        
         self.errors = []
         self.warnings = []
+        self.last_status = None  # Для отслеживания изменений статуса
         
         # Подписка на логи
         self.rosout_sub = self.create_subscription(
@@ -31,6 +37,9 @@ class HealthMonitor(Node):
             self.on_log,
             100
         )
+        
+        # Publisher для звуков
+        self.sound_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
         
         # Таймер для отчётов
         self.report_timer = self.create_timer(5.0, self.print_report)
@@ -79,6 +88,17 @@ class HealthMonitor(Node):
         else:
             status = "✅ HEALTHY"
         
+        # Звуковой сигнал при изменении статуса
+        if self.enable_sounds and status != self.last_status:
+            if status == "🚨 CRITICAL":
+                self._play_sound('angry_2')
+            elif status == "⚠️  DEGRADED":
+                self._play_sound('confused')
+            elif status == "✅ HEALTHY" and self.last_status is not None:  # Восстановление
+                self._play_sound('cute')
+            
+            self.last_status = status
+        
         print(f"Status: {status}")
         print(f"Total Errors: {len(self.errors)} (последние {recent_errors} за минуту)")
         print(f"Total Warnings: {len(self.warnings)}")
@@ -98,6 +118,16 @@ class HealthMonitor(Node):
                 print(f"  [WARN] {w['node']} ({age}s ago): {w['msg'][:60]}")
         
         print("="*70)
+    
+    def _play_sound(self, sound_name: str):
+        """Проиграть звуковой эффект"""
+        try:
+            msg = String()
+            msg.data = sound_name
+            self.sound_pub.publish(msg)
+            self.get_logger().info(f'🎵 Health звук: {sound_name}')
+        except Exception as e:
+            self.get_logger().warn(f'⚠️  Ошибка триггера звука: {e}')
 
 
 def main(args=None):

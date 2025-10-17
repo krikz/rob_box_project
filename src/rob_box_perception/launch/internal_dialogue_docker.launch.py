@@ -38,6 +38,7 @@ def generate_launch_description():
                 'error_window': 30,  # секунд для подсчёта ошибок
                 'degraded_threshold': 5,  # ошибок для degraded
                 'critical_threshold': 10,  # ошибок для critical
+                'enable_sounds': True,  # Звуки при изменении статуса
             }],
         ),
         
@@ -64,6 +65,19 @@ def generate_launch_description():
                 'enable_speech': enable_speech,
                 'system_prompt_file': system_prompt_file,
                 'urgent_response_timeout': urgent_response_timeout,
+            }],
+        ),
+        
+        # Startup Greeting - приветствие при загрузке
+        Node(
+            package='rob_box_perception',
+            executable='startup_greeting',
+            name='startup_greeting',
+            output='screen',
+            parameters=[{
+                'wait_time': 5.0,  # Минимальное время ожидания
+                'check_timeout': 30.0,  # Максимальное время ожидания
+                'enable_greeting': True,
             }],
         ),
     ])
