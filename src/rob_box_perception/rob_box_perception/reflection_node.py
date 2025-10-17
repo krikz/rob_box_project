@@ -38,7 +38,7 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 try:
-    from rob_box_perception.msg import PerceptionEvent
+    from rob_box_perception_msgs.msg import PerceptionEvent
 except ImportError:
     PerceptionEvent = None
 

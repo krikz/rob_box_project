@@ -45,7 +45,7 @@ except ImportError:
 
 # Custom messages
 try:
-    from rob_box_perception.msg import PerceptionEvent
+    from rob_box_perception_msgs.msg import PerceptionEvent
 except ImportError:
     PerceptionEvent = None  # Fallback if not built yet
 
