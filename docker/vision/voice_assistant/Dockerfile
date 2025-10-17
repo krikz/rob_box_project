@@ -47,16 +47,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
-# Используем --reinstall для переустановки СУЩЕСТВУЮЩИХ версий из базового образа
-# ВАЖНО: БЕЗ apt-get update! Иначе подтянет новые несовместимые версии пакетов
+# ТОЧНАЯ КОПИЯ из успешной сборки 80f5938
 RUN apt-get install -y --reinstall \
-    # ROS2 message пакеты
+    # ROS2 зависимости
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    # ROS2 runtime и development библиотеки (для colcon build)
+    # ROS2 runtime библиотеки для colcon build
     ros-${ROS_DISTRO}-rcutils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \
     ros-${ROS_DISTRO}-rosidl-runtime-cpp \
@@ -65,7 +64,6 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
-    ros-${ROS_DISTRO}-rosidl-default-generators \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
