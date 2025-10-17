@@ -38,17 +38,33 @@ RUN apt-get update && apt-get install -y \
     libusb-1.0-0 \
     libusb-1.0-0-dev \
     udev \
-    # ROS2 development tools (для сборки message пакетов)
-    ros-${ROS_DISTRO}-rosidl-default-generators \
-    ros-${ROS_DISTRO}-rosidl-default-runtime \
-    ros-${ROS_DISTRO}-sensor-msgs \
-    ros-${ROS_DISTRO}-std-msgs \
     # Утилиты
     git \
     wget \
     curl \
     unzip \
     usbutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
+# Используем --reinstall для гарантии что библиотеки установлены корректно
+RUN apt-get update && apt-get install -y --reinstall \
+    # ROS2 message пакеты
+    ros-${ROS_DISTRO}-std-msgs \
+    ros-${ROS_DISTRO}-std-srvs \
+    ros-${ROS_DISTRO}-sensor-msgs \
+    ros-${ROS_DISTRO}-geometry-msgs \
+    ros-${ROS_DISTRO}-nav-msgs \
+    # ROS2 runtime и development библиотеки (для colcon build)
+    ros-${ROS_DISTRO}-rcutils \
+    ros-${ROS_DISTRO}-rosidl-runtime-c \
+    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
