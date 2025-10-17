@@ -11,6 +11,12 @@
       publish_rate: 10            # Hz для VAD/DOA topics
       device_index: -1            # -1 = auto-detect ReSpeaker
       device_name: "ReSpeaker 4 Mic Array"
+      
+      # VAD настройки для определения конца фразы
+      speech_continuation: 3.0    # Секунды после окончания речи до публикации (было 0.5, увеличено до 3.0)
+      speech_prefetch: 0.5        # Буфер перед началом речи (секунды)
+      speech_min_duration: 0.3    # Минимальная длительность фразы (секунды)
+      speech_max_duration: 10.0   # Максимальная длительность фразы (секунды)
 
     # ========== STT Node ==========
     stt_node:
