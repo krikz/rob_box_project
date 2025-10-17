@@ -420,10 +420,44 @@ class ReflectionNode(Node):
             for issue in ctx.health_issues:
                 lines.append(f"⚠️  {issue}")
         
-        # Memory
+        # Summarized History (суммаризованная история по типам)
+        lines.append("")
+        lines.append("=== СУММАРИЗОВАННАЯ ИСТОРИЯ ===")
+        
+        if ctx.speech_summaries and ctx.speech_summaries != '[]':
+            try:
+                speech_sums = json.loads(ctx.speech_summaries)
+                if speech_sums:
+                    lines.append("\n📝 ДИАЛОГИ:")
+                    for s in speech_sums[-3:]:  # Последние 3
+                        lines.append(f"  • {s['summary']}")
+            except:
+                pass
+        
+        if ctx.vision_summaries and ctx.vision_summaries != '[]':
+            try:
+                vision_sums = json.loads(ctx.vision_summaries)
+                if vision_sums:
+                    lines.append("\n👁️  НАБЛЮДЕНИЯ:")
+                    for s in vision_sums[-3:]:  # Последние 3
+                        lines.append(f"  • {s['summary']}")
+            except:
+                pass
+        
+        if ctx.system_summaries and ctx.system_summaries != '[]':
+            try:
+                system_sums = json.loads(ctx.system_summaries)
+                if system_sums:
+                    lines.append("\n⚙️  СИСТЕМА:")
+                    for s in system_sums[-3:]:  # Последние 3
+                        lines.append(f"  • {s['summary']}")
+            except:
+                pass
+        
+        # Memory (недавние события ~10)
         if ctx.memory_summary:
             lines.append("")
-            lines.append("=== НЕДАВНИЕ СОБЫТИЯ ===")
+            lines.append("=== НЕДАВНИЕ СОБЫТИЯ (последние ~10) ===")
             lines.append(ctx.memory_summary)
         
         return '\n'.join(lines)

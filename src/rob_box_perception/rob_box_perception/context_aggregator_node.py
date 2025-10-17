@@ -78,11 +78,16 @@ class ContextAggregatorNode(Node):
         self.recent_errors: List[Dict] = []
         self.recent_warnings: List[Dict] = []
         
-        # Короткая память (для memory_summary)
-        self.recent_events: List[Dict] = []
+        # Короткая память (для memory_summary) - РАЗДЕЛЕНО ПО ТИПАМ
+        self.recent_events: List[Dict] = []  # Все события (для совместимости)
+        self.speech_events: List[Dict] = []  # Речь пользователя
+        self.vision_events: List[Dict] = []  # Визуальные события
+        self.system_events: List[Dict] = []  # Ошибки, battery, warnings
         
-        # Суммаризованные истории (от DeepSeek)
-        self.summaries: List[Dict] = []  # {'time', 'summary', 'event_count'}
+        # Суммаризованные истории (от DeepSeek) - РАЗДЕЛЕНО ПО ТИПАМ
+        self.speech_summaries: List[Dict] = []  # {'time', 'summary', 'event_count'}
+        self.vision_summaries: List[Dict] = []
+        self.system_summaries: List[Dict] = []
         self.last_summarization_time = time.time()
         
         # ============ Подписки ============
@@ -284,18 +289,31 @@ class ContextAggregatorNode(Node):
     # ============================================================
     
     def add_to_memory(self, event_type: str, content: str, important: bool = False):
-        """Добавить событие в память"""
+        """Добавить событие в память (с разделением по типам)"""
         event = {
             'time': time.time(),
             'type': event_type,
             'content': content,
             'important': important
         }
+        
+        # Добавляем в общую память
         self.recent_events.append(event)
+        
+        # Добавляем в типизированные очереди
+        if event_type == 'user_speech':
+            self.speech_events.append(event)
+        elif event_type in ['vision', 'apriltag']:
+            self.vision_events.append(event)
+        elif event_type in ['error', 'warning', 'battery', 'system']:
+            self.system_events.append(event)
         
         # Очистка старых событий
         cutoff = time.time() - self.memory_window
         self.recent_events = [e for e in self.recent_events if e['time'] > cutoff]
+        self.speech_events = [e for e in self.speech_events if e['time'] > cutoff]
+        self.vision_events = [e for e in self.vision_events if e['time'] > cutoff]
+        self.system_events = [e for e in self.system_events if e['time'] > cutoff]
         
         # Проверка нужна ли суммаризация
         self.check_and_summarize()
@@ -364,6 +382,11 @@ class ContextAggregatorNode(Node):
         # Memory
         event.memory_summary = self.get_memory_summary()
         
+        # Summaries (суммаризованная история по типам)
+        event.speech_summaries = json.dumps(self.speech_summaries, ensure_ascii=False)
+        event.vision_summaries = json.dumps(self.vision_summaries, ensure_ascii=False)
+        event.system_summaries = json.dumps(self.system_summaries, ensure_ascii=False)
+        
         # Публикуем
         self.event_pub.publish(event)
         self.get_logger().debug(f'📤 Event: health={health_status}, moving={event.is_moving}')
@@ -397,24 +420,32 @@ class ContextAggregatorNode(Node):
     # ============================================================
     
     def check_and_summarize(self):
-        """Проверить нужна ли суммаризация и выполнить если нужно"""
+        """Проверить нужна ли суммаризация и выполнить если нужно (ПО ТИПАМ)"""
         if not self.enable_summarization or not self.deepseek_client:
             return
         
-        # Проверка порога событий
-        if len(self.recent_events) >= self.summarization_threshold:
-            self.get_logger().info(f'🔄 Суммаризация: {len(self.recent_events)} событий')
-            self._summarize_events()
+        # Проверка порога для каждого типа событий
+        if len(self.speech_events) >= self.summarization_threshold:
+            self.get_logger().info(f'🔄 Суммаризация SPEECH: {len(self.speech_events)} событий')
+            self._summarize_events('speech', self.speech_events, self.speech_summaries)
+        
+        if len(self.vision_events) >= self.summarization_threshold:
+            self.get_logger().info(f'🔄 Суммаризация VISION: {len(self.vision_events)} событий')
+            self._summarize_events('vision', self.vision_events, self.vision_summaries)
+        
+        if len(self.system_events) >= self.summarization_threshold:
+            self.get_logger().info(f'🔄 Суммаризация SYSTEM: {len(self.system_events)} событий')
+            self._summarize_events('system', self.system_events, self.system_summaries)
     
-    def _summarize_events(self):
-        """Суммаризировать recent_events через DeepSeek"""
-        if not self.deepseek_client or len(self.recent_events) == 0:
+    def _summarize_events(self, event_category: str, events_list: List[Dict], summaries_storage: List[Dict]):
+        """Суммаризировать события определённого типа через DeepSeek"""
+        if not self.deepseek_client or len(events_list) == 0:
             return
         
         try:
             # Подготовка данных для суммаризации
             events_text = []
-            for event in self.recent_events:
+            for event in events_list:
                 event_time = time.strftime('%H:%M:%S', time.localtime(event['time']))
                 events_text.append(f"[{event_time}] {event['type']}: {event['content']}")
             
@@ -437,39 +468,56 @@ class ContextAggregatorNode(Node):
             # Сохраняем summary
             summary_data = {
                 'time': time.time(),
+                'category': event_category,
                 'summary': summary,
-                'event_count': len(self.recent_events)
+                'event_count': len(events_list)
             }
-            self.summaries.append(summary_data)
+            summaries_storage.append(summary_data)
             
             # Оставляем только последние 10 summaries
-            if len(self.summaries) > 10:
-                self.summaries.pop(0)
+            if len(summaries_storage) > 10:
+                summaries_storage.pop(0)
             
-            self.get_logger().info(f'✅ Суммаризация завершена: {len(summary)} символов')
+            self.get_logger().info(f'✅ Суммаризация {event_category.upper()} завершена: {len(summary)} символов')
             self.get_logger().debug(f'  Summary: {summary[:100]}...')
             
-            # Очищаем старые события (оставляем последние 10)
-            self.recent_events = self.recent_events[-10:]
+            # Очищаем суммаризованные события (оставляем последние 10 для контекста)
+            events_list.clear()
+            events_list.extend(events_list[-10:] if len(events_list) > 10 else events_list)
+            
             self.last_summarization_time = time.time()
             
         except Exception as e:
-            self.get_logger().error(f'❌ Ошибка суммаризации: {e}')
+            self.get_logger().error(f'❌ Ошибка суммаризации {event_category}: {e}')
     
     def get_full_context(self) -> str:
-        """Получить полный контекст: summaries + recent_events"""
+        """Получить полный контекст: summaries + recent_events (ПО ТИПАМ)"""
         context_parts = []
         
-        # Добавляем summaries
-        if self.summaries:
-            context_parts.append("=== СУММАРИЗОВАННАЯ ИСТОРИЯ ===")
-            for summary_data in self.summaries:
+        # Добавляем SPEECH summaries
+        if self.speech_summaries:
+            context_parts.append("=== ИСТОРИЯ ДИАЛОГОВ (суммаризованная) ===")
+            for summary_data in self.speech_summaries:
+                summary_time = time.strftime('%H:%M:%S', time.localtime(summary_data['time']))
+                context_parts.append(f"[{summary_time}] ({summary_data['event_count']} реплик): {summary_data['summary']}")
+        
+        # Добавляем VISION summaries
+        if self.vision_summaries:
+            context_parts.append("\n=== ИСТОРИЯ ВИЗУАЛЬНЫХ НАБЛЮДЕНИЙ (суммаризованная) ===")
+            for summary_data in self.vision_summaries:
+                summary_time = time.strftime('%H:%M:%S', time.localtime(summary_data['time']))
+                context_parts.append(f"[{summary_time}] ({summary_data['event_count']} наблюдений): {summary_data['summary']}")
+        
+        # Добавляем SYSTEM summaries
+        if self.system_summaries:
+            context_parts.append("\n=== ИСТОРИЯ СИСТЕМНЫХ СОБЫТИЙ (суммаризованная) ===")
+            for summary_data in self.system_summaries:
                 summary_time = time.strftime('%H:%M:%S', time.localtime(summary_data['time']))
                 context_parts.append(f"[{summary_time}] ({summary_data['event_count']} событий): {summary_data['summary']}")
         
         # Добавляем недавние события
         if self.recent_events:
-            context_parts.append("\n=== НЕДАВНИЕ СОБЫТИЯ ===")
+            context_parts.append("\n=== НЕДАВНИЕ СОБЫТИЯ (последние ~10) ===")
             context_parts.append(self.get_memory_summary())
         
         return '\n'.join(context_parts)

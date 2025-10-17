@@ -25,3 +25,8 @@ string[] health_issues
 
 # Memory context (recent events summary)
 string memory_summary
+
+# Summarized history (from DeepSeek) - structured context
+string speech_summaries     # Суммаризованные диалоги (JSON array)
+string vision_summaries     # Суммаризованные визуальные наблюдения (JSON array)
+string system_summaries     # Суммаризованные системные события (JSON array)
