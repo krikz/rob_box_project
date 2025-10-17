@@ -164,6 +164,7 @@ class ContextAggregatorNode(Node):
         
         # ============ DeepSeek API для суммаризации ============
         self.deepseek_client = None
+        self.summarization_prompt = None
         if self.enable_summarization:
             deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
             if deepseek_api_key and OPENAI_AVAILABLE:
@@ -172,6 +173,7 @@ class ContextAggregatorNode(Node):
                         api_key=deepseek_api_key,
                         base_url="https://api.deepseek.com"
                     )
+                    self.summarization_prompt = self._load_summarization_prompt()
                     self.get_logger().info('✅ DeepSeek API для суммаризации инициализирован')
                 except Exception as e:
                     self.get_logger().error(f'❌ Ошибка инициализации DeepSeek: {e}')
@@ -185,6 +187,30 @@ class ContextAggregatorNode(Node):
         self.get_logger().info('📊 Context Aggregator запущен')
         self.get_logger().info(f'   Частота событий: {self.publish_rate} Hz')
         self.get_logger().info(f'   Окно памяти: {self.memory_window} сек')
+    
+    def _load_summarization_prompt(self) -> str:
+        """Загрузить промпт для суммаризации из файла"""
+        from ament_index_python.packages import get_package_share_directory
+        try:
+            pkg_share = get_package_share_directory('rob_box_perception')
+            prompt_path = os.path.join(pkg_share, 'prompts', 'context_summarization_prompt.txt')
+            
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                prompt = f.read()
+            
+            self.get_logger().info(f'✅ Загружен промпт суммаризации ({len(prompt)} байт)')
+            return prompt
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка загрузки промпта: {e}')
+            # Fallback промпт
+            return """Суммаризируй следующие события робота РОББОКС.
+Выдели КЛЮЧЕВУЮ информацию: что говорил пользователь, важные события, состояние системы.
+Будь КРАТКИМ (3-5 предложений).
+
+События:
+{events_list}
+
+Суммарное резюме:"""
     
     # ============================================================
     # Callbacks - Сбор данных
@@ -392,14 +418,11 @@ class ContextAggregatorNode(Node):
                 event_time = time.strftime('%H:%M:%S', time.localtime(event['time']))
                 events_text.append(f"[{event_time}] {event['type']}: {event['content']}")
             
-            prompt = f"""Суммаризируй следующие события робота РОББОКС за последние {self.memory_window} секунд.
-Выдели КЛЮЧЕВУЮ информацию: что говорил пользователь, важные события, состояние системы.
-Будь КРАТКИМ (3-5 предложений).
-
-События:
-{chr(10).join(events_text)}
-
-Суммарное резюме:"""
+            # Формируем промпт из загруженного шаблона
+            prompt = self.summarization_prompt.format(
+                memory_window=self.memory_window,
+                events_list='\n'.join(events_text)
+            )
             
             # Вызов DeepSeek
             response = self.deepseek_client.chat.completions.create(
