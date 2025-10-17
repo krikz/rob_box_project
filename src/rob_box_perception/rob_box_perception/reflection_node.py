@@ -524,15 +524,21 @@ class ReflectionNode(Node):
             self.recent_thoughts.pop(0)
     
     def _publish_speech(self, speech: str):
-        """Публикация речи в TTS"""
+        """Публикация речи в TTS (в формате SSML)"""
         # Проверка: silence mode активен?
         if self.silence_until and time.time() < self.silence_until:
             remaining = int(self.silence_until - time.time())
             self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
             return  # НЕ публикуем речь
         
+        # Формируем JSON с SSML (как dialogue_node)
+        import json
+        response_json = {
+            "ssml": f"<speak>{speech}</speak>"
+        }
+        
         msg = String()
-        msg.data = speech
+        msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
 
 
