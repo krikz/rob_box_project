@@ -160,9 +160,21 @@ class TTSNode(Node):
             10
         )
         
+        # Подписка на control commands (STOP)
+        self.control_sub = self.create_subscription(
+            String,
+            '/voice/tts/control',
+            self.control_callback,
+            10
+        )
+        
         # Публикация аудио и состояния
         self.audio_pub = self.create_publisher(AudioData, '/voice/audio/speech', 10)
         self.state_pub = self.create_publisher(String, '/voice/tts/state', 10)
+        
+        # Флаг для остановки воспроизведения
+        self.stop_requested = False
+        self.current_stream = None  # Текущий sounddevice stream
         
         # Публикуем начальное состояние
         self.publish_state('ready')
@@ -179,8 +191,29 @@ class TTSNode(Node):
         if not self.yandex_stub:
             self.get_logger().warn('⚠️  Yandex gRPC не подключен - будет использован только Silero fallback')
     
+    def control_callback(self, msg: String):
+        """Обработка control commands (STOP)"""
+        command = msg.data.strip().upper()
+        
+        if command == 'STOP':
+            self.get_logger().warn('🔇 STOP command received - немедленная остановка TTS')
+            self.stop_requested = True
+            
+            # Остановить текущий sounddevice stream если есть
+            if self.current_stream:
+                try:
+                    sd.stop()
+                    self.current_stream = None
+                except Exception as e:
+                    self.get_logger().error(f'❌ Ошибка остановки stream: {e}')
+            
+            self.publish_state('stopped')
+    
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от dialogue_node"""
+        # Сбрасываем флаг stop при новом запросе
+        self.stop_requested = False
+        
         try:
             chunk_data = json.loads(msg.data)
             
@@ -286,15 +319,34 @@ class TTSNode(Node):
             audio_stereo = np.column_stack((audio_np_adjusted, audio_np_adjusted))
             self.get_logger().info(f'🔊 Воспроизведение: {len(audio_stereo)} frames, {target_rate} Hz, стерео')
             
+            # Проверка STOP ДО воспроизведения
+            if self.stop_requested:
+                self.get_logger().warn('🔇 STOP: отменено ДО воспроизведения')
+                self.publish_state('stopped')
+                return
+            
             # Блокирующее воспроизведение
             with ignore_stderr(enable=True):
-                sd.play(audio_stereo, target_rate, device=1, blocking=True)
-                sd.stop()
-                sd.wait()
+                self.current_stream = True  # Маркер что воспроизведение идёт
+                sd.play(audio_stereo, target_rate, device=1, blocking=False)
+                
+                # Ждём завершения, но проверяем stop_requested
+                while sd.get_stream().active:
+                    if self.stop_requested:
+                        self.get_logger().warn('🔇 STOP: прерываем воспроизведение')
+                        sd.stop()
+                        break
+                    sd.wait(10)  # Проверяем каждые 10ms
+                
+                self.current_stream = None
             
             # Закончили воспроизведение
-            self.publish_state('ready')
-            self.get_logger().info('✅ Воспроизведение завершено')
+            if self.stop_requested:
+                self.publish_state('stopped')
+                self.get_logger().warn('🔇 Воспроизведение прервано')
+            else:
+                self.publish_state('ready')
+                self.get_logger().info('✅ Воспроизведение завершено')
             
         except Exception as e:
             self.get_logger().error(f'❌ Synthesis error: {e}')
