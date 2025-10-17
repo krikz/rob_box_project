@@ -47,10 +47,10 @@ local_test/
 scripts/
 tools/
 
-# Assets (не нужны в контейнерах)
+# Assets (не копируем в базовые образы, но некоторые сервисы используют)
+# sound_pack - используется voice_assistant (НЕ исключаем!)
+# models - используется voice_assistant (НЕ исключаем!)
 assets/
-sound_pack/
-models/
 
 # Docker-specific (не копировать в контейнер)
 docker-compose*.yml
