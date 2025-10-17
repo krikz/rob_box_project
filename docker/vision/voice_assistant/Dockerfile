@@ -69,7 +69,16 @@ RUN apt-get update && apt-get install -y \
     # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
+    # КРИТИЧНО: builtin-interfaces должен быть явно установлен
+    ros-${ROS_DISTRO}-builtin-interfaces \
     && rm -rf /var/lib/apt/lists/*
+
+# Дебаг: проверяем что builtin_interfaces__rosidl_generator_c библиотека существует
+RUN echo "=== Проверка builtin_interfaces библиотек ===" && \
+    find /opt/ros/${ROS_DISTRO} -name "*builtin_interfaces*rosidl_generator_c*" -type f | head -20 && \
+    echo "=== CMake config builtin_interfaces ===" && \
+    ls -la /opt/ros/${ROS_DISTRO}/share/builtin_interfaces/cmake/ && \
+    echo "=== Конец проверки ==="
 
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
