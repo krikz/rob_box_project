@@ -1,4 +1,18 @@
-# Internal Dialogue Agent v2.0 - Event-Driven Architecture
+# Internal Dialogue Architecture v2.0
+
+> **⚠️ ВНИМАНИЕ:** Эта документация устарела. Актуальная полная документация:
+> 
+> **[INTERNAL_DIALOGUE_VOICE_ASSISTANT.md](INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)**
+>
+> Новый документ включает:
+> - Event-driven архитектура с Context Aggregator (MPC lite)
+> - Суммаризация по типам: speech/vision/system
+> - Интеграция с Voice Assistant и urgent hook
+> - Полные диаграммы и примеры кода
+
+---
+
+# Internal Dialogue Architecture v2.0 (УСТАРЕЛО)
 
 ## 🏗️ Архитектура
 
