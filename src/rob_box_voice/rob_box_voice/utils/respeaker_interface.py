@@ -30,6 +30,9 @@ class ReSpeakerInterface:
         'VOICEACTIVITY': (19, 32, 'int'),  # Voice Activity Detection (0/1)
         'SPEECHDETECTED': (19, 22, 'int'), # Speech detection status
         'AGCONOFF': (19, 0, 'int'),        # AGC on/off
+        'AECFREEZEONOFF': (18, 7, 'int'),  # AEC Freeze control (0=adaptive, 1=frozen)
+        'ECHOONOFF': (18, 6, 'int'),       # Echo cancellation on/off
+        'NLATTENONOFF': (18, 1, 'int'),    # Non-linear AEC attenuation on/off
     }
     
     def __init__(self):
@@ -212,6 +215,34 @@ class ReSpeakerInterface:
         else:
             success &= self.write_parameter('STATNOISEONOFF', 0)
             success &= self.write_parameter('NONSTATNOISEONOFF', 0)
+        
+        return success
+    
+    def configure_aec(self, 
+                     aec_on: bool = True,
+                     aec_freeze: bool = False,
+                     nlp_on: bool = True) -> bool:
+        """
+        Настроить Acoustic Echo Cancellation (AEC)
+        
+        Args:
+            aec_on: Включить эхоподавление (ECHOONOFF)
+            aec_freeze: Заморозить адаптацию AEC (AECFREEZEONOFF) - обычно False для адаптации
+            nlp_on: Включить нелинейное подавление (NLATTENONOFF)
+        
+        Returns:
+            True если все параметры успешно установлены
+        """
+        success = True
+        
+        # AECFREEZEONOFF: 0 = adaptive (рекомендуется), 1 = frozen
+        success &= self.write_parameter('AECFREEZEONOFF', 1 if aec_freeze else 0)
+        
+        # ECHOONOFF: 1 = on, 0 = off
+        success &= self.write_parameter('ECHOONOFF', 1 if aec_on else 0)
+        
+        # NLATTENONOFF: 1 = on (рекомендуется), 0 = off
+        success &= self.write_parameter('NLATTENONOFF', 1 if nlp_on else 0)
         
         return success
     
