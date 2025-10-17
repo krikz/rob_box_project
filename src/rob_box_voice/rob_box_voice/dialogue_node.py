@@ -124,12 +124,16 @@ class DialogueNode(Node):
         # Текущий streaming запрос (для прерывания)
         self.current_stream = None
         
+        # Таймер для проверки dialogue timeout
+        self.timeout_timer = self.create_timer(5.0, self._check_dialogue_timeout)
+        
         self.get_logger().info('✅ DialogueNode инициализирован')
         self.get_logger().info(f'  Wake words: {", ".join(self.wake_words)}')
         self.get_logger().info(f'  Silence commands: {", ".join(self.silence_commands)}')
         self.get_logger().info(f'  Model: {self.model}')
         self.get_logger().info(f'  Temperature: {self.temperature}')
         self.get_logger().info(f'  Max tokens: {self.max_tokens}')
+        self.get_logger().info(f'  Dialogue timeout: {self.dialogue_timeout}s')
     
     def _load_system_prompt(self) -> str:
         """Загрузить упрощённый system prompt"""
@@ -437,6 +441,17 @@ class DialogueNode(Node):
         response_msg = String()
         response_msg.data = json.dumps(response_json, ensure_ascii=False)
         self.response_pub.publish(response_msg)
+    
+    def _check_dialogue_timeout(self):
+        """Проверить тайм-аут диалога и вернуться в IDLE если нет активности"""
+        if self.state not in ['LISTENING', 'DIALOGUE']:
+            return
+        
+        elapsed = time.time() - self.last_interaction_time
+        if elapsed > self.dialogue_timeout:
+            self.get_logger().info(f'⏰ Dialogue timeout ({elapsed:.1f}s) → IDLE')
+            self.state = 'IDLE'
+            self._publish_state()
 
 
 def main(args=None):
