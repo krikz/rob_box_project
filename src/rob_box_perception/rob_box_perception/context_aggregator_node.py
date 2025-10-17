@@ -26,6 +26,7 @@ context_aggregator_node.py - Perception Context Aggregator (MPC lite)
 
 import json
 import time
+import os
 from typing import Dict, List, Optional
 
 import rclpy
@@ -34,6 +35,13 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import Log
+
+# DeepSeek API для суммаризации
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
 # Custom messages
 try:
@@ -51,9 +59,13 @@ class ContextAggregatorNode(Node):
         # ============ Параметры ============
         self.declare_parameter('publish_rate', 2.0)  # Hz - частота публикации событий
         self.declare_parameter('memory_window', 60)  # секунды
+        self.declare_parameter('summarization_threshold', 50)  # событий для суммаризации
+        self.declare_parameter('enable_summarization', True)  # включить авто-суммаризацию
         
         self.publish_rate = self.get_parameter('publish_rate').value
         self.memory_window = self.get_parameter('memory_window').value
+        self.summarization_threshold = self.get_parameter('summarization_threshold').value
+        self.enable_summarization = self.get_parameter('enable_summarization').value
         
         # ============ Текущее состояние (кэш) ============
         self.current_vision: Optional[Dict] = None
@@ -68,6 +80,10 @@ class ContextAggregatorNode(Node):
         
         # Короткая память (для memory_summary)
         self.recent_events: List[Dict] = []
+        
+        # Суммаризованные истории (от DeepSeek)
+        self.summaries: List[Dict] = []  # {'time', 'summary', 'event_count'}
+        self.last_summarization_time = time.time()
         
         # ============ Подписки ============
         
@@ -145,6 +161,22 @@ class ContextAggregatorNode(Node):
             '/perception/user_speech',
             10
         )
+        
+        # ============ DeepSeek API для суммаризации ============
+        self.deepseek_client = None
+        if self.enable_summarization:
+            deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
+            if deepseek_api_key and OPENAI_AVAILABLE:
+                try:
+                    self.deepseek_client = OpenAI(
+                        api_key=deepseek_api_key,
+                        base_url="https://api.deepseek.com"
+                    )
+                    self.get_logger().info('✅ DeepSeek API для суммаризации инициализирован')
+                except Exception as e:
+                    self.get_logger().error(f'❌ Ошибка инициализации DeepSeek: {e}')
+            else:
+                self.get_logger().warn('⚠️  DeepSeek API недоступен - суммаризация отключена')
         
         # ============ Таймер публикации событий ============
         timer_period = 1.0 / self.publish_rate
@@ -238,6 +270,9 @@ class ContextAggregatorNode(Node):
         # Очистка старых событий
         cutoff = time.time() - self.memory_window
         self.recent_events = [e for e in self.recent_events if e['time'] > cutoff]
+        
+        # Проверка нужна ли суммаризация
+        self.check_and_summarize()
     
     def get_memory_summary(self) -> str:
         """Получить краткое резюме памяти"""
@@ -330,6 +365,91 @@ class ContextAggregatorNode(Node):
             status = "critical"
         
         return status, issues
+    
+    # ============================================================
+    # Суммаризация через DeepSeek
+    # ============================================================
+    
+    def check_and_summarize(self):
+        """Проверить нужна ли суммаризация и выполнить если нужно"""
+        if not self.enable_summarization or not self.deepseek_client:
+            return
+        
+        # Проверка порога событий
+        if len(self.recent_events) >= self.summarization_threshold:
+            self.get_logger().info(f'🔄 Суммаризация: {len(self.recent_events)} событий')
+            self._summarize_events()
+    
+    def _summarize_events(self):
+        """Суммаризировать recent_events через DeepSeek"""
+        if not self.deepseek_client or len(self.recent_events) == 0:
+            return
+        
+        try:
+            # Подготовка данных для суммаризации
+            events_text = []
+            for event in self.recent_events:
+                event_time = time.strftime('%H:%M:%S', time.localtime(event['time']))
+                events_text.append(f"[{event_time}] {event['type']}: {event['content']}")
+            
+            prompt = f"""Суммаризируй следующие события робота РОББОКС за последние {self.memory_window} секунд.
+Выдели КЛЮЧЕВУЮ информацию: что говорил пользователь, важные события, состояние системы.
+Будь КРАТКИМ (3-5 предложений).
+
+События:
+{chr(10).join(events_text)}
+
+Суммарное резюме:"""
+            
+            # Вызов DeepSeek
+            response = self.deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=300
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            
+            # Сохраняем summary
+            summary_data = {
+                'time': time.time(),
+                'summary': summary,
+                'event_count': len(self.recent_events)
+            }
+            self.summaries.append(summary_data)
+            
+            # Оставляем только последние 10 summaries
+            if len(self.summaries) > 10:
+                self.summaries.pop(0)
+            
+            self.get_logger().info(f'✅ Суммаризация завершена: {len(summary)} символов')
+            self.get_logger().debug(f'  Summary: {summary[:100]}...')
+            
+            # Очищаем старые события (оставляем последние 10)
+            self.recent_events = self.recent_events[-10:]
+            self.last_summarization_time = time.time()
+            
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка суммаризации: {e}')
+    
+    def get_full_context(self) -> str:
+        """Получить полный контекст: summaries + recent_events"""
+        context_parts = []
+        
+        # Добавляем summaries
+        if self.summaries:
+            context_parts.append("=== СУММАРИЗОВАННАЯ ИСТОРИЯ ===")
+            for summary_data in self.summaries:
+                summary_time = time.strftime('%H:%M:%S', time.localtime(summary_data['time']))
+                context_parts.append(f"[{summary_time}] ({summary_data['event_count']} событий): {summary_data['summary']}")
+        
+        # Добавляем недавние события
+        if self.recent_events:
+            context_parts.append("\n=== НЕДАВНИЕ СОБЫТИЯ ===")
+            context_parts.append(self.get_memory_summary())
+        
+        return '\n'.join(context_parts)
 
 
 def main(args=None):
