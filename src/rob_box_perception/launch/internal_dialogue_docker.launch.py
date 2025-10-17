@@ -27,6 +27,20 @@ def generate_launch_description():
     memory_window = int(os.getenv('MEMORY_WINDOW', '60'))
     
     return LaunchDescription([
+        # Health Monitor - мониторинг здоровья системы
+        Node(
+            package='rob_box_perception',
+            executable='health_monitor',
+            name='health_monitor',
+            output='screen',
+            parameters=[{
+                'check_rate': 1.0,  # Hz
+                'error_window': 30,  # секунд для подсчёта ошибок
+                'degraded_threshold': 5,  # ошибок для degraded
+                'critical_threshold': 10,  # ошибок для critical
+            }],
+        ),
+        
         # Context Aggregator - сборщик контекста (MPC lite)
         Node(
             package='rob_box_perception',
