@@ -27,6 +27,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'context_aggregator = rob_box_perception.context_aggregator_node:main',
             'reflection_node = rob_box_perception.reflection_node:main',
             'vision_stub_node = rob_box_perception.vision_stub_node:main',
             'health_monitor = rob_box_perception.health_monitor:main',

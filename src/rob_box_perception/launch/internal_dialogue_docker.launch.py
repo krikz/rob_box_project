@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-internal_dialogue_docker.launch.py - Запуск для Docker контейнера
+internal_dialogue_docker.launch.py - Запуск для Docker контейнера v2.0
 
-Упрощённая версия для production:
-- Без vision_stub (будет отдельный контейнер с AI HAT)
-- Только reflection_node
-- Использует параметры из environment variables
+НОВАЯ АРХИТЕКТУРА (Event-Driven):
+- context_aggregator - собирает данные со всех топиков
+- reflection_node v2.0 - размышляет на основе событий
+
+Без vision_stub (будет отдельный контейнер с AI HAT)
+Параметры из environment variables
 """
 
 from launch import LaunchDescription
@@ -15,25 +17,40 @@ import os
 
 def generate_launch_description():
     # Параметры из environment или defaults
-    reflection_rate = float(os.getenv('REFLECTION_RATE', '1.0'))
     dialogue_timeout = float(os.getenv('DIALOGUE_TIMEOUT', '10.0'))
-    memory_window = int(os.getenv('MEMORY_WINDOW', '60'))
     enable_speech = os.getenv('ENABLE_SPEECH', 'true').lower() == 'true'
     system_prompt_file = os.getenv('SYSTEM_PROMPT_FILE', 'reflection_prompt.txt')
+    urgent_response_timeout = float(os.getenv('URGENT_RESPONSE_TIMEOUT', '2.0'))
+    
+    # Context Aggregator параметры
+    context_publish_rate = float(os.getenv('CONTEXT_PUBLISH_RATE', '2.0'))
+    memory_window = int(os.getenv('MEMORY_WINDOW', '60'))
     
     return LaunchDescription([
-        # Reflection Node - главная нода размышлений
+        # Context Aggregator - сборщик контекста (MPC lite)
+        Node(
+            package='rob_box_perception',
+            executable='context_aggregator',
+            name='context_aggregator',
+            output='screen',
+            parameters=[{
+                'publish_rate': context_publish_rate,
+                'memory_window': memory_window,
+            }],
+        ),
+        
+        # Reflection Node v2.0 - внутренний диалог (event-driven)
         Node(
             package='rob_box_perception',
             executable='reflection_node',
             name='reflection_node',
             output='screen',
             parameters=[{
-                'reflection_rate': reflection_rate,
                 'dialogue_timeout': dialogue_timeout,
-                'memory_window': memory_window,
                 'enable_speech': enable_speech,
                 'system_prompt_file': system_prompt_file,
+                'urgent_response_timeout': urgent_response_timeout,
             }],
         ),
     ])
+
