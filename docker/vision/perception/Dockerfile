@@ -17,14 +17,15 @@ RUN pip3 install --no-cache-dir -r /tmp/perception_requirements.txt
 WORKDIR /ws
 RUN mkdir -p src
 
-# Копируем пакет rob_box_perception
+# Копируем пакеты rob_box_perception
+COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# Сборка пакета
+# Сборка пакетов (сначала msgs, потом nodes)
 ARG ROS_DISTRO=humble
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception \
+    --packages-select rob_box_perception_msgs rob_box_perception \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release
