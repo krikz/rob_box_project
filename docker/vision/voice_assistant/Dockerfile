@@ -84,15 +84,13 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src
+RUN mkdir -p src/rob_box_voice src/rob_box_animations
 
-# Копируем пакеты
-COPY src/rob_box_voice /ws/src/rob_box_voice
-COPY src/rob_box_animations /ws/src/rob_box_animations
-COPY sound_pack /ws/sound_pack
+# ============================================================
+# ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
+# ============================================================
 
-# Клонируем audio_common для audio_common_msgs (пакет недоступен через apt для Humble)
-# Используем ветку ros2, но удаляем ненужные пакеты чтобы избежать зависимостей GStreamer/festival
+# Шаг 1: Клонируем audio_common_msgs (редко меняется)
 RUN cd /ws/src && \
     git clone -b ros2 --depth 1 https://github.com/ros-drivers/audio_common.git && \
     cd audio_common && \
@@ -100,7 +98,49 @@ RUN cd /ws/src && \
     find . -maxdepth 1 -type d ! -name '.' ! -name '.git' ! -name 'audio_common_msgs' -exec rm -rf {} + && \
     echo "✅ audio_common_msgs extracted from ros2 branch"
 
+# Шаг 2: Копируем package.xml для rosdep (зависимости меняются редко)
+COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
+COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
+
+# Шаг 3: Установка ROS зависимостей через rosdep
+# Этот слой кешируется пока package.xml не изменяется
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    rosdep update && \
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
+
+# Шаг 4: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
+COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
+COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
+COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
+
+# Шаг 5: Копируем конфигурационные файлы и ресурсы
+COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
+COPY src/rob_box_animations/resource /ws/src/rob_box_animations/resource
+COPY sound_pack /ws/sound_pack
+
+# Шаг 6: Копируем message definitions (если изменяются - пересобираем)
+COPY src/rob_box_animations/msg /ws/src/rob_box_animations/msg
+
+# Шаг 7: Копируем launch файлы и конфигурации
+COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
+COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
+
+# Шаг 8: Копируем animations data
+COPY src/rob_box_animations/animations /ws/src/rob_box_animations/animations
+
+# Шаг 9: Копируем исходный код Python (меняется чаще всего - последний слой!)
+COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
+COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
+
+# Шаг 10: Копируем scripts
+COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
+
+# ============================================================
+# ВНЕШНИЕ ЗАВИСИМОСТИ (ReSpeaker drivers, models)
+# ============================================================
+
 # Установка ReSpeaker драйверов (usb_4_mic_array и pixel_ring)
+# Эти библиотеки меняются редко, поэтому ставим до сборки ROS пакетов
 RUN cd /tmp && \
     git clone https://github.com/respeaker/usb_4_mic_array.git && \
     cd usb_4_mic_array && \
@@ -120,6 +160,7 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
     > /etc/udev/rules.d/60-respeaker.rules
 
 # Скачивание и установка STT/TTS моделей (offline)
+# Модели большие (145 MB) и никогда не меняются - кешируем
 RUN mkdir -p /models && \
     # Vosk STT: Russian small model (45 MB, fast)
     wget -q -O /tmp/vosk-model.zip \
@@ -132,14 +173,12 @@ RUN mkdir -p /models && \
     https://models.silero.ai/models/tts/ru/v4_ru.pt && \
     echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
 
-# Установка ROS зависимостей через rosdep (игнорируем ошибки для audio_common)
-# audio_common_msgs имеет минимальные зависимости, но rosdep может жаловаться на недоступные пакеты
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    rosdep update && \
-    # Устанавливаем зависимости только для rob_box_voice и rob_box_animations
-    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
+# ============================================================
+# СБОРКА ROS2 ПАКЕТОВ
+# ============================================================
 
 # Сборка пакетов (включая audio_common_msgs для зависимостей rob_box_voice)
+# Используем symlink-install для быстрой пересборки при изменении Python кода
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
     --packages-select audio_common_msgs rob_box_voice rob_box_animations \
