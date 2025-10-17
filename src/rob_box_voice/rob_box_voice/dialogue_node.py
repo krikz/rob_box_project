@@ -13,6 +13,8 @@ from std_msgs.msg import String
 import os
 import json
 import sys
+import time
+import re
 from pathlib import Path
 
 # Импортируем из scripts
@@ -94,10 +96,27 @@ class DialogueNode(Node):
         # Публикация звуковых триггеров (Phase 4)
         self.sound_trigger_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
         
+        # Публикация control commands в TTS
+        self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)
+        
+        # ============ State Machine ============
+        # IDLE -> LISTENING -> DIALOGUE -> SILENCED
+        self.state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
+        self.silence_until = None  # Timestamp когда закончится SILENCED
+        self.last_interaction_time = time.time()
+        self.dialogue_timeout = 30.0  # секунд без активности -> IDLE
+        
+        # Wake words
+        self.wake_words = ['робок', 'робот', 'роббокс', 'робокос', 'роббос', 'робокс']
+        
         # Флаг что dialogue_node обработал запрос (чтобы игнорировать command feedback)
         self.dialogue_in_progress = False
         
+        # Текущий streaming запрос (для прерывания)
+        self.current_stream = None
+        
         self.get_logger().info('✅ DialogueNode инициализирован')
+        self.get_logger().info(f'  Wake words: {", ".join(self.wake_words)}')
         self.get_logger().info(f'  Model: {self.model}')
         self.get_logger().info(f'  Temperature: {self.temperature}')
         self.get_logger().info(f'  Max tokens: {self.max_tokens}')
@@ -121,15 +140,132 @@ class DialogueNode(Node):
             self.get_logger().warn(f'⚠ Не удалось загрузить prompt: {e}')
             return "Ты ROBBOX - мобильный робот-ассистент. Отвечай в JSON: {\"ssml\": \"<speak>...</speak>\"}"
     
+    # ============================================================
+    # Wake Word & Silence Detection
+    # ============================================================
+    
+    def _has_wake_word(self, text: str) -> bool:
+        """Проверка наличия wake word"""
+        for wake_word in self.wake_words:
+            if wake_word in text:
+                return True
+        return False
+    
+    def _remove_wake_word(self, text: str) -> str:
+        """Убрать wake word из текста"""
+        for wake_word in self.wake_words:
+            text = text.replace(wake_word, '').strip()
+        return text
+    
+    def _is_silence_command(self, text: str) -> bool:
+        """Проверка: команда замолчать?"""
+        silence_patterns = [
+            r'\bпомолч',
+            r'\bзамолч',
+            r'\bхватит\b',
+            r'\bзакрой',
+            r'\bзаткн',
+            r'\bне\s+меша',
+        ]
+        
+        for pattern in silence_patterns:
+            if re.search(pattern, text):
+                return True
+        
+        return False
+    
+    def _handle_silence_command(self):
+        """Обработка команды silence"""
+        self.get_logger().warn('🔇 SILENCE: останавливаем TTS и переходим в SILENCED')
+        
+        # 1. Прервать текущий streaming
+        if self.current_stream:
+            try:
+                # Не можем прервать генератор, но можем установить флаг
+                self.current_stream = None
+            except Exception as e:
+                self.get_logger().error(f'Ошибка прерывания stream: {e}')
+        
+        # 2. Отправить STOP в TTS
+        stop_msg = String()
+        stop_msg.data = 'STOP'
+        self.tts_control_pub.publish(stop_msg)
+        self.get_logger().info('  → STOP отправлен в TTS')
+        
+        # 3. Перейти в SILENCED на 5 минут
+        self.state = 'SILENCED'
+        self.silence_until = time.time() + 300  # 5 минут
+        self.get_logger().info('  → State: SILENCED (5 минут)')
+        
+        # 4. Короткое подтверждение (через TTS напрямую)
+        self._speak_simple('Хорошо, молчу')
+    
+    def _speak_simple(self, text: str):
+        """Простая речь без LLM"""
+        response_json = {
+            "ssml": f"<speak>{text}</speak>"
+        }
+        
+        response_msg = String()
+        response_msg.data = json.dumps(response_json, ensure_ascii=False)
+        self.response_pub.publish(response_msg)
+        self.tts_pub.publish(response_msg)
+    
+    # ============================================================
+    # Main Callback
+    # ============================================================
+    
     def stt_callback(self, msg: String):
-        """Обработка распознанной речи"""
+        """Обработка распознанной речи с State Machine"""
         user_message = msg.data.strip()
         if not user_message:
             return
         
-        self.get_logger().info(f'👤 User: {user_message}')
+        user_message_lower = user_message.lower()
+        self.get_logger().info(f'👤 User: {user_message} [State: {self.state}]')
         
-        # Устанавливаем флаг что dialogue обрабатывает запрос
+        # ============ ПРИОРИТЕТ 1: Проверка SILENCE command ============
+        if self._is_silence_command(user_message_lower):
+            self.get_logger().warn('🔇 SILENCE COMMAND обнаружена!')
+            self._handle_silence_command()
+            return
+        
+        # ============ ПРИОРИТЕТ 2: Проверка SILENCED state ============
+        if self.state == 'SILENCED':
+            # В SILENCED: ТОЛЬКО команды с wake word, НЕТ диалога
+            if self._has_wake_word(user_message_lower):
+                self.get_logger().info('🔓 Wake word в SILENCED → разрешаем ТОЛЬКО команды')
+                # TODO: передать в command_node для навигации/LED
+                # Пока просто логируем
+                self.get_logger().info('  → Команда должна быть обработана command_node')
+                return
+            else:
+                self.get_logger().debug('🔇 SILENCED: игнорируем (нет wake word)')
+                return
+        
+        # ============ ПРИОРИТЕТ 3: Wake Word Detection ============
+        if self.state == 'IDLE':
+            # В IDLE: требуется wake word
+            if self._has_wake_word(user_message_lower):
+                self.get_logger().info('👋 Wake word обнаружен → LISTENING')
+                self.state = 'LISTENING'
+                self.last_interaction_time = time.time()
+                
+                # Убираем wake word из текста
+                user_message_clean = self._remove_wake_word(user_message_lower)
+                if not user_message_clean:
+                    # Только wake word без команды/вопроса
+                    self._speak_simple("Слушаю!")
+                    return
+                
+                user_message = user_message_clean
+            else:
+                self.get_logger().debug('⏸️  IDLE: игнорируем (нет wake word)')
+                return
+        
+        # ============ State: LISTENING или DIALOGUE ============
+        self.state = 'DIALOGUE'
+        self.last_interaction_time = time.time()
         self.dialogue_in_progress = True
         
         # Добавляем в историю
