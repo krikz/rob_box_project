@@ -118,6 +118,15 @@ class DialogueNode(Node):
         self.wake_words = self.get_parameter('wake_words').value
         self.silence_commands = self.get_parameter('silence_commands').value
         
+        # Unsilence commands - команды для выхода из SILENCED режима
+        self.unsilence_commands = [
+            "говори",
+            "включ",     # включись, включайся
+            "работ",     # работай, работайте
+            "отвеч",     # отвечай, отвечайте
+            "разговар",  # разговаривай
+        ]
+        
         # Флаг что dialogue_node обработал запрос (чтобы игнорировать command feedback)
         self.dialogue_in_progress = False
         
@@ -175,6 +184,14 @@ class DialogueNode(Node):
         """Проверка: команда замолчать?"""
         # Используем silence_commands из параметров
         for command in self.silence_commands:
+            if command in text:
+                return True
+        
+        return False
+    
+    def _is_unsilence_command(self, text: str) -> bool:
+        """Проверка: команда выхода из silence режима?"""
+        for command in self.unsilence_commands:
             if command in text:
                 return True
         
@@ -245,13 +262,23 @@ class DialogueNode(Node):
         
         # ============ ПРИОРИТЕТ 2: Проверка SILENCED state ============
         if self.state == 'SILENCED':
-            # В SILENCED: ТОЛЬКО команды с wake word, НЕТ диалога
+            # В SILENCED: проверяем unsilence команды с wake word
             if self._has_wake_word(user_message_lower):
-                self.get_logger().info('🔓 Wake word в SILENCED → разрешаем ТОЛЬКО команды')
-                # TODO: передать в command_node для навигации/LED
-                # Пока просто логируем
-                self.get_logger().info('  → Команда должна быть обработана command_node')
-                return
+                # Проверяем: команда выхода из silence?
+                if self._is_unsilence_command(user_message_lower):
+                    self.get_logger().info('🔓 Unsilence command обнаружена → IDLE')
+                    self.state = 'IDLE'
+                    self.silence_until = None
+                    self._publish_state()
+                    self._speak_simple("Хорошо, слушаю!")
+                    return
+                else:
+                    # Обычная команда с wake word в SILENCED
+                    self.get_logger().info('🔓 Wake word в SILENCED → разрешаем ТОЛЬКО команды')
+                    # TODO: передать в command_node для навигации/LED
+                    # Пока просто логируем
+                    self.get_logger().info('  → Команда должна быть обработана command_node')
+                    return
             else:
                 self.get_logger().debug('🔇 SILENCED: игнорируем (нет wake word)')
                 return
