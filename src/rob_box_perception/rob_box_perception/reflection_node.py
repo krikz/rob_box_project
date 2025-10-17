@@ -453,8 +453,28 @@ class ReflectionNode(Node):
             try:
                 speech_sums = json.loads(ctx.speech_summaries)
                 if speech_sums:
-                    lines.append("\n📝 ДИАЛОГИ:")
+                    lines.append("\n� ВОПРОСЫ ПОЛЬЗОВАТЕЛЯ:")
                     for s in speech_sums[-3:]:  # Последние 3
+                        lines.append(f"  • {s['summary']}")
+            except:
+                pass
+        
+        if ctx.robot_response_summaries and ctx.robot_response_summaries != '[]':
+            try:
+                response_sums = json.loads(ctx.robot_response_summaries)
+                if response_sums:
+                    lines.append("\n🤖 МОИ ОТВЕТЫ:")
+                    for s in response_sums[-3:]:  # Последние 3
+                        lines.append(f"  • {s['summary']}")
+            except:
+                pass
+        
+        if ctx.robot_thought_summaries and ctx.robot_thought_summaries != '[]':
+            try:
+                thought_sums = json.loads(ctx.robot_thought_summaries)
+                if thought_sums:
+                    lines.append("\n🧠 МОИ РАЗМЫШЛЕНИЯ:")
+                    for s in thought_sums[-3:]:  # Последние 3
                         lines.append(f"  • {s['summary']}")
             except:
                 pass

@@ -81,11 +81,15 @@ class ContextAggregatorNode(Node):
         # Короткая память (для memory_summary) - РАЗДЕЛЕНО ПО ТИПАМ
         self.recent_events: List[Dict] = []  # Все события (для совместимости)
         self.speech_events: List[Dict] = []  # Речь пользователя
+        self.robot_response_events: List[Dict] = []  # Ответы робота
+        self.robot_thought_events: List[Dict] = []  # Внутренние мысли робота
         self.vision_events: List[Dict] = []  # Визуальные события
         self.system_events: List[Dict] = []  # Ошибки, battery, warnings
         
         # Суммаризованные истории (от DeepSeek) - РАЗДЕЛЕНО ПО ТИПАМ
         self.speech_summaries: List[Dict] = []  # {'time', 'summary', 'event_count'}
+        self.robot_response_summaries: List[Dict] = []
+        self.robot_thought_summaries: List[Dict] = []
         self.vision_summaries: List[Dict] = []
         self.system_summaries: List[Dict] = []
         self.last_summarization_time = time.time()
@@ -145,6 +149,22 @@ class ContextAggregatorNode(Node):
             String,
             '/voice/stt/result',
             self.on_user_speech,
+            10
+        )
+        
+        # Dialogue responses (ответы робота)
+        self.dialogue_response_sub = self.create_subscription(
+            String,
+            '/voice/dialogue/response',
+            self.on_robot_response,
+            10
+        )
+        
+        # Internal thoughts (размышления робота)
+        self.thought_sub = self.create_subscription(
+            String,
+            '/reflection/internal_thought',
+            self.on_robot_thought,
             10
         )
         
@@ -284,6 +304,27 @@ class ContextAggregatorNode(Node):
             # Транзит для рефлексии
             self.speech_pub.publish(msg)
     
+    def on_robot_response(self, msg: String):
+        """Получен ответ робота (dialogue_node)"""
+        # Парсим JSON (может содержать SSML)
+        try:
+            import json
+            data = json.loads(msg.data)
+            text = data.get('ssml', '').replace('<speak>', '').replace('</speak>', '').strip()
+        except:
+            text = msg.data.strip()
+        
+        if text:
+            self.get_logger().info(f'🤖 Робот: "{text[:50]}..."')
+            self.add_to_memory('robot_response', text, important=True)
+    
+    def on_robot_thought(self, msg: String):
+        """Получена внутренняя мысль робота (reflection_node)"""
+        text = msg.data.strip()
+        if text:
+            self.get_logger().debug(f'🧠 Мысль: "{text[:50]}..."')
+            self.add_to_memory('robot_thought', text, important=False)
+    
     # ============================================================
     # Память событий
     # ============================================================
@@ -303,6 +344,10 @@ class ContextAggregatorNode(Node):
         # Добавляем в типизированные очереди
         if event_type == 'user_speech':
             self.speech_events.append(event)
+        elif event_type == 'robot_response':
+            self.robot_response_events.append(event)
+        elif event_type == 'robot_thought':
+            self.robot_thought_events.append(event)
         elif event_type in ['vision', 'apriltag']:
             self.vision_events.append(event)
         elif event_type in ['error', 'warning', 'battery', 'system']:
@@ -312,6 +357,8 @@ class ContextAggregatorNode(Node):
         cutoff = time.time() - self.memory_window
         self.recent_events = [e for e in self.recent_events if e['time'] > cutoff]
         self.speech_events = [e for e in self.speech_events if e['time'] > cutoff]
+        self.robot_response_events = [e for e in self.robot_response_events if e['time'] > cutoff]
+        self.robot_thought_events = [e for e in self.robot_thought_events if e['time'] > cutoff]
         self.vision_events = [e for e in self.vision_events if e['time'] > cutoff]
         self.system_events = [e for e in self.system_events if e['time'] > cutoff]
         
@@ -384,6 +431,8 @@ class ContextAggregatorNode(Node):
         
         # Summaries (суммаризованная история по типам)
         event.speech_summaries = json.dumps(self.speech_summaries, ensure_ascii=False)
+        event.robot_response_summaries = json.dumps(self.robot_response_summaries, ensure_ascii=False)
+        event.robot_thought_summaries = json.dumps(self.robot_thought_summaries, ensure_ascii=False)
         event.vision_summaries = json.dumps(self.vision_summaries, ensure_ascii=False)
         event.system_summaries = json.dumps(self.system_summaries, ensure_ascii=False)
         
@@ -428,6 +477,14 @@ class ContextAggregatorNode(Node):
         if len(self.speech_events) >= self.summarization_threshold:
             self.get_logger().info(f'🔄 Суммаризация SPEECH: {len(self.speech_events)} событий')
             self._summarize_events('speech', self.speech_events, self.speech_summaries)
+        
+        if len(self.robot_response_events) >= self.summarization_threshold:
+            self.get_logger().info(f'🔄 Суммаризация ROBOT_RESPONSE: {len(self.robot_response_events)} событий')
+            self._summarize_events('robot_response', self.robot_response_events, self.robot_response_summaries)
+        
+        if len(self.robot_thought_events) >= self.summarization_threshold:
+            self.get_logger().info(f'🔄 Суммаризация ROBOT_THOUGHT: {len(self.robot_thought_events)} событий')
+            self._summarize_events('robot_thought', self.robot_thought_events, self.robot_thought_summaries)
         
         if len(self.vision_events) >= self.summarization_threshold:
             self.get_logger().info(f'🔄 Суммаризация VISION: {len(self.vision_events)} событий')
