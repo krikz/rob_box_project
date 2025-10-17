@@ -10,6 +10,8 @@
 - [**SYSTEM_OVERVIEW.md**](architecture/SYSTEM_OVERVIEW.md) - Общая архитектура системы
 - [**HARDWARE.md**](architecture/HARDWARE.md) - Аппаратные компоненты
 - [**SOFTWARE.md**](architecture/SOFTWARE.md) - Программные компоненты
+- [**INTERNAL_DIALOGUE_VOICE_ASSISTANT.md**](architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md) - ⭐ **НОВОЕ** Internal Dialogue + Voice Assistant (полная документация)
+- [**INTERNAL_DIALOGUE_V2.md**](architecture/INTERNAL_DIALOGUE_V2.md) - ⚠️ УСТАРЕЛО (см. выше)
 
 ### 📦 [packages/](packages/) - Документация пакетов
 Документация ROS 2 пакетов проекта (ссылки на src/).
@@ -49,6 +51,7 @@
 - [**TROUBLESHOOTING.md**](guides/TROUBLESHOOTING.md) - Решение проблем
 - [**ANIMATION_EDITOR.md**](guides/ANIMATION_EDITOR.md) - Редактор LED анимаций
 - [**HEALTH_MONITORING.md**](guides/HEALTH_MONITORING.md) - 🏥 Мониторинг здоровья системы
+- [**INTERNAL_DIALOGUE_USAGE.md**](guides/INTERNAL_DIALOGUE_USAGE.md) - ⚠️ УСТАРЕЛО (см. architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
 
 ### 📊 [reports/](reports/) - Отчёты и аудиты
 Технические отчёты, аудиты, итоги сессий.
