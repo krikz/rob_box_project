@@ -64,6 +64,9 @@ class ReflectionNode(Node):
         self.last_user_speech_time = None
         self.pending_user_speech: Optional[str] = None  # Ожидающий срочный вопрос
         
+        # ============ Silence Mode (команда "помолчи") ============
+        self.silence_until: Optional[float] = None  # Timestamp до которого молчать
+        
         # ============ Последний контекст ============
         self.last_context: Optional[PerceptionEvent] = None
         
@@ -211,6 +214,14 @@ class ReflectionNode(Node):
             return
         
         self.get_logger().info(f'👤 Пользователь: "{text}"')
+        
+        # ПРИОРИТЕТ: Проверка стоп-слов ("помолчи")
+        if self._is_silence_command(text):
+            self.get_logger().warn('🔇 КОМАНДА SILENCE: робот будет молчать 5 минут')
+            self.silence_until = time.time() + 300  # 5 минут
+            # НЕ публикуем в TTS - просто устанавливаем флаг
+            return
+        
         self.in_dialogue = True
         self.last_user_speech_time = time.time()
         
@@ -250,6 +261,25 @@ class ReflectionNode(Node):
         ]
         
         for pattern in personal_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        
+        return False
+    
+    def _is_silence_command(self, text: str) -> bool:
+        """Проверка: команда замолчать?"""
+        text_lower = text.lower()
+        
+        silence_patterns = [
+            r'\bпомолч',    # помолчи, помолчите
+            r'\bзамолч',    # замолчи, замолчите
+            r'\bхватит\b',
+            r'\bзакрой',    # закройся
+            r'\bзаткн',     # заткнись, заткнитесь
+            r'\bне\s+меша',  # не мешай
+        ]
+        
+        for pattern in silence_patterns:
             if re.search(pattern, text_lower):
                 return True
         
@@ -461,6 +491,12 @@ class ReflectionNode(Node):
     
     def _publish_speech(self, speech: str):
         """Публикация речи в TTS"""
+        # Проверка: silence mode активен?
+        if self.silence_until and time.time() < self.silence_until:
+            remaining = int(self.silence_until - time.time())
+            self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
+            return  # НЕ публикуем речь
+        
         msg = String()
         msg.data = speech
         self.tts_pub.publish(msg)
