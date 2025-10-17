@@ -116,27 +116,15 @@ class TTSNode(Node):
         # Callback для изменения параметров во время работы
         self.add_on_set_parameters_callback(self.parameters_callback)
         
-        # Загрузка Silero TTS (fallback, всегда готов)
-        self.get_logger().info('🔄 Загрузка Silero TTS v4 (fallback)...')
+        # Silero TTS модель (lazy loading - загружается только при первом использовании)
+        self.silero_model = None
+        self.silero_loading = False
         self.device = torch.device('cpu')
         
-        # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
-        torch.set_num_threads(4)
-        torch._C._jit_set_profiling_mode(False)
-        torch.set_grad_enabled(False)
-        
-        try:
-            self.silero_model, _ = torch.hub.load(
-                repo_or_dir='snakers4/silero-models',
-                model='silero_tts',
-                language='ru',
-                speaker='v4_ru'
-            )
-            self.silero_model.to(self.device)
-            self.get_logger().info('✅ Silero TTS загружен (fallback, ARM64 оптимизация)')
-        except Exception as e:
-            self.get_logger().error(f'❌ Ошибка загрузки Silero: {e}')
-            self.silero_model = None
+        # Если provider='silero' - загружаем сразу
+        if self.provider == 'silero':
+            self.get_logger().info('🔄 Provider=silero → загрузка Silero TTS...')
+            self._load_silero_model()
         
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
         self.yandex_channel = None
@@ -190,6 +178,38 @@ class TTSNode(Node):
         
         if not self.yandex_stub:
             self.get_logger().warn('⚠️  Yandex gRPC не подключен - будет использован только Silero fallback')
+    
+    def _load_silero_model(self):
+        """Загрузить Silero TTS модель (lazy loading)"""
+        if self.silero_model is not None:
+            return  # Уже загружена
+        
+        if self.silero_loading:
+            self.get_logger().warn('⏳ Silero модель уже загружается...')
+            return
+        
+        self.silero_loading = True
+        self.get_logger().info('🔄 Загрузка Silero TTS v4...')
+        
+        # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
+        torch.set_num_threads(4)
+        torch._C._jit_set_profiling_mode(False)
+        torch.set_grad_enabled(False)
+        
+        try:
+            self.silero_model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-models',
+                model='silero_tts',
+                language='ru',
+                speaker='v4_ru'
+            )
+            self.silero_model.to(self.device)
+            self.get_logger().info('✅ Silero TTS загружен (ARM64 оптимизация)')
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка загрузки Silero: {e}')
+            self.silero_model = None
+        finally:
+            self.silero_loading = False
     
     def control_callback(self, msg: String):
         """Обработка control commands (STOP)"""
@@ -270,8 +290,13 @@ class TTSNode(Node):
             
             # Fallback на Silero если Yandex не сработал
             if audio_np is None:
+                # Загружаем Silero при первом использовании (lazy loading)
                 if self.silero_model is None:
-                    raise Exception('Silero fallback недоступен!')
+                    self.get_logger().warn('⚠️  Silero модель не загружена, загружаю сейчас...')
+                    self._load_silero_model()
+                
+                if self.silero_model is None:
+                    raise Exception('Silero fallback недоступен - не удалось загрузить модель!')
                 
                 self.publish_state('synthesizing')
                 self.get_logger().info('🔊 Синтез через Silero (fallback)...')

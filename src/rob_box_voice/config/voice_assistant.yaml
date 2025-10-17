@@ -29,10 +29,10 @@
 
     # ========== TTS Node ==========
     tts_node:
-      provider: "silero"          # "silero", "yandex" или "coqui"
+      provider: "yandex"          # "yandex" (primary), "silero" (fallback)
       
       # Параметры для кода (плоские, без вложенности)
-      speaker: "aidar"            # Голоса: aidar (М), baya (М), kseniya (Ж), xenia (Ж)
+      speaker: "aidar"            # Голоса Silero: aidar (М), baya (М), kseniya (Ж), xenia (Ж)
       sample_rate: 24000          # Hz (24000 - нормальная, будет ускорена при воспроизведении)
       prosody_pitch: "medium"     # x-low/low/medium/high/x-high
       normalize_text: true
@@ -41,9 +41,9 @@
       pitch_shift: 2.0            # Ускорение при воспроизведении (2.0x = быстро, бурундучий голос)
       volume_db: -3.0             # Громкость (-3dB = 70%, компромисс между сигналом и шумом)
       
-      # Yandex TTS settings (fallback, требует API key)
+      # Yandex TTS settings (primary provider)
       yandex:
-        voice: "anton"            # Мужской голос
+        voice: "anton"            # Мужской голос (оригинальный ROBBOX!)
         speed: 0.4                # Скорость речи (0.1-3.0)
         emotion: "neutral"        # neutral/good/evil
       
