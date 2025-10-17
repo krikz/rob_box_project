@@ -47,8 +47,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
-# Используем --reinstall для гарантии что библиотеки установлены корректно
-RUN apt-get update && apt-get install -y --reinstall \
+# Используем --reinstall для переустановки СУЩЕСТВУЮЩИХ версий из базового образа
+# ВАЖНО: БЕЗ apt-get update! Иначе подтянет новые несовместимые версии пакетов
+RUN apt-get install -y --reinstall \
     # ROS2 message пакеты
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
