@@ -53,6 +53,7 @@ class ReflectionNode(Node):
         self.declare_parameter('dialogue_timeout', 10.0)  # секунд
         self.declare_parameter('enable_speech', True)
         self.declare_parameter('system_prompt_file', 'reflection_prompt.txt')
+        self.declare_parameter('user_response_prompt_file', 'reflection_user_response_prompt.txt')
         self.declare_parameter('urgent_response_timeout', 2.0)  # секунд для срочного ответа
         
         self.dialogue_timeout = self.get_parameter('dialogue_timeout').value
@@ -93,6 +94,7 @@ class ReflectionNode(Node):
         
         # Загрузка системного промпта
         self.system_prompt = self._load_system_prompt()
+        self.user_response_prompt = self._load_user_response_prompt()
         
         # ============ Подписки (Event-Driven) ============
         
@@ -156,6 +158,34 @@ class ReflectionNode(Node):
         except Exception as e:
             self.get_logger().warn(f'⚠️  Не удалось загрузить prompt: {e}')
             return self._get_fallback_prompt()
+    
+    def _load_user_response_prompt(self) -> str:
+        """Загрузить user response prompt из файла"""
+        prompt_file = self.get_parameter('user_response_prompt_file').value
+        
+        from ament_index_python.packages import get_package_share_directory
+        try:
+            pkg_share = get_package_share_directory('rob_box_perception')
+            prompt_path = os.path.join(pkg_share, 'prompts', prompt_file)
+            
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                prompt = f.read()
+            
+            self.get_logger().info(f'✅ Загружен user response prompt: {prompt_file} ({len(prompt)} байт)')
+            return prompt
+        except Exception as e:
+            self.get_logger().warn(f'⚠️  Не удалось загрузить user response prompt: {e}')
+            return self._get_fallback_user_response_prompt()
+    
+    def _get_fallback_user_response_prompt(self) -> str:
+        """Fallback user response prompt"""
+        return """Ответь на личный вопрос пользователя кратко (1-2 предложения).
+
+Формат ответа JSON:
+{
+  "speech_ssml": "<speak>Текст с SSML<break time='300ms'/></speak>"
+}
+"""
     
     def _get_fallback_prompt(self) -> str:
         """Fallback system prompt"""
@@ -294,32 +324,20 @@ class ReflectionNode(Node):
         # Формируем специальный промпт для быстрого ответа
         context_summary = self._format_context_summary(self.last_context)
         
-        prompt = f"""СРОЧНЫЙ ЛИЧНЫЙ ВОПРОС: "{question}"
+        user_prompt = f"""Вопрос пользователя: "{question}"
 
 {context_summary}
 
-Дай КОРОТКИЙ (1-2 предложения) естественный ответ на вопрос пользователя.
-Упомяни текущее состояние если релевантно.
-
-Формат JSON:
-{{
-  "thought": "внутренняя оценка ситуации",
-  "speech": "короткий ответ пользователю"
-}}
-"""
+Сформируй короткий ответ (1-2 предложения) в формате SSML."""
         
-        # Вызов AI
-        result = self._call_deepseek(prompt, urgent=True)
+        # Вызов AI с user response prompt
+        result = self._call_deepseek_user_response(user_prompt)
         
         if result:
-            thought = result.get('thought', '')
-            speech = result.get('speech', '')
+            speech_ssml = result.get('speech_ssml', '')
             
-            if thought:
-                self._publish_thought(thought)
-            
-            if speech and self.enable_speech:
-                self._publish_speech(speech)
+            if speech_ssml and self.enable_speech:
+                self._publish_speech_ssml(speech_ssml)
     
     # ============================================================
     # Обычное размышление
@@ -467,7 +485,7 @@ class ReflectionNode(Node):
     # ============================================================
     
     def _call_deepseek(self, prompt: str, urgent: bool = False) -> Optional[Dict]:
-        """Вызов DeepSeek API"""
+        """Вызов DeepSeek API для обычного размышления"""
         if not self.deepseek_client:
             return self._stub_response(urgent)
         
@@ -493,6 +511,38 @@ class ReflectionNode(Node):
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка DeepSeek API: {e}')
             return self._stub_response(urgent)
+    
+    def _call_deepseek_user_response(self, user_prompt: str) -> Optional[Dict]:
+        """Вызов DeepSeek API для ответа пользователю (с SSML)"""
+        if not self.deepseek_client:
+            return {
+                'speech_ssml': '<speak>У мен+я вс+ё отл+ично!<break time="300ms"/>Гот+ов к раб+оте.<break time="400ms"/></speak>'
+            }
+        
+        try:
+            response = self.deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": self.user_response_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=150,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            speech_ssml = result.get('speech_ssml', '')
+            self.get_logger().info(f'🤖 AI User Response: {speech_ssml[:100]}...')
+            
+            return result
+            
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка DeepSeek API (user response): {e}')
+            return {
+                'speech_ssml': '<speak>У мен+я вс+ё отл+ично!<break time="300ms"/>Гот+ов к раб+оте.<break time="400ms"/></speak>'
+            }
     
     def _stub_response(self, urgent: bool) -> Dict:
         """Заглушка без API"""
@@ -524,7 +574,7 @@ class ReflectionNode(Node):
             self.recent_thoughts.pop(0)
     
     def _publish_speech(self, speech: str):
-        """Публикация речи в TTS (в формате SSML)"""
+        """Публикация речи в TTS (в формате SSML) - для обычного размышления"""
         # Проверка: silence mode активен?
         if self.silence_until and time.time() < self.silence_until:
             remaining = int(self.silence_until - time.time())
@@ -540,6 +590,26 @@ class ReflectionNode(Node):
         msg = String()
         msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
+    
+    def _publish_speech_ssml(self, speech_ssml: str):
+        """Публикация речи в TTS (уже в SSML формате) - для ответов пользователю"""
+        # Проверка: silence mode активен?
+        if self.silence_until and time.time() < self.silence_until:
+            remaining = int(self.silence_until - time.time())
+            self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
+            return  # НЕ публикуем речь
+        
+        # Формируем JSON с готовым SSML
+        import json
+        response_json = {
+            "ssml": speech_ssml
+        }
+        
+        msg = String()
+        msg.data = json.dumps(response_json, ensure_ascii=False)
+        self.tts_pub.publish(msg)
+        
+        self.get_logger().info(f'🗣️  Reflection → TTS: {speech_ssml[:80]}...')
 
 
 def main(args=None):
