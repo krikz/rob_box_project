@@ -120,7 +120,7 @@
         api_key: "YOUR_API_KEY"      # Заменить!
         voice: "anton"  # anton | alena | oksana | jane
         emotion: "neutral"  # neutral | good | evil
-        speed: 0.4  # 0.1-3.0 (медленнее для робота)
+        speed: 1  # 0.1-3.0 (медленнее для робота)
         format: "lpcm"
         sample_rate: 16000
         use_for_important: true  # Использовать для важных сообщений
