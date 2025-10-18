@@ -135,6 +135,7 @@ COPY sound_pack /ws/sound_pack
 # Шаг 6: Копируем launch файлы и конфигурации
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
 COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
+COPY src/rob_box_animations/launch /ws/src/rob_box_animations/launch
 
 # Шаг 8: Копируем animations data
 COPY src/rob_box_animations/animations /ws/src/rob_box_animations/animations
