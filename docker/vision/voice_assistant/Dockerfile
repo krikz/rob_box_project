@@ -76,23 +76,11 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# ОТЛАДКА: Проверяем что CMake config файлы были пересозданы после --reinstall
-RUN echo "=== ПОСЛЕ --reinstall: Проверка builtin_interfaces CMake config ===" && \
-    ls -lh /opt/ros/humble/share/builtin_interfaces/cmake/*.cmake 2>&1 | head -10 && \
-    echo "=== Содержимое ament_cmake_export_libraries-extras.cmake ===" && \
-    cat /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake && \
-    echo "=== Проверка .so файлов ===" && \
+# ОТЛАДКА: Проверяем что CMake find_library() находит библиотеки
+RUN echo "=== ПОСЛЕ --reinstall: builtin_interfaces ===" && \
     ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* && \
-    echo "=== Проверка что find_package(builtin_interfaces) находит библиотеки ===" && \
-    cmake -Dbuiltin_interfaces_DIR=/opt/ros/humble/share/builtin_interfaces/cmake \
-          -P /dev/stdin <<'EOF' 2>&1 | grep -i "builtin_interfaces" || echo "⚠️ find_package test skipped"
-find_package(builtin_interfaces QUIET)
-if(builtin_interfaces_FOUND)
-  message(STATUS "✅ find_package(builtin_interfaces) SUCCESS")
-else()
-  message(FATAL_ERROR "❌ find_package(builtin_interfaces) FAILED")
-endif()
-EOF
+    echo "=== Список без префикса lib: ===" && \
+    cd /opt/ros/humble/lib && ls -1 libbuiltin_interfaces*.so | sed 's/^lib//' | sed 's/\.so$//'
 
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
