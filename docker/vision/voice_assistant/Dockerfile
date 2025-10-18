@@ -194,21 +194,28 @@ RUN echo "=== ПЕРЕД COLCON BUILD: проверка builtin_interfaces ===" 
     ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && \
     echo "=== Проверка CMake config ===" && \
     grep "_exported_libraries" /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -1 && \
+    echo "=== Проверка FULL CMake export ===" && \
+    cat /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | grep -A10 "_exported_libraries" && \
     echo "=== LD_LIBRARY_PATH ===" && \
     echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH" && \
-    echo "=== CMAKE_PREFIX_PATH ===" && \
-    echo "CMAKE_PREFIX_PATH: $CMAKE_PREFIX_PATH" && \
+    echo "=== Проверка, что библиотека ТОЧНО существует ===" && \
+    ls -la /opt/ros/humble/lib/libbuiltin_interfaces__rosidl_generator_c.so && \
     echo "✅ Debug перед colcon build завершен"
 
 # ИЗМЕНЕНО: Используем --symlink-install для избежания копирования Python файлов
 # Это позволяет быстро пересобирать при изменении кода
+# FIX: Добавляем CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH для явного указания где искать библиотеки
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    export CMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}:$CMAKE_PREFIX_PATH && \
+    export CMAKE_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib:$CMAKE_LIBRARY_PATH && \
     colcon build \
     --packages-select audio_common_msgs rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DCMAKE_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib \
+    -DCMAKE_FIND_ROOT_PATH=/opt/ros/${ROS_DISTRO}
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
