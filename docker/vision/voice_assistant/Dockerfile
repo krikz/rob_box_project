@@ -49,6 +49,7 @@ RUN apt-get update && apt-get install -y \
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
 # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: --reinstall для builtin-interfaces чинит сломанный CMake config
 # Проблема: .so файл есть, но CMake не может его найти → нужен --reinstall
+# ВАЖНО: apt-get install и --reinstall ДОЛЖНЫ быть в одном RUN (для доступа к apt cache!)
 # Источник: docs/development/DOCKER_BUILD_FIXES.md (проблема #4)
 RUN apt-get update && apt-get install -y \
     # ROS2 development tools (для colcon build с custom messages)
@@ -62,11 +63,9 @@ RUN apt-get update && apt-get install -y \
     # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
-    && rm -rf /var/lib/apt/lists/*
-
-# КРИТИЧНО: Переустановка builtin-interfaces и runtime библиотек с --reinstall
-# Это чинит сломанные CMake config файлы в базовом образе nav2
-RUN apt-get install -y --reinstall \
+    # ПЕРЕУСТАНОВКА в том же RUN (до rm -rf /var/lib/apt/lists)
+    # --reinstall пересоздаёт CMake config файлы с правильными путями
+    && apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-builtin-interfaces \
     ros-${ROS_DISTRO}-rcutils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \
@@ -74,7 +73,26 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-typesupport-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    && rm -rf /var/lib/apt/lists/*
+
+# ОТЛАДКА: Проверяем что CMake config файлы были пересозданы после --reinstall
+RUN echo "=== ПОСЛЕ --reinstall: Проверка builtin_interfaces CMake config ===" && \
+    ls -lh /opt/ros/humble/share/builtin_interfaces/cmake/*.cmake 2>&1 | head -10 && \
+    echo "=== Содержимое ament_cmake_export_libraries-extras.cmake ===" && \
+    cat /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake && \
+    echo "=== Проверка .so файлов ===" && \
+    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* && \
+    echo "=== Проверка что find_package(builtin_interfaces) находит библиотеки ===" && \
+    cmake -Dbuiltin_interfaces_DIR=/opt/ros/humble/share/builtin_interfaces/cmake \
+          -P /dev/stdin <<'EOF' 2>&1 | grep -i "builtin_interfaces" || echo "⚠️ find_package test skipped"
+find_package(builtin_interfaces QUIET)
+if(builtin_interfaces_FOUND)
+  message(STATUS "✅ find_package(builtin_interfaces) SUCCESS")
+else()
+  message(FATAL_ERROR "❌ find_package(builtin_interfaces) FAILED")
+endif()
+EOF
 
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
