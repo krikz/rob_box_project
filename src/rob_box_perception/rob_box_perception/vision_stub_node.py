@@ -39,9 +39,10 @@ class VisionStubNode(Node):
         self.last_frame_time = None
         
         # Подписка на камеру
+        # ИСПРАВЛЕНО: OAK-D публикует в /camera/rgb/..., а не /oak/rgb/...
         self.camera_sub = self.create_subscription(
             CompressedImage,
-            '/oak/rgb/image_raw/compressed',
+            '/camera/rgb/image_raw/compressed',
             self.on_camera_frame,
             10
         )

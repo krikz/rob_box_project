@@ -80,5 +80,16 @@ def generate_launch_description():
                 'enable_greeting': True,
             }],
         ),
+        
+        # Vision Stub - заглушка для обработки камеры (до AI HAT)
+        Node(
+            package='rob_box_perception',
+            executable='vision_stub_node',
+            name='vision_stub',
+            output='screen',
+            parameters=[{
+                'publish_rate': 1.0,  # Hz
+            }],
+        ),
     ])
 
