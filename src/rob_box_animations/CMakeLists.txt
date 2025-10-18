@@ -9,9 +9,10 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
+# УДАЛЕНО: find_package(sensor_msgs REQUIRED) - не нужно для Python-only пакета
+# УДАЛЕНО: find_package(std_msgs REQUIRED) - не нужно для Python-only пакета
+# УДАЛЕНО: find_package(std_srvs REQUIRED) - не нужно для Python-only пакета
+# Python зависимости объявлены в package.xml
 
 # Install Python modules
 ament_python_install_package(${PROJECT_NAME})

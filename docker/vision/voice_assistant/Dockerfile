@@ -46,15 +46,27 @@ RUN apt-get update && apt-get install -y \
     usbutils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get install -y --reinstall \
+# Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
+# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: --reinstall для builtin-interfaces чинит сломанный CMake config
+# Проблема: .so файл есть, но CMake не может его найти → нужен --reinstall
+# ВАЖНО: apt-get install и --reinstall ДОЛЖНЫ быть в одном RUN (для доступа к apt cache!)
+# Источник: docs/development/DOCKER_BUILD_FIXES.md (проблема #4)
+RUN apt-get update && apt-get install -y \
+    # ROS2 development tools (для colcon build с custom messages)
+    ros-dev-tools \
     # ROS2 зависимости
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
+    # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
+    ros-${ROS_DISTRO}-rosidl-default-generators \
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    # ПЕРЕУСТАНОВКА в том же RUN (до rm -rf /var/lib/apt/lists)
+    # --reinstall пересоздаёт CMake config файлы с правильными путями
+    && apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-builtin-interfaces \
-    # ROS2 runtime библиотеки для colcon build
     ros-${ROS_DISTRO}-rcutils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \
     ros-${ROS_DISTRO}-rosidl-runtime-cpp \
@@ -62,39 +74,38 @@ RUN apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
-    ros-${ROS_DISTRO}-rosidl-default-runtime \
-    ros-${ROS_DISTRO}-rosidl-default-generators \
-    ros-${ROS_DISTRO}-ament-cmake-core \
     && rm -rf /var/lib/apt/lists/*
-RUN find /opt -name "*.so" | grep -E "(rcutils)" | head -10
-RUN cat /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake
+
+# ОТЛАДКА: Проверяем что CMake find_library() находит библиотеки
+RUN echo "=== ПОСЛЕ --reinstall: builtin_interfaces ===" && \
+    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* && \
+    echo "=== Список без префикса lib: ===" && \
+    cd /opt/ros/humble/lib && ls -1 libbuiltin_interfaces*.so | sed 's/^lib//' | sed 's/\.so$//'
 
 # Установка Python библиотек для голосового ассистента
 # Используем requirements.txt для лучшего кеширования и управления зависимостями
 # BuildKit cache mount позволяет переиспользовать загруженные пакеты между сборками
 # ВАЖНО: setuptools <80 требуется для совместимости с colcon-core и antlr4-python3-runtime
-RUN pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel
 
-# Копируем requirements.txt
+# Копируем requirements.txt ПЕРЕД остальными файлами для лучшего кэширования
 COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
 
-# Устанавливаем все зависимости одной командой
+# Устанавливаем pip, setuptools, wheel и все зависимости одной командой
 # BuildKit cache mount сохраняет загруженные пакеты между сборками
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel && \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src
+RUN mkdir -p src/rob_box_voice src/rob_box_animations
 
-# Копируем пакеты
-COPY src/rob_box_voice /ws/src/rob_box_voice
-COPY src/rob_box_animations /ws/src/rob_box_animations
-COPY sound_pack /ws/sound_pack
+# ============================================================
+# ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
+# ============================================================
 
-# Клонируем audio_common для audio_common_msgs (пакет недоступен через apt для Humble)
-# Используем ветку ros2, но удаляем ненужные пакеты чтобы избежать зависимостей GStreamer/festival
+# Шаг 1: Клонируем audio_common_msgs (редко меняется)
 RUN cd /ws/src && \
     git clone -b ros2 --depth 1 https://github.com/ros-drivers/audio_common.git && \
     cd audio_common && \
@@ -102,7 +113,47 @@ RUN cd /ws/src && \
     find . -maxdepth 1 -type d ! -name '.' ! -name '.git' ! -name 'audio_common_msgs' -exec rm -rf {} + && \
     echo "✅ audio_common_msgs extracted from ros2 branch"
 
+# Шаг 2: Копируем package.xml для rosdep (зависимости меняются редко)
+COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
+COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
+
+# Шаг 3: Установка ROS зависимостей через rosdep
+# Этот слой кешируется пока package.xml не изменяется
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    rosdep update && \
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
+
+# Шаг 4: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
+COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
+COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
+COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
+
+# Шаг 5: Копируем конфигурационные файлы и ресурсы
+COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
+COPY sound_pack /ws/sound_pack
+
+# Шаг 6: Копируем launch файлы и конфигурации
+COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
+COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
+COPY src/rob_box_animations/launch /ws/src/rob_box_animations/launch
+
+# Шаг 8: Копируем animations data
+COPY src/rob_box_animations/animations /ws/src/rob_box_animations/animations
+
+# Шаг 9: Копируем исходный код Python (меняется чаще всего - последний слой!)
+COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
+COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
+
+# Шаг 10: Копируем scripts
+COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
+COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
+
+# ============================================================
+# ВНЕШНИЕ ЗАВИСИМОСТИ (ReSpeaker drivers, models)
+# ============================================================
+
 # Установка ReSpeaker драйверов (usb_4_mic_array и pixel_ring)
+# Эти библиотеки меняются редко, поэтому ставим до сборки ROS пакетов
 RUN cd /tmp && \
     git clone https://github.com/respeaker/usb_4_mic_array.git && \
     cd usb_4_mic_array && \
@@ -122,6 +173,7 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
     > /etc/udev/rules.d/60-respeaker.rules
 
 # Скачивание и установка STT/TTS моделей (offline)
+# Модели большие (145 MB) и никогда не меняются - кешируем
 RUN mkdir -p /models && \
     # Vosk STT: Russian small model (45 MB, fast)
     wget -q -O /tmp/vosk-model.zip \
@@ -134,21 +186,37 @@ RUN mkdir -p /models && \
     https://models.silero.ai/models/tts/ru/v4_ru.pt && \
     echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
 
-# Установка ROS зависимостей через rosdep (игнорируем ошибки для audio_common)
-# audio_common_msgs имеет минимальные зависимости, но rosdep может жаловаться на недоступные пакеты
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    rosdep update && \
-    # Устанавливаем зависимости только для rob_box_voice и rob_box_animations
-    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
+# ============================================
+# 🚀 СБОРКА ROS2 ПАКЕТОВ
+# ============================================
 
-# Сборка пакетов (включая audio_common_msgs для зависимостей rob_box_voice)
+# ОТЛАДКА: Проверка состояния ПЕРЕД colcon build (не изменилось ли что-то между RUN-ами)
+RUN echo "=== ПЕРЕД COLCON BUILD: проверка builtin_interfaces ===" && \
+    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && \
+    echo "=== Проверка CMake config ===" && \
+    grep "_exported_libraries" /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -1 && \
+    echo "=== Проверка FULL CMake export ===" && \
+    cat /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | grep -A10 "_exported_libraries" && \
+    echo "=== LD_LIBRARY_PATH ===" && \
+    echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH" && \
+    echo "=== Проверка, что библиотека ТОЧНО существует ===" && \
+    ls -la /opt/ros/humble/lib/libbuiltin_interfaces__rosidl_generator_c.so && \
+    echo "✅ Debug перед colcon build завершен"
+
+# ИЗМЕНЕНО: Используем --symlink-install для избежания копирования Python файлов
+# Это позволяет быстро пересобирать при изменении кода
+# FIX: Добавляем CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH для явного указания где искать библиотеки
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    export CMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}:$CMAKE_PREFIX_PATH && \
+    export CMAKE_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib:$CMAKE_LIBRARY_PATH && \
     colcon build \
     --packages-select audio_common_msgs rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DCMAKE_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib \
+    -DCMAKE_FIND_ROOT_PATH=/opt/ros/${ROS_DISTRO}
 
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \

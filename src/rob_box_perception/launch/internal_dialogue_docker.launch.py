@@ -38,6 +38,7 @@ def generate_launch_description():
                 'error_window': 30,  # секунд для подсчёта ошибок
                 'degraded_threshold': 5,  # ошибок для degraded
                 'critical_threshold': 10,  # ошибок для critical
+                'enable_sounds': True,  # Звуки при изменении статуса
             }],
         ),
         
@@ -66,5 +67,35 @@ def generate_launch_description():
                 'urgent_response_timeout': urgent_response_timeout,
             }],
         ),
+        
+        # Startup Greeting - приветствие при загрузке
+        Node(
+            package='rob_box_perception',
+            executable='startup_greeting',
+            name='startup_greeting',
+            output='screen',
+            parameters=[{
+                'wait_time': 5.0,  # Минимальное время ожидания
+                'check_timeout': 30.0,  # Максимальное время ожидания
+                'enable_greeting': True,
+            }],
+        ),
+        
+        # Vision Stub - заглушка для обработки камеры (до AI HAT)
+    Node(
+        package='rob_box_perception',
+        executable='vision_stub_node',
+        name='vision_stub',
+        output='screen',
+        parameters=[{
+            'publish_rate': 1.0,  # Hz
+            'context_topic': '/perception/vision_context',
+            'camera_topics': [
+                '/camera/rgb/image_raw/compressed',  # OAK-D front camera
+                # '/camera/stereo/image_raw/compressed',  # Раскомментировать для стерео
+                # '/camera_up/rgb/image_raw/compressed',  # Раскомментировать для верхней камеры
+            ],
+        }],
+    ),
     ])
 

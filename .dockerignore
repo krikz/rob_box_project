@@ -1,0 +1,58 @@
+# Build artifacts
+build/
+install/
+log/
+.colcon/
+
+# Git
+.git/
+.github/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+*.pyd
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
+*.md
+README*
+CHANGELOG*
+CONTRIBUTING*
+LICENSE*
+
+# Test files
+test/
+*_test.py
+*_test.cpp
+
+# Temporary files
+.DS_Store
+*.tmp
+*.log
+
+# Host-specific
+local_test/
+scripts/
+tools/
+
+# Assets (не копируем в базовые образы, но некоторые сервисы используют)
+# sound_pack - используется voice_assistant (НЕ исключаем!)
+# models - используется voice_assistant (НЕ исключаем!)
+assets/
+
+# Docker-specific (не копировать в контейнер)
+docker-compose*.yml
+Dockerfile*
+.dockerignore

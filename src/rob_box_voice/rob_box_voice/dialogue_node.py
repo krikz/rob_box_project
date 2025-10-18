@@ -10,11 +10,13 @@ DialogueNode - LLM диалоговая система с DeepSeek API (streamin
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+from std_srvs.srv import Empty
 import os
 import json
 import sys
 import time
 import re
+import subprocess
 from pathlib import Path
 
 # Импортируем из scripts
@@ -132,6 +134,47 @@ class DialogueNode(Node):
         
         # Текущий streaming запрос (для прерывания)
         self.current_stream = None
+        
+        # ============ RTABMap Control (Mapping Commands) ============
+        # Service clients для управления картографией
+        self.reset_memory_client = self.create_client(Empty, '/rtabmap/reset_memory')
+        self.set_mode_mapping_client = self.create_client(Empty, '/rtabmap/set_mode_mapping')
+        self.set_mode_localization_client = self.create_client(Empty, '/rtabmap/set_mode_localization')
+        
+        # Mapping intent patterns
+        self.mapping_intents = {
+            'start_mapping': [
+                r'исследуй территорию',
+                r'начни исследование',
+                r'создай новую карту',
+                r'начни картографию',
+                r'новая карта',
+                r'начать сначала',
+                r'исследовать',
+            ],
+            'continue_mapping': [
+                r'продолжи исследование',
+                r'продолжить картографию',
+                r'продолжай карту',
+                r'добавь к карте',
+                r'продолжи создание карты',
+                r'продолжить',
+            ],
+            'finish_mapping': [
+                r'закончи исследование',
+                r'завершить картографию',
+                r'перейди в навигацию',
+                r'режим локализации',
+                r'карта готова',
+                r'хватит исследовать',
+                r'закончить',
+            ],
+        }
+        
+        # Система подтверждения (для start_mapping)
+        self.pending_confirmation = None  # 'start_mapping' или None
+        self.confirmation_time = None  # Timestamp запроса подтверждения
+        self.confirmation_timeout = 30.0  # секунд для ответа
         
         # Таймер для проверки dialogue timeout
         self.timeout_timer = self.create_timer(5.0, self._check_dialogue_timeout)
@@ -310,6 +353,69 @@ class DialogueNode(Node):
         self.last_interaction_time = time.time()
         self.dialogue_in_progress = True
         
+        # ============ ПРИОРИТЕТ 4: Проверка подтверждения (start_mapping) ============
+        if self.pending_confirmation:
+            elapsed = time.time() - self.confirmation_time if self.confirmation_time else 999
+            
+            if elapsed > self.confirmation_timeout:
+                # Timeout подтверждения
+                self.get_logger().warn('⏰ Confirmation timeout → отмена')
+                self.pending_confirmation = None
+                self.confirmation_time = None
+                self._speak_simple("Время ожидания истекло. Операция отменена.")
+                self.dialogue_in_progress = False
+                return
+            
+            # Проверяем ответ: да/нет
+            if any(word in user_message_lower for word in ['да', 'давай', 'начинай', 'начни', 'подтверждаю', 'ок', 'угу']):
+                self.get_logger().info('✅ Подтверждение получено!')
+                
+                if self.pending_confirmation == 'start_mapping':
+                    # Выполнить start_mapping
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    response = loop.run_until_complete(self._confirm_start_mapping())
+                    loop.close()
+                    
+                    self.pending_confirmation = None
+                    self.confirmation_time = None
+                    self._speak_simple(response)
+                    self.dialogue_in_progress = False
+                    return
+            
+            elif any(word in user_message_lower for word in ['нет', 'отмена', 'стоп', 'не надо', 'передумал']):
+                self.get_logger().info('❌ Подтверждение отклонено')
+                self.pending_confirmation = None
+                self.confirmation_time = None
+                self._speak_simple("Хорошо, операция отменена.")
+                self.dialogue_in_progress = False
+                return
+            else:
+                # Неясный ответ - повторить вопрос
+                self.get_logger().warn('⚠️ Неясный ответ на подтверждение')
+                self._speak_simple("Пожалуйста, ответьте да или нет.")
+                self.dialogue_in_progress = False
+                return
+        
+        # ============ ПРИОРИТЕТ 5: Проверка Mapping Commands ============
+        mapping_intent = self._detect_mapping_intent(user_message_lower)
+        if mapping_intent:
+            self.get_logger().info(f'🗺️ Обнаружена mapping команда: {mapping_intent}')
+            
+            # Обработать команду
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            response = loop.run_until_complete(self._handle_mapping_command(mapping_intent, user_message))
+            loop.close()
+            
+            if response:
+                self._speak_simple(response)
+                self.dialogue_in_progress = False
+                return
+        
+        # ============ ПРИОРИТЕТ 6: Обычный диалог с LLM ============
         # Добавляем в историю
         self.conversation_history.append({
             "role": "user",
@@ -449,6 +555,105 @@ class DialogueNode(Node):
             self.get_logger().debug(f'🔔 Триггер звука: {sound_name}')
         except Exception as e:
             self.get_logger().warn(f'⚠️ Ошибка триггера звука: {e}')
+    
+    # ============================================================
+    # Mapping Commands (RTABMap Control)
+    # ============================================================
+    
+    def _detect_mapping_intent(self, text: str):
+        """Определить intent для команд картографии"""
+        text_lower = text.lower()
+        
+        for intent, patterns in self.mapping_intents.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return intent
+        
+        return None
+    
+    async def _backup_rtabmap_db(self) -> bool:
+        """Создать backup текущей БД RTABMap через Docker"""
+        try:
+            # Docker exec на Main Pi для backup
+            # Предполагается что контейнер rtabmap доступен
+            result = subprocess.run([
+                'docker', 'exec', 'rtabmap', 'bash', '-c',
+                'mkdir -p /maps/backups && cp /maps/rtabmap.db /maps/backups/rtabmap_backup_$(date +%Y%m%d_%H%M%S).db && echo OK'
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0 and 'OK' in result.stdout:
+                self.get_logger().info('✅ RTABMap backup создан')
+                return True
+            else:
+                self.get_logger().error(f'❌ Backup failed: {result.stderr}')
+                return False
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('❌ Backup timeout (10s)')
+            return False
+        except Exception as e:
+            self.get_logger().error(f'❌ Backup error: {e}')
+            return False
+    
+    async def _handle_mapping_command(self, intent: str, text: str) -> str:
+        """Обработка команд картографии"""
+        self.get_logger().info(f'🗺️ Mapping intent: {intent}')
+        
+        if intent == 'start_mapping':
+            # Запрос подтверждения
+            self.pending_confirmation = 'start_mapping'
+            self.confirmation_time = time.time()
+            self._trigger_sound('confused')  # Звук вопроса
+            return "Начать новое исследование? Старая карта будет сохранена в резервную копию."
+        
+        elif intent == 'continue_mapping':
+            # Переключить в mapping mode
+            try:
+                self.get_logger().info('  → Переключение в SLAM mode...')
+                future = self.set_mode_mapping_client.call_async(Empty.Request())
+                # Не ждём ответа (async), просто отправляем
+                self._trigger_sound('cute')  # Звук подтверждения
+                return "Продолжаю исследование территории. Добавляю новые области к карте."
+            except Exception as e:
+                self.get_logger().error(f'❌ Ошибка set_mode_mapping: {e}')
+                self._trigger_sound('confused')
+                return "Извините, не удалось переключить режим картографии."
+        
+        elif intent == 'finish_mapping':
+            # Переключить в localization mode
+            try:
+                self.get_logger().info('  → Переключение в Localization mode...')
+                future = self.set_mode_localization_client.call_async(Empty.Request())
+                # Не ждём ответа (async), просто отправляем
+                self._trigger_sound('cute')  # Звук подтверждения
+                return "Заканчиваю исследование. Переключаюсь в режим навигации по готовой карте."
+            except Exception as e:
+                self.get_logger().error(f'❌ Ошибка set_mode_localization: {e}')
+                self._trigger_sound('confused')
+                return "Извините, не удалось переключить в режим локализации."
+        
+        return None
+    
+    async def _confirm_start_mapping(self) -> str:
+        """Подтверждение start_mapping - создать backup и reset БД"""
+        self.get_logger().warn('🗺️ Подтверждение start_mapping...')
+        
+        # 1. Backup
+        backup_ok = await self._backup_rtabmap_db()
+        if not backup_ok:
+            self._trigger_sound('angry_2')
+            return "Не удалось создать резервную копию карты. Операция отменена."
+        
+        # 2. Reset memory
+        try:
+            self.get_logger().info('  → Reset RTABMap memory...')
+            future = self.reset_memory_client.call_async(Empty.Request())
+            # Не ждём ответа (async)
+            self._trigger_sound('cute')  # Звук успеха
+            return "Начинаю исследование. Старая карта сохранена в резервной копии."
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка reset_memory: {e}')
+            self._trigger_sound('angry_2')
+            return "Не удалось сбросить память RTABMap. Попробуйте позже."
     
     def command_feedback_callback(self, msg: String):
         """Обработка feedback от command_node (Phase 5)"""
