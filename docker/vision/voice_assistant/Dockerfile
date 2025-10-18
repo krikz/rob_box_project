@@ -184,12 +184,23 @@ RUN mkdir -p /models && \
     https://models.silero.ai/models/tts/ru/v4_ru.pt && \
     echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
 
-# ============================================================
-# СБОРКА ROS2 ПАКЕТОВ
-# ============================================================
+# ============================================
+# 🚀 СБОРКА ROS2 ПАКЕТОВ
+# ============================================
 
-# Сборка пакетов (включая audio_common_msgs для зависимостей rob_box_voice)
-# Используем symlink-install для быстрой пересборки при изменении Python кода
+# ОТЛАДКА: Проверка состояния ПЕРЕД colcon build (не изменилось ли что-то между RUN-ами)
+RUN echo "=== ПЕРЕД COLCON BUILD: проверка builtin_interfaces ===" && 
+    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && 
+    echo "=== Проверка CMake config ===" && 
+    grep "_exported_libraries" /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -1 && 
+    echo "=== LD_LIBRARY_PATH ===" && 
+    echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH" && 
+    echo "=== CMAKE_PREFIX_PATH ===" && 
+    echo "CMAKE_PREFIX_PATH: $CMAKE_PREFIX_PATH" && 
+    echo "✅ Debug перед colcon build завершен"
+
+# ИЗМЕНЕНО: Используем --symlink-install для избежания копирования Python файлов
+# Это позволяет быстро пересобирать при изменении кода
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
     --packages-select audio_common_msgs rob_box_voice rob_box_animations \
