@@ -1,0 +1,2 @@
+# DeepSeek API (совместимо с OpenAI SDK)
+openai>=1.0.0

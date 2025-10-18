@@ -1,0 +1,55 @@
+# Python dependencies for Voice Assistant (rob_box_voice)
+# Оптимизировано для ARM64 (Raspberry Pi 5)
+# Только реально используемые пакеты!
+
+# =============================================================================
+# Base utilities
+# =============================================================================
+pyyaml
+requests
+omegaconf==2.2.3
+
+# =============================================================================
+# Audio processing
+# =============================================================================
+pyaudio
+sounddevice
+soundfile
+pydub
+numpy<2.0.0
+
+# =============================================================================
+# USB interface for ReSpeaker (used in audio_node.py)
+# =============================================================================
+pyusb
+
+# =============================================================================
+# Machine Learning (PyTorch for Silero TTS)
+# CRITICAL: PyTorch 2.9.0+ required for ARM64 compatibility!
+# PyTorch 2.1.0 has broken MKLDNN matmul primitives on aarch64
+# PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
+# =============================================================================
+torch>=2.9.0
+torchaudio>=2.9.0
+
+# =============================================================================
+# Speech-to-Text: Vosk (offline, lightweight Russian STT)
+# Used in: rob_box_voice/stt_node.py
+# =============================================================================
+vosk
+
+# =============================================================================
+# gRPC for Yandex Cloud API v3 (STT + TTS)
+# Used in: rob_box_voice/tts_node.py (TTS with anton voice)
+#          scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
+# =============================================================================
+grpcio
+grpcio-tools
+protobuf
+yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
+
+# =============================================================================
+# Dialogue system: OpenAI-compatible API for DeepSeek
+# Used in: rob_box_voice/dialogue_node.py
+# =============================================================================
+openai

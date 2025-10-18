@@ -38,19 +38,32 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /ws
 RUN mkdir -p src
 
-# Копируем vesc_nexus пакеты (vesc_msgs и vesc_nexus) из их src/
-# vesc_nexus - это отдельный репозиторий, пакеты находятся в vesc_nexus/src/
-COPY src/vesc_nexus/src/vesc_msgs /ws/src/vesc_msgs
-COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
+# ============================================================
+# ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
+# ============================================================
 
-# Установка ROS зависимостей через rosdep
-# Пропускаем необязательные ключи (serial-driver, joint-state-publisher-gui, rviz2)
+# 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
+COPY src/vesc_nexus/src/vesc_msgs/package.xml /ws/src/vesc_msgs/
+COPY src/vesc_nexus/src/vesc_nexus/package.xml /ws/src/vesc_nexus/
+
+# 2. Установка ROS зависимостей через rosdep (кэшируется если package.xml не изменился)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
     --skip-keys "serial_driver joint_state_publisher joint_state_publisher_gui rviz2" || true
 
-# Сборка пакетов
+# 3. Копируем CMakeLists.txt - изменяются реже чем код
+COPY src/vesc_nexus/src/vesc_msgs/CMakeLists.txt /ws/src/vesc_msgs/
+COPY src/vesc_nexus/src/vesc_nexus/CMakeLists.txt /ws/src/vesc_nexus/
+
+# 4. Копируем msg/srv определения (изменяются редко)
+COPY src/vesc_nexus/src/vesc_msgs/msg /ws/src/vesc_msgs/msg
+
+# 5. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
+COPY src/vesc_nexus/src/vesc_msgs /ws/src/vesc_msgs
+COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
+
+# 6. Сборка пакетов
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
     --packages-select vesc_msgs vesc_nexus \

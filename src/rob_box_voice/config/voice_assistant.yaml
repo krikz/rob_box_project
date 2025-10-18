@@ -1,0 +1,164 @@
+# Voice Assistant Configuration for ROBBOX
+
+/**:
+  ros__parameters:
+    # ========== Audio Node ==========
+    audio_node:
+      sample_rate: 16000          # Hz (ReSpeaker max)
+      channels: 1                 # обработанный канал из 1_channel_firmware
+      chunk_size: 1024            # frames per buffer
+      vad_threshold: 3.5          # dB (GAMMAVAD_SR parameter)
+      publish_rate: 10            # Hz для VAD/DOA topics
+      device_index: -1            # -1 = auto-detect ReSpeaker
+      device_name: "ReSpeaker 4 Mic Array"
+      
+      # VAD настройки для определения конца фразы
+      speech_continuation: 3.0    # Секунды после окончания речи до публикации (было 0.5, увеличено до 3.0)
+      speech_prefetch: 0.5        # Буфер перед началом речи (секунды)
+      speech_min_duration: 0.3    # Минимальная длительность фразы (секунды)
+      speech_max_duration: 10.0   # Максимальная длительность фразы (секунды)
+
+    # ========== STT Node ==========
+    stt_node:
+      # Vosk settings (Phase 3)
+      model_path: "/models/vosk-model-small-ru-0.22"
+      sample_rate: 16000          # Hz (должен совпадать с audio_node)
+      vad_timeout: 1.5            # Секунды тишины до отправки результата
+      min_speech_duration: 0.5    # Минимальная длина речи (секунды)
+      
+      # Legacy settings (для будущей поддержки других STT)
+      provider: "vosk"            # "vosk", "whisper" или "yandex"
+      language: "ru-RU"
+      # Whisper settings (если provider="whisper")
+      whisper_model: "base"       # tiny/base/small/medium/large
+      whisper_device: "cpu"       # cpu/cuda
+
+    # ========== TTS Node ==========
+    tts_node:
+      provider: "yandex"          # "yandex" (primary), "silero" (fallback)
+      
+      # Параметры для кода (плоские, без вложенности)
+      speaker: "aidar"            # Голоса Silero: aidar (М), baya (М), kseniya (Ж), xenia (Ж)
+      sample_rate: 24000          # Hz (24000 - нормальная, будет ускорена при воспроизведении)
+      prosody_pitch: "medium"     # x-low/low/medium/high/x-high
+      normalize_text: true
+      # Бурундук режим - ускоряем воспроизведение (НЕ TTS генерацию!)
+      chipmunk_mode: true         # Ускорять воспроизведение
+      pitch_shift: 2.0            # Ускорение при воспроизведении (2.0x = быстро, бурундучий голос)
+      volume_db: -3.0             # Громкость (-3dB = 70%, компромисс между сигналом и шумом)
+      
+      # Yandex TTS settings (primary provider)
+      yandex:
+        voice: "anton"            # Мужской голос (оригинальный ROBBOX!)
+        speed: 0.4                # Скорость речи (0.1-3.0)
+        emotion: "neutral"        # neutral/good/evil
+      
+      # Кэширование
+      cache_dir: "~/.cache/rob_box_voice/tts"
+      pregenerate: true           # Генерировать системные фразы при старте
+      cache_enabled: true
+
+    # ========== Dialogue Node ==========
+    dialogue_node:
+      # Wake Words - слова для активации голосового ассистента
+      wake_words:
+        - "робок"
+        - "робот"
+        - "роббокс"
+        - "робокос"
+        - "роббос"
+        - "робокс"
+      
+      # Silence Commands - команды для остановки TTS и перехода в режим молчания
+      silence_commands:
+        - "помолч"
+        - "замолч"
+        - "хватит"
+        - "закрой"
+        - "заткн"
+        - "не меша"
+      
+      # Таймауты
+      silence_timeout: 3.5        # секунды тишины → конец вопроса
+      max_question_time: 20.0     # максимальное время накопления вопроса
+      
+      # LLM
+      llm_provider: "deepseek"    # "deepseek" или "local" (Ollama)
+      model: "deepseek-chat"      # Или "llama3" для local
+      
+      # История
+      history_size: 10            # пар user/assistant (20 сообщений)
+      
+      # Streaming
+      streaming: true             # Потоковый вывод LLM
+      sentence_split: true        # Разбивать на предложения для TTS
+
+    # ========== Sound Node ==========
+    sound_node:
+      # Пути
+      sound_pack_dir: "~/rob_box_project/sound_pack"
+      
+      # Громкость (dB adjustment, 0 = без изменений)
+      volume_db: 0                # +6 = громче, -6 = тише
+      
+      # Синхронизация с анимациями
+      trigger_animations: true
+      animation_topic: "/animations/trigger"
+
+    # ========== LED Node ==========
+    led_node:
+      brightness: 16              # 0-31 (0x00-0x1F)
+      auto_mode: true             # Автосмена по /voice/state
+      
+      # Цвета для режимов (RGB, 0-255)
+      colors:
+        idle: [0, 0, 0]           # Выключен
+        listening: [0, 255, 0]    # Зелёный
+        thinking: [0, 0, 255]     # Синий
+        speaking: [0, 255, 255]   # Голубой
+        error: [255, 0, 0]        # Красный
+
+    # ========== Command Node ==========
+    command_node:
+      # Распознавание команд
+      confidence_threshold: 0.7   # Минимальная уверенность
+      
+      # Включить модули
+      enable_navigation: true     # Nav2 команды
+      enable_follow: false        # Следование (Phase 6)
+      enable_vision: false        # Зрение (Phase 6)
+      
+      # Nav2 интеграция
+      nav2_enabled: true
+      nav2_timeout: 300.0         # секунды
+      
+      # Предопределённые waypoints (можно задать свои)
+      waypoints:
+        дом:       {x: 0.0, y: 0.0, theta: 0.0}
+        кухня:     {x: 2.0, y: 1.0, theta: 0.0}
+        гостиная:  {x: 3.0, y: 2.0, theta: 1.57}
+        точка_1:   {x: 1.0, y: 0.0, theta: 0.0}
+        точка_2:   {x: 2.0, y: 0.0, theta: 0.0}
+        точка_3:   {x: 3.0, y: 0.0, theta: 0.0}
+
+# ========== System Phrases (для кэша) ==========
+# TODO: Переместить system_phrases под конкретную ноду (tts_node) или удалить
+# system_phrases:
+#   - "Слушаю"
+#   - "Дай подумаю"
+#   - "Готово"
+#   - "Не понял"
+#   - "Повторите пожалуйста"
+#   - "Выполняю"
+#   - "Остановился"
+#   - "Еду вперёд"
+#   - "Поворачиваю"
+#   - "Поворачиваю налево"
+#   - "Поворачиваю направо"
+#   - "Приехал"
+#   - "Препятствие обнаружено"
+#   - "Батарея разряжена"
+#   - "Заряд батареи низкий"
+#   - "Не могу выполнить команду"
+#   - "Что-то пошло не так"
+#   - "Сервис недоступен"

@@ -230,5 +230,5 @@ ros2 run rob_box_animations player --manifest manifests/police.yaml
 
 ## 📚 Ссылки
 
-- [LED Matrix Integration](../docs/reference/LED_MATRIX_INTEGRATION.md)
+- [LED Matrix Integration](../reference/LED_MATRIX_INTEGRATION.md)
 - [ros2leds Repository](https://github.com/krikz/ros2leds)

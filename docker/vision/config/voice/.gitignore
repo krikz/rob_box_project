@@ -1,0 +1,9 @@
+# Игнорировать файлы с секретами
+secrets.yaml
+*_secrets.yaml
+*.key
+*.pem
+google-credentials.json
+
+# Локальные конфиги
+local_*.yaml

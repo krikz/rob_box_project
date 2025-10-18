@@ -47,16 +47,28 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 WORKDIR /ws
 RUN mkdir -p src
 
-# Копируем пакеты ros2leds (driver и compositor)
-COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
-COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
+# ============================================================
+# ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
+# ============================================================
 
-# Установка ROS зависимостей через rosdep
+# 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
+COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
+COPY src/ros2leds/led_matrix_compositor/package.xml /ws/src/led_matrix_compositor/
+
+# 2. Установка ROS зависимостей через rosdep (кэшируется если package.xml не изменился)
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
 
-# Сборка пакетов
+# 3. Копируем setup.py - изменяются реже чем код
+COPY src/ros2leds/led_matrix_driver/setup.py /ws/src/led_matrix_driver/
+COPY src/ros2leds/led_matrix_compositor/setup.py /ws/src/led_matrix_compositor/
+
+# 4. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
+COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
+COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
+
+# 5. Сборка пакетов
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
     --packages-select led_matrix_driver led_matrix_compositor \
