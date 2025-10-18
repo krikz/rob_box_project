@@ -190,14 +190,14 @@ RUN mkdir -p /models && \
 # ============================================
 
 # ОТЛАДКА: Проверка состояния ПЕРЕД colcon build (не изменилось ли что-то между RUN-ами)
-RUN echo "=== ПЕРЕД COLCON BUILD: проверка builtin_interfaces ===" && 
-    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && 
-    echo "=== Проверка CMake config ===" && 
-    grep "_exported_libraries" /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -1 && 
-    echo "=== LD_LIBRARY_PATH ===" && 
-    echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH" && 
-    echo "=== CMAKE_PREFIX_PATH ===" && 
-    echo "CMAKE_PREFIX_PATH: $CMAKE_PREFIX_PATH" && 
+RUN echo "=== ПЕРЕД COLCON BUILD: проверка builtin_interfaces ===" && \
+    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && \
+    echo "=== Проверка CMake config ===" && \
+    grep "_exported_libraries" /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake | head -1 && \
+    echo "=== LD_LIBRARY_PATH ===" && \
+    echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH" && \
+    echo "=== CMAKE_PREFIX_PATH ===" && \
+    echo "CMAKE_PREFIX_PATH: $CMAKE_PREFIX_PATH" && \
     echo "✅ Debug перед colcon build завершен"
 
 # ИЗМЕНЕНО: Используем --symlink-install для избежания копирования Python файлов
