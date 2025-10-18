@@ -145,6 +145,7 @@ COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_bo
 
 # Шаг 10: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
+COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
 
 # ============================================================
 # ВНЕШНИЕ ЗАВИСИМОСТИ (ReSpeaker drivers, models)
