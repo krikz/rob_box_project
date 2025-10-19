@@ -18,7 +18,31 @@ context_aggregator (MPC lite) → events → reflection_node → thoughts/speech
 Особенности:
 1. Event-driven: размышляет при получении события (не по таймеру)
 2. Hook для срочных ответов: личные вопросы → быстрый ответ
-3. НЕ собирает данные - только думает и решает
+3. НЕ собирает данные - только думае    def _play_sound(self, sound_name: str):
+        """Проиграть звуковой эффект с debounce"""
+        try:
+            current_time = time.time()
+            
+            # Проверка debounce: если звук недавно играл - пропускаем
+            if sound_name in self.last_sound_time:
+                time_since_last = current_time - self.last_sound_time[sound_name]
+                if time_since_last < self.sound_debounce_interval:
+                    self.get_logger().debug(
+                        f'🔇 Звук {sound_name} пропущен (debounce: {time_since_last:.1f}s < {self.sound_debounce_interval}s)'
+                    )
+                    return
+            
+            # Публикуем звук
+            msg = String()
+            msg.data = sound_name
+            self.sound_pub.publish(msg)
+            
+            # Запоминаем время последнего звука
+            self.last_sound_time[sound_name] = current_time
+            self.get_logger().debug(f'🎵 Звук: {sound_name}')
+            
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка проигрывания звука: {e}')т
 """
 
 import json
@@ -143,9 +167,14 @@ class ReflectionNode(Node):
             10
         )
         
+        # ============ Sound Debounce ============
+        self.last_sound_time: Dict[str, float] = {}  # sound_name -> timestamp
+        self.sound_debounce_interval = 10.0  # секунд между одинаковыми звуками
+        
         self.get_logger().info('🧠 Reflection Node v2.0 (Event-Driven) запущен')
         self.get_logger().info(f'   Тайм-аут диалога: {self.dialogue_timeout} сек')
         self.get_logger().info(f'   Срочный ответ: {self.urgent_response_timeout} сек')
+        self.get_logger().info(f'   🔇 Sound debounce: {self.sound_debounce_interval} сек')
     
     def _load_system_prompt(self) -> str:
         """Загрузить system prompt из файла"""

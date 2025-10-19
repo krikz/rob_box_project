@@ -5,16 +5,18 @@
 # - SERVICE_IMAGE_PREFIX: ghcr.io/krikz/rob_box
 
 services:
-  # Zenoh Router - центральный роутер для связи между Pi
+  # Zenoh Router - центральный роутер для связи между Pi и облаком
   zenoh-router:
     image: eclipse/zenoh:latest
     container_name: zenoh-router
     network_mode: host
     environment:
       - RUST_LOG=zenoh=info
+      - ROBOT_ID=${ROBOT_ID}  # ID робота для namespace при публикации в облако
     volumes:
-      - ./config/zenoh_router_config.json5:/zenoh_config.json5
-    command: -c /zenoh_config.json5
+      - ./config:/config:ro
+      - ./zenoh-router:/scripts:ro
+    command: ["/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
