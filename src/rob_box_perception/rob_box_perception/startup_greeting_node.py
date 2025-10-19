@@ -133,8 +133,14 @@ class StartupGreetingNode(Node):
         greeting = random.choice(self.GREETINGS)
         self.get_logger().info(f'🗣️  Говорю: "{greeting}"')
         
+        # Формируем JSON chunk (как dialogue_node)
+        import json
+        chunk_json = {
+            "ssml": f"<speak>{greeting}</speak>"
+        }
+        
         msg = String()
-        msg.data = greeting
+        msg.data = json.dumps(chunk_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
         
         # 4. Завершаем работу ноды через 3 секунды
