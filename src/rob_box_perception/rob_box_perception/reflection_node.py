@@ -13,7 +13,14 @@ context_aggregator (MPC lite) → events → reflection_node → thoughts/speech
 
 Публикует:
 - /reflection/internal_thought (String) - внутренние мысли
-- /voice/tts/request (String) - речь робота
+- /voice/tts/request        # Summarized History (суммаризованная история по типам)
+        lines.append("")
+        lines.append("=== СУММАРИЗОВАННАЯ ИСТОРИЯ ===")
+        
+        # НЕ включаем речь пользователя в обычное размышление!
+        # Речь обрабатывается dialogue_node, reflection размышляет только о системе и окружении
+        
+        if ctx.robot_response_summaries and ctx.robot_response_summaries != '[]':ь робота
 
 Особенности:
 1. Event-driven: размышляет при получении события (не по таймеру)
