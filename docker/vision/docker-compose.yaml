@@ -8,9 +8,8 @@ services:
     environment:
       - RUST_LOG=zenoh=info
     volumes:
-      - ./config:/config:ro
-      - ./zenoh-router:/scripts:ro
-    command: ["/scripts/start_zenoh_router.sh"]
+      - ./config/zenoh_router_config.json5:/zenoh_config.json5
+    command: -c /zenoh_config.json5
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
