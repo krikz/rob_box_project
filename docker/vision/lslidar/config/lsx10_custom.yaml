@@ -10,7 +10,7 @@
     # device_ip_difop: 192.168.1.102        # Отключено для serial режима
     # msop_port: 2368                       # UDP порт (только для network режима)
     # difop_port: 2369                      # UDP порт (только для network режима)
-    lidar_name: M10                         # Тип лидара: N10 (используется M10 конфиг)
+    lidar_name: N10                         # Тип лидара: N10 (правильный протокол для N10!)
     angle_disable_min: 0.0                  # Обрезка угла - начало
     angle_disable_max: 0.0                  # Обрезка угла - конец
     min_range: 0.15                         # Минимальная дистанция (м)
