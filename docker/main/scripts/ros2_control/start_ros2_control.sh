@@ -171,7 +171,9 @@ echo -e "${CYAN}🎯 Starting controller spawner in background...${NC}"
 # В Humble нет ros2_control_node.launch.py, запускаем ноду напрямую
 exec ros2 run controller_manager ros2_control_node \
     --ros-args \
-    --params-file ${CONTROLLER_CONFIG}
+    --params-file ${CONTROLLER_CONFIG} \
+    -r __ns:=/controller_manager \
+    -r ~/robot_description:=/robot_description
 
 # Если exec не сработал (не должно произойти)
 echo -e "${RED}❌ ERROR: Failed to start controller manager${NC}"
