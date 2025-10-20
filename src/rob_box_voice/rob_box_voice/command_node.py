@@ -152,12 +152,6 @@ class CommandNode(Node):
         if not text:
             return
         
-        # ПРИОРИТЕТ: Игнорировать STT если dialogue активен (LISTENING или DIALOGUE)
-        # Проверка ПЕРЕД классификацией и ПЕРЕД любым feedback
-        if self.dialogue_state in ['LISTENING', 'DIALOGUE']:
-            self.get_logger().debug(f'🔇 Dialogue активен ({self.dialogue_state}) - command_node игнорирует: {text}')
-            return
-        
         self.get_logger().info(f'🎤 STT: {text}')
         
         # Удалить wake word из начала команды
@@ -170,10 +164,12 @@ class CommandNode(Node):
         # Распознать команду
         command = self.classify_intent(text)
         
+        # Всегда публиковать intent (даже UNKNOWN) для dialogue_node
+        self.publish_intent(command)
+        
         if command.intent == IntentType.UNKNOWN:
-            self.get_logger().warn(f'⚠️ Неизвестная команда: {text}')
-            # Не публикуем feedback для неизвестных команд - пусть тишина
-            # (возможно пользователь обращался не к роботу)
+            self.get_logger().debug(f'🤷 Неизвестная команда - пере даю dialogue_node: {text}')
+            # Не выполняем команду, но публикуем intent=UNKNOWN для dialogue
             return
         
         if command.confidence < self.confidence_threshold:
@@ -183,9 +179,6 @@ class CommandNode(Node):
         
         self.get_logger().info(f'🎯 Intent: {command.intent.value} ({command.confidence:.2f})')
         self.get_logger().info(f'📦 Entities: {command.entities}')
-        
-        # Опубликовать intent
-        self.publish_intent(command)
         
         # Выполнить команду
         self.execute_command(command)
