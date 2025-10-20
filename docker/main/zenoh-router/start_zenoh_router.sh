@@ -29,4 +29,4 @@ echo "Запуск Zenoh Router..."
 echo "=========================================="
 
 # Запускаем zenoh router с модифицированным конфигом
-exec zenohd -c "$CONFIG_FILE"
+exec /zenohd -c "$CONFIG_FILE"
