@@ -47,7 +47,7 @@ echo "  3. /cmd_vel_web       (priority:  50) - Web UI"
 echo "  4. /cmd_vel           (priority:  10) - Nav2 navigation"
 echo ""
 echo "Output topic:"
-echo "  → /diff_cont/cmd_vel_unstamped (to ros2_control)"
+echo "  → /diff_drive_controller/cmd_vel_unstamped (to diff_drive_controller)"
 echo ""
 echo "Logic:"
 echo "  • Joystick active → blocks Nav2 (safety first!)"
@@ -61,5 +61,5 @@ echo ""
 exec ros2 run twist_mux twist_mux \
     --ros-args \
     --params-file $CONFIG_FILE \
-    -r cmd_vel_out:=/diff_cont/cmd_vel_unstamped \
+    -r cmd_vel_out:=/diff_drive_controller/cmd_vel_unstamped \
     -p use_sim_time:=false
