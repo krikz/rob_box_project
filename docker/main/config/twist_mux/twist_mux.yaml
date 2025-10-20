@@ -3,40 +3,35 @@
 
 twist_mux:
   ros__parameters:
-    # Источники команд (в порядке приоритета)
+    # Источники команд (в порядке приоритета - priority: 0-255, чем выше тем приоритетнее)
     topics:
       # 1. Emergency Stop (наивысший приоритет)
-      - name: emergency_stop
+      emergency_stop:
         topic: cmd_vel_emergency
         timeout: 0.1
-        priority: 255.0
-        short_desc: "Emergency stop from safety systems"
+        priority: 255
         
-      # 2. Joystick/Gamepad (высокий приоритет)
-      - name: joystick
+      # 2. Joystick/Gamepad (высокий приоритет - человек > автономия)
+      joystick:
         topic: cmd_vel_joy
         timeout: 0.5
-        priority: 100.0
-        short_desc: "Manual control from gamepad/joystick"
+        priority: 100
         
       # 3. Web UI / Mobile App (средний приоритет)
-      - name: web_ui
+      web_ui:
         topic: cmd_vel_web
         timeout: 1.0
-        priority: 50.0
-        short_desc: "Manual control from web interface"
+        priority: 50
         
-      # 4. Nav2 Navigation (низкий приоритет)
-      - name: navigation
+      # 4. Nav2 Navigation (низкий приоритет - автономия < человек)
+      navigation:
         topic: cmd_vel
         timeout: 0.5
-        priority: 10.0
-        short_desc: "Autonomous navigation from Nav2"
+        priority: 10
 
     # Locks (блокировка определенных источников)
     # locks:
-    #   - name: manual_lock
+    #   manual_lock:
     #     topic: /manual_lock
     #     timeout: 5.0
     #     priority: 255
-    #     locks: [navigation]  # Блокирует Nav2 при ручном управлении
