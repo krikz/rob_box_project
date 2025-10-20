@@ -166,4 +166,5 @@ exec ros2 launch nav2_bringup navigation_launch.py \
     use_sim_time:=False \
     autostart:=True \
     use_lifecycle_mgr:=True \
-    use_respawn:=True
+    use_respawn:=True \
+    namespace:=""
