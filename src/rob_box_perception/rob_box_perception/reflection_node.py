@@ -663,6 +663,16 @@ class ReflectionNode(Node):
             self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
             return  # НЕ публикуем речь
         
+        # Проверка: говорили недавно? (debounce для избежания дубликатов)
+        current_time = time.time()
+        if self.last_speech_time:
+            time_since_last = current_time - self.last_speech_time
+            if time_since_last < 5.0:  # Для срочных ответов короткий debounce - 5 сек
+                self.get_logger().debug(
+                    f'🔇 Speech debounce (SSML): не говорю (прошло {time_since_last:.1f}s < 5.0s)'
+                )
+                return  # НЕ публикуем речь
+        
         # Формируем JSON с готовым SSML
         import json
         response_json = {
@@ -672,6 +682,9 @@ class ReflectionNode(Node):
         msg = String()
         msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
+        
+        # Обновляем время последней речи
+        self.last_speech_time = current_time
         
         self.get_logger().info(f'🗣️  Reflection → TTS: {speech_ssml[:80]}...')
     
