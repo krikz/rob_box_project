@@ -270,5 +270,5 @@
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="0.25 0 0.167" origin_rpy="0 0 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
-	<xacro:include filename="$(find rob_box_description)/urdf/rob_box_ros2_control.xacro"/>
+	<xacro:include filename="rob_box_ros2_control.xacro"/>
 </robot>
