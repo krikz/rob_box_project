@@ -133,7 +133,7 @@ joint_state_broadcaster:
   ros__parameters:
     # Дополнительные параметры (обычно не требуются)
     # Broadcaster автоматически публикует все joint states из hardware interface
-    pass
+    use_local_topics: false
 
 
 # ═══════════════════════════════════════════════════════════════════
