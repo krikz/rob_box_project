@@ -62,13 +62,33 @@ if ! ip link show ${CAN_INTERFACE} > /dev/null 2>&1; then
     exit 1
 fi
 
-CAN_STATE=$(ip -details link show ${CAN_INTERFACE} | grep -oP 'state \K\w+' || echo "UNKNOWN")
-echo -e "${GREEN}✅ CAN interface: ${CAN_INTERFACE} (state: ${CAN_STATE})${NC}"
+# Проверяем link state (UP/DOWN), игнорируя CAN controller state (ERROR-ACTIVE/ERROR-PASSIVE/BUS-OFF)
+LINK_STATE=$(ip link show ${CAN_INTERFACE} | grep -oP '<.*>' | grep -q 'UP' && echo "UP" || echo "DOWN")
+CAN_CTRL_STATE=$(ip -details link show ${CAN_INTERFACE} | grep -oP 'can state \K[A-Z-]+' || echo "UNKNOWN")
 
-if [ "$CAN_STATE" != "UP" ]; then
-    echo -e "${RED}❌ ERROR: CAN interface is DOWN!${NC}"
+echo -e "${GREEN}✅ CAN interface: ${CAN_INTERFACE}${NC}"
+echo -e "   Link state: ${LINK_STATE}"
+echo -e "   CAN controller state: ${CAN_CTRL_STATE}"
+
+if [ "$LINK_STATE" != "UP" ]; then
+    echo -e "${RED}❌ ERROR: CAN interface link is DOWN!${NC}"
     echo "Run on host: sudo /path/to/setup_can.sh ${CAN_INTERFACE}"
     exit 1
+fi
+
+# ERROR-ACTIVE - нормальное состояние (может передавать и принимать)
+# ERROR-PASSIVE - ограниченная передача (много ошибок, но работает)
+# BUS-OFF - критическое состояние (полностью отключен от шины)
+if [ "$CAN_CTRL_STATE" = "BUS-OFF" ]; then
+    echo -e "${RED}❌ ERROR: CAN controller in BUS-OFF state!${NC}"
+    echo "Too many errors detected. Check wiring and termination resistors."
+    echo "Restart interface: sudo ip link set ${CAN_INTERFACE} down && sudo ip link set ${CAN_INTERFACE} up"
+    exit 1
+fi
+
+if [ "$CAN_CTRL_STATE" = "ERROR-PASSIVE" ]; then
+    echo -e "${YELLOW}⚠️  WARNING: CAN controller in ERROR-PASSIVE state${NC}"
+    echo "High error rate detected. Check bus quality."
 fi
 
 # ═══════════════════════════════════════════════════════════════
