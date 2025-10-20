@@ -31,9 +31,17 @@
 ### 🛠️ [development/](development/) - Разработка
 Руководства для разработчиков.
 
-- [**AGENT_GUIDE.md**](development/AGENT_GUIDE.md) - Руководство для AI агентов
-- [**BUILD_OPTIMIZATION.md**](development/BUILD_OPTIMIZATION.md) - Оптимизация сборки
+**AI & Code Quality (NEW 🆕)**
+- [**GitHub Copilot Instructions**](../.github/copilot-instructions.md) ⭐ - Инструкции для AI-ассистентов
+- [**CODE_REVIEW_SUMMARY.md**](development/CODE_REVIEW_SUMMARY.md) 🆕 - Code review summary (Oct 2025)
+- [**CODE_REVIEW_2025-10.md**](development/CODE_REVIEW_2025-10.md) 🆕 - Полный code review
+- [**IMPROVEMENT_RECOMMENDATIONS.md**](development/IMPROVEMENT_RECOMMENDATIONS.md) 🆕 - Рекомендации по улучшению
+
+**Development Guides**
+- [**AGENT_GUIDE.md**](development/AGENT_GUIDE.md) ⭐ - Руководство для AI агентов
 - [**DOCKER_STANDARDS.md**](development/DOCKER_STANDARDS.md) - Стандарты Docker
+- [**PYTHON_STYLE_GUIDE.md**](development/PYTHON_STYLE_GUIDE.md) - Python coding standards
+- [**BUILD_OPTIMIZATION.md**](development/BUILD_OPTIMIZATION.md) - Оптимизация сборки
 - [**LOCAL_BUILD.md**](development/LOCAL_BUILD.md) - Локальная сборка Docker
 - [**DOCKER_BUILD_FIXES.md**](development/DOCKER_BUILD_FIXES.md) - Исправления сборки
 - [**DEVCONTAINERS_ANALYSIS.md**](development/DEVCONTAINERS_ANALYSIS.md) - Анализ devcontainers
