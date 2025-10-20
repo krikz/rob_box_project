@@ -76,6 +76,10 @@ class CommandNode(Node):
         self.intent_pub = self.create_publisher(String, '/voice/command/intent', 10)
         self.feedback_pub = self.create_publisher(String, '/voice/command/feedback', 10)
         
+        # Publisher для управления движением
+        from geometry_msgs.msg import Twist
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        
         # State tracking
         self.dialogue_state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
         
@@ -108,6 +112,7 @@ class CommandNode(Node):
                 (r'(двигайся|иди|поезжай|езжай|направляйся)\s+к\s+точке\s+(\d+)', 'waypoint_number'),
                 (r'(двигайся|иди|поезжай|езжай)\s+к\s+(дом|кухня|гостиная)', 'waypoint_name'),
                 (r'(двигайся|иди|поезжай)\s+(вперед|назад|влево|вправо)', 'direction'),
+                (r'(поверни|повернись|разверн|развернись)\s+(налево|направо|влево|вправо)', 'turn'),
             ],
             # Остановка
             IntentType.STOP: [
@@ -154,6 +159,13 @@ class CommandNode(Node):
             return
         
         self.get_logger().info(f'🎤 STT: {text}')
+        
+        # Удалить wake word из начала команды
+        wake_words = ['робот', 'робокс', 'робобокс']
+        for wake_word in wake_words:
+            if text.startswith(wake_word):
+                text = text[len(wake_word):].strip()
+                break
         
         # Распознать команду
         command = self.classify_intent(text)
@@ -204,6 +216,8 @@ class CommandNode(Node):
                             best_entities = {'waypoint': match.group(2)}
                         elif entity_type == 'direction':
                             best_entities = {'direction': match.group(2)}
+                        elif entity_type == 'turn':
+                            best_entities = {'direction': match.group(2)}
         
         return Command(
             intent=best_intent,
@@ -232,6 +246,12 @@ class CommandNode(Node):
         if not self.enable_navigation:
             self.get_logger().warn('⚠️ Навигация отключена')
             self.publish_feedback('Навигация недоступна')
+            return
+        
+        # Проверка на команду направления (поверни налево/направо)
+        direction = command.entities.get('direction')
+        if direction:
+            self.handle_direction(direction)
             return
         
         waypoint_name = command.entities.get('waypoint')
@@ -314,6 +334,52 @@ class CommandNode(Node):
         if self.enable_navigation and hasattr(self, 'nav_client'):
             # TODO: Cancel current goal
             pass
+    
+    def handle_direction(self, direction: str):
+        """Обработка команды поворота/движения в направлении"""
+        from geometry_msgs.msg import Twist
+        
+        # Маппинг направлений на скорости
+        direction_map = {
+            'налево': (0.0, 0.5),    # linear_x, angular_z (поворот налево)
+            'влево': (0.0, 0.5),
+            'направо': (0.0, -0.5),  # поворот направо
+            'вправо': (0.0, -0.5),
+            'вперед': (0.3, 0.0),    # движение вперёд
+            'назад': (-0.3, 0.0),    # движение назад
+        }
+        
+        if direction not in direction_map:
+            self.get_logger().warn(f'⚠️ Неизвестное направление: {direction}')
+            self.publish_feedback(f'Не понимаю куда {direction}')
+            return
+        
+        linear_x, angular_z = direction_map[direction]
+        
+        self.get_logger().info(f'🎯 Поворот {direction}: linear={linear_x}, angular={angular_z}')
+        self.publish_feedback(f'Поворачиваю {direction}')
+        
+        # Отправить Twist команду
+        twist = Twist()
+        twist.linear.x = linear_x
+        twist.angular.z = angular_z
+        
+        # Публиковать команду в течение 2 секунд (примерно поворот на 90 градусов при 0.5 рад/с)
+        import time
+        duration = 2.0  # секунды
+        rate = 10  # Гц
+        iterations = int(duration * rate)
+        
+        for _ in range(iterations):
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(1.0 / rate)
+        
+        # Остановка
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+        self.cmd_vel_pub.publish(twist)
+        
+        self.get_logger().info(f'✅ Поворот {direction} завершён')
     
     def handle_status(self, command: Command):
         """Обработка запроса статуса"""
