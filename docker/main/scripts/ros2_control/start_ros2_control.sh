@@ -159,8 +159,12 @@ echo -e "${CYAN}  1. Subscribe to /robot_description topic (from robot_state_pub
 echo -e "${CYAN}  2. Load VescSystemHardwareInterface from URDF${NC}"
 echo -e "${CYAN}  3. Initialize CAN connection to VESC motors${NC}"
 echo -e "${CYAN}  4. Configure controller_manager${NC}"
-echo -e "${CYAN}  5. Wait for controllers to be spawned via CLI${NC}"
+echo -e "${CYAN}  5. Load and activate controllers${NC}"
 echo ""
+
+# Запускаем spawner в фоне
+echo -e "${CYAN}🎯 Starting controller spawner in background...${NC}"
+(/scripts/spawn_controllers.sh > /tmp/spawner.log 2>&1) &
 
 # Запускаем controller_manager напрямую (ros2_control_node)
 # robot_description будет получен из топика /robot_description (публикует robot_state_publisher)
