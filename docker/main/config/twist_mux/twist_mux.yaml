@@ -11,19 +11,25 @@ twist_mux:
         timeout: 0.1
         priority: 255
         
-      # 2. Joystick/Gamepad (высокий приоритет - человек > автономия)
+      # 2. Joystick/Gamepad (высокий приоритет - оператор с физическим пультом)
       joystick:
         topic: cmd_vel_joy
         timeout: 0.5
         priority: 100
         
-      # 3. Web UI / Mobile App (средний приоритет)
+      # 3. Web UI / Mobile App (средний приоритет - оператор через веб)
       web_ui:
         topic: cmd_vel_web
         timeout: 1.0
         priority: 50
         
-      # 4. Nav2 Navigation (низкий приоритет - автономия < человек)
+      # 4. Voice Commands (низкий-средний приоритет - может быть кто угодно)
+      voice:
+        topic: cmd_vel_voice
+        timeout: 1.0
+        priority: 25
+        
+      # 5. Nav2 Navigation (самый низкий приоритет - автономия)
       navigation:
         topic: cmd_vel
         timeout: 0.5

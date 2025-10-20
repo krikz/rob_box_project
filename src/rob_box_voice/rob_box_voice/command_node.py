@@ -77,10 +77,10 @@ class CommandNode(Node):
         self.feedback_pub = self.create_publisher(String, '/voice/command/feedback', 10)
         
         # Publisher для управления движением
-        # Публикуем на /cmd_vel_joy (priority: 100 в twist_mux) - высокий приоритет как у джойстика
-        # потому что голосовые команды = прямое управление человеком
+        # Публикуем на /cmd_vel_voice (priority: 25 в twist_mux)
+        # Приоритет ниже чем у оператора (joy:100, web:50) но выше Nav2 (10)
         from geometry_msgs.msg import Twist
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_joy', 10)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_voice', 10)
         
         # State tracking
         self.dialogue_state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
