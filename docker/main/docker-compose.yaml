@@ -46,7 +46,7 @@ services:
       - zenoh-router
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list | grep -q twist_mux || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f twist_mux || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 15s
@@ -205,7 +205,7 @@ services:
       - twist-mux
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 control list_controllers | grep -q diff_drive_controller || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f ros2_control_node || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 30s
