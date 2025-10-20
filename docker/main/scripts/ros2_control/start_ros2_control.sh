@@ -158,16 +158,16 @@ echo -e "${CYAN}This will:${NC}"
 echo -e "${CYAN}  1. Load VescSystemHardwareInterface from URDF${NC}"
 echo -e "${CYAN}  2. Initialize CAN connection to VESC motors${NC}"
 echo -e "${CYAN}  3. Configure controller_manager${NC}"
-echo -e "${CYAN}  4. Spawn joint_state_broadcaster${NC}"
-echo -e "${CYAN}  5. Spawn diff_drive_controller${NC}"
+echo -e "${CYAN}  4. Wait for controllers to be spawned via CLI${NC}"
 echo ""
 
-# Запускаем controller_manager с URDF и конфигом
-# robot_description передается как параметр
-exec ros2 launch controller_manager ros2_control_node.launch.py \
-    robot_description:="${ROBOT_DESCRIPTION}" \
-    controller_params_file:="${CONTROLLER_CONFIG}" \
-    use_sim_time:=false
+# Запускаем controller_manager напрямую (ros2_control_node)
+# robot_description передается как параметр через --ros-args
+# В Humble нет ros2_control_node.launch.py, запускаем ноду напрямую
+exec ros2 run controller_manager ros2_control_node \
+    --ros-args \
+    -p robot_description:="${ROBOT_DESCRIPTION}" \
+    --params-file ${CONTROLLER_CONFIG}
 
 # Если exec не сработал (не должно произойти)
 echo -e "${RED}❌ ERROR: Failed to start controller manager${NC}"
