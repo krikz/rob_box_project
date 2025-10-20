@@ -16,7 +16,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./zenoh-router:/scripts:ro
-    command: ["/scripts/start_zenoh_router.sh"]
+    entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
@@ -100,6 +100,7 @@ services:
     volumes:
       - ./config:/config/shared:ro
       - ./scripts/robot_state_publisher:/scripts:ro
+      - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
     command: ["/scripts/start_robot_state_publisher.sh"]
     depends_on:
       - zenoh-router
