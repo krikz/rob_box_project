@@ -1,13 +1,6 @@
 # Nav2 Navigation Parameters для rob_box
 # Main Pi - автономная навигация
 
-# === ОБЩИЕ ПАРАМЕТРЫ ===
-use_sim_time: False
-robot_base_frame: base_link
-odom_topic: /odom
-global_frame: map
-robot_radius: 0.17  # rob_box диаметр ~340мм → радиус 170мм
-
 # === BT NAVIGATOR ===
 bt_navigator:
   ros__parameters:
