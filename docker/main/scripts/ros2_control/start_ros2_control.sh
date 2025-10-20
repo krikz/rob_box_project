@@ -172,7 +172,6 @@ echo -e "${CYAN}🎯 Starting controller spawner in background...${NC}"
 exec ros2 run controller_manager ros2_control_node \
     --ros-args \
     --params-file ${CONTROLLER_CONFIG} \
-    -r __ns:=/controller_manager \
     -r ~/robot_description:=/robot_description
 
 # Если exec не сработал (не должно произойти)
