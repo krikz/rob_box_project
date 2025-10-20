@@ -160,6 +160,13 @@ class CommandNode(Node):
         
         self.get_logger().info(f'🎤 STT: {text}')
         
+        # Удалить wake word из начала команды
+        wake_words = ['робот', 'робокс', 'робобокс']
+        for wake_word in wake_words:
+            if text.startswith(wake_word):
+                text = text[len(wake_word):].strip()
+                break
+        
         # Распознать команду
         command = self.classify_intent(text)
         
