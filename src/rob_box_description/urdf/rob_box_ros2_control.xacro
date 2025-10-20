@@ -24,9 +24,9 @@
     </hardware>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- Front Left Wheel -->
+    <!-- Left Front Wheel -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <joint name="front_left_wheel_joint">
+    <joint name="left_front_wheel_joint">
       <command_interface name="velocity">
         <param name="min">-10</param>  <!-- м/с -->
         <param name="max">10</param>
@@ -42,9 +42,9 @@
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- Front Right Wheel -->
+    <!-- Right Front Wheel -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <joint name="front_right_wheel_joint">
+    <joint name="right_front_wheel_joint">
       <command_interface name="velocity">
         <param name="min">-10</param>
         <param name="max">10</param>
@@ -59,9 +59,9 @@
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- Rear Left Wheel -->
+    <!-- Left Rear Wheel -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <joint name="rear_left_wheel_joint">
+    <joint name="left_rear_wheel_joint">
       <command_interface name="velocity">
         <param name="min">-10</param>
         <param name="max">10</param>
@@ -76,9 +76,9 @@
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- Rear Right Wheel -->
+    <!-- Right Rear Wheel -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <joint name="rear_right_wheel_joint">
+    <joint name="right_rear_wheel_joint">
       <command_interface name="velocity">
         <param name="min">-10</param>
         <param name="max">10</param>
