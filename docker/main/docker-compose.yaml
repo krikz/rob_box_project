@@ -237,7 +237,7 @@ services:
       - twist-mux
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list | grep -q 'bt_navigator\\|controller_server\\|planner_server' || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f 'bt_navigator' || exit 1"]
       interval: 15s
       timeout: 10s
       start_period: 60s
