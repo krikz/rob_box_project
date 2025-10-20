@@ -329,17 +329,23 @@ class CommandNode(Node):
             pass
     
     def handle_direction(self, direction: str):
-        """Обработка команды поворота/движения в направлении"""
-        from geometry_msgs.msg import Twist
+        """Обработка команды поворота/движения в направлении
         
-        # Маппинг направлений на скорости
+        По умолчанию:
+        - Поворот: ~90 градусов (2 сек при 0.5 рад/с ≈ 1 радиан ≈ 57°, увеличим до 3 сек)
+        - Движение вперёд/назад: 1 метр (3.3 сек при 0.3 м/с)
+        """
+        from geometry_msgs.msg import Twist
+        import threading
+        
+        # Маппинг направлений: (linear_x, angular_z, duration, description)
         direction_map = {
-            'налево': (0.0, 0.5),    # linear_x, angular_z (поворот налево)
-            'влево': (0.0, 0.5),
-            'направо': (0.0, -0.5),  # поворот направо
-            'вправо': (0.0, -0.5),
-            'вперед': (0.3, 0.0),    # движение вперёд
-            'назад': (-0.3, 0.0),    # движение назад
+            'налево': (0.0, 0.5, 3.0, 'поворачиваю налево'),    # 3 сек * 0.5 рад/с ≈ 1.5 рад ≈ 86°
+            'влево': (0.0, 0.5, 3.0, 'поворачиваю влево'),
+            'направо': (0.0, -0.5, 3.0, 'поворачиваю направо'),  # поворот направо
+            'вправо': (0.0, -0.5, 3.0, 'поворачиваю вправо'),
+            'вперед': (0.3, 0.0, 3.3, 'двигаюсь вперёд'),        # 3.3 сек * 0.3 м/с ≈ 1 метр
+            'назад': (-0.3, 0.0, 3.3, 'двигаюсь назад'),         # 1 метр назад
         }
         
         if direction not in direction_map:
@@ -347,32 +353,38 @@ class CommandNode(Node):
             self.publish_feedback(f'Не понимаю куда {direction}')
             return
         
-        linear_x, angular_z = direction_map[direction]
+        linear_x, angular_z, duration, feedback = direction_map[direction]
         
-        self.get_logger().info(f'🎯 Поворот {direction}: linear={linear_x}, angular={angular_z}')
-        self.publish_feedback(f'Поворачиваю {direction}')
+        self.get_logger().info(f'🎯 Команда: {feedback}, linear={linear_x}, angular={angular_z}, duration={duration}s')
+        self.publish_feedback(feedback.capitalize())
         
-        # Отправить Twist команду
-        twist = Twist()
-        twist.linear.x = linear_x
-        twist.angular.z = angular_z
-        
-        # Публиковать команду в течение 2 секунд (примерно поворот на 90 градусов при 0.5 рад/с)
-        import time
-        duration = 2.0  # секунды
-        rate = 10  # Гц
-        iterations = int(duration * rate)
-        
-        for _ in range(iterations):
+        # Запустить публикацию в отдельном потоке чтобы не блокировать ноду
+        def publish_velocity():
+            twist = Twist()
+            twist.linear.x = linear_x
+            twist.angular.z = angular_z
+            
+            # Публиковать с частотой 20 Hz (каждые 50 мс)
+            # Это выше чем cmd_vel_timeout (0.5 сек), так что команды не потеряются
+            rate_hz = 20
+            sleep_time = 1.0 / rate_hz
+            iterations = int(duration * rate_hz)
+            
+            import time
+            for i in range(iterations):
+                self.cmd_vel_pub.publish(twist)
+                time.sleep(sleep_time)
+            
+            # Остановка
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
-            time.sleep(1.0 / rate)
+            
+            self.get_logger().info(f'✅ Выполнено: {feedback}')
         
-        # Остановка
-        twist.linear.x = 0.0
-        twist.angular.z = 0.0
-        self.cmd_vel_pub.publish(twist)
-        
-        self.get_logger().info(f'✅ Поворот {direction} завершён')
+        # Запустить в фоне
+        thread = threading.Thread(target=publish_velocity, daemon=True)
+        thread.start()
     
     def handle_status(self, command: Command):
         """Обработка запроса статуса"""
