@@ -143,12 +143,17 @@ class StartupGreetingNode(Node):
         msg.data = json.dumps(chunk_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
         
-        # 4. Завершаем работу ноды через 3 секунды
-        self.create_timer(3.0, self.shutdown_node, once=True)
+        # 4. Завершаем работу ноды через 3 секунды (без once=True для Humble)
+        self.shutdown_timer = self.create_timer(3.0, self.shutdown_node)
     
     def shutdown_node(self):
         """Завершить работу ноды (больше не нужна)"""
         self.get_logger().info('👋 Приветствие завершено, завершаю работу ноды')
+        
+        # Отменяем таймер
+        if hasattr(self, 'shutdown_timer'):
+            self.shutdown_timer.cancel()
+        
         self.destroy_node()
         rclpy.shutdown()
     
