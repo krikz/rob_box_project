@@ -228,7 +228,7 @@ services:
       - ./config/nav2:/config/nav2:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
-    command: ["/scripts/start_nav2.sh"]
+    command: ["/scripts/start_nav2_direct.sh"]
     depends_on:
       - zenoh-router
       - robot-state-publisher
