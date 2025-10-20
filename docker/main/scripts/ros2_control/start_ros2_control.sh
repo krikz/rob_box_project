@@ -155,18 +155,18 @@ ROBOT_DESCRIPTION=$(xacro ${URDF_PATH})
 echo -e "${GREEN}🚀 Starting ros2_control_node (controller_manager)...${NC}"
 echo ""
 echo -e "${CYAN}This will:${NC}"
-echo -e "${CYAN}  1. Load VescSystemHardwareInterface from URDF${NC}"
-echo -e "${CYAN}  2. Initialize CAN connection to VESC motors${NC}"
-echo -e "${CYAN}  3. Configure controller_manager${NC}"
-echo -e "${CYAN}  4. Wait for controllers to be spawned via CLI${NC}"
+echo -e "${CYAN}  1. Subscribe to /robot_description topic (from robot_state_publisher)${NC}"
+echo -e "${CYAN}  2. Load VescSystemHardwareInterface from URDF${NC}"
+echo -e "${CYAN}  3. Initialize CAN connection to VESC motors${NC}"
+echo -e "${CYAN}  4. Configure controller_manager${NC}"
+echo -e "${CYAN}  5. Wait for controllers to be spawned via CLI${NC}"
 echo ""
 
 # Запускаем controller_manager напрямую (ros2_control_node)
-# robot_description передается как параметр через --ros-args
+# robot_description будет получен из топика /robot_description (публикует robot_state_publisher)
 # В Humble нет ros2_control_node.launch.py, запускаем ноду напрямую
 exec ros2 run controller_manager ros2_control_node \
     --ros-args \
-    -p robot_description:="${ROBOT_DESCRIPTION}" \
     --params-file ${CONTROLLER_CONFIG}
 
 # Если exec не сработал (не должно произойти)
