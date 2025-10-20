@@ -5,16 +5,18 @@
 # - SERVICE_IMAGE_PREFIX: ghcr.io/krikz/rob_box
 
 services:
-  # Zenoh Router - центральный роутер для связи между Pi
+  # Zenoh Router - центральный роутер для связи между Pi и облаком
   zenoh-router:
     image: eclipse/zenoh:latest
     container_name: zenoh-router
     network_mode: host
     environment:
       - RUST_LOG=zenoh=info
+      - ROBOT_ID=${ROBOT_ID}  # ID робота для namespace при публикации в облако
     volumes:
-      - ./config/zenoh_router_config.json5:/zenoh_config.json5
-    command: -c /zenoh_config.json5
+      - ./config:/config:ro
+      - ./zenoh-router:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
@@ -44,7 +46,7 @@ services:
       - zenoh-router
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list | grep -q twist_mux || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f twist_mux || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 15s
@@ -98,6 +100,7 @@ services:
     volumes:
       - ./config:/config/shared:ro
       - ./scripts/robot_state_publisher:/scripts:ro
+      - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
     command: ["/scripts/start_robot_state_publisher.sh"]
     depends_on:
       - zenoh-router
@@ -202,7 +205,7 @@ services:
       - twist-mux
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 control list_controllers | grep -q diff_drive_controller || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f ros2_control_node || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 30s
@@ -225,7 +228,7 @@ services:
       - ./config/nav2:/config/nav2:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
-    command: ["/scripts/start_nav2.sh"]
+    command: ["/scripts/start_nav2_direct.sh"]
     depends_on:
       - zenoh-router
       - robot-state-publisher
@@ -234,7 +237,7 @@ services:
       - twist-mux
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list | grep -q 'bt_navigator\\|controller_server\\|planner_server' || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f 'bt_navigator' || exit 1"]
       interval: 15s
       timeout: 10s
       start_period: 60s

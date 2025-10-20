@@ -28,25 +28,13 @@ echo -e "${GREEN}✓${NC} ROS2 sourced"
 
 # Проверка конфигурации
 MAIN_CONFIG="/config/nav2/nav2_params.yaml"
-LOCAL_COSTMAP="/config/nav2/local_costmap_params.yaml"
-GLOBAL_COSTMAP="/config/nav2/global_costmap_params.yaml"
 
 if [ ! -f "$MAIN_CONFIG" ]; then
     echo -e "${RED}❌ ERROR: Main config not found: $MAIN_CONFIG${NC}"
     exit 1
 fi
 
-if [ ! -f "$LOCAL_COSTMAP" ]; then
-    echo -e "${RED}❌ ERROR: Local costmap config not found: $LOCAL_COSTMAP${NC}"
-    exit 1
-fi
-
-if [ ! -f "$GLOBAL_COSTMAP" ]; then
-    echo -e "${RED}❌ ERROR: Global costmap config not found: $GLOBAL_COSTMAP${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✓${NC} Configuration files validated"
+echo -e "${GREEN}✓${NC} Configuration file validated: $MAIN_CONFIG"
 
 # Проверка behavior trees
 BT_DIR="/config/nav2/behavior_trees"
@@ -142,9 +130,7 @@ echo "  🚀 Launching Nav2 Navigation Stack"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 echo "Configuration:"
-echo "  • Main config: $MAIN_CONFIG"
-echo "  • Local costmap: $LOCAL_COSTMAP"
-echo "  • Global costmap: $GLOBAL_COSTMAP"
+echo "  • Main config: $MAIN_CONFIG (includes costmap configs)"
 echo "  • Behavior trees: $BT_DIR"
 echo ""
 echo "Expected topics:"
@@ -180,4 +166,5 @@ exec ros2 launch nav2_bringup navigation_launch.py \
     use_sim_time:=False \
     autostart:=True \
     use_lifecycle_mgr:=True \
-    use_respawn:=True
+    use_respawn:=True \
+    namespace:=""

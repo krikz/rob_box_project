@@ -1,5 +1,6 @@
 services:
   # Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
+  # Namespace НЕ используется здесь - он добавляется только на Main Pi при отправке в облако
   zenoh-router:
     image: eclipse/zenoh:latest
     container_name: zenoh-router-vision

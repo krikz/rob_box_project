@@ -76,6 +76,12 @@ class CommandNode(Node):
         self.intent_pub = self.create_publisher(String, '/voice/command/intent', 10)
         self.feedback_pub = self.create_publisher(String, '/voice/command/feedback', 10)
         
+        # Publisher для управления движением
+        # Публикуем на /cmd_vel_voice (priority: 25 в twist_mux)
+        # Приоритет ниже чем у оператора (joy:100, web:50) но выше Nav2 (10)
+        from geometry_msgs.msg import Twist
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_voice', 10)
+        
         # State tracking
         self.dialogue_state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
         
@@ -107,7 +113,12 @@ class CommandNode(Node):
             IntentType.NAVIGATE: [
                 (r'(двигайся|иди|поезжай|езжай|направляйся)\s+к\s+точке\s+(\d+)', 'waypoint_number'),
                 (r'(двигайся|иди|поезжай|езжай)\s+к\s+(дом|кухня|гостиная)', 'waypoint_name'),
-                (r'(двигайся|иди|поезжай)\s+(вперед|назад|влево|вправо)', 'direction'),
+                # Движение с глаголом
+                (r'(двигайся|иди|поезжай|езжай|катись|двигай)\s+(вперед|вперёд|назад|влево|вправо)', 'direction'),
+                # Движение без глагола (просто направление)
+                (r'^(вперед|вперёд|назад)$', 'direction'),
+                # Повороты
+                (r'(поверни|повернись|разверн|развернись)\s+(налево|направо|влево|вправо)', 'turn'),
             ],
             # Остановка
             IntentType.STOP: [
@@ -147,21 +158,24 @@ class CommandNode(Node):
         if not text:
             return
         
-        # ПРИОРИТЕТ: Игнорировать STT если dialogue активен (LISTENING или DIALOGUE)
-        # Проверка ПЕРЕД классификацией и ПЕРЕД любым feedback
-        if self.dialogue_state in ['LISTENING', 'DIALOGUE']:
-            self.get_logger().debug(f'🔇 Dialogue активен ({self.dialogue_state}) - command_node игнорирует: {text}')
-            return
-        
         self.get_logger().info(f'🎤 STT: {text}')
+        
+        # Удалить wake word из начала команды
+        wake_words = ['робот', 'робокс', 'робобокс']
+        for wake_word in wake_words:
+            if text.startswith(wake_word):
+                text = text[len(wake_word):].strip()
+                break
         
         # Распознать команду
         command = self.classify_intent(text)
         
+        # Всегда публиковать intent (даже UNKNOWN) для dialogue_node
+        self.publish_intent(command)
+        
         if command.intent == IntentType.UNKNOWN:
-            self.get_logger().warn(f'⚠️ Неизвестная команда: {text}')
-            # Не публикуем feedback для неизвестных команд - пусть тишина
-            # (возможно пользователь обращался не к роботу)
+            self.get_logger().debug(f'🤷 Неизвестная команда - пере даю dialogue_node: {text}')
+            # Не выполняем команду, но публикуем intent=UNKNOWN для dialogue
             return
         
         if command.confidence < self.confidence_threshold:
@@ -171,9 +185,6 @@ class CommandNode(Node):
         
         self.get_logger().info(f'🎯 Intent: {command.intent.value} ({command.confidence:.2f})')
         self.get_logger().info(f'📦 Entities: {command.entities}')
-        
-        # Опубликовать intent
-        self.publish_intent(command)
         
         # Выполнить команду
         self.execute_command(command)
@@ -203,6 +214,10 @@ class CommandNode(Node):
                         elif entity_type == 'waypoint_name':
                             best_entities = {'waypoint': match.group(2)}
                         elif entity_type == 'direction':
+                            # Направление может быть в группе 1 (только направление) или 2 (с глаголом)
+                            direction = match.group(2) if match.lastindex >= 2 else match.group(1)
+                            best_entities = {'direction': direction}
+                        elif entity_type == 'turn':
                             best_entities = {'direction': match.group(2)}
         
         return Command(
@@ -232,6 +247,12 @@ class CommandNode(Node):
         if not self.enable_navigation:
             self.get_logger().warn('⚠️ Навигация отключена')
             self.publish_feedback('Навигация недоступна')
+            return
+        
+        # Проверка на команду направления (поверни налево/направо)
+        direction = command.entities.get('direction')
+        if direction:
+            self.handle_direction(direction)
             return
         
         waypoint_name = command.entities.get('waypoint')
@@ -314,6 +335,65 @@ class CommandNode(Node):
         if self.enable_navigation and hasattr(self, 'nav_client'):
             # TODO: Cancel current goal
             pass
+    
+    def handle_direction(self, direction: str):
+        """Обработка команды поворота/движения в направлении
+        
+        По умолчанию:
+        - Поворот: ~90 градусов (2 сек при 0.5 рад/с ≈ 1 радиан ≈ 57°, увеличим до 3 сек)
+        - Движение вперёд/назад: 1 метр (3.3 сек при 0.3 м/с)
+        """
+        from geometry_msgs.msg import Twist
+        import threading
+        
+        # Маппинг направлений: (linear_x, angular_z, duration, description)
+        direction_map = {
+            'налево': (0.0, 0.5, 3.0, 'поворачиваю налево'),    # 3 сек * 0.5 рад/с ≈ 1.5 рад ≈ 86°
+            'влево': (0.0, 0.5, 3.0, 'поворачиваю влево'),
+            'направо': (0.0, -0.5, 3.0, 'поворачиваю направо'),  # поворот направо
+            'вправо': (0.0, -0.5, 3.0, 'поворачиваю вправо'),
+            'вперед': (0.3, 0.0, 3.3, 'двигаюсь вперёд'),        # 3.3 сек * 0.3 м/с ≈ 1 метр
+            'вперёд': (0.3, 0.0, 3.3, 'двигаюсь вперёд'),        # вариант с ё
+            'назад': (-0.3, 0.0, 3.3, 'двигаюсь назад'),         # 1 метр назад
+        }
+        
+        if direction not in direction_map:
+            self.get_logger().warn(f'⚠️ Неизвестное направление: {direction}')
+            self.publish_feedback(f'Не понимаю куда {direction}')
+            return
+        
+        linear_x, angular_z, duration, feedback = direction_map[direction]
+        
+        self.get_logger().info(f'🎯 Команда: {feedback}, linear={linear_x}, angular={angular_z}, duration={duration}s')
+        self.publish_feedback(feedback.capitalize())
+        
+        # Запустить публикацию в отдельном потоке чтобы не блокировать ноду
+        def publish_velocity():
+            twist = Twist()
+            twist.linear.x = linear_x
+            twist.angular.z = angular_z
+            
+            # Публиковать с частотой 20 Hz (каждые 50 мс)
+            # Это выше чем cmd_vel_timeout (0.5 сек), так что команды не потеряются
+            rate_hz = 20
+            sleep_time = 1.0 / rate_hz
+            iterations = int(duration * rate_hz)
+            
+            import time
+            for i in range(iterations):
+                self.cmd_vel_pub.publish(twist)
+                time.sleep(sleep_time)
+            
+            # Остановка
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.cmd_vel_pub.publish(twist)
+            
+            self.get_logger().info(f'✅ Выполнено: {feedback}')
+        
+        # Запустить в фоне
+        thread = threading.Thread(target=publish_velocity, daemon=True)
+        thread.start()
     
     def handle_status(self, command: Command):
         """Обработка запроса статуса"""
