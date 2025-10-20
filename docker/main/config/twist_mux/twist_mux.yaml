@@ -8,29 +8,29 @@ twist_mux:
       # 1. Emergency Stop (наивысший приоритет)
       - name: emergency_stop
         topic: cmd_vel_emergency
-        timeout: 0.1  # Быстрый timeout для безопасности
-        priority: 255  # Максимальный приоритет
+        timeout: 0.1
+        priority: 255.0
         short_desc: "Emergency stop from safety systems"
         
       # 2. Joystick/Gamepad (высокий приоритет)
       - name: joystick
         topic: cmd_vel_joy
-        timeout: 0.5  # 0.5 сек после последней команды
-        priority: 100  # Высокий приоритет (человек > автономия)
+        timeout: 0.5
+        priority: 100.0
         short_desc: "Manual control from gamepad/joystick"
         
       # 3. Web UI / Mobile App (средний приоритет)
       - name: web_ui
         topic: cmd_vel_web
         timeout: 1.0
-        priority: 50
+        priority: 50.0
         short_desc: "Manual control from web interface"
         
       # 4. Nav2 Navigation (низкий приоритет)
       - name: navigation
         topic: cmd_vel
         timeout: 0.5
-        priority: 10  # Низкий приоритет (автономия < человек)
+        priority: 10.0
         short_desc: "Autonomous navigation from Nav2"
 
     # Locks (блокировка определенных источников)
