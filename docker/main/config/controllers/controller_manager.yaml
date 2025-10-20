@@ -43,13 +43,13 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
     # Имена joints для левых колес (из URDF)
     left_wheel_names:
-      - front_left_wheel_joint
-      - rear_left_wheel_joint
+      - left_front_wheel_joint
+      - left_rear_wheel_joint
     
     # Имена joints для правых колес (из URDF)
     right_wheel_names:
-      - front_right_wheel_joint
-      - rear_right_wheel_joint
+      - right_front_wheel_joint
+      - right_rear_wheel_joint
     
     # ✅ Параметры получены из Fusion 360 URDF (2025-10-11)
     # Подтверждены ручными измерениями: база 390мм, колея 289мм
