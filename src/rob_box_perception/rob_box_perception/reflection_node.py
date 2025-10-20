@@ -80,6 +80,10 @@ class ReflectionNode(Node):
         # ============ Память размышлений ============
         self.recent_thoughts: List[str] = []  # Последние 10 мыслей
         
+        # ============ Speech Debounce ============
+        self.last_speech_time: Optional[float] = None  # Когда последний раз говорили
+        self.speech_debounce_interval = 30.0  # Не говорить чаще чем раз в 30 секунд
+        
         # ============ DeepSeek API ============
         self.deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
         self.deepseek_client = None
@@ -628,6 +632,16 @@ class ReflectionNode(Node):
             self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
             return  # НЕ публикуем речь
         
+        # Проверка: говорили недавно? (debounce)
+        current_time = time.time()
+        if self.last_speech_time:
+            time_since_last = current_time - self.last_speech_time
+            if time_since_last < self.speech_debounce_interval:
+                self.get_logger().debug(
+                    f'🔇 Speech debounce: не говорю (прошло {time_since_last:.1f}s < {self.speech_debounce_interval}s)'
+                )
+                return  # НЕ публикуем речь
+        
         # Формируем JSON с SSML (как dialogue_node)
         import json
         response_json = {
@@ -637,6 +651,9 @@ class ReflectionNode(Node):
         msg = String()
         msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
+        
+        # Обновляем время последней речи
+        self.last_speech_time = current_time
     
     def _publish_speech_ssml(self, speech_ssml: str):
         """Публикация речи в TTS (уже в SSML формате) - для ответов пользователю"""
