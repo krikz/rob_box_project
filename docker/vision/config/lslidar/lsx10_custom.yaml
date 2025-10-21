@@ -2,7 +2,7 @@
 # Serial interface через /dev/ttyACM0 (USB CDC ACM)
 /lslidar_driver_node:
   ros__parameters:
-    frame_id: laser_link                    # Лазерная система координат
+    frame_id: lslidar_n10               # Должен совпадать с URDF frame
     # Сетевые параметры (не используются в serial режиме)
     # group_ip: 224.1.1.2
     # add_multicast: false
