@@ -775,8 +775,7 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 
 - [Архитектура системы](SYSTEM_OVERVIEW.md)
 - [Программное обеспечение](SOFTWARE.md)
-- [Deployment Guide](DEPLOYMENT.md)
-- [Fusion 360 Measurements](reference/FUSION360_FINAL_MEASUREMENTS.md)
+- [Развёртывание](../deployment/README.md)
 
 ---
 
