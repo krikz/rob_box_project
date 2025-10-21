@@ -105,7 +105,7 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
-    
+
   rtabmap:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: rtabmap

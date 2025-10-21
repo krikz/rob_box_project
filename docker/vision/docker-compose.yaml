@@ -47,7 +47,7 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
-    
+
   lslidar:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:lslidar-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: lslidar

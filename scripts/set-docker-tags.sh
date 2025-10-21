@@ -35,6 +35,11 @@ elif [[ "$CURRENT_BRANCH" == feature/* ]] || [[ "$CURRENT_BRANCH" == feat/* ]]; 
     ENV_FILE="$DOCKER_DIR/.env.feature"
     IMAGE_TAG="test"
     DESCRIPTION="Feature testing (feature/* branch)"
+elif [[ "$CURRENT_BRANCH" == copilot/* ]]; then
+    # Copilot branches are similar to feature branches
+    ENV_FILE="$DOCKER_DIR/.env.feature"
+    IMAGE_TAG="test"
+    DESCRIPTION="Copilot feature testing (copilot/* branch)"
 elif [[ "$CURRENT_BRANCH" == release/* ]]; then
     # Release branches use release candidate tags
     VERSION="${CURRENT_BRANCH#release/}"
