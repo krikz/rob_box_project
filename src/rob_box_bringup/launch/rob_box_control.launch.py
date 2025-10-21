@@ -71,7 +71,7 @@ def generate_launch_description():
                 [
                     FindPackageShare("rob_box_description"),
                     "urdf",
-                    "rob_box_main.xacro",
+                    "rob_box.xacro",
                 ]
             ),
         ]
