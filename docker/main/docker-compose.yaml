@@ -27,7 +27,7 @@ services:
 
   # twist_mux - мультиплексирование команд скорости с приоритизацией
   twist-mux:
-    image: ghcr.io/krikz/rob_box:twist-mux-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:twist-mux-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: twist-mux
     network_mode: host
     environment:
@@ -55,7 +55,7 @@ services:
   # micro-ROS Agent - связь с ESP32 Sensor Hub по UART
   # Транслирует сообщения между ROS2 (DDS/Zenoh) и micro-ROS (XRCE-DDS)
   micro-ros-agent:
-    image: ghcr.io/krikz/rob_box:micro-ros-agent-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:micro-ros-agent-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: micro-ros-agent
     network_mode: host
     privileged: true  # Нужен для доступа к serial устройствам
@@ -87,7 +87,7 @@ services:
 
   # Robot State Publisher - публикует TF дерево робота из URDF
   robot-state-publisher:
-    image: ghcr.io/krikz/rob_box:robot-state-publisher-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:robot-state-publisher-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: robot-state-publisher
     network_mode: host
     environment:
@@ -107,7 +107,7 @@ services:
     restart: unless-stopped
     
   rtabmap:
-    image: ghcr.io/krikz/rob_box:rtabmap-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: rtabmap
     network_mode: host
     environment:
@@ -179,7 +179,7 @@ services:
   # ROS2 Control Manager - управление моторами через VESC
   # VESC Nexus работает как hardware_interface плагин
   ros2-control:
-    image: ghcr.io/krikz/rob_box:ros2-control-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ros2-control-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: ros2-control
     network_mode: host
     privileged: true  # Для доступа к CAN интерфейсу
@@ -213,7 +213,7 @@ services:
 
   # Nav2 Navigation Stack - автономная навигация
   nav2:
-    image: ghcr.io/krikz/rob_box:nav2-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:nav2-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: nav2
     network_mode: host
     environment:

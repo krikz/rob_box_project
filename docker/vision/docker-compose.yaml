@@ -19,7 +19,7 @@ services:
       start_period: 30s
 
   oak-d:
-    image: ghcr.io/krikz/rob_box:oak-d-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: oak-d
     network_mode: host
     privileged: true
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
     
   lslidar:
-    image: ghcr.io/krikz/rob_box:lslidar-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:lslidar-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: lslidar
     network_mode: host
     privileged: true  # Для доступа к USB/Serial устройству
@@ -73,7 +73,7 @@ services:
     restart: unless-stopped
 
   apriltag:
-    image: ghcr.io/krikz/rob_box:apriltag-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:apriltag-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: apriltag
     network_mode: host
     environment:
@@ -96,7 +96,7 @@ services:
     restart: unless-stopped
 
   led-matrix:
-    image: ghcr.io/krikz/rob_box:led-matrix-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: led-matrix
     network_mode: host
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
@@ -119,14 +119,12 @@ services:
     restart: unless-stopped
 
   voice-assistant:
-    # Image tags:
-    # - ghcr.io/krikz/rob_box:voice-assistant-humble-latest (main branch)
-    # - ghcr.io/krikz/rob_box:voice-assistant-humble-dev (develop branch)
-    # - ghcr.io/krikz/rob_box:voice-assistant-humble-test (feature/* branches)
+    # Image tags automatically determined by IMAGE_TAG environment variable:
+    # - IMAGE_TAG=latest  → voice-assistant-humble-latest (main branch)
+    # - IMAGE_TAG=dev     → voice-assistant-humble-dev (develop branch)
+    # - IMAGE_TAG=test    → voice-assistant-humble-test (feature/* branches)
     # Built via GitHub Actions: .github/workflows/build-vision-services.yml
-    image: ghcr.io/krikz/rob_box:voice-assistant-humble-test
-    # После мерджа в develop поменяй на: voice-assistant-humble-dev
-    # После мерджа в main поменяй на: voice-assistant-humble-latest
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
@@ -166,9 +164,8 @@ services:
 
   # Internal Dialogue Agent - система внутреннего диалога робота
   perception:
-    image: ghcr.io/krikz/rob_box:perception-humble-test
-    # После мерджа в develop: perception-humble-dev
-    # После мерджа в main: perception-humble-latest
+    # Image tag automatically determined by IMAGE_TAG environment variable
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:perception-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: perception
     network_mode: host
     environment:
