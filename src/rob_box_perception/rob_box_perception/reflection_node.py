@@ -13,43 +13,18 @@ context_aggregator (MPC lite) → events → reflection_node → thoughts/speech
 
 Публикует:
 - /reflection/internal_thought (String) - внутренние мысли
-- /voice/tts/request        # Summarized History (суммаризованная история по типам)
-        lines.append("")
-        lines.append("=== СУММАРИЗОВАННАЯ ИСТОРИЯ ===")
-        
-        # НЕ включаем речь пользователя в обычное размышление!
-        # Речь обрабатывается dialogue_node, reflection размышляет только о системе и окружении
-        
-        if ctx.robot_response_summaries and ctx.robot_response_summaries != '[]':ь робота
+- /voice/tts/request (String) - речь робота
 
 Особенности:
 1. Event-driven: размышляет при получении события (не по таймеру)
 2. Hook для срочных ответов: личные вопросы → быстрый ответ
-3. НЕ собирает данные - только думае    def _play_sound(self, sound_name: str):
-        """Проиграть звуковой эффект с debounce"""
-        try:
-            current_time = time.time()
-            
-            # Проверка debounce: если звук недавно играл - пропускаем
-            if sound_name in self.last_sound_time:
-                time_since_last = current_time - self.last_sound_time[sound_name]
-                if time_since_last < self.sound_debounce_interval:
-                    self.get_logger().debug(
-                        f'🔇 Звук {sound_name} пропущен (debounce: {time_since_last:.1f}s < {self.sound_debounce_interval}s)'
-                    )
-                    return
-            
-            # Публикуем звук
-            msg = String()
-            msg.data = sound_name
-            self.sound_pub.publish(msg)
-            
-            # Запоминаем время последнего звука
-            self.last_sound_time[sound_name] = current_time
-            self.get_logger().debug(f'🎵 Звук: {sound_name}')
-            
-        except Exception as e:
-            self.get_logger().error(f'❌ Ошибка проигрывания звука: {e}')т
+3. НЕ собирает данные - только думает и решает
+
+ВАЖНО: Речь пользователя НЕ включается в обычное размышление!
+Она обрабатывается dialogue_node. Reflection размышляет ТОЛЬКО о:
+- Состоянии систем (health, battery, sensors)
+- Изменениях в окружении (vision, AprilTags, движение)
+- Своих мыслях и ответах робота
 """
 
 import json
@@ -104,6 +79,10 @@ class ReflectionNode(Node):
         
         # ============ Память размышлений ============
         self.recent_thoughts: List[str] = []  # Последние 10 мыслей
+        
+        # ============ Speech Debounce ============
+        self.last_speech_time: Optional[float] = None  # Когда последний раз говорили
+        self.speech_debounce_interval = 30.0  # Не говорить чаще чем раз в 30 секунд
         
         # ============ DeepSeek API ============
         self.deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
@@ -495,7 +474,7 @@ class ReflectionNode(Node):
             try:
                 speech_sums = json.loads(ctx.speech_summaries)
                 if speech_sums:
-                    lines.append("\n� ВОПРОСЫ ПОЛЬЗОВАТЕЛЯ:")
+                    lines.append("\n👤 ВОПРОСЫ ПОЛЬЗОВАТЕЛЯ:")
                     for s in speech_sums[-3:]:  # Последние 3
                         lines.append(f"  • {s['summary']}")
             except:
@@ -653,6 +632,16 @@ class ReflectionNode(Node):
             self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
             return  # НЕ публикуем речь
         
+        # Проверка: говорили недавно? (debounce)
+        current_time = time.time()
+        if self.last_speech_time:
+            time_since_last = current_time - self.last_speech_time
+            if time_since_last < self.speech_debounce_interval:
+                self.get_logger().debug(
+                    f'🔇 Speech debounce: не говорю (прошло {time_since_last:.1f}s < {self.speech_debounce_interval}s)'
+                )
+                return  # НЕ публикуем речь
+        
         # Формируем JSON с SSML (как dialogue_node)
         import json
         response_json = {
@@ -662,6 +651,9 @@ class ReflectionNode(Node):
         msg = String()
         msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
+        
+        # Обновляем время последней речи
+        self.last_speech_time = current_time
     
     def _publish_speech_ssml(self, speech_ssml: str):
         """Публикация речи в TTS (уже в SSML формате) - для ответов пользователю"""
@@ -670,6 +662,16 @@ class ReflectionNode(Node):
             remaining = int(self.silence_until - time.time())
             self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
             return  # НЕ публикуем речь
+        
+        # Проверка: говорили недавно? (debounce для избежания дубликатов)
+        current_time = time.time()
+        if self.last_speech_time:
+            time_since_last = current_time - self.last_speech_time
+            if time_since_last < 5.0:  # Для срочных ответов короткий debounce - 5 сек
+                self.get_logger().debug(
+                    f'🔇 Speech debounce (SSML): не говорю (прошло {time_since_last:.1f}s < 5.0s)'
+                )
+                return  # НЕ публикуем речь
         
         # Формируем JSON с готовым SSML
         import json
@@ -680,6 +682,9 @@ class ReflectionNode(Node):
         msg = String()
         msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
+        
+        # Обновляем время последней речи
+        self.last_speech_time = current_time
         
         self.get_logger().info(f'🗣️  Reflection → TTS: {speech_ssml[:80]}...')
     

@@ -140,11 +140,19 @@ class TTSNode(Node):
             except Exception as e:
                 self.get_logger().warn(f'⚠️  Не удалось подключиться к Yandex gRPC: {e}')
         
-        # Подписка на dialogue response
+        # Подписка на dialogue response (от dialogue_node)
         self.dialogue_sub = self.create_subscription(
             String,
             '/voice/dialogue/response',
             self.dialogue_callback,
+            10
+        )
+        
+        # Подписка на TTS requests (от reflection_node и других)
+        self.tts_request_sub = self.create_subscription(
+            String,
+            '/voice/tts/request',
+            self.dialogue_callback,  # Используем тот же callback
             10
         )
         
