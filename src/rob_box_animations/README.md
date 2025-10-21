@@ -229,7 +229,7 @@ Check that logical group name in manifest matches LED panel configuration.
 
 ## 📚 Related Documentation
 
-- [LED Matrix Integration](../../reference/LED_MATRIX_INTEGRATION.md)
+- [LED Matrix Driver](https://github.com/krikz/ros2leds)
 - [Animation List](animations/ANIMATIONS_LIST.md)
 - [ros2leds Package](https://github.com/krikz/ros2leds)
 

@@ -55,7 +55,7 @@ URDF модель робота, Gazebo симуляция.
 ### vesc_nexus
 Интеграция VESC моторных контроллеров.
 
-**Документация:** [`src/vesc_nexus/README.md`](../../src/vesc_nexus/README.md)
+**Документация:** [github.com/krikz/vesc_nexus](https://github.com/krikz/vesc_nexus)
 
 ### robot_sensor_hub_msg
 ROS 2 сообщения для ESP32 сенсорного хаба.
@@ -65,7 +65,7 @@ ROS 2 сообщения для ESP32 сенсорного хаба.
 ### ros2leds
 Драйвер WS2812B LED лент.
 
-**Документация:** [`src/ros2leds/README.md`](../../src/ros2leds/README.md)
+**Документация:** [github.com/krikz/ros2leds](https://github.com/krikz/ros2leds)
 
 ### led_matrix_driver
 Драйвер LED матриц для отображения анимаций.

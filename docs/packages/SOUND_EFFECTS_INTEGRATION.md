@@ -320,6 +320,6 @@ git push origin feature/internal-dialogue
 
 ## 📚 См. также
 
-- [Sound Node архитектура](../rob_box_voice/docs/PHASE4_SOUND_IMPLEMENTATION.md)
-- [Internal Dialogue архитектура](./INTERNAL_DIALOGUE_ARCHITECTURE.md)
+- [Sound Node архитектура](../../src/rob_box_voice/docs/PHASE4_SOUND_IMPLEMENTATION.md)
+- [Internal Dialogue + Voice Assistant](../architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
 - [Animation Editor](../guides/ANIMATION_EDITOR.md) - синхронизация с анимациями
