@@ -29,6 +29,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Validate YAML syntax (Main Pi)
         run: |
@@ -110,6 +127,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Validate YAML syntax (Vision Pi)
         run: |
@@ -198,6 +232,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Check required files
         run: |
@@ -283,3 +334,11 @@ jobs:
             echo "❌ Некоторые проверки провалились. См. детали выше."
             exit 1
           fi
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-validate-summary
+          path: |
+            ${{ github.workspace }}

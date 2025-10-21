@@ -21,6 +21,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Detect changes
         id: changes
@@ -84,7 +99,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Get branch name
         id: branch
@@ -173,3 +203,11 @@ jobs:
           echo "  # resolve conflicts"
           echo "  git push origin develop"
           exit 1
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-auto-merge-develop
+          path: |
+            ${{ github.workspace }}

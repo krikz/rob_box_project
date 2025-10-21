@@ -69,6 +69,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -105,6 +122,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-oak-d
+          path: |
+            ${{ github.workspace }}
+
   # LSLIDAR N10
   build-lslidar:
     needs: determine-tag
@@ -116,6 +141,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -152,6 +194,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-lslidar
+          path: |
+            ${{ github.workspace }}
+
   # AprilTag Detection
   build-apriltag:
     needs: determine-tag
@@ -163,6 +213,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -199,6 +266,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-apriltag
+          path: |
+            ${{ github.workspace }}
+
   # LED Matrix System
   build-led-matrix:
     needs: determine-tag
@@ -212,6 +287,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive  # Важно! ros2leds это submodule
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -248,6 +339,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-led-matrix
+          path: |
+            ${{ github.workspace }}
+
   # Voice Assistant (ReSpeaker + Animations)
   build-voice-assistant:
     needs: determine-tag
@@ -259,6 +358,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -295,6 +411,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-voice-assistant
+          path: |
+            ${{ github.workspace }}
+
   # Internal Dialogue Agent (Perception + Reflection)
   build-perception:
     needs: determine-tag
@@ -306,6 +430,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -341,6 +482,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-perception
+          path: |
+            ${{ github.workspace }}
 
   # Проверка сборки всех сервисов прошла успешно
   verify-build:

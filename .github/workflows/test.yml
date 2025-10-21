@@ -31,6 +31,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
           
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
@@ -123,6 +139,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
           
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
@@ -148,6 +180,14 @@ jobs:
             --packages-select rob_box_voice \
             --pytest-args -m integration \
             --event-handlers console_direct+
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-integration-tests
+          path: |
+            ${{ github.workspace }}
 
   # ============================================================================
   # Test Summary
@@ -182,3 +222,11 @@ jobs:
           else
             echo "✅ All tests passed!" >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-test-summary
+          path: |
+            ${{ github.workspace }}

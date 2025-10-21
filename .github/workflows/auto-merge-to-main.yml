@@ -52,7 +52,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Полная история для мерджа
+          persist-credentials: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Configure Git
         run: |
@@ -145,6 +160,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Trigger main build
         run: |
@@ -160,3 +191,11 @@ jobs:
           echo "  ghcr.io/krikz/rob_box:oak-d-humble-latest"
           echo "  ghcr.io/krikz/rob_box:lslidar-humble-latest"
           echo "  # ... and all other services"
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-auto-merge-main
+          path: |
+            ${{ github.workspace }}

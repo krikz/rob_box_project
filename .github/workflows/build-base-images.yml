@@ -60,6 +60,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -103,6 +120,14 @@ jobs:
         with:
           job-name: ros2-zenoh-base
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-build-ros2-zenoh
+          path: |
+            ${{ github.workspace }}
+
   # Сборка базового образа RTAB-Map (для SLAM)
   build-rtabmap:
     runs-on: ubuntu-latest
@@ -113,6 +138,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -149,6 +191,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-build-rtabmap
+          path: |
+            ${{ github.workspace }}
+
   # Сборка базового образа DepthAI (для OAK-D камеры)
   build-depthai:
     runs-on: ubuntu-latest
@@ -159,6 +209,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -194,6 +261,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-build-depthai
+          path: |
+            ${{ github.workspace }}
+
   # Сборка базового образа PCL (для лидаров)
   build-pcl:
     runs-on: ubuntu-latest
@@ -205,6 +280,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: diag:Print environment and versions
+        run: |
+          echo "Runner: $RUNNER_OS"
+          uname -a || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          node --version || true
+          python --version || true
+          git --version || true
+          echo "Top-level files:"
+          ls -la .
+
+      - name: diag:List repository recursively
+        run: ls -laR .
 
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -241,3 +333,11 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BASE_IMAGE=${{ env.IMAGE_PREFIX }}:ros2-zenoh
+
+      - name: diag:Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-build-pcl
+          path: |
+            ${{ github.workspace }}
