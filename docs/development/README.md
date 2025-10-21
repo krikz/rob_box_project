@@ -64,13 +64,22 @@
 - Best practices
 
 ### [BUILD_OPTIMIZATION.md](BUILD_OPTIMIZATION.md)
-**Оптимизация сборки**
+**Оптимизация времени выполнения**
 
-- Ускорение компиляции ROS 2
-- Кэширование зависимостей
+- Оптимизация OAK-D камеры
+- Оптимизация RTAB-Map SLAM
+- Настройка DDS (CycloneDDS/Zenoh)
+- Оптимизация сети между Pi
+- Снижение CPU/RAM нагрузки
+
+### [DOCKER_BUILD_OPTIMIZATION.md](DOCKER_BUILD_OPTIMIZATION.md)
+**Оптимизация процесса сборки Docker**
+
+- Оптимизация Dockerfile структуры
+- Кэширование слоев
 - Multi-stage builds
-- Cross-compilation для ARM64
-- CI/CD оптимизация
+- GitHub Actions cache
+- Ускорение CI/CD сборок
 
 ### [LOCAL_BUILD.md](LOCAL_BUILD.md)
 **Локальная сборка Docker образов**
@@ -107,6 +116,40 @@
 - Extensions и инструменты
 - Debugging setup
 - Remote development
+
+### [LINTING_GUIDE.md](LINTING_GUIDE.md)
+**Руководство по линтингу**
+
+- Python linters (flake8, black, pylint)
+- C++ linters (clang-format, cpplint)
+- YAML validators
+- Dockerfile linting (hadolint)
+- Pre-commit hooks
+
+### [PYTHON_STYLE_GUIDE.md](PYTHON_STYLE_GUIDE.md)
+**Руководство по стилю Python**
+
+- PEP 8 стандарты
+- ROS 2 Python conventions
+- Docstring format
+- Type hints
+- Testing conventions
+
+### [TESTING_GUIDE.md](TESTING_GUIDE.md)
+**Руководство по тестированию**
+
+- Unit тесты (pytest, unittest)
+- Integration тесты
+- Launch тесты ROS 2
+- Mock объекты и fixtures
+- CI/CD тестирование
+
+### AI Development Reports
+Отчеты о разработке с использованием AI:
+- [**AI_CONTEXT_MAP.md**](AI_CONTEXT_MAP.md) - Карта контекста проекта для AI
+- [**AI_DEVELOPMENT_COMPLETE.md**](AI_DEVELOPMENT_COMPLETE.md) - Завершенные AI сессии
+- [**AI_DEVELOPMENT_REVIEW.md**](AI_DEVELOPMENT_REVIEW.md) - Обзор AI разработки
+- [**AI_TROUBLESHOOTING_CHECKLIST.md**](AI_TROUBLESHOOTING_CHECKLIST.md) - Чеклист диагностики для AI
 
 ## 🔧 Инструменты разработки
 
@@ -167,7 +210,7 @@
 
 ## 🤝 Вклад
 
-См. [CONTRIBUTING.md](../../../../CONTRIBUTING.md) для деталей процесса разработки.
+См. [CONTRIBUTING.md](../../CONTRIBUTING.md) для деталей процесса разработки.
 
 ---
 

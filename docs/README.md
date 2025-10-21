@@ -4,9 +4,12 @@
 
 ## 📂 Структура документации
 
+**[📖 Полное описание структуры документации](DOCUMENTATION_STRUCTURE.md)**
+
 ### 🏗️ [architecture/](architecture/) - Архитектура системы
 Описание архитектуры робота, аппаратных и программных компонентов.
 
+- [**README.md**](architecture/README.md) - Навигация по архитектурной документации
 - [**SYSTEM_OVERVIEW.md**](architecture/SYSTEM_OVERVIEW.md) - Общая архитектура системы
 - [**HARDWARE.md**](architecture/HARDWARE.md) - Аппаратные компоненты
 - [**SOFTWARE.md**](architecture/SOFTWARE.md) - Программные компоненты
@@ -16,6 +19,7 @@
 ### 📦 [packages/](packages/) - Документация пакетов
 Документация ROS 2 пакетов проекта (ссылки на src/).
 
+- [**README.md**](packages/README.md) - Навигация по пакетам
 - [**rob_box_voice**](../src/rob_box_voice/README.md) - Голосовой ассистент с AI
 - [**rob_box_animations**](../src/rob_box_animations/README.md) - LED анимации
 - [**rob_box_bringup**](../src/rob_box_bringup/) - Системный запуск
@@ -24,6 +28,7 @@
 ### 🚀 [deployment/](deployment/) - Развёртывание
 Инструкции по развёртыванию на роботе и в Docker.
 
+- [**README.md**](deployment/README.md) - Навигация по развёртыванию
 - [**READY_FOR_DEPLOY.md**](deployment/READY_FOR_DEPLOY.md) - Чеклист готовности к деплою
 - [**VOICE_ASSISTANT_DOCKER.md**](deployment/VOICE_ASSISTANT_DOCKER.md) - Voice Assistant в Docker
 - [**VISION_PI_DEPLOYMENT.md**](deployment/VISION_PI_DEPLOYMENT.md) - Развёртывание Vision Pi
@@ -49,6 +54,7 @@
 ### 📖 [guides/](guides/) - Руководства пользователя
 Пошаговые инструкции по настройке и использованию.
 
+- [**README.md**](guides/README.md) - Навигация по руководствам
 - [**QUICK_START.md**](guides/QUICK_START.md) - Быстрый старт
 - [**NAV2_SETUP.md**](guides/NAV2_SETUP.md) - Настройка навигации Nav2
 - [**CAN_SETUP.md**](guides/CAN_SETUP.md) - Настройка CAN шины
@@ -64,8 +70,10 @@
 ### 📊 [reports/](reports/) - Отчёты и аудиты
 Технические отчёты, аудиты, итоги сессий.
 
+- [**README.md**](reports/README.md) - Навигация по отчётам
 - [**VISION_PI_USB_POWER_AUDIT_2025-10-13.md**](reports/VISION_PI_USB_POWER_AUDIT_2025-10-13.md)
 - [**VISION_PI_CONTAINERS_FIX_2025-10-13.md**](reports/VISION_PI_CONTAINERS_FIX_2025-10-13.md)
+- [**DOCKER_BUILD_FIX_2025-10-18.md**](reports/DOCKER_BUILD_FIX_2025-10-18.md)
 
 ### ⚙️ Другие документы
 
@@ -74,8 +82,8 @@
 ## 🔗 Связанные документы
 
 - [**README.md**](../README.md) - Главная страница проекта
-- [**CONTRIBUTING.md**](../../../CONTRIBUTING.md) - Правила участия в разработке
-- [**.github/workflows/**](../.github/workflows/) - GitHub Actions workflows
+- [**CONTRIBUTING.md**](../CONTRIBUTING.md) - Правила участия в разработке
+- [**CI/CD Pipeline**](CI_CD_PIPELINE.md) - GitHub Actions workflows
 - [**docker/**](../docker/) - Docker конфигурации
 
 ## 📝 Правила документации

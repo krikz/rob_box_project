@@ -300,7 +300,7 @@ watch -n 1 vcgencmd get_throttled
 
 - [POWER_MANAGEMENT.md](../guides/POWER_MANAGEMENT.md) - Power configuration guide
 - [RASPBERRY_PI_USB_POWER_FIX.md](../guides/RASPBERRY_PI_USB_POWER_FIX.md) - USB power setup
-- [HARDWARE.md](../HARDWARE.md) - System hardware documentation
+- [HARDWARE.md](../architecture/HARDWARE.md) - System hardware documentation
 - [OAK-D Lite Specs](https://docs.luxonis.com/projects/hardware/en/latest/pages/DM9095.html) - Official specs
 
 ---

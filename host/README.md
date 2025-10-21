@@ -224,6 +224,6 @@ sudo systemctl daemon-reload
 
 ## См. также
 
-- [CAN Setup Guide](../../guides/CAN_SETUP.md) - Полная документация по CAN
-- [VESC Integration](../../reference/VESC_INTEGRATION.md) - Интеграция VESC моторов
-- [ROS2 Control Architecture](../../reference/ROS2_CONTROL_SYSTEM_OVERVIEW.md) - Архитектура управления
+- [CAN Setup Guide](../docs/guides/CAN_SETUP.md) - Полная документация по CAN
+- [VESC Integration](https://github.com/krikz/vesc_nexus) - Интеграция VESC моторов
+- [System Architecture](../docs/architecture/SYSTEM_OVERVIEW.md) - Архитектура системы

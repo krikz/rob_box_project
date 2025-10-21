@@ -173,7 +173,7 @@ python3 scripts/visualize_animations.py
 
 - [ros2leds package](https://github.com/nosknut/ros2leds) — LED управление
 - [rob_box_animations README](../README.md) — детали пакета
-- [SOFTWARE.md](../../../architecture/SOFTWARE.md) — архитектура программного обеспечения
+- [SOFTWARE.md](../../../docs/architecture/SOFTWARE.md) — архитектура программного обеспечения
 
 ---
 

@@ -185,7 +185,7 @@ source install/setup.bash
 
 После проверки визуализации можно интегрировать с реальными моторами VESC.
 
-См. [VESC Integration Guide](../reference/vesc-integration.md) для деталей.
+См. [VESC Integration](https://github.com/krikz/vesc_nexus) для деталей.
 
 ## Следующие шаги
 

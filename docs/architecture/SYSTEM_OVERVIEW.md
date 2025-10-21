@@ -753,9 +753,9 @@ docker stats  # CPU, RAM для каждого контейнера
 
 - [Аппаратная документация](HARDWARE.md)
 - [Программная документация](SOFTWARE.md)
-- [API Reference](API_REFERENCE.md)
-- [Deployment Guide](DEPLOYMENT.md)
-- [Docker Standards](development/DOCKER_STANDARDS.md)
+- [Развёртывание](../deployment/README.md)
+- [Стандарты Docker](../development/DOCKER_STANDARDS.md)
+- [CI/CD Pipeline](../CI_CD_PIPELINE.md)
 
 ---
 

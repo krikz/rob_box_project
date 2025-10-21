@@ -249,7 +249,7 @@ sudo reboot
 
 ## 📄 License
 
-MIT License - см. [LICENSE](../../../LICENSE)
+MIT License
 
 ---
 

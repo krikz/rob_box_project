@@ -29,7 +29,7 @@
 - **[Архитектура](docs/architecture/SYSTEM_OVERVIEW.md)** - Полная архитектура системы
 - **[Конфигурация RTAB-Map + LiDAR](docs/guides/VISUALIZATION.md)** ⭐ - 2D SLAM с лазерным сканером
 - **[Fusion 360 Measurements](docs/architecture/HARDWARE.md)** - Геометрия робота
-- **[VESC Integration](src/vesc_nexus/README.md)** - Интеграция моторов
+- **[VESC Integration](https://github.com/krikz/vesc_nexus)** - Интеграция моторов
 - **[Оптимизация](docs/development/BUILD_OPTIMIZATION.md)** - Детали оптимизации OAK-D + RTAB-Map
 - **[Резюме оптимизации](docs/development/BUILD_OPTIMIZATION.md)** - Краткий обзор изменений
 

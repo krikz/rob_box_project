@@ -648,29 +648,26 @@ echo "✅ Smoke tests passed!"
 **Решение:**  
 Разбить на модули:
 
+**Текущая структура документации:**
+
 ```
 docs/development/
-├── AGENT_GUIDE.md              # Основной index (200 строк)
-├── agents/
-│   ├── DOCKER_GUIDE.md         # Docker workflow (300 строк)
-│   ├── SSH_ACCESS.md           # SSH credentials (100 строк)
-│   ├── MONITORING.md           # Мониторинг tools (200 строк)
-│   ├── CICD_GUIDE.md           # GitHub Actions (200 строк)
-│   └── SECRETS_GUIDE.md        # Secret management (100 строк)
+├── AGENT_GUIDE.md              # Основной guide для AI агентов
+├── DOCKER_STANDARDS.md         # Docker стандарты
+├── BUILD_OPTIMIZATION.md       # Оптимизация сборки
+├── CI_CD_PIPELINE.md          # CI/CD процесс
+└── [другие development docs]
 ```
 
-AGENT_GUIDE.md становится навигацией:
+AGENT_GUIDE.md содержит все необходимые разделы:
 
-```markdown
-# Agent Guide - Quick Start
+- 🐳 Docker workflow
+- 🔑 SSH доступ к Pi
+- 📊 Мониторинг системы
+- 🚀 CI/CD workflow
+- 🔒 Управление секретами
 
-Выбери задачу:
-
-- 🐳 [Работа с Docker](agents/DOCKER_GUIDE.md)
-- 🔑 [SSH доступ к Pi](agents/SSH_ACCESS.md)
-- 📊 [Мониторинг системы](agents/MONITORING.md)
-- 🚀 [CI/CD workflow](agents/CICD_GUIDE.md)
-- 🔒 [Управление секретами](agents/SECRETS_GUIDE.md)
+См. [AGENT_GUIDE.md](AGENT_GUIDE.md) для подробностей.
 
 ## Быстрые команды
 

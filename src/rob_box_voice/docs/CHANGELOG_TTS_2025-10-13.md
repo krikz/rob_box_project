@@ -208,6 +208,6 @@ Audio output
 
 ## Ссылки
 
-- [Полная документация](../VOICE_FORMATTING_RULES.md)
-- [Краткая справка](../VOICE_FORMATTING_QUICK.md)
+- [Полная документация](VOICE_FORMATTING_RULES.md)
+- [Краткая справка](VOICE_FORMATTING_QUICK.md)
 - [Silero TTS SSML docs](https://github.com/snakers4/silero-models)

@@ -434,7 +434,7 @@ docker-compose restart voice-assistant
 
 ## Дополнительная информация
 
-- **Architecture:** [docs/development/VOICE_ASSISTANT_ARCHITECTURE.md](../../development/VOICE_ASSISTANT_SYSTEM_OVERVIEW.md)
-- **Hardware:** [docs/HARDWARE.md](../../architecture/HARDWARE.md)
+- **Architecture:** [Voice Assistant Architecture](../../src/rob_box_voice/docs/VOICE_ASSISTANT_ARCHITECTURE.md)
+- **Hardware:** [Hardware Documentation](../architecture/HARDWARE.md)
 - **Package README:** [src/rob_box_voice/README.md](../../src/rob_box_voice/README.md)
 - **Docker README:** [docker/vision/README.md](./README.md)
