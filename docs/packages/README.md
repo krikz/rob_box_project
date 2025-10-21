@@ -15,6 +15,13 @@ AI голосовой ассистент с DeepSeek, Vosk STT, Silero TTS.
 - [**PHASE4_SOUND_IMPLEMENTATION.md**](../../src/rob_box_voice/docs/PHASE4_SOUND_IMPLEMENTATION.md) - Sound нода
 - [**PHASE5_COMMAND_IMPLEMENTATION.md**](../../src/rob_box_voice/docs/PHASE5_COMMAND_IMPLEMENTATION.md) - Command нода + Nav2
 
+### Руководства пользователя:
+- [**SOUND_EFFECTS_QUICKSTART.md**](SOUND_EFFECTS_QUICKSTART.md) - Быстрый старт со звуками
+- [**SOUND_EFFECTS_INTEGRATION.md**](SOUND_EFFECTS_INTEGRATION.md) - Интеграция звуковых эффектов
+- [**MAPPING_COMMANDS.md**](MAPPING_COMMANDS.md) - Голосовые команды картографии
+- [**MAPPING_COMMANDS_SUMMARY.md**](MAPPING_COMMANDS_SUMMARY.md) - Краткое резюме команд
+- [**MAPPING_COMMANDS_TESTING.md**](MAPPING_COMMANDS_TESTING.md) - Тестирование команд
+
 ### Разработка:
 - [**CUSTOM_TTS_TRAINING.md**](../../src/rob_box_voice/docs/CUSTOM_TTS_TRAINING.md) - Тренировка кастомного голоса
 - [**SILERO_QUICK_START.md**](../../src/rob_box_voice/docs/SILERO_QUICK_START.md) - Быстрый старт Silero TTS
