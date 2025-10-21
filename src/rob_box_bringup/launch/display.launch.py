@@ -35,7 +35,7 @@ def generate_launch_description():
             PathJoinSubstitution([
                 FindPackageShare('rob_box_description'),
                 'urdf',
-                'rob_box_complete.xacro'
+                'rob_box.xacro'
             ])
         ]),
         value_type=str

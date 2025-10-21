@@ -27,7 +27,7 @@ def generate_launch_description():
     urdf_path = PathJoinSubstitution([
         FindPackageShare('rob_box_description'),
         'urdf',
-        'rob_box_complete.xacro'
+        'rob_box.xacro'
     ])
     
     robot_description_content = ParameterValue(
