@@ -332,7 +332,7 @@ docker compose restart lslidar
 - **[Аппаратное обеспечение](../architecture/HARDWARE.md)** — Аппаратное обеспечение
 - **[Программное обеспечение](../architecture/SOFTWARE.md)** — Программное обеспечение
 - **[Развёртывание](../deployment/README.md)** — Развёртывание системы
-- **[CONTRIBUTING.md](../../../CONTRIBUTING.md)** — Участие в проекте
+- **[Участие в проекте](../../CONTRIBUTING.md)** — Как внести вклад
 
 ---
 
