@@ -58,6 +58,15 @@ jobs:
           echo "ROS Distro: $ROS_DISTRO"
           echo "Branch Tag: $BRANCH_TAG"
           echo "Full Tag: $FULL_TAG"
+
+  # Сборка базовых образов (нужны для voice-assistant)
+  build-base-images:
+    uses: ./.github/workflows/build-base-images.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
   # OAK-D Camera
   build-oak-d:
     needs: determine-tag
@@ -250,7 +259,7 @@ jobs:
 
   # Voice Assistant (ReSpeaker + Animations)
   build-voice-assistant:
-    needs: determine-tag
+    needs: [determine-tag, build-base-images]  # Ждём пока базовые образы соберутся
     runs-on: ubuntu-latest
     permissions:
       contents: read
