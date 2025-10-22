@@ -154,6 +154,7 @@ services:
       frame_id:=base_link
       odom_frame_id:=odom
       odom_topic:=odom
+      apriltag_topic:=/detections
       qos:=1
       approx_sync:=false
       rtabmap_viz:=false
