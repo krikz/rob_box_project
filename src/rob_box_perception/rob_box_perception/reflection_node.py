@@ -664,12 +664,13 @@ class ReflectionNode(Node):
             return  # НЕ публикуем речь
         
         # Проверка: говорили недавно? (debounce для избежания дубликатов)
+        # Для СРОЧНЫХ ответов пользователю короткий debounce - 2 секунды
         current_time = time.time()
         if self.last_speech_time:
             time_since_last = current_time - self.last_speech_time
-            if time_since_last < 5.0:  # Для срочных ответов короткий debounce - 5 сек
+            if time_since_last < 2.0:  # 2 сек для срочных ответов (было 5 сек)
                 self.get_logger().debug(
-                    f'🔇 Speech debounce (SSML): не говорю (прошло {time_since_last:.1f}s < 5.0s)'
+                    f'🔇 Speech debounce (SSML): не говорю (прошло {time_since_last:.1f}s < 2.0s)'
                 )
                 return  # НЕ публикуем речь
         
@@ -708,8 +709,8 @@ class ReflectionNode(Node):
         elif any(word in thought_lower for word in ['не уверен', 'сложно', 'непонятно', 'затрудняюсь', 'не знаю']):
             self._play_sound('confused')
         
-        # Злость при проблемах
-        elif any(word in thought_lower for word in ['ошибка', 'проблема', 'критично', 'degraded', 'сбой', 'авария']):
+        # Злость только при КРИТИЧНЫХ проблемах (не degraded - это warning)
+        elif any(word in thought_lower for word in ['критично', 'авария', 'критическая ошибка']):
             self._play_sound('angry')
         
         # Радость при успехе
