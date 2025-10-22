@@ -27,15 +27,17 @@ services:
       - ROS_DOMAIN_ID=0
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Пытаемся подключиться к router 10 раз
       - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config/shared:ro
       - ./config/oak-d:/config/oak-d:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/oak-d:/scripts:ro
       - ./oak-d/launch:/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
@@ -43,7 +45,7 @@ services:
     # AprilTag-only mode: OAK-D publishes only color image and camera_info for marker detection
     mem_limit: 6g  # Максимум 6GB (оставляем 2GB для системы)
     memswap_limit: 7g  # 6GB RAM + 1GB swap максимум
-    command: ["/scripts/start_oak_d.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_oak_d.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -58,16 +60,18 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
       - ./config:/config/shared:ro
       - ./config/lslidar:/config/lslidar:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/lslidar:/scripts:ro
       - /dev/shm:/dev/shm
-    command: ["/scripts/start_lslidar.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_lslidar.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -79,17 +83,19 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
       - ./config:/config/shared:ro
       - ./config/apriltag:/config/apriltag:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/apriltag:/scripts:ro
       - /dev/shm:/dev/shm
-    command: ["/scripts/start_apriltag.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_apriltag.sh"]
     depends_on:
       - zenoh-router
       - oak-d
@@ -105,15 +111,17 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
       - ./config:/config/shared:ro
       - ./config/led_matrix:/config/led_matrix:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/led_matrix:/scripts:ro
-    command: ["/scripts/start_led_matrix.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_led_matrix.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
