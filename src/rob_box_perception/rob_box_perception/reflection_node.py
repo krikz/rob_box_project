@@ -30,7 +30,7 @@ context_aggregator (MPC lite) → events → reflection_node → thoughts/speech
 import json
 import time
 import re
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import os
 
 import rclpy
@@ -80,7 +80,13 @@ class ReflectionNode(Node):
         # ============ Память размышлений ============
         self.recent_thoughts: List[str] = []  # Последние 10 мыслей
         
-        # ============ Speech Debounce ============
+        # ============ Event State Tracking (State-Based Detection) ============
+        # Отслеживание текущего состояния событий для edge detection
+        self.event_states: Dict[str, Any] = {}  # event_name -> current state
+        self.event_last_reaction: Dict[str, float] = {}  # event_name -> timestamp
+        self.periodic_event_cooldown = 60.0  # 1 минута для periodic checks
+        
+        # ============ Speech Debounce (Legacy, will be replaced) ============
         self.last_speech_time: Optional[float] = None  # Когда последний раз говорили
         self.speech_debounce_interval = 30.0  # Не говорить чаще чем раз в 30 секунд
         
@@ -255,8 +261,72 @@ class ReflectionNode(Node):
                 else:
                     return
         
-        # Обычное размышление
-        self.think_and_maybe_speak()
+        # ============ STATE-BASED EVENT DETECTION ============
+        # Проверяем изменения в health status (edge detection)
+        self._check_health_status_change(msg)
+        
+        # Обычное размышление (только если нет недавней речи)
+        # Старая логика сохранена для других типов событий (vision, apriltag, etc.)
+        # self.think_and_maybe_speak()  # ❌ ВРЕМЕННО ОТКЛЮЧЕНО - только health_status
+    
+    def _check_health_status_change(self, ctx: PerceptionEvent):
+        """Проверка изменения health status (STATE-BASED DETECTION)"""
+        current_health = ctx.system_health_status
+        previous_health = self.event_states.get('health_status')
+        
+        current_time = time.time()
+        
+        # EDGE DETECTION: State changed (false→true or true→false)
+        if previous_health != current_health:
+            self.get_logger().info(f'📊 Health status changed: {previous_health} → {current_health}')
+            
+            # React to state change
+            if current_health == 'HEALTHY' and previous_health in ['DEGRADED', 'UNHEALTHY', None]:
+                # System recovered or first start
+                if previous_health:  # Not first start
+                    speech = "Отлично! Системы восстановлены, всё работает нормально."
+                else:  # First start
+                    speech = "Всё хорошо! Батарея полная, системы в норме, готов к работе."
+                
+                self._publish_speech(speech)
+                self.get_logger().info(f'🗣️  Говорю (health recovery): "{speech}"')
+            
+            elif current_health == 'DEGRADED':
+                speech = "Внимание! Обнаружены проблемы с системой."
+                if ctx.health_issues:
+                    speech += f" {', '.join(ctx.health_issues[:2])}"  # First 2 issues
+                
+                self._publish_speech(speech)
+                self.get_logger().info(f'🗣️  Говорю (health degraded): "{speech}"')
+            
+            elif current_health == 'UNHEALTHY':
+                speech = "Критическое состояние! Требуется внимание."
+                self._publish_speech(speech)
+                self.get_logger().info(f'🗣️  Говорю (health critical): "{speech}"')
+            
+            # Update state
+            self.event_states['health_status'] = current_health
+            self.event_last_reaction['health_status'] = current_time
+        
+        # PERIODIC CHECK: State unchanged for 1+ minute
+        elif previous_health == current_health and previous_health:
+            last_reaction = self.event_last_reaction.get('health_status', 0)
+            time_since_reaction = current_time - last_reaction
+            
+            # Only react if 1 minute passed AND status is not healthy (don't spam "all good")
+            if time_since_reaction > self.periodic_event_cooldown and current_health != 'HEALTHY':
+                self.get_logger().info(f'⏰ Periodic check: health still {current_health} after {time_since_reaction:.0f}s')
+                
+                if current_health == 'DEGRADED':
+                    speech = "Проблемы с системой всё ещё не устранены."
+                elif current_health == 'UNHEALTHY':
+                    speech = "Критическое состояние продолжается!"
+                else:
+                    return  # Don't speak for other states
+                
+                self._publish_speech(speech)
+                self.event_last_reaction['health_status'] = current_time
+
     
     def on_user_speech(self, msg: String):
         """Получена речь пользователя"""
@@ -625,22 +695,16 @@ class ReflectionNode(Node):
             self.recent_thoughts.pop(0)
     
     def _publish_speech(self, speech: str):
-        """Публикация речи в TTS (в формате SSML) - для обычного размышления"""
+        """Публикация речи в TTS (в формате SSML) - для state-based events"""
         # Проверка: silence mode активен?
         if self.silence_until and time.time() < self.silence_until:
             remaining = int(self.silence_until - time.time())
             self.get_logger().debug(f'🔇 Silence mode: не говорю (осталось {remaining} сек)')
             return  # НЕ публикуем речь
         
-        # Проверка: говорили недавно? (debounce)
+        # ❌ NO DEBOUNCE - state-based logic controls when to speak!
+        # Каждый вызов _publish_speech() уже прошёл проверку в _check_health_status_change()
         current_time = time.time()
-        if self.last_speech_time:
-            time_since_last = current_time - self.last_speech_time
-            if time_since_last < self.speech_debounce_interval:
-                self.get_logger().debug(
-                    f'🔇 Speech debounce: не говорю (прошло {time_since_last:.1f}s < {self.speech_debounce_interval}s)'
-                )
-                return  # НЕ публикуем речь
         
         # Формируем JSON с SSML (как dialogue_node)
         import json
@@ -652,7 +716,7 @@ class ReflectionNode(Node):
         msg.data = json.dumps(response_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
         
-        # Обновляем время последней речи
+        # Обновляем время последней речи (для логирования)
         self.last_speech_time = current_time
     
     def _publish_speech_ssml(self, speech_ssml: str):
