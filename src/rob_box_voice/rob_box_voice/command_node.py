@@ -384,10 +384,9 @@ class CommandNode(Node):
                 self.cmd_vel_pub.publish(twist)
                 time.sleep(sleep_time)
             
-            # Остановка
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-            self.cmd_vel_pub.publish(twist)
+            # НЕ публикуем нулевой Twist в конце!
+            # Просто прекращаем публикацию -> twist_mux через timeout (1.0 сек)
+            # переключится на другой источник или освободит колёса
             
             self.get_logger().info(f'✅ Выполнено: {feedback}')
         
