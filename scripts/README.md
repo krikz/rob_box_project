@@ -360,11 +360,111 @@ cd ~/rob_box_project
 
 ---
 
+### 🔍 validate_zenoh_namespace.sh
+
+**Назначение:** Проверка корректности конфигурации Zenoh namespace для облачной связности.
+
+**Использование:**
+```bash
+# На Vision Pi или Main Pi
+./scripts/validate_zenoh_namespace.sh
+```
+
+**Что проверяет:**
+1. ✅ Наличие ROBOT_ID в .env файле
+2. ✅ Валидность формата ROBOT_ID (только буквы, цифры, подчеркивания)
+3. ✅ Запущенные Docker контейнеры
+4. ✅ Переменная окружения ROBOT_ID в контейнерах
+5. ✅ Сгенерированный namespace в `/tmp/zenoh_session_config.json5`
+6. ✅ Логи контейнеров на подтверждение namespace
+7. ✅ Доступность Zenoh router REST API
+8. ✅ Наличие топиков с префиксом `robots/{ROBOT_ID}/`
+9. ✅ Подключение к облачному роутеру (только Main Pi)
+
+**Пример вывода:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║  Zenoh Namespace Configuration Validator                    ║
+╔══════════════════════════════════════════════════════════════╗
+
+✅ Detected: VISION Pi
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Checking Prerequisites
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ docker found
+✓ curl found
+✓ grep found
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. Checking ROBOT_ID Configuration
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ ROBOT_ID found in .env: RBXU100001
+✓ ROBOT_ID format is valid
+  Expected namespace: robots/RBXU100001
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. Checking Docker Containers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Container zenoh-router-vision is running
+✓ Container oak-d is running
+✓ Container lslidar is running
+✓ Container voice-assistant is running
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. Checking Namespace in Containers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Checking oak-d...
+  ✓ ROBOT_ID environment variable: RBXU100001
+  ✓ Namespace in config: robots/RBXU100001
+  ✓ Namespace confirmed in container logs
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. Checking Zenoh Router Connectivity
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Local Zenoh router REST API is accessible
+
+Checking for topics with namespace prefix...
+✓ Found topics with namespace robots/RBXU100001:
+  → robots/RBXU100001/camera/rgb/image_raw
+  → robots/RBXU100001/camera/depth/image_rect_raw
+  → robots/RBXU100001/scan
+  → robots/RBXU100001/odom
+  → robots/RBXU100001/cmd_vel
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. Summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Namespace Configuration:
+  Robot ID:  RBXU100001
+  Namespace: robots/RBXU100001
+  Host:      VISION Pi
+
+Expected Topic Format in Cloud:
+  robots/RBXU100001/camera/rgb/image_raw
+  robots/RBXU100001/cmd_vel
+  robots/RBXU100001/odom
+
+Cloud Subscription Examples:
+  All robots: robots/**
+  This robot: robots/RBXU100001/**
+  Specific:   robots/RBXU100001/camera/**
+
+✅ Validation Complete
+```
+
+**Связанная документация:** `docs/architecture/ZENOH_CLOUD_NAMESPACES.md`
+
+---
+
 ## Дополнительные ресурсы
 
 - **CI/CD Pipeline:** `docs/CI_CD_PIPELINE.md`
 - **Docker Standards:** `docs/development/DOCKER_STANDARDS.md`
 - **Agent Guide:** `docs/development/AGENT_GUIDE.md`
+- **Zenoh Cloud Namespaces:** `docs/architecture/ZENOH_CLOUD_NAMESPACES.md`
 - **GitHub Actions Workflows:** `.github/workflows/`
 
 ---
