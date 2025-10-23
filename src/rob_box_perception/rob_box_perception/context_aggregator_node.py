@@ -36,6 +36,11 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import Log
 
+# Monitoring components
+from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
+from rob_box_perception.utils.internet_monitor import InternetConnectivityMonitor
+from rob_box_perception.utils.time_provider import TimeAwarenessProvider
+
 # DeepSeek API для суммаризации
 try:
     from openai import OpenAI
@@ -93,6 +98,19 @@ class ContextAggregatorNode(Node):
         self.vision_summaries: List[Dict] = []
         self.system_summaries: List[Dict] = []
         self.last_summarization_time = time.time()
+        
+        # ============ Мониторинг компоненты ============
+        
+        # Node availability monitor
+        self.node_monitor = NodeAvailabilityMonitor(self)
+        
+        # Internet connectivity monitor
+        self.internet_monitor = InternetConnectivityMonitor(self, check_interval=30.0)
+        
+        # Time awareness provider
+        self.time_provider = TimeAwarenessProvider(timezone='Europe/Moscow')
+        
+        self.get_logger().info('✅ Monitoring components initialized')
         
         # ============ Подписки ============
         
@@ -177,7 +195,7 @@ class ContextAggregatorNode(Node):
                 10
             )
         else:
-            self.get_logger().warn('⚠️  PerceptionEvent message не найден! Соберите пакет.')
+            self.get_logger().warning('⚠️  PerceptionEvent message не найден! Соберите пакет.')
             self.event_pub = None
         
         # Транзит STT для рефлексии
@@ -203,7 +221,7 @@ class ContextAggregatorNode(Node):
                 except Exception as e:
                     self.get_logger().error(f'❌ Ошибка инициализации DeepSeek: {e}')
             else:
-                self.get_logger().warn('⚠️  DeepSeek API недоступен - суммаризация отключена')
+                self.get_logger().warning('⚠️  DeepSeek API недоступен - суммаризация отключена')
         
         # ============ Таймер публикации событий ============
         timer_period = 1.0 / self.publish_rate
@@ -426,6 +444,26 @@ class ContextAggregatorNode(Node):
         event.system_health_status = health_status
         event.health_issues = health_issues
         
+        # ============ НОВЫЕ ПОЛЯ: Мониторинг ============
+        
+        # Time context
+        time_context = self.time_provider.get_current_time_context()
+        event.current_time_human = time_context['human_readable']
+        event.time_period = time_context['period']
+        event.time_context_json = json.dumps(time_context, ensure_ascii=False)
+        
+        # Internet connectivity
+        event.internet_available = self.internet_monitor.get_status()['is_online']
+        
+        # Node availability
+        node_summary = self.node_monitor.get_status_summary()
+        event.active_nodes = node_summary['active_list']
+        event.failed_nodes = node_summary['failed_list']
+        event.missing_nodes = node_summary['missing_list']
+        
+        # Equipment summary (placeholder for Stage 2)
+        event.equipment_summary_json = "{}"
+        
         # Memory
         event.memory_summary = self.get_memory_summary()
         
@@ -451,8 +489,19 @@ class ContextAggregatorNode(Node):
         
         # Проверка батареи
         battery = self.current_sensors.get('battery', 100.0)
-        if battery < 11.0:
+        if battery > 0 and battery < 11.0:
             issues.append(f'Низкая батарея: {battery:.1f}V')
+        
+        # Проверка нод (добавлено)
+        node_summary = self.node_monitor.get_status_summary()
+        if node_summary['failed']:
+            issues.append(f"Упавшие ноды: {', '.join(node_summary['failed_list'])}")
+        if node_summary['missing'] > 2:
+            issues.append(f"Отсутствуют {node_summary['missing']} нод")
+        
+        # Проверка интернета (добавлено)
+        if not self.internet_monitor.get_status()['is_online']:
+            issues.append("Нет интернета")
         
         # Определяем статус
         if len(issues) == 0:

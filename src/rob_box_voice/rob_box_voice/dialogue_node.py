@@ -109,6 +109,23 @@ class DialogueNode(Node):
         # Публикация срочных запросов к внутреннему диалогу (reflection)
         self.reflection_request_pub = self.create_publisher(String, '/perception/user_speech', 10)
         
+        # ============ Internet Status Monitoring ============
+        self.internet_available = True  # Assume available by default
+        
+        # Подписка на perception context для мониторинга интернета
+        try:
+            from rob_box_perception_msgs.msg import PerceptionEvent
+            self.perception_sub = self.create_subscription(
+                PerceptionEvent,
+                '/perception/context_update',
+                self._on_perception_update,
+                10
+            )
+            self.get_logger().info('✅ Подписан на /perception/context_update для мониторинга интернета')
+        except ImportError:
+            self.get_logger().warning('⚠️  PerceptionEvent не найден - мониторинг интернета отключен')
+            self.perception_sub = None
+        
         # ============ State Machine ============
         # IDLE -> LISTENING -> DIALOGUE -> SILENCED
         self.state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
@@ -203,7 +220,7 @@ class DialogueNode(Node):
             self.get_logger().info(f'✅ Загружен prompt: {prompt_file} ({len(prompt)} байт)')
             return prompt
         except Exception as e:
-            self.get_logger().warn(f'⚠ Не удалось загрузить prompt: {e}')
+            self.get_logger().warning(f'⚠ Не удалось загрузить prompt: {e}')
             return "Ты ROBBOX - мобильный робот-ассистент. Отвечай в JSON: {\"ssml\": \"<speak>...</speak>\"}"
     
     # ============================================================
@@ -242,7 +259,7 @@ class DialogueNode(Node):
     
     def _handle_silence_command(self):
         """Обработка команды silence"""
-        self.get_logger().warn('🔇 SILENCE: останавливаем TTS и переходим в SILENCED')
+        self.get_logger().warning('🔇 SILENCE: останавливаем TTS и переходим в SILENCED')
         
         # 1. Прервать текущий streaming
         if self.current_stream:
@@ -284,6 +301,34 @@ class DialogueNode(Node):
         msg.data = self.state
         self.state_pub.publish(msg)
     
+    def _on_perception_update(self, msg):
+        """Обработка обновления контекста восприятия для мониторинга интернета"""
+        if hasattr(msg, 'internet_available'):
+            was_available = self.internet_available
+            self.internet_available = msg.internet_available
+            
+            # Логируем изменения статуса
+            if was_available and not self.internet_available:
+                self.get_logger().warning('⚠️  Интернет недоступен - переход на fallback режим')
+            elif not was_available and self.internet_available:
+                self.get_logger().info('✅ Интернет восстановлен - нормальный режим')
+    
+    def _generate_fallback_response(self, user_message: str) -> str:
+        """Генерация fallback ответа когда интернет недоступен"""
+        user_lower = user_message.lower()
+        
+        # Простые правила для fallback
+        if any(word in user_lower for word in ['привет', 'здравствуй', 'хай', 'hello']):
+            return "Привет! Извините, сейчас нет подключения к интернету, мои возможности ограничены."
+        elif any(word in user_lower for word in ['как дела', 'как ты', 'что делаешь']):
+            return "Всё работает, но интернет недоступен. Мои возможности сейчас ограничены простыми ответами."
+        elif any(word in user_lower for word in ['спасибо', 'благодар']):
+            return "Пожалуйста!"
+        elif any(word in user_lower for word in ['пока', 'до свидания', 'bye']):
+            return "До свидания!"
+        else:
+            return "Извините, интернет сейчас недоступен. Я могу только отвечать на простые приветствия."
+    
     # ============================================================
     # Main Callback
     # ============================================================
@@ -299,7 +344,7 @@ class DialogueNode(Node):
         
         # ============ ПРИОРИТЕТ 1: Проверка SILENCE command ============
         if self._is_silence_command(user_message_lower):
-            self.get_logger().warn('🔇 SILENCE COMMAND обнаружена!')
+            self.get_logger().warning('🔇 SILENCE COMMAND обнаружена!')
             self._handle_silence_command()
             return
         
@@ -359,7 +404,7 @@ class DialogueNode(Node):
             
             if elapsed > self.confirmation_timeout:
                 # Timeout подтверждения
-                self.get_logger().warn('⏰ Confirmation timeout → отмена')
+                self.get_logger().warning('⏰ Confirmation timeout → отмена')
                 self.pending_confirmation = None
                 self.confirmation_time = None
                 self._speak_simple("Время ожидания истекло. Операция отменена.")
@@ -393,7 +438,7 @@ class DialogueNode(Node):
                 return
             else:
                 # Неясный ответ - повторить вопрос
-                self.get_logger().warn('⚠️ Неясный ответ на подтверждение')
+                self.get_logger().warning('⚠️ Неясный ответ на подтверждение')
                 self._speak_simple("Пожалуйста, ответьте да или нет.")
                 self.dialogue_in_progress = False
                 return
@@ -415,7 +460,15 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
                 return
         
-        # ============ ПРИОРИТЕТ 6: Обычный диалог с LLM ============
+        # ============ ПРИОРИТЕТ 6: Проверка доступности интернета ============
+        if not self.internet_available:
+            self.get_logger().warning('⚠️  Интернет недоступен - используем fallback')
+            fallback_response = self._generate_fallback_response(user_message)
+            self._speak_simple(fallback_response)
+            self.dialogue_in_progress = False
+            return
+        
+        # ============ ПРИОРИТЕТ 7: Обычный диалог с LLM ============
         # Добавляем в историю
         self.conversation_history.append({
             "role": "user",
@@ -487,7 +540,7 @@ class DialogueNode(Node):
                             # ============ ПРОВЕРКА: ask_reflection команда ============
                             if 'action' in chunk_data and chunk_data['action'] == 'ask_reflection':
                                 question = chunk_data.get('question', '')
-                                self.get_logger().warn(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
+                                self.get_logger().warning(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
                                 
                                 # Публикуем в /perception/user_speech для reflection_node
                                 reflection_msg = String()
@@ -554,7 +607,7 @@ class DialogueNode(Node):
             self.sound_trigger_pub.publish(msg)
             self.get_logger().debug(f'🔔 Триггер звука: {sound_name}')
         except Exception as e:
-            self.get_logger().warn(f'⚠️ Ошибка триггера звука: {e}')
+            self.get_logger().warning(f'⚠️ Ошибка триггера звука: {e}')
     
     # ============================================================
     # Mapping Commands (RTABMap Control)
@@ -635,7 +688,7 @@ class DialogueNode(Node):
     
     async def _confirm_start_mapping(self) -> str:
         """Подтверждение start_mapping - создать backup и reset БД"""
-        self.get_logger().warn('🗺️ Подтверждение start_mapping...')
+        self.get_logger().warning('🗺️ Подтверждение start_mapping...')
         
         # 1. Backup
         backup_ok = await self._backup_rtabmap_db()
