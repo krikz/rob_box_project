@@ -4,8 +4,6 @@ name: Run Tests
 on:
   push:
     branches:
-      - feature/**
-      - copilot/**
       - develop
       - main
     paths:
