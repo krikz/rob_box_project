@@ -17,10 +17,15 @@
 │                                                 │
 │ 1. Detect changes (vision/main/docs)           │
 │ 2. Build changed services                      │
-│ 3. Auto-merge to develop (if success)          │
-│ 4. Delete feature branch                       │
+│ 3. Create PR to develop (if success)           │
 └────────┬────────────────────────────────────────┘
-         │ auto-merge
+         │ creates PR
+         ▼
+┌─────────────────┐
+│ Pull Request    │
+│ feature → dev   │
+└────────┬────────┘
+         │ manual review & merge
          ▼
 ┌─────────────────┐
 │ Develop Branch  │
@@ -33,10 +38,15 @@
 │ auto-merge-to-main.yml                          │
 │                                                 │
 │ 1. Build ALL services (build-all.yml)          │
-│ 2. Auto-merge to main (if all success)         │
-│ 3. Create release tag                          │
+│ 2. Create PR to main (if all success)          │
 └────────┬────────────────────────────────────────┘
-         │ auto-merge
+         │ creates PR
+         ▼
+┌─────────────────┐
+│ Pull Request    │
+│ develop → main  │
+└────────┬────────┘
+         │ manual review & merge
          ▼
 ┌─────────────────┐
 │ Main Branch     │
@@ -52,7 +62,7 @@
 
 ## Workflows
 
-### 1. Auto-merge Feature to Develop
+### 1. Create PR Feature to Develop
 
 **Файл:** `.github/workflows/auto-merge-feature-to-develop.yml`
 
@@ -62,6 +72,7 @@ push:
   branches:
     - 'feature/**'
     - 'feat/**'
+    - 'copilot/**'
 ```
 
 **Логика:**
@@ -75,22 +86,19 @@ push:
    - `build-main` - если изменились Main Pi сервисы
    - Пропускает сборку если изменилась только документация
 
-3. **Auto-merge** - после успешной сборки
-   ```bash
-   git checkout develop
-   git merge --no-ff feature/branch-name
-   git push origin develop
-   git push origin --delete feature/branch-name
-   ```
-
-4. **Delete Feature Branch** - удаляет feature ветку после мерджа
+3. **Create Pull Request** - после успешной сборки
+   - Проверяет, существует ли уже PR
+   - Создаёт новый PR если его нет
+   - Добавляет label `autobuild`
+   - Включает информацию о собранных компонентах
 
 **Результат:**
-- Feature ветка автоматически вливается в `develop`
-- Docker images: `*-humble-dev`
-- Feature ветка удаляется
+- Создаётся PR: feature ветка → `develop`
+- Docker images: `*-humble-test`
+- PR готов для ревью и ручного мерджа
+- Feature ветка НЕ удаляется автоматически
 
-### 2. Auto-merge Develop to Main
+### 2. Create PR Develop to Main
 
 **Файл:** `.github/workflows/auto-merge-to-main.yml`
 
@@ -107,23 +115,17 @@ push:
    - Vision Pi (oak-d, lslidar, apriltag, led-matrix, voice-assistant)
    - Main Pi (micro-ros-agent, zenoh-router)
 
-2. **Auto-merge** - если ВСЕ сборки успешны
-   ```bash
-   git checkout main
-   git merge --no-ff develop
-   git push origin main
-   ```
-
-3. **Create Release Tag**
-   ```bash
-   git tag -a "release-YYYYMMDD-HHMMSS"
-   git push origin "release-YYYYMMDD-HHMMSS"
-   ```
+2. **Create Pull Request** - если ВСЕ сборки успешны
+   - Проверяет, существует ли уже PR
+   - Создаёт новый PR если его нет
+   - Добавляет labels `release` и `autobuild`
+   - Включает полный список собранных сервисов
 
 **Результат:**
-- `develop` автоматически вливается в `main`
-- Docker images: `*-humble-latest`
-- Создаётся release tag
+- Создаётся PR: `develop` → `main`
+- Docker images: `*-humble-dev` (для тестирования перед релизом)
+- PR готов для ревью и ручного мерджа
+- После мерджа в main будут созданы образы `*-humble-latest`
 
 ### 3. Build Vision Services
 
@@ -235,11 +237,16 @@ git push origin feature/my-awesome-feature
 
 # 4. GitHub Actions автоматически:
 #    - Соберёт изменённые сервисы
-#    - Мерджнет в develop (если сборка успешна)
-#    - Удалит feature ветку
+#    - Создаст Pull Request в develop
+#    - PR будет помечен label 'autobuild'
+
+# 5. После ревью:
+#    - Проверить изменения в PR
+#    - Сделать merge PR вручную через GitHub UI
+#    - Удалить feature ветку (опционально)
 ```
 
-**Результат:** Feature автоматически в `develop`, образы с тегом `-dev` доступны для тестирования.
+**Результат:** Pull Request создан автоматически, но merge требует ручного подтверждения.
 
 ### Релиз в production
 
@@ -248,17 +255,30 @@ git push origin feature/my-awesome-feature
 # - Протестировать на реальном железе
 # - Проверить все сервисы
 
-# 2. Push в develop (если ещё не запушено)
+# 2. Merge всех feature PRs в develop
+#    - Проверить что все PR прошли ревью
+#    - Сделать merge через GitHub UI
+
+# 3. Push в develop (если изменения были локальные)
+git checkout develop
+git pull
 git push origin develop
 
-# 3. GitHub Actions автоматически:
+# 4. GitHub Actions автоматически:
 #    - Соберёт ВСЕ сервисы
-#    - Мерджнет develop в main (если всё успешно)
-#    - Создаст release tag
-#    - Опубликует образы с тегом -latest
+#    - Создаст Pull Request в main
+#    - PR будет помечен labels 'release' и 'autobuild'
+
+# 5. Перед релизом:
+#    - Проверить PR develop → main
+#    - Протестировать образы с тегом -dev
+#    - Убедиться что всё готово к продакшн
+
+# 6. Сделать merge PR вручную через GitHub UI
+#    - Это запустит сборку образов с тегом -latest
 ```
 
-**Результат:** Production образы с тегом `-latest` готовы к деплою.
+**Результат:** Pull Request создан автоматически, но merge в main требует ручного подтверждения перед релизом.
 
 ### Hotfix
 
@@ -285,12 +305,30 @@ git push origin develop
 
 ## Ручное управление
 
-### Отключить auto-merge
+### Управление Pull Requests
 
-Если нужно отключить автомердж, закомментировать trigger в workflow:
+После успешной сборки автоматически создаются PRs, которые нужно мерджить вручную:
+
+**Feature → Develop:**
+1. Перейти в GitHub → Pull Requests
+2. Найти PR с label `autobuild`
+3. Проверить изменения
+4. Нажать "Merge pull request"
+5. Опционально удалить feature ветку
+
+**Develop → Main:**
+1. Перейти в GitHub → Pull Requests
+2. Найти PR с labels `release` и `autobuild`
+3. Проверить все изменения с последнего релиза
+4. Протестировать образы с тегом `-dev`
+5. Нажать "Merge pull request" когда готово к релизу
+
+### Отключить автоматическое создание PR
+
+Если нужно отключить автоматическое создание PR, закомментировать trigger в workflow:
 
 ```yaml
-# Отключить auto-merge feature to develop
+# Отключить создание PR для feature веток
 on:
   push:
     branches:
@@ -355,41 +393,54 @@ gh run view --log
 
 ## Troubleshooting
 
-### Feature ветка не мерджится
+### Feature ветка не создаёт PR
 
 **Причины:**
 1. Сборка упала - проверить логи в Actions
-2. Конфликт мерджа - нужен ручной мердж
+2. PR уже существует для этой ветки
 3. Workflow disabled - проверить `.github/workflows/`
 
 **Решение:**
 ```bash
-# Ручной мердж
-git checkout develop
-git pull
-git merge feature/my-feature
-# Resolve conflicts
-git push origin develop
+# Проверить логи workflow
+gh run list --workflow=auto-merge-feature-to-develop.yml
+
+# Создать PR вручную если нужно
+gh pr create --base develop --head feature/my-feature \
+  --title "feat: my feature" \
+  --body "Manual PR creation"
 ```
 
-### Develop не мерджится в main
+### Develop не создаёт PR в main
 
 **Причины:**
 1. Хотя бы одна сборка упала - все сервисы должны собираться
-2. Конфликт мерджа
+2. PR уже существует
+3. Workflow не запустился
 
 **Решение:**
 ```bash
 # Проверить что всё собирается
 gh workflow run build-all.yml --ref develop
 
-# Ручной мердж если нужно
-git checkout main
-git pull
-git merge develop
-# Resolve conflicts
-git push origin main
+# Проверить статус
+gh run list --workflow=auto-merge-to-main.yml
+
+# Создать PR вручную если нужно
+gh pr create --base main --head develop \
+  --title "chore: release to main" \
+  --body "Manual release PR"
 ```
+
+### PR создан но не мерджится автоматически
+
+**Это нормальное поведение!** После изменений workflow больше НЕ делает автоматический merge.
+
+**Действия:**
+1. Перейти в GitHub UI
+2. Найти созданный PR
+3. Проверить изменения
+4. Сделать merge вручную когда готово
 
 ### Docker образы не публикуются
 
