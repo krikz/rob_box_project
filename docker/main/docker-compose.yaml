@@ -99,7 +99,6 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
