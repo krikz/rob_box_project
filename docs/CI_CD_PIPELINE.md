@@ -175,17 +175,45 @@ ghcr.io/krikz/rob_box:<service>-<distro>-<version>
 **Примеры:**
 - `ghcr.io/krikz/rob_box:voice-assistant-humble-latest`
 - `ghcr.io/krikz/rob_box:voice-assistant-humble-dev`
+- `ghcr.io/krikz/rob_box:voice-assistant-humble-test`
 - `ghcr.io/krikz/rob_box:voice-assistant-humble-abc1234` (SHA)
 
 ### Tags по веткам
 
-| Ветка | Tag | Описание |
-|-------|-----|----------|
-| `main` | `humble-latest` | Продакшн, стабильная версия |
-| `develop` | `humble-dev` | Development, тестирование |
-| `feature/*` | `humble-dev` | После мерджа в develop |
-| `release/X.X.X` | `humble-rc-X.X.X` | Release candidate |
-| SHA commit | `humble-<sha>` | Специфичная версия |
+| Ветка | Tag | Описание | Env файл |
+|-------|-----|----------|----------|
+| `main` | `humble-latest` | Продакшн, стабильная версия | `.env.main` |
+| `develop` | `humble-dev` | Development, тестирование | `.env.develop` |
+| `feature/*` | `humble-test` | Feature testing | `.env.feature` |
+| `release/X.X.X` | `humble-rc-X.X.X` | Release candidate | `.env.develop` + override |
+| `hotfix/*` | `humble-hotfix-X.X.X` | Hotfix | `.env.main` + override |
+| SHA commit | `humble-<sha>` | Специфичная версия | - |
+
+### Автоматическое управление тегами
+
+Docker-compose файлы теперь используют переменные окружения для определения тегов:
+
+```yaml
+services:
+  voice-assistant:
+    image: ${SERVICE_IMAGE_PREFIX}:voice-assistant-${ROS_DISTRO}-${IMAGE_TAG}
+```
+
+**Настройка тегов для текущей ветки:**
+
+```bash
+# Автоматически определить ветку и установить правильный IMAGE_TAG
+source scripts/set-docker-tags.sh
+
+# Или вручную установить нужный тег
+export IMAGE_TAG=dev  # или latest, test, rc-1.0.0
+```
+
+**Готовые конфигурации в env файлах:**
+
+- `docker/.env.main` → `IMAGE_TAG=latest` (production)
+- `docker/.env.develop` → `IMAGE_TAG=dev` (development)
+- `docker/.env.feature` → `IMAGE_TAG=test` (testing)
 
 ## Workflow для разработчика
 
@@ -379,6 +407,148 @@ gh secret list
 # permissions:
 #   contents: read
 #   packages: write
+```
+
+### Неправильные теги Docker образов
+
+**Проблема:** docker-compose использует `-latest` образы вместо `-dev` или `-test`
+
+**Решение:**
+```bash
+# Автоматическая настройка на основе текущей ветки
+cd /path/to/rob_box_project
+source scripts/set-docker-tags.sh
+
+# Проверить что IMAGE_TAG установлен правильно
+echo $IMAGE_TAG
+
+# Или вручную установить нужный тег
+export IMAGE_TAG=dev
+```
+
+## Локальная разработка и сборка
+
+### Локальная сборка Docker образов
+
+Для ускорения разработки можно собирать образы локально, не дожидаясь GitHub Actions:
+
+```bash
+# Собрать один сервис
+./scripts/local-build.sh voice-assistant
+
+# Собрать все Vision Pi сервисы
+./scripts/local-build.sh vision
+
+# Собрать все Main Pi сервисы
+./scripts/local-build.sh main
+
+# Собрать все сервисы
+./scripts/local-build.sh all
+
+# Собрать для конкретной платформы
+./scripts/local-build.sh voice-assistant linux/amd64
+```
+
+**Примечание:** Локальная сборка создаёт образы с тегом `IMAGE_TAG=local`. Они будут использованы если запустить `docker-compose` с `IMAGE_TAG=local`.
+
+### Запуск GitHub Actions локально с act
+
+Установите [act](https://github.com/nektos/act) для запуска workflows локально:
+
+```bash
+# Установка
+brew install act  # macOS
+curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash  # Linux
+
+# Список всех workflows
+act -l
+
+# Запуск конкретного workflow (dry run)
+act -W .github/workflows/build-vision-services.yml -n
+
+# Запуск конкретного job
+act -j build-oak-d
+
+# Запуск с секретами
+echo "GITHUB_TOKEN=ghp_xxx" > .secrets
+act --secret-file .secrets
+```
+
+**Важно:** 
+- Сборка ARM64 образов на x86_64 будет очень медленной через QEMU
+- Для разработки рекомендуется использовать `./scripts/local-build.sh` вместо act
+- act полезен для тестирования логики workflows, но не для реальной сборки образов
+
+### Быстрая итерация при разработке
+
+**Сценарий 1: Разработка на x86_64, деплой на Raspberry Pi**
+
+```bash
+# 1. Настроить теги для текущей ветки
+source scripts/set-docker-tags.sh
+
+# 2. Собрать образ для x86_64 (быстрая разработка)
+IMAGE_TAG=local ./scripts/local-build.sh voice-assistant linux/amd64
+
+# 3. Протестировать локально
+cd docker/vision
+IMAGE_TAG=local docker-compose up voice-assistant
+
+# 4. Запушить изменения - GitHub Actions соберёт для ARM64
+git add .
+git commit -m "feat: update voice assistant"
+git push
+
+# 5. Через ~10 минут образ с правильным тегом будет на ghcr.io
+# 6. На Raspberry Pi выполнить:
+ssh ros2@10.1.1.21
+cd ~/rob_box_project/docker/vision
+source ../../scripts/set-docker-tags.sh
+docker-compose pull voice-assistant
+docker-compose up -d voice-assistant
+```
+
+**Сценарий 2: Разработка непосредственно на Raspberry Pi**
+
+```bash
+# 1. SSH на Raspberry Pi
+ssh ros2@10.1.1.21
+
+# 2. Перейти в проект
+cd ~/rob_box_project
+
+# 3. Настроить теги
+source scripts/set-docker-tags.sh
+
+# 4. Собрать образ локально (нативный ARM64)
+IMAGE_TAG=local ./scripts/local-build.sh voice-assistant
+
+# 5. Запустить
+cd docker/vision
+IMAGE_TAG=local docker-compose up -d voice-assistant
+
+# 6. Проверить логи
+docker logs -f voice-assistant
+```
+
+### Переключение между окружениями
+
+```bash
+# Production (main branch images)
+source scripts/set-docker-tags.sh  # автоматически определит main
+cd docker/vision && docker-compose pull && docker-compose up -d
+
+# Development (develop branch images)
+export IMAGE_TAG=dev
+cd docker/vision && docker-compose pull && docker-compose up -d
+
+# Local testing (locally built images)
+export IMAGE_TAG=local
+cd docker/vision && docker-compose up -d
+
+# Specific version
+export IMAGE_TAG=rc-1.0.0
+cd docker/vision && docker-compose pull && docker-compose up -d
 ```
 
 ## Best Practices

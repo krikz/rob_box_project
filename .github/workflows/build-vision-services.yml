@@ -6,6 +6,7 @@ on:
     branches:
       - develop        # Автосборка при пуше в develop
       - 'feature/**'   # Автосборка для feature веток (для тестирования)
+      - 'copilot/**'   # Автосборка для copilot веток (AI-ассистированная разработка)
     paths:
       - 'docker/vision/**'
       - '.github/workflows/build-vision-services.yml'
@@ -30,7 +31,7 @@ jobs:
         run: |
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           ROS_DISTRO="${{ env.ROS_DISTRO }}"
-          
+
           # Определяем базовый тег на основе ветки
           if [ "$BRANCH_NAME" = "main" ]; then
             BRANCH_TAG="latest"
@@ -38,6 +39,9 @@ jobs:
             BRANCH_TAG="dev"
           elif [[ "$BRANCH_NAME" == feature/* ]]; then
             # Feature ветки получают тег 'test'
+            BRANCH_TAG="test"
+          elif [[ "$BRANCH_NAME" == copilot/* ]]; then
+            # Copilot ветки получают тег 'test' (аналогично feature веткам)
             BRANCH_TAG="test"
           elif [[ "$BRANCH_NAME" == release/* ]]; then
             VERSION="${BRANCH_NAME#release/}"
@@ -48,10 +52,10 @@ jobs:
           else
             BRANCH_TAG="test"
           fi
-          
+
           # Полный тег: ros_distro-branch_tag
           FULL_TAG="${ROS_DISTRO}-${BRANCH_TAG}"
-          
+
           echo "docker_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
           echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
           echo "Branch: $BRANCH_NAME"
@@ -65,7 +69,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -112,7 +116,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -159,7 +163,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -206,7 +210,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -255,7 +259,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -302,7 +306,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
