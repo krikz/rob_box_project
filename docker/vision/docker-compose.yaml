@@ -159,7 +159,7 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./config/voice:/config/voice:ro
-      - ./scripts:/scripts:ro
+      - ./scripts/voice:/scripts:ro
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
       - ./cache/tts:/cache/tts
@@ -200,7 +200,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./perception/scripts:/scripts:ro
+      - ./scripts/perception:/scripts:ro
       - /dev/shm:/dev/shm
     mem_limit: 512m  # Perception - лёгкий контейнер
     memswap_limit: 768m
