@@ -35,13 +35,14 @@ services:
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
-      - ./config:/config/shared:ro
-      - ./config/twist_mux:/config/twist_mux:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/twist_mux:/scripts:ro
-    command: ["/scripts/start_twist_mux.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_twist_mux.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -64,17 +65,19 @@ services:
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
       # micro-ROS специфичные переменные
       - MICROROS_SERIAL_PORT=/dev/ttyUSB0  # ESP32 USB serial (измените на /dev/ttyAMA0 для GPIO UART)
       - MICROROS_BAUDRATE=115200
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/micro_ros_agent:/scripts:ro
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0  # ESP32 через USB (измените при необходимости)
-    command: ["/scripts/start_micro_ros_agent.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_micro_ros_agent.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -95,10 +98,11 @@ services:
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/robot_state_publisher:/scripts:ro
       - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
     command: ["/scripts/start_robot_state_publisher.sh"]
@@ -118,11 +122,13 @@ services:
       - RUST_LOG=zenoh=info
       # Zenoh configuration через JSON
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
     # === RTAB-Map конфигурация для 2D LiDAR SLAM ===
@@ -145,33 +151,29 @@ services:
     # • Grid/Sensor=0 - сетка из лидара (не из depth камеры)
     #
     # ОЖИДАЕМЫЕ ПОДПИСКИ: /scan, /rtabmap/odom_info
-    command: >
-      ros2 launch rtabmap_launch rtabmap.launch.py
-      depth:=false
-      subscribe_scan:=true
-      scan_topic:=/scan
-      icp_odometry:=true
-      frame_id:=base_link
-      odom_frame_id:=odom
-      odom_topic:=odom
-      qos:=1
-      approx_sync:=false
-      rtabmap_viz:=false
-      rviz:=false
-      visual_odometry:=false
-      database_path:=/maps/rtabmap.db
-      wait_for_transform:=0.5
-      use_sim_time:=false
-      args:="--delete_db_on_start
-      -p Reg/Strategy:1
-      -p Reg/Force3DoF:true
-      -p Icp/VoxelSize:0.05
-      -p Icp/MaxCorrespondenceDistance:0.1
-      -p RGBD/NeighborLinkRefining:true
-      -p RGBD/ProximityBySpace:true
-      -p Grid/RangeMin:0.2
-      -p Grid/Sensor:0
-            -p Optimizer/GravitySigma:0"
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - ros2
+      - launch
+      - rtabmap_launch
+      - rtabmap.launch.py
+      - depth:=false
+      - subscribe_scan:=true
+      - scan_topic:=/scan
+      - icp_odometry:=true
+      - frame_id:=base_link
+      - odom_frame_id:=odom
+      - odom_topic:=odom
+      - apriltag_topic:=/detections
+      - qos:=1
+      - approx_sync:=false
+      - rtabmap_viz:=false
+      - rviz:=false
+      - visual_odometry:=false
+      - database_path:=/maps/rtabmap.db
+      - wait_for_transform:=0.5
+      - use_sim_time:=false
+      - args:=--delete_db_on_start -p Reg/Strategy:1 -p Reg/Force3DoF:true -p Icp/VoxelSize:0.05 -p Icp/MaxCorrespondenceDistance:0.1 -p RGBD/NeighborLinkRefining:true -p RGBD/ProximityBySpace:true -p Grid/RangeMin:0.2 -p Grid/Sensor:0 -p Optimizer/GravitySigma:0
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -188,17 +190,20 @@ services:
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
+      - CONTROLLER_CONFIG=/config/controllers/controller_manager.yaml
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./config/vesc_nexus:/config/vesc_nexus:ro
       - ./config/controllers:/config/controllers:ro
       - ./scripts/ros2_control:/scripts:ro
       - /dev:/dev  # Доступ к CAN устройствам
-    command: ["/scripts/start_ros2_control.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ros2_control.sh"]
     depends_on:
       - zenoh-router
       - robot-state-publisher
@@ -221,14 +226,16 @@ services:
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./config/nav2:/config/nav2:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
-    command: ["/scripts/start_nav2_direct.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_nav2_direct.sh"]
     depends_on:
       - zenoh-router
       - robot-state-publisher
