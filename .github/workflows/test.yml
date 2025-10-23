@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feature/**
+      - copilot/**
       - develop
       - main
     paths:
@@ -25,23 +26,23 @@ jobs:
   unit-tests:
     name: Unit Tests (ROS2 Humble)
     runs-on: ubuntu-22.04
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          
+
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
-          
+
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-mock
-          
+
       - name: Install ROS2 test dependencies
         run: |
           sudo apt-get update
@@ -51,55 +52,55 @@ jobs:
             ros-humble-ament-cmake-pytest \
             ros-humble-launch-testing \
             ros-humble-launch-testing-ament-cmake
-          
+
       - name: Build workspace
         run: |
           source /opt/ros/humble/setup.bash
-          
+
           # Create workspace in runner's working directory
           mkdir -p ${{ github.workspace }}/test_ws/src
           cp -r src/* ${{ github.workspace }}/test_ws/src/
-          
+
           # Build packages
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-select rob_box_voice rob_box_animations \
+            --packages-select rob_box_voice rob_box_animations rob_box_perception \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
-            
+
       - name: Run unit tests
         run: |
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
-          
+
           cd ${{ github.workspace }}/test_ws
-          
+
           # Run tests with colcon
           colcon test \
-            --packages-select rob_box_voice rob_box_animations \
+            --packages-select rob_box_voice rob_box_animations rob_box_perception \
             --event-handlers console_direct+ \
             --return-code-on-test-failure
-            
+
       - name: Display test results
         if: always()
         run: |
           source /opt/ros/humble/setup.bash
           cd ${{ github.workspace }}/test_ws
           colcon test-result --all --verbose
-          
+
       - name: Generate coverage report
         if: always()
         run: |
           cd ${{ github.workspace }}/test_ws
-          
+
           # Find coverage files
           find build -name "*.coverage" -type f
-          
+
           # Combine coverage if exists
           if [ -f "build/rob_box_voice/coverage.xml" ]; then
             echo "Coverage report generated"
             cat build/rob_box_voice/coverage.xml
           fi
-          
+
       - name: Upload coverage to artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -117,18 +118,18 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-22.04
     if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          
+
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
-          
+
       - name: Build workspace
         run: |
           source /opt/ros/humble/setup.bash
@@ -136,12 +137,12 @@ jobs:
           cp -r src/* ${{ github.workspace }}/test_ws/src/
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install
-          
+
       - name: Run integration tests
         run: |
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
-          
+
           # Run tests marked as integration
           cd ${{ github.workspace }}/test_ws
           colcon test \
@@ -157,7 +158,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-tests]
     if: always()
-    
+
     steps:
       - name: Generate summary
         run: |
@@ -167,7 +168,7 @@ jobs:
           echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "${{ needs.unit-tests.result }}" != "success" ]; then
             echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
