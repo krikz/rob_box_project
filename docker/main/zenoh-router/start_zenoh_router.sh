@@ -13,17 +13,14 @@ if [ -z "$ROBOT_ID" ]; then
 fi
 
 echo "🤖 Robot ID: $ROBOT_ID"
-echo "📡 Namespace: robots/$ROBOT_ID"
+echo "📡 Namespace для ROS нод: robots/$ROBOT_ID"
+echo "⚠️  Namespace применяется в session config, НЕ в router config!"
 
-# Генерируем конфиг с namespace
+# Копируем router конфиг без изменений (без namespace!)
 CONFIG_FILE="/tmp/zenoh_router_config.json5"
 cp /config/zenoh_router_config.json5 "$CONFIG_FILE"
 
-# Раскомментируем и заменяем namespace в конфиге
-# Используем sed для замены закомментированной строки
-sed -i "s|// namespace: \"my/namespace\"|namespace: \"robots/$ROBOT_ID\"|g" "$CONFIG_FILE"
-
-echo "✅ Конфигурация сгенерирована с namespace"
+echo "✅ Router конфиг скопирован БЕЗ namespace (правильно!)"
 echo ""
 echo "Запуск Zenoh Router..."
 echo "=========================================="
