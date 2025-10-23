@@ -35,11 +35,23 @@
 - Docker архитектура
 - Zenoh middleware
 
+### [ZENOH_CLOUD_NAMESPACES.md](ZENOH_CLOUD_NAMESPACES.md)
+**Zenoh Cloud Connectivity & Namespaces**
+
+- Что такое Zenoh namespace (отличия от ROS namespace)
+- Текущая реализация (ROBOT_ID, wrapper script, Docker)
+- Топология облачной сети
+- Детали конфигурации
+- Тестирование и валидация
+- Troubleshooting
+- Соображения безопасности (TLS/mTLS)
+
 ## 🔗 Связанные документы
 
 - [Документация пакетов](../packages/)
 - [Руководства по настройке](../guides/)
 - [CI/CD Pipeline](../CI_CD_PIPELINE.md)
+- [Отчет об анализе Zenoh](../reports/ZENOH_NAMESPACE_ANALYSIS_2025-10-23.md)
 
 ---
 
