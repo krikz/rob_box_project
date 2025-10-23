@@ -276,7 +276,7 @@ class DialogueNode(Node):
         response_msg = String()
         response_msg.data = json.dumps(response_json, ensure_ascii=False)
         self.response_pub.publish(response_msg)
-        self.tts_pub.publish(response_msg)
+        # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
     
     def _publish_state(self):
         """Публикация текущего состояния dialogue_node"""
@@ -517,9 +517,8 @@ class DialogueNode(Node):
                                 response_msg = String()
                                 response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
                                 self.response_pub.publish(response_msg)
+                                # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
                                 
-                                # Публикуем в TTS для синтеза (Phase 6)
-                                self.tts_pub.publish(response_msg)
                                 self.get_logger().info(f'🔊 Отправлено в TTS: chunk {chunk_count}')
                             
                         except json.JSONDecodeError:
