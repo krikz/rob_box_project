@@ -2,7 +2,7 @@
 # Serial interface через /dev/ttyACM0 (USB CDC ACM)
 /lslidar_driver_node:
   ros__parameters:
-    frame_id: laser_link                    # Лазерная система координат
+    frame_id: lslidar_n10               # Должен совпадать с URDF frame
     # Сетевые параметры (не используются в serial режиме)
     # group_ip: 224.1.1.2
     # add_multicast: false
@@ -10,7 +10,7 @@
     # device_ip_difop: 192.168.1.102        # Отключено для serial режима
     # msop_port: 2368                       # UDP порт (только для network режима)
     # difop_port: 2369                      # UDP порт (только для network режима)
-    lidar_name: M10                         # Тип лидара: N10 (используется M10 конфиг)
+    lidar_name: N10                         # Тип лидара: N10 (правильный протокол для N10!)
     angle_disable_min: 0.0                  # Обрезка угла - начало
     angle_disable_max: 0.0                  # Обрезка угла - конец
     min_range: 0.15                         # Минимальная дистанция (м)

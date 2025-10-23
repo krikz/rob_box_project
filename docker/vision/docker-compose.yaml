@@ -27,15 +27,17 @@ services:
       - ROS_DOMAIN_ID=0
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Пытаемся подключиться к router 10 раз
       - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/oak-d:/config/oak-d:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/oak-d:/scripts:ro
       - ./oak-d/launch:/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
@@ -43,7 +45,7 @@ services:
     # AprilTag-only mode: OAK-D publishes only color image and camera_info for marker detection
     mem_limit: 6g  # Максимум 6GB (оставляем 2GB для системы)
     memswap_limit: 7g  # 6GB RAM + 1GB swap максимум
-    command: ["/scripts/start_oak_d.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_oak_d.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -58,16 +60,18 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/lslidar:/config/lslidar:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/lslidar:/scripts:ro
       - /dev/shm:/dev/shm
-    command: ["/scripts/start_lslidar.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_lslidar.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -79,17 +83,19 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/apriltag:/config/apriltag:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/apriltag:/scripts:ro
       - /dev/shm:/dev/shm
-    command: ["/scripts/start_apriltag.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_apriltag.sh"]
     depends_on:
       - zenoh-router
       - oak-d
@@ -105,15 +111,17 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/led_matrix:/config/led_matrix:ro
+      - ./scripts:/ros_scripts:ro
       - ./scripts/led_matrix:/scripts:ro
-    command: ["/scripts/start_led_matrix.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_led_matrix.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -138,7 +146,8 @@ services:
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       # Audio settings
       - ALSA_CARD=ReSpeaker
       - TTS_CACHE_DIR=/cache/tts
@@ -147,7 +156,8 @@ services:
     env_file:
       - .env.secrets  # API keys: DEEPSEEK_API_KEY, YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./config/voice:/config/voice:ro
       - ./scripts:/scripts:ro
       - /dev/shm:/dev/shm
@@ -157,7 +167,7 @@ services:
       - ../../sound_pack:/ws/sound_pack:ro
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
-    command: ["/scripts/start_voice_assistant.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -174,7 +184,8 @@ services:
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       # Reflection parameters (v2.0 Event-Driven)
       - DIALOGUE_TIMEOUT=10.0  # секунды - тайм-аут диалога
       - URGENT_RESPONSE_TIMEOUT=2.0  # секунды - тайм-аут срочного ответа
@@ -187,12 +198,13 @@ services:
     env_file:
       - .env.secrets  # API keys: DEEPSEEK_API_KEY
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
       - ./perception/scripts:/scripts:ro
       - /dev/shm:/dev/shm
     mem_limit: 512m  # Perception - лёгкий контейнер
     memswap_limit: 768m
-    command: ["/scripts/start_perception.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_perception.sh"]
     depends_on:
       - zenoh-router
       - voice-assistant  # Зависим от voice для TTS
