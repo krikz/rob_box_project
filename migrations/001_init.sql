@@ -1,4 +1,22 @@
--- 001_init.sql
+-- ============================================================================
+-- Migration: 001_init.sql
+-- Purpose: Initializes the database schema for the event tracking and summarization system.
+--          Creates the 'events', 'summaries', and 'summary_events' tables, along with
+--          relevant indexes and foreign key constraints.
+--
+-- When to apply: This migration should be applied when setting up a new database instance
+--                for the first time, or when migrating from a version prior to the introduction
+--                of the event and summary tracking features.
+--
+-- Prerequisites: No prior migrations are required. This is the initial schema setup.
+--
+-- Version compatibility: Designed for SQLite 3.x. May require adjustments for other SQL dialects.
+--
+-- Rollback considerations: Dropping these tables will result in loss of all event and summary data.
+--                        Ensure backups are taken before rollback. No explicit DROP statements
+--                        are included in this migration.
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   category TEXT NOT NULL,

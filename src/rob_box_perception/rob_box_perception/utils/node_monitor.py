@@ -54,12 +54,19 @@ class NodeAvailabilityMonitor:
         self.node.get_logger().info(f"📡 Node Monitor: отслеживаем {len(self.expected_nodes)} нод")
 
     def check_nodes(self):
-        """Проверить доступность всех ожидаемых нод."""
+        """
+        Проверить доступность всех ожидаемых нод.
+        
+        Note: Uses subprocess to call 'ros2 node list' which may be slower on
+        resource-constrained devices like Raspberry Pi. Consider using rclpy's
+        node.get_node_names() API for better performance, or increase check_interval
+        to reduce CPU usage.
+        """
         try:
             result = subprocess.run(["ros2", "node", "list"], capture_output=True, text=True, timeout=2.0)
 
             if result.returncode != 0:
-                self.node.get_logger().warn(f"⚠️ Ошибка вызова ros2 node list: {result.stderr}")
+                self.node.get_logger().warning(f"⚠️ Ошибка вызова ros2 node list: {result.stderr}")
                 return
 
             active_nodes = result.stdout.strip().split("\n") if result.stdout.strip() else []

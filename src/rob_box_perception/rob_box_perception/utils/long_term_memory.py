@@ -43,8 +43,8 @@ class SQLiteLongTermMemory:
         if migrations_dir:
             self.migrations_dir = migrations_dir
         else:
-            # default migrations path relative to this file
-            self.migrations_dir = os.path.join(os.path.dirname(__file__), '..', 'migrations')
+            # default migrations path relative to project root (four levels up from utils/)
+            self.migrations_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'migrations')
             self.migrations_dir = os.path.normpath(self.migrations_dir)
 
         # init DB (create tables or run migrations)
@@ -126,7 +126,8 @@ class SQLiteLongTermMemory:
         if not isinstance(content, str):
             try:
                 content = json.dumps(content, ensure_ascii=False)
-            except Exception:
+            except (TypeError, ValueError) as e:
+                # Log the error and fall back to string conversion
                 content = str(content)
         important = 1 if event.get('important') else 0
 
@@ -195,8 +196,14 @@ class SQLiteLongTermMemory:
             self.conn.execute('DELETE FROM events WHERE time <= ? AND summarized = 1', (cutoff,))
 
     def close(self):
+        """Close the database connection."""
         try:
             with self.lock:
                 self.conn.close()
-        except Exception:
+        except sqlite3.ProgrammingError:
+            # Connection already closed, ignore
             pass
+        except Exception as e:
+            # Log unexpected errors during cleanup
+            import logging
+            logging.warning(f"Error closing LongTermMemory database: {e}")

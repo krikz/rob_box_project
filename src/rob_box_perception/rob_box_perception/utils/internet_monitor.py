@@ -63,7 +63,7 @@ class InternetConnectivityMonitor:
         for host in self.test_hosts:
             try:
                 result = subprocess.run(
-                    ["ping", "-c", "1", "-W", "2", host], capture_output=True, timeout=3.0
+                    ["ping", "-c", "1", "-W", "2", host], capture_output=True, timeout=2.5
                 )
 
                 if result.returncode == 0:

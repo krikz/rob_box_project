@@ -3,6 +3,15 @@
 time_provider.py - Time Awareness Provider
 
 Провайдер осознания текущего времени и контекста времени суток.
+
+Dependencies:
+    - pytz (optional): For timezone support. If unavailable, falls back to local time
+                       without timezone awareness. Install with: pip install pytz
+
+When pytz is not available:
+    - Timezone parameter is ignored
+    - Local system time is used instead
+    - All timezone-related features fall back to local time
 """
 
 import time
