@@ -468,10 +468,27 @@ class ReflectionNode(Node):
         """Краткое резюме контекста (для срочных ответов)"""
         lines = ["=== ТЕКУЩЕЕ СОСТОЯНИЕ ==="]
         
+        # Time (NEW)
+        if hasattr(ctx, 'current_time_human') and ctx.current_time_human:
+            try:
+                time_data = json.loads(ctx.time_context_json)
+                lines.append(f"🕐 Сейчас: {time_data.get('period_ru', ctx.time_period)}, {ctx.current_time_human}")
+            except:
+                lines.append(f"🕐 Время: {ctx.current_time_human}")
+        
         # Health
         lines.append(f"Здоровье: {ctx.system_health_status}")
         if ctx.health_issues:
             lines.append(f"Проблемы: {', '.join(ctx.health_issues)}")
+        
+        # Internet status (NEW)
+        if hasattr(ctx, 'internet_available'):
+            internet_status = "доступен" if ctx.internet_available else "недоступен"
+            lines.append(f"🌐 Интернет: {internet_status}")
+        
+        # Node status (NEW)
+        if hasattr(ctx, 'failed_nodes') and ctx.failed_nodes:
+            lines.append(f"⚠️  Упавшие ноды: {', '.join(ctx.failed_nodes)}")
         
         # Battery
         if ctx.battery_voltage > 0:
@@ -488,6 +505,37 @@ class ReflectionNode(Node):
     def _format_context_for_prompt(self, ctx: PerceptionEvent) -> str:
         """Полный контекст для обычного размышления"""
         lines = ["=== ТЕКУЩИЙ КОНТЕКСТ РОБОТА ===", ""]
+        
+        # ============ НОВОЕ: Time Context ============
+        if hasattr(ctx, 'current_time_human') and ctx.current_time_human:
+            lines.append("=== ВРЕМЯ ===")
+            lines.append(f"🕐 Время: {ctx.current_time_human}")
+            lines.append(f"📅 Период: {ctx.time_period}")
+            
+            # Парсим JSON для более детальной информации
+            try:
+                time_data = json.loads(ctx.time_context_json)
+                lines.append(f"   {time_data.get('weekday_ru', '')}, {time_data.get('period_ru', '')}")
+            except:
+                pass
+            lines.append("")
+        
+        # ============ НОВОЕ: Internet and Node Status ============
+        if hasattr(ctx, 'internet_available'):
+            internet_emoji = "✅" if ctx.internet_available else "❌"
+            internet_text = "Доступен" if ctx.internet_available else "Недоступен"
+            lines.append(f"🌐 Интернет: {internet_emoji} {internet_text}")
+        
+        if hasattr(ctx, 'active_nodes') and (ctx.active_nodes or ctx.failed_nodes or ctx.missing_nodes):
+            lines.append(f"📡 Ноды: {len(ctx.active_nodes)} активных")
+            
+            if ctx.failed_nodes:
+                lines.append(f"   ❌ Упавшие: {', '.join(ctx.failed_nodes)}")
+            
+            if ctx.missing_nodes:
+                lines.append(f"   ⚠️  Отсутствуют: {', '.join(ctx.missing_nodes)}")
+        
+        lines.append("")
         
         # ВАЖНО: Последние мысли (для избежания повторений)
         if self.recent_thoughts:

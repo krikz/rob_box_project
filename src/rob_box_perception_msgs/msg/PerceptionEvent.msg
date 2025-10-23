@@ -23,6 +23,22 @@ int32[] apriltag_ids
 string system_health_status  # "healthy", "degraded", "critical"
 string[] health_issues
 
+# Time awareness (current time context)
+string current_time_human     # Human-readable time: "2025-10-21 12:30:00"
+string time_period            # "morning", "day", "evening", "night"
+string time_context_json      # Full time context as JSON
+
+# Internet connectivity
+bool internet_available
+
+# ROS2 nodes availability
+string[] active_nodes
+string[] failed_nodes
+string[] missing_nodes
+
+# Equipment health (cameras, LIDAR, motors, SLAM)
+string equipment_summary_json
+
 # Memory context (recent events summary)
 string memory_summary
 
