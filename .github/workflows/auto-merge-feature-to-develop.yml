@@ -1,6 +1,6 @@
-name: Auto-merge feature branches to develop
+name: Create PR to develop after build
 
-# Автоматическое слияние feature веток в develop после успешной сборки
+# Автоматическое создание PR в develop после успешной сборки feature веток
 # Срабатывает при пуше в feature/* и copilot/* ветки
 on:
   push:
@@ -67,8 +67,8 @@ jobs:
       contents: read
       packages: write
 
-  # Шаг 4: Автомердж в develop после успешной сборки
-  auto-merge-to-develop:
+  # Шаг 4: Создание PR в develop после успешной сборки
+  create-pr-to-develop:
     runs-on: ubuntu-latest
     needs: [detect-changes, build-vision, build-main]
     # Запускаем если хотя бы одна сборка прошла успешно (или не запускалась)
@@ -77,7 +77,7 @@ jobs:
       (needs.build-vision.result == 'success' || needs.build-vision.result == 'skipped') &&
       (needs.build-main.result == 'success' || needs.build-main.result == 'skipped')
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
 
     steps:
@@ -94,62 +94,75 @@ jobs:
           echo "name=$BRANCH_NAME" >> $GITHUB_OUTPUT
           echo "Current branch: $BRANCH_NAME"
 
-      - name: Configure Git
-        run: |
-          git config user.name "GitHub Actions Bot"
-          git config user.email "actions@github.com"
-
-      - name: Merge feature branch to develop
-        id: merge
+      - name: Check if PR already exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
-          echo "🔀 Merging $FEATURE_BRANCH to develop..."
+          PR_EXISTS=$(gh pr list --head "$FEATURE_BRANCH" --base develop --json number --jq length)
+          echo "pr_exists=$PR_EXISTS" >> $GITHUB_OUTPUT
+          echo "Existing PRs: $PR_EXISTS"
 
-          # Переключаемся на develop
-          git fetch origin develop
-          git checkout develop
-          git pull origin develop
+      - name: Create Pull Request to develop
+        if: steps.check-pr.outputs.pr_exists == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
+          
+          # Создаём описание PR с информацией о сборке
+          PR_BODY="## ✅ Сборка успешно завершена
 
-          # Мержим feature ветку
-          if git merge --no-ff origin/$FEATURE_BRANCH -m "feat: auto-merge $FEATURE_BRANCH to develop after successful build"; then
-            echo "✅ Merge successful"
-            echo "merged=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Merge conflict detected"
-            echo "merged=false" >> $GITHUB_OUTPUT
-            git merge --abort
-            exit 1
+          Эта ветка прошла автоматическую сборку и проверку.
+
+          ### Изменённые компоненты:
+          "
+          
+          if [ "${{ needs.detect-changes.outputs.vision_changed }}" == "true" ]; then
+            PR_BODY="${PR_BODY}
+          - ✓ Vision Pi services"
+          fi
+          
+          if [ "${{ needs.detect-changes.outputs.main_changed }}" == "true" ]; then
+            PR_BODY="${PR_BODY}
+          - ✓ Main Pi services"
+          fi
+          
+          if [ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]; then
+            PR_BODY="${PR_BODY}
+          - ✓ Documentation"
           fi
 
-      - name: Push to develop
-        if: steps.merge.outputs.merged == 'true'
-        run: |
-          git push origin develop
-          echo "✅ Successfully pushed to develop!"
+          PR_BODY="${PR_BODY}
 
-      # NOTE: Feature branch deletion disabled
-      # Developer should manually delete feature branches after verification
-      # This prevents accidental deletion of work-in-progress branches
-      #
-      # - name: Delete feature branch (optional)
-      #   if: steps.merge.outputs.merged == 'true'
-      #   run: |
-      #     FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
-      #     echo "🗑️ Deleting merged feature branch: $FEATURE_BRANCH"
-      #     git push origin --delete $FEATURE_BRANCH || echo "⚠️ Failed to delete remote branch"
+          ### Действия:
+          - Проверьте изменения
+          - Убедитесь что всё работает корректно
+          - Сделайте merge когда готово
+
+          ---
+          _Автоматически создано GitHub Actions после успешной сборки_"
+
+          # Создаём PR
+          gh pr create \
+            --base develop \
+            --head "$FEATURE_BRANCH" \
+            --title "feat: merge $FEATURE_BRANCH to develop" \
+            --body "$PR_BODY" \
+            --label "autobuild" \
+            || echo "Failed to create PR, it may already exist"
 
       - name: Success notification
-        if: steps.merge.outputs.merged == 'true'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Feature branch auto-merged to develop!"
+          echo "✅ Pull Request created for review!"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "Branch: ${{ steps.branch.outputs.name }} → develop"
-          echo "Commit: $(git rev-parse develop)"
           echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo ""
-          echo "Changes merged:"
+          echo "Changes ready for review:"
           if [ "${{ needs.detect-changes.outputs.vision_changed }}" == "true" ]; then
             echo "  ✓ Vision Pi services"
           fi
@@ -159,18 +172,5 @@ jobs:
           if [ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]; then
             echo "  ✓ Documentation"
           fi
-
-      - name: Merge conflict notification
-        if: steps.merge.outputs.merged == 'false'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "⚠️ Auto-merge failed due to conflicts!"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          echo "Please merge manually:"
-          echo "  git checkout develop"
-          echo "  git pull"
-          echo "  git merge ${{ steps.branch.outputs.name }}"
-          echo "  # resolve conflicts"
-          echo "  git push origin develop"
-          exit 1
+          echo "Please review and merge the PR when ready."

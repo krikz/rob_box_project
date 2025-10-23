@@ -1,162 +1,95 @@
-name: Auto-merge develop to main
+name: Create PR to main after build
 
-# Автоматическое слияние develop в main после успешной сборки ВСЕХ сервисов
+# Автоматическое создание PR в main после успешной сборки ВСЕХ сервисов из develop
 # Срабатывает:
 #   1. При пуше в develop (ручной пуш)
-#   2. После успешного автомерджа из feature ветки
 on:
   push:
     branches:
       - develop
-  workflow_run:
-    workflows: ["Auto-merge feature branches to develop"]
-    types:
-      - completed
-    branches:
-      - develop
 
 jobs:
-  # Шаг 0: Проверка что предыдущий workflow завершился успешно (для workflow_run)
-  check-previous-run:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_run'
-    steps:
-      - name: Check workflow run status
-        run: |
-          if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
-            echo "❌ Previous workflow failed, skipping auto-merge"
-            exit 1
-          fi
-          echo "✅ Previous workflow succeeded, continuing..."
-
   # Шаг 1: Проверяем что ВСЕ образы собираются успешно
   build-and-test:
-    needs: [check-previous-run]
-    if: always() && (needs.check-previous-run.result == 'success' || needs.check-previous-run.result == 'skipped')
     uses: ./.github/workflows/build-all.yml
     secrets: inherit
     permissions:
       contents: read
       packages: write
 
-  # Шаг 2: Если ВСЕ сборки успешны, мержим в main
-  auto-merge:
+  # Шаг 2: Если ВСЕ сборки успешны, создаём PR в main
+  create-pr-to-main:
     runs-on: ubuntu-latest
     needs: build-and-test
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Полная история для мерджа
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
+      - name: Check if PR already exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "GitHub Actions Bot"
-          git config user.email "actions@github.com"
+          PR_EXISTS=$(gh pr list --head develop --base main --json number --jq length)
+          echo "pr_exists=$PR_EXISTS" >> $GITHUB_OUTPUT
+          echo "Existing PRs: $PR_EXISTS"
 
-      - name: Merge develop to main
-        id: merge
+      - name: Create Pull Request to main
+        if: steps.check-pr.outputs.pr_exists == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔀 Merging develop to main..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          
-          git fetch origin main
-          git checkout main
-          git pull origin main
-          
-          if git merge --no-ff develop -m "chore: auto-merge develop to main after successful build"; then
-            echo "merged=true" >> $GITHUB_OUTPUT
-            echo "✅ Merge successful"
-          else
-            echo "merged=false" >> $GITHUB_OUTPUT
-            echo "❌ Merge conflict detected"
-            git merge --abort
-            exit 1
-          fi
+          # Создаём описание PR
+          PR_BODY="## 🎉 Ready for Production Release
 
-      - name: Push to main
-        if: steps.merge.outputs.merged == 'true'
-        run: |
-          git push origin main
-          echo "✅ Successfully pushed to main!"
+          All services have been built successfully and are ready for production deployment.
 
-      - name: Create release tag (optional)
-        if: steps.merge.outputs.merged == 'true'
-        run: |
-          # Создаём тег с датой
-          TAG="release-$(date -u '+%Y%m%d-%H%M%S')"
-          git tag -a "$TAG" -m "Automated release from develop to main"
-          git push origin "$TAG"
-          echo "📦 Created release tag: $TAG"
+          ### Built Services:
+          - ✓ Vision Pi services (oak-d, lslidar, apriltag, led-matrix, voice-assistant)
+          - ✓ Main Pi services (micro-ros-agent, zenoh-router)  
+          - ✓ Base images (ros2-zenoh)
+
+          ### Docker Images:
+          All images will be tagged as \`*-humble-latest\` after merge.
+
+          ### Actions Required:
+          - Review all changes since last release
+          - Test on staging/development robot
+          - Verify all services work correctly
+          - Merge when ready for production deployment
+
+          ---
+          _Автоматически создано GitHub Actions после успешной сборки всех сервисов_"
+
+          # Создаём PR
+          gh pr create \
+            --base main \
+            --head develop \
+            --title "chore: release develop to main" \
+            --body "$PR_BODY" \
+            --label "release" \
+            --label "autobuild" \
+            || echo "Failed to create PR, it may already exist"
 
       - name: Success notification
-        if: steps.merge.outputs.merged == 'true'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Successfully merged develop to main!"
+          echo "✅ Pull Request to main created for review!"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "Branch: develop → main"
-          echo "Commit: $(git rev-parse HEAD)"
-          echo "Tag: release-$(date -u '+%Y%m%d-%H%M%S')"
           echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo ""
           echo "All services built successfully:"
-          echo "  ✓ Vision Pi services (oak-d, lslidar, apriltag, led-matrix, voice-assistant)"
-          echo "  ✓ Main Pi services (micro-ros-agent, zenoh-router)"
-          echo "  ✓ Base images (ros2-zenoh)"
+          echo "  ✓ Vision Pi services"
+          echo "  ✓ Main Pi services"
+          echo "  ✓ Base images"
           echo ""
-          echo "Images will be available with tags:"
-          echo "  - *-humble-latest (production)"
-
-      - name: Merge conflict notification
-        if: steps.merge.outputs.merged == 'false'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "⚠️ Auto-merge failed due to conflicts!"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "Please merge manually:"
-          echo "  git checkout main"
-          echo "  git pull"
-          echo "  git merge develop"
-          echo "  # resolve conflicts"
-          echo "  git push origin main"
-          exit 1
-
-  # Шаг 3: Собираем main branch с тегом 'latest'
-  build-main:
-    runs-on: ubuntu-latest
-    needs: auto-merge
-    if: always() && needs.auto-merge.result == 'success'
-    permissions:
-      contents: read
-      packages: write
-    
-    steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Trigger main build
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🚀 Main branch updated, build triggered"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "Main branch is now at: $(git rev-parse HEAD)"
-          echo "Docker images will be built with '-latest' tags"
-          echo ""
-          echo "Available at:"
-          echo "  ghcr.io/krikz/rob_box:voice-assistant-humble-latest"
-          echo "  ghcr.io/krikz/rob_box:oak-d-humble-latest"
-          echo "  ghcr.io/krikz/rob_box:lslidar-humble-latest"
-          echo "  # ... and all other services"
+          echo "Please review and merge the PR for production deployment."
