@@ -105,7 +105,7 @@ services:
       - ./scripts:/ros_scripts:ro
       - ./scripts/robot_state_publisher:/scripts:ro
       - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_robot_state_publisher.sh"]
+    command: ["/scripts/start_robot_state_publisher.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
