@@ -1,12 +1,13 @@
 name: Auto-merge feature branches to develop
 
 # Автоматическое слияние feature веток в develop после успешной сборки
-# Срабатывает при пуше в feature/* ветки
+# Срабатывает при пуше в feature/* и copilot/* ветки
 on:
   push:
     branches:
       - 'feature/**'
       - 'feat/**'
+      - 'copilot/**'
 
 jobs:
   # Шаг 1: Определяем что менялось
@@ -27,19 +28,19 @@ jobs:
         run: |
           # Проверяем изменения относительно develop
           git fetch origin develop
-          
+
           if git diff --name-only origin/develop HEAD | grep -q "^docker/vision/"; then
             echo "vision=true" >> $GITHUB_OUTPUT
           else
             echo "vision=false" >> $GITHUB_OUTPUT
           fi
-          
+
           if git diff --name-only origin/develop HEAD | grep -q "^docker/main/"; then
             echo "main=true" >> $GITHUB_OUTPUT
           else
             echo "main=false" >> $GITHUB_OUTPUT
           fi
-          
+
           if git diff --name-only origin/develop HEAD | grep -q "^docs/"; then
             echo "docs=true" >> $GITHUB_OUTPUT
           else
@@ -72,13 +73,13 @@ jobs:
     needs: [detect-changes, build-vision, build-main]
     # Запускаем если хотя бы одна сборка прошла успешно (или не запускалась)
     if: |
-      always() && 
+      always() &&
       (needs.build-vision.result == 'success' || needs.build-vision.result == 'skipped') &&
       (needs.build-main.result == 'success' || needs.build-main.result == 'skipped')
     permissions:
       contents: write
       pull-requests: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -103,12 +104,12 @@ jobs:
         run: |
           FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
           echo "🔀 Merging $FEATURE_BRANCH to develop..."
-          
+
           # Переключаемся на develop
           git fetch origin develop
           git checkout develop
           git pull origin develop
-          
+
           # Мержим feature ветку
           if git merge --no-ff origin/$FEATURE_BRANCH -m "feat: auto-merge $FEATURE_BRANCH to develop after successful build"; then
             echo "✅ Merge successful"

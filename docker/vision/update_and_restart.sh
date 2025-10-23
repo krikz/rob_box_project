@@ -34,6 +34,12 @@ git pull origin $CURRENT_BRANCH
 echo "✅ Код обновлен"
 echo ""
 
+# Настраиваем Docker теги на основе текущей ветки
+echo "🔧 Настройка Docker тегов..."
+cd "$PROJECT_ROOT"
+bash scripts/set-docker-tags.sh
+echo ""
+
 # Скачиваем новые образы из registry
 echo "📦 Скачиваем обновленные Docker образы из registry..."
 cd docker/vision
