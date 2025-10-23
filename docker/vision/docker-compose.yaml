@@ -35,7 +35,7 @@ services:
       - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/oak-d:/config/oak-d:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/oak-d:/scripts:ro
@@ -66,7 +66,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/lslidar:/config/lslidar:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/lslidar:/scripts:ro
@@ -90,7 +90,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/apriltag:/config/apriltag:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/apriltag:/scripts:ro
@@ -117,7 +117,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/led_matrix:/config/led_matrix:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/led_matrix:/scripts:ro
@@ -148,7 +148,7 @@ services:
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_CONFIG=/config/zenoh_session_config.json5
       # Audio settings
       - ALSA_CARD=ReSpeaker
       - TTS_CACHE_DIR=/cache/tts
@@ -157,7 +157,7 @@ services:
     env_file:
       - .env.secrets  # API keys: DEEPSEEK_API_KEY, YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./config/voice:/config/voice:ro
       - ./scripts:/scripts:ro
       - /dev/shm:/dev/shm
@@ -185,7 +185,7 @@ services:
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+      - ZENOH_CONFIG=/config/zenoh_session_config.json5
       # Reflection parameters (v2.0 Event-Driven)
       - DIALOGUE_TIMEOUT=10.0  # секунды - тайм-аут диалога
       - URGENT_RESPONSE_TIMEOUT=2.0  # секунды - тайм-аут срочного ответа
@@ -198,7 +198,7 @@ services:
     env_file:
       - .env.secrets  # API keys: DEEPSEEK_API_KEY
     volumes:
-      - ./config:/config/shared:ro
+      - ./config:/config:ro
       - ./perception/scripts:/scripts:ro
       - /dev/shm:/dev/shm
     mem_limit: 512m  # Perception - лёгкий контейнер
