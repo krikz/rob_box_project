@@ -196,6 +196,7 @@ services:
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
+      - CONTROLLER_CONFIG=/config/controllers/controller_manager.yaml
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro

@@ -161,7 +161,7 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./config/voice:/config/voice:ro
-      - ./scripts/voice_assistant:/scripts:ro
+      - ./scripts:/scripts:ro
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
       - ./cache/tts:/cache/tts
