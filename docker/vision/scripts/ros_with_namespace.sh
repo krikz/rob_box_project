@@ -18,7 +18,7 @@ echo "📡 Namespace: robots/$ROBOT_ID"
 
 # Генерируем session config с namespace
 GENERATED_CONFIG="/tmp/zenoh_session_config.json5"
-cp /config/shared/zenoh_session_config.json5 "$GENERATED_CONFIG"
+cp /config/zenoh_session_config.json5 "$GENERATED_CONFIG"
 
 # Раскомментируем и заменяем namespace
 sed -i "s|// namespace: \"my/namespace\"|namespace: \"robots/$ROBOT_ID\"|g" "$GENERATED_CONFIG"
