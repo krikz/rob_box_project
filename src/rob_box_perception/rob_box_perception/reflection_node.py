@@ -775,12 +775,26 @@ class ReflectionNode(Node):
             self._play_sound('cute')
     
     def _play_sound(self, sound_name: str):
-        """Проиграть звуковой эффект"""
+        """Проиграть звуковой эффект (с debounce защитой от повторов)"""
+        # Проверка debounce: не играть один и тот же звук слишком часто
+        current_time = time.time()
+        if sound_name in self.last_sound_time:
+            time_since_last = current_time - self.last_sound_time[sound_name]
+            if time_since_last < self.sound_debounce_interval:
+                self.get_logger().debug(
+                    f'🔇 Sound debounce: пропускаю {sound_name} '
+                    f'(прошло {time_since_last:.1f}s < {self.sound_debounce_interval}s)'
+                )
+                return  # НЕ публикуем звук
+        
         try:
             msg = String()
             msg.data = sound_name
             self.sound_pub.publish(msg)
             self.get_logger().debug(f'🎵 Звук: {sound_name}')
+            
+            # Обновляем время последнего воспроизведения этого звука
+            self.last_sound_time[sound_name] = current_time
         except Exception as e:
             self.get_logger().warn(f'⚠️  Ошибка триггера звука: {e}')
 
