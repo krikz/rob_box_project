@@ -25,8 +25,8 @@ sed -i "s|// namespace: \"my/namespace\"|namespace: \"robots/$ROBOT_ID\"|g" "$GE
 
 echo "✅ Session config сгенерирован: $GENERATED_CONFIG"
 
-# Обновляем ZENOH_CONFIG на сгенерированный файл
-export ZENOH_CONFIG="$GENERATED_CONFIG"
+# Обновляем ZENOH_SESSION_CONFIG_URI на сгенерированный файл
+export ZENOH_SESSION_CONFIG_URI="$GENERATED_CONFIG"
 
 echo "🚀 Запуск: $@"
 echo "=================================================="

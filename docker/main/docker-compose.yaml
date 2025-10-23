@@ -36,7 +36,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
@@ -66,7 +66,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
       # micro-ROS специфичные переменные
       - MICROROS_SERIAL_PORT=/dev/ttyUSB0  # ESP32 USB serial (измените на /dev/ttyAMA0 для GPIO UART)
@@ -99,7 +99,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
@@ -124,7 +124,7 @@ services:
       # Zenoh configuration через JSON
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
     volumes:
@@ -192,7 +192,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
@@ -228,7 +228,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_CONFIG=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
