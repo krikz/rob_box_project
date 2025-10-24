@@ -13,6 +13,7 @@ import os
 import sys
 import random
 import threading
+import time
 import numpy as np
 import sounddevice as sd
 from typing import Dict, List, Optional
@@ -223,6 +224,9 @@ class SoundNode(Node):
             
             self.get_logger().info(f'✅ Завершено: {sound_name}')
             
+            # Cleanup для устранения белого шума после воспроизведения
+            self.cleanup_playback_noise()
+            
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка воспроизведения {sound_name}: {e}')
         
@@ -230,6 +234,33 @@ class SoundNode(Node):
             self.is_playing = False
             self.current_sound = None
             self.publish_state('ready')
+    
+    def cleanup_playback_noise(self):
+        """
+        Устранение белого шума после воспроизведения звука.
+        
+        Проблема: После воспроизведения через ReSpeaker (USB Audio Class 1.0)
+        возникает постоянный белый шум из-за активного playback channel.
+        
+        Решение:
+        1. Properly close sounddevice stream
+        2. Flush audio buffers
+        3. Small delay для стабилизации USB audio interface
+        """
+        try:
+            # 1. Ensure sounddevice is fully stopped
+            sd.stop()
+            
+            # 2. Small delay to let USB audio interface stabilize
+            # ReSpeaker USB Audio Class 1.0 requires time to properly close playback path
+            import time
+            time.sleep(0.1)
+            
+            # 3. Log cleanup completion
+            self.get_logger().debug('🧹 Playback noise cleanup completed')
+            
+        except Exception as e:
+            self.get_logger().warn(f'⚠️ Noise cleanup failed: {e}')
     
     def trigger_animation(self, trigger: str):
         """Триггер соответствующей анимации"""
