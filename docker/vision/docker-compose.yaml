@@ -105,6 +105,34 @@ services:
     labels:
       logging: "promtail"
 
+  ceiling-camera:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: ceiling-camera
+    network_mode: host
+    privileged: true  # Для доступа к USB camera
+    devices:
+      - /dev/video0:/dev/video0  # USB UVC камера
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85  # JPEG качество для compressed transport
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/ceiling-camera:/scripts:ro
+      - /dev/shm:/dev/shm
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ceiling_camera.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+
   voice-assistant:
     # Image tags automatically determined by IMAGE_TAG environment variable:
     # - IMAGE_TAG=latest  → voice-assistant-humble-latest (main branch)
