@@ -99,13 +99,14 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/robot_state_publisher:/scripts:ro
       - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
-    command: ["/scripts/start_robot_state_publisher.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_robot_state_publisher.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
