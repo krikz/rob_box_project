@@ -1,41 +1,52 @@
 #!/bin/bash
-# Скрипт для включения мониторинга на Main Pi
+# Скрипт для включения агентов мониторинга на Main Pi
+# Отправляют метрики и логи на отдельную машину мониторинга
 # Использование: ./enable_monitoring.sh
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 echo "================================================"
-echo "  Включение мониторинга на Main Pi"
+echo "  Включение агентов мониторинга на Main Pi"
 echo "================================================"
 echo ""
 
 # Проверяем наличие конфигураций
-if [ ! -f "config/monitoring/prometheus.yml" ]; then
+if [ ! -f "config/monitoring/promtail-config.yaml" ]; then
     echo "❌ Ошибка: файлы конфигурации мониторинга не найдены!"
     echo "   Проверьте наличие config/monitoring/"
     exit 1
 fi
 
+# Проверяем наличие переменной LOKI_HOST
+if [ -z "${LOKI_HOST}" ]; then
+    echo "⚠️  Внимание: переменная LOKI_HOST не установлена"
+    echo "   Используется значение по умолчанию: monitoring-machine"
+    echo ""
+    echo "   Для настройки добавьте в .env файл:"
+    echo "   LOKI_HOST=<IP адрес машины мониторинга>"
+    echo ""
+fi
+
 echo "✓ Конфигурационные файлы найдены"
 echo ""
 
-# Запускаем мониторинг с профилем
-echo "Запуск сервисов мониторинга..."
-docker-compose --profile monitoring up -d cadvisor prometheus loki promtail grafana
+# Запускаем агенты мониторинга с профилем
+echo "Запуск агентов мониторинга..."
+docker-compose --profile monitoring up -d cadvisor promtail
 
 echo ""
 echo "================================================"
-echo "  Мониторинг успешно запущен!"
+echo "  Агенты мониторинга успешно запущены!"
 echo "================================================"
 echo ""
-echo "Доступ к сервисам:"
-echo "  • Grafana:    http://localhost:3000 (admin/robbox)"
-echo "  • Prometheus: http://localhost:9090"
+echo "Локальный доступ:"
 echo "  • cAdvisor:   http://localhost:8080"
-echo "  • Loki:       http://localhost:3100"
 echo ""
-echo "Для остановки: ./disable_monitoring.sh"
+echo "Данные отправляются на машину мониторинга (${LOKI_HOST:-monitoring-machine})"
+echo "Для просмотра логов и метрик откройте Grafana на машине мониторинга"
+echo ""
+echo "Для остановки: ./scripts/disable_monitoring.sh"
 echo ""

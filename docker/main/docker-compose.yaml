@@ -334,8 +334,9 @@ services:
     labels:
       logging: "promtail"
 
-  # ============ Monitoring Stack ============
-  # Легковесная система мониторинга для робота
+  # ============ Monitoring Agents ============
+  # Агенты мониторинга для Main Pi
+  # Отправляют метрики и логи на отдельную машину мониторинга
   # Можно отключить через: docker-compose --profile monitoring up -d
 
   # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
@@ -360,65 +361,18 @@ services:
       - '--store_container_labels=false'
     restart: unless-stopped
 
-  # Prometheus - сбор метрик
-  prometheus:
-    image: prom/prometheus:v2.47.2
-    container_name: prometheus
-    profiles: ["monitoring"]
-    network_mode: host
-    volumes:
-      - ./config/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d'
-      - '--web.listen-address=:9090'
-    restart: unless-stopped
-
-  # Loki - агрегация логов
-  loki:
-    image: grafana/loki:2.9.2
-    container_name: loki
-    profiles: ["monitoring"]
-    network_mode: host
-    volumes:
-      - ./config/monitoring/loki-config.yaml:/etc/loki/local-config.yaml:ro
-      - loki-data:/tmp/loki
-    command: -config.file=/etc/loki/local-config.yaml
-    restart: unless-stopped
-
-  # Promtail - сбор логов из Docker контейнеров
+  # Promtail - сбор логов из Docker контейнеров и отправка на машину мониторинга
   promtail:
     image: grafana/promtail:2.9.2
     container_name: promtail
     profiles: ["monitoring"]
     network_mode: host
+    environment:
+      - LOKI_HOST=${LOKI_HOST:-monitoring-machine}
     volumes:
       - ./config/monitoring/promtail-config.yaml:/etc/promtail/config.yml:ro
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    command: -config.file=/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     restart: unless-stopped
-
-  # Grafana - визуализация метрик и логов
-  grafana:
-    image: grafana/grafana:10.2.0
-    container_name: grafana
-    profiles: ["monitoring"]
-    network_mode: host
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=robbox
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_HTTP_PORT=3000
-      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
-    volumes:
-      - ./config/monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
-      - grafana-data:/var/lib/grafana
-    restart: unless-stopped
-
-volumes:
-  prometheus-data:
-  loki-data:
-  grafana-data:

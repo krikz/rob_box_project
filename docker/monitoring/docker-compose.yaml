@@ -1,0 +1,71 @@
+# Использует переменные из .env файла:
+# - ROBOT_ID: ID робота для фильтрации метрик и логов
+# - MAIN_PI_IP: IP адрес Main Pi (по умолчанию 10.1.1.10)
+# - VISION_PI_IP: IP адрес Vision Pi (по умолчанию 10.1.1.11)
+
+services:
+  # Prometheus - сбор метрик с обоих Raspberry Pi
+  prometheus:
+    image: prom/prometheus:v2.47.2
+    container_name: prometheus
+    network_mode: host
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.listen-address=:9090'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # Loki - агрегация логов с обоих Raspberry Pi
+  loki:
+    image: grafana/loki:2.9.2
+    container_name: loki
+    network_mode: host
+    volumes:
+      - ./config/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/tmp/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # Grafana - визуализация метрик и логов
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-robbox}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - ./config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:
