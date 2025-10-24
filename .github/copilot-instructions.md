@@ -350,6 +350,58 @@ environment:
 
 ---
 
+## 📊 Monitoring System
+
+### Overview
+
+Rob Box uses a lightweight monitoring stack for observing system health and logs:
+
+- **Grafana** (port 3000) - Web dashboard for visualization
+- **Prometheus** (port 9090) - Metrics collection
+- **Loki** (port 3100) - Log aggregation
+- **cAdvisor** (port 8080) - Container metrics on both Pis
+- **Promtail** (port 9080) - Log forwarding
+
+### Quick Start
+
+```bash
+# Enable monitoring
+cd ~/rob_box_project/docker/main && ./scripts/enable_monitoring.sh
+cd ~/rob_box_project/docker/vision && ./scripts/enable_monitoring.sh
+
+# Access Grafana
+http://10.1.1.10:3000  (admin/robbox)
+
+# Disable monitoring
+cd ~/rob_box_project/docker/main && ./scripts/disable_monitoring.sh
+cd ~/rob_box_project/docker/vision && ./scripts/disable_monitoring.sh
+```
+
+### Resource Usage
+
+- **Main Pi:** ~320MB RAM (idle), ~570MB RAM (active)
+- **Vision Pi:** ~70MB RAM (idle), ~120MB RAM (active)
+
+### When to Use Monitoring
+
+**Enable when:**
+- ✅ Debugging performance issues
+- ✅ Load testing
+- ✅ Configuring new features
+- ✅ Remote robot operation
+
+**Disable when:**
+- ✅ Autonomous operation (save resources)
+- ✅ Maximum performance needed
+- ✅ Battery conservation required
+
+### Documentation
+
+- [Monitoring System Guide](../docs/guides/MONITORING_SYSTEM.md) - Complete documentation
+- [Quick Reference](../docs/MONITORING_QUICK_REF.md) - Command reference
+
+---
+
 ## 🔐 Security & Secrets Management
 
 ### API Keys & Credentials

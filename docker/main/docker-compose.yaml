@@ -24,6 +24,8 @@ services:
       timeout: 10s
       retries: 20
       start_period: 30s
+    labels:
+      logging: "promtail"
 
   # twist_mux - мультиплексирование команд скорости с приоритизацией
   twist-mux:
@@ -52,6 +54,8 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    labels:
+      logging: "promtail"
 
   # micro-ROS Agent - связь с ESP32 Sensor Hub по UART
   # Транслирует сообщения между ROS2 (DDS/Zenoh) и micro-ROS (XRCE-DDS)
@@ -87,6 +91,8 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+    labels:
+      logging: "promtail"
 
   # Robot State Publisher - публикует TF дерево робота из URDF
   robot-state-publisher:
@@ -109,6 +115,8 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    labels:
+      logging: "promtail"
 
   rtabmap:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
@@ -176,6 +184,8 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    labels:
+      logging: "promtail"
 
   # ROS2 Control Manager - управление моторами через VESC
   # VESC Nexus работает как hardware_interface плагин
@@ -212,6 +222,8 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+    labels:
+      logging: "promtail"
 
   # LSLIDAR N10 - 2D LiDAR scanner
   lslidar:
@@ -238,6 +250,8 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    labels:
+      logging: "promtail"
 
   # Internal Dialogue Agent - система внутреннего диалога робота
   perception:
@@ -281,6 +295,8 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+    labels:
+      logging: "promtail"
 
   # Nav2 Navigation Stack - автономная навигация
   nav2:
@@ -315,3 +331,48 @@ services:
       timeout: 10s
       start_period: 60s
       retries: 3
+    labels:
+      logging: "promtail"
+
+  # ============ Monitoring Agents ============
+  # Агенты мониторинга для Main Pi
+  # Отправляют метрики и логи на отдельную машину мониторинга
+  # Можно отключить через: docker-compose --profile monitoring up -d
+
+  # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: cadvisor
+    profiles: ["monitoring"]
+    network_mode: host
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - '--port=8080'
+      - '--housekeeping_interval=30s'
+      - '--docker_only=true'
+      - '--store_container_labels=false'
+    restart: unless-stopped
+
+  # Promtail - сбор логов из Docker контейнеров и отправка на машину мониторинга
+  promtail:
+    image: grafana/promtail:2.9.2
+    container_name: promtail
+    profiles: ["monitoring"]
+    network_mode: host
+    environment:
+      - LOKI_HOST=${LOKI_HOST:-monitoring-machine}
+    volumes:
+      - ./config/monitoring/promtail-config.yaml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
+    restart: unless-stopped
