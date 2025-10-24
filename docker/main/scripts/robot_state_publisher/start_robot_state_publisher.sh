@@ -1,16 +1,8 @@
 #!/bin/bash
 set -e
 
-# ВАЖНО: Сначала настраиваем Zenoh конфиг через wrapper
-echo "Setting up Zenoh session config with namespace..."
-if [ -f "/ros_scripts/ros_with_namespace.sh" ]; then
-    # Создаём zenoh config с namespace через wrapper 
-    /ros_scripts/ros_with_namespace.sh echo "Zenoh config set up"
-    echo "ZENOH_SESSION_CONFIG_URI=$ZENOH_SESSION_CONFIG_URI"
-else
-    echo "WARNING: ros_with_namespace.sh not found, using default config"
-    export ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
-fi
+# Zenoh config уже настроен через ros_with_namespace.sh wrapper в docker-compose.yaml
+echo "ZENOH_SESSION_CONFIG_URI=$ZENOH_SESSION_CONFIG_URI"
 
 # Source ROS 2
 source /opt/ros/humble/setup.bash
