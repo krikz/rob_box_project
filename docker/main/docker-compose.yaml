@@ -337,7 +337,7 @@ services:
   # ============ Monitoring Stack ============
   # Легковесная система мониторинга для робота
   # Можно отключить через: docker-compose --profile monitoring up -d
-  
+
   # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
