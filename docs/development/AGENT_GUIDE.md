@@ -203,10 +203,16 @@ Node(
 **Vision Pi (10.1.1.11 eth0 / 10.1.1.21 wlan0)**
 - OAK-D Lite камера (Intel Movidius MyriadX)
 - AprilTag детекция
+- LED Matrix контроллер
+- Voice Assistant (ReSpeaker)
 - Zenoh router для маршрутизации данных
 
 **Main Pi (10.1.1.10 eth0 / 10.1.1.20 wlan0)**
 - RTAB-Map SLAM система
+- LSLIDAR N10 (2D LiDAR)
+- Perception система (внутренний диалог)
+- Navigation (Nav2)
+- Motor control (ROS2 Control + VESC)
 - Zenoh router (центральный узел)
 - Подключение к внешнему серверу zenoh.robbox.online:7447
 
@@ -323,8 +329,8 @@ Feature Branch (feature/*)
 |----------|------|------------|
 | **Feature → Develop** | `.github/workflows/auto-merge-feature-to-develop.yml` | Собирает изменённые сервисы, автомерджит в develop |
 | **Develop → Main** | `.github/workflows/auto-merge-to-main.yml` | Собирает ВСЕ сервисы, автомерджит в main |
-| **Vision Services** | `.github/workflows/build-vision-services.yml` | Сборка oak-d, lslidar, apriltag, led-matrix, voice-assistant |
-| **Main Services** | `.github/workflows/build-main-services.yml` | Сборка rtabmap, led-compositor |
+| **Vision Services** | `.github/workflows/build-vision-services.yml` | Сборка oak-d, apriltag, led-matrix, voice-assistant |
+| **Main Services** | `.github/workflows/build-main-services.yml` | Сборка rtabmap, nav2, ros2-control, lslidar, perception |
 | **Base Images** | `.github/workflows/build-base-images.yml` | Сборка базовых образов (ros2-zenoh) |
 
 ### Docker Image Tagging

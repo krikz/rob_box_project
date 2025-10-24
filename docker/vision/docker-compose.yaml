@@ -141,4 +141,3 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
-

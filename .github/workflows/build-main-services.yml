@@ -443,7 +443,15 @@ jobs:
   # Проверка сборки всех сервисов прошла успешно
   verify-build:
     runs-on: ubuntu-latest
-    needs: [build-robot-state-publisher, build-rtabmap, build-twist-mux, build-micro-ros-agent, build-ros2-control, build-nav2, build-lslidar, build-perception]
+    needs:
+      - build-robot-state-publisher
+      - build-rtabmap
+      - build-twist-mux
+      - build-micro-ros-agent
+      - build-ros2-control
+      - build-nav2
+      - build-lslidar
+      - build-perception
     steps:
       - name: Verify all builds succeeded
         run: echo "✅ All Main Pi services built successfully!"
