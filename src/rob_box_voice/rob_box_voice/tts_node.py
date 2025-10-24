@@ -415,7 +415,12 @@ class TTSNode(Node):
                 self.publish_state("synthesizing")
                 self.get_logger().info("🔊 Синтез через Silero (fallback)...")
 
+                # Логируем SSML атрибуты если есть (для консистентности с Yandex)
+                if ssml_attributes:
+                    self.get_logger().info(f"🎵 SSML атрибуты для Silero: {ssml_attributes}")
+
                 # Оборачиваем в SSML для Silero
+                # Silero поддерживает SSML напрямую через apply_tts
                 if not ssml.startswith("<speak>"):
                     ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
                 else:
