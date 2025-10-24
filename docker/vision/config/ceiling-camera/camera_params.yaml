@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    # USB Camera settings
+    video_device: "/dev/video0"
+    framerate: 10.0
+    image_width: 1280
+    image_height: 720
+    pixel_format: "yuyv"
+
+    # Camera info
+    camera_name: "ceiling_camera"
+    camera_frame_id: "ceiling_camera_optical_frame"
+
+    # Image transport settings
+    # Публикуем в raw, а сжатие будет через image_transport
+    io_method: "mmap"
+
+    # Auto exposure (можно настроить)
+    autoexposure: true
+    autofocus: false
