@@ -63,13 +63,13 @@ labels:
 **Main Pi:**
 ```bash
 cd ~/rob_box_project
-git pull origin main  # или develop/feature ветка
+git pull origin <branch-name>  # например: main, develop, или feature branch
 ```
 
 **Vision Pi:**
 ```bash
 cd ~/rob_box_project
-git pull origin main  # или develop/feature ветка
+git pull origin <branch-name>  # например: main, develop, или feature branch
 ```
 
 ### Шаг 2: Включить мониторинг
@@ -173,6 +173,7 @@ curl http://10.1.1.10:9090/api/v1/targets | jq '.data.activeTargets[] | {job, he
 
 На Vision Pi:
 ```bash
+# Замените 10.1.1.10 на IP адрес вашего Main Pi (указан в docker/main/config/zenoh_router_config.json5)
 docker exec promtail-vision wget -qO- http://10.1.1.10:3100/ready
 ```
 
@@ -290,8 +291,8 @@ docker volume rm main_prometheus-data main_loki-data main_grafana-data
 
 ## 📚 Дополнительная документация
 
-- **Полное руководство:** [docs/guides/MONITORING_SYSTEM.md](../../docs/guides/MONITORING_SYSTEM.md)
-- **Быстрая справка:** [docs/MONITORING_QUICK_REF.md](../../docs/MONITORING_QUICK_REF.md)
+- **Полное руководство:** [docs/guides/MONITORING_SYSTEM.md](../guides/MONITORING_SYSTEM.md)
+- **Быстрая справка:** [docs/MONITORING_QUICK_REF.md](../MONITORING_QUICK_REF.md)
 - **Конфигурация:** [docker/main/config/monitoring/README.md](../../docker/main/config/monitoring/README.md)
 
 ## 🆘 Поддержка
