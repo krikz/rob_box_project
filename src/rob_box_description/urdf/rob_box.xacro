@@ -301,8 +301,8 @@
 	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="0.25 0 0.2" topic_name="/scan"/>
 	<!-- OAK-D-Lite камера на передней части робота -->
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="0.25 0 0.167" origin_rpy="0 0 0"/>
-	<!-- Потолочная USB камера (направлена вертикально вверх) -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.0 0.0 0.25" origin_rpy="0 3.14159 0"/>
+	<!-- Потолочная USB камера (направлена вертикально вверх) - координаты из Fusion 360 -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.171 0.462" origin_rpy="0 -1.5708 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
