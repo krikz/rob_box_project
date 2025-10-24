@@ -61,13 +61,13 @@ class SoundNode(Node):
             self.sound_pack_dir = os.path.expanduser(sound_pack_dir)
         else:
             self.sound_pack_dir = sound_pack_dir
-        self.volume_db = self.get_parameter('volume_db').value
-        self.trigger_animations = self.get_parameter('trigger_animations').value
-        self.animation_topic = self.get_parameter('animation_topic').value
-        
+        self.volume_db = self.get_parameter("volume_db").value
+        self.trigger_animations = self.get_parameter("trigger_animations").value
+        self.animation_topic = self.get_parameter("animation_topic").value
+
         # Callback для изменения параметров во время работы
         self.add_on_set_parameters_callback(self.parameters_callback)
-        
+
         # Subscribers
         self.trigger_sub = self.create_subscription(String, "/voice/sound/trigger", self.trigger_callback, 10)
 
@@ -275,37 +275,24 @@ class SoundNode(Node):
         except Exception as e:
             self.get_logger().warn(f"⚠️ Ошибка триггера анимации: {e}")
 
+    def publish_state(self, state: str):
+        """Публикация состояния ноды"""
+        msg = String()
+        msg.data = state
+        self.state_pub.publish(msg)
+
     def parameters_callback(self, params):
         """Callback для изменения параметров во время работы"""
         from rcl_interfaces.msg import SetParametersResult
 
         for param in params:
             if param.name == "volume_db":
-                self.volume_db = param.value
-                self.get_logger().info(f"🔊 Громкость изменена: {self.volume_db:.1f} dB")
-
-        return SetParametersResult(successful=True)
-
-    def publish_state(self, state: str):
-        """Публикация состояния ноды"""
-        msg = String()
-        msg.data = state
-        self.state_pub.publish(msg)
-    
-    def parameters_callback(self, params):
-        """Callback для изменения параметров во время работы"""
-        from rcl_interfaces.msg import SetParametersResult
-        
-        for param in params:
-            if param.name == 'volume_db':
                 old_volume = self.volume_db
                 self.volume_db = param.value
-                self.get_logger().info(
-                    f"🔊 Громкость звуков изменена: {old_volume:.1f} → {self.volume_db:.1f} dB"
-                )
+                self.get_logger().info(f"🔊 Громкость звуков изменена: {old_volume:.1f} → {self.volume_db:.1f} dB")
                 # Перезагружаем звуки с новой громкостью
                 self.load_sounds()
-        
+
         return SetParametersResult(successful=True)
 
 
