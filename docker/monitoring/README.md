@@ -53,10 +53,54 @@
 
 ## Требования
 
-- Linux-машина с Docker и Docker Compose
+### Аппаратные требования
+
+- Linux-машина (Ubuntu 20.04+ или Debian 11+ рекомендуется)
 - Подключение к той же WiFi сети что и робот
 - Минимум 1GB свободной RAM
 - Минимум 10GB свободного места на диске
+- Сетевая доступность к Raspberry Pi по IP адресам
+
+### Программные требования
+
+**Docker и Docker Compose:**
+
+Для Ubuntu/Debian:
+
+```bash
+# Установка Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Установка Docker Compose (для Ubuntu 20.04/22.04)
+sudo apt update
+sudo apt install docker-compose -y
+
+# Добавление текущего пользователя в группу docker
+sudo usermod -aG docker $USER
+
+# Применение изменений групп (или перелогиньтесь)
+newgrp docker
+
+# Проверка установки
+docker --version
+docker-compose --version
+```
+
+**Минимальные версии:**
+- Docker: 20.10+
+- Docker Compose: 1.29+ (или Docker Compose v2)
+
+**Проверка доступности Docker:**
+
+```bash
+# Проверка что Docker daemon запущен
+docker info
+
+# Если ошибка "permission denied", выполните:
+sudo systemctl start docker
+sudo systemctl enable docker
+```
 
 ## Быстрый старт
 
@@ -284,6 +328,182 @@ http://<monitoring-machine-ip>:9090/targets
 ```
 
 Все targets должны быть в состоянии UP.
+
+## Устранение неполадок при развёртывании
+
+### Ошибка: "docker-compose: command not found"
+
+**Причина:** Docker Compose не установлен.
+
+**Решение:**
+```bash
+sudo apt update
+sudo apt install docker-compose -y
+```
+
+Для современных систем с Docker 20.10+ можно использовать встроенный Docker Compose v2:
+```bash
+docker compose version
+# Если работает, можно создать alias
+echo 'alias docker-compose="docker compose"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Ошибка: "urllib3.exceptions.URLSchemeUnknown: Not supported URL scheme http+docker"
+
+**Причина:** Пользователь не имеет доступа к Docker socket (`/var/run/docker.sock`).
+
+**Решение:**
+```bash
+# Добавить пользователя в группу docker
+sudo usermod -aG docker $USER
+
+# Применить изменения
+newgrp docker
+
+# Или перелогиньтесь в систему
+```
+
+Проверка:
+```bash
+groups | grep docker  # Должна быть группа docker
+docker ps             # Должно работать без sudo
+```
+
+### Ошибка: "error mounting ... read-only file system" (Grafana)
+
+**Причина:** Некоторые системы блокируют bind-mount отдельных файлов.
+
+**Решение:** Уже исправлено в текущей версии - используется монтирование директории вместо отдельных файлов.
+
+Если проблема сохраняется:
+```bash
+# Проверьте права на config/grafana
+ls -la config/grafana
+chmod -R 755 config/grafana
+```
+
+### Ошибка: "mkdir /tmp/loki/rules: permission denied" (Loki)
+
+**Причина:** Loki запускается от UID 10001, и не может создать директорию с правами root.
+
+**Решение:** Уже исправлено в текущей версии - ruler отключен в конфигурации Loki.
+
+Если вам нужен ruler для алертинга:
+
+**Вариант 1:** Создать директорию вручную с правильными правами
+```bash
+# Создаём volume и устанавливаем права
+docker volume create loki-data
+docker run --rm -v loki-data:/tmp/loki busybox sh -c "mkdir -p /tmp/loki/rules && chmod 777 /tmp/loki/rules"
+```
+
+**Вариант 2:** Использовать init-контейнер в docker-compose.yaml
+```yaml
+services:
+  loki-init:
+    image: busybox
+    volumes:
+      - loki-data:/tmp/loki
+    command: sh -c "mkdir -p /tmp/loki/rules && chmod 777 /tmp/loki/rules"
+  
+  loki:
+    depends_on:
+      - loki-init
+    # ... остальная конфигурация
+```
+
+### Ошибка: "Cannot connect to the Docker daemon"
+
+**Причина:** Docker daemon не запущен.
+
+**Решение:**
+```bash
+# Запустить Docker daemon
+sudo systemctl start docker
+
+# Включить автозапуск
+sudo systemctl enable docker
+
+# Проверить статус
+sudo systemctl status docker
+```
+
+### Ошибка: Контейнеры запускаются, но сразу останавливаются
+
+**Причина:** Ошибка в конфигурации или порты уже заняты.
+
+**Решение:**
+```bash
+# Проверить логи контейнеров
+docker-compose logs loki
+docker-compose logs prometheus
+docker-compose logs grafana
+
+# Проверить что порты свободны
+sudo netstat -tulpn | grep -E ':(3000|3100|9090)'
+
+# Если порты заняты, остановите конфликтующие службы
+# или измените порты в docker-compose.yaml
+```
+
+### Проблема: Низкая производительность или высокая нагрузка
+
+**Причина:** Недостаточно ресурсов или слишком частый scraping.
+
+**Решение:**
+
+1. Увеличьте интервал scraping в `config/prometheus.yml`:
+```yaml
+scrape_configs:
+  - job_name: 'cadvisor-main'
+    scrape_interval: 30s  # Вместо 15s
+```
+
+2. Уменьшите retention period:
+```bash
+# В docker-compose.yaml для Prometheus
+command:
+  - '--storage.tsdb.retention.time=3d'  # Вместо 7d
+```
+
+3. Ограничьте память для контейнеров:
+```yaml
+services:
+  prometheus:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+```
+
+### Проблема: Нет подключения к Raspberry Pi
+
+**Причина:** Сетевая недоступность или firewall.
+
+**Решение:**
+
+1. Проверьте сетевую доступность:
+```bash
+ping 10.1.1.10
+ping 10.1.1.11
+```
+
+2. Проверьте что порты открыты на Pi:
+```bash
+# На машине мониторинга
+telnet 10.1.1.10 8080
+telnet 10.1.1.11 8080
+```
+
+3. Проверьте firewall на Pi:
+```bash
+# На Raspberry Pi
+sudo ufw status
+# Если активен, добавьте правила:
+sudo ufw allow from 10.1.1.0/24 to any port 8080
+sudo ufw allow from 10.1.1.0/24 to any port 9080
+```
 
 ## Безопасность
 
