@@ -47,10 +47,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
-# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: --reinstall для пакетов чинит сломанный CMake config
-# Проблема: .so файл есть, но CMake не может его найти → нужен --reinstall
-# ВАЖНО: apt-get install и --reinstall ДОЛЖНЫ быть в одном RUN (для доступа к apt cache!)
-# Источник: docs/reports/DOCKER_BUILD_FIX_2025-10-18.md
+# После исправления CMakeLists.txt (удаления find_package для Python пакетов),
+# --reinstall больше не нужен. Python зависимости устанавливаются через rosdep.
+# Источник: docs/reports/DOCKER_BUILD_FIX_2025-10-18.md (Решение #2 - главное!)
 RUN apt-get update && apt-get install -y \
     # ROS2 development tools (для colcon build с custom messages)
     ros-dev-tools \
@@ -60,20 +59,9 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
+    # ROS2 message generation
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
-    # ПЕРЕУСТАНОВКА в том же RUN (до rm -rf /var/lib/apt/lists)
-    # --reinstall пересоздаёт CMake config файлы с правильными путями
-    && apt-get install -y --reinstall \
-    ros-${ROS_DISTRO}-builtin-interfaces \
-    ros-${ROS_DISTRO}-rcutils \
-    ros-${ROS_DISTRO}-rosidl-runtime-c \
-    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
