@@ -387,31 +387,25 @@ chmod -R 755 config/grafana
 
 **Причина:** Loki запускается от UID 10001, и не может создать директорию с правами root.
 
-**Решение:** Уже исправлено в текущей версии - ruler отключен в конфигурации Loki.
+**Решение:** Уже исправлено в текущей версии - используется init-контейнер для создания директорий с правильными правами.
 
-Если вам нужен ruler для алертинга:
-
-**Вариант 1:** Создать директорию вручную с правильными правами
-```bash
-# Создаём volume и устанавливаем права
-docker volume create loki-data
-docker run --rm -v loki-data:/tmp/loki busybox sh -c "mkdir -p /tmp/loki/rules && chmod 777 /tmp/loki/rules"
-```
-
-**Вариант 2:** Использовать init-контейнер в docker-compose.yaml
+Конфигурация в `docker-compose.yaml`:
 ```yaml
 services:
   loki-init:
-    image: busybox
+    image: busybox:latest
     volumes:
       - loki-data:/tmp/loki
-    command: sh -c "mkdir -p /tmp/loki/rules && chmod 777 /tmp/loki/rules"
+    command: sh -c "mkdir -p /tmp/loki/rules /tmp/loki/chunks && chmod -R 777 /tmp/loki"
   
   loki:
     depends_on:
-      - loki-init
+      loki-init:
+        condition: service_completed_successfully
     # ... остальная конфигурация
 ```
+
+Init-контейнер автоматически создаёт необходимые директории с правильными правами перед запуском Loki.
 
 ### Ошибка: "Cannot connect to the Docker daemon"
 

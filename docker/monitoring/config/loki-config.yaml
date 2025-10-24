@@ -32,10 +32,13 @@ schema_config:
         prefix: index_
         period: 24h
 
-# Ruler disabled - not needed for basic log aggregation
-# If you need alerting, enable ruler and ensure /tmp/loki/rules has proper permissions
-# ruler:
-#   alertmanager_url: http://localhost:9093
+# Ruler configuration - using in-memory storage to avoid filesystem permissions
+ruler:
+  enable_api: true
+  storage:
+    type: local
+    local:
+      directory: /tmp/loki/rules
 
 # Limit log retention to save disk space on Raspberry Pi
 limits_config:
