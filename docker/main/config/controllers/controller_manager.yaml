@@ -8,6 +8,9 @@ controller_manager:
     # Частота обновления controller manager (Hz)
     update_rate: 50  # 50 Hz = 20ms cycle time
     
+    # FIX: Явно указываем топик robot_description
+    robot_description_topic: /robot_description
+    
     # Список контроллеров для автозапуска
     # Они будут загружены и активированы при старте
     controller_names:

@@ -455,7 +455,16 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
                 return
 
-        # ============ ПРИОРИТЕТ 5: Проверка Mapping Commands ============
+        # ============ ПРИОРИТЕТ 5: Проверка Volume Control Commands ============
+        volume_intent = self._detect_volume_intent(user_message_lower)
+        if volume_intent:
+            self.get_logger().info(f"🔊 Обнаружена volume команда: {volume_intent}")
+            response = self._handle_volume_command(volume_intent)
+            self._speak_simple(response)
+            self.dialogue_in_progress = False
+            return
+
+        # ============ ПРИОРИТЕТ 6: Проверка Mapping Commands ============
         mapping_intent = self._detect_mapping_intent(user_message_lower)
         if mapping_intent:
             self.get_logger().info(f"🗺️ Обнаружена mapping команда: {mapping_intent}")
@@ -473,7 +482,7 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
                 return
 
-        # ============ ПРИОРИТЕТ 6: Проверка доступности интернета ============
+        # ============ ПРИОРИТЕТ 7: Проверка доступности интернета ============
         if not self.internet_available:
             self.get_logger().warning("⚠️  Интернет недоступен - используем fallback")
             fallback_response = self._generate_fallback_response(user_message)
@@ -481,7 +490,7 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
             return
 
-        # ============ ПРИОРИТЕТ 7: Обычный диалог с LLM ============
+        # ============ ПРИОРИТЕТ 8: Обычный диалог с LLM ============
         # Добавляем в историю
         self.conversation_history.append({"role": "user", "content": user_message})
 
@@ -657,6 +666,143 @@ class DialogueNode(Node):
             self.get_logger().debug(f"🔔 Триггер звука: {sound_name}")
         except Exception as e:
             self.get_logger().warning(f"⚠️ Ошибка триггера звука: {e}")
+
+    # ============================================================
+    # Volume Control Commands
+    # ============================================================
+
+    def _detect_volume_intent(self, text: str):
+        """Определить intent для команд управления громкостью
+        
+        Returns:
+            str: 'louder', 'quieter', 'max', 'normal', None
+        """
+        text_lower = text.lower()
+        
+        # Паттерны для различных команд громкости
+        volume_patterns = {
+            'louder': [
+                r'громче',
+                r'громко',
+                r'прибав\w* громкост',
+                r'увелич\w* громкост',
+            ],
+            'quieter': [
+                r'тише',
+                r'потише',
+                r'убав\w* громкост',
+                r'уменьш\w* громкост',
+            ],
+            'max': [
+                r'говори громко',
+                r'максимальн\w* громкост',
+                r'на полную громкост',
+            ],
+            'normal': [
+                r'нормальн\w* громкост',
+                r'стандартн\w* громкост',
+                r'обычн\w* громкост',
+            ],
+        }
+        
+        for intent, patterns in volume_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return intent
+        
+        return None
+    
+    def _handle_volume_command(self, intent: str) -> str:
+        """Обработка команды изменения громкости
+        
+        Args:
+            intent: 'louder', 'quieter', 'max', 'normal'
+            
+        Returns:
+            str: Ответ для пользователя
+        """
+        # Получаем текущую громкость TTS ноды через ROS параметры
+        try:
+            from rcl_interfaces.srv import GetParameters, SetParameters
+            from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+            
+            # Создаем клиенты для работы с параметрами TTS и Sound нод
+            tts_get_params_client = self.create_client(GetParameters, '/tts_node/get_parameters')
+            tts_set_params_client = self.create_client(SetParameters, '/tts_node/set_parameters')
+            sound_set_params_client = self.create_client(SetParameters, '/sound_node/set_parameters')
+            
+            # Ждем доступности сервисов
+            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().error("❌ TTS node параметры недоступны")
+                return "Извините, не могу изменить громкость. Система недоступна."
+            
+            # Получаем текущий volume_db
+            get_request = GetParameters.Request()
+            get_request.names = ['volume_db']
+            future = tts_get_params_client.call_async(get_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+            
+            if future.result() is None:
+                self.get_logger().error("❌ Не удалось получить volume_db")
+                return "Извините, не могу изменить громкость."
+            
+            current_volume_db = future.result().values[0].double_value
+            self.get_logger().info(f"📊 Текущая громкость: {current_volume_db:.1f} dB")
+            
+            # Вычисляем новую громкость
+            new_volume_db = current_volume_db
+            response_text = ""
+            
+            if intent == 'louder':
+                new_volume_db = min(current_volume_db + 3.0, 6.0)  # +3dB, макс +6dB
+                response_text = "Делаю громче"
+            elif intent == 'quieter':
+                new_volume_db = max(current_volume_db - 3.0, -20.0)  # -3dB, мин -20dB
+                response_text = "Делаю тише"
+            elif intent == 'max':
+                new_volume_db = 6.0  # Максимальная громкость +6dB (~2x)
+                response_text = "Максимальная громкость"
+            elif intent == 'normal':
+                new_volume_db = -3.0  # Нормальная громкость -3dB (70%)
+                response_text = "Нормальная громкость"
+            
+            # Устанавливаем новую громкость
+            if abs(new_volume_db - current_volume_db) < 0.1:
+                # Громкость уже на пределе
+                if intent == 'louder':
+                    return "Громкость уже максимальная"
+                elif intent == 'quieter':
+                    return "Громкость уже минимальная"
+            
+            # Устанавливаем параметры для TTS ноды
+            set_request = SetParameters.Request()
+            param = Parameter()
+            param.name = 'volume_db'
+            param.value = ParameterValue()
+            param.value.type = ParameterType.PARAMETER_DOUBLE
+            param.value.double_value = new_volume_db
+            set_request.parameters = [param]
+            
+            future = tts_set_params_client.call_async(set_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+            
+            if future.result() is None or not future.result().results[0].successful:
+                self.get_logger().error("❌ Не удалось установить volume_db для TTS")
+                return "Извините, не могу изменить громкость."
+            
+            # Также устанавливаем для Sound ноды (если доступна)
+            if sound_set_params_client.wait_for_service(timeout_sec=0.5):
+                future = sound_set_params_client.call_async(set_request)
+                rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+                if future.result() and future.result().results[0].successful:
+                    self.get_logger().info("✅ Громкость звуков также изменена")
+            
+            self.get_logger().info(f"✅ Громкость изменена: {current_volume_db:.1f} → {new_volume_db:.1f} dB")
+            return response_text
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка изменения громкости: {e}")
+            return "Извините, произошла ошибка."
 
     # ============================================================
     # Mapping Commands (RTABMap Control)

@@ -92,8 +92,8 @@ class TTSNode(Node):
         self.declare_parameter("silero_sample_rate", 24000)
 
         # Общие параметры
-        self.declare_parameter("chipmunk_mode", True)
-        self.declare_parameter("pitch_shift", 2.0)  # Множитель для playback rate (2.0x = быстро)
+        self.declare_parameter("chipmunk_mode", False)  # ИЗМЕНЕНО: False по умолчанию для оригинального голоса
+        self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0x = нормальная скорость)
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
@@ -276,12 +276,17 @@ class TTSNode(Node):
             if not text.strip():
                 return
 
+            # Извлекаем атрибуты SSML (pitch, rate)
+            ssml_attributes = self._parse_ssml_attributes(ssml)
+
             self.get_logger().info(
                 f'🔊 TTS: {text[:50]}... (dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}...)'
             )
+            if ssml_attributes:
+                self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
 
             # Синтез и воспроизведение
-            self._synthesize_and_play(ssml, text, dialogue_id)
+            self._synthesize_and_play(ssml, text, dialogue_id, ssml_attributes)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ JSON parse error: {e}")
@@ -296,15 +301,87 @@ class TTSNode(Node):
         text = re.sub(r"<[^>]+>", "", ssml)
         return text.strip()
 
-    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None):
+    def _parse_ssml_attributes(self, ssml: str) -> dict:
+        """
+        Извлекает атрибуты из SSML тегов (pitch, rate/speed)
+        
+        Returns:
+            dict: {'pitch': float, 'rate': float} или пустой dict
+        """
+        import re
+        
+        attributes = {}
+        
+        # Ищем <prosody> теги с атрибутами
+        # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow">
+        prosody_pattern = r'<prosody\s+([^>]+)>'
+        matches = re.finditer(prosody_pattern, ssml, re.IGNORECASE)
+        
+        for match in matches:
+            attrs_str = match.group(1)
+            
+            # Парсим pitch
+            pitch_match = re.search(r'pitch\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
+            if pitch_match:
+                pitch_value = pitch_match.group(1)
+                # Конвертируем в множитель для Yandex
+                # "+10%" -> 1.1, "-10%" -> 0.9, "high" -> 1.2, "low" -> 0.8
+                if '%' in pitch_value:
+                    try:
+                        percent = float(pitch_value.replace('%', ''))
+                        attributes['pitch'] = 1.0 + (percent / 100.0)
+                    except ValueError:
+                        pass
+                elif pitch_value == 'high':
+                    attributes['pitch'] = 1.2
+                elif pitch_value == 'low':
+                    attributes['pitch'] = 0.8
+                elif pitch_value == 'medium':
+                    attributes['pitch'] = 1.0
+                else:
+                    try:
+                        attributes['pitch'] = float(pitch_value)
+                    except ValueError:
+                        pass
+            
+            # Парсим rate (скорость речи)
+            rate_match = re.search(r'rate\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
+            if rate_match:
+                rate_value = rate_match.group(1)
+                # "1.5" -> 1.5, "fast" -> 1.5, "slow" -> 0.7
+                if '%' in rate_value:
+                    try:
+                        percent = float(rate_value.replace('%', ''))
+                        attributes['rate'] = percent / 100.0
+                    except ValueError:
+                        pass
+                elif rate_value == 'fast':
+                    attributes['rate'] = 1.5
+                elif rate_value == 'slow':
+                    attributes['rate'] = 0.7
+                elif rate_value == 'medium':
+                    attributes['rate'] = 1.0
+                else:
+                    try:
+                        attributes['rate'] = float(rate_value)
+                    except ValueError:
+                        pass
+        
+        return attributes
+
+    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None):
         """Синтез речи и воспроизведение"""
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
-
+        
         # Устанавливаем processing_dialogue_id для этого синтеза
         if dialogue_id:
             self.processing_dialogue_id = dialogue_id
             self.get_logger().debug(f"🎯 Начинаем обработку dialogue_id: {dialogue_id[:8]}...")
+
+        # Извлекаем SSML атрибуты (если не переданы)
+        if ssml_attributes is None:
+            ssml_attributes = {}
 
         # Нормализация (если включена)
         if self.normalize_text:
@@ -319,7 +396,7 @@ class TTSNode(Node):
                 try:
                     self.publish_state("synthesizing")
                     self.get_logger().info("🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...")
-                    audio_np = self._synthesize_yandex(text)
+                    audio_np = self._synthesize_yandex(text, ssml_attributes)
                     sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
                     # sample_rate уже получен в _synthesize_yandex, но пока захардкодим
                 except Exception as e:
@@ -339,7 +416,12 @@ class TTSNode(Node):
                 self.publish_state("synthesizing")
                 self.get_logger().info("🔊 Синтез через Silero (fallback)...")
 
+                # Логируем SSML атрибуты если есть (для консистентности с Yandex)
+                if ssml_attributes:
+                    self.get_logger().info(f"🎵 SSML атрибуты для Silero: {ssml_attributes}")
+
                 # Оборачиваем в SSML для Silero
+                # Silero поддерживает SSML напрямую через apply_tts
                 if not ssml.startswith("<speak>"):
                     ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
                 else:
@@ -371,22 +453,30 @@ class TTSNode(Node):
             # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
             target_rate = 16000
 
-            # Для оригинального эффекта ROBBOX бурундука:
-            # Yandex возвращает WAV 22050 Hz + заголовок
-            # В оригинале: 22050 Hz → 44100 Hz = 2x ускорение (бурундук!)
-            # У нас ReSpeaker только 16000 Hz, поэтому:
-            # 1. Читаем сырые данные (с заголовком WAV)
-            # 2. Ресемплируем вниз: уменьшаем количество сэмплов в 2x
-            #    Это эквивалентно воспроизведению на 2x скорости!
-
-            # Уменьшаем количество сэмплов в 2 раза (эффект ускорения 2x)
-            audio_accelerated = audio_np[::2]  # Берем каждый второй сэмпл
-            self.get_logger().info(
-                f"🐿️  Эффект бурундука: {len(audio_np)} → {len(audio_accelerated)} samples (2x ускорение)"
-            )
+            # Эффект "бурундука" ROBBOX (опционально):
+            # В оригинале: Yandex возвращает 22050 Hz, читаем сырые PCM, воспроизводим на 44100 Hz
+            # Результат: 2x pitch shift (голос выше и быстрее)
+            # 
+            # Новая реализация:
+            # - chipmunk_mode=False (по умолчанию): воспроизведение на нормальной скорости
+            # - chipmunk_mode=True: эффект бурундука через sample decimation
+            # - pitch_shift параметр: множитель для ускорения (1.0 = нормально, 2.0 = 2x быстрее)
+            
+            if self.chipmunk_mode and self.pitch_shift > 1.0:
+                # Уменьшаем количество сэмплов (эффект ускорения)
+                decimation_factor = int(self.pitch_shift)
+                audio_processed = audio_np[::decimation_factor]
+                self.get_logger().info(
+                    f"🐿️  Эффект бурундука: {len(audio_np)} → {len(audio_processed)} samples "
+                    f"({self.pitch_shift}x ускорение)"
+                )
+            else:
+                # Нормальное воспроизведение без искажений
+                audio_processed = audio_np
+                self.get_logger().info(f"🎵 Нормальная скорость: {len(audio_processed)} samples")
 
             # Применяем громкость
-            audio_np_adjusted = audio_accelerated * self.volume_gain
+            audio_np_adjusted = audio_processed * self.volume_gain
 
             # Конвертируем моно → стерео (ReSpeaker требует 2 канала!)
             audio_stereo = np.column_stack((audio_np_adjusted, audio_np_adjusted))
@@ -435,10 +525,27 @@ class TTSNode(Node):
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
 
-    def _synthesize_yandex(self, text: str) -> np.ndarray:
-        """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!)"""
+    def _synthesize_yandex(self, text: str, ssml_attributes: dict = None) -> np.ndarray:
+        """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!)
+        
+        Args:
+            text: Текст для синтеза
+            ssml_attributes: Словарь с атрибутами SSML (pitch, rate)
+        """
         if not self.yandex_stub:
             raise Exception("Yandex gRPC stub не инициализирован")
+
+        # Применяем SSML атрибуты если есть
+        if ssml_attributes is None:
+            ssml_attributes = {}
+        
+        # Скорость речи: берем из SSML или используем параметр ноды
+        speech_rate = ssml_attributes.get('rate', self.yandex_speed)
+        
+        # Pitch для Yandex не поддерживается напрямую через hints,
+        # но мы можем логировать для будущей реализации
+        if 'pitch' in ssml_attributes:
+            self.get_logger().info(f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)")
 
         # Создаём запрос как в оригинальном ROBBOX коде
         request = tts_pb2.UtteranceSynthesisRequest(
@@ -448,7 +555,7 @@ class TTSNode(Node):
             ),
             hints=[
                 tts_pb2.Hints(voice=self.yandex_voice),  # anton!
-                tts_pb2.Hints(speed=self.yandex_speed),  # 0.4
+                tts_pb2.Hints(speed=speech_rate),  # Используем rate из SSML или параметр
             ],
             loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
         )
@@ -467,11 +574,10 @@ class TTSNode(Node):
             if not audio_data:
                 raise Exception("Пустой ответ от Yandex TTS")
 
-            # ВАЖНО! Эффект бурундука ROBBOX получается так:
-            # 1. Yandex возвращает WAV файл 22050 Hz
-            # 2. Читаем ВЕСЬ файл (с заголовком!) как int16 PCM
-            # 3. Воспроизводим на 44100 Hz (в 2 раза быстрее)
-            # Результат: 2x pitch shift + небольшое искажение от заголовка = ОРИГИНАЛЬНЫЙ ЗВУК ROBBOX!
+            # ВАЖНО! Для оригинального звука ROBBOX:
+            # Вариант 1 (оригинал): читаем сырые PCM с заголовком WAV (np.frombuffer)
+            # Вариант 2 (новый): читаем правильно с декодированием WAV (soundfile)
+            # Сейчас используем Вариант 1 для совместимости с оригиналом
 
             # Декодируем СЫРЫЕ байты (включая WAV заголовок!) как PCM
             audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -485,7 +591,8 @@ class TTSNode(Node):
                 actual_sample_rate = 22050  # fallback
 
             self.get_logger().info(
-                f"✅ Yandex gRPC v3 (ROBBOX original!): {len(audio_np)} samples, source {actual_sample_rate} Hz"
+                f"✅ Yandex gRPC v3 (ROBBOX original!): {len(audio_np)} samples, "
+                f"source {actual_sample_rate} Hz, speed={speech_rate}"
             )
 
             return audio_np

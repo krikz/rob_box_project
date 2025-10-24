@@ -247,6 +247,48 @@
 		</joint>
 	</xacro:macro>
 
+	<!-- Simple USB Camera Macro - для обычных USB камер (ceiling camera, etc.) -->
+	<xacro:macro name="usb_camera" params="name parent_link origin_xyz origin_rpy">
+		<!-- camera_link - основной корпус камеры -->
+		<link name="${name}_link">
+			<visual>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<geometry>
+					<box size="0.03 0.03 0.02"/>  <!-- Размеры generic USB камеры -->
+				</geometry>
+				<material name="black">
+					<color rgba="0.1 0.1 0.1 1"/>
+				</material>
+			</visual>
+			<collision>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<geometry>
+					<box size="0.03 0.03 0.02"/>
+				</geometry>
+			</collision>
+			<inertial>
+				<mass value="0.05"/>  <!-- ~50g -->
+				<origin xyz="0 0 0"/>
+				<inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+			</inertial>
+		</link>
+
+		<!-- Присоединение к роботу -->
+		<joint name="${name}_joint" type="fixed">
+			<parent link="${parent_link}"/>
+			<child link="${name}_link"/>
+			<origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
+		</joint>
+
+		<!-- Optical frame: X right, Y down, Z forward (ROS camera convention) -->
+		<link name="${name}_optical_frame"/>
+		<joint name="${name}_optical_frame_joint" type="fixed">
+			<parent link="${name}_link"/>
+			<child link="${name}_optical_frame"/>
+			<origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+		</joint>
+	</xacro:macro>
+
 	<!-- Использование макросов -->
 	<xacro:rocker name="left_rocker" side="1" side_x="-0.05"/>
 	<xacro:rocker name="right_rocker" side="-1" side_x="0.05"/>
@@ -259,6 +301,8 @@
 	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="0.25 0 0.2" topic_name="/scan"/>
 	<!-- OAK-D-Lite камера на передней части робота -->
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="0.25 0 0.167" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера (направлена вертикально вверх) - координаты из Fusion 360 -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.171 0.462" origin_rpy="0 -1.5708 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
