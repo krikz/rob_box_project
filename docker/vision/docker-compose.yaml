@@ -49,31 +49,6 @@ services:
       - zenoh-router
     restart: unless-stopped
 
-  lslidar:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:lslidar-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
-    container_name: lslidar
-    network_mode: host
-    privileged: true  # Для доступа к USB/Serial устройству
-    devices:
-      - /dev/ttyACM0:/dev/ttyACM0  # LSLIDAR N10 USB CDC ACM device
-    environment:
-      - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
-      - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
-    volumes:
-      - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
-      - ./scripts/lslidar:/scripts:ro
-      - /dev/shm:/dev/shm
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_lslidar.sh"]
-    depends_on:
-      - zenoh-router
-    restart: unless-stopped
-
   apriltag:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:apriltag-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: apriltag
@@ -167,46 +142,3 @@ services:
       - zenoh-router
     restart: unless-stopped
 
-  # Internal Dialogue Agent - система внутреннего диалога робота
-  perception:
-    # Image tag automatically determined by IMAGE_TAG environment variable
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:perception-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
-    container_name: perception
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
-      - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
-      # Reflection parameters (v2.0 Event-Driven)
-      - DIALOGUE_TIMEOUT=10.0  # секунды - тайм-аут диалога
-      - URGENT_RESPONSE_TIMEOUT=2.0  # секунды - тайм-аут срочного ответа
-      - ENABLE_SPEECH=true  # Включить речь робота
-      # Context Aggregator parameters
-      - CONTEXT_PUBLISH_RATE=2.0  # Hz - частота событий
-      - MEMORY_WINDOW=60  # секунды - окно короткой памяти
-      # Python
-      - PYTHONUNBUFFERED=1
-    env_file:
-      - .env.secrets  # API keys: DEEPSEEK_API_KEY
-    volumes:
-      - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
-      - ./scripts/perception:/scripts:ro
-      - /dev/shm:/dev/shm
-    mem_limit: 512m  # Perception - лёгкий контейнер
-    memswap_limit: 768m
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_perception.sh"]
-    depends_on:
-      - zenoh-router
-      - voice-assistant  # Зависим от voice для TTS
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'source /ws/install/setup.bash && ros2 node list | grep -q reflection_node'"]
-      interval: 15s
-      timeout: 5s
-      start_period: 20s
-      retries: 3

@@ -346,10 +346,104 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # LSLIDAR N10 - 2D LiDAR scanner
+  build-lslidar:
+    needs: determine-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=lslidar-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=lslidar-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=lslidar-${{ env.ROS_DISTRO }}-
+
+      - name: Build and push lslidar
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/main
+          file: docker/main/lslidar/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Internal Dialogue Agent (Perception + Reflection)
+  build-perception:
+    needs: determine-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=perception-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=perception-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=perception-${{ env.ROS_DISTRO }}-
+
+      - name: Build and push perception
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/main/perception/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # Проверка сборки всех сервисов прошла успешно
   verify-build:
     runs-on: ubuntu-latest
-    needs: [build-robot-state-publisher, build-rtabmap, build-twist-mux, build-micro-ros-agent, build-ros2-control, build-nav2]
+    needs: [build-robot-state-publisher, build-rtabmap, build-twist-mux, build-micro-ros-agent, build-ros2-control, build-nav2, build-lslidar, build-perception]
     steps:
       - name: Verify all builds succeeded
         run: echo "✅ All Main Pi services built successfully!"
