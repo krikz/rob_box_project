@@ -164,9 +164,11 @@ def parameters_callback(self, params):
 **Как работает эффект "бурундука":**
 
 1. Yandex TTS возвращает WAV 22050 Hz
-2. `np.frombuffer()` читает сырые PCM (с заголовком WAV!)
+2. `np.frombuffer()` читает сырые PCM байты (игнорируя WAV структуру)
 3. Sample decimation: `audio_np[::2]` (каждый 2-й сэмпл)
 4. Результат: 2x ускорение + pitch shift
+
+**Примечание:** В оригинале чтение включало байты WAV заголовка, что создавало дополнительное искажение.
 
 **Новая реализация:**
 - `chipmunk_mode=False` (по умолчанию): нормальное воспроизведение
@@ -213,8 +215,12 @@ python3 src/rob_box_voice/test/test_ssml_parsing.py
 ### Примеры использования:
 
 ```bash
-# В ROS2 окружении
-ros2 run rob_box_voice example_voice_usage.py
+# В ROS2 окружении (если установлено через setup.py)
+ros2 run rob_box_voice example_voice_usage
+
+# Или напрямую через Python
+cd /workspace
+python3 src/rob_box_voice/scripts/example_voice_usage.py
 ```
 
 ### Ручное изменение параметров:
