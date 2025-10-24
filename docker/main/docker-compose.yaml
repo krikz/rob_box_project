@@ -15,7 +15,7 @@ services:
       - ROBOT_ID=${ROBOT_ID}  # ID робота для namespace при публикации в облако
     volumes:
       - ./config:/config:ro
-      - ./zenoh-router:/scripts:ro
+      - ./scripts/zenoh-router:/scripts:ro
     entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
@@ -129,7 +129,6 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./config/rtabmap:/config/rtabmap:ro
       - ./maps:/maps
     # === RTAB-Map конфигурация для 2D LiDAR SLAM ===
     # Полная документация: docs/reference/RTABMAP_LIDAR_CONFIG.md
@@ -199,8 +198,6 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./config/vesc_nexus:/config/vesc_nexus:ro
-      - ./config/controllers:/config/controllers:ro
       - ./scripts/ros2_control:/scripts:ro
       - /dev:/dev  # Доступ к CAN устройствам
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ros2_control.sh"]
@@ -232,7 +229,6 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./config/nav2:/config/nav2:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_nav2_direct.sh"]
