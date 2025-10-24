@@ -47,11 +47,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
-# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: --reinstall для builtin-interfaces чинит сломанный CMake config
-# Проблема: .so файл есть, но CMake не может его найти → нужен --reinstall
-# ВАЖНО: apt-get install и --reinstall ДОЛЖНЫ быть в одном RUN (для доступа к apt cache!)
+# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Удаляем и переустанавливаем проблемные пакеты из base image
+# Проблема: base image (nav2) может содержать пакеты со сломанными CMake configs при cross-compilation
+# Решение: apt-get remove --purge + apt-get install в одном RUN обеспечивает чистую установку
 # Источник: docs/development/DOCKER_BUILD_FIXES.md (проблема #4)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && \
+    # Сначала удаляем потенциально проблемные пакеты из base image
+    apt-get remove --purge -y \
+    ros-${ROS_DISTRO}-builtin-interfaces \
+    ros-${ROS_DISTRO}-rcutils \
+    ros-${ROS_DISTRO}-rosidl-runtime-c \
+    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp 2>/dev/null || true && \
+    # Теперь устанавливаем всё заново
+    apt-get install -y \
     # ROS2 development tools (для colcon build с custom messages)
     ros-dev-tools \
     # ROS2 зависимости
@@ -63,9 +75,7 @@ RUN apt-get update && apt-get install -y \
     # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
-    # ПЕРЕУСТАНОВКА в том же RUN (до rm -rf /var/lib/apt/lists)
-    # --reinstall пересоздаёт CMake config файлы с правильными путями
-    && apt-get install -y --reinstall \
+    # Runtime библиотеки (устанавливаем чисто после удаления)
     ros-${ROS_DISTRO}-builtin-interfaces \
     ros-${ROS_DISTRO}-rcutils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \
