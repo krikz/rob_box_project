@@ -47,23 +47,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
-# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Удаляем и переустанавливаем проблемные пакеты из base image
-# Проблема: base image (nav2) может содержать пакеты со сломанными CMake configs при cross-compilation
-# Решение: apt-get remove --purge + apt-get install в одном RUN обеспечивает чистую установку
-# Источник: docs/development/DOCKER_BUILD_FIXES.md (проблема #4)
-RUN apt-get update && \
-    # Сначала удаляем потенциально проблемные пакеты из base image
-    apt-get remove --purge -y \
-    ros-${ROS_DISTRO}-builtin-interfaces \
-    ros-${ROS_DISTRO}-rcutils \
-    ros-${ROS_DISTRO}-rosidl-runtime-c \
-    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp 2>/dev/null || true && \
-    # Теперь устанавливаем всё заново
-    apt-get install -y \
+# Sourcing /opt/ros/humble/setup.sh в colcon build достаточно для правильной настройки CMake путей
+# НЕ НУЖНО: --reinstall или CMAKE_LIBRARY_PATH (они мешают архитектурно-специфичным путям)
+# Источник: docs/reports/VOICE_ASSISTANT_BUILD_FIX_2025-10-24.md
+RUN apt-get update && apt-get install -y \
     # ROS2 development tools (для colcon build с custom messages)
     ros-dev-tools \
     # ROS2 зависимости
@@ -72,18 +59,9 @@ RUN apt-get update && \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    # ROS2 message generation (КРИТИЧЕСКИ ВАЖНО для builtin_interfaces)
+    # ROS2 message generation
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
-    # Runtime библиотеки (устанавливаем чисто после удаления)
-    ros-${ROS_DISTRO}-builtin-interfaces \
-    ros-${ROS_DISTRO}-rcutils \
-    ros-${ROS_DISTRO}-rosidl-runtime-c \
-    ros-${ROS_DISTRO}-rosidl-runtime-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
-    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
