@@ -109,10 +109,11 @@ class DialogueNode(Node):
         # Публикация срочных запросов к внутреннему диалогу (reflection)
         self.reflection_request_pub = self.create_publisher(String, '/perception/user_speech', 10)
         
-        # ============ Internet Status Monitoring ============
+        # ============ Internet Status Monitoring & Time Awareness ============
         self.internet_available = True  # Assume available by default
+        self.current_time_info = None  # Store time information from perception
         
-        # Подписка на perception context для мониторинга интернета
+        # Подписка на perception context для мониторинга интернета и времени
         try:
             from rob_box_perception_msgs.msg import PerceptionEvent
             self.perception_sub = self.create_subscription(
@@ -121,9 +122,9 @@ class DialogueNode(Node):
                 self._on_perception_update,
                 10
             )
-            self.get_logger().info('✅ Подписан на /perception/context_update для мониторинга интернета')
+            self.get_logger().info('✅ Подписан на /perception/context_update для мониторинга интернета и времени')
         except ImportError:
-            self.get_logger().warning('⚠️  PerceptionEvent не найден - мониторинг интернета отключен')
+            self.get_logger().warning('⚠️  PerceptionEvent не найден - мониторинг интернета и времени отключен')
             self.perception_sub = None
         
         # ============ State Machine ============
@@ -302,7 +303,8 @@ class DialogueNode(Node):
         self.state_pub.publish(msg)
     
     def _on_perception_update(self, msg):
-        """Обработка обновления контекста восприятия для мониторинга интернета"""
+        """Обработка обновления контекста восприятия для мониторинга интернета и времени"""
+        # Update internet status
         if hasattr(msg, 'internet_available'):
             was_available = self.internet_available
             self.internet_available = msg.internet_available
@@ -312,6 +314,14 @@ class DialogueNode(Node):
                 self.get_logger().warning('⚠️  Интернет недоступен - переход на fallback режим')
             elif not was_available and self.internet_available:
                 self.get_logger().info('✅ Интернет восстановлен - нормальный режим')
+        
+        # Update time information
+        if hasattr(msg, 'time_context_json') and msg.time_context_json:
+            try:
+                self.current_time_info = json.loads(msg.time_context_json)
+                self.get_logger().debug(f'🕐 Обновлено время: {self.current_time_info.get("time_only", "N/A")}')
+            except json.JSONDecodeError as e:
+                self.get_logger().warning(f'⚠️  Ошибка парсинга time_context_json: {e}')
     
     def _generate_fallback_response(self, user_message: str) -> str:
         """Генерация fallback ответа когда интернет недоступен"""
@@ -485,10 +495,38 @@ class DialogueNode(Node):
         # Запрос к DeepSeek (streaming)
         self._ask_deepseek_streaming()
     
+    def _build_system_prompt_with_context(self) -> str:
+        """Построить system prompt с добавлением текущего времени"""
+        base_prompt = self.system_prompt
+        
+        # Добавляем информацию о текущем времени, если доступна
+        if self.current_time_info:
+            time_context = []
+            time_context.append("\n# Текущее время\n")
+            time_context.append(f"**Сейчас:** {self.current_time_info.get('time_only', 'N/A')}")
+            time_context.append(f"**Дата:** {self.current_time_info.get('date_only', 'N/A')}")
+            time_context.append(f"**Период суток:** {self.current_time_info.get('period_ru', 'N/A')}")
+            time_context.append(f"**День недели:** {self.current_time_info.get('weekday_ru', 'N/A')}")
+            
+            time_info = '\n'.join(time_context)
+            
+            # Вставляем время после характеристик робота, перед форматом ответа
+            prompt_parts = base_prompt.split('# Формат ответа')
+            if len(prompt_parts) == 2:
+                return f"{prompt_parts[0]}{time_info}\n\n# Формат ответа{prompt_parts[1]}"
+            else:
+                # Если не удалось найти секцию, добавляем в конец
+                return f"{base_prompt}\n{time_info}"
+        
+        return base_prompt
+    
     def _ask_deepseek_streaming(self):
         """Streaming запрос к DeepSeek с парсингом JSON chunks"""
+        # Используем system prompt с контекстом времени
+        system_prompt_with_context = self._build_system_prompt_with_context()
+        
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": system_prompt_with_context},
             *self.conversation_history
         ]
         
