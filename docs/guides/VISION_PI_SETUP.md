@@ -143,10 +143,9 @@ NETWORK
   WiFi (wlan0):     10.1.1.21 [SSH/Management]
 
 DOCKER CONTAINERS
-  Status:         5/5 running
+  Status:         4/4 running
   ✓ vision-zenoh-router    Up 2 hours
   ✓ vision-oak-d           Up 2 hours
-  ✓ vision-lslidar         Up 2 hours
   ✓ vision-apriltag        Up 2 hours
   ✓ vision-voice-assistant Up 2 hours
 
@@ -190,9 +189,11 @@ docker compose logs -f
 **Контейнеры запустятся:**
 - `vision-zenoh-router` - Zenoh маршрутизатор (центральный узел)
 - `vision-oak-d` - OAK-D Lite камера
-- `vision-lslidar` - LSLIDAR N10 2D лидар
 - `vision-apriltag` - AprilTag детекция
+- `vision-led-matrix` - LED Matrix контроллер
 - `vision-voice-assistant` - Voice Assistant + LED анимации
+
+**Примечание:** LSLIDAR и Perception теперь работают на Main Pi для лучшей интеграции с SLAM и навигацией.
 
 ## 🎨 Кастомный MOTD (приветствие)
 

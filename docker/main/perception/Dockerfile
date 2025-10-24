@@ -1,4 +1,4 @@
-# Internal Dialogue Agent - Dockerfile для Vision Pi
+# Internal Dialogue Agent - Dockerfile для Main Pi
 # Использует базовый образ ros2-zenoh
 
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
@@ -29,7 +29,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 
 # 3. Копируем setup.py и requirements.txt - изменяются реже чем код
 COPY src/rob_box_perception/setup.py /ws/src/rob_box_perception/
-COPY docker/vision/perception/requirements.txt /tmp/perception_requirements.txt
+COPY docker/main/perception/requirements.txt /tmp/perception_requirements.txt
 
 # 4. Устанавливаем Python зависимости (кэшируется отдельно от кода)
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
