@@ -322,6 +322,7 @@ class DialogueNode(Node):
                 self.get_logger().debug(f'🕐 Обновлено время: {self.current_time_info.get("time_only", "N/A")}')
             except json.JSONDecodeError as e:
                 self.get_logger().warning(f'⚠️  Ошибка парсинга time_context_json: {e}')
+                self.get_logger().debug(f'   Raw JSON: {msg.time_context_json[:100]}...')
     
     def _generate_fallback_response(self, user_message: str) -> str:
         """Генерация fallback ответа когда интернет недоступен"""
@@ -495,6 +496,10 @@ class DialogueNode(Node):
         # Запрос к DeepSeek (streaming)
         self._ask_deepseek_streaming()
     
+    # Marker for inserting time context in system prompt
+    TIME_CONTEXT_MARKER = '# Формат ответа'
+    TIME_CONTEXT_SECTION_TITLE = '# Текущее время'
+    
     def _build_system_prompt_with_context(self) -> str:
         """Построить system prompt с добавлением текущего времени"""
         base_prompt = self.system_prompt
@@ -502,7 +507,7 @@ class DialogueNode(Node):
         # Добавляем информацию о текущем времени, если доступна
         if self.current_time_info:
             time_context = []
-            time_context.append("\n# Текущее время\n")
+            time_context.append(f"\n{self.TIME_CONTEXT_SECTION_TITLE}\n")
             time_context.append(f"**Сейчас:** {self.current_time_info.get('time_only', 'N/A')}")
             time_context.append(f"**Дата:** {self.current_time_info.get('date_only', 'N/A')}")
             time_context.append(f"**Период суток:** {self.current_time_info.get('period_ru', 'N/A')}")
@@ -511,11 +516,14 @@ class DialogueNode(Node):
             time_info = '\n'.join(time_context)
             
             # Вставляем время после характеристик робота, перед форматом ответа
-            prompt_parts = base_prompt.split('# Формат ответа')
-            if len(prompt_parts) == 2:
-                return f"{prompt_parts[0]}{time_info}\n\n# Формат ответа{prompt_parts[1]}"
+            # Используем маркер для надёжного определения места вставки
+            if self.TIME_CONTEXT_MARKER in base_prompt:
+                prompt_parts = base_prompt.split(self.TIME_CONTEXT_MARKER, 1)
+                return f"{prompt_parts[0]}{time_info}\n\n{self.TIME_CONTEXT_MARKER}{prompt_parts[1]}"
             else:
-                # Если не удалось найти секцию, добавляем в конец
+                # Если маркер не найден, добавляем в конец
+                self.get_logger().warning(f'⚠️  Маркер "{self.TIME_CONTEXT_MARKER}" не найден в промпте, '
+                                        'добавляем время в конец')
                 return f"{base_prompt}\n{time_info}"
         
         return base_prompt
