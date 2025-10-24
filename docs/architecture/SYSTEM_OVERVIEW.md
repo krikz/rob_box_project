@@ -3,7 +3,7 @@
 <div align="center">
   <strong>Полное техническое описание архитектуры автономного робота</strong>
   <br>
-  <sub>Версия: 1.0.0 | Дата: 2025-10-12</sub>
+  <sub>Версия: 1.1.0 | Дата: 2025-10-24</sub>
 </div>
 
 ---
@@ -27,8 +27,8 @@
 
 РОББОКС построен по принципу **распределённой обработки** с разделением вычислительной нагрузки между двумя Raspberry Pi:
 
-- **Vision Pi** — специализируется на обработке изображений и детекции объектов
-- **Main Pi** — отвечает за навигацию, планирование и управление
+- **Vision Pi** — специализируется на обработке изображений и голосовом взаимодействии
+- **Main Pi** — отвечает за навигацию, планирование, SLAM и управление
 
 Такая архитектура позволяет:
 - ✅ Распределить вычислительную нагрузку
@@ -90,14 +90,14 @@
 
 | Компонент | Модель | CPU | RAM | Функции |
 |-----------|--------|-----|-----|---------|
-| **Main Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 16GB | SLAM, Nav2, Control |
-| **Vision Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 8GB | Vision, AprilTag |
+| **Main Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 16GB | SLAM, Nav2, Control, Perception, LSLIDAR |
+| **Vision Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 8GB | Vision, AprilTag, Voice Assistant |
 
 #### Сенсоры
 
 | Сенсор | Интерфейс | Частота | Подключение | Назначение |
 |--------|-----------|---------|-------------|------------|
-| **LS LiDAR N10** | USB (ACM) | 10 Hz | Vision Pi | 2D картография |
+| **LS LiDAR N10** | USB (ACM) | 10 Hz | Main Pi | 2D картография (перемещён 24.10.2025) |
 | **OAK-D Lite** | USB 3.0 | 5-10 Hz | Vision Pi | RGB-D, AprilTag |
 | **MJPEG Camera** | USB 2.0 | 30 Hz | Vision Pi | Потолочная навигация (720p YUY2) |
 | **ReSpeaker Mic v2** | USB 2.0 | — | Vision Pi | Голосовое управление (6-mic array) |
@@ -292,8 +292,13 @@ Main Pi (10.1.1.10)
 ├─ /rtabmap                   # SLAM node
 │  ├─ Subscribed: /scan, /camera/*, /odom
 │  └─ Published: /map, /rtabmap/localization_pose
-├─ /lslidar_driver            # LiDAR driver
+├─ /lslidar_driver            # LiDAR driver (перемещён с Vision Pi 24.10.2025)
 │  └─ Published: /scan
+├─ /perception_*              # Perception nodes (перемещены с Vision Pi 24.10.2025)
+│  ├─ /health_monitor         # Health monitoring
+│  └─ /context_aggregator     # Context aggregation
+├─ /robot_state_publisher     # TF publisher (исправлен Zenoh wrapper 24.10.2025)
+│  └─ Published: /tf, /tf_static
 ├─ /nav2_*                    # Navigation stack (future)
 │  ├─ /controller_server
 │  ├─ /planner_server
@@ -316,12 +321,18 @@ Vision Pi (10.1.1.11)
 │  └─ Published: /camera/color/image_raw
 │                /camera/depth/image_rect_raw
 │                /camera/color/camera_info
-└─ /apriltag_node             # Marker detector
-   ├─ Subscribed: /camera/color/image_raw
-   │              /camera/color/camera_info
-   └─ Published: /apriltag/detections
-                 /tf (tag transforms)
+├─ /apriltag_node             # Marker detector
+│  ├─ Subscribed: /camera/color/image_raw
+│  │              /camera/color/camera_info
+│  └─ Published: /apriltag/detections
+│                /tf (tag transforms)
+└─ /voice_assistant           # Voice assistant (ReSpeaker)
+   ├─ Subscribed: /perception/events
+   └─ Published: /dialogue/text
+                 /audio/tts
 ```
+
+**Примечание:** LSLIDAR и Perception были перемещены на Main Pi (24 октября 2025) для оптимизации ресурсов Vision Pi.
 
 ### 5.3. Ключевые топики
 
@@ -352,15 +363,19 @@ docker/
 │   ├── config/                  # Общие конфиги (монтируются)
 │   │   ├── zenoh_router_config.json5
 │   │   ├── zenoh_session_config.json5
-│   │   └── cyclonedds.xml
+│   │   ├── cyclonedds.xml
+│   │   ├── lslidar/            # LSLIDAR конфиги (перемещён 24.10.2025)
+│   │   └── monitoring/          # Monitoring конфиги (добавлено 24.10.2025)
 │   ├── scripts/                 # Утилиты
 │   ├── maps/                    # Persistent RTAB-Map данные
 │   ├── zenoh-router/
 │   ├── twist-mux/
 │   ├── rtabmap/
-│   ├── lslidar/
+│   ├── lslidar/                 # Перемещён с Vision Pi (24.10.2025)
+│   ├── perception/              # Перемещён с Vision Pi (24.10.2025)
 │   ├── nav2/
 │   ├── vesc-driver/
+│   ├── robot-state-publisher/
 │   └── micro-ros-agent/
 └── vision/                      # Vision Pi сервисы
     ├── docker-compose.yaml
@@ -371,7 +386,8 @@ docker/
     ├── scripts/
     ├── zenoh-router/
     ├── oak-d/
-    └── apriltag/
+    ├── apriltag/
+    └── voice-assistant/         # Voice assistant (добавлено октябрь 2025)
 ```
 
 ### 6.2. Зависимости контейнеров
@@ -382,9 +398,11 @@ Main Pi:
       ↓
   ├─ twist-mux ────────────────┐
   ├─ rtabmap ──────────────────┤
-  ├─ lslidar ──────────────────┤
+  ├─ lslidar ──────────────────┤  (перемещён с Vision Pi 24.10.2025)
+  ├─ perception ───────────────┤  (перемещён с Vision Pi 24.10.2025)
   ├─ nav2 ─────────────────────┤
   ├─ vesc-driver ──────────────┤
+  ├─ robot-state-publisher ────┤  (исправлен TF wrapper 24.10.2025)
   └─ micro-ros-agent ──────────┘
       └─ depends_on: zenoh-router
 
@@ -392,7 +410,8 @@ Vision Pi:
   zenoh-router (base)
       ↓
   ├─ oak-d ────────────────────┤
-  └─ apriltag ─────────────────┘
+  ├─ apriltag ─────────────────┤
+  └─ voice-assistant ──────────┘  (добавлен октябрь 2025)
       └─ depends_on: zenoh-router
 ```
 

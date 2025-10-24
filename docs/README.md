@@ -32,6 +32,7 @@
 - [**READY_FOR_DEPLOY.md**](deployment/READY_FOR_DEPLOY.md) - Чеклист готовности к деплою
 - [**VOICE_ASSISTANT_DOCKER.md**](deployment/VOICE_ASSISTANT_DOCKER.md) - Voice Assistant в Docker
 - [**VISION_PI_DEPLOYMENT.md**](deployment/VISION_PI_DEPLOYMENT.md) - Развёртывание Vision Pi
+- [**MONITORING_DEPLOYMENT.md**](deployment/MONITORING_DEPLOYMENT.md) - 🆕 Развёртывание системы мониторинга (октябрь 2025)
 
 ### 🛠️ [development/](development/) - Разработка
 Руководства для разработчиков.
@@ -65,6 +66,8 @@
 - [**TROUBLESHOOTING.md**](guides/TROUBLESHOOTING.md) - Решение проблем
 - [**ANIMATION_EDITOR.md**](guides/ANIMATION_EDITOR.md) - Редактор LED анимаций
 - [**HEALTH_MONITORING.md**](guides/HEALTH_MONITORING.md) - 🏥 Мониторинг здоровья системы
+- [**MONITORING_SYSTEM.md**](guides/MONITORING_SYSTEM.md) - 🆕 Система мониторинга с Grafana (октябрь 2025)
+- [**MAPPING_PRACTICES_RESEARCH.md**](guides/MAPPING_PRACTICES_RESEARCH.md) - 🆕 Исследование практик маппинга (октябрь 2025)
 - [**INTERNAL_DIALOGUE_USAGE.md**](guides/INTERNAL_DIALOGUE_USAGE.md) - ⚠️ УСТАРЕЛО (см. architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
 
 ### 📊 [reports/](reports/) - Отчёты и аудиты
@@ -74,10 +77,16 @@
 - [**VISION_PI_USB_POWER_AUDIT_2025-10-13.md**](reports/VISION_PI_USB_POWER_AUDIT_2025-10-13.md)
 - [**VISION_PI_CONTAINERS_FIX_2025-10-13.md**](reports/VISION_PI_CONTAINERS_FIX_2025-10-13.md)
 - [**DOCKER_BUILD_FIX_2025-10-18.md**](reports/DOCKER_BUILD_FIX_2025-10-18.md)
+- [**ZENOH_NAMESPACE_ANALYSIS_2025-10-23.md**](reports/ZENOH_NAMESPACE_ANALYSIS_2025-10-23.md) - 🆕 Анализ Zenoh namespace (октябрь 2025)
+- [**TF_TRANSFORMATION_FIX.md**](reports/TF_TRANSFORMATION_FIX.md) - 🆕 Исправление TF трансформаций (октябрь 2025)
+- [**TF_FIX_QUICK_REFERENCE.md**](reports/TF_FIX_QUICK_REFERENCE.md) - 🆕 Краткая справка по TF fix (октябрь 2025)
 
 ### ⚙️ Другие документы
 
 - [**CI_CD_PIPELINE.md**](CI_CD_PIPELINE.md) - CI/CD конвейер
+- [**MONITORING_QUICK_REF.md**](MONITORING_QUICK_REF.md) - 🆕 Краткая справка по мониторингу (октябрь 2025)
+- [**WORKFLOW_CHANGES.md**](WORKFLOW_CHANGES.md) - 🆕 Изменения в workflow (октябрь 2025)
+- [**DOCKER_TAG_MANAGEMENT.md**](DOCKER_TAG_MANAGEMENT.md) - Управление тегами Docker
 
 ## 🔗 Связанные документы
 
@@ -124,6 +133,6 @@
 
 ---
 
-**Последнее обновление:** 2025-10-13  
-**Версия документации:** 2.0  
-**Статус:** ✅ Реорганизовано по стандартам ROS2
+**Последнее обновление:** 2025-10-24  
+**Версия документации:** 2.1  
+**Статус:** ✅ Актуализировано (мониторинг, TF fix, перемещение контейнеров, Zenoh, voice assistant)
