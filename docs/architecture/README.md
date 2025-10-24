@@ -36,14 +36,14 @@
 - Zenoh middleware
 
 ### [ZENOH_CLOUD_NAMESPACES.md](ZENOH_CLOUD_NAMESPACES.md)
-**Zenoh Cloud Connectivity & Namespaces**
+**Zenoh: Облачное подключение и Namespaces**
 
 - Что такое Zenoh namespace (отличия от ROS namespace)
 - Текущая реализация (ROBOT_ID, wrapper script, Docker)
 - Топология облачной сети
 - Детали конфигурации
 - Тестирование и валидация
-- Troubleshooting
+- Устранение неполадок
 - Соображения безопасности (TLS/mTLS)
 
 ## 🔗 Связанные документы

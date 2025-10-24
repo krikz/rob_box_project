@@ -384,49 +384,49 @@ cd ~/rob_box_project
 **Пример вывода:**
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║  Zenoh Namespace Configuration Validator                    ║
+║  Валидатор конфигурации Zenoh Namespace                     ║
 ╔══════════════════════════════════════════════════════════════╗
 
-✅ Detected: VISION Pi
+✅ Обнаружено: VISION Pi
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Checking Prerequisites
+1. Проверка предварительных требований
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ docker found
-✓ curl found
-✓ grep found
+✓ docker найден
+✓ curl найден
+✓ grep найден
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2. Checking ROBOT_ID Configuration
+2. Проверка конфигурации ROBOT_ID
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ ROBOT_ID found in .env: RBXU100001
-✓ ROBOT_ID format is valid
-  Expected namespace: robots/RBXU100001
+✓ ROBOT_ID найден в .env: RBXU100001
+✓ Формат ROBOT_ID корректен
+  Ожидаемый namespace: robots/RBXU100001
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-3. Checking Docker Containers
+3. Проверка Docker контейнеров
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Container zenoh-router-vision is running
-✓ Container oak-d is running
-✓ Container lslidar is running
-✓ Container voice-assistant is running
+✓ Контейнер zenoh-router-vision запущен
+✓ Контейнер oak-d запущен
+✓ Контейнер lslidar запущен
+✓ Контейнер voice-assistant запущен
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-4. Checking Namespace in Containers
+4. Проверка Namespace в контейнерах
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Checking oak-d...
-  ✓ ROBOT_ID environment variable: RBXU100001
-  ✓ Namespace in config: robots/RBXU100001
-  ✓ Namespace confirmed in container logs
+Проверка oak-d...
+  ✓ Переменная окружения ROBOT_ID: RBXU100001
+  ✓ Namespace в конфигурации: robots/RBXU100001
+  ✓ Namespace подтверждён в логах контейнера
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-5. Checking Zenoh Router Connectivity
+5. Проверка подключения к Zenoh Router
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Local Zenoh router REST API is accessible
+✓ REST API локального Zenoh роутера доступен
 
-Checking for topics with namespace prefix...
-✓ Found topics with namespace robots/RBXU100001:
+Проверка топиков с префиксом namespace...
+✓ Найдены топики с namespace robots/RBXU100001:
   → robots/RBXU100001/camera/rgb/image_raw
   → robots/RBXU100001/camera/depth/image_rect_raw
   → robots/RBXU100001/scan
@@ -434,25 +434,25 @@ Checking for topics with namespace prefix...
   → robots/RBXU100001/cmd_vel
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-6. Summary
+6. Итоги
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Namespace Configuration:
+Конфигурация Namespace:
   Robot ID:  RBXU100001
   Namespace: robots/RBXU100001
-  Host:      VISION Pi
+  Хост:      VISION Pi
 
-Expected Topic Format in Cloud:
+Ожидаемый формат топиков в облаке:
   robots/RBXU100001/camera/rgb/image_raw
   robots/RBXU100001/cmd_vel
   robots/RBXU100001/odom
 
-Cloud Subscription Examples:
-  All robots: robots/**
-  This robot: robots/RBXU100001/**
-  Specific:   robots/RBXU100001/camera/**
+Примеры подписки в облаке:
+  Все роботы: robots/**
+  Этот робот: robots/RBXU100001/**
+  Конкретные: robots/RBXU100001/camera/**
 
-✅ Validation Complete
+✅ Валидация завершена
 ```
 
 **Связанная документация:** `docs/architecture/ZENOH_CLOUD_NAMESPACES.md`
