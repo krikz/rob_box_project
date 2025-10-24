@@ -36,7 +36,6 @@ services:
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
-      - ./config/oak-d:/config/oak-d:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/oak-d:/scripts:ro
       - ./oak-d/launch:/oak-d/launch:ro
@@ -67,7 +66,6 @@ services:
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
       - ./config:/config:ro
-      - ./config/lslidar:/config/lslidar:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/lslidar:/scripts:ro
       - /dev/shm:/dev/shm
@@ -91,7 +89,6 @@ services:
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
       - ./config:/config:ro
-      - ./config/apriltag:/config/apriltag:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/apriltag:/scripts:ro
       - /dev/shm:/dev/shm
@@ -118,7 +115,6 @@ services:
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
     volumes:
       - ./config:/config:ro
-      - ./config/led_matrix:/config/led_matrix:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/led_matrix:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_led_matrix.sh"]
@@ -158,7 +154,6 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./config/voice:/config/voice:ro
       - ./scripts/voice:/scripts:ro
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
