@@ -116,17 +116,19 @@ RUN cd /ws/src && \
 # Шаг 2: Копируем package.xml для rosdep (зависимости меняются редко)
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
 COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
+COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 
 # Шаг 3: Установка ROS зависимостей через rosdep
 # Этот слой кешируется пока package.xml не изменяется
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src/rob_box_voice src/rob_box_animations --ignore-src -r -y || true
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs --ignore-src -r -y || true
 
 # Шаг 4: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
 COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
+COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
 
 # Шаг 5: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
@@ -137,6 +139,9 @@ COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
 COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
 COPY src/rob_box_voice/prompts /ws/src/rob_box_voice/prompts
 COPY src/rob_box_animations/launch /ws/src/rob_box_animations/launch
+
+# Шаг 7: Копируем message файлы для rob_box_perception_msgs
+COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
 
 # Шаг 8: Копируем animations data
 COPY src/rob_box_animations/animations /ws/src/rob_box_animations/animations
@@ -211,7 +216,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     export CMAKE_PREFIX_PATH=/opt/ros/${ROS_DISTRO}:$CMAKE_PREFIX_PATH && \
     export CMAKE_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib:$CMAKE_LIBRARY_PATH && \
     colcon build \
-    --packages-select audio_common_msgs rob_box_voice rob_box_animations \
+    --packages-select audio_common_msgs rob_box_perception_msgs rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
