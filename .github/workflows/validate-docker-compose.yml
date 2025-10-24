@@ -235,7 +235,7 @@ jobs:
           echo "📁 Проверка структуры директорий сервисов..."
 
           # Main Pi сервисы
-          for service in robot_state_publisher rtabmap zenoh-router; do
+          for service in robot_state_publisher rtabmap zenoh-router lslidar perception; do
             if [ ! -d "docker/main/$service" ]; then
               echo "❌ Отсутствует директория сервиса: docker/main/$service"
               exit 1
@@ -248,7 +248,7 @@ jobs:
           done
 
           # Vision Pi сервисы
-          for service in oak-d lslidar apriltag zenoh-router; do
+          for service in oak-d apriltag zenoh-router; do
             if [ ! -d "docker/vision/$service" ]; then
               echo "❌ Отсутствует директория сервиса: docker/vision/$service"
               exit 1
