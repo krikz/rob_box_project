@@ -13,6 +13,7 @@ import io
 import json
 import os
 import sys
+import time
 import wave
 from contextlib import contextmanager
 from pathlib import Path
@@ -507,10 +508,10 @@ class TTSNode(Node):
     def cleanup_playback_noise(self):
         """
         Устранение белого шума после воспроизведения TTS.
-        
+
         Проблема: После воспроизведения через ReSpeaker (USB Audio Class 1.0)
         возникает постоянный белый шум из-за активного playback channel.
-        
+
         Решение:
         1. Properly close sounddevice stream
         2. Flush audio buffers
@@ -519,17 +520,16 @@ class TTSNode(Node):
         try:
             # 1. Ensure sounddevice is fully stopped
             sd.stop()
-            
+
             # 2. Small delay to let USB audio interface stabilize
             # ReSpeaker USB Audio Class 1.0 requires time to properly close playback path
-            import time
             time.sleep(0.1)
-            
+
             # 3. Log cleanup completion
-            self.get_logger().debug('🧹 TTS playback noise cleanup completed')
-            
+            self.get_logger().debug("🧹 TTS playback noise cleanup completed")
+
         except Exception as e:
-            self.get_logger().warn(f'⚠️ TTS noise cleanup failed: {e}')
+            self.get_logger().warn(f"⚠️ TTS noise cleanup failed: {e}")
 
     def publish_state(self, state: str):
         """Публикация состояния TTS"""
