@@ -1071,7 +1071,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{container=~\".*\"} |~ \"(?i)error\"",
+          "expr": "{container=~\".+\"} |~ \"(?i)error\"",
           "refId": "A"
         }
       ],
