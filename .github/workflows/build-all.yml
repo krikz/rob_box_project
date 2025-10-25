@@ -59,6 +59,5 @@ jobs:
           echo "  - ghcr.io/krikz/rob_box:rtabmap"
           echo ""
           echo "Vision Pi сервисы:"
-          echo "  - ghcr.io/krikz/rob_box:oak-d"
+          echo "  - ghcr.io/krikz/rob_box:oak-d (with integrated AprilTag detection)"
           echo "  - ghcr.io/krikz/rob_box:lslidar"
-          echo "  - ghcr.io/krikz/rob_box:apriltag"
