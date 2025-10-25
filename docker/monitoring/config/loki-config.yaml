@@ -10,7 +10,6 @@ common:
   storage:
     filesystem:
       chunks_directory: /tmp/loki/chunks
-      rules_directory: /tmp/loki/rules
   replication_factor: 1
   ring:
     kvstore:
@@ -33,8 +32,13 @@ schema_config:
         prefix: index_
         period: 24h
 
+# Ruler configuration - using in-memory storage to avoid filesystem permissions
 ruler:
-  alertmanager_url: http://localhost:9093
+  enable_api: true
+  storage:
+    type: local
+    local:
+      directory: /tmp/loki/rules
 
 # Limit log retention to save disk space on Raspberry Pi
 limits_config:
