@@ -7,20 +7,18 @@ Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - 
 ### Сервисы
 
 1. **zenoh-router** - Локальный Zenoh роутер для коммуникации между контейнерами
-2. **oak-d** - OAK-D камера (AprilTag режим + RGB stream)
+2. **oak-d** - OAK-D камера с интегрированной детекцией AprilTag (RGB stream + AprilTag detection)
 3. **lslidar** - LSLIDAR N10 лидар (2D сканы)
-4. **apriltag** - Детектор AprilTag меток
-5. **led-matrix** - Драйвер NeoPixel LED матрицы
-6. **voice-assistant** - Голосовой ассистент + анимации (ReSpeaker Mic Array v2.0)
+4. **led-matrix** - Драйвер NeoPixel LED матрицы
+5. **voice-assistant** - Голосовой ассистент + анимации (ReSpeaker Mic Array v2.0)
 
 ### Схема коммуникации
 
 ```
 Vision Pi (Raspberry Pi 5)
 ├── zenoh-router (порт 7447)
-│   ├─ oak-d → /camera/color/image_raw, /camera/color/camera_info
+│   ├─ oak-d → /camera/color/image_raw, /camera/color/camera_info, /apriltag_detections
 │   ├─ lslidar → /scan
-│   ├─ apriltag → /apriltag_detections
 │   ├─ led-matrix → слушает /animations/trigger
 │   └─ voice-assistant → /voice/*, /audio/*, /animations/trigger
 │

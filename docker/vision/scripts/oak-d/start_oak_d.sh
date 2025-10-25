@@ -5,6 +5,8 @@ source /opt/ros/humble/setup.bash
 export COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=80
 export COMPRESSED_DEPTH_IMAGE_TRANSPORT_PNG_LEVEL=3
 
-# Запускаем OAK-D только для публикации изображений для AprilTag
+# Запускаем OAK-D с интегрированной детекцией AprilTag
+# Это объединяет камеру и AprilTag детектор в одном контейнере
+# для снижения нагрузки на Vision Pi
 cd /oak-d/launch
-exec ros2 launch oakd_apriltag_only.launch.py
+exec ros2 launch oakd_with_apriltag.launch.py

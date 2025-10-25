@@ -52,7 +52,7 @@ jobs:
           All services have been built successfully and are ready for production deployment.
 
           ### Built Services:
-          - ✓ Vision Pi services (oak-d, lslidar, apriltag, led-matrix, voice-assistant)
+          - ✓ Vision Pi services (oak-d with AprilTag, lslidar, led-matrix, voice-assistant)
           - ✓ Main Pi services (micro-ros-agent, zenoh-router)  
           - ✓ Base images (ros2-zenoh)
 
