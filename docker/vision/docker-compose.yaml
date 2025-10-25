@@ -102,6 +102,12 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f led_matrix || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     labels:
       logging: "promtail"
 
@@ -177,6 +183,12 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     labels:
       logging: "promtail"
 
