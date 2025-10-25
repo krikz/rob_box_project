@@ -210,7 +210,7 @@
           │  Local ROS2 Nodes │
           │  (via rmw_zenoh)  │
           │  - oak-d          │
-          │  - apriltag       │
+          │    (with AprilTag)│
           └───────────────────┘
 ```
 
@@ -324,15 +324,15 @@ Main Pi (10.1.1.10)
 ```
 Vision Pi (10.1.1.11)
 ├─ /zenoh_router              # Zenoh bridge (client mode)
-├─ /oak_d_node                # Camera driver
-│  └─ Published: /camera/color/image_raw
-│                /camera/depth/image_rect_raw
-│                /camera/color/camera_info
-├─ /apriltag_node             # Marker detector
-│  ├─ Subscribed: /camera/color/image_raw
-│  │              /camera/color/camera_info
-│  └─ Published: /apriltag/detections
-│                /tf (tag transforms)
+├─ /oak_d_node                # Camera driver (with integrated AprilTag detection)
+│  ├─ Published: /camera/color/image_raw
+│  │             /camera/depth/image_rect_raw
+│  │             /camera/color/camera_info
+│  └─ /apriltag_node          # Marker detector (runs in same container)
+│     ├─ Subscribed: /camera/color/image_raw
+│     │              /camera/color/camera_info
+│     └─ Published: /apriltag/detections
+│                   /tf (tag transforms)
 └─ /voice_assistant           # Voice assistant (ReSpeaker)
    ├─ Subscribed: /perception/events
    └─ Published: /dialogue/text
@@ -346,7 +346,7 @@ Vision Pi (10.1.1.11)
 | Топик | Тип сообщения | Publisher | Subscriber | Частота | Описание |
 |-------|---------------|-----------|------------|---------|----------|
 | `/scan` | sensor_msgs/LaserScan | lslidar_driver | rtabmap, nav2 | 10 Hz | 2D лазерные сканы |
-| `/camera/color/image_raw` | sensor_msgs/Image | oak_d_node | apriltag, rtabmap | 5 Hz | RGB изображение |
+| `/camera/color/image_raw` | sensor_msgs/Image | oak_d_node | apriltag_node, rtabmap | 5 Hz | RGB изображение |
 | `/camera/depth/image_rect_raw` | sensor_msgs/Image | oak_d_node | rtabmap | 5 Hz | Depth карта |
 | `/cmd_vel` | geometry_msgs/Twist | twist_mux | vesc_driver | 10 Hz | Команды скорости |
 | `/odom` | nav_msgs/Odometry | vesc_driver | rtabmap, nav2 | 50 Hz | Одометрия |
@@ -392,9 +392,8 @@ docker/
     │   └── cyclonedds.xml
     ├── scripts/
     ├── zenoh-router/
-    ├── oak-d/
-    ├── apriltag/
-    └── voice-assistant/         # Voice assistant (добавлено октябрь 2025)
+    ├── oak-d/                       # Includes integrated AprilTag detection
+    └── voice-assistant/             # Voice assistant (добавлено октябрь 2025)
 ```
 
 ### 6.2. Зависимости контейнеров
@@ -416,8 +415,7 @@ Main Pi:
 Vision Pi:
   zenoh-router (base)
       ↓
-  ├─ oak-d ────────────────────┤
-  ├─ apriltag ─────────────────┤
+  ├─ oak-d ────────────────────┤  (with integrated AprilTag detection, 25.10.2025)
   └─ voice-assistant ──────────┘  (добавлен октябрь 2025)
       └─ depends_on: zenoh-router
 ```
@@ -467,9 +465,9 @@ Vision Pi:
 │         │                                         │               │
 │         ▼                                         ▼               │
 │  ┌──────────────┐                     ┌──────────────────┐       │
-│  │ apriltag_node│                     │ Zenoh Router     │       │
-│  │  - Detection │                     │  - Bridge topics │       │
-│  │  - TF publish│                     │  - Compression   │       │
+│  │apriltag_node │                     │ Zenoh Router     │       │
+│  │ (in oak-d    │                     │  - Bridge topics │       │
+│  │  container)  │                     │  - Compression   │       │
 │  └──────┬───────┘                     └────────┬─────────┘       │
 │         │                                      │                 │
 └─────────┼──────────────────────────────────────┼─────────────────┘
