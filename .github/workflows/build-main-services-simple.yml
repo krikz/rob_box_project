@@ -1,0 +1,78 @@
+name: Build Main Pi Services (Simple)
+
+# Упрощенная локальная сборка сервисов Main Pi на self-hosted runner
+on:
+  workflow_dispatch:  # Ручной запуск
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  # Сборка сервисов Main Pi
+  build-main-service:
+    runs-on: self-hosted
+    strategy:
+      matrix:
+        service: 
+          - rtabmap
+          - robot_state_publisher
+          - lslidar
+          - perception
+      fail-fast: false  # Продолжаем сборку других сервисов если один упал
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build service ${{ matrix.service }}
+        run: |
+          SERVICE="${{ matrix.service }}"
+          DOCKER_TAG="local"
+          
+          GHCR_TAG="ghcr.io/krikz/rob_box:${SERVICE}-${{ env.ROS_DISTRO }}-${DOCKER_TAG}"
+          LOCAL_TAG="${{ env.LOCAL_PREFIX }}:${SERVICE}-${{ env.ROS_DISTRO }}-${DOCKER_TAG}"
+          
+          echo "Building $SERVICE..."
+          echo "GHCR Tag: $GHCR_TAG"
+          echo "Local Tag: $LOCAL_TAG"
+          
+          # Сборка образа
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            docker/main
+          
+          # Push в локальный registry
+          docker push "${LOCAL_TAG}"
+          
+          echo "✅ Built $SERVICE successfully"
+
+  # Итоговая сводка
+  summary:
+    needs: [build-main-service]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Main Pi Build Complete!"
+          echo ""
+          echo "📊 Build Results:"
+          echo "  Build Status: ${{ needs.build-main-service.result }}"
+
+      - name: List local images
+        run: |
+          echo ""
+          echo "📦 Local Registry Contents:"
+          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | while read repo; do
+            echo "  Repository: $repo"
+            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read tag; do
+              echo "    Tag: $tag"
+            done
+          done
