@@ -12,8 +12,8 @@ on:
         type: boolean
       services:
         description: >-
-          Services to build (comma-separated: rtabmap,robot-state-publisher,
-          lslidar,perception,nav2,vesc-driver,micro-ros-agent,twist-mux)
+          Services to build (comma-separated: rtabmap,robot_state_publisher,lslidar,perception,nav2,ros2_control,vesc_nexus,micro_ros_agent,twist_mux
+          lslidar,perception,nav2,vesc_nexus,micro_ros_agent,twist_mux)
         required: false
         default: 'all'
         type: string
@@ -54,7 +54,7 @@ jobs:
           # Определяем какие сервисы собирать
           SERVICES_INPUT="${{ github.event.inputs.services }}"
           if [ -z "$SERVICES_INPUT" ] || [ "$SERVICES_INPUT" = "all" ]; then
-            SERVICES="rtabmap,robot-state-publisher,lslidar,perception,nav2,vesc-driver,micro-ros-agent,twist-mux"
+            SERVICES="rtabmap,robot_state_publisher,lslidar,perception,nav2,ros2_control,vesc_nexus,micro_ros_agent,twist_mux"
           else
             SERVICES="$SERVICES_INPUT"
           fi
