@@ -48,7 +48,7 @@ jobs:
             DOCKER_TAG="local"
           fi
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
-          
+
           # Определяем какие сервисы собирать
           SERVICES_INPUT="${{ github.event.inputs.services }}"
           if [ -z "$SERVICES_INPUT" ] || [ "$SERVICES_INPUT" = "all" ]; then
@@ -56,11 +56,11 @@ jobs:
           else
             SERVICES="$SERVICES_INPUT"
           fi
-          
+
           # Преобразуем в JSON matrix
           SERVICES_ARRAY=$(echo "$SERVICES" | tr ',' '\n' | jq -R . | jq -s .)
           echo "services_matrix=${SERVICES_ARRAY}" >> $GITHUB_OUTPUT
-          
+
           # Настройка локального registry
           LOCAL_REG="${{ github.event.inputs.push_to_registry }}"
           if [ "$LOCAL_REG" = "true" ]; then
@@ -68,7 +68,7 @@ jobs:
           else
             echo "local_registry=false" >> $GITHUB_OUTPUT
           fi
-          
+
           echo "Branch: $BRANCH_NAME"
           echo "Docker Tag: $DOCKER_TAG"
           echo "Services: $SERVICES"
@@ -82,7 +82,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.prepare.outputs.services_matrix) }}
       fail-fast: false  # Продолжаем сборку других сервисов если один упал
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -105,13 +105,13 @@ jobs:
         run: |
           SERVICE="${{ matrix.service }}"
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
-          
+
           # Проверяем что папка сервиса существует
           if [ ! -d "docker/vision/${SERVICE}" ]; then
             echo "❌ Service directory docker/vision/${SERVICE} not found!"
             exit 1
           fi
-          
+
           # Определяем базовый образ для каждого сервиса
           case "$SERVICE" in
             "oak-d"|"apriltag")
@@ -127,16 +127,16 @@ jobs:
               BASE_IMAGE="ghcr.io/${{ github.repository_owner }}/rob_box_base:ros2-zenoh"
               ;;
           esac
-          
+
           # Теги для образа
           GHCR_TAG="${{ env.IMAGE_PREFIX }}:${SERVICE}-${{ env.ROS_DISTRO }}-${DOCKER_TAG}"
           LOCAL_TAG="${{ env.LOCAL_PREFIX }}:${SERVICE}-${{ env.ROS_DISTRO }}-${DOCKER_TAG}"
-          
+
           echo "Building $SERVICE..."
           echo "Base Image: $BASE_IMAGE"
           echo "GHCR Tag: $GHCR_TAG"
           echo "Local Tag: $LOCAL_TAG"
-          
+
           # Сборка образа с APT cache
           docker buildx build \
             --platform linux/arm64 \
@@ -148,7 +148,7 @@ jobs:
             --build-arg="BASE_IMAGE=${BASE_IMAGE}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           echo "✅ Built $SERVICE successfully"
           echo "ghcr_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
           echo "local_tag=${LOCAL_TAG}" >> $GITHUB_OUTPUT
@@ -166,7 +166,7 @@ jobs:
           LOCAL_TAG="${{ steps.build.outputs.local_tag }}"
           SERVICE="${{ matrix.service }}"
           echo "Testing image: $LOCAL_TAG"
-          
+
           # Специфичные тесты для каждого сервиса
           case "$SERVICE" in
             "oak-d")

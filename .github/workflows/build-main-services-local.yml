@@ -11,7 +11,9 @@ on:
         default: 'true'
         type: boolean
       services:
-        description: 'Services to build (comma-separated: rtabmap,robot-state-publisher,lslidar,perception,nav2,vesc-driver,micro-ros-agent,twist-mux)'
+        description: >-
+          Services to build (comma-separated: rtabmap,robot-state-publisher,
+          lslidar,perception,nav2,vesc-driver,micro-ros-agent,twist-mux)
         required: false
         default: 'all'
         type: string
@@ -48,7 +50,7 @@ jobs:
             DOCKER_TAG="local"
           fi
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
-          
+
           # Определяем какие сервисы собирать
           SERVICES_INPUT="${{ github.event.inputs.services }}"
           if [ -z "$SERVICES_INPUT" ] || [ "$SERVICES_INPUT" = "all" ]; then
@@ -56,11 +58,11 @@ jobs:
           else
             SERVICES="$SERVICES_INPUT"
           fi
-          
+
           # Преобразуем в JSON matrix
           SERVICES_ARRAY=$(echo "$SERVICES" | tr ',' '\n' | jq -R . | jq -s .)
           echo "services_matrix=${SERVICES_ARRAY}" >> $GITHUB_OUTPUT
-          
+
           # Настройка локального registry
           LOCAL_REG="${{ github.event.inputs.push_to_registry }}"
           if [ "$LOCAL_REG" = "true" ]; then
@@ -68,7 +70,7 @@ jobs:
           else
             echo "local_registry=false" >> $GITHUB_OUTPUT
           fi
-          
+
           echo "Branch: $BRANCH_NAME"
           echo "Docker Tag: $DOCKER_TAG"
           echo "Services: $SERVICES"
@@ -82,7 +84,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.prepare.outputs.services_matrix) }}
       fail-fast: false  # Продолжаем сборку других сервисов если один упал
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -98,21 +100,21 @@ jobs:
         run: |
           SERVICE="${{ matrix.service }}"
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
-          
+
           # Проверяем что папка сервиса существует
           if [ ! -d "docker/main/${SERVICE}" ]; then
             echo "❌ Service directory docker/main/${SERVICE} not found!"
             exit 1
           fi
-          
+
           # Теги для образа
           GHCR_TAG="${{ env.IMAGE_PREFIX }}:${SERVICE}-${{ env.ROS_DISTRO }}-${DOCKER_TAG}"
           LOCAL_TAG="${{ env.LOCAL_PREFIX }}:${SERVICE}-${{ env.ROS_DISTRO }}-${DOCKER_TAG}"
-          
+
           echo "Building $SERVICE..."
           echo "GHCR Tag: $GHCR_TAG"
           echo "Local Tag: $LOCAL_TAG"
-          
+
           # Сборка образа
           docker buildx build \
             --platform linux/arm64 \
@@ -123,7 +125,7 @@ jobs:
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/rob_box_base:ros2-zenoh" \
             .
-          
+
           echo "✅ Built $SERVICE successfully"
           echo "ghcr_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
           echo "local_tag=${LOCAL_TAG}" >> $GITHUB_OUTPUT
@@ -140,7 +142,7 @@ jobs:
         run: |
           LOCAL_TAG="${{ steps.build.outputs.local_tag }}"
           echo "Testing image: $LOCAL_TAG"
-          
+
           # Базовый тест - проверяем что образ запускается
           timeout 10 docker run --rm "$LOCAL_TAG" --help || true
           echo "✅ Image test completed"
