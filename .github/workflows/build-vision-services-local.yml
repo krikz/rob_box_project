@@ -82,6 +82,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.prepare.outputs.services_matrix) }}
       fail-fast: false  # Продолжаем сборку других сервисов если один упал
+      max-parallel: 3   # Собираем максимум 3 сервиса одновременно (Vision Pi - меньше сервисов)
 
     steps:
       - name: Checkout repository

@@ -84,6 +84,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.prepare.outputs.services_matrix) }}
       fail-fast: false  # Продолжаем сборку других сервисов если один упал
+      max-parallel: 4   # Собираем максимум 4 сервиса одновременно
 
     steps:
       - name: Checkout repository
