@@ -263,7 +263,7 @@ jobs:
   # ROS2 Control (VESC Motor Control)
   build-ros2-control:
     needs: determine-tag
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # Используем self-hosted runner с локальным registry
     permissions:
       contents: read
       packages: write
@@ -412,7 +412,7 @@ jobs:
   # Internal Dialogue Agent (Perception + Reflection)
   build-perception:
     needs: determine-tag
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # Используем self-hosted runner с локальным registry
     permissions:
       contents: read
       packages: write
