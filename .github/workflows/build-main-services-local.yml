@@ -116,13 +116,12 @@ jobs:
           # Сборка образа
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/main \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/rob_box_base:ros2-zenoh" \
-            .
+            docker/main
           
           echo "✅ Built $SERVICE successfully"
           echo "ghcr_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
