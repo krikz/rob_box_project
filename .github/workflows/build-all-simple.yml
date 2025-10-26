@@ -39,13 +39,12 @@ jobs:
           
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/base \
             --file docker/base/Dockerfile.ros2-zenoh \
             --tag "ghcr.io/krikz/rob_box_base:ros2-zenoh-latest" \
             --tag "localhost:5000/krikz/rob_box_base:ros2-zenoh-latest" \
             --load \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
+            docker/base
           
           docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
           echo "✅ ros2-zenoh base image ready"
@@ -56,13 +55,12 @@ jobs:
           
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/base \
             --file docker/base/Dockerfile.depthai \
             --tag "ghcr.io/krikz/rob_box_base:depthai-latest" \
             --tag "localhost:5000/krikz/rob_box_base:depthai-latest" \
             --load \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
+            docker/base
           
           docker push localhost:5000/krikz/rob_box_base:depthai-latest
           echo "✅ depthai base image ready"
@@ -82,14 +80,13 @@ jobs:
           
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/main \
             --file docker/main/rtabmap/Dockerfile \
             --tag "ghcr.io/krikz/rob_box:rtabmap-humble-local" \
             --tag "localhost:5000/krikz/rob_box:rtabmap-humble-local" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
+            docker/main
           
           docker push localhost:5000/krikz/rob_box:rtabmap-humble-local
           echo "✅ rtabmap service ready"
@@ -100,14 +97,13 @@ jobs:
           
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/main \
             --file docker/main/robot-state-publisher/Dockerfile \
             --tag "ghcr.io/krikz/rob_box:robot-state-publisher-humble-local" \
             --tag "localhost:5000/krikz/rob_box:robot-state-publisher-humble-local" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
+            docker/main
           
           docker push localhost:5000/krikz/rob_box:robot-state-publisher-humble-local
           echo "✅ robot-state-publisher service ready"
@@ -127,14 +123,13 @@ jobs:
           
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/vision \
             --file docker/vision/oak-d/Dockerfile \
             --tag "ghcr.io/krikz/rob_box:oak-d-humble-local" \
             --tag "localhost:5000/krikz/rob_box:oak-d-humble-local" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
+            docker/vision
           
           docker push localhost:5000/krikz/rob_box:oak-d-humble-local
           echo "✅ oak-d service ready"
