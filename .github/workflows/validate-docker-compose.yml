@@ -247,8 +247,8 @@ jobs:
             echo "✅ docker/main/$service"
           done
 
-          # Vision Pi сервисы
-          for service in oak-d apriltag zenoh-router; do
+          # Vision Pi сервисы (apriltag удален - интегрирован в oak-d)
+          for service in oak-d zenoh-router; do
             if [ ! -d "docker/vision/$service" ]; then
               echo "❌ Отсутствует директория сервиса: docker/vision/$service"
               exit 1

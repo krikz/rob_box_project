@@ -1,0 +1,9 @@
+# Ignore secrets
+.env.secrets
+
+# Ignore data directories (they contain runtime data)
+data/
+
+# Ignore logs
+*.log
+logs/

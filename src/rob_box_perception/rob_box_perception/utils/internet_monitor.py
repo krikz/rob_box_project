@@ -62,10 +62,15 @@ class InternetConnectivityMonitor:
         """
         for host in self.test_hosts:
             try:
+                # Используем curl вместо ping (ping не доступен в Docker контейнере)
+                # curl -s -I --connect-timeout 2 --max-time 3 http://8.8.8.8
                 result = subprocess.run(
-                    ["ping", "-c", "1", "-W", "2", host], capture_output=True, timeout=2.5
+                    ["curl", "-s", "-I", "--connect-timeout", "2", "--max-time", "3", f"http://{host}"],
+                    capture_output=True,
+                    timeout=4  # немного больше чем max-time
                 )
 
+                # curl возвращает 0 если получил HTTP ответ (любой код)
                 if result.returncode == 0:
                     # Интернет доступен
                     if self.is_online is False:
@@ -75,7 +80,8 @@ class InternetConnectivityMonitor:
                     self.last_check_time = time.time()
                     return True
 
-            except (subprocess.TimeoutExpired, Exception):
+            except (subprocess.TimeoutExpired, Exception) as e:
+                self.node.get_logger().debug(f"🔍 Проверка {host} неудачна: {e}")
                 continue
 
         # Интернет недоступен
