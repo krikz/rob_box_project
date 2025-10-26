@@ -105,8 +105,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          build-args: |
-            APT_PROXY=http://192.168.1.125:3142
           cache-to: type=gha,mode=max
           build-contexts: |
             docker/main/robot_state_publisher=docker/main/robot_state_publisher

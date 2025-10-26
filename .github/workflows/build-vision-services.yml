@@ -107,6 +107,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          build-args: |
+            APT_PROXY=http://192.168.1.125:3142
           cache-to: type=gha,mode=max
 
   # LED Matrix System
