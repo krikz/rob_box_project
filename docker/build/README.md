@@ -113,11 +113,12 @@ docker/build/
 
 ### Требования
 
-- **ОС:** Linux (ARM64 для полной совместимости)
+- **ОС:** Linux (x86_64 или ARM64)
 - **RAM:** Минимум 4GB (рекомендуется 8GB)
 - **Диск:** Минимум 50GB свободного места
 - **Сеть:** Доступ к локальной сети 10.1.1.x
 - **Docker:** Docker Engine 20.10+ и docker-compose v2
+- **Для x86_64:** QEMU и buildx для кросс-компиляции ARM64 образов
 
 ### Шаг 1: Клонирование репозитория
 
@@ -152,6 +153,29 @@ nano .env.secrets
 # GITHUB_OWNER=krikz
 # GITHUB_REPO=rob_box_project
 ```
+
+### Шаг 3.1: Настройка QEMU (только для x86_64)
+
+Если build machine на x86_64, необходимо настроить QEMU для кросс-компиляции ARM64 образов:
+
+```bash
+# Установка QEMU
+sudo apt-get update
+sudo apt-get install -y qemu-user-static binfmt-support
+
+# Регистрация QEMU для multi-arch builds
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+# Проверка
+docker buildx ls
+# Должен быть builder с поддержкой linux/arm64
+
+# Если нужно создать builder
+docker buildx create --name multiarch --driver docker-container --use
+docker buildx inspect --bootstrap
+```
+
+**Примечание:** Сборка ARM64 образов на x86_64 будет медленнее (эмуляция через QEMU), но всё равно быстрее чем использование GitHub Actions из-за локального APT cache и registry.
 
 ### Шаг 4: Запуск инфраструктуры
 
@@ -251,7 +275,7 @@ jobs:
   build:
     runs-on: self-hosted  # Вместо ubuntu-latest
     # или более специфично:
-    # runs-on: [self-hosted, Linux, ARM64, rob-box]
+    # runs-on: [self-hosted, Linux, X64, rob-box]
 ```
 
 ### Обновление workflows для локальной сборки
@@ -478,7 +502,7 @@ docker logs -f build-github-runner
 # .github/workflows/*.yml:
 #   runs-on: self-hosted  ← должно быть именно так
 #   # или:
-#   runs-on: [self-hosted, Linux, ARM64, rob-box]
+#   runs-on: [self-hosted, Linux, X64, rob-box]
 
 # Проверьте labels runner
 docker exec build-github-runner cat /runner/.runner

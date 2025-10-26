@@ -63,7 +63,7 @@ services:
       - RUNNER_NAME=rob-box-build-machine
       - RUNNER_WORKDIR=/runner/_work
       - RUNNER_GROUP=default
-      - LABELS=self-hosted,Linux,ARM64,rob-box
+      - LABELS=self-hosted,Linux,X64,rob-box
       - RUNNER_SCOPE=repo
       - DISABLE_AUTO_UPDATE=false
       - EPHEMERAL=false

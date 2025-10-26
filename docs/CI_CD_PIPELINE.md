@@ -680,11 +680,18 @@ nano .env.secrets  # Добавить GITHUB_TOKEN
 # 3. Запуск инфраструктуры
 ./scripts/setup.sh
 
+# 3.1. Для x86_64: настроить QEMU для кросс-компиляции
+# sudo apt-get install -y qemu-user-static binfmt-support
+# docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+# docker buildx create --name multiarch --driver docker-container --use
+
 # 4. Проверка
 ./scripts/check_status.sh
 ```
 
 **Документация:** `docker/build/README.md`, `docker/build/QUICKSTART.md`
+
+**Примечание:** Build machine может работать на x86_64 или ARM64. На x86_64 образы кросс-компилируются через QEMU (медленнее, но всё равно быстрее GitHub Actions).
 
 ### Настройка Raspberry Pi для Build Machine
 

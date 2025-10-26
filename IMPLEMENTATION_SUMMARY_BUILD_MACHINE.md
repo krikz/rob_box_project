@@ -22,7 +22,7 @@
 - Выполняет GitHub workflows локально на build machine
 - Поддерживает Docker-in-Docker для сборки образов
 - Автоматическая регистрация в репозитории через токен
-- Labels: `self-hosted`, `Linux`, `ARM64`, `rob-box`
+- Labels: `self-hosted`, `Linux`, `X64`, `rob-box`
 
 ### 2. Docker Registry (port 5000)
 - Локальное хранилище Docker образов
@@ -186,7 +186,8 @@ jobs:
 Due to the nature of this implementation, testing requires:
 
 1. **Physical build machine** with:
-   - ARM64 architecture (for full compatibility)
+   - x86_64 or ARM64 architecture
+   - For x86_64: QEMU and buildx configured for ARM64 cross-compilation
    - Minimum 4GB RAM (recommended 8GB)
    - 50GB+ free disk space
    - Network access to 10.1.1.x subnet
@@ -260,6 +261,10 @@ GitHub Actions (local) → local registry → Raspberry Pi (fast)
    - SSH-based deployment to Pis
    - Rollback mechanisms
    - Health verification
+
+6. **Performance Notes**
+   - x86_64 builds are slower due to QEMU emulation but still faster than GitHub cloud
+   - ARM64 native builds are fastest option if available
 
 ## Conclusion
 

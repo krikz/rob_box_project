@@ -11,10 +11,19 @@ echo "🔧 Rob Box Build Machine Setup"
 echo "==============================="
 echo ""
 
-# Check if running on correct architecture
+# Check architecture and inform about requirements
 ARCH=$(uname -m)
-if [ "$ARCH" != "aarch64" ] && [ "$ARCH" != "arm64" ]; then
-    echo "⚠️  Warning: Build machine is expected to be ARM64, but detected: $ARCH"
+echo "🔍 Detected architecture: $ARCH"
+
+if [ "$ARCH" = "x86_64" ]; then
+    echo "ℹ️  x86_64 build machine detected"
+    echo "   Docker images will be cross-compiled for ARM64 (Raspberry Pi)"
+    echo "   Ensure QEMU and buildx are configured for ARM64 emulation"
+elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    echo "ℹ️  ARM64 build machine detected (native builds)"
+else
+    echo "⚠️  Warning: Unexpected architecture: $ARCH"
+    echo "   Supported: x86_64 (with QEMU), aarch64/arm64 (native)"
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then

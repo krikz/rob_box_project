@@ -18,7 +18,7 @@ jobs:
     # CHANGE 1: Use self-hosted runner instead of ubuntu-latest
     runs-on: self-hosted
     # Or more specifically:
-    # runs-on: [self-hosted, Linux, ARM64, rob-box]
+    # runs-on: [self-hosted, Linux, X64, rob-box]
     
     permissions:
       contents: read
@@ -28,11 +28,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # QEMU and Buildx are NOT needed on self-hosted ARM64 runner
-      # - name: Set up QEMU
-      #   uses: docker/setup-qemu-action@v3
-      # - name: Set up Docker Buildx
-      #   uses: docker/setup-buildx-action@v3
+      # CHANGE 2: For x86_64 build machine, setup QEMU and Buildx
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -55,7 +58,7 @@ jobs:
         with:
           context: docker/vision/oak-d
           file: docker/vision/oak-d/Dockerfile
-          platforms: linux/arm64
+          platforms: linux/arm64  # Cross-compile for Raspberry Pi
           push: false  # Don't push to ghcr.io yet
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -64,7 +67,7 @@ jobs:
           # CHANGE 2: Use APT cache from build machine
           build-args: |
             APT_PROXY=http://localhost:3142
-          load: true  # Load image to local Docker
+          load: false  # Can't load cross-compiled image on x86_64
 
       # CHANGE 3: Push to both local registry and ghcr.io
       - name: Push to local registry
