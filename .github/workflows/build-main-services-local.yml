@@ -60,7 +60,7 @@ jobs:
           fi
 
           # Преобразуем в JSON matrix
-          SERVICES_ARRAY=$(echo "$SERVICES" | tr ',' '\n' | jq -R . | jq -s .)
+          SERVICES_ARRAY=$(echo "$SERVICES" | tr ',' '\n' | jq -R . | jq -sc .)
           echo "services_matrix=${SERVICES_ARRAY}" >> $GITHUB_OUTPUT
 
           # Настройка локального registry
@@ -124,7 +124,7 @@ jobs:
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/rob_box_base:ros2-zenoh" \
             docker/main
-          
+
           echo "✅ Built $SERVICE successfully"
           echo "ghcr_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
           echo "local_tag=${LOCAL_TAG}" >> $GITHUB_OUTPUT
