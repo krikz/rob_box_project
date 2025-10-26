@@ -15,9 +15,9 @@ on:
         default: 'basic'
         type: choice
         options:
-        - basic
-        - all
-        - custom
+          - basic
+          - all
+          - custom
 
 env:
   LOCAL_REGISTRY: localhost:5000
@@ -36,7 +36,7 @@ jobs:
       - name: Build ros2-zenoh base image
         run: |
           echo "🏗️ Building ros2-zenoh base image..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.ros2-zenoh \
@@ -45,14 +45,14 @@ jobs:
             --load \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-          
+
           docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
           echo "✅ ros2-zenoh base image ready"
 
       - name: Build depthai base image
         run: |
           echo "🏗️ Building depthai base image..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.depthai \
@@ -61,7 +61,7 @@ jobs:
             --load \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-          
+
           docker push localhost:5000/krikz/rob_box_base:depthai-latest
           echo "✅ depthai base image ready"
 
@@ -77,7 +77,7 @@ jobs:
       - name: Build rtabmap service
         run: |
           echo "🔨 Building rtabmap service..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/rtabmap/Dockerfile \
@@ -87,14 +87,14 @@ jobs:
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main
-          
+
           docker push localhost:5000/krikz/rob_box:rtabmap-humble-local
           echo "✅ rtabmap service ready"
 
       - name: Build robot-state-publisher service
         run: |
           echo "🔨 Building robot-state-publisher service..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/robot_state_publisher/Dockerfile \
@@ -104,7 +104,7 @@ jobs:
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main
-          
+
           docker push localhost:5000/krikz/rob_box:robot-state-publisher-humble-local
           echo "✅ robot-state-publisher service ready"
 
@@ -120,7 +120,7 @@ jobs:
       - name: Build oak-d service
         run: |
           echo "🎥 Building oak-d service..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/oak-d/Dockerfile \
@@ -130,7 +130,7 @@ jobs:
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
-          
+
           docker push localhost:5000/krikz/rob_box:oak-d-humble-local
           echo "✅ oak-d service ready"
 
@@ -156,6 +156,6 @@ jobs:
               echo "    🏷️ $tag"
             done
           done
-          
+
           echo ""
           echo "🚀 Next: On Raspberry Pi, set IMAGE_TAG=local and pull from 10.1.1.5:5000"
