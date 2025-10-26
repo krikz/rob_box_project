@@ -652,8 +652,8 @@ cd docker/vision && docker-compose pull && docker-compose up -d
 │ ┌──────────────────┐  ┌──────────────┐  ┌────────────┐│
 │ │ GitHub Runner    │  │ Registry     │  │ APT Cache  ││
 │ │ (self-hosted)    │  │ :5000        │  │ :3142      ││
-│ │ - Builds locally │  │ - Fast pull  │  │ - No       ││
-│ │ - Uses APT cache │  │ - No internet│  │   redownld ││
+│ │ - Builds locally │  │ - Fast pull  │  │ - Cached   ││
+│ │ - Uses APT cache │  │ - No internet│  │   packages ││
 │ └────────┬─────────┘  └──────┬───────┘  └────────────┘│
 └──────────┼────────────────────┼─────────────────────────┘
            │                    │
