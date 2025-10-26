@@ -11,16 +11,20 @@
 git clone https://github.com/krikz/rob_box_project.git
 cd rob_box_project/docker/build
 
-# 2. Настройте GitHub токен
+# 2. Настройте GitHub токен (необязательно для начала)
 cp .env.secrets.example .env.secrets
 nano .env.secrets
 # Добавьте ваш GitHub Personal Access Token
+# Можно пропустить - runner просто не запустится, остальное работает
 
 # 3. Запустите инфраструктуру
 ./scripts/setup.sh
 
 # 4. Проверьте статус
 ./scripts/check_status.sh
+
+# Примечание: Если GitHub runner перезапускается - это нормально без .env.secrets
+# Registry и APT Cache должны работать сразу
 ```
 
 ### На Raspberry Pi (Main и Vision)
@@ -358,6 +362,27 @@ curl http://localhost:3142/acng-report.html
 
 # Проверьте что используется BuildKit cache
 # В логах GitHub Actions должно быть: "importing cache manifest from gha"
+```
+
+### Проблема: Сервисы перезапускаются
+
+```bash
+# Проверьте какие сервисы проблемные
+./scripts/check_status.sh
+
+# GitHub Runner перезапускается?
+# Это нормально если не настроен .env.secrets
+docker logs build-github-runner
+# Решение: настроить .env.secrets или остановить runner:
+docker stop build-github-runner
+
+# APT Cache перезапускается?
+docker logs build-apt-cache
+# Решение: используйте latest версию (уже в docker-compose.yaml)
+# Или пересоздайте: docker compose down && docker compose up -d
+
+# Проверьте права на data директории
+sudo chown -R $USER:$USER ./data/
 ```
 
 ### Проблема: Raspberry Pi не может pull образ

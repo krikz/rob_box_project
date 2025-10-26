@@ -95,12 +95,27 @@ echo "   ✅ Services started"
 # Wait for services to be healthy
 echo ""
 echo "⏳ Waiting for services to be ready..."
-sleep 5
+sleep 10
 
 # Check service status
 echo ""
 echo "📊 Service Status:"
 docker compose -f "$BUILD_DIR/docker-compose.yaml" ps
+
+# Check for unhealthy services
+UNHEALTHY=$(docker compose -f "$BUILD_DIR/docker-compose.yaml" ps | grep -E "Restarting|unhealthy" || true)
+if [ ! -z "$UNHEALTHY" ]; then
+    echo ""
+    echo "⚠️  Some services are not healthy:"
+    echo "$UNHEALTHY"
+    echo ""
+    echo "💡 Common issues:"
+    echo "   - APT Cache restarting: Image compatibility issue (now using latest)"
+    echo "   - GitHub Runner restarting: .env.secrets not configured"
+    echo ""
+    echo "📝 Check logs: docker compose -f $BUILD_DIR/docker-compose.yaml logs"
+    echo "📖 See README.md Troubleshooting section for solutions"
+fi
 
 # Load .env for IP address
 source "$BUILD_DIR/.env"

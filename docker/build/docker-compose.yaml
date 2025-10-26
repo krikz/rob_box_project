@@ -30,7 +30,7 @@ services:
   # APT Cacher NG - кэш пакетов для ускорения apt-get install
   # Доступ: http://<build-machine-ip>:3142
   apt-cacher-ng:
-    image: sameersbn/apt-cacher-ng:3.7.4-20200505
+    image: sameersbn/apt-cacher-ng:latest
     container_name: build-apt-cache
     network_mode: host
     volumes:

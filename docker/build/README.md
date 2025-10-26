@@ -396,12 +396,42 @@ tar -czf registry-backup-$(date +%Y%m%d).tar.gz data/registry/
 docker logs build-github-runner
 
 # Частые причины:
-# 1. Неверный GITHUB_TOKEN
+# 1. Не настроен .env.secrets файл
+#    → Скопируйте .env.secrets.example в .env.secrets
+#    → Добавьте GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO
+# 2. Неверный GITHUB_TOKEN
 #    → Проверьте .env.secrets, убедитесь что токен валиден
-# 2. Неверные GITHUB_OWNER/GITHUB_REPO
+#    → Токен должен иметь права: repo, workflow
+# 3. Неверные GITHUB_OWNER/GITHUB_REPO
 #    → Проверьте названия в .env.secrets
-# 3. Runner уже зарегистрирован
+# 4. Runner уже зарегистрирован
 #    → GitHub Settings → Actions → Runners → удалите старый runner
+
+# Если runner не нужен сейчас, можно остановить:
+docker stop build-github-runner
+# Остальные сервисы (registry, apt-cache) будут работать
+```
+
+### APT Cache постоянно перезапускается
+
+**Проблема:** `build-apt-cache` контейнер в статусе "Restarting"
+
+**Решение:**
+```bash
+# Проверьте логи
+docker logs build-apt-cache
+
+# Частые причины:
+# 1. Старая версия образа несовместима с системой
+#    → Используйте latest версию (уже обновлено в docker-compose.yaml)
+# 2. Проблемы с правами на директорию
+#    → sudo chown -R 1000:1000 ./data/apt-cache
+# 3. Поврежденный конфиг
+#    → Проверьте config/acng.conf на синтаксические ошибки
+
+# Пересоздать контейнер:
+docker compose down apt-cacher-ng
+docker compose up -d apt-cacher-ng
 ```
 
 ### Registry недоступен с Raspberry Pi
