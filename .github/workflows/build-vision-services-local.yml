@@ -140,15 +140,14 @@ jobs:
           # Сборка образа с APT cache
           docker buildx build \
             --platform linux/arm64 \
-            --context docker/vision \
             --file docker/vision/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=${BASE_IMAGE}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
-
+            docker/vision
+          
           echo "✅ Built $SERVICE successfully"
           echo "ghcr_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
           echo "local_tag=${LOCAL_TAG}" >> $GITHUB_OUTPUT
