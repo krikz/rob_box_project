@@ -97,7 +97,7 @@ jobs:
           
           docker buildx build \
             --platform linux/arm64 \
-            --file docker/main/robot-state-publisher/Dockerfile \
+            --file docker/main/robot_state_publisher/Dockerfile \
             --tag "ghcr.io/krikz/rob_box:robot-state-publisher-humble-local" \
             --tag "localhost:5000/krikz/rob_box:robot-state-publisher-humble-local" \
             --load \
