@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-std-msgs \
     ros-humble-sensor-msgs \
     ros-humble-ament-cmake \
+    libboost-dev \
+    libboost-thread-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаём рабочее пространство
