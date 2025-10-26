@@ -18,6 +18,8 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
   ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
+  # Локальный registry для self-hosted runners (пустая строка для GitHub Actions)
+  LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 
 jobs:
   # Определение тега Docker на основе ветки
@@ -105,9 +107,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          build-args: |
-            APT_PROXY=http://192.168.1.125:3142
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
           build-contexts: |
             docker/main/robot_state_publisher=docker/main/robot_state_publisher
 
@@ -157,6 +159,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:rtabmap
 
   # twist_mux (Velocity Command Multiplexer)
   build-twist-mux:
@@ -204,6 +208,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # micro-ROS Agent (ESP32 Sensor Hub communication)
   build-micro-ros-agent:
@@ -251,6 +257,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # ROS2 Control (VESC Motor Control)
   build-ros2-control:
@@ -300,6 +308,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # Nav2 Navigation Stack
   build-nav2:
@@ -347,6 +357,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # LSLIDAR N10 - 2D LiDAR scanner
   build-lslidar:
@@ -394,6 +406,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:pcl
 
   # Internal Dialogue Agent (Perception + Reflection)
   build-perception:
@@ -441,6 +455,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # Проверка сборки всех сервисов прошла успешно
   verify-build:

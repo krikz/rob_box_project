@@ -60,6 +60,7 @@ services:
       - /tmp:/tmp  # Для временных файлов сборки
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-1
       - RUNNER_WORKDIR=/runner/_work
@@ -85,6 +86,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-2
       - RUNNER_WORKDIR=/runner/_work
@@ -110,6 +112,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-3
       - RUNNER_WORKDIR=/runner/_work
@@ -135,6 +138,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-4
       - RUNNER_WORKDIR=/runner/_work
@@ -160,6 +164,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-5
       - RUNNER_WORKDIR=/runner/_work
@@ -185,6 +190,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-6
       - RUNNER_WORKDIR=/runner/_work
@@ -210,6 +216,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-7
       - RUNNER_WORKDIR=/runner/_work
@@ -235,6 +242,7 @@ services:
       - /tmp:/tmp
     env_file:
       - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
     environment:
       - RUNNER_NAME=rob-box-build-machine-8
       - RUNNER_WORKDIR=/runner/_work
