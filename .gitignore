@@ -5,6 +5,8 @@ __pycache__/
 *.so
 .Python
 build/
+# Allow docker/build directory (build machine infrastructure)
+!docker/build/
 develop-eggs/
 dist/
 downloads/
@@ -23,7 +25,6 @@ MANIFEST
 
 # ROS
 install/
-build/
 log/
 *.bag
 *.db3
