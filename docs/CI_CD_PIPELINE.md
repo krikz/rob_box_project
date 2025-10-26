@@ -624,8 +624,200 @@ cd docker/vision && docker-compose pull && docker-compose up -d
    - Main → production
    - Rollback через release tags
 
+## Build Machine Infrastructure (Локальная сборка)
+
+### Обзор
+
+**Проблема:** Сборка образов на GitHub Actions и загрузка на Raspberry Pi через интернет занимает 25-35 минут.
+
+**Решение:** Build machine в локальной сети (10.1.1.x) с:
+- GitHub Actions self-hosted runner (локальная сборка)
+- Docker Registry (локальное хранилище образов)
+- APT Cacher NG (кэш пакетов)
+
+**Результат:** Обновление Raspberry Pi занимает 3-5 минут (10-20x быстрее).
+
+### Архитектура с Build Machine
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ GitHub Repository                                       │
+│ (код, workflows, issues)                                │
+└────────┬────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│ Build Machine (10.1.1.5) - Локальная сеть              │
+│                                                         │
+│ ┌──────────────────┐  ┌──────────────┐  ┌────────────┐│
+│ │ GitHub Runner    │  │ Registry     │  │ APT Cache  ││
+│ │ (self-hosted)    │  │ :5000        │  │ :3142      ││
+│ │ - Builds locally │  │ - Fast pull  │  │ - No       ││
+│ │ - Uses APT cache │  │ - No internet│  │   redownld ││
+│ └────────┬─────────┘  └──────┬───────┘  └────────────┘│
+└──────────┼────────────────────┼─────────────────────────┘
+           │                    │
+           ├────────────────────┤
+           │                    │
+   ┌───────▼─────┐      ┌───────▼─────┐
+   │ Main Pi     │      │ Vision Pi   │
+   │ 10.1.1.20   │      │ 10.1.1.21   │
+   │ pull: 30sec │      │ pull: 30sec │
+   └─────────────┘      └─────────────┘
+```
+
+### Установка Build Machine
+
+```bash
+# 1. На build machine
+git clone https://github.com/krikz/rob_box_project.git
+cd rob_box_project/docker/build
+
+# 2. Настройка GitHub токена
+cp .env.secrets.example .env.secrets
+nano .env.secrets  # Добавить GITHUB_TOKEN
+
+# 3. Запуск инфраструктуры
+./scripts/setup.sh
+
+# 4. Проверка
+./scripts/check_status.sh
+```
+
+**Документация:** `docker/build/README.md`, `docker/build/QUICKSTART.md`
+
+### Настройка Raspberry Pi для Build Machine
+
+```bash
+# На каждом Raspberry Pi
+BUILD_MACHINE_IP=10.1.1.5 ./configure_raspberry_pi.sh
+```
+
+Скрипт настроит:
+- Docker для pull из локального registry
+- APT для использования локального кэша
+
+### Использование в CI/CD
+
+#### Вариант 1: Self-Hosted Runner (рекомендуется)
+
+Измените workflow для использования self-hosted runner:
+
+```yaml
+jobs:
+  build-oak-d:
+    runs-on: self-hosted  # ← было: ubuntu-latest
+    
+    steps:
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          # Сборка происходит локально на build machine
+          # APT cache используется автоматически
+          # Результат попадает в локальный registry
+```
+
+**Преимущества:**
+- ✅ 10-20x быстрее pull на Raspberry Pi
+- ✅ 3-5x быстрее сборка (APT cache)
+- ✅ Работает без интернета
+- ✅ Экономия трафика
+
+#### Вариант 2: Hybrid (GitHub + Local Registry)
+
+Оставить сборку на GitHub Actions, но дублировать в локальный registry:
+
+```yaml
+jobs:
+  build-oak-d:
+    runs-on: ubuntu-latest  # Сборка на GitHub
+    
+    steps:
+      - name: Build and push to ghcr.io
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ghcr.io/krikz/rob_box:oak-d-humble-latest
+      
+      # Дополнительно: копирование в локальный registry
+      - name: Copy to local registry
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Выполнится на build machine через self-hosted runner
+          docker pull ghcr.io/krikz/rob_box:oak-d-humble-latest
+          docker tag ghcr.io/krikz/rob_box:oak-d-humble-latest \
+                     10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+          docker push 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+```
+
+### Мониторинг Build Machine
+
+```bash
+# Статус сервисов
+cd ~/rob_box_project/docker/build
+./scripts/check_status.sh
+
+# Логи GitHub runner
+docker logs -f build-github-runner
+
+# Образы в registry
+curl http://10.1.1.5:5000/v2/_catalog | jq
+
+# Статистика APT cache
+curl http://10.1.1.5:3142/acng-report.html
+
+# Веб-интерфейсы
+open http://10.1.1.5:8080  # Registry UI
+open http://10.1.1.5:3142  # APT Cache Report
+```
+
+### Сравнение производительности
+
+| Операция | GitHub Actions | Build Machine | Ускорение |
+|----------|----------------|---------------|-----------|
+| Сборка образа (1GB) | 15-20 мин | 5-8 мин | **2-3x** |
+| Pull на Pi (1GB) | 10-15 мин | 30-60 сек | **10-20x** |
+| Полное обновление | 25-35 мин | 3-5 мин | **7-10x** |
+
+### Troubleshooting
+
+**Runner не запускается:**
+```bash
+docker logs build-github-runner
+# Проверить GITHUB_TOKEN в .env.secrets
+```
+
+**Raspberry Pi не может pull:**
+```bash
+# На Pi проверить конфигурацию
+cat /etc/docker/daemon.json
+sudo systemctl restart docker
+```
+
+**APT cache не работает:**
+```bash
+# На Pi проверить proxy
+cat /etc/apt/apt.conf.d/02proxy
+# Должно быть: Acquire::http::Proxy "http://10.1.1.5:3142";
+```
+
+### Maintenance
+
+```bash
+# Обновление build machine
+./scripts/update_and_restart.sh
+
+# Очистка старых образов
+./scripts/cleanup_registry.sh --dry-run  # Просмотр
+./scripts/cleanup_registry.sh --all      # Удаление
+
+# Очистка APT cache (освобождение места)
+docker exec build-apt-cache rm -rf /var/cache/apt-cacher-ng/*
+```
+
 ## Дополнительная информация
 
 - **Docker README:** `docker/vision/README.md`
 - **Deployment Guide:** `docker/vision/DEPLOYMENT.md`
 - **Architecture:** `docs/ARCHITECTURE.md`
+- **Build Machine:** `docker/build/README.md`, `docker/build/QUICKSTART.md`

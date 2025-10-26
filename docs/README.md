@@ -46,6 +46,7 @@
 **Development Guides**
 - [**AGENT_GUIDE.md**](development/AGENT_GUIDE.md) ⭐ - Руководство для AI агентов
 - [**DOCKER_STANDARDS.md**](development/DOCKER_STANDARDS.md) - Стандарты Docker
+- [**BUILD_MACHINE**](../docker/build/README.md) 🆕 ⭐ - Локальная инфраструктура сборки (октябрь 2025)
 - [**PYTHON_STYLE_GUIDE.md**](development/PYTHON_STYLE_GUIDE.md) - Python coding standards
 - [**BUILD_OPTIMIZATION.md**](development/BUILD_OPTIMIZATION.md) - Оптимизация сборки
 - [**LOCAL_BUILD.md**](development/LOCAL_BUILD.md) - Локальная сборка Docker
@@ -83,7 +84,7 @@
 
 ### ⚙️ Другие документы
 
-- [**CI_CD_PIPELINE.md**](CI_CD_PIPELINE.md) - CI/CD конвейер
+- [**CI_CD_PIPELINE.md**](CI_CD_PIPELINE.md) - CI/CD конвейер и Build Machine
 - [**MONITORING_QUICK_REF.md**](MONITORING_QUICK_REF.md) - 🆕 Краткая справка по мониторингу (октябрь 2025)
 - [**WORKFLOW_CHANGES.md**](WORKFLOW_CHANGES.md) - 🆕 Изменения в workflow (октябрь 2025)
 - [**DOCKER_TAG_MANAGEMENT.md**](DOCKER_TAG_MANAGEMENT.md) - Управление тегами Docker
