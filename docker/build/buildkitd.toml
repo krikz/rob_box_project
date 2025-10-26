@@ -1,0 +1,20 @@
+# BuildKit daemon configuration для использования APT cache
+# Настройка APT прокси для всех сборок
+
+[worker.oci]
+  # Настройка для использования APT кэша
+  gc = true
+  gckeepstorage = 9000  # 9GB в MB
+  
+  [[worker.oci.gcpolicy]]
+    keepBytes = 536870912  # 512MB
+    keepDuration = 172800  # 48 hours
+    filters = [ "type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+  
+  [[worker.oci.gcpolicy]]
+    all = true
+    keepBytes = 1073741824  # 1GB
+
+# HTTP прокси для APT
+[http]
+  # Не настраиваем HTTP прокси глобально, используем build args

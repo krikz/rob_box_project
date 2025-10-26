@@ -27,7 +27,7 @@ services:
       timeout: 5s
       retries: 3
 
-    # APT Cacher NG - кэш пакетов для ускорения apt-get install
+  # APT Cacher NG - кэш пакетов для ускорения apt-get install с поддержкой параллельных сборок
   # Доступ: http://<build-machine-ip>:3142
   apt-cacher-ng:
     image: mbentley/apt-cacher-ng:latest
@@ -35,30 +35,208 @@ services:
     network_mode: host
     volumes:
       - ./data/apt-cache:/var/cache/apt-cacher-ng
-      # Используем дефолтную конфигурацию без кастомного файла
+      - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
+      - ./data/apt-logs:/var/log/apt-cacher-ng
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3142/acng-report.html || exit 1"]
       interval: 30s
-      timeout: 5s
-      retries: 3
+      timeout: 10s
+      retries: 5
 
-  # GitHub Actions Self-Hosted Runner
+  # GitHub Actions Self-Hosted Runners (множественные для параллельной работы)
   # Регистрация: ./scripts/register_runner.sh
   # Требует: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO в .env.secrets
-  github-runner:
+  
+  # Runner 1 - основной
+  github-runner-1:
     image: myoung34/github-runner:latest
-    container_name: build-github-runner
+    container_name: build-github-runner-1
     network_mode: host
     privileged: true  # Требуется для Docker-in-Docker
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./data/runner:/runner
+      - ./data/runner1:/runner
       - /tmp:/tmp  # Для временных файлов сборки
     env_file:
       - .env.secrets
     environment:
-      - RUNNER_NAME=rob-box-build-machine
+      - RUNNER_NAME=rob-box-build-machine-1
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 2 - дополнительный
+  github-runner-2:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-2
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner2:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-2
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 3 - дополнительный
+  github-runner-3:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-3
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner3:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-3
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 4 - дополнительный
+  github-runner-4:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-4
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner4:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-4
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 5 - дополнительный
+  github-runner-5:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-5
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner5:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-5
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 6 - дополнительный
+  github-runner-6:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-6
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner6:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-6
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 7 - дополнительный
+  github-runner-7:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-7
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner7:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-7
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 8 - дополнительный
+  github-runner-8:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-8
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner8:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-8
       - RUNNER_WORKDIR=/runner/_work
       - RUNNER_GROUP=default
       - LABELS=self-hosted,Linux,X64,rob-box

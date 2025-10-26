@@ -2,6 +2,15 @@
 # Наследуется от официального образа RTAB-Map и добавляет Zenoh
 FROM introlab3it/rtabmap_ros:humble-latest
 
+# Build argument для APT кэша (опциональный)
+ARG APT_PROXY=""
+
+# Настройка APT прокси если указан
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+        echo "🔧 Using APT proxy: $APT_PROXY"; \
+    fi
+
 # Установка плагинов для сжатия изображений и Zenoh
 RUN apt-get update && \
     apt-get install -y \
@@ -10,6 +19,9 @@ RUN apt-get update && \
         ros-humble-theora-image-transport \
         ros-humble-rmw-zenoh-cpp \
         && rm -rf /var/lib/apt/lists/*
+
+# Удаляем APT прокси конфигурацию после установки пакетов
+RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Устанавливаем переменные окружения для Zenoh
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \

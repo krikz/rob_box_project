@@ -3,6 +3,15 @@
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
+# Build argument для APT кэша (опциональный)
+ARG APT_PROXY=""
+
+# Настройка APT прокси если указан
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+        echo "🔧 Using APT proxy: $APT_PROXY"; \
+    fi
+
 # Установка зависимостей для работы с облаками точек
 RUN apt-get update && \
     apt-get install -y \
@@ -20,6 +29,9 @@ RUN apt-get update && \
         libboost-system-dev \
         # Очистка кэша
         && rm -rf /var/lib/apt/lists/*
+
+# Удаляем APT прокси конфигурацию после установки пакетов
+RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Метаданные образа
 LABEL maintainer="rob_box_project" \
