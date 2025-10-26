@@ -27,17 +27,15 @@ services:
       timeout: 5s
       retries: 3
 
-  # APT Cacher NG - кэш пакетов для ускорения apt-get install
+    # APT Cacher NG - кэш пакетов для ускорения apt-get install
   # Доступ: http://<build-machine-ip>:3142
   apt-cacher-ng:
-    image: sameersbn/apt-cacher-ng:latest
+    image: mbentley/apt-cacher-ng:latest
     container_name: build-apt-cache
     network_mode: host
     volumes:
       - ./data/apt-cache:/var/cache/apt-cacher-ng
-      - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
-    environment:
-      - APT_CACHER_NG_CACHE_DIR=/var/cache/apt-cacher-ng
+      # Используем дефолтную конфигурацию без кастомного файла
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3142/acng-report.html || exit 1"]
