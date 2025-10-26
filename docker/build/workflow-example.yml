@@ -1,0 +1,99 @@
+# Example GitHub Actions workflow using self-hosted runner
+# This is a REFERENCE file showing how to modify existing workflows
+# DO NOT use this directly - update existing workflows instead
+
+name: Build on Self-Hosted Runner (EXAMPLE)
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  LOCAL_REGISTRY: 10.1.1.5:5000  # Update with your build machine IP
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  build-example:
+    # CHANGE 1: Use self-hosted runner instead of ubuntu-latest
+    runs-on: self-hosted
+    # Or more specifically:
+    # runs-on: [self-hosted, Linux, X64, rob-box]
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # CHANGE 2: For x86_64 build machine, setup QEMU and Buildx
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=example-service-${{ env.ROS_DISTRO }}-latest
+
+      - name: Build Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/vision/oak-d
+          file: docker/vision/oak-d/Dockerfile
+          platforms: linux/arm64  # Cross-compile for Raspberry Pi
+          push: false  # Don't push to ghcr.io yet
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # CHANGE 2: Use APT cache from build machine
+          build-args: |
+            APT_PROXY=http://localhost:3142
+          load: false  # Can't load cross-compiled image on x86_64
+
+      # CHANGE 3: Push to both local registry and ghcr.io
+      - name: Push to local registry
+        run: |
+          # Tag for local registry
+          LOCAL_TAG="${{ env.LOCAL_REGISTRY }}/krikz/rob_box:example-service-${{ env.ROS_DISTRO }}-latest"
+          docker tag ${{ steps.meta.outputs.tags }} $LOCAL_TAG
+          
+          # Push to local registry (insecure)
+          docker push $LOCAL_TAG
+          
+          echo "✅ Image available locally at: $LOCAL_TAG"
+
+      - name: Push to GitHub Container Registry
+        run: |
+          docker push ${{ steps.meta.outputs.tags }}
+          echo "✅ Image pushed to ghcr.io"
+
+      # CHANGE 4: Notify Raspberry Pis to update (optional)
+      - name: Trigger update on Raspberry Pis
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Main Pi
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 \
+            'cd ~/rob_box_project/docker/main && ./update_and_restart.sh' || true
+          
+          # Vision Pi
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            'cd ~/rob_box_project/docker/vision && ./update_and_restart.sh' || true

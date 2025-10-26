@@ -38,11 +38,20 @@
 - **[Руководство для AI агентов](docs/development/AGENT_GUIDE.md)** ⭐ Критически важно!
 - **[Стандарты Docker](docs/development/DOCKER_STANDARDS.md)** - Правила работы с Docker
 - **[Оптимизация сборки](docs/development/BUILD_OPTIMIZATION.md)** - Ускорение разработки
+- **[Build Machine](docker/build/README.md)** ⭐ - Локальная инфраструктура сборки (10-20x быстрее)
+- **[CI/CD Pipeline](docs/CI_CD_PIPELINE.md)** - Автоматизация сборки и деплоя
 - **[Contributing](CONTRIBUTING.md)** - Как участвовать в проекте
 
 📂 **[Полная документация](docs/README.md)** - Структурированный каталог всей документации
 
 ## ⚡ Последние изменения
+
+**26 октября 2025** - Build Machine Infrastructure:
+- 🚀 **Build Machine** - Локальная инфраструктура для сборки Docker образов
+- ⚡ **10-20x быстрее** - обновление Raspberry Pi с 25-35 мин до 3-5 мин
+- 🗄️ **Локальный Registry** - Docker образы хранятся в локальной сети
+- 📦 **APT Cache** - кэширование пакетов ускоряет сборку в 3-5 раз
+- 🤖 **Self-hosted Runner** - GitHub Actions выполняются локально
 
 **24 октября 2025** - Крупные улучшения системы:
 - ✅ **Система мониторинга** - Grafana, Prometheus, Loki для наблюдения за роботом

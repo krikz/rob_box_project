@@ -1,0 +1,166 @@
+name: Build All Services (Self-Hosted Simple)
+
+# Упрощенная локальная сборка всех сервисов на self-hosted runner
+on:
+  workflow_dispatch:  # Ручной запуск
+    inputs:
+      build_base_images:
+        description: 'Build base images first'
+        required: false
+        default: 'false'
+        type: boolean
+      services_to_build:
+        description: 'Services to build (basic/all/custom)'
+        required: false
+        default: 'basic'
+        type: choice
+        options:
+        - basic
+        - all
+        - custom
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  # Сборка базовых образов (если нужно)
+  build-base-images:
+    runs-on: self-hosted
+    if: github.event.inputs.build_base_images == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ros2-zenoh base image
+        run: |
+          echo "🏗️ Building ros2-zenoh base image..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --context docker/base \
+            --file docker/base/Dockerfile.ros2-zenoh \
+            --tag "ghcr.io/krikz/rob_box_base:ros2-zenoh-latest" \
+            --tag "localhost:5000/krikz/rob_box_base:ros2-zenoh-latest" \
+            --load \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
+          echo "✅ ros2-zenoh base image ready"
+
+      - name: Build depthai base image
+        run: |
+          echo "🏗️ Building depthai base image..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --context docker/base \
+            --file docker/base/Dockerfile.depthai \
+            --tag "ghcr.io/krikz/rob_box_base:depthai-latest" \
+            --tag "localhost:5000/krikz/rob_box_base:depthai-latest" \
+            --load \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          docker push localhost:5000/krikz/rob_box_base:depthai-latest
+          echo "✅ depthai base image ready"
+
+  # Main Pi сервисы
+  build-main-services:
+    needs: build-base-images
+    runs-on: self-hosted
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build rtabmap service
+        run: |
+          echo "🔨 Building rtabmap service..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --context docker/main \
+            --file docker/main/rtabmap/Dockerfile \
+            --tag "ghcr.io/krikz/rob_box:rtabmap-humble-local" \
+            --tag "localhost:5000/krikz/rob_box:rtabmap-humble-local" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          docker push localhost:5000/krikz/rob_box:rtabmap-humble-local
+          echo "✅ rtabmap service ready"
+
+      - name: Build robot-state-publisher service
+        run: |
+          echo "🔨 Building robot-state-publisher service..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --context docker/main \
+            --file docker/main/robot-state-publisher/Dockerfile \
+            --tag "ghcr.io/krikz/rob_box:robot-state-publisher-humble-local" \
+            --tag "localhost:5000/krikz/rob_box:robot-state-publisher-humble-local" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          docker push localhost:5000/krikz/rob_box:robot-state-publisher-humble-local
+          echo "✅ robot-state-publisher service ready"
+
+  # Vision Pi сервисы
+  build-vision-services:
+    needs: build-base-images
+    runs-on: self-hosted
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build oak-d service
+        run: |
+          echo "🎥 Building oak-d service..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --context docker/vision \
+            --file docker/vision/oak-d/Dockerfile \
+            --tag "ghcr.io/krikz/rob_box:oak-d-humble-local" \
+            --tag "localhost:5000/krikz/rob_box:oak-d-humble-local" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          docker push localhost:5000/krikz/rob_box:oak-d-humble-local
+          echo "✅ oak-d service ready"
+
+  # Итоговая сводка
+  summary:
+    needs: [build-base-images, build-main-services, build-vision-services]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Local Build Complete!"
+          echo ""
+          echo "📊 Build Results:"
+          echo "  Base Images: ${{ needs.build-base-images.result }}"
+          echo "  Main Services: ${{ needs.build-main-services.result }}"
+          echo "  Vision Services: ${{ needs.build-vision-services.result }}"
+          echo ""
+          echo "📦 Local Registry Contents:"
+          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read repo; do
+            echo "  📁 $repo"
+            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read tag; do
+              echo "    🏷️ $tag"
+            done
+          done
+          
+          echo ""
+          echo "🚀 Next: On Raspberry Pi, set IMAGE_TAG=local and pull from 10.1.1.5:5000"

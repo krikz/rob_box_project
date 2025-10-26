@@ -1,0 +1,107 @@
+# Build Machine Docker Compose Configuration
+# Локальная инфраструктура для сборки Docker образов в локальной сети
+#
+# Компоненты:
+# - GitHub Actions self-hosted runner - выполняет workflow локально
+# - Docker Registry - локальное хранилище Docker образов
+# - apt-cacher-ng - кэш APT пакетов для ускорения сборки
+# - Portainer - опциональный веб-интерфейс для управления контейнерами
+
+services:
+  # Docker Registry - локальное хранилище образов
+  # Доступ: http://<build-machine-ip>:5000
+  registry:
+    image: registry:2.8.3
+    container_name: build-registry
+    network_mode: host
+    volumes:
+      - ./data/registry:/var/lib/registry
+      - ./config/registry-config.yml:/etc/docker/registry/config.yml:ro
+    environment:
+      - REGISTRY_HTTP_ADDR=0.0.0.0:5000
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/v2/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+    # APT Cacher NG - кэш пакетов для ускорения apt-get install
+  # Доступ: http://<build-machine-ip>:3142
+  apt-cacher-ng:
+    image: mbentley/apt-cacher-ng:latest
+    container_name: build-apt-cache
+    network_mode: host
+    volumes:
+      - ./data/apt-cache:/var/cache/apt-cacher-ng
+      # Используем дефолтную конфигурацию без кастомного файла
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3142/acng-report.html || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # GitHub Actions Self-Hosted Runner
+  # Регистрация: ./scripts/register_runner.sh
+  # Требует: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO в .env.secrets
+  github-runner:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner
+    network_mode: host
+    privileged: true  # Требуется для Docker-in-Docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner:/runner
+      - /tmp:/tmp  # Для временных файлов сборки
+    env_file:
+      - .env.secrets
+    environment:
+      - RUNNER_NAME=rob-box-build-machine
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Portainer - опциональный веб-интерфейс для управления
+  # Доступ: http://<build-machine-ip>:9000
+  # Отключен по умолчанию, раскомментируйте для использования
+  # portainer:
+  #   image: portainer/portainer-ce:latest
+  #   container_name: build-portainer
+  #   network_mode: host
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - portainer-data:/data
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -qO- http://localhost:9000/api/status || exit 1"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+
+  # Docker Registry UI - веб-интерфейс для просмотра образов в registry
+  # Доступ: http://<build-machine-ip>:8080
+  registry-ui:
+    image: joxit/docker-registry-ui:latest
+    container_name: build-registry-ui
+    network_mode: host
+    environment:
+      - REGISTRY_TITLE=Rob Box Local Registry
+      - REGISTRY_URL=http://localhost:5000
+      - DELETE_IMAGES=true
+      - SHOW_CONTENT_DIGEST=true
+      - SINGLE_REGISTRY=true
+    restart: unless-stopped
+    depends_on:
+      - registry
+
+volumes:
+  portainer-data:
