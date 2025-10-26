@@ -134,4 +134,4 @@ This fixes: "Could NOT find Boost (missing: Boost_INCLUDE_DIR thread)" error.
 
 ## References
 - Failed run: https://github.com/krikz/rob_box_project/actions/runs/18818952962
-- Fix commit: 4798405
+- Fix commit: 47984054e69bf26877f6ee8b76d3d2169481b89d
