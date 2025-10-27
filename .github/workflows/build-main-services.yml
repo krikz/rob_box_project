@@ -18,8 +18,13 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
   ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
-  # Локальный registry для self-hosted runners (пустая строка для GitHub Actions)
-  LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
+  # Локальный registry для self-hosted runners - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
+  # LOCAL_BASE_REGISTRY устанавливается только в self-hosted jobs индивидуально
+  LOCAL_BASE_REGISTRY: ""
+  # IP адрес и порт локального registry для self-hosted runners
+  # Изменить при необходимости переноса на другой сервер
+  SELF_HOSTED_REGISTRY_HOST: 192.168.1.125:5000
+  SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base
 
 jobs:
   # Определение тега Docker на основе ветки
@@ -267,6 +272,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
 
     steps:
       - name: Checkout repository
@@ -416,6 +423,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
 
     steps:
       - name: Checkout repository

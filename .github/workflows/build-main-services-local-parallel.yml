@@ -49,7 +49,7 @@ jobs:
           else
             DOCKER_TAG="dev"
           fi
-          
+
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "local_registry=${LOCAL_REGISTRY}" >> $GITHUB_OUTPUT
 
@@ -74,11 +74,11 @@ jobs:
           SERVICE="rtabmap"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           echo "Building ${SERVICE}..."
           echo "GHCR Tag: ${GHCR_TAG}"
           echo "Local Tag: ${LOCAL_TAG}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -86,8 +86,8 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap" \
-            docker/main
-          
+            .
+
           echo "✅ Built ${SERVICE} successfully"
 
   build-robot-state-publisher:
@@ -110,11 +110,11 @@ jobs:
           SERVICE="robot_state_publisher"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           echo "Building ${SERVICE}..."
           echo "GHCR Tag: ${GHCR_TAG}"
           echo "Local Tag: ${LOCAL_TAG}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -122,8 +122,8 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
-            docker/main
-          
+            .
+
           echo "✅ Built ${SERVICE} successfully"
 
   build-lslidar:
@@ -146,11 +146,11 @@ jobs:
           SERVICE="lslidar"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           echo "Building ${SERVICE}..."
           echo "GHCR Tag: ${GHCR_TAG}"
           echo "Local Tag: ${LOCAL_TAG}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -158,8 +158,8 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:pcl" \
-            docker/main
-          
+            .
+
           echo "✅ Built ${SERVICE} successfully"
 
   build-perception:
@@ -182,11 +182,11 @@ jobs:
           SERVICE="perception"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           echo "Building ${SERVICE}..."
           echo "GHCR Tag: ${GHCR_TAG}"
           echo "Local Tag: ${LOCAL_TAG}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -194,8 +194,8 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
-            docker/main
-          
+            .
+
           echo "✅ Built ${SERVICE} successfully"
 
   build-nav2:
@@ -218,11 +218,11 @@ jobs:
           SERVICE="nav2"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           echo "Building ${SERVICE}..."
           echo "GHCR Tag: ${GHCR_TAG}"
           echo "Local Tag: ${LOCAL_TAG}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -230,8 +230,8 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
-            docker/main
-          
+            .
+
           echo "✅ Built ${SERVICE} successfully"
 
   build-ros2-control:
@@ -254,11 +254,11 @@ jobs:
           SERVICE="ros2_control"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           echo "Building ${SERVICE}..."
           echo "GHCR Tag: ${GHCR_TAG}"
           echo "Local Tag: ${LOCAL_TAG}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -267,7 +267,7 @@ jobs:
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap" \
             docker/main
-          
+
           echo "✅ Built ${SERVICE} successfully"
 
 # Дополнительные сервисы можно добавить аналогично

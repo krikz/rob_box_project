@@ -120,7 +120,7 @@ jobs:
           echo "GHCR Tag: $GHCR_TAG"
           echo "Local Tag: $LOCAL_TAG"
 
-          # Сборка образа
+          # Сборка образа (контекст = корень репозитория для доступа к src/)
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -128,7 +128,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --build-arg="BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/rob_box_base:ros2-zenoh" \
-            docker/main
+            .
 
           echo "✅ Built $SERVICE successfully"
           echo "ghcr_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
