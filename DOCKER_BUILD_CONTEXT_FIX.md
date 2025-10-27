@@ -2,7 +2,7 @@
 
 **Date**: 2025-10-26  
 **Updated**: 2025-10-27
-**Issue**: GitHub Actions run #18818952962 failed with build context errors  
+**Issue**: GitHub Actions failures with build context and registry errors  
 **Status**: ✅ Fixed
 
 ## Problem Description
@@ -46,6 +46,23 @@ Affected jobs:
 - GitHub Actions cloud runners couldn't build services
 - Only self-hosted runner jobs (perception, ros2_control) would work
 - Auto-merge workflows failed completely
+
+### Issue 3: Hardcoded Configuration (Fixed 2025-10-27)
+
+**Symptoms:**
+IP address `192.168.1.125` was hardcoded in job-specific environment variables, making it difficult to change when moving to a different build server.
+
+**Root Cause:**
+```yaml
+build-perception:
+  env:
+    LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base  # Hardcoded!
+```
+
+**Impact:**
+- Difficult to maintain and update registry configuration
+- Required editing multiple places when changing server
+- Error-prone when updating configuration
 
 ## Services Affected
 
@@ -130,16 +147,19 @@ This fixes: "Could NOT find Boost (missing: Boost_INCLUDE_DIR thread)" error.
 -  LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 +  # Локальный registry - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
 +  LOCAL_BASE_REGISTRY: ""
++  # Конфигурация для self-hosted runners
++  SELF_HOSTED_REGISTRY_HOST: 192.168.1.125:5000
++  SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base
 
 +build-ros2-control:
 +  runs-on: self-hosted
 +  env:
-+    LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
++    LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
 +
 +build-perception:
 +  runs-on: self-hosted
 +  env:
-+    LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
++    LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
 ```
 
 **2. build-vision-services.yml**
@@ -151,7 +171,51 @@ This fixes: "Could NOT find Boost (missing: Boost_INCLUDE_DIR thread)" error.
 
 All vision service jobs run on ubuntu-latest, so they use ghcr.io.
 
-## Registry Usage Matrix
+### Fix 3: Configuration Refactoring (2025-10-27)
+
+**Problem:** IP addresses hardcoded in multiple job definitions.
+
+**Solution:** Extract to global environment variables.
+
+```yaml
+# At workflow level - single point of configuration
+env:
+  SELF_HOSTED_REGISTRY_HOST: 192.168.1.125:5000
+  SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base
+
+# In job definitions - composed from variables
+build-perception:
+  env:
+    LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
+```
+
+**Benefits:**
+- Single place to update registry configuration
+- Easy to change when moving to different build server
+- Clear separation of concerns
+- No duplication
+
+## Configuration Management
+
+### Changing Self-Hosted Registry Location
+
+To change the self-hosted registry location (e.g., when moving to a new build server), update these variables at the top of `build-main-services.yml`:
+
+```yaml
+env:
+  # IP адрес и порт локального registry для self-hosted runners
+  # Изменить при необходимости переноса на другой сервер
+  SELF_HOSTED_REGISTRY_HOST: 192.168.1.125:5000  # ← Change this
+  SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base  # ← And this if needed
+```
+
+**Example: Moving to a new server at 10.0.1.50:5000**
+```yaml
+SELF_HOSTED_REGISTRY_HOST: 10.0.1.50:5000
+SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base
+```
+
+All jobs using self-hosted runners will automatically use the new configuration.
 
 | Workflow Type | Runner Type | Registry Used | Configuration |
 |--------------|-------------|---------------|---------------|
@@ -234,6 +298,10 @@ build-perception:
 
 7. **Runner accessibility**: GitHub cloud runners (ubuntu-latest) cannot access private networks (192.168.x.x). Self-hosted runners can access both public (ghcr.io) and private (local registry) resources.
 
+8. **Configuration centralization**: Extract configuration values to workflow-level environment variables for easy maintenance. Use composition in job-level env vars to build complex values from simple parts.
+
+9. **Single source of truth**: Keep IP addresses and other infrastructure configuration in one place at the top of the workflow file. This makes updates easier and reduces errors.
+
 ## Related Documentation
 - [AGENT_GUIDE.md](docs/development/AGENT_GUIDE.md) - Docker architecture
 - [DOCKER_STANDARDS.md](docs/development/DOCKER_STANDARDS.md) - Docker best practices
@@ -244,3 +312,4 @@ build-perception:
 - Failed run (registry): https://github.com/krikz/rob_box_project/actions/runs/18821166593
 - Fix commit (build context): 47984054e69bf26877f6ee8b76d3d2169481b89d
 - Fix commit (registry): e442de2ffcd3c6af3de25446069484a96658ed18
+- Fix commit (configuration): a7750e700bd1501c830cb9ed25d26aff32769afb
