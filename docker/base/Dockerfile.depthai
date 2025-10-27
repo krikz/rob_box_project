@@ -2,6 +2,15 @@
 # Наследуется от официального образа Luxonis и добавляет Zenoh
 FROM luxonis/depthai-ros:humble-latest
 
+# Build argument для APT кэша (опциональный)
+ARG APT_PROXY=""
+
+# Настройка APT прокси если указан
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+        echo "🔧 Using APT proxy: $APT_PROXY"; \
+    fi
+
 # Обновляем ключ ROS 2 (может быть устаревшим в базовом образе)
 RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
     gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg
@@ -12,6 +21,9 @@ RUN apt-get update && \
         ros-humble-rmw-zenoh-cpp \
         ros-humble-compressed-depth-image-transport \
         && rm -rf /var/lib/apt/lists/*
+
+# Удаляем APT прокси конфигурацию после установки пакетов
+RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Устанавливаем переменные окружения для Zenoh
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \

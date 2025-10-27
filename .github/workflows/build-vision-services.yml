@@ -17,6 +17,9 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
   ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
+  # Локальный registry для self-hosted runners - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
+  # LOCAL_BASE_REGISTRY устанавливается только в self-hosted jobs индивидуально
+  LOCAL_BASE_REGISTRY: ""
 
 jobs:
   # Определение тега Docker на основе ветки
@@ -107,6 +110,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          build-args: |
+            APT_PROXY=http://192.168.1.125:3142
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:depthai
           cache-to: type=gha,mode=max
 
   # LED Matrix System
@@ -157,6 +163,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # Ceiling Camera (USB UVC)
   build-ceiling-camera:
@@ -251,6 +259,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # Проверка сборки всех сервисов прошла успешно
   verify-build:
