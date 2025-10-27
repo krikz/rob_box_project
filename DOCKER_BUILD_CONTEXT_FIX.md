@@ -1,12 +1,15 @@
 # Docker Build Context Fix for Local Runner Workflows
 
 **Date**: 2025-10-26  
+**Updated**: 2025-10-27
 **Issue**: GitHub Actions run #18818952962 failed with build context errors  
 **Status**: ✅ Fixed
 
 ## Problem Description
 
-### Symptoms
+### Issue 1: Build Context Mismatch (Fixed 2025-10-26)
+
+**Symptoms:**
 Local runner workflows (`build-main-services-local.yml`, `build-vision-services-local.yml`, `build-main-services-local-parallel.yml`) were failing with errors:
 
 ```
@@ -15,13 +18,34 @@ failed to calculate checksum of ref ...: "/src/...": not found
 
 Build logs showed very small context transfers (e.g., "transferring context: 2B done"), indicating incorrect build context.
 
-### Root Cause
-
-**Inconsistent Build Context**:
+**Root Cause:**
 - **GitHub Actions workflows** (correct): Used `context: .` (repository root)
 - **Local runner workflows** (incorrect): Used `context: docker/main` or `context: docker/vision`
 
-**Impact**: Dockerfiles with `COPY src/...` commands could not access the source code because the build context was limited to the docker subdirectory.
+**Impact:** Dockerfiles with `COPY src/...` commands could not access the source code because the build context was limited to the docker subdirectory.
+
+### Issue 2: Registry Configuration Error (Fixed 2025-10-27)
+
+**Symptoms:**
+GitHub Actions builds failing with timeout errors:
+
+```
+ERROR: failed to do request: Head "https://192.168.1.125:5000/v2/krikz/rob_box_base/manifests/rtabmap": dial tcp 192.168.1.125:5000: i/o timeout
+```
+
+Affected jobs:
+- build-rtabmap
+- build-lslidar
+- build-nav2
+- build-robot-state-publisher
+
+**Root Cause:**
+`LOCAL_BASE_REGISTRY=192.168.1.125:5000/krikz/rob_box_base` was set globally in workflow `env` section. This caused ALL jobs (including GitHub cloud runners on ubuntu-latest) to try accessing the local registry, which is not reachable from GitHub's infrastructure.
+
+**Impact:** 
+- GitHub Actions cloud runners couldn't build services
+- Only self-hosted runner jobs (perception, ros2_control) would work
+- Auto-merge workflows failed completely
 
 ## Services Affected
 
@@ -54,19 +78,21 @@ Services that don't need root context:
 
 ## Changes Made
 
-### 1. build-main-services-local.yml
+### Fix 1: Build Context (2025-10-26)
+
+**1. build-main-services-local.yml**
 ```diff
 - docker buildx build ... docker/main
 + docker buildx build ... .
 ```
 
-### 2. build-vision-services-local.yml
+**2. build-vision-services-local.yml**
 ```diff
 - docker buildx build ... docker/vision
 + docker buildx build ... .
 ```
 
-### 3. build-main-services-local-parallel.yml
+**3. build-main-services-local-parallel.yml**
 Fixed all 6 build jobs:
 - rtabmap
 - robot_state_publisher
@@ -77,7 +103,7 @@ Fixed all 6 build jobs:
 
 Changed context from `docker/main` to `.` in all occurrences.
 
-### 4. docker/main/lslidar/Dockerfile
+**4. docker/main/lslidar/Dockerfile**
 Added missing Boost dependencies:
 ```diff
  RUN apt-get update && apt-get install -y \
@@ -89,18 +115,93 @@ Added missing Boost dependencies:
 
 This fixes: "Could NOT find Boost (missing: Boost_INCLUDE_DIR thread)" error.
 
-## Verification Status
+### Fix 2: Registry Configuration (2025-10-27)
 
-### GitHub Actions Workflows
-✅ **Already correct** - No changes needed:
-- `build-main-services.yml` - Uses `context: .` for services that need it
-- `build-vision-services.yml` - Uses `context: .` for services that need it
+**Problem:** `LOCAL_BASE_REGISTRY` was set globally, affecting all runners.
 
-### Local Runner Workflows
-✅ **Fixed** - Build context changed to repository root:
-- `build-main-services-local.yml`
-- `build-vision-services-local.yml`
-- `build-main-services-local-parallel.yml`
+**Solution:** Separate registry configuration by runner type.
+
+**1. build-main-services.yml**
+```diff
+ env:
+   REGISTRY: ghcr.io
+   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+   ROS_DISTRO: humble
+-  LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
++  # Локальный registry - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
++  LOCAL_BASE_REGISTRY: ""
+
++build-ros2-control:
++  runs-on: self-hosted
++  env:
++    LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
++
++build-perception:
++  runs-on: self-hosted
++  env:
++    LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
+```
+
+**2. build-vision-services.yml**
+```diff
+ env:
+-  LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
++  LOCAL_BASE_REGISTRY: ""
+```
+
+All vision service jobs run on ubuntu-latest, so they use ghcr.io.
+
+## Registry Usage Matrix
+
+| Workflow Type | Runner Type | Registry Used | Configuration |
+|--------------|-------------|---------------|---------------|
+| **GitHub Actions** | ubuntu-latest | ghcr.io | `LOCAL_BASE_REGISTRY=""` (empty) |
+| **GitHub Actions** | self-hosted | 192.168.1.125:5000 | Job-specific env var |
+| **Local Workflows** | self-hosted | localhost:5000 | Workflow-specific |
+
+### How It Works
+
+**For GitHub cloud runners (ubuntu-latest):**
+```yaml
+env:
+  LOCAL_BASE_REGISTRY: ""  # Empty at workflow level
+
+build-args: |
+  BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
+  # Empty string is falsy in bash, so || fallback triggers
+  # Result: BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh ✅
+```
+
+**For self-hosted runners:**
+```yaml
+build-perception:
+  runs-on: self-hosted
+  env:
+    LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
+
+  build-args: |
+    BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
+    # Non-empty string is truthy, uses it directly
+    # Result: BASE_IMAGE=192.168.1.125:5000/krikz/rob_box_base:ros2-zenoh ✅
+```
+
+### Job Runner Assignments
+
+**Main Pi Services (build-main-services.yml):**
+- `build-rtabmap` → ubuntu-latest → ghcr.io
+- `build-robot-state-publisher` → ubuntu-latest → ghcr.io
+- `build-nav2` → ubuntu-latest → ghcr.io
+- `build-lslidar` → ubuntu-latest → ghcr.io
+- `build-twist-mux` → ubuntu-latest → ghcr.io
+- `build-micro-ros-agent` → ubuntu-latest → ghcr.io
+- `build-ros2-control` → **self-hosted** → 192.168.1.125:5000
+- `build-perception` → **self-hosted** → 192.168.1.125:5000
+
+**Vision Pi Services (build-vision-services.yml):**
+- `build-oak-d` → ubuntu-latest → ghcr.io
+- `build-led-matrix` → ubuntu-latest → ghcr.io
+- `build-ceiling-camera` → ubuntu-latest → ghcr.io
+- `build-voice-assistant` → ubuntu-latest → ghcr.io
 
 ## Testing Recommendations
 
@@ -127,11 +228,19 @@ This fixes: "Could NOT find Boost (missing: Boost_INCLUDE_DIR thread)" error.
 
 4. **Base images vs service images**: Base images (rtabmap, depthai, pcl) don't need source code. Service images that build ROS packages need access to `src/`.
 
+5. **Registry access boundaries**: Environment variables set at workflow level affect ALL jobs. Use job-specific env vars to separate behavior between GitHub cloud runners and self-hosted runners.
+
+6. **Empty string fallback**: In GitHub Actions expressions, empty string `""` is falsy, allowing `||` fallback to work. Non-empty strings (even with spaces) are truthy and bypass the fallback.
+
+7. **Runner accessibility**: GitHub cloud runners (ubuntu-latest) cannot access private networks (192.168.x.x). Self-hosted runners can access both public (ghcr.io) and private (local registry) resources.
+
 ## Related Documentation
 - [AGENT_GUIDE.md](docs/development/AGENT_GUIDE.md) - Docker architecture
 - [DOCKER_STANDARDS.md](docs/development/DOCKER_STANDARDS.md) - Docker best practices
 - [IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md](IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md) - Local registry setup
 
 ## References
-- Failed run: https://github.com/krikz/rob_box_project/actions/runs/18818952962
-- Fix commit: 47984054e69bf26877f6ee8b76d3d2169481b89d
+- Failed run (build context): https://github.com/krikz/rob_box_project/actions/runs/18818952962
+- Failed run (registry): https://github.com/krikz/rob_box_project/actions/runs/18821166593
+- Fix commit (build context): 47984054e69bf26877f6ee8b76d3d2169481b89d
+- Fix commit (registry): e442de2ffcd3c6af3de25446069484a96658ed18
