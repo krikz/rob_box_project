@@ -2,7 +2,25 @@
 
 **Date:** 2025-10-28  
 **Issue:** Setup APT Cacher NG configuration for build machine  
-**Status:** ✅ Complete
+**Status:** ✅ Complete  
+**Update:** 2025-10-28 - Fixed version compatibility issue
+
+---
+
+## ⚠️ Important Update (2025-10-28)
+
+**Version Compatibility Fix:**
+
+Директивы `PHttpThreads`, `ConnectTimeout`, и `NetworkTimeout` были закомментированы в `acng.conf`, так как они доступны только в apt-cacher-ng версии 3.8+, а используемый Docker образ `mbentley/apt-cacher-ng:latest` содержит версию 3.7.5.
+
+**Последствия:**
+- ✅ APT cacher больше не падает при старте
+- ⚠️ Параллельные сборки используют дефолтные настройки (менее оптимально)
+- ⚠️ Таймауты могут быть недостаточны для медленных ARM64 QEMU сборок
+
+**Решение для будущего:**
+- Обновить Docker образ до версии с apt-cacher-ng 3.8+
+- Раскомментировать директивы в `acng.conf` после обновления
 
 ---
 
