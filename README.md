@@ -37,6 +37,8 @@
 ### 🔧 Для разработчиков
 - **[Руководство для AI агентов](docs/development/AGENT_GUIDE.md)** ⭐ Критически важно!
 - **[Стандарты Docker](docs/development/DOCKER_STANDARDS.md)** - Правила работы с Docker
+- **[Тестирование на x86_64](docker/test/QUICKSTART.md)** ⭐ НОВОЕ! - Разработка без Raspberry Pi
+- **[ARM64 эмуляция](docs/development/ARM64_EMULATION_ON_X86.md)** - QEMU для запуска ARM64 на x86_64
 - **[Оптимизация сборки](docs/development/BUILD_OPTIMIZATION.md)** - Ускорение разработки
 - **[Build Machine](docker/build/README.md)** ⭐ - Локальная инфраструктура сборки (10-20x быстрее)
 - **[CI/CD Pipeline](docs/CI_CD_PIPELINE.md)** - Автоматизация сборки и деплоя
@@ -45,6 +47,13 @@
 📂 **[Полная документация](docs/README.md)** - Структурированный каталог всей документации
 
 ## ⚡ Последние изменения
+
+**28 октября 2025** - x86_64 Test Environment:
+- 🧪 **Тестирование на x86_64** - Полноценное тестовое окружение без Raspberry Pi
+- 🚀 **ARM64 эмуляция** - Запуск всех сервисов через QEMU на AMD64 машинах
+- 📊 **Smoke testing** - Автоматическая проверка всех ROS2 топиков
+- 🔍 **Мониторинг** - Скрипты для проверки здоровья сервисов
+- 📚 **Документация** - Полное руководство по использованию QEMU emulation
 
 **26 октября 2025** - Build Machine Infrastructure:
 - 🚀 **Build Machine** - Локальная инфраструктура для сборки Docker образов
