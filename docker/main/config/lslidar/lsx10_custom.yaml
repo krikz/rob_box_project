@@ -19,7 +19,7 @@
     scan_topic: /scan                       # Topic для LaserScan сообщений
     interface_selection: serial             # SERIAL интерфейс (не network)
     serial_port_: /dev/ttyACM0              # USB CDC ACM устройство на Vision Pi
-    high_reflection: false                  
+    high_reflection: false
     compensation: false                     # Компенсация угла
     pubScan: true                           # Публикуем LaserScan для навигации
     pubPointCloud2: false                   # Отключаем PointCloud2 для экономии bandwidth

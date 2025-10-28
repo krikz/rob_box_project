@@ -61,17 +61,18 @@ jobs:
           SERVICE="oak-d"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -91,17 +92,18 @@ jobs:
           SERVICE="led_matrix"
           GHCR_TAG="${IMAGE_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -121,17 +123,18 @@ jobs:
           SERVICE="ceiling-camera"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -151,17 +154,18 @@ jobs:
           SERVICE="voice_assistant"
           GHCR_TAG="${IMAGE_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi

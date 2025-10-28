@@ -35,16 +35,17 @@ jobs:
       - name: Build ros2-zenoh base image
         run: |
           echo "🏗️ Building ros2-zenoh base image..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.ros2-zenoh \
             --tag "ghcr.io/krikz/rob_box_base:ros2-zenoh-latest" \
             --tag "localhost:5000/krikz/rob_box_base:ros2-zenoh-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-          
+
           if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
             docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
           fi
@@ -53,16 +54,17 @@ jobs:
       - name: Build rtabmap base image
         run: |
           echo "🏗️ Building rtabmap base image..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.rtabmap \
             --tag "ghcr.io/krikz/rob_box_base:rtabmap-latest" \
             --tag "localhost:5000/krikz/rob_box_base:rtabmap-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-          
+
           if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
             docker push localhost:5000/krikz/rob_box_base:rtabmap-latest
           fi
@@ -71,16 +73,17 @@ jobs:
       - name: Build depthai base image
         run: |
           echo "🏗️ Building depthai base image..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.depthai \
             --tag "ghcr.io/krikz/rob_box_base:depthai-latest" \
             --tag "localhost:5000/krikz/rob_box_base:depthai-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-          
+
           if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
             docker push localhost:5000/krikz/rob_box_base:depthai-latest
           fi
@@ -89,17 +92,18 @@ jobs:
       - name: Build pcl base image
         run: |
           echo "🏗️ Building pcl base image..."
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.pcl \
             --tag "ghcr.io/krikz/rob_box_base:pcl-latest" \
             --tag "localhost:5000/krikz/rob_box_base:pcl-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-          
+
           if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
             docker push localhost:5000/krikz/rob_box_base:pcl-latest
           fi
@@ -143,6 +147,6 @@ jobs:
               echo "    🏷️ $tag"
             done
           done
-          
+
           echo ""
           echo "🚀 Next: On Raspberry Pi, set IMAGE_TAG=local and pull from 10.1.1.5:5000"

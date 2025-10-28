@@ -185,3 +185,42 @@ docker buildx build ... .    # ✅ Now matches local-build.sh behavior
 ## Conclusion
 
 All local builder failures have been resolved through PR #32. The main issue was incorrect Docker build context configuration in GitHub Actions workflows. The fix aligns the workflows with the working `local-build.sh` script and ensures all services can access required source files during build.
+
+---
+
+## Update: October 28, 2025 - APT Proxy DNS Resolution Fix
+
+### New Issue Discovered
+
+After the previous fixes in PR #32, a new issue emerged when running the `[L] Build All Services` workflow:
+
+**Symptom:**
+```
+Could not resolve 'host.docker.internal'
+E: Unable to locate package ros-humble-rmw-zenoh-cpp
+```
+
+**Root Cause:**
+The workflow was passing `APT_PROXY=http://host.docker.internal:3142` as a build argument, but Docker containers on Linux with standard Docker Engine cannot resolve `host.docker.internal` by default. This is a Docker Desktop feature that doesn't work on standard Linux installations.
+
+### Resolution
+
+Added `--add-host=host.docker.internal:host-gateway` to all `docker buildx build` commands in:
+- `.github/workflows/[L] Build All Services.yml` (4 base images)
+- `.github/workflows/[L] Build Main Pi Services.yml` (8 services)
+- `.github/workflows/[L] Build Vision Pi Services.yml` (4 services)
+
+**Example fix:**
+```yaml
+docker buildx build \
+  --platform linux/arm64 \
+  --add-host=host.docker.internal:host-gateway \
+  --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+  ...
+```
+
+The `--add-host=host.docker.internal:host-gateway` flag tells Docker to automatically resolve `host.docker.internal` to the host machine's IP, enabling the APT proxy to work correctly on Linux.
+
+### Testing
+
+The fix has been committed and pushed. The workflow needs to be manually triggered to verify the build succeeds.

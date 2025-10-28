@@ -61,17 +61,18 @@ jobs:
           SERVICE="robot_state_publisher"
           GHCR_TAG="${IMAGE_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -91,17 +92,18 @@ jobs:
           SERVICE="rtabmap"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main/${SERVICE}
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -121,17 +123,18 @@ jobs:
           SERVICE="twist_mux"
           GHCR_TAG="${IMAGE_PREFIX}:twist-mux-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main/${SERVICE}
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -151,17 +154,18 @@ jobs:
           SERVICE="micro_ros_agent"
           GHCR_TAG="${IMAGE_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -181,17 +185,18 @@ jobs:
           SERVICE="ros2_control"
           GHCR_TAG="${IMAGE_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -211,17 +216,18 @@ jobs:
           SERVICE="nav2"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main/${SERVICE}
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -241,17 +247,18 @@ jobs:
           SERVICE="lslidar"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:pcl" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -271,17 +278,18 @@ jobs:
           SERVICE="perception"
           GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
-          
+
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
           fi
@@ -289,7 +297,16 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [prepare, build-robot-state-publisher, build-rtabmap, build-twist-mux, build-micro-ros-agent, build-ros2-control, build-nav2, build-lslidar, build-perception]
+    needs:
+      - prepare
+      - build-robot-state-publisher
+      - build-rtabmap
+      - build-twist-mux
+      - build-micro-ros-agent
+      - build-ros2-control
+      - build-nav2
+      - build-lslidar
+      - build-perception
     runs-on: self-hosted
     if: always()
     steps:
