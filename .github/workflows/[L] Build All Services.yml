@@ -42,6 +42,7 @@ jobs:
             --tag "ghcr.io/krikz/rob_box_base:ros2-zenoh-latest" \
             --tag "localhost:5000/krikz/rob_box_base:ros2-zenoh-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
           
@@ -60,6 +61,7 @@ jobs:
             --tag "ghcr.io/krikz/rob_box_base:rtabmap-latest" \
             --tag "localhost:5000/krikz/rob_box_base:rtabmap-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
           
@@ -78,6 +80,7 @@ jobs:
             --tag "ghcr.io/krikz/rob_box_base:depthai-latest" \
             --tag "localhost:5000/krikz/rob_box_base:depthai-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
           
@@ -96,6 +99,7 @@ jobs:
             --tag "ghcr.io/krikz/rob_box_base:pcl-latest" \
             --tag "localhost:5000/krikz/rob_box_base:pcl-latest" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base

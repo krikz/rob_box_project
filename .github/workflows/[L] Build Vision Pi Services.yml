@@ -68,6 +68,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
@@ -98,6 +99,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
@@ -128,6 +130,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
@@ -158,6 +161,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .

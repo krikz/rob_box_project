@@ -68,6 +68,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
@@ -98,6 +99,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main/${SERVICE}
@@ -128,6 +130,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main/${SERVICE}
@@ -158,6 +161,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
@@ -188,6 +192,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
@@ -218,6 +223,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main/${SERVICE}
@@ -248,6 +254,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:pcl" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/main
@@ -278,6 +285,7 @@ jobs:
             --tag "${GHCR_TAG}" \
             --tag "${LOCAL_TAG}" \
             --load \
+            --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             .
