@@ -216,15 +216,25 @@ docker buildx build --platform linux/arm64 ... --output type=docker
 docker buildx build --platform linux/arm64 ... --push  # В registry
 ```
 
-### "Could not resolve 'host.docker.internal'"
-**Проблема:** APT proxy на `host.docker.internal:3142` не резолвится на Linux
+### "Could not resolve 'host.docker.internal'" или "503 Connection closed"
+**Проблема:** APT proxy на `host.docker.internal:3142` не резолвится на Linux или недоступен
 
-**Решение:** Добавьте `--add-host=host.docker.internal:host-gateway`:
+**Решение 1 (рекомендуется):** Все Dockerfiles теперь автоматически проверяют доступность прокси:
 ```bash
 docker buildx build \
   --platform linux/arm64 \
   --add-host=host.docker.internal:host-gateway \
   --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+  ...
+```
+- Если прокси доступен → будет использован (ускорение сборки)
+- Если прокси недоступен → автоматически используется прямое подключение
+
+**Решение 2:** Собирать без прокси (медленнее):
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --build-arg="APT_PROXY=" \
   ...
 ```
 
@@ -233,4 +243,4 @@ docker buildx build \
 ---
 
 **Автор:** GitHub Copilot  
-**Дата:** 2025-10-11
+**Дата:** 2025-10-28
