@@ -47,6 +47,7 @@
 - Отсутствующие директории scripts/ в Docker volumes (24 октября 2025)
 - Дублирование запусков тестов и линтинга в CI/CD (23 октября 2025)
 - Предупреждение 'PerceptionEvent не найден' в voice-assistant (24 октября 2025)
+- Orphaned workflow build-all-local.yml - добавлен placeholder с deprecation notice (28 октября 2025)
 
 ## [0.1.0] - 2025-10-04
 

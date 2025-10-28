@@ -67,12 +67,15 @@ GitHub Actions Runner (Docker build)
 Our configuration is optimized for **8 parallel GitHub Actions runners** performing Docker builds:
 
 ```ini
+# ⚠️ NOTE: The following directives are commented out due to version compatibility
+# They require apt-cacher-ng 3.8+, but mbentley/apt-cacher-ng:latest uses 3.7.5
+# 
 # Worker threads - handle concurrent connections
-PHttpThreads: 16
-
+# PHttpThreads: 16
+#
 # Timeouts - increased for ARM64 QEMU builds
-ConnectTimeout: 120
-NetworkTimeout: 300
+# ConnectTimeout: 120
+# NetworkTimeout: 300
 
 # DNS caching - reduce DNS overhead
 DnsCacheSeconds: 3600
@@ -86,18 +89,22 @@ MaxDlSpeed: 0
 
 ### Key Configuration Choices
 
-#### 1. PHttpThreads: 16
+#### 1. PHttpThreads: 16 (Currently commented out)
 
 **Reasoning:** With 8 GitHub runners potentially building simultaneously, we need at least 8 worker threads. Setting it to 16 provides headroom for:
 - Multiple connections per build
 - Metadata requests
 - Report page access
 
-#### 2. Increased Timeouts
+**Status:** ⚠️ **Commented out** - Requires apt-cacher-ng 3.8+. Currently using default value.
+
+#### 2. Increased Timeouts (Currently commented out)
 
 **ConnectTimeout: 120** and **NetworkTimeout: 300**
 
 **Reasoning:** ARM64 Docker builds use QEMU emulation on x86_64, which is slower. Large packages (like ROS packages) take longer to install.
+
+**Status:** ⚠️ **Commented out** - Requires apt-cacher-ng 3.8+. Currently using default timeouts.
 
 #### 3. DnsCacheSeconds: 3600
 
@@ -175,7 +182,7 @@ When running parallel Docker builds, APT Cacher NG must handle:
 
 **Our optimizations:**
 
-1. **PHttpThreads: 16** - Handle 16 concurrent HTTP connections
+1. **PHttpThreads: 16** (⚠️ Currently commented - requires v3.8+) - Would handle 16 concurrent HTTP connections
 2. **Persistent cache** - Docker volume persists between builds
 3. **Host networking** - Minimal network overhead
 4. **No speed limits** - MaxDlSpeed: 0 for maximum throughput
@@ -335,7 +342,31 @@ curl -f http://localhost:3142/acng-report.html && echo "OK" || echo "FAILED"
 
 ### Common Issues
 
-#### 1. Cache not being used
+#### 1. "Unknown configuration directive" error
+
+**Symptoms:** Container crashes at startup with errors like:
+```
+Warning, unknown configuration directive: PHttpThreads
+Error reading main options, terminating.
+```
+
+**Root Cause:** Configuration file contains directives from apt-cacher-ng 3.8+ but the Docker image uses version 3.7.5.
+
+**Solutions:**
+```bash
+# Check apt-cacher-ng version
+docker exec build-apt-cache apt-cache policy apt-cacher-ng
+
+# Fix: Comment out unsupported directives in config/acng.conf
+# PHttpThreads, ConnectTimeout, NetworkTimeout require version 3.8+
+
+# Restart container after fixing config
+docker compose restart apt-cacher-ng
+```
+
+**Prevention:** Always check apt-cacher-ng version compatibility before adding new configuration directives.
+
+#### 2. Cache not being used
 
 **Symptoms:** Builds still download packages from internet
 
@@ -519,14 +550,14 @@ docker buildx build \
 
 ### Optimal Settings for Rob Box
 
-| Setting | Value | Reason |
-|---------|-------|--------|
-| PHttpThreads | 16 | Support 8 parallel runners + overhead |
-| ConnectTimeout | 120 | ARM64 QEMU emulation is slow |
-| NetworkTimeout | 300 | Large ROS packages take time |
-| DnsCacheSeconds | 3600 | Reduce DNS overhead for repeated repos |
-| ExThreshold | 10 | Balance disk usage and cache hits |
-| MaxDlSpeed | 0 | No artificial speed limits |
+| Setting | Value | Status | Reason |
+|---------|-------|--------|--------|
+| PHttpThreads | 16 | ⚠️ Commented (needs v3.8+) | Support 8 parallel runners + overhead |
+| ConnectTimeout | 120 | ⚠️ Commented (needs v3.8+) | ARM64 QEMU emulation is slow |
+| NetworkTimeout | 300 | ⚠️ Commented (needs v3.8+) | Large ROS packages take time |
+| DnsCacheSeconds | 3600 | ✅ Active | Reduce DNS overhead for repeated repos |
+| ExThreshold | 10 | ✅ Active | Balance disk usage and cache hits |
+| MaxDlSpeed | 0 | ✅ Active | No artificial speed limits |
 
 ### Critical Files
 

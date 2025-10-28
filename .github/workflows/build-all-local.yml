@@ -1,0 +1,69 @@
+name: "[DEPRECATED] build-all-local"
+
+# ❌ DEPRECATED WORKFLOW ❌
+#
+# Этот workflow устарел и больше не используется.
+# Используйте вместо него "L-Build All Services.yml"
+#
+# История:
+# - Создан в ветке copilot/add-build-machine-composition
+# - Ветка была удалена, но workflow остался в GitHub Actions
+# - Вызывал ошибки из-за отсутствия файла в активных ветках
+#
+# Правильные workflows для локальной сборки:
+# - L-Build All Services.yml - полная сборка всех сервисов
+# - L-Build Base Images.yml - сборка базовых образов
+# - L-Build Main Pi Services.yml - сборка Main Pi сервисов
+# - L-Build Vision Pi Services.yml - сборка Vision Pi сервисов
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deprecated:
+        description: 'This workflow is DEPRECATED. Use L-Build All Services.yml instead!'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  deprecation-notice:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_deprecated != 'true'
+    steps:
+      - name: Show Deprecation Notice
+        run: |
+          echo "❌ =========================================="
+          echo "❌ THIS WORKFLOW IS DEPRECATED"
+          echo "❌ =========================================="
+          echo ""
+          echo "This workflow has been replaced by:"
+          echo "  👉 L-Build All Services.yml"
+          echo ""
+          echo "Please use the correct workflow instead:"
+          echo "  https://github.com/krikz/rob_box_project/actions/workflows/L-Build%20All%20Services.yml"
+          echo ""
+          echo "Documentation:"
+          echo "  docs/CI_CD_PIPELINE.md"
+          echo ""
+          echo "❌ =========================================="
+          exit 1
+
+  # В случае если кто-то всё же подтвердит запуск устаревшего workflow
+  redirect-to-new-workflow:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_deprecated == 'true'
+    steps:
+      - name: Redirect Information
+        run: |
+          echo "⚠️  You are using a deprecated workflow!"
+          echo ""
+          echo "✅ Please switch to: L-Build All Services.yml"
+          echo ""
+          echo "🔗 Correct workflow URL:"
+          echo "   https://github.com/krikz/rob_box_project/actions/workflows/L-Build%20All%20Services.yml"
+          echo ""
+          echo "📖 For more information, see:"
+          echo "   docs/CI_CD_PIPELINE.md"
+          echo ""
+          echo "This placeholder workflow will be removed in the future."
+          exit 1
