@@ -1,4 +1,4 @@
-name: Validate Docker Compose
+name: "[G] Validate Docker Compose"
 
 # Автоматическая проверка Docker Compose конфигураций на соответствие стандартам
 # Запускается при каждом PR или push в develop/main

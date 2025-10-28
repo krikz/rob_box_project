@@ -1,6 +1,7 @@
-name: Build All Services (Self-Hosted Simple)
+name: "[L] Build All Services"
 
-# Упрощенная локальная сборка всех сервисов на self-hosted runner
+# Полная сборка всех образов на self-hosted runner с локальным registry
+# Собирает базовые образы, Main Pi и Vision Pi сервисы параллельно
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
@@ -9,15 +10,11 @@ on:
         required: false
         default: 'false'
         type: boolean
-      services_to_build:
-        description: 'Services to build (basic/all/custom)'
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
         required: false
-        default: 'basic'
-        type: choice
-        options:
-          - basic
-          - all
-          - custom
+        default: 'true'
+        type: boolean
 
 env:
   LOCAL_REGISTRY: localhost:5000
@@ -38,7 +35,7 @@ jobs:
       - name: Build ros2-zenoh base image
         run: |
           echo "🏗️ Building ros2-zenoh base image..."
-
+          
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.ros2-zenoh \
@@ -47,14 +44,34 @@ jobs:
             --load \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-
-          docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
+          
+          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
+            docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
+          fi
           echo "✅ ros2-zenoh base image ready"
+
+      - name: Build rtabmap base image
+        run: |
+          echo "🏗️ Building rtabmap base image..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/base/Dockerfile.rtabmap \
+            --tag "ghcr.io/krikz/rob_box_base:rtabmap-latest" \
+            --tag "localhost:5000/krikz/rob_box_base:rtabmap-latest" \
+            --load \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/base
+          
+          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
+            docker push localhost:5000/krikz/rob_box_base:rtabmap-latest
+          fi
+          echo "✅ rtabmap base image ready"
 
       - name: Build depthai base image
         run: |
           echo "🏗️ Building depthai base image..."
-
+          
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.depthai \
@@ -63,82 +80,46 @@ jobs:
             --load \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
-
-          docker push localhost:5000/krikz/rob_box_base:depthai-latest
+          
+          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
+            docker push localhost:5000/krikz/rob_box_base:depthai-latest
+          fi
           echo "✅ depthai base image ready"
+
+      - name: Build pcl base image
+        run: |
+          echo "🏗️ Building pcl base image..."
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/base/Dockerfile.pcl \
+            --tag "ghcr.io/krikz/rob_box_base:pcl-latest" \
+            --tag "localhost:5000/krikz/rob_box_base:pcl-latest" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/base
+          
+          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
+            docker push localhost:5000/krikz/rob_box_base:pcl-latest
+          fi
+          echo "✅ pcl base image ready"
 
   # Main Pi сервисы
   build-main-services:
     needs: build-base-images
-    runs-on: self-hosted
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Build rtabmap service
-        run: |
-          echo "🔨 Building rtabmap service..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/rtabmap/Dockerfile \
-            --tag "ghcr.io/krikz/rob_box:rtabmap-humble-local" \
-            --tag "localhost:5000/krikz/rob_box:rtabmap-humble-local" \
-            --load \
-            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/main
-
-          docker push localhost:5000/krikz/rob_box:rtabmap-humble-local
-          echo "✅ rtabmap service ready"
-
-      - name: Build robot-state-publisher service
-        run: |
-          echo "🔨 Building robot-state-publisher service..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/robot_state_publisher/Dockerfile \
-            --tag "ghcr.io/krikz/rob_box:robot-state-publisher-humble-local" \
-            --tag "localhost:5000/krikz/rob_box:robot-state-publisher-humble-local" \
-            --load \
-            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/main
-
-          docker push localhost:5000/krikz/rob_box:robot-state-publisher-humble-local
-          echo "✅ robot-state-publisher service ready"
+    uses: ./.github/workflows/[L] Build Main Pi Services.yml
+    with:
+      push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
 
   # Vision Pi сервисы
   build-vision-services:
     needs: build-base-images
-    runs-on: self-hosted
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Build oak-d service
-        run: |
-          echo "🎥 Building oak-d service..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/oak-d/Dockerfile \
-            --tag "ghcr.io/krikz/rob_box:oak-d-humble-local" \
-            --tag "localhost:5000/krikz/rob_box:oak-d-humble-local" \
-            --load \
-            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:depthai" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/vision
-
-          docker push localhost:5000/krikz/rob_box:oak-d-humble-local
-          echo "✅ oak-d service ready"
+    uses: ./.github/workflows/[L] Build Vision Pi Services.yml
+    with:
+      push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
 
   # Итоговая сводка
   summary:
@@ -162,6 +143,6 @@ jobs:
               echo "    🏷️ $tag"
             done
           done
-
+          
           echo ""
           echo "🚀 Next: On Raspberry Pi, set IMAGE_TAG=local and pull from 10.1.1.5:5000"

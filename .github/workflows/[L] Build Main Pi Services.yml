@@ -1,0 +1,312 @@
+name: "[L] Build Main Pi Services"
+
+# Локальная сборка сервисов Main Pi на self-hosted runner
+# Все сервисы собираются параллельно (до 8 одновременно)
+on:
+  workflow_dispatch:  # Ручной запуск
+    inputs:
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
+        required: false
+        default: 'true'
+        type: boolean
+  workflow_call:  # Вызов из других workflow
+    inputs:
+      push_to_registry:
+        description: 'Push to local registry'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  GHCR_REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/krikz/rob_box
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  # Определение тега
+  prepare:
+    runs-on: self-hosted
+    outputs:
+      docker_tag: ${{ steps.set-config.outputs.docker_tag }}
+    steps:
+      - name: Set build configuration
+        id: set-config
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          if [ "$BRANCH_NAME" = "main" ]; then
+            DOCKER_TAG="latest"
+          elif [ "$BRANCH_NAME" = "develop" ]; then
+            DOCKER_TAG="dev"
+          else
+            DOCKER_TAG="local"
+          fi
+          echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
+          echo "Docker Tag: $DOCKER_TAG"
+
+  # Параллельная сборка всех сервисов Main Pi (до 8 одновременно)
+  build-robot-state-publisher:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build robot-state-publisher
+        run: |
+          SERVICE="robot_state_publisher"
+          GHCR_TAG="${IMAGE_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-rtabmap:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build rtabmap
+        run: |
+          SERVICE="rtabmap"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/main/${SERVICE}
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-twist-mux:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build twist-mux
+        run: |
+          SERVICE="twist_mux"
+          GHCR_TAG="${IMAGE_PREFIX}:twist-mux-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/main/${SERVICE}
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-micro-ros-agent:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build micro-ros-agent
+        run: |
+          SERVICE="micro_ros_agent"
+          GHCR_TAG="${IMAGE_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-ros2-control:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build ros2-control
+        run: |
+          SERVICE="ros2_control"
+          GHCR_TAG="${IMAGE_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-nav2:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build nav2
+        run: |
+          SERVICE="nav2"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/main/${SERVICE}
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-lslidar:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build lslidar
+        run: |
+          SERVICE="lslidar"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:pcl" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/main
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-perception:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build perception
+        run: |
+          SERVICE="perception"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+          
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  # Итоговая сводка
+  summary:
+    needs: [prepare, build-robot-state-publisher, build-rtabmap, build-twist-mux, build-micro-ros-agent, build-ros2-control, build-nav2, build-lslidar, build-perception]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Main Pi Services Build Complete!"
+          echo ""
+          echo "Configuration:"
+          echo "  Docker Tag: ${{ needs.prepare.outputs.docker_tag }}"
+          echo "  Push to Registry: ${{ inputs.push_to_registry }}"
+          echo ""
+          echo "Services built:"
+          echo "  ✅ robot-state-publisher"
+          echo "  ✅ rtabmap"
+          echo "  ✅ twist-mux"
+          echo "  ✅ micro-ros-agent"
+          echo "  ✅ ros2-control"
+          echo "  ✅ nav2"
+          echo "  ✅ lslidar"
+          echo "  ✅ perception"
