@@ -1,0 +1,165 @@
+name: "L: Build Base Images"
+
+# Сборка базовых образов на self-hosted runner с локальным registry
+# Используется локальный APT cache для ускорения сборки
+on:
+  workflow_dispatch:  # Ручной запуск
+    inputs:
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
+        required: false
+        default: 'true'
+        type: boolean
+  workflow_call:  # Вызов из других workflow (например, L-Build All Services)
+    inputs:
+      push_to_registry:
+        description: 'Push to local registry'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  GHCR_REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/krikz/rob_box_base
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box_base
+  ROS_DISTRO: humble
+
+jobs:
+  # Сборка базового образа ROS 2 + Zenoh (общая база для всех)
+  build-ros2-zenoh:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build ros2-zenoh base image
+        run: |
+          echo "🏗️ Building ros2-zenoh base image..."
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/base/Dockerfile.ros2-zenoh \
+            --tag "${IMAGE_PREFIX}:ros2-zenoh-latest" \
+            --tag "${LOCAL_PREFIX}:ros2-zenoh-latest" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/base
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push ${LOCAL_PREFIX}:ros2-zenoh-latest
+          fi
+          echo "✅ ros2-zenoh base image ready"
+
+  # Сборка базового образа RTAB-Map (для SLAM)
+  build-rtabmap:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build rtabmap base image
+        run: |
+          echo "🏗️ Building rtabmap base image..."
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/base/Dockerfile.rtabmap \
+            --tag "${IMAGE_PREFIX}:rtabmap-latest" \
+            --tag "${LOCAL_PREFIX}:rtabmap-latest" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/base
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push ${LOCAL_PREFIX}:rtabmap-latest
+          fi
+          echo "✅ rtabmap base image ready"
+
+  # Сборка базового образа DepthAI (для OAK-D камеры)
+  build-depthai:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build depthai base image
+        run: |
+          echo "🏗️ Building depthai base image..."
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/base/Dockerfile.depthai \
+            --tag "${IMAGE_PREFIX}:depthai-latest" \
+            --tag "${LOCAL_PREFIX}:depthai-latest" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/base
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push ${LOCAL_PREFIX}:depthai-latest
+          fi
+          echo "✅ depthai base image ready"
+
+  # Сборка базового образа PCL (для лидаров)
+  build-pcl:
+    runs-on: self-hosted
+    needs: build-ros2-zenoh  # Зависит от ros2-zenoh базы
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build pcl base image
+        run: |
+          echo "🏗️ Building pcl base image..."
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/base/Dockerfile.pcl \
+            --tag "${IMAGE_PREFIX}:pcl-latest" \
+            --tag "${LOCAL_PREFIX}:pcl-latest" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-latest" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/base
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push ${LOCAL_PREFIX}:pcl-latest
+          fi
+          echo "✅ pcl base image ready"
+
+  # Итоговая сводка
+  summary:
+    needs: [build-ros2-zenoh, build-rtabmap, build-depthai, build-pcl]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Local Base Images Build Complete!"
+          echo ""
+          echo "📊 Build Results:"
+          echo "  ros2-zenoh: ${{ needs.build-ros2-zenoh.result }}"
+          echo "  rtabmap: ${{ needs.build-rtabmap.result }}"
+          echo "  depthai: ${{ needs.build-depthai.result }}"
+          echo "  pcl: ${{ needs.build-pcl.result }}"
+          echo ""
+          echo "📦 Images pushed to: ${LOCAL_REGISTRY}"
+          echo ""
+          echo "🏷️ Tags:"
+          echo "  - ${LOCAL_PREFIX}:ros2-zenoh-latest"
+          echo "  - ${LOCAL_PREFIX}:rtabmap-latest"
+          echo "  - ${LOCAL_PREFIX}:depthai-latest"
+          echo "  - ${LOCAL_PREFIX}:pcl-latest"
