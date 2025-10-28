@@ -7,8 +7,39 @@ This guide explains how to quickly build a single Docker image using the `L: Bui
 The `L: Build Single Service` workflow allows you to build just one Docker image instead of all services, saving significant time during development.
 
 **Time Comparison:**
-- **All services**: 30-60 minutes
-- **Single service**: 1-5 minutes
+- **All services**: 30-60 minutes ⏱️
+- **Single service**: 1-5 minutes ⚡
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────┐
+│  GitHub Actions: L: Build Single Service               │
+│                                                         │
+│  Inputs:                                               │
+│    ├─ Branch (main/develop/feature/*)                 │
+│    ├─ Pi Type (main/vision/base)                      │
+│    ├─ Service (voice-assistant, nav2, etc.)           │
+│    └─ Push to Registry (true/false)                   │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│  Self-Hosted Runner (Build Machine)                    │
+│                                                         │
+│  1. Checkout code from selected branch                 │
+│  2. Determine build configuration                      │
+│  3. Build Docker image with buildx                     │
+│  4. Tag for GHCR and local registry                    │
+│  5. Push to localhost:5000 (if enabled)                │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│  Local Registry (localhost:5000)                       │
+│                                                         │
+│  Image ready for deployment to Raspberry Pi            │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## Prerequisites
 
