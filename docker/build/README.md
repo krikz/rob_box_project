@@ -572,9 +572,10 @@ docker exec build-github-runner cat /runner/.runner
 
 ### Связанные документы
 
-- [AGENT_GUIDE.md](../docs/development/AGENT_GUIDE.md) - Гайд для AI агентов
-- [DOCKER_STANDARDS.md](../docs/development/DOCKER_STANDARDS.md) - Стандарты Docker
-- [CI_CD_PIPELINE.md](../docs/CI_CD_PIPELINE.md) - Описание CI/CD
+- [APT_CACHER_NG_GUIDE.md](APT_CACHER_NG_GUIDE.md) - Подробное руководство по APT Cacher NG
+- [AGENT_GUIDE.md](../../docs/development/AGENT_GUIDE.md) - Гайд для AI агентов
+- [DOCKER_STANDARDS.md](../../docs/development/DOCKER_STANDARDS.md) - Стандарты Docker
+- [CI_CD_PIPELINE.md](../../docs/CI_CD_PIPELINE.md) - Описание CI/CD
 
 ---
 
@@ -591,6 +592,13 @@ docker exec build-github-runner cat /runner/.runner
 
 ## 📝 Changelog
 
+### 2025-10-28
+- ✅ Оптимизирована конфигурация APT Cacher NG для 8 параллельных runners
+- ✅ Увеличены таймауты для стабильности ARM64 QEMU сборок
+- ✅ Добавлен Ubuntu Ports remap для ARM64 архитектуры
+- ✅ Создано подробное руководство APT_CACHER_NG_GUIDE.md
+- ✅ Удалены устаревшие директивы из конфигурации
+
 ### 2025-10-26
 - ✅ Первоначальная версия build machine infrastructure
 - ✅ Docker Registry для локального хранения образов
@@ -602,4 +610,4 @@ docker exec build-github-runner cat /runner/.runner
 ---
 
 **Maintained by:** Rob Box Project Team  
-**Last Updated:** 2025-10-26
+**Last Updated:** 2025-10-28
