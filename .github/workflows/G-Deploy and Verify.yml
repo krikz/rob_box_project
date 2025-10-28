@@ -29,11 +29,15 @@ on:
           - production
           - staging
           - test
-      skip_pull_images:
-        description: 'Пропустить pull образов (использовать локальные)'
-        required: false
-        default: false
-        type: boolean
+      registry_source:
+        description: 'Источник Docker образов'
+        required: true
+        default: 'github'
+        type: choice
+        options:
+          - skip
+          - github
+          - local
       dry_run:
         description: 'Сухой прогон (без реального деплоя)'
         required: false
@@ -78,6 +82,22 @@ jobs:
               ;;
           esac
 
+          # Настройка источника образов
+          case "${{ inputs.registry_source }}" in
+            github)
+              echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=GitHub Container Registry (ghcr.io)" >> $GITHUB_ENV
+              ;;
+            local)
+              echo "SERVICE_IMAGE_PREFIX=localhost:5000/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Local Build Machine Registry (localhost:5000)" >> $GITHUB_ENV
+              ;;
+            skip)
+              echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Skipping pull (using existing local images)" >> $GITHUB_ENV
+              ;;
+          esac
+
           echo "branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
@@ -95,6 +115,7 @@ jobs:
           echo "Branch: ${{ inputs.branch }}"
           echo "Environment: ${{ inputs.environment }}"
           echo "Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "Registry: ${{ env.registry_display }}"
           echo "Vision Pi: ${{ env.vision_pi_ip }}"
           echo "Main Pi: ${{ env.main_pi_ip }}"
           echo ""
@@ -126,15 +147,17 @@ jobs:
              git pull origin ${{ inputs.branch }}"
 
       - name: "[Vision Pi] Pull Docker Images"
-        if: '!inputs.dry_run && !inputs.skip_pull_images'
+        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📦 Pulling Docker images on Vision Pi..."
+          echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              docker compose pull" \
             || echo "⚠️  Warning: Some images may not be available"
 
@@ -148,6 +171,7 @@ jobs:
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              docker compose up -d"
 
       # ==================== MAIN PI DEPLOYMENT ====================
@@ -177,15 +201,17 @@ jobs:
              git pull origin ${{ inputs.branch }}"
 
       - name: "[Main Pi] Pull Docker Images"
-        if: '!inputs.dry_run && !inputs.skip_pull_images'
+        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📦 Pulling Docker images on Main Pi..."
+          echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              docker compose pull" \
             || echo "⚠️  Warning: Some images may not be available"
 
@@ -199,6 +225,7 @@ jobs:
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              docker compose up -d"
 
       # ==================== INITIALIZATION WAIT ====================
@@ -583,6 +610,7 @@ jobs:
           echo "Branch: ${{ inputs.branch }}"
           echo "Environment: ${{ inputs.environment }}"
           echo "Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "Registry: ${{ env.registry_display }}"
           echo "Timestamp: ${{ steps.setup.outputs.timestamp }}"
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -631,6 +659,7 @@ jobs:
           echo "  Branch: ${{ inputs.branch }}"
           echo "  Environment: ${{ inputs.environment }}"
           echo "  Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "  Registry: ${{ env.registry_display }}"
           echo "  Vision Pi: ${{ env.vision_pi_ip }}"
           echo "  Main Pi: ${{ env.main_pi_ip }}"
           echo ""

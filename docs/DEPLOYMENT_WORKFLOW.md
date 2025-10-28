@@ -29,34 +29,37 @@ Workflow `G: Deploy and Verify` автоматизирует процесс ра
 4. Заполнить параметры:
    - **Branch:** Ветка для деплоя (main/develop/feature/test)
    - **Environment:** Окружение (production/staging/test)
-   - **Skip pull images:** Пропустить загрузку образов (использовать локальные)
+   - **Registry source:** Источник Docker образов (skip/github/local)
    - **Dry run:** Сухой прогон (не выполнять реальный деплой)
 5. Нажать **"Run workflow"**
 
 ### Запуск через GitHub CLI
 
 ```bash
-# Production деплой из main ветки
+# Production деплой из main ветки (GitHub registry)
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=main \
-  -f environment=production
+  -f environment=production \
+  -f registry_source=github
 
-# Staging деплой из develop ветки
+# Staging деплой из develop ветки (Local build machine registry)
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=develop \
-  -f environment=staging
+  -f environment=staging \
+  -f registry_source=local
 
 # Тестовый деплой с dry-run
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=test \
+  -f registry_source=github \
   -f dry_run=true
 
-# Быстрый деплой без pull образов (использовать локальные)
+# Быстрый деплой без pull образов (использовать существующие локальные)
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production \
-  -f skip_pull_images=true
+  -f registry_source=skip
 ```
 
 ## Параметры workflow
@@ -79,17 +82,26 @@ gh workflow run "G-Deploy and Verify.yml" \
 - `staging` - Staging окружение (IMAGE_TAG=dev)
 - `test` - Test окружение (IMAGE_TAG=test)
 
-### `skip_pull_images` (optional)
+### `registry_source` (required)
 
-Пропустить загрузку Docker образов из registry.
+Источник Docker образов.
 
-**Использование:**
-- `false` (default) - Загрузить свежие образы из registry
-- `true` - Использовать локальные образы (быстрее)
+**Опции:**
+- `github` (default) - GitHub Container Registry (ghcr.io/krikz/rob_box)
+  - Используется для production деплоя
+  - Образы собраны через GitHub Actions (G-Build workflows)
+- `local` - Local Build Machine Registry (localhost:5000/krikz/rob_box)
+  - Используется для быстрого локального тестирования
+  - Образы собраны на локальной build machine (L-Build workflows)
+  - В 10-20x быстрее pull на Raspberry Pi (локальная сеть)
+- `skip` - Не загружать образы, использовать существующие
+  - Используется для быстрого перезапуска контейнеров
+  - Не обновляет образы, только перезапускает
 
 **Когда использовать:**
-- Если образы уже на Pi и не изменились
-- Для быстрого перезапуска без обновления образов
+- `github` - Для production и staging окружений
+- `local` - Для разработки и тестирования с локальной build machine
+- `skip` - Для быстрого рестарта без обновления образов
 
 ### `dry_run` (optional)
 
@@ -110,6 +122,7 @@ gh workflow run "G-Deploy and Verify.yml" \
 - Установка SSH и sshpass
 - Настройка переменных окружения
 - Определение IP адресов Pi
+- Настройка источника Docker образов (registry prefix)
 
 ### 2. Vision Pi Deployment
 
@@ -269,10 +282,11 @@ Topics Status: true
 git checkout main
 git pull
 
-# 2. Запустить деплой
+# 2. Запустить деплой из GitHub registry
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=main \
-  -f environment=production
+  -f environment=production \
+  -f registry_source=github
 
 # 3. Следить за прогрессом
 gh run watch
@@ -287,10 +301,11 @@ gh run watch
 Тестируем develop ветку перед мерджем в main:
 
 ```bash
-# 1. Запустить деплой в staging
+# 1. Запустить деплой в staging из GitHub registry
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=develop \
-  -f environment=staging
+  -f environment=staging \
+  -f registry_source=github
 
 # 2. Проверить работоспособность
 # - Логи в workflow
@@ -310,7 +325,7 @@ git push
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production \
-  -f skip_pull_images=true
+  -f registry_source=skip
 ```
 
 ### Сценарий 4: Тестирование workflow
@@ -321,12 +336,13 @@ gh workflow run "G-Deploy and Verify.yml" \
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=test \
+  -f registry_source=github \
   -f dry_run=true
 ```
 
-### Сценарий 5: Feature тестирование
+### Сценарий 5: Feature тестирование (Local build machine)
 
-Развернуть feature ветку для тестирования:
+Развернуть feature ветку для быстрого тестирования с локальной build machine:
 
 ```bash
 # 1. Создать feature ветку и запушить
@@ -334,16 +350,17 @@ git checkout -b feature/my-feature
 # ... внести изменения ...
 git push
 
-# 2. Собрать образы через CI/CD
-# (автоматически при push в feature/* ветку)
+# 2. Собрать образы на локальной build machine через L-Build workflow
+gh workflow run "L-Build All Services.yml"
 
-# 3. Развернуть на test окружение
+# 3. Развернуть на test окружение из локального registry
 gh workflow run "G-Deploy and Verify.yml" \
   -f branch=feature/my-feature \
-  -f environment=test
+  -f environment=test \
+  -f registry_source=local
 
-# 4. Проверить работу
-# 5. Если OK - создать PR в develop
+# 4. Проверить работу (pull будет в 10-20x быстрее)
+# 5. Если OK - собрать через GitHub и создать PR в develop
 ```
 
 ## Troubleshooting
