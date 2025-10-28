@@ -1,0 +1,637 @@
+name: "G: Deploy and Verify"
+
+# Автоматизированный деплой и проверка работоспособности робота
+# - Останавливает контейнеры на обоих Pi
+# - Обновляет код из выбранной ветки
+# - Подтягивает свежие образы
+# - Запускает контейнеры
+# - Проверяет логи и ROS2 топики
+# - Создает issue при ошибках
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка для деплоя'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - develop
+          - feature/test
+      environment:
+        description: 'Целевое окружение'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - test
+      skip_pull_images:
+        description: 'Пропустить pull образов (использовать локальные)'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Сухой прогон (без реального деплоя)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  deploy-and-verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 1
+
+      - name: Setup SSH and Environment
+        id: setup
+        run: |
+          echo "Setting up deployment environment..."
+
+          # Настройка переменных окружения
+          case "${{ inputs.environment }}" in
+            production)
+              echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.21" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.20" >> $GITHUB_ENV
+              ;;
+            staging)
+              echo "IMAGE_TAG=dev" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.21" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.20" >> $GITHUB_ENV
+              ;;
+            test)
+              echo "IMAGE_TAG=test" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.21" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.20" >> $GITHUB_ENV
+              ;;
+          esac
+
+          echo "branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+          # Установка sshpass для автоматической аутентификации
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+      - name: Dry Run Notice
+        if: inputs.dry_run
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 DRY RUN MODE - No actual deployment"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Branch: ${{ inputs.branch }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "Vision Pi: ${{ env.vision_pi_ip }}"
+          echo "Main Pi: ${{ env.main_pi_ip }}"
+          echo ""
+
+      # ==================== VISION PI DEPLOYMENT ====================
+
+      - name: "[Vision Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Vision Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
+
+      - name: "[Vision Pi] Update Code"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Updating Vision Pi code from branch: ${{ inputs.branch }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project && \
+             git fetch origin && \
+             git checkout ${{ inputs.branch }} && \
+             git pull origin ${{ inputs.branch }}"
+
+      - name: "[Vision Pi] Pull Docker Images"
+        if: '!inputs.dry_run && !inputs.skip_pull_images'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Pulling Docker images on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             docker compose pull" \
+            || echo "⚠️  Warning: Some images may not be available"
+
+      - name: "[Vision Pi] Start Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Starting Vision Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             docker compose up -d"
+
+      # ==================== MAIN PI DEPLOYMENT ====================
+
+      - name: "[Main Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Main Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
+
+      - name: "[Main Pi] Update Code"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Updating Main Pi code from branch: ${{ inputs.branch }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            "cd ~/rob_box_project && \
+             git fetch origin && \
+             git checkout ${{ inputs.branch }} && \
+             git pull origin ${{ inputs.branch }}"
+
+      - name: "[Main Pi] Pull Docker Images"
+        if: '!inputs.dry_run && !inputs.skip_pull_images'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Pulling Docker images on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            "cd ~/rob_box_project/docker/main && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             docker compose pull" \
+            || echo "⚠️  Warning: Some images may not be available"
+
+      - name: "[Main Pi] Start Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Starting Main Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            "cd ~/rob_box_project/docker/main && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             docker compose up -d"
+
+      # ==================== INITIALIZATION WAIT ====================
+
+      - name: "Wait for Container Initialization"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⏳ Waiting for containers to initialize..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sleep 30
+          echo "✅ Initialization wait complete"
+
+      # ==================== HEALTH CHECKS ====================
+
+      - name: "[Vision Pi] Check Container Status"
+        if: '!inputs.dry_run'
+        id: vision_status
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Checking Vision Pi container status..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
+
+          echo "$STATUS" | jq -r '.[] | "  \(.Name): \(.State)"'
+
+          # Проверяем наличие падших контейнеров
+          FAILED_COUNT=$(echo "$STATUS" | jq -r '.[] | select(.State != "running") | .Name' | wc -l)
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "❌ $FAILED_COUNT container(s) not running on Vision Pi"
+            echo "vision_healthy=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ All Vision Pi containers running"
+            echo "vision_healthy=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "[Main Pi] Check Container Status"
+        if: '!inputs.dry_run'
+        id: main_status
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Checking Main Pi container status..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose ps --format json')
+
+          echo "$STATUS" | jq -r '.[] | "  \(.Name): \(.State)"'
+
+          # Проверяем наличие падших контейнеров
+          FAILED_COUNT=$(echo "$STATUS" | jq -r '.[] | select(.State != "running") | .Name' | wc -l)
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "❌ $FAILED_COUNT container(s) not running on Main Pi"
+            echo "main_healthy=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ All Main Pi containers running"
+            echo "main_healthy=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "[Vision Pi] Check Container Logs"
+        if: '!inputs.dry_run'
+        id: vision_logs
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Checking Vision Pi container logs..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Создаем временный файл для сбора логов
+          LOGS_FILE="vision_logs.txt"
+          echo "" > $LOGS_FILE
+
+          # Получаем список контейнеров
+          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.[].Name')
+
+          CRITICAL_COUNT=0
+          WARNING_COUNT=0
+
+          for container in $CONTAINERS; do
+            echo "Checking logs for: $container"
+
+            # Получаем последние 100 строк логов
+            LOGS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+              "docker logs --tail 100 $container 2>&1")
+
+            # Проверяем на критические ошибки
+            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR.*failed|segmentation fault|core dumped)" || true)
+            if [ ! -z "$CRITICAL" ]; then
+              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+              echo "  ❌ CRITICAL errors found in $container"
+              echo "=== $container CRITICAL ===" >> $LOGS_FILE
+              echo "$CRITICAL" >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+
+            # Проверяем на предупреждения
+            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" || true)
+            if [ ! -z "$WARNINGS" ]; then
+              WARNING_COUNT=$((WARNING_COUNT + 1))
+              echo "  ⚠️  Warnings found in $container"
+              echo "=== $container WARNINGS ===" >> $LOGS_FILE
+              echo "$WARNINGS" | head -20 >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+          done
+
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "warning_count=$WARNING_COUNT" >> $GITHUB_OUTPUT
+
+          # Сохраняем логи как артефакт
+          if [ -s $LOGS_FILE ]; then
+            cat $LOGS_FILE
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No critical errors or warnings found"
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "[Main Pi] Check Container Logs"
+        if: '!inputs.dry_run'
+        id: main_logs
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Checking Main Pi container logs..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Создаем временный файл для сбора логов
+          LOGS_FILE="main_logs.txt"
+          echo "" > $LOGS_FILE
+
+          # Получаем список контейнеров
+          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.[].Name')
+
+          CRITICAL_COUNT=0
+          WARNING_COUNT=0
+
+          for container in $CONTAINERS; do
+            echo "Checking logs for: $container"
+
+            # Получаем последние 100 строк логов
+            LOGS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+              "docker logs --tail 100 $container 2>&1")
+
+            # Проверяем на критические ошибки
+            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR.*failed|segmentation fault|core dumped)" || true)
+            if [ ! -z "$CRITICAL" ]; then
+              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+              echo "  ❌ CRITICAL errors found in $container"
+              echo "=== $container CRITICAL ===" >> $LOGS_FILE
+              echo "$CRITICAL" >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+
+            # Проверяем на предупреждения
+            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" || true)
+            if [ ! -z "$WARNINGS" ]; then
+              WARNING_COUNT=$((WARNING_COUNT + 1))
+              echo "  ⚠️  Warnings found in $container"
+              echo "=== $container WARNINGS ===" >> $LOGS_FILE
+              echo "$WARNINGS" | head -20 >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+          done
+
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "warning_count=$WARNING_COUNT" >> $GITHUB_OUTPUT
+
+          # Сохраняем логи как артефакт
+          if [ -s $LOGS_FILE ]; then
+            cat $LOGS_FILE
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No critical errors or warnings found"
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "[Vision Pi] Check ROS2 Topics"
+        if: '!inputs.dry_run'
+        id: vision_topics
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📡 Checking ROS2 topics on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Проверяем топики OAK-D камеры
+          echo "Checking oak-d container topics..."
+          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            "docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+
+          if [ -z "$TOPICS" ]; then
+            echo "❌ No topics found (ROS2 may not be initialized yet)"
+            echo "topics_healthy=false" >> $GITHUB_OUTPUT
+          else
+            echo "Topics found:"
+            echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
+
+            # Проверяем наличие критически важных топиков
+            EXPECTED_TOPICS="/oak/rgb/image_raw/compressed"
+            MISSING_TOPICS=""
+
+            for topic in $EXPECTED_TOPICS; do
+              if ! echo "$TOPICS" | grep -q "$topic"; then
+                MISSING_TOPICS="$MISSING_TOPICS $topic"
+              fi
+            done
+
+            if [ ! -z "$MISSING_TOPICS" ]; then
+              echo "⚠️  Missing expected topics:$MISSING_TOPICS"
+              echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+            else
+              echo "✅ All expected topics present"
+              echo "topics_healthy=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: "[Main Pi] Check ROS2 Topics"
+        if: '!inputs.dry_run'
+        id: main_topics
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📡 Checking ROS2 topics on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Проверяем топики в rtabmap контейнере
+          echo "Checking rtabmap container topics..."
+          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+
+          if [ -z "$TOPICS" ]; then
+            echo "❌ No topics found (ROS2 may not be initialized yet)"
+            echo "topics_healthy=false" >> $GITHUB_OUTPUT
+          else
+            echo "Topics found:"
+            echo "$TOPICS" | head -20
+
+            # Просто проверяем что есть хоть какие-то топики
+            TOPIC_COUNT=$(echo "$TOPICS" | wc -l)
+            if [ "$TOPIC_COUNT" -gt 5 ]; then
+              echo "✅ ROS2 topics active ($TOPIC_COUNT topics)"
+              echo "topics_healthy=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️  Few topics found ($TOPIC_COUNT topics)"
+              echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # ==================== ISSUE CREATION ====================
+
+      - name: "Analyze Results and Create Issue"
+        if: >-
+          !inputs.dry_run &&
+          (steps.vision_logs.outputs.has_issues == 'true' ||
+           steps.main_logs.outputs.has_issues == 'true' ||
+           steps.vision_status.outputs.vision_healthy == 'false' ||
+           steps.main_status.outputs.main_healthy == 'false')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚨 Issues detected, creating GitHub issue..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Подсчет ошибок
+          VISION_CRITICAL=${{ steps.vision_logs.outputs.critical_count || 0 }}
+          VISION_WARNING=${{ steps.vision_logs.outputs.warning_count || 0 }}
+          MAIN_CRITICAL=${{ steps.main_logs.outputs.critical_count || 0 }}
+          MAIN_WARNING=${{ steps.main_logs.outputs.warning_count || 0 }}
+
+          TOTAL_CRITICAL=$((VISION_CRITICAL + MAIN_CRITICAL))
+          TOTAL_WARNING=$((VISION_WARNING + MAIN_WARNING))
+
+          # Определяем severity и assignee
+          if [ "$TOTAL_CRITICAL" -gt 0 ] || \
+             [ "${{ steps.vision_status.outputs.vision_healthy }}" == "false" ] || \
+             [ "${{ steps.main_status.outputs.main_healthy }}" == "false" ]; then
+            SEVERITY="critical"
+            ASSIGNEE="copilot"
+            LABEL="bug,critical,deployment"
+            TITLE="🚨 Critical Deployment Failure"
+          else
+            SEVERITY="warning"
+            ASSIGNEE="krikz"
+            LABEL="bug,deployment"
+            TITLE="⚠️  Deployment Warnings"
+          fi
+
+          # Формируем описание issue
+          ISSUE_BODY="## Deployment Issue Report
+
+          **Branch:** \`${{ inputs.branch }}\`
+          **Environment:** \`${{ inputs.environment }}\`
+          **Timestamp:** ${{ steps.setup.outputs.timestamp }}
+          **Workflow Run:** [#${{ github.run_number }}](${{
+          github.server_url }}/${{ github.repository }}/actions/runs/${{
+          github.run_id }})
+
+          ### Summary
+          - Vision Pi Critical Errors: $VISION_CRITICAL
+          - Vision Pi Warnings: $VISION_WARNING
+          - Main Pi Critical Errors: $MAIN_CRITICAL
+          - Main Pi Warnings: $MAIN_WARNING
+
+          ### Container Status
+
+          **Vision Pi:**
+          - Healthy: ${{ steps.vision_status.outputs.vision_healthy }}
+          - Failed Containers: ${{ steps.vision_status.outputs.failed_count || 0 }}
+          - Topics Status: ${{ steps.vision_topics.outputs.topics_healthy || 'unknown' }}
+
+          **Main Pi:**
+          - Healthy: ${{ steps.main_status.outputs.main_healthy }}
+          - Failed Containers: ${{ steps.main_status.outputs.failed_count || 0 }}
+          - Topics Status: ${{ steps.main_topics.outputs.topics_healthy || 'unknown' }}
+
+          ### Logs
+
+          Check the workflow logs for detailed information about the errors:
+          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ### Recommended Actions
+          "
+
+          if [ "$SEVERITY" == "critical" ]; then
+            ISSUE_BODY="${ISSUE_BODY}
+          1. Check container logs immediately: \`docker logs <container_name>\`
+          2. Verify Docker images were pulled correctly
+          3. Check system resources (CPU, memory, disk)
+          4. Review recent code changes for breaking changes
+          5. Consider rolling back to previous stable version"
+          else
+            ISSUE_BODY="${ISSUE_BODY}
+          1. Review warnings in container logs
+          2. Check if warnings affect functionality
+          3. Monitor system for degraded performance
+          4. Plan fixes for next deployment"
+          fi
+
+          ISSUE_BODY="${ISSUE_BODY}
+
+          ### Quick Commands
+
+          \`\`\`bash
+          # Check Vision Pi status
+          sshpass -p 'open' ssh ros2@${{ env.vision_pi_ip }} 'cd ~/rob_box_project/docker/vision && docker compose ps'
+
+          # Check Main Pi status
+          sshpass -p 'open' ssh ros2@${{ env.main_pi_ip }} 'cd ~/rob_box_project/docker/main && docker compose ps'
+
+          # View logs
+          sshpass -p 'open' ssh ros2@${{ env.vision_pi_ip }} 'docker logs oak-d --tail 50'
+          sshpass -p 'open' ssh ros2@${{ env.main_pi_ip }} 'docker logs rtabmap --tail 50'
+          \`\`\`
+
+          ---
+          *Auto-generated by deployment workflow*"
+
+          # Создаем issue
+          gh issue create \
+            --title "$TITLE: ${{ inputs.branch }} → ${{ inputs.environment }}" \
+            --body "$ISSUE_BODY" \
+            --label "$LABEL" \
+            --assignee "$ASSIGNEE"
+
+          echo "✅ Issue created and assigned to @$ASSIGNEE"
+
+      # ==================== SUMMARY ====================
+
+      - name: "Deployment Summary"
+        if: always() && !inputs.dry_run
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 DEPLOYMENT SUMMARY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Branch: ${{ inputs.branch }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "Timestamp: ${{ steps.setup.outputs.timestamp }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Vision Pi (${{ env.vision_pi_ip }})"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Containers Healthy: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }}"
+          echo "Failed Containers: ${{ steps.vision_status.outputs.failed_count || '0' }}"
+          echo "Critical Errors: ${{ steps.vision_logs.outputs.critical_count || '0' }}"
+          echo "Warnings: ${{ steps.vision_logs.outputs.warning_count || '0' }}"
+          echo "Topics Status: ${{ steps.vision_topics.outputs.topics_healthy || 'unknown' }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Main Pi (${{ env.main_pi_ip }})"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Containers Healthy: ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
+          echo "Failed Containers: ${{ steps.main_status.outputs.failed_count || '0' }}"
+          echo "Critical Errors: ${{ steps.main_logs.outputs.critical_count || '0' }}"
+          echo "Warnings: ${{ steps.main_logs.outputs.warning_count || '0' }}"
+          echo "Topics Status: ${{ steps.main_topics.outputs.topics_healthy || 'unknown' }}"
+          echo ""
+
+          # Определяем общий статус
+          if [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
+             [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
+             [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
+             [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "✅ DEPLOYMENT SUCCESSFUL"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          else
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ DEPLOYMENT COMPLETED WITH ISSUES"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Check the logs above and created GitHub issue for details"
+          fi
+
+      - name: "Dry Run Summary"
+        if: inputs.dry_run
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DRY RUN COMPLETED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "This was a dry run. No actual deployment was performed."
+          echo "The workflow would have deployed:"
+          echo "  Branch: ${{ inputs.branch }}"
+          echo "  Environment: ${{ inputs.environment }}"
+          echo "  Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "  Vision Pi: ${{ env.vision_pi_ip }}"
+          echo "  Main Pi: ${{ env.main_pi_ip }}"
+          echo ""
+          echo "To perform actual deployment, run without dry_run flag."
