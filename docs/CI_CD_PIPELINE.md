@@ -2,6 +2,11 @@
 
 Автоматизированная система сборки и деплоя для rob_box_project.
 
+## Документация
+
+- **[Deployment Workflow Guide](DEPLOYMENT_WORKFLOW.md)** - Подробное руководство по automated deployment
+- Этот документ - Overview CI/CD системы
+
 ## Архитектура Pipeline
 
 ```
@@ -267,6 +272,38 @@ push:
 **Особенности:**
 - В 10-20x быстрее для Raspberry Pi (локальный pull)
 - Требует настроенный build machine с self-hosted runner
+
+### 11. Deploy and Verify (Manual Deployment)
+
+**Файл:** `.github/workflows/G-Deploy and Verify.yml`
+
+**Назначение:** Автоматизированный деплой и проверка работоспособности робота
+
+**Триггер:**
+- `workflow_dispatch` (только ручной запуск)
+
+**Inputs:**
+- `branch` - ветка для деплоя (main/develop/feature/test)
+- `environment` - целевое окружение (production/staging/test)
+- `skip_pull_images` - пропустить pull образов
+- `dry_run` - сухой прогон без реального деплоя
+
+**Процесс:**
+1. SSH подключение к обоим Pi
+2. Остановка контейнеров (`docker compose down`)
+3. Обновление кода из выбранной ветки (`git pull`)
+4. Загрузка свежих Docker образов (`docker compose pull`)
+5. Запуск контейнеров (`docker compose up -d`)
+6. Проверка здоровья контейнеров
+7. Анализ логов на ошибки
+8. Проверка ROS2 топиков
+9. Автоматическое создание GitHub Issue при проблемах
+
+**Issue Assignment:**
+- Критические ошибки → @copilot (label: `bug`, `critical`, `deployment`)
+- Предупреждения → @krikz (label: `bug`, `deployment`)
+
+**Подробная документация:** См. [DEPLOYMENT_WORKFLOW.md](DEPLOYMENT_WORKFLOW.md)
 
 ## Docker Image Tags
 
