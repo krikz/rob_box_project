@@ -39,7 +39,7 @@ services:
       - ./data/apt-logs:/var/log/apt-cacher-ng
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3142/acng-report.html || exit 1"]
+      test: ["CMD-SHELL", "test -f /var/run/apt-cacher-ng/pid || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
