@@ -6,14 +6,14 @@
 controller_manager:
   ros__parameters:
     update_rate: 50  # Hz - должна совпадать с publish_rate в VESC config
-    
+
     # Список активных контроллеров
     use_sim_time: false
-    
+
     # Diff Drive Controller для управления движением
     diff_drive_controller:
       type: diff_drive_controller/DiffDriveController
-    
+
     # Joint State Broadcaster для публикации состояния джоинтов
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -26,72 +26,72 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
     # Wheel Configuration
     # ───────────────────────────────────────────────────────────────
-    
+
     # Левые колеса (управляются как группа)
     left_wheel_names:
       - front_left_wheel_joint
       - rear_left_wheel_joint
-    
+
     # Правые колеса (управляются как группа)
     right_wheel_names:
       - front_right_wheel_joint
       - rear_right_wheel_joint
-    
+
     # Количество колес с каждой стороны
     wheels_per_side: 2
-    
+
     # ───────────────────────────────────────────────────────────────
     # Robot Geometry
     # ⚠️ TODO: Обновить значения из Fusion 360!
     # ───────────────────────────────────────────────────────────────
-    
+
     # Расстояние между левыми и правыми колесами (м)
     # Измерение: от центра левого колеса до центра правого
     wheel_separation: 0.380
-    
+
     # Радиус колеса (м)
     wheel_radius: 0.115
-    
+
     # Множитель для компенсации проскальзывания (опционально)
     # wheel_separation_multiplier: 1.0
     # wheel_radius_multiplier: 1.0
-    
+
     # ───────────────────────────────────────────────────────────────
     # Publishing Configuration
     # ───────────────────────────────────────────────────────────────
-    
+
     # Частота публикации odometry и TF
     publish_rate: 50.0
-    
+
     # Публикация одометрии в /odom
     odom_frame_id: odom
     base_frame_id: base_link
-    
+
     # Публикация TF трансформации odom → base_link
     enable_odom_tf: true
-    
+
     # Ковариация одометрии (неопределенность)
     pose_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
     twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
-    
+
     # ───────────────────────────────────────────────────────────────
     # Command Configuration
     # ───────────────────────────────────────────────────────────────
-    
+
     # Таймаут команды (сек)
     # Робот остановится если не получит cmd_vel в течение этого времени
     cmd_vel_timeout: 0.5
-    
+
     # Использовать stamped Twist или обычный
     use_stamped_vel: false
-    
+
     # Открытый/закрытый цикл управления
     open_loop: false
-    
+
     # ───────────────────────────────────────────────────────────────
     # Velocity Limits
     # ───────────────────────────────────────────────────────────────
-    
+
     # Линейная скорость (м/с)
     linear:
       x:
@@ -104,7 +104,7 @@ diff_drive_controller:
         min_acceleration: -1.0
         max_jerk: 0.0
         min_jerk: 0.0
-    
+
     # Угловая скорость (рад/с)
     angular:
       z:

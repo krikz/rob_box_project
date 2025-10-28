@@ -10,24 +10,24 @@ rtabmap:
   ros__parameters:
     # Основные параметры
     queue_size: 10
-    
+
     # Режим работы: только LaserScan, без RGB-D
     Mem/IncrementalMemory: true
     Mem/InitWMWithAllNodes: false
-    
+
     # LaserScan параметры - ВАЖНО: boolean без кавычек!
     subscribe_scan: true
     subscribe_rgbd: false
     subscribe_rgb: false
     subscribe_depth: false
     subscribe_stereo: false
-    
+
     # Grid mapping параметры для лидара - строковые значения в кавычках
     Grid/FromDepth: "false"  # Не используем depth камеру
     Grid/CellSize: "0.05"    # 5см разрешение сетки
     Grid/RangeMax: "10.0"    # Используем лидар до 10м
     Grid/RangeMin: "0.2"     # Минимальная дистанция
-    
+
     # Оптимизация для 2D лидара
     Reg/Strategy: "1"        # ICP (Iterative Closest Point)
     Icp/PointToPlane: "false"  # 2D ICP
@@ -36,7 +36,7 @@ rtabmap:
     Icp/MaxTranslation: "0.3"
     Icp/MaxRotation: "0.78"  # ~45 градусов
     Icp/CorrespondenceRatio: "0.4"
-    
+
     # Loop closure для навигации
     Mem/LaserScanNormalK: "0"  # Отключено для 2D лидара
     RGBD/ProximityPathMaxNeighbors: "10"

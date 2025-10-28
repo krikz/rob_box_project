@@ -47,7 +47,7 @@ services:
   # GitHub Actions Self-Hosted Runners (множественные для параллельной работы)
   # Регистрация: ./scripts/register_runner.sh
   # Требует: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO в .env.secrets
-  
+
   # Runner 1 - основной
   github-runner-1:
     image: myoung34/github-runner:latest
