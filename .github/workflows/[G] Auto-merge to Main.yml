@@ -1,4 +1,4 @@
-name: Create PR to main after build
+name: "[G] Auto-merge to Main"
 
 # Автоматическое создание PR в main после успешной сборки ВСЕХ сервисов из develop
 # Срабатывает:
@@ -11,7 +11,7 @@ on:
 jobs:
   # Шаг 1: Проверяем что ВСЕ образы собираются успешно
   build-and-test:
-    uses: ./.github/workflows/build-all.yml
+    uses: ./.github/workflows/[G] Build All Services.yml
     secrets: inherit
     permissions:
       contents: read

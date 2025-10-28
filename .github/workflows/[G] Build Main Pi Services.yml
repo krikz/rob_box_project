@@ -1,4 +1,4 @@
-name: Build Main Pi Services
+name: "[G] Build Main Pi Services"
 
 # Собираем сервисы Main Pi
 on:
@@ -10,7 +10,7 @@ on:
       - 'docker/main/**'
       - 'src/rob_box_description/**'
       - 'src/vesc_nexus/**'  # Submodule для ros2_control
-      - '.github/workflows/build-main-services.yml'
+      - '.github/workflows/[G] Build Main Pi Services.yml'
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Main Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 
@@ -18,6 +18,13 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
   ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
+  # Локальный registry для self-hosted runners - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
+  # LOCAL_BASE_REGISTRY устанавливается только в self-hosted jobs индивидуально
+  LOCAL_BASE_REGISTRY: ""
+  # IP адрес и порт локального registry для self-hosted runners
+  # Изменить при необходимости переноса на другой сервер
+  SELF_HOSTED_REGISTRY_HOST: 192.168.1.125:5000
+  SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base
 
 jobs:
   # Определение тега Docker на основе ветки
@@ -106,6 +113,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
           build-contexts: |
             docker/main/robot_state_publisher=docker/main/robot_state_publisher
 
@@ -155,6 +164,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:rtabmap
 
   # twist_mux (Velocity Command Multiplexer)
   build-twist-mux:
@@ -202,6 +213,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # micro-ROS Agent (ESP32 Sensor Hub communication)
   build-micro-ros-agent:
@@ -249,14 +262,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # ROS2 Control (VESC Motor Control)
   build-ros2-control:
     needs: determine-tag
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # Используем self-hosted runner с локальным registry
     permissions:
       contents: read
       packages: write
+    env:
+      LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
 
     steps:
       - name: Checkout repository
@@ -298,6 +315,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # Nav2 Navigation Stack
   build-nav2:
@@ -345,6 +364,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # LSLIDAR N10 - 2D LiDAR scanner
   build-lslidar:
@@ -392,14 +413,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:pcl
 
   # Internal Dialogue Agent (Perception + Reflection)
   build-perception:
     needs: determine-tag
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # Используем self-hosted runner с локальным registry
     permissions:
       contents: read
       packages: write
+    env:
+      LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
 
     steps:
       - name: Checkout repository
@@ -439,6 +464,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
   # Проверка сборки всех сервисов прошла успешно
   verify-build:
