@@ -94,8 +94,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APT_PROXY=http://192.168.1.125:3142
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -148,8 +146,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APT_PROXY=http://192.168.1.125:3142
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -195,8 +191,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APT_PROXY=http://192.168.1.125:3142
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -247,4 +241,3 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BASE_IMAGE=${{ env.IMAGE_PREFIX }}:ros2-zenoh
-            APT_PROXY=http://192.168.1.125:3142

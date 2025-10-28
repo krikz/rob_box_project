@@ -28,6 +28,9 @@ RUN apt-get update && apt-get install -y \
     can-utils \
     iproute2 \
     net-tools \
+    # ROS 2 development packages needed for building message packages
+    ros-humble-rosidl-default-generators \
+    ros-humble-rosidl-default-runtime \
     # ROS2 Control (ros-base уже в базовом образе)
     ros-humble-ros2-control \
     ros-humble-ros2-controllers \
