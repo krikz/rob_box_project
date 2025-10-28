@@ -216,6 +216,20 @@ docker buildx build --platform linux/arm64 ... --output type=docker
 docker buildx build --platform linux/arm64 ... --push  # В registry
 ```
 
+### "Could not resolve 'host.docker.internal'"
+**Проблема:** APT proxy на `host.docker.internal:3142` не резолвится на Linux
+
+**Решение:** Добавьте `--add-host=host.docker.internal:host-gateway`:
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --add-host=host.docker.internal:host-gateway \
+  --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+  ...
+```
+
+**Примечание:** `host.docker.internal` - это функция Docker Desktop, которая не работает по умолчанию на Linux с обычным Docker Engine. Флаг `--add-host` решает эту проблему.
+
 ---
 
 **Автор:** GitHub Copilot  
