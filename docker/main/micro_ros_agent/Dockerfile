@@ -3,10 +3,9 @@
 # Работает по UART (serial) с ESP32
 
 ARG ROS_DISTRO=humble
-ARG IMAGE_TAG=latest
-ARG BASE_IMAGE_PREFIX=ghcr.io/krikz/rob_box_base
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
-FROM ${BASE_IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-${IMAGE_TAG}
+FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="micro-ROS Agent for ESP32"
 LABEL org.opencontainers.image.description="XRCE-DDS Agent for sensor hub communication"
