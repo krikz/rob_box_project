@@ -44,6 +44,7 @@ jobs:
             --file docker/base/Dockerfile.ros2-zenoh \
             --tag "${IMAGE_PREFIX}:ros2-zenoh-latest" \
             --tag "${LOCAL_PREFIX}:ros2-zenoh-latest" \
+            --tag "${LOCAL_PREFIX}:ros2-zenoh" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
@@ -51,6 +52,7 @@ jobs:
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push ${LOCAL_PREFIX}:ros2-zenoh-latest
+            docker push ${LOCAL_PREFIX}:ros2-zenoh
           fi
           echo "✅ ros2-zenoh base image ready"
 
@@ -72,6 +74,7 @@ jobs:
             --file docker/base/Dockerfile.rtabmap \
             --tag "${IMAGE_PREFIX}:rtabmap-latest" \
             --tag "${LOCAL_PREFIX}:rtabmap-latest" \
+            --tag "${LOCAL_PREFIX}:rtabmap" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
@@ -79,6 +82,7 @@ jobs:
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push ${LOCAL_PREFIX}:rtabmap-latest
+            docker push ${LOCAL_PREFIX}:rtabmap
           fi
           echo "✅ rtabmap base image ready"
 
@@ -100,6 +104,7 @@ jobs:
             --file docker/base/Dockerfile.depthai \
             --tag "${IMAGE_PREFIX}:depthai-latest" \
             --tag "${LOCAL_PREFIX}:depthai-latest" \
+            --tag "${LOCAL_PREFIX}:depthai" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
@@ -107,6 +112,7 @@ jobs:
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push ${LOCAL_PREFIX}:depthai-latest
+            docker push ${LOCAL_PREFIX}:depthai
           fi
           echo "✅ depthai base image ready"
 
@@ -129,6 +135,7 @@ jobs:
             --file docker/base/Dockerfile.pcl \
             --tag "${IMAGE_PREFIX}:pcl-latest" \
             --tag "${LOCAL_PREFIX}:pcl-latest" \
+            --tag "${LOCAL_PREFIX}:pcl" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-latest" \
@@ -137,6 +144,7 @@ jobs:
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push ${LOCAL_PREFIX}:pcl-latest
+            docker push ${LOCAL_PREFIX}:pcl
           fi
           echo "✅ pcl base image ready"
 
@@ -160,6 +168,10 @@ jobs:
           echo ""
           echo "🏷️ Tags:"
           echo "  - ${LOCAL_PREFIX}:ros2-zenoh-latest"
+          echo "  - ${LOCAL_PREFIX}:ros2-zenoh"
           echo "  - ${LOCAL_PREFIX}:rtabmap-latest"
+          echo "  - ${LOCAL_PREFIX}:rtabmap"
           echo "  - ${LOCAL_PREFIX}:depthai-latest"
+          echo "  - ${LOCAL_PREFIX}:depthai"
           echo "  - ${LOCAL_PREFIX}:pcl-latest"
+          echo "  - ${LOCAL_PREFIX}:pcl"
