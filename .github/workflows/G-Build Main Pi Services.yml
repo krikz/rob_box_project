@@ -269,12 +269,10 @@ jobs:
   # ROS2 Control (VESC Motor Control)
   build-ros2-control:
     needs: determine-tag
-    runs-on: self-hosted  # Используем self-hosted runner с локальным registry
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    env:
-      LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 
     steps:
       - name: Checkout repository
@@ -420,12 +418,10 @@ jobs:
   # Internal Dialogue Agent (Perception + Reflection)
   build-perception:
     needs: determine-tag
-    runs-on: self-hosted  # Используем self-hosted runner с локальным registry
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    env:
-      LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 
     steps:
       - name: Checkout repository
