@@ -100,7 +100,7 @@ jobs:
             --tag "localhost:5000/krikz/rob_box_base:pcl-latest" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
