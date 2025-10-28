@@ -153,7 +153,7 @@ push:
 **Файл:** `.github/workflows/G-Build Vision Pi Services.yml`
 
 **Сервисы:**
-- `oak-d` - OAK-D camera (with integrated AprilTag detection)
+- `oak-d` - OAK-D camera
 - `lslidar` - LSLIDAR N10
 - `led-matrix` - NeoPixel LED matrix driver
 - `voice-assistant` - Voice assistant + animations
