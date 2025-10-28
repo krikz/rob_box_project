@@ -1,4 +1,4 @@
-name: "[L] Build Main Pi Services"
+name: "L: Build Main Pi Services"
 
 # Локальная сборка сервисов Main Pi на self-hosted runner
 # Все сервисы собираются параллельно (до 8 одновременно)

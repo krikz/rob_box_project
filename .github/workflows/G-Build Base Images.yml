@@ -1,4 +1,4 @@
-name: "[G] Build Base Images"
+name: "G: Build Base Images"
 
 # Собираем базовые образы только по требованию или по расписанию
 on:

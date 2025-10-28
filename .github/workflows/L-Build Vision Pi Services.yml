@@ -1,4 +1,4 @@
-name: "[L] Build Vision Pi Services"
+name: "L: Build Vision Pi Services"
 
 # Локальная сборка сервисов Vision Pi на self-hosted runner
 # Все сервисы собираются параллельно (до 8 одновременно)

@@ -1,4 +1,4 @@
-name: "[G] Run Tests"
+name: "G: Run Tests"
 
 # Запуск unit tests для ROS2 пакетов
 on:
