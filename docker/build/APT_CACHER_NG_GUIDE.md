@@ -557,7 +557,7 @@ docker buildx build \
 | NetworkTimeout | 300 | ⚠️ Commented (needs v3.8+) | Large ROS packages take time |
 | DnsCacheSeconds | 3600 | ✅ Active | Reduce DNS overhead for repeated repos |
 | ExThreshold | 10 | ✅ Active | Balance disk usage and cache hits |
-| MaxDlSpeed | 0 | No artificial speed limits |
+| MaxDlSpeed | 0 | ✅ Active | No artificial speed limits |
 
 ### Critical Files
 
