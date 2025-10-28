@@ -24,90 +24,10 @@ env:
 jobs:
   # Сборка базовых образов (если нужно)
   build-base-images:
-    runs-on: self-hosted
     if: github.event.inputs.build_base_images == 'true'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Build ros2-zenoh base image
-        run: |
-          echo "🏗️ Building ros2-zenoh base image..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.ros2-zenoh \
-            --tag "ghcr.io/krikz/rob_box_base:ros2-zenoh-latest" \
-            --tag "localhost:5000/krikz/rob_box_base:ros2-zenoh-latest" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/base
-
-          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
-            docker push localhost:5000/krikz/rob_box_base:ros2-zenoh-latest
-          fi
-          echo "✅ ros2-zenoh base image ready"
-
-      - name: Build rtabmap base image
-        run: |
-          echo "🏗️ Building rtabmap base image..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.rtabmap \
-            --tag "ghcr.io/krikz/rob_box_base:rtabmap-latest" \
-            --tag "localhost:5000/krikz/rob_box_base:rtabmap-latest" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/base
-
-          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
-            docker push localhost:5000/krikz/rob_box_base:rtabmap-latest
-          fi
-          echo "✅ rtabmap base image ready"
-
-      - name: Build depthai base image
-        run: |
-          echo "🏗️ Building depthai base image..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.depthai \
-            --tag "ghcr.io/krikz/rob_box_base:depthai-latest" \
-            --tag "localhost:5000/krikz/rob_box_base:depthai-latest" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/base
-
-          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
-            docker push localhost:5000/krikz/rob_box_base:depthai-latest
-          fi
-          echo "✅ depthai base image ready"
-
-      - name: Build pcl base image
-        run: |
-          echo "🏗️ Building pcl base image..."
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.pcl \
-            --tag "ghcr.io/krikz/rob_box_base:pcl-latest" \
-            --tag "localhost:5000/krikz/rob_box_base:pcl-latest" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/base
-
-          if [ "${{ github.event.inputs.push_to_registry }}" = "true" ]; then
-            docker push localhost:5000/krikz/rob_box_base:pcl-latest
-          fi
-          echo "✅ pcl base image ready"
+    uses: ./.github/workflows/L-Build Base Images.yml
+    with:
+      push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
 
   # Main Pi сервисы
   build-main-services:
