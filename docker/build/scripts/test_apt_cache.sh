@@ -13,7 +13,7 @@ if ! curl -f http://localhost:3142/acng-report.html > /dev/null 2>&1; then
 fi
 
 # IP адрес для Docker контейнеров (host.docker.internal не всегда работает в Linux)
-APT_PROXY_URL="http://192.168.1.125:3142"
+APT_PROXY_URL="http://10.1.1.148:3142"
 
 echo "🔧 Используем APT прокси: $APT_PROXY_URL"
 
@@ -30,4 +30,4 @@ docker buildx build \
 echo "✅ Тестовая сборка завершена!"
 echo ""
 echo "Проверим кэш APT:"
-echo "http://192.168.1.125:3142/acng-report.html"
+echo "http://10.1.1.148:3142/acng-report.html"
