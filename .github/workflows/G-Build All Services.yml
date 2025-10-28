@@ -1,4 +1,4 @@
-name: "[G] Build All Services"
+name: "G: Build All Services"
 
 # Полная сборка всех образов проекта на GitHub Actions
 # (базовые + сервисы Main Pi + сервисы Vision Pi)
@@ -15,7 +15,7 @@ on:
 jobs:
   # Шаг 1: Собираем базовые образы
   build-base-images:
-    uses: ./.github/workflows/[G] Build Base Images.yml
+    uses: ./.github/workflows/G-Build Base Images.yml
     secrets: inherit
     permissions:
       contents: read
@@ -24,7 +24,7 @@ jobs:
   # Шаг 2: Собираем сервисы Main Pi (зависят от базовых образов)
   build-main-services:
     needs: build-base-images
-    uses: ./.github/workflows/[G] Build Main Pi Services.yml
+    uses: ./.github/workflows/G-Build Main Pi Services.yml
     secrets: inherit
     permissions:
       contents: read
@@ -33,7 +33,7 @@ jobs:
   # Шаг 3: Собираем сервисы Vision Pi (зависят от базовых образов)
   build-vision-services:
     needs: build-base-images
-    uses: ./.github/workflows/[G] Build Vision Pi Services.yml
+    uses: ./.github/workflows/G-Build Vision Pi Services.yml
     secrets: inherit
     permissions:
       contents: read

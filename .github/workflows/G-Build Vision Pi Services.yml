@@ -1,4 +1,4 @@
-name: "[G] Build Vision Pi Services"
+name: "G: Build Vision Pi Services"
 
 # Собираем сервисы Vision Pi
 on:
@@ -9,7 +9,7 @@ on:
       - 'copilot/**'   # Автосборка для copilot веток (AI-ассистированная разработка)
     paths:
       - 'docker/vision/**'
-      - '.github/workflows/[G] Build Vision Pi Services.yml'
+      - '.github/workflows/G-Build Vision Pi Services.yml'
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Vision Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 
@@ -59,8 +59,8 @@ jobs:
           # Полный тег: ros_distro-branch_tag
           FULL_TAG="${ROS_DISTRO}-${BRANCH_TAG}"
 
-          echo "docker_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
-          echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "docker_tag=${BRANCH_TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
           echo "Branch: $BRANCH_NAME"
           echo "ROS Distro: $ROS_DISTRO"
           echo "Branch Tag: $BRANCH_TAG"

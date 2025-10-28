@@ -1,4 +1,4 @@
-name: "[L] Build All Services"
+name: "L: Build All Services"
 
 # Полная сборка всех образов на self-hosted runner с локальным registry
 # Собирает базовые образы, Main Pi и Vision Pi сервисы параллельно
@@ -113,7 +113,7 @@ jobs:
   build-main-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    uses: ./.github/workflows/[L] Build Main Pi Services.yml
+    uses: ./.github/workflows/L-Build Main Pi Services.yml
     with:
       push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
 
@@ -121,7 +121,7 @@ jobs:
   build-vision-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    uses: ./.github/workflows/[L] Build Vision Pi Services.yml
+    uses: ./.github/workflows/L-Build Vision Pi Services.yml
     with:
       push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
 

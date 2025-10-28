@@ -1,4 +1,4 @@
-name: "[G] Build Main Pi Services"
+name: "G: Build Main Pi Services"
 
 # Собираем сервисы Main Pi
 on:
@@ -10,7 +10,7 @@ on:
       - 'docker/main/**'
       - 'src/rob_box_description/**'
       - 'src/vesc_nexus/**'  # Submodule для ros2_control
-      - '.github/workflows/[G] Build Main Pi Services.yml'
+      - '.github/workflows/G-Build Main Pi Services.yml'
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Main Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 
@@ -61,8 +61,8 @@ jobs:
           # Полный тег: ros_distro-branch_tag
           FULL_TAG="${ROS_DISTRO}-${BRANCH_TAG}"
 
-          echo "docker_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
-          echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "docker_tag=${BRANCH_TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
           echo "Branch: $BRANCH_NAME"
           echo "ROS Distro: $ROS_DISTRO"
           echo "Branch Tag: $BRANCH_TAG"
@@ -274,7 +274,7 @@ jobs:
       contents: read
       packages: write
     env:
-      LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
+      LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 
     steps:
       - name: Checkout repository
@@ -425,7 +425,7 @@ jobs:
       contents: read
       packages: write
     env:
-      LOCAL_BASE_REGISTRY: ${{ env.SELF_HOSTED_REGISTRY_HOST }}/${{ env.SELF_HOSTED_REGISTRY_PREFIX }}
+      LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 
     steps:
       - name: Checkout repository
