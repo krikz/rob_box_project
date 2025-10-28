@@ -13,7 +13,7 @@
          ▼
 ┌─────────────────────────────────────────────────┐
 │ GitHub Actions:                                 │
-│ auto-merge-feature-to-develop.yml               │
+│ G-Auto-merge Feature to Develop.yml             │
 │                                                 │
 │ 1. Detect changes (vision/main/docs)           │
 │ 2. Build changed services                      │
@@ -35,9 +35,9 @@
          ▼
 ┌─────────────────────────────────────────────────┐
 │ GitHub Actions:                                 │
-│ auto-merge-to-main.yml                          │
+│ G-Auto-merge to Main.yml                        │
 │                                                 │
-│ 1. Build ALL services (build-all.yml)          │
+│ 1. Build ALL services (G-Build All Services.yml) │
 │ 2. Create PR to main (if all success)          │
 └────────┬────────────────────────────────────────┘
          │ creates PR
@@ -62,9 +62,30 @@
 
 ## Workflows
 
+### Naming Convention
+
+Все workflows следуют единой схеме именования:
+
+- **G-** prefix - GitHub Actions workflows (`runs-on: ubuntu-latest`)
+  - Сборка на облачных runners GitHub
+  - Публикация в `ghcr.io`
+  - Медленнее, но не требует локальной инфраструктуры
+
+- **L-** prefix - Local self-hosted runner workflows (`runs-on: self-hosted`)
+  - Сборка на локальном build machine
+  - Публикация в локальный registry (`localhost:5000`)
+  - В 10-20x быстрее для Raspberry Pi
+  - Требует настроенный build machine
+
+**Примеры:**
+- `G-Build Base Images.yml` - сборка базовых образов на GitHub Actions
+- `L-Build Base Images.yml` - сборка базовых образов на локальном runner
+- `G-Build All Services.yml` - полная сборка на GitHub Actions
+- `L-Build All Services.yml` - полная сборка на локальном runner
+
 ### 1. Create PR Feature to Develop
 
-**Файл:** `.github/workflows/auto-merge-feature-to-develop.yml`
+**Файл:** `.github/workflows/G-Auto-merge Feature to Develop.yml`
 
 **Триггер:**
 ```yaml
@@ -100,7 +121,7 @@ push:
 
 ### 2. Create PR Develop to Main
 
-**Файл:** `.github/workflows/auto-merge-to-main.yml`
+**Файл:** `.github/workflows/G-Auto-merge to Main.yml`
 
 **Триггер:**
 ```yaml
@@ -110,7 +131,7 @@ push:
 ```
 
 **Логика:**
-1. **Build All Services** - собирает ВСЕ сервисы через `build-all.yml`
+1. **Build All Services** - собирает ВСЕ сервисы через `G-Build All Services.yml`
    - Base images (ros2-zenoh)
    - Vision Pi (oak-d, lslidar, apriltag, led-matrix, voice-assistant)
    - Main Pi (micro-ros-agent, zenoh-router)
@@ -127,44 +148,125 @@ push:
 - PR готов для ревью и ручного мерджа
 - После мерджа в main будут созданы образы `*-humble-latest`
 
-### 3. Build Vision Services
+### 3. Build Vision Services (GitHub Actions)
 
-**Файл:** `.github/workflows/build-vision-services.yml`
+**Файл:** `.github/workflows/G-Build Vision Pi Services.yml`
 
 **Сервисы:**
-- `oak-d` - OAK-D camera
+- `oak-d` - OAK-D camera (with integrated AprilTag detection)
 - `lslidar` - LSLIDAR N10
-- `apriltag` - AprilTag detector
 - `led-matrix` - NeoPixel LED matrix driver
 - `voice-assistant` - Voice assistant + animations
+- `perception` - Perception nodes
 
 **Платформа:** `linux/arm64` (Raspberry Pi 5)
+**Runner:** `ubuntu-latest` (GitHub Actions)
 
-### 4. Build Main Services
+### 4. Build Main Services (GitHub Actions)
 
-**Файл:** `.github/workflows/build-main-services.yml`
+**Файл:** `.github/workflows/G-Build Main Pi Services.yml`
 
 **Сервисы:**
+- `robot-state-publisher` - Robot state publisher
+- `rtabmap` - RTAB-Map SLAM
+- `twist-mux` - Twist multiplexer
 - `micro-ros-agent` - micro-ROS bridge
-- `zenoh-router` - Zenoh DDS router
+- `ros2-control` - ROS 2 Control
+- `nav2` - Nav2 navigation stack
+- `lslidar` - LSLIDAR N10 driver
+- `perception` - Perception nodes
 
 **Платформа:** `linux/arm64` (Raspberry Pi 5)
+**Runner:** `ubuntu-latest` (GitHub Actions)
 
-### 5. Build Base Images
+### 5. Build Base Images (GitHub Actions)
 
-**Файл:** `.github/workflows/build-base-images.yml`
+**Файл:** `.github/workflows/G-Build Base Images.yml`
 
 **Образы:**
-- `ros2-zenoh-humble` - ROS2 Humble + Zenoh
+- `ros2-zenoh` - ROS 2 Humble + Zenoh middleware
+- `rtabmap` - RTAB-Map base image
+- `depthai` - DepthAI для OAK-D камеры
+- `pcl` - Point Cloud Library для лидаров
 
-### 6. Build All
+**Платформа:** `linux/arm64` (Raspberry Pi 5)
+**Runner:** `ubuntu-latest` (GitHub Actions)
+**Registry:** `ghcr.io/krikz/rob_box_base`
 
-**Файл:** `.github/workflows/build-all.yml`
+### 6. Build All Services (GitHub Actions)
 
-Вызывает все остальные workflows:
-- `build-base-images.yml`
-- `build-vision-services.yml`
-- `build-main-services.yml`
+**Файл:** `.github/workflows/G-Build All Services.yml`
+
+**Назначение:** Полная сборка всех образов проекта на GitHub Actions
+
+**Вызывает workflows:**
+- `G-Build Base Images.yml`
+- `G-Build Main Pi Services.yml`
+- `G-Build Vision Pi Services.yml`
+
+**Триггеры:**
+- `push` в ветку `main` (автоматически)
+- `workflow_dispatch` (ручной запуск)
+- `workflow_call` (вызов из других workflows)
+- `schedule` (ночная сборка в 3:00 UTC)
+
+### 7. Build Base Images (Local Runner)
+
+**Файл:** `.github/workflows/L-Build Base Images.yml`
+
+**Образы:**
+- `ros2-zenoh` - ROS 2 Humble + Zenoh middleware
+- `rtabmap` - RTAB-Map base image
+- `depthai` - DepthAI для OAK-D камеры
+- `pcl` - Point Cloud Library для лидаров
+
+**Платформа:** `linux/arm64` (Raspberry Pi 5)
+**Runner:** `self-hosted` (локальный build machine)
+**Registry:** `localhost:5000/krikz/rob_box_base` + `ghcr.io/krikz/rob_box_base`
+**Особенности:**
+- Использует локальный APT cache (`http://host.docker.internal:3142`)
+- В 2-3x быстрее чем GitHub Actions
+- Публикует в локальный registry для быстрого pull на Raspberry Pi
+
+### 8. Build Vision Services (Local Runner)
+
+**Файл:** `.github/workflows/L-Build Vision Pi Services.yml`
+
+Аналог `G-Build Vision Pi Services.yml`, но:
+- Собирается на локальном build machine
+- Использует локальный APT cache
+- Публикует в `localhost:5000`
+
+### 9. Build Main Services (Local Runner)
+
+**Файл:** `.github/workflows/L-Build Main Pi Services.yml`
+
+Аналог `G-Build Main Pi Services.yml`, но:
+- Собирается на локальном build machine
+- Использует локальный APT cache
+- Публикует в `localhost:5000`
+
+### 10. Build All Services (Local Runner)
+
+**Файл:** `.github/workflows/L-Build All Services.yml`
+
+**Назначение:** Полная сборка всех образов на локальном build machine
+
+**Вызывает workflows:**
+- `L-Build Base Images.yml` (опционально, если `build_base_images=true`)
+- `L-Build Main Pi Services.yml`
+- `L-Build Vision Pi Services.yml`
+
+**Триггеры:**
+- `workflow_dispatch` (только ручной запуск)
+
+**Inputs:**
+- `build_base_images` (boolean, default: `false`) - собирать ли базовые образы
+- `push_to_registry` (boolean, default: `true`) - публиковать ли в локальный registry
+
+**Особенности:**
+- В 10-20x быстрее для Raspberry Pi (локальный pull)
+- Требует настроенный build machine с self-hosted runner
 
 ## Docker Image Tags
 
@@ -339,7 +441,7 @@ on:
 
 ```bash
 # Через GitHub CLI
-gh workflow run build-vision-services.yml --ref develop
+gh workflow run "G-Build Vision Pi Services.yml" --ref develop
 
 # Или через web interface
 # GitHub → Actions → Build Vision Pi Services → Run workflow
@@ -385,7 +487,7 @@ git push origin main
 Проверить статус сборки:
 ```bash
 # Через GitHub CLI
-gh run list --workflow=build-vision-services.yml
+gh run list --workflow="G-Build Vision Pi Services.yml"
 
 # Последний статус
 gh run view --log
@@ -403,7 +505,7 @@ gh run view --log
 **Решение:**
 ```bash
 # Проверить логи workflow
-gh run list --workflow=auto-merge-feature-to-develop.yml
+gh run list --workflow="G-Auto-merge Feature to Develop.yml"
 
 # Создать PR вручную если нужно
 gh pr create --base develop --head feature/my-feature \
@@ -421,10 +523,10 @@ gh pr create --base develop --head feature/my-feature \
 **Решение:**
 ```bash
 # Проверить что всё собирается
-gh workflow run build-all.yml --ref develop
+gh workflow run "G-Build All Services.yml" --ref develop
 
 # Проверить статус
-gh run list --workflow=auto-merge-to-main.yml
+gh run list --workflow="G-Auto-merge to Main.yml"
 
 # Создать PR вручную если нужно
 gh pr create --base main --head develop \
@@ -515,7 +617,7 @@ curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash 
 act -l
 
 # Запуск конкретного workflow (dry run)
-act -W .github/workflows/build-vision-services.yml -n
+act -W ".github/workflows/G-Build Vision Pi Services.yml" -n
 
 # Запуск конкретного job
 act -j build-oak-d
