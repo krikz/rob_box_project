@@ -38,7 +38,7 @@ RUN if [ -n "$APT_PROXY" ]; then \
 ARG APT_PROXY=""
 RUN if [ -n "$APT_PROXY" ]; then \
         PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
-        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*:\([0-9]*\)$|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
         echo "🔍 Checking proxy availability at $PROXY_HOST:$PROXY_PORT..."; \
         if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
             echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
