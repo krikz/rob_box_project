@@ -315,7 +315,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:rtabmap
 
   # Nav2 Navigation Stack
   build-nav2:

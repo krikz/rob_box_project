@@ -4,9 +4,14 @@
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
-# Установка Python зависимостей для perception
+# Установка Python зависимостей и ROS 2 development packages для perception
 RUN apt-get update && apt-get install -y \
     python3-pip \
+    # ROS 2 development packages needed for building message packages
+    ros-humble-rosidl-default-generators \
+    ros-humble-rosidl-default-runtime \
+    ros-humble-ament-cmake \
+    ros-humble-ament-cmake-python \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория для ROS2 workspace
