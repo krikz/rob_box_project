@@ -11,10 +11,9 @@
 #   - Общая цепочка: 381 LED (256 + 125)
 
 ARG ROS_DISTRO=humble
-ARG IMAGE_TAG=latest
-ARG BASE_IMAGE_PREFIX=ghcr.io/krikz/rob_box_base
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
-FROM ${BASE_IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-${IMAGE_TAG}
+FROM ${BASE_IMAGE}
 
 # Метаданные
 LABEL org.opencontainers.image.title="LED Matrix System for Vision Pi"
