@@ -1,4 +1,4 @@
-name: "[G] Build Main Pi Services"
+name: "G: Build Main Pi Services"
 
 # Собираем сервисы Main Pi
 on:
@@ -10,7 +10,7 @@ on:
       - 'docker/main/**'
       - 'src/rob_box_description/**'
       - 'src/vesc_nexus/**'  # Submodule для ros2_control
-      - '.github/workflows/**Build Main Pi Services.yml'
+      - '.github/workflows/G-Build Main Pi Services.yml'
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Main Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 

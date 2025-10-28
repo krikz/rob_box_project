@@ -1,4 +1,4 @@
-name: "[G] Auto-merge Feature to Develop"
+name: "G: Auto-merge Feature to Develop"
 
 # Автоматическое создание PR в develop после успешной сборки feature веток
 # Срабатывает при пуше в feature/* и copilot/* ветки
@@ -51,7 +51,7 @@ jobs:
   build-vision:
     needs: detect-changes
     if: needs.detect-changes.outputs.vision_changed == 'true'
-    uses: ./.github/workflows/[G] Build Vision Pi Services.yml
+    uses: ./.github/workflows/G-Build Vision Pi Services.yml
     secrets: inherit
     permissions:
       contents: read
@@ -61,7 +61,7 @@ jobs:
   build-main:
     needs: detect-changes
     if: needs.detect-changes.outputs.main_changed == 'true'
-    uses: ./.github/workflows/[G] Build Main Pi Services.yml
+    uses: ./.github/workflows/G-Build Main Pi Services.yml
     secrets: inherit
     permissions:
       contents: read
