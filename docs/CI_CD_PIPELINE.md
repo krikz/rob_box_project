@@ -268,6 +268,66 @@ push:
 - В 10-20x быстрее для Raspberry Pi (локальный pull)
 - Требует настроенный build machine с self-hosted runner
 
+### 11. Build Single Service (Local Runner)
+
+**Файл:** `.github/workflows/L-Build Single Service.yml`
+
+**Назначение:** Оперативная сборка одного выбранного сервиса на локальном build machine
+
+**Триггеры:**
+- `workflow_dispatch` (только ручной запуск)
+
+**Inputs:**
+- `branch` (string, required) - ветка для сборки (например, `main`, `develop`, `feature/xyz`)
+- `pi_type` (choice, required) - тип Pi: `main`, `vision`, или `base`
+- `service` (string, required) - название сервиса для сборки
+- `push_to_registry` (boolean, default: `true`) - публиковать ли в локальный registry
+
+**Доступные сервисы:**
+
+Main Pi:
+- `robot-state-publisher` / `robot_state_publisher`
+- `rtabmap`
+- `twist-mux` / `twist_mux`
+- `micro-ros-agent` / `micro_ros_agent`
+- `ros2-control` / `ros2_control`
+- `nav2`
+- `lslidar`
+- `perception`
+- `zenoh-router`
+
+Vision Pi:
+- `oak-d`
+- `led-matrix` / `led_matrix`
+- `ceiling-camera`
+- `voice-assistant` / `voice_assistant`
+- `apriltag`
+- `zenoh-router`
+
+Base images:
+- `ros2-zenoh`
+- `rtabmap`
+- `depthai`
+- `pcl`
+
+**Особенности:**
+- Позволяет быстро пересобрать один конкретный образ без сборки всех сервисов
+- Автоматически определяет все параметры сборки (Dockerfile, контекст, базовый образ) на основе выбранного сервиса
+- Поддерживает выбор произвольной ветки для сборки
+- Идеально для итеративной разработки и быстрого тестирования изменений
+- Экономит время: сборка одного сервиса занимает 1-5 минут вместо 30-60 минут для всех сервисов
+
+**Пример использования:**
+1. Открыть GitHub Actions в репозитории
+2. Выбрать workflow "L: Build Single Service"
+3. Нажать "Run workflow"
+4. Заполнить параметры:
+   - Branch: `develop`
+   - Pi type: `vision`
+   - Service: `voice-assistant`
+   - Push to registry: `true`
+5. Запустить workflow
+
 ## Docker Image Tags
 
 ### Tag Naming Convention
