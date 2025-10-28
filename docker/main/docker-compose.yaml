@@ -285,7 +285,7 @@ services:
       - ./scripts/perception:/scripts:ro
       - /dev/shm:/dev/shm
     # Memory limits отключены для Raspberry Pi (kernel не поддерживает cgroup memory limits)
-    # mem_limit: 512m  # Perception - лёгкий контейнер  
+    # mem_limit: 512m  # Perception - лёгкий контейнер
     # memswap_limit: 768m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_perception.sh"]
     depends_on:

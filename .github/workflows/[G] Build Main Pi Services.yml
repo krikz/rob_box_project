@@ -99,7 +99,8 @@ jobs:
           images: ${{ env.IMAGE_PREFIX }}
           tags: |
             type=raw,value=robot-state-publisher-${{ needs.determine-tag.outputs.full_tag }}
-            type=raw,value=robot-state-publisher-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=robot-state-publisher-${{ env.ROS_DISTRO }}-latest,enable=${{
+              github.ref == 'refs/heads/main' }}
             type=sha,prefix=robot-state-publisher-${{ env.ROS_DISTRO }}-
 
       - name: Build and push robot-state-publisher

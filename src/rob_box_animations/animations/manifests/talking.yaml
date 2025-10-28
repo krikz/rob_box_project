@@ -104,7 +104,7 @@ panels:
       - image: "frames/emotions/mouth_talk_03.png"
         duration_ms: 100
         audio_range: [0.17, 0.25]
-      
+
       # Peak phase (sine wave) - frames 4-6
       - image: "frames/emotions/mouth_talk_04.png"
         duration_ms: 100
@@ -115,7 +115,7 @@ panels:
       - image: "frames/emotions/mouth_talk_06.png"
         duration_ms: 100
         audio_range: [0.55, 0.70]
-      
+
       # Closing phase (sawtooth wave) - frames 7-9
       - image: "frames/emotions/mouth_talk_07.png"
         duration_ms: 100
@@ -126,7 +126,7 @@ panels:
       - image: "frames/emotions/mouth_talk_09.png"
         duration_ms: 100
         audio_range: [0.87, 0.92]
-      
+
       # Rest phase (low sine wave) - frames 10-12
       - image: "frames/emotions/mouth_talk_10.png"
         duration_ms: 100

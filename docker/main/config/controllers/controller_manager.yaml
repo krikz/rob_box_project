@@ -7,31 +7,31 @@ controller_manager:
   ros__parameters:
     # Частота обновления controller manager (Hz)
     update_rate: 50  # 50 Hz = 20ms cycle time
-    
+
     # FIX: Явно указываем топик robot_description
     robot_description_topic: /robot_description
-    
+
     # Список контроллеров для автозапуска
     # Они будут загружены и активированы при старте
     controller_names:
       - joint_state_broadcaster
       - diff_drive_controller
-    
+
     # ═══════════════════════════════════════════════════════════════
     # Joint State Broadcaster
     # ═══════════════════════════════════════════════════════════════
     # Публикует состояние всех joints (position, velocity) в топик /joint_states
     # robot_state_publisher подписывается на этот топик для обновления TF
-    
+
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
-    
+
     # ═══════════════════════════════════════════════════════════════
     # Diff Drive Controller
     # ═══════════════════════════════════════════════════════════════
     # Преобразует команды /cmd_vel (Twist) в команды для колес
     # Вычисляет одометрию и публикует /odom и TF odom→base_link
-    
+
     diff_drive_controller:
       type: diff_drive_controller/DiffDriveController
 
@@ -48,50 +48,50 @@ diff_drive_controller:
     left_wheel_names:
       - left_front_wheel_joint
       - left_rear_wheel_joint
-    
+
     # Имена joints для правых колес (из URDF)
     right_wheel_names:
       - right_front_wheel_joint
       - right_rear_wheel_joint
-    
+
     # ✅ Параметры получены из Fusion 360 URDF (2025-10-11)
     # Подтверждены ручными измерениями: база 390мм, колея 289мм
-    
+
     # Расстояние между центрами левых и правых колес (база робота) в метрах
     # Для rocker-bogie это расстояние по оси X между левой и правой группой
     wheel_separation: 0.390  # 390 мм (база: left↔right по X)
-    
+
     # Радиус колеса в метрах (подтверждено из STL анализа)
     wheel_radius: 0.115  # 115 мм (10" колеса от электросамоката)
-    
+
     # Количество колес с каждой стороны
     wheels_per_side: 2
-    
+
     # ───────────────────────────────────────────────────────────────
     # Odometry Configuration
     # ───────────────────────────────────────────────────────────────
     # Опубликовывать TF трансформацию odom → base_link
     enable_odom_tf: true
-    
+
     # Frame IDs для одометрии
     odom_frame_id: odom
     base_frame_id: base_link
-    
+
     # Использовать только реальные колеса (не виртуальные)
     open_loop: false
-    
+
     # Публиковать одометрию
     publish_rate: 50.0  # Hz
-    
+
     # ───────────────────────────────────────────────────────────────
     # Velocity Commands
     # ───────────────────────────────────────────────────────────────
     # Подписываться на /cmd_vel (а не /cmd_vel_stamped)
     use_stamped_vel: false
-    
+
     # Таймаут команды - остановка если нет команд
     cmd_vel_timeout: 0.5  # seconds
-    
+
     # ───────────────────────────────────────────────────────────────
     # Velocity Limits
     # ───────────────────────────────────────────────────────────────
@@ -103,7 +103,7 @@ diff_drive_controller:
     linear.x.max_acceleration: 1.0    # m/s²
     linear.x.min_acceleration: -1.0   # m/s²
     linear.x.has_jerk_limits: false
-    
+
     # Угловая скорость (повороты)
     angular.z.has_velocity_limits: true
     angular.z.max_velocity: 2.0       # rad/s (TODO: настроить после тестов)
@@ -112,19 +112,19 @@ diff_drive_controller:
     angular.z.max_acceleration: 1.5   # rad/s²
     angular.z.min_acceleration: -1.5  # rad/s²
     angular.z.has_jerk_limits: false
-    
+
     # ───────────────────────────────────────────────────────────────
     # Advanced Settings
     # ───────────────────────────────────────────────────────────────
     # Позиционный режим (используем velocity control для VESC)
     position_feedback: false
-    
+
     # Опубликовывать limited velocity
     publish_limited_velocity: true
-    
+
     # Опубликовывать wheel TF (отключено, т.к. robot_state_publisher делает это)
     publish_wheel_data: false
-    
+
     # Velocity rolling window (фильтр скорости)
     velocity_rolling_window_size: 10
 
