@@ -297,7 +297,16 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [prepare, build-robot-state-publisher, build-rtabmap, build-twist-mux, build-micro-ros-agent, build-ros2-control, build-nav2, build-lslidar, build-perception]
+    needs:
+      - prepare
+      - build-robot-state-publisher
+      - build-rtabmap
+      - build-twist-mux
+      - build-micro-ros-agent
+      - build-ros2-control
+      - build-nav2
+      - build-lslidar
+      - build-perception
     runs-on: self-hosted
     if: always()
     steps:

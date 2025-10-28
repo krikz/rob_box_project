@@ -24,7 +24,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
 
           ### Built Services:
           - ✓ Vision Pi services (oak-d with AprilTag, lslidar, led-matrix, voice-assistant)
-          - ✓ Main Pi services (micro-ros-agent, zenoh-router)  
+          - ✓ Main Pi services (micro-ros-agent, zenoh-router)
           - ✓ Base images (ros2-zenoh)
 
           ### Docker Images:

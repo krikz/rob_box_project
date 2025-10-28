@@ -23,7 +23,7 @@ jobs:
         run: |
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           ROS_DISTRO="${{ env.ROS_DISTRO }}"
-          
+
           # Определяем базовый тег на основе ветки
           if [ "$BRANCH_NAME" = "main" ]; then
             BRANCH_TAG="latest"
@@ -38,10 +38,10 @@ jobs:
           else
             BRANCH_TAG="test"
           fi
-          
+
           # Полный тег: ros_distro-branch_tag
           FULL_TAG="${ROS_DISTRO}-${BRANCH_TAG}"
-          
+
           echo "docker_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
           echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
           echo "Branch: $BRANCH_NAME"
@@ -56,7 +56,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -111,7 +111,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -159,7 +159,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -207,7 +207,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

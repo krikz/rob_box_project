@@ -110,7 +110,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
-          
+
           # Создаём описание PR с информацией о сборке
           PR_BODY="## ✅ Сборка успешно завершена
 
@@ -118,17 +118,17 @@ jobs:
 
           ### Изменённые компоненты:
           "
-          
+
           if [ "${{ needs.detect-changes.outputs.vision_changed }}" == "true" ]; then
             PR_BODY="${PR_BODY}
           - ✓ Vision Pi services"
           fi
-          
+
           if [ "${{ needs.detect-changes.outputs.main_changed }}" == "true" ]; then
             PR_BODY="${PR_BODY}
           - ✓ Main Pi services"
           fi
-          
+
           if [ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]; then
             PR_BODY="${PR_BODY}
           - ✓ Documentation"
