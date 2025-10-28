@@ -29,14 +29,17 @@ services:
 
   # APT Cacher NG - кэш пакетов для ускорения apt-get install с поддержкой параллельных сборок
   # Доступ: http://<build-machine-ip>:3142
+  # ИЗМЕНЕНО: используем sameersbn/apt-cacher-ng (популярный и стабильный образ)
+  # КРИТИЧНО: init: true обязателен для sameersbn образа (из документации)
   apt-cacher-ng:
-    image: mbentley/apt-cacher-ng:latest
+    image: sameersbn/apt-cacher-ng:3.7.4-20220421
     container_name: build-apt-cache
+    init: true  # ОБЯЗАТЕЛЬНО! Без этого контейнер падает
     network_mode: host
     volumes:
       - ./data/apt-cache:/var/cache/apt-cacher-ng
-      - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
-      - ./data/apt-logs:/var/log/apt-cacher-ng
+      # ВРЕМЕННО закомментировано: проверим с дефолтным конфигом sameersbn
+      # - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "test -f /var/run/apt-cacher-ng/pid || exit 1"]
