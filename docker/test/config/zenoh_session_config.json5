@@ -1,0 +1,20 @@
+{
+  // Zenoh Session Configuration для ROS 2 нод в тестовом окружении
+  // Все ноды подключаются к локальному router на localhost
+  
+  mode: "client",
+  
+  // Подключение к локальному роутеру
+  connect: {
+    endpoints: [
+      "tcp/127.0.0.1:7447"
+    ]
+  },
+  
+  // Отключить multicast (не нужно)
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  }
+}

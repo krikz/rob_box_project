@@ -1,0 +1,15 @@
+# Environment variables (local overrides)
+.env
+
+# Mock data files (may be large)
+mock_data/*.bag
+mock_data/*.db3
+
+# Test results
+test_results/
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+.DS_Store

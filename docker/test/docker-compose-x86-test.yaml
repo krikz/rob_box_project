@@ -1,0 +1,321 @@
+# Docker Compose для тестирования Rob Box на x86_64/AMD64 через QEMU emulation
+#
+# ВАЖНО: 
+# 1. Установите QEMU: sudo apt-get install qemu-user-static binfmt-support
+# 2. Зарегистрируйте: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+# 3. Hardware-dependent сервисы будут падать (ожидаемо)
+#
+# Использование:
+#   docker compose -f docker-compose-x86-test.yaml up -d
+#   docker compose -f docker-compose-x86-test.yaml logs -f
+#   docker compose -f docker-compose-x86-test.yaml down
+
+services:
+  # ============================================================================
+  # ZENOH ROUTER - центральный коммуникационный узел (native amd64 для скорости)
+  # ============================================================================
+  zenoh-router:
+    image: eclipse/zenoh:latest
+    platform: linux/amd64  # Native на x86_64 для максимальной производительности
+    container_name: test-zenoh-router
+    network_mode: host
+    environment:
+      - RUST_LOG=zenoh=info
+    volumes:
+      - ./config/zenoh_test_config.json5:/zenoh_config.json5:ro
+    command: -c /zenoh_config.json5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  # ============================================================================
+  # MAIN PI SERVICES (через QEMU ARM64 emulation)
+  # ============================================================================
+
+  # Robot State Publisher - публикует URDF и TF tree
+  # ✅ Должен работать нормально
+  robot-state-publisher:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:robot-state-publisher-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-robot-state-publisher
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+      - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Twist Mux - мультиплексирование команд скорости
+  # ✅ Должен работать нормально
+  twist-mux:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:twist-mux-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-twist-mux
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Perception - контекст и агрегация данных
+  # ✅ Должен работать, но без реальных данных
+  perception:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:perception-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-perception
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # RTAB-Map SLAM
+  # ⚠️ Запустится, но будет idle без топиков /camera/* и /scan
+  rtabmap:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-rtabmap
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - QT_QPA_PLATFORM=offscreen
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+      - ./mock_data:/mock_data:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    # NOTE: RTABMAP будет выдавать "Did not receive data since 5 seconds" - это ожидаемо
+
+  # Nav2 - навигационный стек
+  # ⚠️ Запустится, но будет idle без карты и /scan
+  nav2:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:nav2-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-nav2
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================================================
+  # VISION PI SERVICES (через QEMU ARM64 emulation)
+  # ============================================================================
+
+  # OAK-D Camera
+  # ❌ Падает с ошибкой "Failed to find device" (нет /dev/bus/usb)
+  oak-d:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-oak-d
+    network_mode: host
+    privileged: true
+    environment:
+      - ROS_DOMAIN_ID=0
+      - DISPLAY=:0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: "no"  # Не перезапускать после падения (ожидаемая ошибка)
+    # NOTE: Упадёт с "[error] Failed to find device (ma2x8x)" - это ОЖИДАЕМО
+
+  # LS LiDAR N10
+  # ❌ Падает с ошибкой "Could not open serial port"
+  lslidar:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:lslidar-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-lslidar
+    network_mode: host
+    privileged: true
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: "no"  # Не перезапускать (ожидаемая ошибка)
+    # NOTE: Упадёт с "Could not open serial port" - это ОЖИДАЕМО
+
+  # LED Matrix
+  # ❌ Падает с ошибкой "Can't open /dev/spidev0.0"
+  led-matrix:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-led-matrix
+    network_mode: host
+    privileged: true
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: "no"  # Не перезапускать (ожидаемая ошибка)
+    # NOTE: Упадёт с "Can't open /dev/spidev0.0" - это ОЖИДАЕМО
+
+  # Voice Assistant
+  # ❌ Падает с ошибкой "ALSA lib: cannot find card '2'"
+  voice-assistant:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-voice-assistant
+    network_mode: host
+    privileged: true
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: "no"  # Не перезапускать (ожидаемая ошибка)
+    # NOTE: Упадёт с "ALSA lib: cannot find card" - это ОЖИДАЕМО
+
+  # micro-ROS Agent
+  # ❌ Падает с ошибкой "Cannot open serial port /dev/ttyUSB0"
+  micro-ros-agent:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:micro-ros-agent-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-micro-ros-agent
+    network_mode: host
+    privileged: true
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+      - MICROROS_SERIAL_PORT=/dev/ttyUSB0
+      - MICROROS_BAUDRATE=115200
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: "no"  # Не перезапускать (ожидаемая ошибка)
+    # NOTE: Упадёт с "Cannot open serial port" - это ОЖИДАЕМО
+
+  # VESC Nexus - motor control
+  # ❌ Падает с ошибкой "VESC not found on any port"
+  vesc-nexus:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:vesc-nexus-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    platform: linux/arm64  # ARM64 через QEMU
+    container_name: test-vesc-nexus
+    network_mode: host
+    privileged: true
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/config/zenoh_session_config.json5
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: "no"  # Не перезапускать (ожидаемая ошибка)
+    # NOTE: Упадёт с "VESC not found" - это ОЖИДАЕМО
+
+# ============================================================================
+# VOLUMES - persistent data
+# ============================================================================
+volumes:
+  test-maps:
+    name: test-rtabmap-maps
+
+# ============================================================================
+# ПРИМЕЧАНИЯ
+# ============================================================================
+#
+# ✅ Успешно работают (без hardware):
+#   - zenoh-router (native amd64)
+#   - robot-state-publisher (QEMU arm64)
+#   - twist-mux (QEMU arm64)
+#   - perception (QEMU arm64)
+#
+# ⚠️ Запускаются, но idle (ждут топики):
+#   - rtabmap (ждёт /camera/*, /scan)
+#   - nav2 (ждёт /scan, /odom, /map)
+#
+# ❌ Падают с ожидаемыми ошибками (требуют hardware):
+#   - oak-d (нет камеры)
+#   - lslidar (нет устройства)
+#   - led-matrix (нет SPI)
+#   - voice-assistant (нет микрофона)
+#   - micro-ros-agent (нет UART)
+#   - vesc-nexus (нет VESC)
+#
+# Для smoke testing используйте только первые 4 сервиса:
+#   docker compose -f docker-compose-x86-test.yaml up -d \
+#     zenoh-router robot-state-publisher twist-mux perception
+#

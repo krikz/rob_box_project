@@ -1,0 +1,43 @@
+{
+  // Zenoh Router Configuration для тестирования на x86_64
+  // Все ноды работают на localhost (одна машина)
+  
+  mode: "router",
+  
+  // Слушать на localhost для всех клиентов
+  listen: {
+    endpoints: [
+      "tcp/127.0.0.1:7447",  // Localhost TCP
+      "tcp/0.0.0.0:7447"     // Все интерфейсы
+    ]
+  },
+  
+  // Отключить multicast discovery (не нужно для localhost)
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  },
+  
+  // REST API для мониторинга
+  plugins: {
+    rest: {
+      http_port: 8000
+    },
+    
+    // Storage plugin для recording (опционально)
+    // storage_manager: {
+    //   volumes: {
+    //     test_storage: {
+    //       backend: "memory"
+    //     }
+    //   },
+    //   storages: {
+    //     test_demo: {
+    //       key_expr: "test/**",
+    //       volume: "test_storage"
+    //     }
+    //   }
+    // }
+  }
+}
