@@ -1,6 +1,7 @@
-name: "G: Deploy and Verify"
+name: "L: Deploy and Verify"
 
-# Автоматизированный деплой и проверка работоспособности робота
+# Автоматизированный деплой и проверка работоспособности робота на self-hosted runner
+# Требует: self-hosted runner с доступом к локальной сети (10.1.1.x) и Raspberry Pi устройствам
 # - Останавливает контейнеры на обоих Pi
 # - Обновляет код из выбранной ветки
 # - Подтягивает свежие образы
@@ -46,7 +47,11 @@ on:
 
 jobs:
   deploy-and-verify:
-    runs-on: ubuntu-latest
+    # Всегда используем self-hosted runner, так как:
+    # - Raspberry Pi устройства в локальной сети (10.1.1.x) недоступны из GitHub hosted runners
+    # - Требуется SSH доступ к устройствам
+    # - Локальный registry (localhost:5000) доступен только на self-hosted машине
+    runs-on: self-hosted
     permissions:
       contents: read
       issues: write
@@ -104,6 +109,116 @@ jobs:
           # Установка sshpass для автоматической аутентификации
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
+
+      - name: Verify SSH Tools and Connectivity
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Verifying SSH tools and connectivity..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          
+          # Проверка наличия необходимых инструментов
+          echo "1. Checking SSH tools availability..."
+          TOOLS_OK=true
+          
+          if ! command -v ssh &> /dev/null; then
+            echo "❌ ERROR: 'ssh' command not found in runner"
+            echo "   The SSH client is not installed or not in PATH"
+            TOOLS_OK=false
+          else
+            echo "✅ ssh: $(which ssh)"
+            ssh -V 2>&1 | head -1
+          fi
+          
+          if ! command -v sshpass &> /dev/null; then
+            echo "❌ ERROR: 'sshpass' command not found in runner"
+            echo "   sshpass was not installed correctly"
+            TOOLS_OK=false
+          else
+            echo "✅ sshpass: $(which sshpass)"
+          fi
+          
+          if [ "$TOOLS_OK" = false ]; then
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ DEPLOYMENT FAILED: Missing required SSH tools"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "Required packages are not available in the runner."
+            echo "Please check the 'Setup SSH and Environment' step for installation errors."
+            exit 1
+          fi
+          
+          echo ""
+          echo "2. Checking network connectivity..."
+          
+          # Проверка сетевой доступности хостов
+          CONNECTIVITY_OK=true
+          
+          echo "Testing Vision Pi (${{ env.vision_pi_ip }})..."
+          if ping -c 1 -W 2 ${{ env.vision_pi_ip }} &> /dev/null; then
+            echo "✅ Vision Pi is reachable via ICMP"
+          else
+            echo "⚠️  Vision Pi is NOT reachable via ICMP (ping)"
+            CONNECTIVITY_OK=false
+          fi
+          
+          # Проверка доступности SSH порта
+          if timeout 3 bash -c "</dev/tcp/${{ env.vision_pi_ip }}/22" 2>/dev/null; then
+            echo "✅ Vision Pi SSH port (22) is open"
+          else
+            echo "❌ Vision Pi SSH port (22) is NOT accessible"
+            CONNECTIVITY_OK=false
+          fi
+          
+          echo ""
+          echo "Testing Main Pi (${{ env.main_pi_ip }})..."
+          if ping -c 1 -W 2 ${{ env.main_pi_ip }} &> /dev/null; then
+            echo "✅ Main Pi is reachable via ICMP"
+          else
+            echo "⚠️  Main Pi is NOT reachable via ICMP (ping)"
+            CONNECTIVITY_OK=false
+          fi
+          
+          # Проверка доступности SSH порта
+          if timeout 3 bash -c "</dev/tcp/${{ env.main_pi_ip }}/22" 2>/dev/null; then
+            echo "✅ Main Pi SSH port (22) is open"
+          else
+            echo "❌ Main Pi SSH port (22) is NOT accessible"
+            CONNECTIVITY_OK=false
+          fi
+          
+          echo ""
+          
+          if [ "$CONNECTIVITY_OK" = false ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ DEPLOYMENT FAILED: Target hosts unreachable"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "The Raspberry Pi devices are not accessible from this runner."
+            echo ""
+            echo "Possible reasons:"
+            echo "  • GitHub Actions runners cannot reach private network IPs (10.1.1.x)"
+            echo "  • This workflow requires a self-hosted runner on the same network"
+            echo "  • Devices may be powered off or network is down"
+            echo "  • Firewall blocking connections"
+            echo ""
+            echo "Solutions:"
+            echo "  1. Use a self-hosted GitHub Actions runner on the local network"
+            echo "  2. Set up a VPN connection from GitHub runners to your network"
+            echo "  3. Use SSH tunneling or a bastion host with public IP"
+            echo ""
+            echo "Target IPs:"
+            echo "  • Vision Pi: ${{ env.vision_pi_ip }}"
+            echo "  • Main Pi: ${{ env.main_pi_ip }}"
+            echo ""
+            exit 1
+          fi
+          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ All connectivity checks passed"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Dry Run Notice
         if: inputs.dry_run
