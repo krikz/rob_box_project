@@ -648,7 +648,7 @@ jobs:
              [ "${{ steps.vision_status.outputs.vision_healthy }}" == "false" ] || \
              [ "${{ steps.main_status.outputs.main_healthy }}" == "false" ]; then
             SEVERITY="critical"
-            ASSIGNEE="copilot"
+            ASSIGNEE="krikz"
             LABEL="bug,critical,deployment"
             TITLE="🚨 Critical Deployment Failure"
           else
