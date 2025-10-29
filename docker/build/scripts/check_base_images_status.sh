@@ -25,7 +25,7 @@ fi
 # Проверка локального registry
 echo "📦 Images in local registry:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-curl -s http://10.1.1.148:5000/v2/krikz/rob_box_base/tags/list | jq -r '.tags[]' 2>/dev/null || echo "❌ Failed to query registry"
+curl -s http://10.1.1.5:5000/v2/krikz/rob_box_base/tags/list | jq -r '.tags[]' 2>/dev/null || echo "❌ Failed to query registry"
 echo ""
 
 # Статистика
@@ -35,7 +35,7 @@ EXPECTED=("ros2-zenoh" "rtabmap" "pcl" "depthai")
 FOUND=0
 
 for img in "${EXPECTED[@]}"; do
-    if curl -s "http://10.1.1.148:5000/v2/krikz/rob_box_base/tags/list" | grep -q "\"$img\""; then
+    if curl -s "http://10.1.1.5:5000/v2/krikz/rob_box_base/tags/list" | grep -q "\"$img\""; then
         echo "✅ $img - FOUND"
         ((FOUND++))
     else
