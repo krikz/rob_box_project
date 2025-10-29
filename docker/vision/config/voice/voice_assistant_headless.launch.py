@@ -103,18 +103,17 @@ def generate_launch_description():
     )
     
     # === Sound Node (Phase 4: Sound Effects) ===
-    # ОТКЛЮЧЕНО: Конфликтует с tts_node за аудио устройство
-    # sound_node = Node(
-    #     package='rob_box_voice',
-    #     executable='sound_node',
-    #     name='sound_node',
-    #     namespace=namespace,
-    #     parameters=[config_file],
-    #     output='screen',
-    #     respawn=True,
-    #     respawn_delay=3.0,
-    #     arguments=['--ros-args', '--log-level', 'info']
-    # )
+    sound_node = Node(
+        package='rob_box_voice',
+        executable='sound_node',
+        name='sound_node',
+        namespace=namespace,
+        parameters=[config_file],
+        output='screen',
+        respawn=True,
+        respawn_delay=3.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
     
     # === Command Node (Phase 5: Command recognition + Nav2) ===
     command_node = Node(
@@ -138,6 +137,6 @@ def generate_launch_description():
         dialogue_node,
         tts_node,
         stt_node,
-        # sound_node,  # ОТКЛЮЧЕНО: конфликт с tts_node
+        sound_node,
         command_node
     ])

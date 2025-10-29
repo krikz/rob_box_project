@@ -27,6 +27,7 @@ from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from std_msgs.msg import String
 from .utils.audio_utils import find_respeaker_device_sounddevice
+from .audio_playback_manager import AudioPlaybackManager
 
 
 @contextmanager
@@ -148,6 +149,9 @@ class TTSNode(Node):
         # Инициализация аудио устройства для воспроизведения
         self.device_index = None
         self.initialize_audio_device()
+        
+        # Менеджер воспроизведения (предотвращает ALSA конфликты)
+        self.playback_manager = AudioPlaybackManager.get_instance()
 
         # Подписка на dialogue response (от dialogue_node)
         self.dialogue_sub = self.create_subscription(String, "/voice/dialogue/response", self.dialogue_callback, 10)
@@ -512,20 +516,25 @@ class TTSNode(Node):
                 self.publish_state("stopped")
                 return
 
-            # Блокирующее воспроизведение
+            # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
             with ignore_stderr(enable=True):
                 self.current_stream = True  # Маркер что воспроизведение идёт
-                # channels определяется автоматически из shape данных (audio_stereo уже stereo)
-                sd.play(audio_stereo, target_rate, device=self.device_index, blocking=False)
-
-                # Ждём завершения, но проверяем stop_requested
-                while sd.get_stream().active:
-                    if self.stop_requested:
-                        self.get_logger().warn("🔇 STOP: прерываем воспроизведение")
-                        sd.stop()
-                        break
-                    sd.wait(10)  # Проверяем каждые 10ms
-
+                
+                # Используем AudioPlaybackManager для синхронизированного доступа
+                success = self.playback_manager.play_audio(
+                    audio_data=audio_stereo,
+                    sample_rate=target_rate,
+                    device_index=self.device_index,
+                    blocking=True,  # Блокирующее воспроизведение для TTS
+                    timeout=5.0,
+                    node_name="tts_node"
+                )
+                
+                if not success:
+                    self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
+                    self.current_stream = None
+                    return
+                
                 self.current_stream = None
 
             # Cleanup для устранения белого шума после воспроизведения
