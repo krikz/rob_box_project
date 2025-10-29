@@ -95,6 +95,18 @@
 - LED анимации
 - Performance troubleshooting
 
+## 🏗️ Сборка и развертывание
+
+### [SINGLE_SERVICE_BUILD.md](SINGLE_SERVICE_BUILD.md)
+**Быстрая сборка одного Docker образа** 🆕 (октябрь 2025)
+
+- Workflow для оперативной сборки одного сервиса
+- Экономия времени: 1-5 минут вместо 30-60 минут
+- Выбор ветки и конкретного сервиса
+- Сборка на локальном runner
+- Main Pi, Vision Pi, и базовые образы
+- Пошаговые инструкции
+
 ### [HEALTH_MONITORING.md](HEALTH_MONITORING.md)
 **Мониторинг здоровья системы** 🏥
 

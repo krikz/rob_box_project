@@ -273,9 +273,72 @@ push:
 - В 10-20x быстрее для Raspberry Pi (локальный pull)
 - Требует настроенный build machine с self-hosted runner
 
-### 11. Deploy and Verify (Manual Deployment)
+### 11. Build Single Service (Local Runner)
 
-**Файл:** `.github/workflows/G-Deploy and Verify.yml`
+**Файл:** `.github/workflows/L-Build Single Service.yml`
+
+**Назначение:** Оперативная сборка одного выбранного сервиса на локальном build machine
+
+**Триггеры:**
+- `workflow_dispatch` (только ручной запуск)
+
+**Inputs:**
+- `branch` (string, required) - ветка для сборки (например, `main`, `develop`, `feature/xyz`)
+- `pi_type` (choice, required) - тип Pi: `main`, `vision`, или `base`
+- `service` (string, required) - название сервиса для сборки
+- `push_to_registry` (boolean, default: `true`) - публиковать ли в локальный registry
+- `create_issue_on_failure` (boolean, default: `true`) - создавать GitHub issue при ошибке сборки
+
+**Доступные сервисы:**
+
+Main Pi:
+- `robot-state-publisher` / `robot_state_publisher`
+- `rtabmap`
+- `twist-mux` / `twist_mux`
+- `micro-ros-agent` / `micro_ros_agent`
+- `ros2-control` / `ros2_control`
+- `nav2`
+- `lslidar`
+- `perception`
+- `zenoh-router`
+
+Vision Pi:
+- `oak-d`
+- `led-matrix` / `led_matrix`
+- `ceiling-camera`
+- `voice-assistant` / `voice_assistant`
+- `apriltag`
+- `zenoh-router`
+
+Base images:
+- `ros2-zenoh`
+- `rtabmap`
+- `depthai`
+- `pcl`
+
+**Особенности:**
+- Позволяет быстро пересобрать один конкретный образ без сборки всех сервисов
+- Автоматически определяет все параметры сборки (Dockerfile, контекст, базовый образ) на основе выбранного сервиса
+- Поддерживает выбор произвольной ветки для сборки
+- Идеально для итеративной разработки и быстрого тестирования изменений
+- Экономит время: сборка одного сервиса занимает 1-5 минут вместо 30-60 минут для всех сервисов
+- Автоматически создает GitHub issue при ошибке сборки с детальной информацией
+
+**Пример использования:**
+1. Открыть GitHub Actions в репозитории
+2. Выбрать workflow "L: Build Single Service"
+3. Нажать "Run workflow"
+4. Заполнить параметры:
+   - Branch: `develop`
+   - Pi type: `vision`
+   - Service: `voice-assistant`
+   - Push to registry: `true`
+   - Create issue on failure: `true`
+5. Запустить workflow
+
+### 12. Deploy and Verify (Manual Deployment)
+
+**Файл:** `.github/workflows/L-Deploy and Verify.yml`
 
 **Назначение:** Автоматизированный деплой и проверка работоспособности робота
 
@@ -285,7 +348,7 @@ push:
 **Inputs:**
 - `branch` - ветка для деплоя (main/develop/feature/test)
 - `environment` - целевое окружение (production/staging/test)
-- `skip_pull_images` - пропустить pull образов
+- `registry_source` - источник Docker образов (skip/github/local)
 - `dry_run` - сухой прогон без реального деплоя
 
 **Процесс:**
@@ -300,7 +363,7 @@ push:
 9. Автоматическое создание GitHub Issue при проблемах
 
 **Issue Assignment:**
-- Критические ошибки → @copilot (label: `bug`, `critical`, `deployment`)
+- Критические ошибки → @krikz (label: `bug`, `critical`, `deployment`)
 - Предупреждения → @krikz (label: `bug`, `deployment`)
 
 **Подробная документация:** См. [DEPLOYMENT_WORKFLOW.md](DEPLOYMENT_WORKFLOW.md)

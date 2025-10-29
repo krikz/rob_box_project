@@ -1,0 +1,484 @@
+name: "L: Build Single Service"
+
+# Локальная сборка одного выбранного сервиса на self-hosted runner
+# Позволяет оперативно собрать конкретный образ без сборки всех сервисов
+on:
+  workflow_dispatch:  # Ручной запуск
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        default: 'main'
+        type: string
+
+      pi_type:
+        description: 'Pi type (main/vision/base)'
+        required: true
+        type: choice
+        options:
+          - main
+          - vision
+          - base
+
+      service:
+        description: 'Service to build (see list in workflow description)'
+        required: true
+        type: string
+
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
+        required: false
+        default: true
+        type: boolean
+
+      create_issue_on_failure:
+        description: 'Create GitHub issue if build fails'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  GHCR_REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/krikz/rob_box
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # Определение конфигурации сборки
+  prepare:
+    runs-on: self-hosted
+    outputs:
+      docker_tag: ${{ steps.set-config.outputs.docker_tag }}
+      service_name: ${{ steps.set-config.outputs.service_name }}
+      dockerfile_path: ${{ steps.set-config.outputs.dockerfile_path }}
+      build_context: ${{ steps.set-config.outputs.build_context }}
+      base_image: ${{ steps.set-config.outputs.base_image }}
+      image_tag: ${{ steps.set-config.outputs.image_tag }}
+      local_tag: ${{ steps.set-config.outputs.local_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          submodules: recursive
+
+      - name: Set build configuration
+        id: set-config
+        run: |
+          BRANCH_NAME="${{ inputs.branch }}"
+          PI_TYPE="${{ inputs.pi_type }}"
+          SERVICE="${{ inputs.service }}"
+
+          # Определение Docker tag на основе ветки
+          if [ "$BRANCH_NAME" = "main" ]; then
+            DOCKER_TAG="latest"
+          elif [ "$BRANCH_NAME" = "develop" ]; then
+            DOCKER_TAG="dev"
+          else
+            DOCKER_TAG="local"
+          fi
+
+          echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
+          echo "Docker Tag: $DOCKER_TAG"
+
+          # Конфигурация для разных типов Pi
+          case "$PI_TYPE" in
+            "main")
+              case "$SERVICE" in
+                "robot-state-publisher"|"robot_state_publisher")
+                  SERVICE_NAME="robot_state_publisher"
+                  IMAGE_NAME="robot-state-publisher"
+                  DOCKERFILE="docker/main/robot_state_publisher/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "rtabmap")
+                  SERVICE_NAME="rtabmap"
+                  IMAGE_NAME="rtabmap"
+                  DOCKERFILE="docker/main/rtabmap/Dockerfile"
+                  BUILD_CONTEXT="docker/main/rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  ;;
+                "twist-mux"|"twist_mux")
+                  SERVICE_NAME="twist_mux"
+                  IMAGE_NAME="twist-mux"
+                  DOCKERFILE="docker/main/twist_mux/Dockerfile"
+                  BUILD_CONTEXT="docker/main/twist_mux"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "micro-ros-agent"|"micro_ros_agent")
+                  SERVICE_NAME="micro_ros_agent"
+                  IMAGE_NAME="micro-ros-agent"
+                  DOCKERFILE="docker/main/micro_ros_agent/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "ros2-control"|"ros2_control")
+                  SERVICE_NAME="ros2_control"
+                  IMAGE_NAME="ros2-control"
+                  DOCKERFILE="docker/main/ros2_control/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  ;;
+                "nav2")
+                  SERVICE_NAME="nav2"
+                  IMAGE_NAME="nav2"
+                  DOCKERFILE="docker/main/nav2/Dockerfile"
+                  BUILD_CONTEXT="docker/main/nav2"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "lslidar")
+                  SERVICE_NAME="lslidar"
+                  IMAGE_NAME="lslidar"
+                  DOCKERFILE="docker/main/lslidar/Dockerfile"
+                  BUILD_CONTEXT="docker/main"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:pcl"
+                  ;;
+                "perception")
+                  SERVICE_NAME="perception"
+                  IMAGE_NAME="perception"
+                  DOCKERFILE="docker/main/perception/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "zenoh-router")
+                  SERVICE_NAME="zenoh-router"
+                  IMAGE_NAME="zenoh-router"
+                  DOCKERFILE="docker/main/zenoh-router/Dockerfile"
+                  BUILD_CONTEXT="docker/main/zenoh-router"
+                  BASE_IMAGE="eclipse/zenoh:latest"
+                  ;;
+                *)
+                  echo "❌ Unknown Main Pi service: $SERVICE"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            "vision")
+              case "$SERVICE" in
+                "oak-d")
+                  SERVICE_NAME="oak-d"
+                  IMAGE_NAME="oak-d"
+                  DOCKERFILE="docker/vision/oak-d/Dockerfile"
+                  BUILD_CONTEXT="docker/vision"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:depthai"
+                  ;;
+                "led-matrix"|"led_matrix")
+                  SERVICE_NAME="led_matrix"
+                  IMAGE_NAME="led-matrix"
+                  DOCKERFILE="docker/vision/led_matrix/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "ceiling-camera")
+                  SERVICE_NAME="ceiling-camera"
+                  IMAGE_NAME="ceiling-camera"
+                  DOCKERFILE="docker/vision/ceiling-camera/Dockerfile"
+                  BUILD_CONTEXT="docker/vision"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "voice-assistant"|"voice_assistant")
+                  SERVICE_NAME="voice_assistant"
+                  IMAGE_NAME="voice-assistant"
+                  DOCKERFILE="docker/vision/voice_assistant/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "apriltag")
+                  SERVICE_NAME="apriltag"
+                  IMAGE_NAME="apriltag"
+                  DOCKERFILE="docker/vision/apriltag/Dockerfile"
+                  BUILD_CONTEXT="docker/vision"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "zenoh-router")
+                  SERVICE_NAME="zenoh-router"
+                  IMAGE_NAME="zenoh-router"
+                  DOCKERFILE="docker/vision/zenoh-router/Dockerfile"
+                  BUILD_CONTEXT="docker/vision/zenoh-router"
+                  BASE_IMAGE="eclipse/zenoh:latest"
+                  ;;
+                *)
+                  echo "❌ Unknown Vision Pi service: $SERVICE"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            "base")
+              case "$SERVICE" in
+                "ros2-zenoh")
+                  SERVICE_NAME="ros2-zenoh"
+                  IMAGE_NAME="ros2-zenoh"
+                  DOCKERFILE="docker/base/Dockerfile.ros2-zenoh"
+                  BUILD_CONTEXT="docker/base"
+                  BASE_IMAGE=""
+                  IMAGE_PREFIX="ghcr.io/krikz/rob_box_base"
+                  LOCAL_PREFIX="localhost:5000/krikz/rob_box_base"
+                  ;;
+                "rtabmap")
+                  SERVICE_NAME="rtabmap"
+                  IMAGE_NAME="rtabmap"
+                  DOCKERFILE="docker/base/Dockerfile.rtabmap"
+                  BUILD_CONTEXT="docker/base"
+                  BASE_IMAGE=""
+                  IMAGE_PREFIX="ghcr.io/krikz/rob_box_base"
+                  LOCAL_PREFIX="localhost:5000/krikz/rob_box_base"
+                  ;;
+                "depthai")
+                  SERVICE_NAME="depthai"
+                  IMAGE_NAME="depthai"
+                  DOCKERFILE="docker/base/Dockerfile.depthai"
+                  BUILD_CONTEXT="docker/base"
+                  BASE_IMAGE=""
+                  IMAGE_PREFIX="ghcr.io/krikz/rob_box_base"
+                  LOCAL_PREFIX="localhost:5000/krikz/rob_box_base"
+                  ;;
+                "pcl")
+                  SERVICE_NAME="pcl"
+                  IMAGE_NAME="pcl"
+                  DOCKERFILE="docker/base/Dockerfile.pcl"
+                  BUILD_CONTEXT="docker/base"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-latest"
+                  IMAGE_PREFIX="ghcr.io/krikz/rob_box_base"
+                  LOCAL_PREFIX="localhost:5000/krikz/rob_box_base"
+                  ;;
+                *)
+                  echo "❌ Unknown Base image: $SERVICE"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            *)
+              echo "❌ Unknown Pi type: $PI_TYPE"
+              exit 1
+              ;;
+          esac
+
+          # Формирование тегов
+          if [ "$PI_TYPE" = "base" ]; then
+            GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${DOCKER_TAG}"
+            LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${DOCKER_TAG}"
+          else
+            GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
+            LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
+          fi
+
+          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
+          echo "dockerfile_path=${DOCKERFILE}" >> $GITHUB_OUTPUT
+          echo "build_context=${BUILD_CONTEXT}" >> $GITHUB_OUTPUT
+          echo "base_image=${BASE_IMAGE}" >> $GITHUB_OUTPUT
+          echo "image_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
+          echo "local_tag=${LOCAL_TAG}" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "📋 Build Configuration:"
+          echo "  Pi Type: $PI_TYPE"
+          echo "  Service: $SERVICE_NAME"
+          echo "  Image Name: $IMAGE_NAME"
+          echo "  Dockerfile: $DOCKERFILE"
+          echo "  Build Context: $BUILD_CONTEXT"
+          echo "  Base Image: $BASE_IMAGE"
+          echo "  GHCR Tag: $GHCR_TAG"
+          echo "  Local Tag: $LOCAL_TAG"
+
+  # Сборка выбранного сервиса
+  build-service:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          submodules: recursive
+
+      - name: Build ${{ needs.prepare.outputs.service_name }}
+        run: |
+          echo "🏗️ Building ${{ needs.prepare.outputs.service_name }}..."
+          echo ""
+          echo "Configuration:"
+          echo "  Branch: ${{ inputs.branch }}"
+          echo "  Pi Type: ${{ inputs.pi_type }}"
+          echo "  Service: ${{ needs.prepare.outputs.service_name }}"
+          echo "  Dockerfile: ${{ needs.prepare.outputs.dockerfile_path }}"
+          echo "  Build Context: ${{ needs.prepare.outputs.build_context }}"
+          echo "  Base Image: ${{ needs.prepare.outputs.base_image }}"
+          echo "  Image Tag: ${{ needs.prepare.outputs.image_tag }}"
+          echo "  Local Tag: ${{ needs.prepare.outputs.local_tag }}"
+          echo ""
+
+          # Подготовка аргументов сборки
+          BUILD_ARGS=""
+          if [ -n "${{ needs.prepare.outputs.base_image }}" ]; then
+            BUILD_ARGS="--build-arg=BASE_IMAGE=${{ needs.prepare.outputs.base_image }}"
+          fi
+
+          # Сборка образа
+          docker buildx build \
+            --platform linux/arm64 \
+            --file "${{ needs.prepare.outputs.dockerfile_path }}" \
+            --tag "${{ needs.prepare.outputs.image_tag }}" \
+            --tag "${{ needs.prepare.outputs.local_tag }}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            ${BUILD_ARGS} \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            "${{ needs.prepare.outputs.build_context }}"
+
+          echo ""
+          echo "✅ Build complete!"
+
+          # Push в локальный registry
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            echo ""
+            echo "📤 Pushing to local registry..."
+            docker push "${{ needs.prepare.outputs.local_tag }}"
+            echo "✅ Push complete!"
+          fi
+
+  # Итоговая сводка
+  summary:
+    needs: [prepare, build-service]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Single Service Build Complete!"
+          echo ""
+          echo "📋 Configuration:"
+          echo "  Branch: ${{ inputs.branch }}"
+          echo "  Pi Type: ${{ inputs.pi_type }}"
+          echo "  Service: ${{ needs.prepare.outputs.service_name }}"
+          echo "  Docker Tag: ${{ needs.prepare.outputs.docker_tag }}"
+          echo "  Push to Registry: ${{ inputs.push_to_registry }}"
+          echo ""
+          echo "🏷️ Image Tags:"
+          echo "  GHCR: ${{ needs.prepare.outputs.image_tag }}"
+          echo "  Local: ${{ needs.prepare.outputs.local_tag }}"
+          echo ""
+          echo "📦 Available services by Pi type:"
+          echo ""
+          echo "Main Pi services:"
+          echo "  - robot-state-publisher (robot_state_publisher)"
+          echo "  - rtabmap"
+          echo "  - twist-mux (twist_mux)"
+          echo "  - micro-ros-agent (micro_ros_agent)"
+          echo "  - ros2-control (ros2_control)"
+          echo "  - nav2"
+          echo "  - lslidar"
+          echo "  - perception"
+          echo "  - zenoh-router"
+          echo ""
+          echo "Vision Pi services:"
+          echo "  - oak-d"
+          echo "  - led-matrix (led_matrix)"
+          echo "  - ceiling-camera"
+          echo "  - voice-assistant (voice_assistant)"
+          echo "  - apriltag"
+          echo "  - zenoh-router"
+          echo ""
+          echo "Base images:"
+          echo "  - ros2-zenoh"
+          echo "  - rtabmap"
+          echo "  - depthai"
+          echo "  - pcl"
+
+  # Создание issue при ошибке сборки
+  create-issue-on-failure:
+    needs: [prepare, build-service]
+    runs-on: self-hosted
+    if: always() && failure() && inputs.create_issue_on_failure
+    permissions:
+      issues: write
+    steps:
+      - name: Create GitHub Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚨 Build failed, creating GitHub issue..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Формируем описание issue
+          ISSUE_BODY="## Build Failure Report
+
+          **Service:** \`${{ needs.prepare.outputs.service_name }}\`
+          **Branch:** \`${{ inputs.branch }}\`
+          **Pi Type:** \`${{ inputs.pi_type }}\`
+          **Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{
+          github.repository }}/actions/runs/${{ github.run_id }})
+
+          ### Build Configuration
+          - **Dockerfile:** \`${{ needs.prepare.outputs.dockerfile_path }}\`
+          - **Build Context:** \`${{ needs.prepare.outputs.build_context }}\`
+          - **Base Image:** \`${{ needs.prepare.outputs.base_image }}\`
+          - **Target Tag:** \`${{ needs.prepare.outputs.local_tag }}\`
+
+          ### Error Details
+
+          The build failed during the Docker image build process. Check the workflow logs for detailed error messages:
+          [View Workflow Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ### Possible Causes
+          - Missing or incorrect dependencies in Dockerfile
+          - Base image not available or incorrect tag
+          - Build context missing required files
+          - Docker build errors (syntax, compilation, etc.)
+          - Network issues pulling dependencies
+          - Insufficient disk space or resources
+
+          ### Recommended Actions
+          1. Review the workflow logs for specific error messages
+          2. Check if base image is available: \`docker pull ${{ needs.prepare.outputs.base_image }}\`
+          3. Verify Dockerfile syntax and dependencies
+          4. Test build locally:
+             \`\`\`bash
+             cd ${{ needs.prepare.outputs.build_context }}
+             docker buildx build \\
+               --platform linux/arm64 \\
+               --file ${{ needs.prepare.outputs.dockerfile_path }} \\
+               --tag test:local \\
+               --build-arg BASE_IMAGE=${{ needs.prepare.outputs.base_image }} \\
+               --build-arg APT_PROXY=http://host.docker.internal:3142 \\
+               .
+             \`\`\`
+          5. Check recent changes to the service code or Dockerfile
+          6. Verify build machine has sufficient resources
+
+          ### Quick Commands
+
+          \`\`\`bash
+          # Check Docker daemon status
+          docker info
+
+          # Check available disk space
+          df -h
+
+          # View recent Docker build logs
+          docker buildx ls
+
+          # Clean up Docker build cache if needed
+          docker buildx prune -f
+          \`\`\`
+
+          ---
+          *Auto-generated by L: Build Single Service workflow*"
+
+          # Создаем issue
+          gh issue create \
+            --title "🚨 Build Failed: ${{ needs.prepare.outputs.service_name }} (${{ inputs.pi_type }})" \
+            --body "$ISSUE_BODY" \
+            --label "bug,build-failure,ci/cd" \
+            --assignee "krikz"
+
+          echo "✅ Issue created and assigned to @krikz"
