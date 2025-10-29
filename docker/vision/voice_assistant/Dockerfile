@@ -209,7 +209,7 @@ RUN mkdir -p /models && \
 # иначе CMake не может найти библиотеки при поиске через find_package()
 # Source ROS setup для CMAKE_PREFIX_PATH, затем экспортируем LD_LIBRARY_PATH
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    export LD_LIBRARY_PATH=/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:$LD_LIBRARY_PATH && \
+    export LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO}/lib:$LD_LIBRARY_PATH && \
     colcon build \
     --packages-select audio_common_msgs rob_box_perception_msgs rob_box_voice rob_box_animations \
     --symlink-install \
