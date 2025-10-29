@@ -124,7 +124,57 @@ gh workflow run "G-Deploy and Verify.yml" \
 - Определение IP адресов Pi
 - Настройка источника Docker образов (registry prefix)
 
-### 2. Vision Pi Deployment
+### 2. Verification (проверка готовности) 🆕
+
+**Добавлено в версии от 2025-10-29**
+
+Проверяет наличие необходимых инструментов и доступность целевых хостов:
+
+#### SSH Tools Check
+```
+✅ ssh: /usr/bin/ssh
+   OpenSSH_9.x, OpenSSL x.x.x
+✅ sshpass: /usr/bin/sshpass
+```
+
+Если инструменты отсутствуют:
+```
+❌ ERROR: 'sshpass' command not found in runner
+❌ DEPLOYMENT FAILED: Missing required SSH tools
+```
+
+#### Network Connectivity Check
+
+Проверяет доступность Raspberry Pi:
+
+**Vision Pi (10.1.1.21):**
+- ICMP ping test (1 пакет, таймаут 2 сек)
+- SSH port (22) TCP connection test (таймаут 3 сек)
+
+**Main Pi (10.1.1.20):**
+- ICMP ping test (1 пакет, таймаут 2 сек)
+- SSH port (22) TCP connection test (таймаут 3 сек)
+
+Если хосты недоступны:
+```
+❌ Vision Pi SSH port (22) is NOT accessible
+❌ DEPLOYMENT FAILED: Target hosts unreachable
+
+Possible reasons:
+  • GitHub Actions runners cannot reach private network IPs (10.1.1.x)
+  • This workflow requires a self-hosted runner on the same network
+  • Devices may be powered off or network is down
+  • Firewall blocking connections
+
+Solutions:
+  1. Use a self-hosted GitHub Actions runner on the local network
+  2. Set up a VPN connection from GitHub runners to your network
+  3. Use SSH tunneling or a bastion host with public IP
+```
+
+**Важно:** Эта проверка пропускается в dry-run режиме.
+
+### 3. Vision Pi Deployment
 
 ```
 🛑 Stop Containers
@@ -364,6 +414,72 @@ gh workflow run "G-Deploy and Verify.yml" \
 ```
 
 ## Troubleshooting
+
+### Проблема: Missing SSH tools in runner
+
+**Симптомы:**
+```
+❌ ERROR: 'ssh' command not found in runner
+❌ ERROR: 'sshpass' command not found in runner
+❌ DEPLOYMENT FAILED: Missing required SSH tools
+```
+
+**Решение:**
+1. Проверить что установка sshpass в шаге "Setup SSH and Environment" прошла успешно
+2. Проверить логи установки: `sudo apt-get install -y sshpass`
+3. Убедиться что используется правильный runner (ubuntu-latest)
+4. Если проблема повторяется, использовать self-hosted runner
+
+**Примечание:** С версии от 2025-10-29 workflow автоматически проверяет наличие SSH инструментов перед началом деплоя.
+
+### Проблема: Target hosts unreachable
+
+**Симптомы:**
+```
+⚠️  Vision Pi is NOT reachable via ICMP (ping)
+❌ Vision Pi SSH port (22) is NOT accessible
+❌ DEPLOYMENT FAILED: Target hosts unreachable
+```
+
+**Причины:**
+- **GitHub Actions hosted runners** не могут достучаться до частных IP адресов (10.1.1.x)
+- Raspberry Pi устройства находятся в локальной сети
+- Устройства выключены или сеть недоступна
+- Firewall блокирует соединения
+
+**Решение:**
+
+**Вариант 1: Self-hosted runner (рекомендуется)**
+```bash
+# На машине в той же сети что и Raspberry Pi
+# 1. Скачать GitHub Actions runner
+curl -o actions-runner-linux-x64-2.319.1.tar.gz -L \
+  https://github.com/actions/runner/releases/download/v2.319.1/actions-runner-linux-x64-2.319.1.tar.gz
+tar xzf ./actions-runner-linux-x64-2.319.1.tar.gz
+
+# 2. Настроить runner
+./config.sh --url https://github.com/krikz/rob_box_project --token YOUR_TOKEN
+
+# 3. Запустить как сервис
+sudo ./svc.sh install
+sudo ./svc.sh start
+
+# 4. Обновить workflow для использования self-hosted runner
+# В .github/workflows/G-Deploy and Verify.yml:
+# runs-on: [self-hosted, linux]
+```
+
+**Вариант 2: VPN туннель**
+- Настроить WireGuard/OpenVPN на GitHub runner
+- Подключиться к локальной сети через VPN
+- Требует дополнительной настройки безопасности
+
+**Вариант 3: SSH bastion host**
+- Настроить публично доступный bastion host
+- Проброс SSH соединений к Raspberry Pi через bastion
+- Требует дополнительной инфраструктуры
+
+**Примечание:** С версии от 2025-10-29 workflow автоматически различает проблемы с SSH инструментами и проблемы с сетевой доступностью.
 
 ### Проблема: SSH connection failed
 
