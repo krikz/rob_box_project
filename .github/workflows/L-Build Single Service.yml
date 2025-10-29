@@ -25,10 +25,11 @@ on:
           - base
 
       service:
-        description: 'Service to build (select based on pi_type above)'
+        description: 'Service to build - select based on pi_type above (see workflow summary for service mapping)'
         required: true
         type: choice
         options:
+          # Main Pi services
           - robot-state-publisher
           - rtabmap
           - twist-mux
@@ -37,12 +38,15 @@ on:
           - nav2
           - lslidar
           - perception
+          # Vision Pi services
           - oak-d
           - led-matrix
           - ceiling-camera
           - voice-assistant
           - apriltag
+          # Common to both
           - zenoh-router
+          # Base images
           - ros2-zenoh
           - depthai
           - pcl
