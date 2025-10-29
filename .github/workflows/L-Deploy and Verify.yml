@@ -50,7 +50,7 @@ jobs:
     # Всегда используем self-hosted runner, так как:
     # - Raspberry Pi устройства в локальной сети (10.1.1.x) недоступны из GitHub hosted runners
     # - Требуется SSH доступ к устройствам
-    # - Локальный registry (localhost:5000) доступен только на self-hosted машине
+    # - Локальный registry (10.1.1.148:5000) доступен только на self-hosted машине
     runs-on: self-hosted
     permissions:
       contents: read
@@ -94,8 +94,8 @@ jobs:
               echo "registry_display=GitHub Container Registry (ghcr.io)" >> $GITHUB_ENV
               ;;
             local)
-              echo "SERVICE_IMAGE_PREFIX=localhost:5000/krikz/rob_box" >> $GITHUB_ENV
-              echo "registry_display=Local Build Machine Registry (localhost:5000)" >> $GITHUB_ENV
+              echo "SERVICE_IMAGE_PREFIX=10.1.1.148:5000/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Local Build Machine Registry (10.1.1.148:5000)" >> $GITHUB_ENV
               ;;
             skip)
               echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV

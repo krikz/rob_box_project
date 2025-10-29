@@ -9,8 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
 BASE_DIR="$PROJECT_ROOT/docker/base"
 
-LOCAL_REGISTRY="10.1.1.148:5000"
-APT_PROXY="http://10.1.1.148:3142"
+LOCAL_REGISTRY="10.1.1.5:5000"
+APT_PROXY="http://10.1.1.5:3142"
 PLATFORM="linux/arm64"
 
 echo "🏗️  Сборка базовых образов для локального registry..."

@@ -23,7 +23,7 @@ env:
   LOCAL_BASE_REGISTRY: ""
   # IP адрес и порт локального registry для self-hosted runners
   # Изменить при необходимости переноса на другой сервер
-  SELF_HOSTED_REGISTRY_HOST: 192.168.1.125:5000
+  SELF_HOSTED_REGISTRY_HOST: 10.1.1.148:5000
   SELF_HOSTED_REGISTRY_PREFIX: krikz/rob_box_base
 
 jobs:
