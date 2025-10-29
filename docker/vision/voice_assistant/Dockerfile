@@ -66,20 +66,29 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     # --reinstall в том же RUN (для доступа к apt cache!)
     # Пересоздаёт CMake config файлы с правильными путями
+    # РАСШИРЕННЫЙ СПИСОК для полного исправления ARM64 cross-compilation
     && apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-builtin-interfaces \
     ros-${ROS_DISTRO}-rcutils \
+    ros-${ROS_DISTRO}-rcpputils \
     ros-${ROS_DISTRO}-rosidl-runtime-c \
     ros-${ROS_DISTRO}-rosidl-runtime-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-interface \
+    ros-${ROS_DISTRO}-rosidl-typesupport-introspection-c \
+    ros-${ROS_DISTRO}-rosidl-typesupport-introspection-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     ros-${ROS_DISTRO}-rosidl-generator-c \
     ros-${ROS_DISTRO}-rosidl-generator-cpp \
+    ros-${ROS_DISTRO}-rosidl-generator-py \
+    ros-${ROS_DISTRO}-ament-cmake \
     ros-${ROS_DISTRO}-ament-cmake-core \
+    ros-${ROS_DISTRO}-ament-cmake-python \
+    ros-${ROS_DISTRO}-ament-cmake-ros \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
@@ -196,11 +205,11 @@ RUN mkdir -p /models && \
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
 # ============================================
 
-# ИСПРАВЛЕНИЕ: Убираем проблемные CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH,
-# которые мешают правильному поиску библиотек через CMake package config.
-# Sourcing /opt/ros/humble/setup.sh достаточно для правильной настройки путей.
-# Используем --symlink-install для избежания копирования Python файлов.
+# ИСПРАВЛЕНИЕ: Для ARM64 cross-compilation нужно явно указать пути библиотек
+# иначе CMake не может найти библиотеки при поиске через find_package()
+# Source ROS setup для CMAKE_PREFIX_PATH, затем экспортируем LD_LIBRARY_PATH
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    export LD_LIBRARY_PATH=/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:$LD_LIBRARY_PATH && \
     colcon build \
     --packages-select audio_common_msgs rob_box_perception_msgs rob_box_voice rob_box_animations \
     --symlink-install \
