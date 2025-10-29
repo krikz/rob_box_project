@@ -287,6 +287,7 @@ push:
 - `pi_type` (choice, required) - тип Pi: `main`, `vision`, или `base`
 - `service` (string, required) - название сервиса для сборки
 - `push_to_registry` (boolean, default: `true`) - публиковать ли в локальный registry
+- `create_issue_on_failure` (boolean, default: `true`) - создавать GitHub issue при ошибке сборки
 
 **Доступные сервисы:**
 
@@ -321,6 +322,7 @@ Base images:
 - Поддерживает выбор произвольной ветки для сборки
 - Идеально для итеративной разработки и быстрого тестирования изменений
 - Экономит время: сборка одного сервиса занимает 1-5 минут вместо 30-60 минут для всех сервисов
+- Автоматически создает GitHub issue при ошибке сборки с детальной информацией
 
 **Пример использования:**
 1. Открыть GitHub Actions в репозитории
@@ -331,6 +333,7 @@ Base images:
    - Pi type: `vision`
    - Service: `voice-assistant`
    - Push to registry: `true`
+   - Create issue on failure: `true`
 5. Запустить workflow
 
 ### 12. Deploy and Verify (Manual Deployment)

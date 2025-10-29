@@ -81,6 +81,12 @@ The `L: Build Single Service` workflow allows you to build just one Docker image
    - Default: `true`
    - Set to `false` if you only want to build locally without pushing
 
+   **Create Issue on Failure** (optional)
+   - Default: `true`
+   - Automatically creates a GitHub issue if the build fails
+   - Issue includes error details, build configuration, and troubleshooting steps
+   - Set to `false` to disable automatic issue creation
+
 4. **Run the Workflow**
    - Click "Run workflow" button
    - Monitor progress in the Actions tab
@@ -159,6 +165,42 @@ Push to Registry: true
 ### 4. Local Build Only
 
 You want to build without pushing to registry:
+
+```
+Branch: develop
+Pi Type: vision
+Service: oak-d
+Push to Registry: false
+```
+
+### 5. Build Without Issue Creation
+
+You're testing and don't want issues created for expected failures:
+
+```
+Branch: feature/experimental
+Pi Type: main
+Service: perception
+Push to Registry: true
+Create Issue on Failure: false
+```
+
+## Automatic Issue Creation
+
+When a build fails and `create_issue_on_failure` is `true` (default), the workflow automatically creates a GitHub issue with:
+
+- **Service and configuration details**
+- **Error timestamp and workflow link**
+- **Build configuration** (Dockerfile, context, base image)
+- **Possible causes** of the failure
+- **Recommended troubleshooting actions**
+- **Quick commands** for debugging
+- **Label:** `bug`, `build-failure`, `ci/cd`
+- **Assignee:** `@krikz`
+
+This helps track build problems and provides immediate guidance for fixing issues.
+
+## Image Tags
 
 ```
 Branch: develop
@@ -265,3 +307,9 @@ A: No, this workflow requires `self-hosted` runner. For GitHub Actions runners, 
 
 **Q: How do I know which base image a service needs?**
 A: Check the service's Dockerfile or refer to the workflow summary output which shows this information.
+
+**Q: What happens when a build fails?**
+A: By default, the workflow automatically creates a GitHub issue with detailed error information, troubleshooting steps, and quick commands for debugging. You can disable this by setting `create_issue_on_failure` to `false`.
+
+**Q: Can I disable automatic issue creation?**
+A: Yes, set the `create_issue_on_failure` parameter to `false` when running the workflow. This is useful when testing experimental changes where failures are expected.
