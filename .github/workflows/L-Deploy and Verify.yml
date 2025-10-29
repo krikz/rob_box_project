@@ -625,12 +625,12 @@ jobs:
              [ "${{ steps.main_status.outputs.main_healthy }}" == "false" ]; then
             SEVERITY="critical"
             ASSIGNEE="copilot"
-            LABEL="bug,critical"
+            LABEL="bug,critical,deployment"
             TITLE="🚨 Critical Deployment Failure"
           else
             SEVERITY="warning"
             ASSIGNEE="krikz"
-            LABEL="bug"
+            LABEL="bug,deployment"
             TITLE="⚠️  Deployment Warnings"
           fi
 
