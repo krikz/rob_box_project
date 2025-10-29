@@ -333,6 +333,38 @@ Base images:
    - Push to registry: `true`
 5. Запустить workflow
 
+### 12. Deploy and Verify (Manual Deployment)
+
+**Файл:** `.github/workflows/L-Deploy and Verify.yml`
+
+**Назначение:** Автоматизированный деплой и проверка работоспособности робота
+
+**Триггер:**
+- `workflow_dispatch` (только ручной запуск)
+
+**Inputs:**
+- `branch` - ветка для деплоя (main/develop/feature/test)
+- `environment` - целевое окружение (production/staging/test)
+- `registry_source` - источник Docker образов (skip/github/local)
+- `dry_run` - сухой прогон без реального деплоя
+
+**Процесс:**
+1. SSH подключение к обоим Pi
+2. Остановка контейнеров (`docker compose down`)
+3. Обновление кода из выбранной ветки (`git pull`)
+4. Загрузка свежих Docker образов (`docker compose pull`)
+5. Запуск контейнеров (`docker compose up -d`)
+6. Проверка здоровья контейнеров
+7. Анализ логов на ошибки
+8. Проверка ROS2 топиков
+9. Автоматическое создание GitHub Issue при проблемах
+
+**Issue Assignment:**
+- Критические ошибки → @krikz (label: `bug`, `critical`, `deployment`)
+- Предупреждения → @krikz (label: `bug`, `deployment`)
+
+**Подробная документация:** См. [DEPLOYMENT_WORKFLOW.md](DEPLOYMENT_WORKFLOW.md)
+
 ## Docker Image Tags
 
 ### Tag Naming Convention
