@@ -1,6 +1,7 @@
-name: "G: Deploy and Verify"
+name: "L: Deploy and Verify"
 
-# Автоматизированный деплой и проверка работоспособности робота
+# Автоматизированный деплой и проверка работоспособности робота на self-hosted runner
+# Требует: self-hosted runner с доступом к локальной сети (10.1.1.x) и Raspberry Pi устройствам
 # - Останавливает контейнеры на обоих Pi
 # - Обновляет код из выбранной ветки
 # - Подтягивает свежие образы
@@ -46,10 +47,11 @@ on:
 
 jobs:
   deploy-and-verify:
-    # Используем self-hosted runner когда registry_source=local,
-    # так как localhost:5000 доступен только на self-hosted машине
-    # и SSH доступ к Raspberry Pi требует локальной сети
-    runs-on: ${{ inputs.registry_source == 'local' && 'self-hosted' || 'ubuntu-latest' }}
+    # Всегда используем self-hosted runner, так как:
+    # - Raspberry Pi устройства в локальной сети (10.1.1.x) недоступны из GitHub hosted runners
+    # - Требуется SSH доступ к устройствам
+    # - Локальный registry (localhost:5000) доступен только на self-hosted машине
+    runs-on: self-hosted
     permissions:
       contents: read
       issues: write

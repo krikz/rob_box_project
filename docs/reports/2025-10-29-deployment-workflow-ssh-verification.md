@@ -5,9 +5,11 @@
 **Status:** ✅ Resolved  
 **Author:** GitHub Copilot
 
+**Update 2025-10-29:** Workflow renamed from `G: Deploy and Verify` to `L: Deploy and Verify` and now always runs on self-hosted runner, as GitHub hosted runners cannot access Raspberry Pi devices in local network.
+
 ## Problem Statement
 
-The deployment workflow `G: Deploy and Verify` was failing with generic SSH connection errors when trying to connect to Raspberry Pi devices:
+The deployment workflow `G: Deploy and Verify` (now `L: Deploy and Verify`) was failing with generic SSH connection errors when trying to connect to Raspberry Pi devices:
 
 ```
 ssh: connect to host 10.1.1.21 port 22: No route to host
@@ -135,7 +137,7 @@ Added two new troubleshooting sections:
 ## Files Changed
 
 ```
-.github/workflows/G-Deploy and Verify.yml  (+110 lines)
+.github/workflows/L-Deploy and Verify.yml  (+110 lines)
 docs/DEPLOYMENT_WORKFLOW.md                (+117 lines)
 docs/reports/2025-10-29-deployment-workflow-ssh-verification.md (new file)
 ```
@@ -191,7 +193,7 @@ sudo ./svc.sh start
 
 # 4. Use registry_source=local when running workflow
 # Workflow automatically uses self-hosted runner when registry_source=local
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=staging \
   -f registry_source=local
@@ -216,7 +218,7 @@ Deploy a public-facing SSH bastion host to proxy connections to Raspberry Pi dev
 Use dry-run mode to test workflow without actual deployment:
 
 ```bash
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=staging \
   -f registry_source=github \
