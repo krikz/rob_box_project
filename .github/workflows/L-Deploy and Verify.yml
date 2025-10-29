@@ -428,16 +428,21 @@ jobs:
           for container in $CONTAINERS; do
             echo "Checking logs for: $container"
 
-            # Получаем последние 100 строк логов
-            LOGS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
-              "docker logs --tail 100 $container 2>&1")
+            # Получаем первые 50 строк (инициализация) и последние 150 строк логов
+            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+              "docker logs --tail 10000 $container 2>&1 | head -50")
+            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+              "docker logs --tail 150 $container 2>&1")
+            
+            # Объединяем логи для анализа
+            LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
-            # Проверяем на критические ошибки
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR.*failed|segmentation fault|core dumped)" || true)
+            # Проверяем на критические ошибки (расширенные паттерны)
+            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
-              echo "=== $container CRITICAL ===" >> $LOGS_FILE
+              echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
               echo "$CRITICAL" >> $LOGS_FILE
               echo "" >> $LOGS_FILE
             fi
@@ -448,7 +453,14 @@ jobs:
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
               echo "=== $container WARNINGS ===" >> $LOGS_FILE
-              echo "$WARNINGS" | head -20 >> $LOGS_FILE
+              echo "$WARNINGS" | head -30 >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+            
+            # Если найдены критические ошибки, добавляем полный контекст инициализации
+            if [ ! -z "$CRITICAL" ]; then
+              echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
+              echo "$LOGS_START" >> $LOGS_FILE
               echo "" >> $LOGS_FILE
             fi
           done
@@ -487,16 +499,21 @@ jobs:
           for container in $CONTAINERS; do
             echo "Checking logs for: $container"
 
-            # Получаем последние 100 строк логов
-            LOGS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
-              "docker logs --tail 100 $container 2>&1")
+            # Получаем первые 50 строк (инициализация) и последние 150 строк логов
+            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+              "docker logs --tail 10000 $container 2>&1 | head -50")
+            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+              "docker logs --tail 150 $container 2>&1")
+            
+            # Объединяем логи для анализа
+            LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
-            # Проверяем на критические ошибки
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR.*failed|segmentation fault|core dumped)" || true)
+            # Проверяем на критические ошибки (расширенные паттерны)
+            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
-              echo "=== $container CRITICAL ===" >> $LOGS_FILE
+              echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
               echo "$CRITICAL" >> $LOGS_FILE
               echo "" >> $LOGS_FILE
             fi
@@ -507,7 +524,14 @@ jobs:
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
               echo "=== $container WARNINGS ===" >> $LOGS_FILE
-              echo "$WARNINGS" | head -20 >> $LOGS_FILE
+              echo "$WARNINGS" | head -30 >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+            
+            # Если найдены критические ошибки, добавляем полный контекст инициализации
+            if [ ! -z "$CRITICAL" ]; then
+              echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
+              echo "$LOGS_START" >> $LOGS_FILE
               echo "" >> $LOGS_FILE
             fi
           done
