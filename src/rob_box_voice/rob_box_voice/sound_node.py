@@ -19,6 +19,7 @@ import sounddevice as sd
 from typing import Dict, List, Optional
 from contextlib import contextmanager
 from pydub import AudioSegment
+from .utils.audio_utils import find_respeaker_device_sounddevice
 
 
 @contextmanager
@@ -77,6 +78,10 @@ class SoundNode(Node):
         # Опционально: триггер анимаций
         if self.trigger_animations:
             self.animation_pub = self.create_publisher(String, self.animation_topic, 10)
+            
+        # Инициализация аудио устройства
+        self.device_index = None
+        self.initialize_audio_device()
 
         # Хранилище звуков
         self.sounds: Dict[str, AudioSegment] = {}
@@ -94,6 +99,25 @@ class SoundNode(Node):
         # Инициализация
         self.get_logger().info("SoundNode инициализирован")
         self.load_sounds()
+
+    def initialize_audio_device(self):
+        """Инициализация аудио устройства для воспроизведения"""
+        try:
+            # Поиск ReSpeaker устройства
+            self.device_index = find_respeaker_device_sounddevice()
+            
+            if self.device_index is not None:
+                devices = sd.query_devices()
+                device_name = devices[self.device_index]['name']
+                self.get_logger().info(f"✅ ReSpeaker найден для playback: device {self.device_index} ({device_name})")
+            else:
+                # Fallback на default device
+                self.get_logger().warn("⚠️ ReSpeaker не найден, используем default device")
+                self.device_index = None  # None означает default device в sounddevice
+                
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка инициализации аудио устройства: {e}")
+            self.device_index = None
 
     def load_sounds(self):
         """Загрузка всех звуковых файлов из sound_pack/"""
@@ -126,6 +150,14 @@ class SoundNode(Node):
                     self.get_logger().error(f"  ❌ Ошибка загрузки {filename}: {e}")
 
         self.get_logger().info(f"✅ Загружено звуков: {loaded_count}/{len(os.listdir(self.sound_pack_dir))}")
+
+        # Информация об аудио устройстве
+        if self.device_index is not None:
+            devices = sd.query_devices()
+            device_name = devices[self.device_index]['name']
+            self.get_logger().info(f"🔊 Аудио устройство: {device_name} (index {self.device_index})")
+        else:
+            self.get_logger().info("🔊 Аудио устройство: default system device")
 
         if loaded_count > 0:
             self.publish_state("ready")
@@ -207,8 +239,8 @@ class SoundNode(Node):
             # Нормализация float32
             samples = samples.astype(np.float32) / 32768.0
 
-            # Воспроизведение через sounddevice (как в TTS)
-            sd.play(samples, samplerate=16000, device=1)  # device 1 = ReSpeaker
+            # Воспроизведение через sounddevice с автоопределенным устройством
+            sd.play(samples, samplerate=16000, device=self.device_index)
             sd.wait()
 
             self.get_logger().info(f"✅ Завершено: {sound_name}")
