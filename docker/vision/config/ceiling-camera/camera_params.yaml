@@ -10,6 +10,7 @@
     # Camera info
     camera_name: "ceiling_camera"
     camera_frame_id: "ceiling_camera_optical_frame"
+    camera_info_url: ""  # Empty string = использовать default calibration (uncalibrated)
 
     # Image transport settings
     # Публикуем в raw, а сжатие будет через image_transport

@@ -2,6 +2,11 @@
 
 Автоматизированная система сборки и деплоя для rob_box_project.
 
+## Документация
+
+- **[Deployment Workflow Guide](DEPLOYMENT_WORKFLOW.md)** - Подробное руководство по automated deployment
+- Этот документ - Overview CI/CD системы
+
 ## Архитектура Pipeline
 
 ```
