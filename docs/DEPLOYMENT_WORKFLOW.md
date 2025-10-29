@@ -2,15 +2,18 @@
 
 ## Обзор
 
-Workflow `G: Deploy and Verify` автоматизирует процесс развертывания обновлений на роботе и проверяет работоспособность системы.
+Workflow `L: Deploy and Verify` автоматизирует процесс развертывания обновлений на роботе и проверяет работоспособность системы.
 
-**Местоположение:** `.github/workflows/G-Deploy and Verify.yml`
+**Местоположение:** `.github/workflows/L-Deploy and Verify.yml`
+
+**Важно:** Этот workflow работает **только на self-hosted runner**, так как требует доступа к Raspberry Pi устройствам в локальной сети (10.1.1.x).
 
 ## Возможности
 
 - ✅ **Автоматизированный деплой** на Main Pi и Vision Pi через SSH
 - ✅ **Выбор ветки** для деплоя (main, develop, feature/test)
 - ✅ **Выбор окружения** (production, staging, test)
+- ✅ **Self-hosted runner** - всегда выполняется на локальном runner с доступом к Raspberry Pi
 - ✅ **Проверка здоровья контейнеров** - статус, логи, ошибки
 - ✅ **Проверка ROS2 топиков** - наличие и работоспособность
 - ✅ **Автоматическое создание issue** при обнаружении проблем
@@ -24,7 +27,7 @@ Workflow `G: Deploy and Verify` автоматизирует процесс ра
 ### Запуск через GitHub UI
 
 1. Перейти в GitHub → Actions
-2. Выбрать workflow **"G: Deploy and Verify"**
+2. Выбрать workflow **"L: Deploy and Verify"**
 3. Нажать **"Run workflow"**
 4. Заполнить параметры:
    - **Branch:** Ветка для деплоя (main/develop/feature/test)
@@ -37,26 +40,26 @@ Workflow `G: Deploy and Verify` автоматизирует процесс ра
 
 ```bash
 # Production деплой из main ветки (GitHub registry)
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production \
   -f registry_source=github
 
 # Staging деплой из develop ветки (Local build machine registry)
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=staging \
   -f registry_source=local
 
 # Тестовый деплой с dry-run
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=test \
   -f registry_source=github \
   -f dry_run=true
 
 # Быстрый деплой без pull образов (использовать существующие локальные)
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production \
   -f registry_source=skip
@@ -103,6 +106,8 @@ gh workflow run "G-Deploy and Verify.yml" \
 - `local` - Для разработки и тестирования с локальной build machine
 - `skip` - Для быстрого рестарта без обновления образов
 
+**Важно:** Этот workflow всегда выполняется на self-hosted runner, так как Raspberry Pi устройства находятся в локальной сети и недоступны из GitHub hosted runners.
+
 ### `dry_run` (optional)
 
 Сухой прогон без реального деплоя.
@@ -124,7 +129,57 @@ gh workflow run "G-Deploy and Verify.yml" \
 - Определение IP адресов Pi
 - Настройка источника Docker образов (registry prefix)
 
-### 2. Vision Pi Deployment
+### 2. Verification (проверка готовности) 🆕
+
+**Добавлено в версии от 2025-10-29**
+
+Проверяет наличие необходимых инструментов и доступность целевых хостов:
+
+#### SSH Tools Check
+```
+✅ ssh: /usr/bin/ssh
+   OpenSSH_9.x, OpenSSL x.x.x
+✅ sshpass: /usr/bin/sshpass
+```
+
+Если инструменты отсутствуют:
+```
+❌ ERROR: 'sshpass' command not found in runner
+❌ DEPLOYMENT FAILED: Missing required SSH tools
+```
+
+#### Network Connectivity Check
+
+Проверяет доступность Raspberry Pi:
+
+**Vision Pi (10.1.1.21):**
+- ICMP ping test (1 пакет, таймаут 2 сек)
+- SSH port (22) TCP connection test (таймаут 3 сек)
+
+**Main Pi (10.1.1.20):**
+- ICMP ping test (1 пакет, таймаут 2 сек)
+- SSH port (22) TCP connection test (таймаут 3 сек)
+
+Если хосты недоступны:
+```
+❌ Vision Pi SSH port (22) is NOT accessible
+❌ DEPLOYMENT FAILED: Target hosts unreachable
+
+Possible reasons:
+  • GitHub Actions runners cannot reach private network IPs (10.1.1.x)
+  • This workflow requires a self-hosted runner on the same network
+  • Devices may be powered off or network is down
+  • Firewall blocking connections
+
+Solutions:
+  1. Use a self-hosted GitHub Actions runner on the local network
+  2. Set up a VPN connection from GitHub runners to your network
+  3. Use SSH tunneling or a bastion host with public IP
+```
+
+**Важно:** Эта проверка пропускается в dry-run режиме.
+
+### 3. Vision Pi Deployment
 
 ```
 🛑 Stop Containers
@@ -283,7 +338,7 @@ git checkout main
 git pull
 
 # 2. Запустить деплой из GitHub registry
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production \
   -f registry_source=github
@@ -302,7 +357,7 @@ gh run watch
 
 ```bash
 # 1. Запустить деплой в staging из GitHub registry
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=staging \
   -f registry_source=github
@@ -322,7 +377,7 @@ git push
 Перезапустить контейнеры без обновления образов:
 
 ```bash
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production \
   -f registry_source=skip
@@ -333,7 +388,7 @@ gh workflow run "G-Deploy and Verify.yml" \
 Проверить работу workflow без реального деплоя:
 
 ```bash
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=test \
   -f registry_source=github \
@@ -354,7 +409,7 @@ git push
 gh workflow run "L-Build All Services.yml"
 
 # 3. Развернуть на test окружение из локального registry
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=feature/my-feature \
   -f environment=test \
   -f registry_source=local
@@ -364,6 +419,78 @@ gh workflow run "G-Deploy and Verify.yml" \
 ```
 
 ## Troubleshooting
+
+### Проблема: Missing SSH tools in runner
+
+**Симптомы:**
+```
+❌ ERROR: 'ssh' command not found in runner
+❌ ERROR: 'sshpass' command not found in runner
+❌ DEPLOYMENT FAILED: Missing required SSH tools
+```
+
+**Решение:**
+1. Проверить что установка sshpass в шаге "Setup SSH and Environment" прошла успешно
+2. Проверить логи установки: `sudo apt-get install -y sshpass`
+3. Убедиться что используется правильный runner (ubuntu-latest)
+4. Если проблема повторяется, использовать self-hosted runner
+
+**Примечание:** С версии от 2025-10-29 workflow автоматически проверяет наличие SSH инструментов перед началом деплоя.
+
+### Проблема: Target hosts unreachable
+
+**Симптомы:**
+```
+⚠️  Vision Pi is NOT reachable via ICMP (ping)
+❌ Vision Pi SSH port (22) is NOT accessible
+❌ DEPLOYMENT FAILED: Target hosts unreachable
+```
+
+**Причины:**
+- **GitHub Actions hosted runners** не могут достучаться до частных IP адресов (10.1.1.x)
+- Raspberry Pi устройства находятся в локальной сети
+- Устройства выключены или сеть недоступна
+- Firewall блокирует соединения
+
+**Решение:**
+
+**Решение:**
+
+**Этот workflow теперь всегда выполняется на self-hosted runner (с версии 2025-10-29):**
+
+Workflow `L: Deploy and Verify` всегда использует self-hosted runner, так как GitHub hosted runners не имеют доступа к Raspberry Pi устройствам в локальной сети.
+
+```bash
+gh workflow run "L-Deploy and Verify.yml" \
+  -f branch=develop \
+  -f environment=staging \
+  -f registry_source=local
+```
+
+**Настройка self-hosted runner:**
+
+Если у вас еще нет self-hosted runner, настройте его:
+```bash
+# На машине в той же сети что и Raspberry Pi
+# 1. Скачать GitHub Actions runner
+curl -o actions-runner-linux-x64-2.319.1.tar.gz -L \
+  https://github.com/actions/runner/releases/download/v2.319.1/actions-runner-linux-x64-2.319.1.tar.gz
+tar xzf ./actions-runner-linux-x64-2.319.1.tar.gz
+
+# 2. Настроить runner
+./config.sh --url https://github.com/krikz/rob_box_project --token YOUR_TOKEN
+
+# 3. Запустить как сервис
+sudo ./svc.sh install
+sudo ./svc.sh start
+```
+
+После настройки runner, workflow `L: Deploy and Verify` будет автоматически выполняться на нём.
+
+**Примечание:** С версии от 2025-10-29 workflow:
+- Различает проблемы с SSH инструментами и проблемы с сетевой доступностью
+- Всегда выполняется на self-hosted runner (переименован с G- на L- префикс)
+- Работает с любым источником образов (github/local/skip)
 
 ### Проблема: SSH connection failed
 
@@ -468,7 +595,7 @@ gh workflow run ... -f branch=feature/new
 gh run watch
 
 # Проверить последние 5 runs
-gh run list --workflow="G-Deploy and Verify.yml" --limit 5
+gh run list --workflow="L-Deploy and Verify.yml" --limit 5
 
 # Посмотреть логи конкретного run
 gh run view <run-id> --log
