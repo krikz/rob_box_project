@@ -8,7 +8,7 @@ This directory contains all automated workflows for the Rob Box project.
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| **G: Deploy and Verify** | Manual | Deploy and verify robot system on both Pis |
+| **L: Deploy and Verify** | Manual | Deploy and verify robot system on both Pis |
 
 ### 🏗️ Build Workflows
 
@@ -22,6 +22,7 @@ This directory contains all automated workflows for the Rob Box project.
 | **L: Build Base Images** | Called by local workflows | Build base images locally |
 | **L: Build Vision Pi Services** | Called by local workflows | Build Vision Pi services locally |
 | **L: Build Main Pi Services** | Called by local workflows | Build Main Pi services locally |
+| **L: Build Single Service** | Manual | Build a single service on local build machine |
 
 ### 🔄 CI/CD Automation
 
@@ -48,7 +49,7 @@ This directory contains all automated workflows for the Rob Box project.
 ### Deploy to Production
 
 ```bash
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=main \
   -f environment=production
 ```
@@ -56,7 +57,7 @@ gh workflow run "G-Deploy and Verify.yml" \
 ### Deploy to Staging for Testing
 
 ```bash
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=staging
 ```
@@ -67,10 +68,20 @@ gh workflow run "G-Deploy and Verify.yml" \
 gh workflow run "G-Build All Services.yml"
 ```
 
+### Build Single Service Locally
+
+```bash
+gh workflow run "L-Build Single Service.yml" \
+  -f branch=develop \
+  -f pi_type=vision \
+  -f service=voice-assistant \
+  -f push_to_registry=true
+```
+
 ### Test Workflow Without Deployment
 
 ```bash
-gh workflow run "G-Deploy and Verify.yml" \
+gh workflow run "L-Deploy and Verify.yml" \
   -f branch=develop \
   -f environment=test \
   -f dry_run=true
