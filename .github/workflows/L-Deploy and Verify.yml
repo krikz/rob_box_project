@@ -522,11 +522,11 @@ jobs:
 
             # Проверяем на критические ошибки (расширенные паттерны)
             # Исключаем известные ложные срабатывания:
-            # - Sound/TTS errors: audio device not available (environmental issue, not critical)
             # - CAN ERROR-ACTIVE: normal operational state for CAN controllers
+            # NOTE: Audio errors (OutputStream/channels) are NOT filtered - they indicate real config issues
             CRITICAL=$(echo "$LOGS" | \
               grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
-              grep -viE "(Error opening OutputStream|Synthesis error.*OutputStream|CAN controller state: ERROR-ACTIVE)" \
+              grep -viE "(CAN controller state: ERROR-ACTIVE)" \
               || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))

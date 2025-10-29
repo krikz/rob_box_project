@@ -87,27 +87,68 @@ reason: 'entry too far behind, oldest acceptable timestamp is: 2025-10-29T08:14:
 
 ## Main Pi
 
-### 1. Perception Sound/TTS Errors
+### 1. Perception Sound/TTS Audio Configuration Errors ⚠️ NEEDS FIX
 
 **Error Messages:**
 ```
-[ERROR] sound_node (9s ago): ❌ Ошибка воспроизведения thinking: Error opening OutputStream
-[ERROR] tts_node (4s ago): ❌ Synthesis error: Error opening OutputStream: Invalid number
+Expression 'parameters->channelCount <= maxChans' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1514
+[ERROR] sound_node (9s ago): ❌ Ошибка воспроизведения thinking: Error opening OutputStream: Invalid number of channels [PaErrorCode -9998]
+[ERROR] tts_node (4s ago): ❌ Synthesis error: Error opening OutputStream: Invalid number of channels [PaErrorCode -9998]
 ```
 
 **Explanation:**
-- Audio output device may not be available in the deployment environment
-- Sound effects and TTS are enhancement features, not critical for core robot functionality
-- These errors typically occur when:
-  - Audio device is not configured
-  - Robot is running headless without audio hardware
-  - Audio permissions are not properly set
+- **This is a REAL configuration issue that needs to be fixed**
+- The code is configured to output stereo audio (2 channels) at 16kHz to device 1 (ReSpeaker)
+- The error "Invalid number of channels" indicates the audio device doesn't support the configured number of channels
+- This happens when:
+  - Audio device is not available at all
+  - Audio device exists but doesn't support stereo (only mono)
+  - Wrong device index is specified (device 1 may not be ReSpeaker)
 
-**Impact:** None for navigation and mapping - robot operates normally without audio feedback
+**Impact:** Audio features (sound effects and TTS) will not work until this is fixed
 
 **Resolution:**
-- For production with audio: Configure audio device in `docker-compose.yaml`
-- For headless operation: Ignore - audio is optional
+
+**Option 1: Configure proper audio device (for production with audio)**
+1. Check available audio devices:
+   ```bash
+   python3 -c "import sounddevice as sd; print(sd.query_devices())"
+   ```
+
+2. Find the correct device index for ReSpeaker (or your audio output device)
+
+3. Update the code to use correct device and channel configuration:
+   - For ReSpeaker: should be stereo (2 channels), 16kHz
+   - For other devices: may need mono (1 channel) or different sample rate
+
+4. Fix in `src/rob_box_voice/rob_box_voice/sound_node.py` line 211:
+   ```python
+   sd.play(samples, samplerate=16000, device=1, channels=2)  # Verify device index
+   ```
+
+5. Fix in `src/rob_box_voice/rob_box_voice/tts_node.py` line 494:
+   ```python
+   sd.play(audio_stereo, target_rate, device=1, blocking=False)  # Verify device index
+   ```
+
+**Option 2: Disable audio features (for headless operation)**
+1. Stop perception container that has audio:
+   ```bash
+   docker compose stop perception
+   ```
+
+2. Add environment variable to disable audio:
+   ```yaml
+   environment:
+     - ENABLE_AUDIO=false
+   ```
+
+**Option 3: Make audio device configurable (recommended fix)**
+1. Add ROS parameters for audio device configuration
+2. Allow fallback to no-audio mode if device is not available
+3. Detect audio capabilities at runtime and configure accordingly
+
+**This error should NOT be ignored** - it indicates either missing hardware or misconfiguration.
 
 ---
 
@@ -281,11 +322,14 @@ The deployment workflow has been updated to automatically filter out these known
 - `enable watchConfig` info messages (Promtail)
 
 **Main Pi Filters:**
-- `Error opening OutputStream` (sound/TTS audio device)
 - `CAN controller state: ERROR-ACTIVE` (normal CAN state)
 - `out of bounds of the costmap` warnings (Nav2 startup)
 - `root link.*inertia` warnings (KDL limitation)
 - `No real-time kernel detected` (informational only)
+
+**NOT Filtered (Real Issues That Need Attention):**
+- ⚠️ `Error opening OutputStream: Invalid number of channels` - **Audio device misconfiguration**
+- ⚠️ `Expression 'parameters->channelCount <= maxChans' failed` - **Audio channel mismatch**
 
 After filtering, only genuinely critical issues will trigger deployment alerts.
 
