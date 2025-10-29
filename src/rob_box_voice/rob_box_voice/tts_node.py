@@ -515,7 +515,8 @@ class TTSNode(Node):
             # Блокирующее воспроизведение
             with ignore_stderr(enable=True):
                 self.current_stream = True  # Маркер что воспроизведение идёт
-                sd.play(audio_stereo, target_rate, device=self.device_index, channels=2, blocking=False)
+                # channels определяется автоматически из shape данных (audio_stereo уже stereo)
+                sd.play(audio_stereo, target_rate, device=self.device_index, blocking=False)
 
                 # Ждём завершения, но проверяем stop_requested
                 while sd.get_stream().active:
