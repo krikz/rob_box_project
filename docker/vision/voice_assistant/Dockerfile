@@ -9,7 +9,7 @@
 #   - ReSpeaker Mic Array v2.0 (USB, 4 микрофона, 12× RGB LED)
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box:nav2-humble-latest
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 # Версия сборки для инвалидации кеша при изменении зависимостей
 ARG BUILD_VERSION=2025-10-12-rtabmap
 
@@ -75,6 +75,11 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rosidl-typesupport-cpp \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
     ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-rosidl-generator-c \
+    ros-${ROS_DISTRO}-rosidl-generator-cpp \
+    ros-${ROS_DISTRO}-ament-cmake-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python библиотек для голосового ассистента
