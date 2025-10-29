@@ -240,7 +240,8 @@ class SoundNode(Node):
             samples = samples.astype(np.float32) / 32768.0
 
             # Воспроизведение через sounddevice с автоопределенным устройством
-            sd.play(samples, samplerate=16000, device=self.device_index)
+            # ReSpeaker требует 2 канала (стерео)
+            sd.play(samples, samplerate=16000, device=self.device_index, channels=2)
             sd.wait()
 
             self.get_logger().info(f"✅ Завершено: {sound_name}")
