@@ -189,10 +189,19 @@ tar xzf ./actions-runner-linux-x64-2.319.1.tar.gz
 sudo ./svc.sh install
 sudo ./svc.sh start
 
-# 4. Update workflow file
-# Change: runs-on: ubuntu-latest
-# To:     runs-on: [self-hosted, linux]
+# 4. Use registry_source=local when running workflow
+# Workflow automatically uses self-hosted runner when registry_source=local
+gh workflow run "G-Deploy and Verify.yml" \
+  -f branch=develop \
+  -f environment=staging \
+  -f registry_source=local
 ```
+
+**Note:** As of 2025-10-29, the workflow automatically selects the appropriate runner:
+- `registry_source=local` → self-hosted runner (for localhost:5000 and local network access)
+- `registry_source=github` or `skip` → GitHub hosted runner (ubuntu-latest)
+
+This eliminates the need to manually modify the workflow file.
 
 **Option 2: VPN Solution**
 

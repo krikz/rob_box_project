@@ -11,6 +11,7 @@ Workflow `G: Deploy and Verify` автоматизирует процесс ра
 - ✅ **Автоматизированный деплой** на Main Pi и Vision Pi через SSH
 - ✅ **Выбор ветки** для деплоя (main, develop, feature/test)
 - ✅ **Выбор окружения** (production, staging, test)
+- ✅ **Автоматический выбор runner** - self-hosted для local registry, GitHub hosted для остальных
 - ✅ **Проверка здоровья контейнеров** - статус, логи, ошибки
 - ✅ **Проверка ROS2 топиков** - наличие и работоспособность
 - ✅ **Автоматическое создание issue** при обнаружении проблем
@@ -90,18 +91,25 @@ gh workflow run "G-Deploy and Verify.yml" \
 - `github` (default) - GitHub Container Registry (ghcr.io/krikz/rob_box)
   - Используется для production деплоя
   - Образы собраны через GitHub Actions (G-Build workflows)
+  - **Runner:** GitHub hosted (ubuntu-latest)
 - `local` - Local Build Machine Registry (localhost:5000/krikz/rob_box)
   - Используется для быстрого локального тестирования
   - Образы собраны на локальной build machine (L-Build workflows)
   - В 10-20x быстрее pull на Raspberry Pi (локальная сеть)
+  - **Runner:** Self-hosted (автоматически, так как нужен доступ к localhost:5000 и локальной сети)
 - `skip` - Не загружать образы, использовать существующие
   - Используется для быстрого перезапуска контейнеров
   - Не обновляет образы, только перезапускает
+  - **Runner:** GitHub hosted (ubuntu-latest)
 
 **Когда использовать:**
 - `github` - Для production и staging окружений
 - `local` - Для разработки и тестирования с локальной build machine
 - `skip` - Для быстрого рестарта без обновления образов
+
+**Важно:** При выборе `local` workflow автоматически запускается на self-hosted runner, так как:
+- Требуется доступ к локальному registry (localhost:5000)
+- Требуется SSH доступ к Raspberry Pi в локальной сети (10.1.1.x)
 
 ### `dry_run` (optional)
 
@@ -449,7 +457,19 @@ gh workflow run "G-Deploy and Verify.yml" \
 
 **Решение:**
 
-**Вариант 1: Self-hosted runner (рекомендуется)**
+**Автоматическое решение (с версии 2025-10-29):**
+
+При использовании `registry_source=local` workflow автоматически запускается на self-hosted runner:
+```bash
+gh workflow run "G-Deploy and Verify.yml" \
+  -f branch=develop \
+  -f environment=staging \
+  -f registry_source=local  # ← автоматически использует self-hosted runner
+```
+
+**Ручная настройка self-hosted runner:**
+
+Если у вас еще нет self-hosted runner, настройте его:
 ```bash
 # На машине в той же сети что и Raspberry Pi
 # 1. Скачать GitHub Actions runner
@@ -463,11 +483,11 @@ tar xzf ./actions-runner-linux-x64-2.319.1.tar.gz
 # 3. Запустить как сервис
 sudo ./svc.sh install
 sudo ./svc.sh start
-
-# 4. Обновить workflow для использования self-hosted runner
-# В .github/workflows/G-Deploy and Verify.yml:
-# runs-on: [self-hosted, linux]
 ```
+
+После настройки runner, используйте `registry_source=local` и workflow автоматически выберет правильный runner.
+
+**Альтернативные варианты:**
 
 **Вариант 2: VPN туннель**
 - Настроить WireGuard/OpenVPN на GitHub runner
@@ -479,7 +499,9 @@ sudo ./svc.sh start
 - Проброс SSH соединений к Raspberry Pi через bastion
 - Требует дополнительной инфраструктуры
 
-**Примечание:** С версии от 2025-10-29 workflow автоматически различает проблемы с SSH инструментами и проблемы с сетевой доступностью.
+**Примечание:** С версии от 2025-10-29 workflow автоматически:
+- Различает проблемы с SSH инструментами и проблемы с сетевой доступностью
+- Выбирает правильный runner в зависимости от registry_source (self-hosted для local, GitHub hosted для github/skip)
 
 ### Проблема: SSH connection failed
 

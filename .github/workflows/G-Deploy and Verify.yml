@@ -46,7 +46,10 @@ on:
 
 jobs:
   deploy-and-verify:
-    runs-on: ubuntu-latest
+    # Используем self-hosted runner когда registry_source=local,
+    # так как localhost:5000 доступен только на self-hosted машине
+    # и SSH доступ к Raspberry Pi требует локальной сети
+    runs-on: ${{ inputs.registry_source == 'local' && 'self-hosted' || 'ubuntu-latest' }}
     permissions:
       contents: read
       issues: write
