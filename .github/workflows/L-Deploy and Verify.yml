@@ -117,11 +117,11 @@ jobs:
           echo "🔍 Verifying SSH tools and connectivity..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          
+
           # Проверка наличия необходимых инструментов
           echo "1. Checking SSH tools availability..."
           TOOLS_OK=true
-          
+
           if ! command -v ssh &> /dev/null; then
             echo "❌ ERROR: 'ssh' command not found in runner"
             echo "   The SSH client is not installed or not in PATH"
@@ -130,7 +130,7 @@ jobs:
             echo "✅ ssh: $(which ssh)"
             ssh -V 2>&1 | head -1
           fi
-          
+
           if ! command -v sshpass &> /dev/null; then
             echo "❌ ERROR: 'sshpass' command not found in runner"
             echo "   sshpass was not installed correctly"
@@ -138,7 +138,7 @@ jobs:
           else
             echo "✅ sshpass: $(which sshpass)"
           fi
-          
+
           if [ "$TOOLS_OK" = false ]; then
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -149,13 +149,13 @@ jobs:
             echo "Please check the 'Setup SSH and Environment' step for installation errors."
             exit 1
           fi
-          
+
           echo ""
           echo "2. Checking network connectivity..."
-          
+
           # Проверка сетевой доступности хостов
           CONNECTIVITY_OK=true
-          
+
           echo "Testing Vision Pi (${{ env.vision_pi_ip }})..."
           if ping -c 1 -W 2 ${{ env.vision_pi_ip }} &> /dev/null; then
             echo "✅ Vision Pi is reachable via ICMP"
@@ -163,7 +163,7 @@ jobs:
             echo "⚠️  Vision Pi is NOT reachable via ICMP (ping)"
             CONNECTIVITY_OK=false
           fi
-          
+
           # Проверка доступности SSH порта
           if timeout 3 bash -c "</dev/tcp/${{ env.vision_pi_ip }}/22" 2>/dev/null; then
             echo "✅ Vision Pi SSH port (22) is open"
@@ -171,7 +171,7 @@ jobs:
             echo "❌ Vision Pi SSH port (22) is NOT accessible"
             CONNECTIVITY_OK=false
           fi
-          
+
           echo ""
           echo "Testing Main Pi (${{ env.main_pi_ip }})..."
           if ping -c 1 -W 2 ${{ env.main_pi_ip }} &> /dev/null; then
@@ -180,7 +180,7 @@ jobs:
             echo "⚠️  Main Pi is NOT reachable via ICMP (ping)"
             CONNECTIVITY_OK=false
           fi
-          
+
           # Проверка доступности SSH порта
           if timeout 3 bash -c "</dev/tcp/${{ env.main_pi_ip }}/22" 2>/dev/null; then
             echo "✅ Main Pi SSH port (22) is open"
@@ -188,9 +188,9 @@ jobs:
             echo "❌ Main Pi SSH port (22) is NOT accessible"
             CONNECTIVITY_OK=false
           fi
-          
+
           echo ""
-          
+
           if [ "$CONNECTIVITY_OK" = false ]; then
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "❌ DEPLOYMENT FAILED: Target hosts unreachable"
@@ -215,7 +215,7 @@ jobs:
             echo ""
             exit 1
           fi
-          
+
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "✅ All connectivity checks passed"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -433,12 +433,20 @@ jobs:
               "docker logs --tail 10000 $container 2>&1 | head -50")
             LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
-            
+
             # Объединяем логи для анализа
             LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
             # Проверяем на критические ошибки (расширенные паттерны)
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" || true)
+            # Исключаем известные ложные срабатывания:
+            # - cAdvisor: machine-id и vendor warnings (нормально в контейнерах)
+            # - promtail: ошибки старых контейнеров при рестарте (cleanup issue)
+            # - micro-ros-agent: ttyUSB0 warnings (ESP32 может быть не подключен)
+            # - Loki: timestamp warnings (нормально после рестарта)
+            CRITICAL=$(echo "$LOGS" | \
+              grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
+              grep -viE "(machine-id|vendor id correctly|No such container:|entry too far behind|Serial port /dev/ttyUSB0)" \
+              || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
@@ -448,7 +456,11 @@ jobs:
             fi
 
             # Проверяем на предупреждения
-            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" || true)
+            # Исключаем известные неопасные warnings:
+            # - cAdvisor topology warnings (нормально в контейнерах)
+            # - promtail watchConfig (информационное)
+            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" | \
+              grep -viE "(machine-id|vendor id correctly|topology is not available|enable watchConfig)" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
@@ -456,7 +468,7 @@ jobs:
               echo "$WARNINGS" | head -30 >> $LOGS_FILE
               echo "" >> $LOGS_FILE
             fi
-            
+
             # Если найдены критические ошибки, добавляем полный контекст инициализации
             if [ ! -z "$CRITICAL" ]; then
               echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
@@ -504,12 +516,18 @@ jobs:
               "docker logs --tail 10000 $container 2>&1 | head -50")
             LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
-            
+
             # Объединяем логи для анализа
             LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
             # Проверяем на критические ошибки (расширенные паттерны)
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" || true)
+            # Исключаем известные ложные срабатывания:
+            # - Sound/TTS errors: audio device not available (environmental issue, not critical)
+            # - CAN ERROR-ACTIVE: normal operational state for CAN controllers
+            CRITICAL=$(echo "$LOGS" | \
+              grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
+              grep -viE "(Error opening OutputStream|Synthesis error.*OutputStream|CAN controller state: ERROR-ACTIVE)" \
+              || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
@@ -519,7 +537,12 @@ jobs:
             fi
 
             # Проверяем на предупреждения
-            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" || true)
+            # Исключаем известные неопасные warnings:
+            # - Nav2 costmap warnings (normal at startup, robot position initialization)
+            # - KDL parser warnings (URDF design limitation, not an issue)
+            # - Controller manager realtime kernel warning (informational only)
+            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" | \
+              grep -viE "(out of bounds of the costmap|root link.*inertia|No real-time kernel detected)" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
@@ -527,7 +550,7 @@ jobs:
               echo "$WARNINGS" | head -30 >> $LOGS_FILE
               echo "" >> $LOGS_FILE
             fi
-            
+
             # Если найдены критические ошибки, добавляем полный контекст инициализации
             if [ ! -z "$CRITICAL" ]; then
               echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
@@ -569,7 +592,10 @@ jobs:
             echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
 
             # Проверяем наличие критически важных топиков
-            EXPECTED_TOPICS="/oak/rgb/image_raw/compressed"
+            # У нас две камеры:
+            # 1. OAK-D (стерео) - публикует под namespace /camera
+            # 2. Ceiling camera (потолочная) - публикует под namespace /ceiling_camera
+            EXPECTED_TOPICS="/camera/rgb/image_raw/compressed /camera/stereo/image_raw /ceiling_camera/image_raw"
             MISSING_TOPICS=""
 
             for topic in $EXPECTED_TOPICS; do
