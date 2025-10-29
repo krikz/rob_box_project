@@ -174,7 +174,7 @@ services:
 
   # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
     container_name: cadvisor-vision
     profiles: ["monitoring"]
     network_mode: host

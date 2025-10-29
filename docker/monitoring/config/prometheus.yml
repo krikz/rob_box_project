@@ -6,7 +6,7 @@ scrape_configs:
   # Scrape cAdvisor metrics from Main Pi
   - job_name: 'cadvisor-main'
     static_configs:
-      - targets: ['localhost:8080']
+      - targets: ['10.1.1.10:8080']
         labels:
           host: 'main-pi'
 

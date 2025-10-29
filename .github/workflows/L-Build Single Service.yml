@@ -9,7 +9,11 @@ on:
         description: 'Branch to build from'
         required: true
         default: 'main'
-        type: string
+        type: choice
+        options:
+          - main
+          - develop
+          - release/v1.0.0
 
       pi_type:
         description: 'Pi type (main/vision/base)'
@@ -21,9 +25,31 @@ on:
           - base
 
       service:
-        description: 'Service to build (see list in workflow description)'
+        description: 'Service to build - select based on pi_type above (see workflow summary for service mapping)'
         required: true
-        type: string
+        type: choice
+        options:
+          # Main Pi services
+          - robot-state-publisher
+          - rtabmap
+          - twist-mux
+          - micro-ros-agent
+          - ros2-control
+          - nav2
+          - lslidar
+          - perception
+          # Vision Pi services
+          - oak-d
+          - led-matrix
+          - ceiling-camera
+          - voice-assistant
+          - apriltag
+          # Common to both
+          - zenoh-router
+          # Base images
+          - ros2-zenoh
+          - depthai
+          - pcl
 
       push_to_registry:
         description: 'Push to local registry (localhost:5000)'

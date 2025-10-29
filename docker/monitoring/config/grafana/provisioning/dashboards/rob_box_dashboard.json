@@ -32,7 +32,7 @@
       },
       "id": 1,
       "panels": [],
-      "title": "Обзор робота",
+      "title": "\u041e\u0431\u0437\u043e\u0440 \u0440\u043e\u0431\u043e\u0442\u0430",
       "type": "row"
     },
     {
@@ -289,7 +289,7 @@
       },
       "id": 6,
       "panels": [],
-      "title": "CPU по контейнерам",
+      "title": "CPU \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "row"
     },
     {
@@ -372,12 +372,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "rate(container_cpu_usage_seconds_total{job=\"cadvisor-main\",container_label_logging=\"promtail\"}[5m]) * 100",
+          "expr": "rate(container_cpu_usage_seconds_total{job=\"cadvisor-main\",name=~\".+\"}[5m]) * 100",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
-      "title": "Main Pi - CPU по контейнерам",
+      "title": "Main Pi - CPU \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "timeseries"
     },
     {
@@ -460,12 +460,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "rate(container_cpu_usage_seconds_total{job=\"cadvisor-vision\",container_label_logging=\"promtail\"}[5m]) * 100",
+          "expr": "rate(container_cpu_usage_seconds_total{job=\"cadvisor-vision\",name=~\".+\"}[5m]) * 100",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
-      "title": "Vision Pi - CPU по контейнерам",
+      "title": "Vision Pi - CPU \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "timeseries"
     },
     {
@@ -478,7 +478,7 @@
       },
       "id": 9,
       "panels": [],
-      "title": "Память по контейнерам",
+      "title": "\u041f\u0430\u043c\u044f\u0442\u044c \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "row"
     },
     {
@@ -561,12 +561,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "container_memory_working_set_bytes{job=\"cadvisor-main\",container_label_logging=\"promtail\"}",
+          "expr": "container_memory_working_set_bytes{job=\"cadvisor-main\",name=~\".+\"}",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
-      "title": "Main Pi - Память по контейнерам",
+      "title": "Main Pi - \u041f\u0430\u043c\u044f\u0442\u044c \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "timeseries"
     },
     {
@@ -649,12 +649,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "container_memory_working_set_bytes{job=\"cadvisor-vision\",container_label_logging=\"promtail\"}",
+          "expr": "container_memory_working_set_bytes{job=\"cadvisor-vision\",name=~\".+\"}",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
-      "title": "Vision Pi - Память по контейнерам",
+      "title": "Vision Pi - \u041f\u0430\u043c\u044f\u0442\u044c \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "timeseries"
     },
     {
@@ -667,7 +667,7 @@
       },
       "id": 12,
       "panels": [],
-      "title": "Сеть",
+      "title": "\u0421\u0435\u0442\u044c",
       "type": "row"
     },
     {
@@ -763,7 +763,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "rate(container_network_receive_bytes_total{job=\"cadvisor-main\",container_label_logging=\"promtail\"}[5m])",
+          "expr": "rate(container_network_receive_bytes_total{job=\"cadvisor-main\",name=~\".+\"}[5m])",
           "legendFormat": "{{name}} RX",
           "refId": "A"
         },
@@ -772,12 +772,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "rate(container_network_transmit_bytes_total{job=\"cadvisor-main\",container_label_logging=\"promtail\"}[5m])",
+          "expr": "rate(container_network_transmit_bytes_total{job=\"cadvisor-main\",name=~\".+\"}[5m])",
           "legendFormat": "{{name}} TX",
           "refId": "B"
         }
       ],
-      "title": "Main Pi - Сеть по контейнерам",
+      "title": "Main Pi - \u0421\u0435\u0442\u044c \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "timeseries"
     },
     {
@@ -873,7 +873,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "rate(container_network_receive_bytes_total{job=\"cadvisor-vision\",container_label_logging=\"promtail\"}[5m])",
+          "expr": "rate(container_network_receive_bytes_total{job=\"cadvisor-vision\",name=~\".+\"}[5m])",
           "legendFormat": "{{name}} RX",
           "refId": "A"
         },
@@ -882,12 +882,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "rate(container_network_transmit_bytes_total{job=\"cadvisor-vision\",container_label_logging=\"promtail\"}[5m])",
+          "expr": "rate(container_network_transmit_bytes_total{job=\"cadvisor-vision\",name=~\".+\"}[5m])",
           "legendFormat": "{{name}} TX",
           "refId": "B"
         }
       ],
-      "title": "Vision Pi - Сеть по контейнерам",
+      "title": "Vision Pi - \u0421\u0435\u0442\u044c \u043f\u043e \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u043c",
       "type": "timeseries"
     },
     {
@@ -900,7 +900,7 @@
       },
       "id": 15,
       "panels": [],
-      "title": "Логи контейнеров",
+      "title": "\u041b\u043e\u0433\u0438 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u043e\u0432",
       "type": "row"
     },
     {
@@ -935,7 +935,7 @@
           "refId": "A"
         }
       ],
-      "title": "Логи всех контейнеров (используйте фильтр для выбора)",
+      "title": "\u041b\u043e\u0433\u0438 \u0432\u0441\u0435\u0445 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u043e\u0432 (\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u0444\u0438\u043b\u044c\u0442\u0440 \u0434\u043b\u044f \u0432\u044b\u0431\u043e\u0440\u0430)",
       "type": "logs"
     },
     {
@@ -970,7 +970,7 @@
           "refId": "A"
         }
       ],
-      "title": "RTAB-Map логи",
+      "title": "RTAB-Map \u043b\u043e\u0433\u0438",
       "type": "logs"
     },
     {
@@ -1005,7 +1005,7 @@
           "refId": "A"
         }
       ],
-      "title": "OAK-D Camera логи",
+      "title": "OAK-D Camera \u043b\u043e\u0433\u0438",
       "type": "logs"
     },
     {
@@ -1040,7 +1040,7 @@
           "refId": "A"
         }
       ],
-      "title": "Voice Assistant логи",
+      "title": "Voice Assistant \u043b\u043e\u0433\u0438",
       "type": "logs"
     },
     {
@@ -1075,7 +1075,7 @@
           "refId": "A"
         }
       ],
-      "title": "Ошибки во всех контейнерах",
+      "title": "\u041e\u0448\u0438\u0431\u043a\u0438 \u0432\u043e \u0432\u0441\u0435\u0445 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\u0445",
       "type": "logs"
     }
   ],
@@ -1096,7 +1096,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Rob Box - Мониторинг робота",
+  "title": "Rob Box - \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433 \u0440\u043e\u0431\u043e\u0442\u0430",
   "uid": "rob_box_dashboard",
   "version": 0,
   "weekStart": ""

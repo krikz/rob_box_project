@@ -6,6 +6,12 @@ import pyaudio
 import numpy as np
 from typing import Optional, List, Tuple
 
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except ImportError:
+    SOUNDDEVICE_AVAILABLE = False
+
 
 def find_respeaker_device(p: pyaudio.PyAudio) -> Optional[int]:
     """
@@ -29,6 +35,27 @@ def find_respeaker_device(p: pyaudio.PyAudio) -> Optional[int]:
             # Проверяем что есть input каналы
             if device_info.get('maxInputChannels', 0) > 0:
                 return i
+    
+    return None
+
+
+def find_respeaker_device_sounddevice() -> Optional[int]:
+    """
+    Найти индекс ReSpeaker устройства в sounddevice для playback
+    
+    Returns:
+        Device index или None если не найден
+    """
+    if not SOUNDDEVICE_AVAILABLE:
+        return None
+        
+    devices = sd.query_devices()
+    
+    for idx, device in enumerate(devices):
+        if "ReSpeaker" in device["name"] or "ArrayUAC10" in device["name"]:
+            # Проверяем что есть output каналы для playback
+            if device.get('max_output_channels', 0) > 0:
+                return idx
     
     return None
 

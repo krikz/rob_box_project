@@ -26,6 +26,7 @@ import torch
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from std_msgs.msg import String
+from .utils.audio_utils import find_respeaker_device_sounddevice
 
 
 @contextmanager
@@ -144,6 +145,10 @@ class TTSNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"⚠️  Не удалось подключиться к Yandex gRPC: {e}")
 
+        # Инициализация аудио устройства для воспроизведения
+        self.device_index = None
+        self.initialize_audio_device()
+
         # Подписка на dialogue response (от dialogue_node)
         self.dialogue_sub = self.create_subscription(String, "/voice/dialogue/response", self.dialogue_callback, 10)
 
@@ -183,6 +188,25 @@ class TTSNode(Node):
 
         if not self.yandex_stub:
             self.get_logger().warn("⚠️  Yandex gRPC не подключен - будет использован только Silero fallback")
+
+    def initialize_audio_device(self):
+        """Инициализация аудио устройства для воспроизведения"""
+        try:
+            # Поиск ReSpeaker устройства
+            self.device_index = find_respeaker_device_sounddevice()
+            
+            if self.device_index is not None:
+                devices = sd.query_devices()
+                device_name = devices[self.device_index]['name']
+                self.get_logger().info(f"✅ ReSpeaker найден для TTS playback: device {self.device_index} ({device_name})")
+            else:
+                # Fallback на default device
+                self.get_logger().warn("⚠️ ReSpeaker не найден для TTS, используем default device")
+                self.device_index = None  # None означает default device в sounddevice
+                
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка инициализации аудио устройства для TTS: {e}")
+            self.device_index = None
 
     def _load_silero_model(self):
         """Загрузить Silero TTS модель (lazy loading)"""
@@ -491,7 +515,7 @@ class TTSNode(Node):
             # Блокирующее воспроизведение
             with ignore_stderr(enable=True):
                 self.current_stream = True  # Маркер что воспроизведение идёт
-                sd.play(audio_stereo, target_rate, device=1, blocking=False)
+                sd.play(audio_stereo, target_rate, device=self.device_index, channels=2, blocking=False)
 
                 # Ждём завершения, но проверяем stop_requested
                 while sd.get_stream().active:
