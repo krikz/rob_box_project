@@ -367,10 +367,10 @@ jobs:
           STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
 
-          echo "$STATUS" | jq -r '.[] | "  \(.Name): \(.State)"'
+          echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
 
           # Проверяем наличие падших контейнеров
-          FAILED_COUNT=$(echo "$STATUS" | jq -r '.[] | select(.State != "running") | .Name' | wc -l)
+          FAILED_COUNT=$(echo "$STATUS" | jq -r 'select(.State != "running") | .Name' | wc -l)
           echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
 
           if [ "$FAILED_COUNT" -gt 0 ]; then
@@ -392,10 +392,10 @@ jobs:
           STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json')
 
-          echo "$STATUS" | jq -r '.[] | "  \(.Name): \(.State)"'
+          echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
 
           # Проверяем наличие падших контейнеров
-          FAILED_COUNT=$(echo "$STATUS" | jq -r '.[] | select(.State != "running") | .Name' | wc -l)
+          FAILED_COUNT=$(echo "$STATUS" | jq -r 'select(.State != "running") | .Name' | wc -l)
           echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
 
           if [ "$FAILED_COUNT" -gt 0 ]; then
@@ -420,7 +420,7 @@ jobs:
 
           # Получаем список контейнеров
           CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.[].Name')
+            'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
 
           CRITICAL_COUNT=0
           WARNING_COUNT=0
@@ -479,7 +479,7 @@ jobs:
 
           # Получаем список контейнеров
           CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.[].Name')
+            'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
 
           CRITICAL_COUNT=0
           WARNING_COUNT=0
