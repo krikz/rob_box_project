@@ -19,37 +19,33 @@
 
 ### Архитектура
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│ Vision Pi (10.1.1.11)                                         │
-│                                                               │
-│  ┌─────────────┐         ┌──────────────┐                    │
-│  │  cAdvisor   │─────────│  Promtail    │                    │
-│  │  :8080      │         │  :9080       │                    │
-│  └─────────────┘         └──────┬───────┘                    │
-│        │                         │                            │
-└────────┼─────────────────────────┼────────────────────────────┘
-         │                         │
-         │ Метрики                 │ Логи
-         │ (Prometheus             │ (Loki API)
-         │  scrape)                │
-         │                         │
-┌────────┼─────────────────────────┼────────────────────────────┐
-│        ▼                         ▼                            │
-│  ┌─────────────┐         ┌──────────────┐                    │
-│  │ Prometheus  │         │     Loki     │                    │
-│  │    :9090    │         │    :3100     │                    │
-│  └──────┬──────┘         └──────┬───────┘                    │
-│         │                       │                             │
-│         └───────────┬───────────┘                             │
-│                     ▼                                         │
-│              ┌──────────────┐                                 │
-│              │   Grafana    │◄──── Веб-интерфейс             │
-│              │    :3000     │                                 │
-│              └──────────────┘                                 │
-│                                                               │
-│  Main Pi (10.1.1.10)                                          │
-└───────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TB
+    subgraph VisionPi["Vision Pi (10.1.1.11)"]
+        cAdvisorV["cAdvisor<br/>:8080"]
+        PromtailV["Promtail<br/>:9080"]
+    end
+    
+    subgraph MainPi["Main Pi (10.1.1.10)"]
+        Prometheus["Prometheus<br/>:9090"]
+        Loki["Loki<br/>:3100"]
+        Grafana["Grafana<br/>:3000"]
+        
+        Prometheus --> Grafana
+        Loki --> Grafana
+    end
+    
+    cAdvisorV -.Метрики<br/>Prometheus scrape.-> Prometheus
+    PromtailV -.Логи<br/>Loki API.-> Loki
+    
+    User["👤 Веб-интерфейс"] --> Grafana
+    
+    style VisionPi fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style MainPi fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Grafana fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Prometheus fill:#f8d7da,stroke:#721c24,stroke-width:2px
+    style Loki fill:#cce5ff,stroke:#004085,stroke-width:2px
 ```
 
 ## Быстрый старт
