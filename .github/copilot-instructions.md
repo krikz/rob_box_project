@@ -1,233 +1,233 @@
-# GitHub Copilot Instructions for Rob Box Project
+# Инструкции GitHub Copilot для проекта Rob Box
 
-## 🎯 Project Overview
+## 🎯 Обзор проекта
 
-**Rob Box (РОББОКС)** is an autonomous wheeled rover project built with ROS 2 Humble on two Raspberry Pi 4 computers. The robot features SLAM capabilities, voice interaction, LED displays, and sensor integration for indoor delivery tasks.
+**Rob Box (РОББОКС)** — это проект автономного колёсного ровера, построенного на ROS 2 Humble с использованием двух компьютеров Raspberry Pi 4. Робот оснащён возможностями SLAM, голосового взаимодействия, LED-дисплеев и интеграции датчиков для задач доставки в помещениях.
 
-### Key Technologies
-- **ROS 2 Humble Hawksbill** - Robot Operating System framework
-- **Zenoh DDS** - Optimized middleware for network communication (rmw_zenoh_cpp)
-- **RTAB-Map** - RGB-D + 2D LiDAR SLAM system
-- **Docker + Docker Compose** - Containerized architecture
-- **Python 3.10+** - Primary programming language
-- **C++** - Performance-critical components
+### Ключевые технологии
+- **ROS 2 Humble Hawksbill** — фреймворк Robot Operating System
+- **Zenoh DDS** — оптимизированное промежуточное ПО для сетевого взаимодействия (rmw_zenoh_cpp)
+- **RTAB-Map** — система SLAM с RGB-D + 2D LiDAR
+- **Docker + Docker Compose** — контейнеризованная архитектура
+- **Python 3.10+** — основной язык программирования
+- **C++** — критичные по производительности компоненты
 
-### Hardware Architecture
-- **Main Pi** (10.1.1.10 eth0 / 10.1.1.20 wlan0) - RTAB-Map SLAM, navigation, VESC motor control
-- **Vision Pi** (10.1.1.11 eth0 / 10.1.1.21 wlan0) - OAK-D camera, LSLIDAR N10, AprilTag, ReSpeaker mic
+### Аппаратная архитектура
+- **Main Pi** (10.1.1.10 eth0 / 10.1.1.20 wlan0) — RTAB-Map SLAM, навигация, управление VESC
+- **Vision Pi** (10.1.1.11 eth0 / 10.1.1.21 wlan0) — камера OAK-D, LSLIDAR N10, AprilTag, микрофон ReSpeaker
 
 ---
 
-## 📂 Project Structure
+## 📂 Структура проекта
 
 ```
 rob_box_project/
-├── .github/                    # GitHub Actions workflows and CI/CD
-│   ├── workflows/              # Build, test, lint workflows
-│   └── copilot-instructions.md # This file
-├── docker/                     # Docker infrastructure
-│   ├── base/                   # Base images (ros2-zenoh, rtabmap, depthai, pcl)
-│   ├── main/                   # Main Pi services (rtabmap, nav2, zenoh-router)
-│   └── vision/                 # Vision Pi services (oak-d, lslidar, apriltag, voice)
-├── src/                        # ROS 2 packages (source code)
-│   ├── rob_box_voice/          # Voice assistant (STT, TTS, dialogue, commands)
-│   ├── rob_box_perception/     # Perception nodes (health monitor, context aggregator)
-│   ├── rob_box_description/    # URDF robot model
-│   ├── rob_box_bringup/        # Launch files for complete system
-│   ├── rob_box_animations/     # LED animation system
-│   ├── led_matrix_driver/      # LED matrix hardware driver
-│   └── vesc_nexus/             # VESC motor controller (git submodule)
-├── docs/                       # Comprehensive documentation
-│   ├── architecture/           # System design, hardware, software architecture
-│   ├── development/            # Developer guides (AGENT_GUIDE.md is critical!)
-│   ├── guides/                 # User guides (setup, troubleshooting)
-│   └── packages/               # Package-specific documentation
-└── scripts/                    # Utility scripts
+├── .github/                    # GitHub Actions workflows и CI/CD
+│   ├── workflows/              # Workflows сборки, тестирования, линтинга
+│   └── copilot-instructions.md # Этот файл
+├── docker/                     # Docker инфраструктура
+│   ├── base/                   # Базовые образы (ros2-zenoh, rtabmap, depthai, pcl)
+│   ├── main/                   # Сервисы Main Pi (rtabmap, nav2, zenoh-router)
+│   └── vision/                 # Сервисы Vision Pi (oak-d, lslidar, apriltag, voice)
+├── src/                        # ROS 2 пакеты (исходный код)
+│   ├── rob_box_voice/          # Голосовой ассистент (STT, TTS, диалог, команды)
+│   ├── rob_box_perception/     # Ноды восприятия (health monitor, context aggregator)
+│   ├── rob_box_description/    # URDF модель робота
+│   ├── rob_box_bringup/        # Launch файлы для полной системы
+│   ├── rob_box_animations/     # Система LED анимаций
+│   ├── led_matrix_driver/      # Драйвер LED матриц
+│   └── vesc_nexus/             # Контроллер моторов VESC (git submodule)
+├── docs/                       # Полная документация
+│   ├── architecture/           # Дизайн системы, аппаратная и программная архитектура
+│   ├── development/            # Руководства для разработчиков (AGENT_GUIDE.md критически важен!)
+│   ├── guides/                 # Руководства пользователя (настройка, устранение неполадок)
+│   └── packages/               # Документация по пакетам
+└── scripts/                    # Утилитарные скрипты
 ```
 
 ---
 
-## 🔑 Critical Files to Review Before Making Changes
+## 🔑 Критически важные файлы для ознакомления перед внесением изменений
 
-### 1. **AGENT_GUIDE.md** ⭐ MUST READ FIRST
-**Location:** `docs/development/AGENT_GUIDE.md`
-**Purpose:** Comprehensive guide for AI agents with examples, Docker architecture, Zenoh setup, deployment workflows
+### 1. **AGENT_GUIDE.md** ⭐ ОБЯЗАТЕЛЬНО ПРОЧИТАТЬ ПЕРВЫМ
+**Расположение:** `docs/development/AGENT_GUIDE.md`
+**Назначение:** Полное руководство для AI агентов с примерами, архитектурой Docker, настройкой Zenoh, рабочими процессами развёртывания
 
-**Read this before:**
-- Any Docker changes
-- Modifying configurations
-- Adding new services
-- Debugging network issues
+**Прочитайте это перед:**
+- Любыми изменениями Docker
+- Модификацией конфигураций
+- Добавлением новых сервисов
+- Отладкой сетевых проблем
 
-### 2. **DOCKER_STANDARDS.md** ⭐ REQUIRED FOR DOCKER WORK
-**Location:** `docs/development/DOCKER_STANDARDS.md`
-**Purpose:** Docker file organization, volume mounting rules, critical anti-patterns
+### 2. **DOCKER_STANDARDS.md** ⭐ ОБЯЗАТЕЛЬНО ДЛЯ РАБОТЫ С DOCKER
+**Расположение:** `docs/development/DOCKER_STANDARDS.md`
+**Назначение:** Организация файлов Docker, правила монтирования томов, критические антипаттерны
 
-**Key Rules:**
-- ❌ **NEVER** `COPY config/` in Dockerfile - configs are mounted via volumes!
-- ❌ **NEVER** `COPY scripts/` in Dockerfile - scripts are mounted via volumes!
-- ✅ **ONLY** use Dockerfile for `RUN apt-get install`, `RUN git clone`, `RUN colcon build`
-- All services use `network_mode: host` and depend on `zenoh-router`
+**Ключевые правила:**
+- ❌ **НИКОГДА** не используйте `COPY config/` в Dockerfile — конфиги монтируются через volumes!
+- ❌ **НИКОГДА** не используйте `COPY scripts/` в Dockerfile — скрипты монтируются через volumes!
+- ✅ **ТОЛЬКО** используйте Dockerfile для `RUN apt-get install`, `RUN git clone`, `RUN colcon build`
+- Все сервисы используют `network_mode: host` и зависят от `zenoh-router`
 
 ### 3. **PYTHON_STYLE_GUIDE.md**
-**Location:** `docs/development/PYTHON_STYLE_GUIDE.md`
-**Purpose:** Python coding standards, naming conventions, ROS 2 patterns
+**Расположение:** `docs/development/PYTHON_STYLE_GUIDE.md`
+**Назначение:** Стандарты кодирования Python, соглашения об именовании, паттерны ROS 2
 
-**Standards:**
-- Use `black` (line length 120) for formatting
-- Use `isort` for import sorting
-- Use `flake8` for linting
-- Type hints required for public APIs
-- Docstrings follow Google style
+**Стандарты:**
+- Используйте `black` (длина строки 120) для форматирования
+- Используйте `isort` для сортировки импортов
+- Используйте `flake8` для линтинга
+- Аннотации типов обязательны для публичных API
+- Docstrings следуют стилю Google
 
 ### 4. **CI_CD_PIPELINE.md**
-**Location:** `docs/CI_CD_PIPELINE.md`
-**Purpose:** GitHub Actions workflows, automatic Docker builds, merge strategies
+**Расположение:** `docs/CI_CD_PIPELINE.md`
+**Назначение:** GitHub Actions workflows, автоматические сборки Docker, стратегии слияния
 
-**Workflow:**
-- `feature/*` → auto-merge to `develop` (builds changed services)
-- `develop` → auto-merge to `main` (builds ALL services)
-- Docker images tagged as `*-humble-latest` (main), `*-humble-dev` (develop)
+**Рабочий процесс:**
+- `feature/*` → авто-слияние в `develop` (сборка изменённых сервисов)
+- `develop` → авто-слияние в `main` (сборка ВСЕХ сервисов)
+- Docker образы с тегами `*-humble-latest` (main), `*-humble-dev` (develop)
 
 ---
 
-## 🐳 Docker Development Rules
+## 🐳 Правила разработки Docker
 
-### Dockerfile Best Practices
+### Лучшие практики Dockerfile
 
 ```dockerfile
-# ✅ GOOD - Install packages in Dockerfile
+# ✅ ХОРОШО - Установка пакетов в Dockerfile
 FROM rob_box_base:ros2-zenoh
 RUN apt-get update && apt-get install -y \
     ros-humble-nav2-msgs \
     ros-humble-sensor-msgs \
     && rm -rf /var/lib/apt/lists/*
 
-# ✅ GOOD - Build ROS packages
+# ✅ ХОРОШО - Сборка ROS пакетов
 WORKDIR /workspace
 COPY src/rob_box_voice ./src/rob_box_voice
 RUN . /opt/ros/humble/setup.sh && \
     colcon build --packages-select rob_box_voice
 
-# ❌ BAD - DON'T copy configs (they're mounted via volumes!)
-COPY config/ /config/  # WRONG! Requires rebuild on config change
+# ❌ ПЛОХО - НЕ копируйте конфиги (они монтируются через volumes!)
+COPY config/ /config/  # НЕПРАВИЛЬНО! Требует пересборки при изменении конфига
 ```
 
-### docker-compose.yaml Patterns
+### Паттерны docker-compose.yaml
 
 ```yaml
 services:
   my_service:
     image: ghcr.io/krikz/rob_box:my-service-humble-latest
     container_name: my_service
-    network_mode: host  # ✅ ALWAYS use host networking
+    network_mode: host  # ✅ ВСЕГДА используйте host сеть
     environment:
       - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp  # ✅ ALWAYS use Zenoh
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp  # ✅ ВСЕГДА используйте Zenoh
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib
     volumes:
-      - ./config:/config:ro  # ✅ Mount config directory
-      - ./scripts:/scripts:ro  # ✅ Mount scripts directory
+      - ./config:/config:ro  # ✅ Монтировать директорию config
+      - ./scripts:/scripts:ro  # ✅ Монтировать директорию scripts
     depends_on:
-      - zenoh-router  # ✅ ALWAYS depend on zenoh-router
+      - zenoh-router  # ✅ ВСЕГДА зависит от zenoh-router
     restart: unless-stopped
 ```
 
-### File Organization
+### Организация файлов
 
 ```
 docker/vision/
-├── docker-compose.yaml           # Service orchestration
-├── config/                       # ✅ All configs here (mounted, not copied)
+├── docker-compose.yaml           # Оркестрация сервисов
+├── config/                       # ✅ Все конфиги здесь (монтируются, не копируются)
 │   ├── zenoh_router_config.json5
 │   ├── zenoh_session_config.json5
-│   └── oak-d/                    # Service-specific configs
+│   └── oak-d/                    # Конфиги специфичные для сервиса
 │       └── camera_params.yaml
-├── scripts/                      # ✅ All scripts here (mounted, not copied)
-│   ├── update_and_restart.sh     # Utility scripts
-│   └── oak-d/                    # Service-specific scripts
+├── scripts/                      # ✅ Все скрипты здесь (монтируются, не копируются)
+│   ├── update_and_restart.sh     # Утилитарные скрипты
+│   └── oak-d/                    # Скрипты специфичные для сервиса
 │       └── start_oak_d.sh
-└── oak-d/                        # ✅ ONLY Dockerfile (no configs/scripts)
+└── oak-d/                        # ✅ ТОЛЬКО Dockerfile (без конфигов/скриптов)
     └── Dockerfile
 ```
 
 ---
 
-## 🐍 Python Coding Standards
+## 🐍 Стандарты кодирования Python
 
-### File Structure Template
+### Шаблон структуры файла
 
 ```python
 #!/usr/bin/env python3
 """
-Module docstring: Brief description of what this module does.
+Docstring модуля: Краткое описание того, что делает этот модуль.
 
-Detailed explanation of functionality, usage patterns, and examples.
+Подробное объяснение функциональности, паттернов использования и примеров.
 """
 
-# Standard library imports
+# Импорты стандартной библиотеки
 import os
 import sys
 from typing import List, Optional
 
-# Third-party imports
+# Импорты сторонних библиотек
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-# Local imports
+# Локальные импорты
 from rob_box_voice.utils import audio_utils
 
 
 class MyNode(Node):
     """
-    Brief class description.
+    Краткое описание класса.
     
-    Detailed explanation of the node's purpose, functionality, and behavior.
+    Подробное объяснение назначения, функциональности и поведения ноды.
     
-    Attributes:
-        sample_rate (int): Audio sample rate in Hz
-        publisher: ROS 2 publisher for messages
+    Атрибуты:
+        sample_rate (int): Частота дискретизации аудио в Гц
+        publisher: ROS 2 publisher для сообщений
     
-    Example:
+    Пример:
         >>> node = MyNode()
         >>> rclpy.spin(node)
     """
     
     def __init__(self) -> None:
-        """Initialize the node with parameters and publishers."""
+        """Инициализация ноды с параметрами и publishers."""
         super().__init__('my_node')
         
-        # Declare parameters
+        # Объявление параметров
         self.declare_parameter('sample_rate', 16000)
         self.sample_rate = self.get_parameter('sample_rate').value
         
-        # Create publishers
+        # Создание publishers
         self.publisher = self.create_publisher(String, '/topic', 10)
         
-        self.get_logger().info('Node initialized')
+        self.get_logger().info('Нода инициализирована')
     
     def process_data(self, data: bytes) -> str:
         """
-        Process input data and return result.
+        Обработка входных данных и возврат результата.
         
         Args:
-            data: Raw bytes to process
+            data: Сырые байты для обработки
             
         Returns:
-            Processed string result
+            Обработанная строка результата
             
         Raises:
-            ValueError: If data is empty
+            ValueError: Если data пустые
         """
         if not data:
-            raise ValueError("Data cannot be empty")
+            raise ValueError("Данные не могут быть пустыми")
         return data.decode('utf-8')
 
 
 def main(args=None):
-    """Main entry point."""
+    """Главная точка входа."""
     rclpy.init(args=args)
     node = MyNode()
     
@@ -244,60 +244,60 @@ if __name__ == '__main__':
     main()
 ```
 
-### Naming Conventions
+### Соглашения об именовании
 
-- **Variables/functions:** `snake_case` (e.g., `sample_rate`, `process_audio()`)
-- **Classes:** `PascalCase` (e.g., `AudioNode`, `ReSpeakerInterface`)
-- **Constants:** `SCREAMING_SNAKE_CASE` (e.g., `MAX_BUFFER_SIZE`, `DEFAULT_RATE`)
-- **ROS 2 node names:** `snake_case` (e.g., `'audio_node'`, `'dialogue_node'`)
-- **Private attributes:** `_protected_var`, `__private_var`
+- **Переменные/функции:** `snake_case` (например, `sample_rate`, `process_audio()`)
+- **Классы:** `PascalCase` (например, `AudioNode`, `ReSpeakerInterface`)
+- **Константы:** `SCREAMING_SNAKE_CASE` (например, `MAX_BUFFER_SIZE`, `DEFAULT_RATE`)
+- **Имена нод ROS 2:** `snake_case` (например, `'audio_node'`, `'dialogue_node'`)
+- **Приватные атрибуты:** `_protected_var`, `__private_var`
 
-### Logging (DO NOT use print())
+### Логирование (НЕ используйте print())
 
 ```python
-# ✅ GOOD - Use ROS 2 logger
-self.get_logger().debug('Detailed debug information')
-self.get_logger().info('Normal operation message')
-self.get_logger().warn('Warning about potential issue')
-self.get_logger().error('Error occurred, but recoverable')
-self.get_logger().fatal('Critical error, cannot continue')
+# ✅ ХОРОШО - Используйте ROS 2 logger
+self.get_logger().debug('Детальная отладочная информация')
+self.get_logger().info('Сообщение о нормальной работе')
+self.get_logger().warn('Предупреждение о потенциальной проблеме')
+self.get_logger().error('Произошла ошибка, но восстановимая')
+self.get_logger().fatal('Критическая ошибка, невозможно продолжить')
 
-# ❌ BAD - Don't use print()
-print('This is a message')  # NEVER do this in ROS nodes!
+# ❌ ПЛОХО - Не используйте print()
+print('Это сообщение')  # НИКОГДА не делайте это в ROS нодах!
 ```
 
 ---
 
-## 🤖 ROS 2 Specific Patterns
+## 🤖 Специфичные паттерны ROS 2
 
-### Parameter Declaration
+### Объявление параметров
 
 ```python
-# ✅ GOOD - Declare with defaults, then get values
+# ✅ ХОРОШО - Объявите со значениями по умолчанию, затем получите значения
 self.declare_parameter('sample_rate', 16000)
 self.declare_parameter('device_name', 'default_device')
 self.sample_rate = self.get_parameter('sample_rate').value
 self.device_name = self.get_parameter('device_name').value
 
-# Add parameter callback for dynamic reconfiguration
+# Добавить callback параметров для динамической реконфигурации
 self.add_on_set_parameters_callback(self.parameters_callback)
 ```
 
-### Topic Naming Convention
+### Соглашение об именовании топиков
 
 ```python
-# ROS 2 topic naming follows pattern: /<namespace>/<topic_name>
-# ✅ GOOD - Clear, hierarchical naming
-'/audio/audio'              # Raw audio data
+# Именование топиков ROS 2 следует паттерну: /<namespace>/<topic_name>
+# ✅ ХОРОШО - Ясное, иерархическое именование
+'/audio/audio'              # Сырые аудио данные
 '/audio/vad'                # Voice Activity Detection
-'/audio/speech_detected'    # Speech detection event
-'/dialogue/text'            # Dialogue text output
-'/led/animation'            # LED animation commands
+'/audio/speech_detected'    # Событие обнаружения речи
+'/dialogue/text'            # Текстовый вывод диалога
+'/led/animation'            # Команды LED анимации
 
-# ❌ BAD - Unclear or flat naming
-'/audio'                    # Too generic
-'/my_topic'                 # Not descriptive
-'/AudioData'                # Wrong case
+# ❌ ПЛОХО - Неясное или плоское именование
+'/audio'                    # Слишком общее
+'/my_topic'                 # Не описательное
+'/AudioData'                # Неправильный регистр
 ```
 
 ### Quality of Service (QoS)
@@ -305,14 +305,14 @@ self.add_on_set_parameters_callback(self.parameters_callback)
 ```python
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
-# For real-time sensor data (ok to drop old messages)
+# Для данных датчиков реального времени (можно потерять старые сообщения)
 sensor_qos = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
     depth=10
 )
 
-# For important events (must not lose messages)
+# Для важных событий (не должны терять сообщения)
 event_qos = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -322,20 +322,20 @@ event_qos = QoSProfile(
 
 ---
 
-## 🌐 Networking & Zenoh
+## 🌐 Сеть и Zenoh
 
-### IP Address Convention
+### Соглашение об IP-адресах
 
-- **Ethernet (eth0):** Used for data transfer between Pis
+- **Ethernet (eth0):** Используется для передачи данных между Pi
   - Main Pi: `10.1.1.10`
   - Vision Pi: `10.1.1.11`
-- **WiFi (wlan0):** Used for SSH access and management
+- **WiFi (wlan0):** Используется для SSH доступа и управления
   - Main Pi: `10.1.1.20`
   - Vision Pi: `10.1.1.21`
 
-### Zenoh Configuration
+### Конфигурация Zenoh
 
-All ROS 2 nodes use Zenoh middleware with these environment variables:
+Все ноды ROS 2 используют промежуточное ПО Zenoh с этими переменными окружения:
 
 ```yaml
 environment:
@@ -346,89 +346,89 @@ environment:
   - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib
 ```
 
-**Important:** Always use Ethernet IPs (10.1.1.10, 10.1.1.11) in Zenoh router configurations, NOT WiFi IPs!
+**Важно:** Всегда используйте Ethernet IP (10.1.1.10, 10.1.1.11) в конфигурациях Zenoh роутера, НЕ WiFi IP!
 
 ---
 
-## 📊 Monitoring System
+## 📊 Система мониторинга
 
-### Overview
+### Обзор
 
-Rob Box uses a lightweight monitoring stack for observing system health and logs:
+Rob Box использует легковесный стек мониторинга для наблюдения за состоянием системы и логами:
 
-- **Grafana** (port 3000) - Web dashboard for visualization
-- **Prometheus** (port 9090) - Metrics collection
-- **Loki** (port 3100) - Log aggregation
-- **cAdvisor** (port 8080) - Container metrics on both Pis
-- **Promtail** (port 9080) - Log forwarding
+- **Grafana** (порт 3000) — веб-дашборд для визуализации
+- **Prometheus** (порт 9090) — сбор метрик
+- **Loki** (порт 3100) — агрегация логов
+- **cAdvisor** (порт 8080) — метрики контейнеров на обоих Pi
+- **Promtail** (порт 9080) — пересылка логов
 
-### Quick Start
+### Быстрый старт
 
 ```bash
-# Enable monitoring
+# Включить мониторинг
 cd ~/rob_box_project/docker/main && ./scripts/enable_monitoring.sh
 cd ~/rob_box_project/docker/vision && ./scripts/enable_monitoring.sh
 
-# Access Grafana
+# Доступ к Grafana
 http://10.1.1.10:3000  (admin/robbox)
 
-# Disable monitoring
+# Отключить мониторинг
 cd ~/rob_box_project/docker/main && ./scripts/disable_monitoring.sh
 cd ~/rob_box_project/docker/vision && ./scripts/disable_monitoring.sh
 ```
 
-### Resource Usage
+### Использование ресурсов
 
-- **Main Pi:** ~320MB RAM (idle), ~570MB RAM (active)
-- **Vision Pi:** ~70MB RAM (idle), ~120MB RAM (active)
+- **Main Pi:** ~320МБ RAM (простой), ~570МБ RAM (активность)
+- **Vision Pi:** ~70МБ RAM (простой), ~120МБ RAM (активность)
 
-### When to Use Monitoring
+### Когда использовать мониторинг
 
-**Enable when:**
-- ✅ Debugging performance issues
-- ✅ Load testing
-- ✅ Configuring new features
-- ✅ Remote robot operation
+**Включать когда:**
+- ✅ Отладка проблем производительности
+- ✅ Нагрузочное тестирование
+- ✅ Настройка новых функций
+- ✅ Удалённая работа робота
 
-**Disable when:**
-- ✅ Autonomous operation (save resources)
-- ✅ Maximum performance needed
-- ✅ Battery conservation required
+**Отключать когда:**
+- ✅ Автономная работа (экономия ресурсов)
+- ✅ Нужна максимальная производительность
+- ✅ Необходима экономия батареи
 
-### Documentation
+### Документация
 
-- [Monitoring System Guide](../docs/guides/MONITORING_SYSTEM.md) - Complete documentation
-- [Quick Reference](../docs/MONITORING_QUICK_REF.md) - Command reference
+- [Руководство по системе мониторинга](../docs/guides/MONITORING_SYSTEM.md) — полная документация
+- [Краткий справочник](../docs/MONITORING_QUICK_REF.md) — справочник команд
 
 ---
 
-## 🔐 Security & Secrets Management
+## 🔐 Безопасность и управление секретами
 
-### API Keys & Credentials
+### API ключи и учётные данные
 
-**CRITICAL:** Never commit API keys or secrets to git!
+**КРИТИЧНО:** Никогда не коммитьте API ключи или секреты в git!
 
 ```bash
-# ✅ GOOD - Use .env.secrets file (gitignored)
+# ✅ ХОРОШО - Используйте файл .env.secrets (в gitignore)
 docker/vision/.env.secrets:
-  DEEPSEEK_API_KEY=your_key_here
-  YANDEX_API_KEY=your_key_here
-  YANDEX_FOLDER_ID=your_folder_here
+  DEEPSEEK_API_KEY=ваш_ключ_здесь
+  YANDEX_API_KEY=ваш_ключ_здесь
+  YANDEX_FOLDER_ID=ваша_папка_здесь
 
-# In docker-compose.yaml
+# В docker-compose.yaml
 services:
   voice-assistant:
     env_file:
-      - .env.secrets  # Load secrets from file
+      - .env.secrets  # Загрузка секретов из файла
 
-# ❌ BAD - Hardcoded secrets
+# ❌ ПЛОХО - Захардкоженные секреты
 environment:
-  - DEEPSEEK_API_KEY=sk-1234567890abcdef  # NEVER DO THIS!
+  - DEEPSEEK_API_KEY=sk-1234567890abcdef  # НИКОГДА НЕ ДЕЛАЙТЕ ТАК!
 ```
 
-### .gitignore Entries
+### Записи .gitignore
 
-Ensure these are in `.gitignore`:
+Убедитесь, что эти записи есть в `.gitignore`:
 ```
 .env.secrets
 *.env.local
@@ -437,96 +437,96 @@ Ensure these are in `.gitignore`:
 
 ---
 
-## 🧪 Testing & Quality Assurance
+## 🧪 Тестирование и обеспечение качества
 
-### Pre-commit Hooks
+### Pre-commit хуки
 
-The project uses pre-commit hooks for automated quality checks:
+Проект использует pre-commit хуки для автоматических проверок качества:
 
 ```bash
-# Install once
+# Установить один раз
 pip install pre-commit
 pre-commit install
 
-# Manually run all checks
+# Запустить все проверки вручную
 pre-commit run --all-files
 ```
 
-### Linting Tools
+### Инструменты линтинга
 
 ```bash
-# Format Python code (automatic)
+# Форматирование Python кода (автоматическое)
 black src/rob_box_voice/ --line-length=120
 
-# Sort imports (automatic)
+# Сортировка импортов (автоматическая)
 isort src/rob_box_voice/ --profile black
 
-# Check code quality
+# Проверка качества кода
 flake8 src/rob_box_voice/ --max-line-length=120
 
-# Check YAML files
+# Проверка YAML файлов
 yamllint -c .yamllint.yml docker/
 ```
 
-### Running Tests
+### Запуск тестов
 
 ```bash
-# ROS 2 package tests
+# Тесты ROS 2 пакетов
 cd /workspace
 colcon test --packages-select rob_box_voice
 colcon test-result --verbose
 
-# Python unit tests (if pytest is used)
+# Модульные тесты Python (если используется pytest)
 pytest src/rob_box_voice/test/
 ```
 
 ---
 
-## 🚀 Development Workflow
+## 🚀 Рабочий процесс разработки
 
-### Adding a New Feature
+### Добавление новой функции
 
-1. **Create feature branch from develop:**
+1. **Создать feature ветку из develop:**
    ```bash
    git checkout develop
    git pull origin develop
    git checkout -b feature/my-awesome-feature
    ```
 
-2. **Make changes following standards:**
-   - Read relevant documentation (AGENT_GUIDE.md, DOCKER_STANDARDS.md)
-   - Follow Python style guide
-   - Update documentation if needed
-   - Add tests for new functionality
+2. **Внести изменения, следуя стандартам:**
+   - Прочитать соответствующую документацию (AGENT_GUIDE.md, DOCKER_STANDARDS.md)
+   - Следовать руководству по стилю Python
+   - Обновить документацию при необходимости
+   - Добавить тесты для новой функциональности
 
-3. **Test locally:**
+3. **Тестировать локально:**
    ```bash
-   # Build Docker image (if needed)
+   # Собрать Docker образ (если нужно)
    cd docker/vision/oak-d
    docker build -t test:local .
    
-   # Run linters
+   # Запустить линтеры
    black --check src/
    flake8 src/
    yamllint docker/
    ```
 
-4. **Commit and push:**
+4. **Закоммитить и запушить:**
    ```bash
    git add .
    git commit -m "feat: add awesome feature for navigation"
    git push origin feature/my-awesome-feature
    ```
 
-5. **GitHub Actions automatically:**
-   - Builds changed services
-   - Runs linters and tests
-   - Creates Docker images with tag `*-humble-test`
-   - Auto-merges to `develop` if successful
+5. **GitHub Actions автоматически:**
+   - Собирает изменённые сервисы
+   - Запускает линтеры и тесты
+   - Создаёт Docker образы с тегом `*-humble-test`
+   - Авто-сливается в `develop` при успехе
 
-### Commit Message Convention
+### Соглашение о сообщениях коммитов
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+Используйте [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <type>(<scope>): <subject>
@@ -536,22 +536,22 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 <footer>
 ```
 
-**Types:**
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation only
-- `style`: Code style (formatting, no logic change)
-- `refactor`: Code refactoring
-- `perf`: Performance improvement
-- `test`: Adding tests
-- `chore`: Maintenance (dependencies, CI/CD)
+**Типы:**
+- `feat`: Новая функция
+- `fix`: Исправление ошибки
+- `docs`: Только документация
+- `style`: Стиль кода (форматирование, без изменения логики)
+- `refactor`: Рефакторинг кода
+- `perf`: Улучшение производительности
+- `test`: Добавление тестов
+- `chore`: Обслуживание (зависимости, CI/CD)
 
-**Examples:**
+**Примеры:**
 ```
 feat(voice): add command node for navigation integration
 
-Implements command_node.py to process navigation commands
-from dialogue system. Publishes to /cmd_vel for robot movement.
+Реализует command_node.py для обработки навигационных команд
+из системы диалогов. Публикует в /cmd_vel для движения робота.
 
 Closes #42
 
@@ -559,23 +559,23 @@ Closes #42
 
 fix(docker): add missing nav2-msgs dependency to voice-assistant
 
-Voice assistant command_node requires nav2_msgs package.
-Added to apt-get install in Dockerfile.
+Command_node голосового ассистента требует пакет nav2_msgs.
+Добавлено в apt-get install в Dockerfile.
 
 ---
 
 docs(readme): update hardware specifications
 
-Added ReSpeaker Mic Array v2.0 and ESP32 sensor hub details.
+Добавлены детали ReSpeaker Mic Array v2.0 и ESP32 sensor hub.
 ```
 
 ---
 
-## 🔍 Debugging & Troubleshooting
+## 🔍 Отладка и устранение неполадок
 
-### Accessing Raspberry Pi via SSH
+### Доступ к Raspberry Pi через SSH
 
-**IMPORTANT:** Always use `sshpass` for automated SSH commands (password is 'open'):
+**ВАЖНО:** Всегда используйте `sshpass` для автоматизированных SSH команд (пароль 'open'):
 
 ```bash
 # Vision Pi
@@ -584,108 +584,108 @@ sshpass -p 'open' ssh ros2@10.1.1.21
 # Main Pi
 sshpass -p 'open' ssh ros2@10.1.20
 
-# Execute remote command without interactive login
+# Выполнить удалённую команду без интерактивного входа
 sshpass -p 'open' ssh ros2@10.1.1.21 'docker ps'
 ```
 
-### Docker Container Debugging
+### Отладка Docker контейнеров
 
 ```bash
-# Check container status
+# Проверить статус контейнера
 docker ps
 
-# View logs
+# Просмотреть логи
 docker logs oak-d --tail 100
 
-# Follow logs in real-time
+# Следить за логами в реальном времени
 docker logs -f rtabmap
 
-# Execute command inside container
+# Выполнить команду внутри контейнера
 docker exec -it oak-d bash
 
-# Check ROS 2 topics inside container
+# Проверить топики ROS 2 внутри контейнера
 docker exec oak-d ros2 topic list
 docker exec oak-d ros2 topic echo /camera/rgb/image_raw
 ```
 
-### Monitoring Scripts
+### Скрипты мониторинга
 
 ```bash
-# Vision Pi - General system monitoring
+# Vision Pi - Общий системный мониторинг
 cd ~/rob_box_project/docker
 ./monitor_system.sh
 
-# Vision Pi - Real-time camera monitoring
+# Vision Pi - Мониторинг камеры в реальном времени
 cd ~/rob_box_project/docker/vision
 ./realtime_monitor.sh
 
-# Vision Pi - Camera diagnostics
+# Vision Pi - Диагностика камеры
 cd ~/rob_box_project/docker/vision
 ./diagnose.sh
 
-# Local machine - Full data flow diagnostics
+# Локальная машина - Полная диагностика потока данных
 cd /path/to/rob_box_project/docker
 wsl bash ./diagnose_data_flow.sh
 ```
 
-### Common Issues & Solutions
+### Распространённые проблемы и решения
 
-**Issue:** "Did not receive data since 5 seconds" in RTAB-Map
-**Solution:** Run `diagnose_data_flow.sh` to check Vision Pi → Main Pi communication
+**Проблема:** "Did not receive data since 5 seconds" в RTAB-Map
+**Решение:** Запустите `diagnose_data_flow.sh` для проверки коммуникации Vision Pi → Main Pi
 
-**Issue:** Docker image rebuild takes 5-10 minutes after config change
-**Solution:** Configs should be in `docker/*/config/` and mounted via volumes, NOT copied in Dockerfile
+**Проблема:** Пересборка Docker образа занимает 5-10 минут после изменения конфига
+**Решение:** Конфиги должны быть в `docker/*/config/` и монтироваться через volumes, НЕ копироваться в Dockerfile
 
-**Issue:** ModuleNotFoundError for ROS package
-**Solution:** Add missing package to Dockerfile: `RUN apt-get install -y ros-humble-<package-name>`
+**Проблема:** ModuleNotFoundError для ROS пакета
+**Решение:** Добавьте отсутствующий пакет в Dockerfile: `RUN apt-get install -y ros-humble-<имя-пакета>`
 
-**Issue:** Zenoh connection issues
-**Solution:** Check that all services depend on `zenoh-router` and use correct session config
+**Проблема:** Проблемы подключения Zenoh
+**Решение:** Проверьте, что все сервисы зависят от `zenoh-router` и используют правильную конфигурацию сессии
 
 ---
 
-## 📝 Documentation Standards
+## 📝 Стандарты документации
 
-### When to Update Documentation
+### Когда обновлять документацию
 
-Update documentation when you:
-- Add new features or services
-- Change Docker architecture
-- Modify configuration files
-- Fix significant bugs
-- Change deployment procedures
+Обновляйте документацию когда вы:
+- Добавляете новые функции или сервисы
+- Изменяете архитектуру Docker
+- Модифицируете конфигурационные файлы
+- Исправляете значительные ошибки
+- Изменяете процедуры развёртывания
 
-### Documentation Structure
+### Структура документации
 
 ```
 docs/
-├── architecture/          # System design, hardware specs
-├── development/           # Developer guides (this is where AI guides live!)
-├── guides/                # User guides (setup, operation)
-├── packages/              # Package-specific documentation
-└── reports/               # Investigation reports, fixes
+├── architecture/          # Дизайн системы, спецификации железа
+├── development/           # Руководства для разработчиков (здесь находятся AI руководства!)
+├── guides/                # Руководства пользователя (настройка, эксплуатация)
+├── packages/              # Документация по пакетам
+└── reports/               # Отчёты об исследованиях, исправления
 ```
 
-### Writing Good Documentation
+### Написание хорошей документации
 
-**DO:**
-- Use clear, concise language
-- Include code examples
-- Add command-line examples with expected output
-- Use emojis for visual hierarchy (⭐ ✅ ❌ 🔧 📝)
-- Link to related documentation
+**ДЕЛАЙТЕ:**
+- Используйте чёткий, лаконичный язык
+- Включайте примеры кода
+- Добавляйте примеры командной строки с ожидаемым выводом
+- Используйте эмодзи для визуальной иерархии (⭐ ✅ ❌ 🔧 📝)
+- Ссылайтесь на связанную документацию
 
-**DON'T:**
-- Write walls of text without examples
-- Use vague language ("might work", "probably")
-- Skip error cases and edge conditions
-- Forget to update README.md if it's a major change
+**НЕ ДЕЛАЙТЕ:**
+- Писать стены текста без примеров
+- Использовать расплывчатый язык ("может работать", "вероятно")
+- Пропускать случаи ошибок и граничные условия
+- Забывать обновлять README.md при значительных изменениях
 
 ---
 
-## 🎯 Common Tasks Quick Reference
+## 🎯 Краткий справочник по распространённым задачам
 
-### Deploy Updated Code to Raspberry Pi
+### Развернуть обновлённый код на Raspberry Pi
 
 ```bash
 # Vision Pi
@@ -697,106 +697,106 @@ sshpass -p 'open' ssh ros2@10.1.1.20 \
   'cd ~/rob_box_project/docker/main && ./update_and_restart.sh'
 ```
 
-### Add New ROS 2 Package
+### Добавить новый пакет ROS 2
 
 ```bash
-# 1. Create package structure
+# 1. Создать структуру пакета
 cd src/
 ros2 pkg create --build-type ament_python my_package \
   --dependencies rclpy std_msgs
 
-# 2. Add to Dockerfile
+# 2. Добавить в Dockerfile
 RUN apt-get install -y ros-humble-my-dependency
 
-# 3. Build in Dockerfile
+# 3. Собрать в Dockerfile
 COPY src/my_package ./src/my_package
 RUN . /opt/ros/humble/setup.sh && \
     colcon build --packages-select my_package
 
-# 4. Add to docker-compose.yaml with proper volumes
+# 4. Добавить в docker-compose.yaml с правильными volumes
 ```
 
-### Add New Docker Service
+### Добавить новый Docker сервис
 
-Follow the workflow in `DOCKER_STANDARDS.md` section "Workflow для добавления нового сервиса"
-
----
-
-## 🔗 Related Documentation Links
-
-**Critical reads:**
-- [AGENT_GUIDE.md](../docs/development/AGENT_GUIDE.md) - Comprehensive AI agent guide
-- [DOCKER_STANDARDS.md](../docs/development/DOCKER_STANDARDS.md) - Docker organization rules
-- [PYTHON_STYLE_GUIDE.md](../docs/development/PYTHON_STYLE_GUIDE.md) - Python coding standards
-
-**Architecture:**
-- [SYSTEM_OVERVIEW.md](../docs/architecture/SYSTEM_OVERVIEW.md) - Complete system architecture
-- [HARDWARE.md](../docs/architecture/HARDWARE.md) - Hardware specifications
-- [SOFTWARE.md](../docs/architecture/SOFTWARE.md) - Software stack details
-
-**Development:**
-- [BUILD_OPTIMIZATION.md](../docs/development/BUILD_OPTIMIZATION.md) - Docker build optimization
-- [LINTING_GUIDE.md](../docs/development/LINTING_GUIDE.md) - Linting setup and usage
-- [TESTING_GUIDE.md](../docs/development/TESTING_GUIDE.md) - Testing best practices
-
-**Operations:**
-- [CI_CD_PIPELINE.md](../docs/CI_CD_PIPELINE.md) - GitHub Actions workflows
-- [TROUBLESHOOTING.md](../docs/guides/TROUBLESHOOTING.md) - Common issues and solutions
+Следуйте рабочему процессу в `DOCKER_STANDARDS.md` раздел "Workflow для добавления нового сервиса"
 
 ---
 
-## 💡 Tips for Effective AI Assistance
+## 🔗 Ссылки на связанную документацию
 
-### Before Writing Code
+**Критические материалы:**
+- [AGENT_GUIDE.md](../docs/development/AGENT_GUIDE.md) — полное руководство для AI агентов
+- [DOCKER_STANDARDS.md](../docs/development/DOCKER_STANDARDS.md) — правила организации Docker
+- [PYTHON_STYLE_GUIDE.md](../docs/development/PYTHON_STYLE_GUIDE.md) — стандарты кодирования Python
 
-1. **Read AGENT_GUIDE.md** - It contains critical project context
-2. **Check existing patterns** - Look at similar files in the codebase
-3. **Review recent commits** - Understand recent changes: `git log -10 --oneline`
-4. **Check documentation** - Especially for Docker and Python standards
+**Архитектура:**
+- [SYSTEM_OVERVIEW.md](../docs/architecture/SYSTEM_OVERVIEW.md) — полная архитектура системы
+- [HARDWARE.md](../docs/architecture/HARDWARE.md) — спецификации оборудования
+- [SOFTWARE.md](../docs/architecture/SOFTWARE.md) — детали программного стека
 
-### When Suggesting Changes
+**Разработка:**
+- [BUILD_OPTIMIZATION.md](../docs/development/BUILD_OPTIMIZATION.md) — оптимизация сборки Docker
+- [LINTING_GUIDE.md](../docs/development/LINTING_GUIDE.md) — настройка и использование линтинга
+- [TESTING_GUIDE.md](../docs/development/TESTING_GUIDE.md) — лучшие практики тестирования
 
-1. **Be specific** - Reference exact file paths and line numbers
-2. **Show examples** - Include before/after code snippets
-3. **Explain why** - Not just what to change, but why it's better
-4. **Consider impact** - Will this require Docker rebuild? Config changes?
-
-### Error Handling
-
-1. **Quote exact errors** - Copy full error messages with stack traces
-2. **Provide context** - What were you trying to do? Which Pi? Which container?
-3. **Show what you tried** - List debugging steps already attempted
-4. **Check logs first** - `docker logs <container>` often reveals the issue
-
-### Testing Suggestions
-
-1. **Test locally first** - Don't rely on CI/CD for basic testing
-2. **Check all affected systems** - Changes might impact both Pis
-3. **Verify with monitoring tools** - Use provided scripts to validate
-4. **Watch resource usage** - Monitor CPU, memory, network on Raspberry Pi
+**Эксплуатация:**
+- [CI_CD_PIPELINE.md](../docs/CI_CD_PIPELINE.md) — GitHub Actions workflows
+- [TROUBLESHOOTING.md](../docs/guides/TROUBLESHOOTING.md) — распространённые проблемы и решения
 
 ---
 
-## 📚 Project-Specific Glossary
+## 💡 Советы для эффективной помощи AI
 
-**Terms you'll encounter:**
+### Перед написанием кода
 
-- **Vision Pi / Main Pi** - The two Raspberry Pi 4 computers in the robot
-- **Zenoh** - Zero Overhead Network Protocol - optimized DDS middleware
-- **RTAB-Map** - Real-Time Appearance-Based Mapping - SLAM system
-- **OAK-D** - OpenCV AI Kit with Depth - stereo camera by Luxonis
-- **LSLIDAR N10** - 2D LiDAR scanner for mapping
-- **ReSpeaker** - USB microphone array for voice assistant
-- **VESC** - Vedder Electronic Speed Controller - motor controllers
-- **AprilTag** - Fiducial marker system for localization
-- **VAD** - Voice Activity Detection
-- **DoA** - Direction of Arrival (sound source direction)
-- **STT** - Speech-to-Text
-- **TTS** - Text-to-Speech
-- **QoS** - Quality of Service (ROS 2 communication reliability)
+1. **Прочитайте AGENT_GUIDE.md** — он содержит критический контекст проекта
+2. **Проверьте существующие паттерны** — посмотрите на похожие файлы в кодовой базе
+3. **Просмотрите последние коммиты** — поймите недавние изменения: `git log -10 --oneline`
+4. **Проверьте документацию** — особенно для Docker и стандартов Python
+
+### При предложении изменений
+
+1. **Будьте конкретны** — ссылайтесь на точные пути файлов и номера строк
+2. **Показывайте примеры** — включайте фрагменты кода до/после
+3. **Объясняйте почему** — не только что изменить, но и почему это лучше
+4. **Учитывайте влияние** — потребуется ли пересборка Docker? Изменения конфигов?
+
+### Обработка ошибок
+
+1. **Цитируйте точные ошибки** — копируйте полные сообщения об ошибках со стек-трейсами
+2. **Предоставляйте контекст** — что вы пытались сделать? Какой Pi? Какой контейнер?
+3. **Показывайте что пробовали** — перечислите уже предпринятые шаги отладки
+4. **Сначала проверьте логи** — `docker logs <контейнер>` часто раскрывает проблему
+
+### Предложения по тестированию
+
+1. **Сначала тестируйте локально** — не полагайтесь на CI/CD для базового тестирования
+2. **Проверяйте все затронутые системы** — изменения могут влиять на оба Pi
+3. **Проверяйте инструментами мониторинга** — используйте предоставленные скрипты для валидации
+4. **Следите за использованием ресурсов** — мониторьте CPU, память, сеть на Raspberry Pi
 
 ---
 
-**Last Updated:** October 2025
-**Maintained By:** Rob Box Project Team
-**For Questions:** See existing Issues or create new one in GitHub
+## 📚 Глоссарий специфичных для проекта терминов
+
+**Термины, которые вы встретите:**
+
+- **Vision Pi / Main Pi** — два компьютера Raspberry Pi 4 в роботе
+- **Zenoh** — Zero Overhead Network Protocol — оптимизированное DDS промежуточное ПО
+- **RTAB-Map** — Real-Time Appearance-Based Mapping — система SLAM
+- **OAK-D** — OpenCV AI Kit with Depth — стерео камера от Luxonis
+- **LSLIDAR N10** — 2D LiDAR сканер для картографии
+- **ReSpeaker** — USB массив микрофонов для голосового ассистента
+- **VESC** — Vedder Electronic Speed Controller — контроллеры моторов
+- **AprilTag** — система маркеров для локализации
+- **VAD** — Voice Activity Detection — обнаружение голосовой активности
+- **DoA** — Direction of Arrival — направление источника звука
+- **STT** — Speech-to-Text — преобразование речи в текст
+- **TTS** — Text-to-Speech — преобразование текста в речь
+- **QoS** — Quality of Service — надёжность коммуникации ROS 2
+
+---
+
+**Последнее обновление:** Октябрь 2025
+**Поддерживается:** Командой проекта Rob Box
+**По вопросам:** См. существующие Issues или создайте новый в GitHub
