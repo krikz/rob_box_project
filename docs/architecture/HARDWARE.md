@@ -25,35 +25,45 @@
 
 ### 1.1. Системная архитектура
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          РОББОКС                                 │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │              Вычислительный кластер                        │ │
-│  │  ┌──────────────────┐       ┌──────────────────┐          │ │
-│  │  │   Vision Pi 5    │       │    Main Pi 5     │          │ │
-│  │  │   (8GB RAM)      │◄─────►│   (16GB RAM)     │          │ │
-│  │  │   Vision Proc.   │  GbE  │  Nav & Control   │          │ │
-│  │  └──────────────────┘       └──────────────────┘          │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐ │
-│  │  Визуальная      │  │   Навигационные  │  │   Система    │ │
-│  │   система        │  │    сенсоры       │  │  управления  │ │
-│  │                  │  │                  │  │   движением  │ │
-│  │ • 5× LED Matrix  │  │ • LS LiDAR N10  │  │ • 2× VESC    │ │
-│  │ • OAK-D Lite     │  │ • OAK-D Depth    │  │ • 2× Motors  │ │
-│  └──────────────────┘  └──────────────────┘  └──────────────┘ │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              Сенсорный хаб (ESP32)                       │  │
-│  │  • 8× AHT30 (Temperature/Humidity)                       │  │
-│  │  • 1× HX711 Load Cell (Weight)                           │  │
-│  │  • 2× PWM Fans with Tachometer                           │  │
-│  │  • IMU 9-DOF (Future)                                    │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TB
+    subgraph ROBBOX["🤖 РОББОКС"]
+        subgraph Compute["💻 Вычислительный кластер"]
+            VisionPi["Vision Pi 5<br/>8GB RAM<br/>Vision Proc."]
+            MainPi["Main Pi 5<br/>16GB RAM<br/>Nav & Control"]
+            VisionPi <==GbE==> MainPi
+        end
+        
+        subgraph Visual["👁️ Визуальная система"]
+            LED["• 5× LED Matrix"]
+            OAK["• OAK-D Lite"]
+        end
+        
+        subgraph Navigation["🗺️ Навигационные сенсоры"]
+            LiDAR["• LS LiDAR N10"]
+            Depth["• OAK-D Depth"]
+        end
+        
+        subgraph Motion["🚗 Система управления движением"]
+            VESC["• 2× VESC"]
+            Motors["• 2× Motors"]
+        end
+        
+        subgraph SensorHub["📊 Сенсорный хаб (ESP32)"]
+            Temp["• 8× AHT30<br/>(Temperature/Humidity)"]
+            Weight["• 1× HX711<br/>(Load Cell Weight)"]
+            Fans["• 2× PWM Fans<br/>(with Tachometer)"]
+            IMU["• IMU 9-DOF<br/>(Future)"]
+        end
+    end
+    
+    style ROBBOX fill:#f0f7ff,stroke:#2c5282,stroke-width:3px
+    style Compute fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style Visual fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Navigation fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Motion fill:#f8d7da,stroke:#721c24,stroke-width:2px
+    style SensorHub fill:#cce5ff,stroke:#004085,stroke-width:2px
 ```
 
 ### 1.2. Компоненты по категориям

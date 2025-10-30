@@ -216,8 +216,8 @@ graph TD
 
 Если вы нашли ASCII-арт диаграмму, конвертируйте её в Mermaid:
 
-**Было (ASCII):**
-```
+**Было (ASCII-арт текст):**
+```text
 ┌─────────┐
 │ Feature │
 └────┬────┘
@@ -228,7 +228,15 @@ graph TD
 └─────────┘
 ```
 
-**Стало (Mermaid):**
+**Стало (Mermaid код):**
+~~~markdown
+```mermaid
+graph TD
+    Feature[Feature Branch] --> Develop[Develop Branch]
+```
+~~~
+
+**Результат рендеринга:**
 ```mermaid
 graph TD
     Feature[Feature Branch] --> Develop[Develop Branch]
