@@ -9,60 +9,25 @@
 
 ## Архитектура Pipeline
 
-```
-┌─────────────────┐
-│ Feature Branch  │
-│ (feature/*)     │
-└────────┬────────┘
-         │ push
-         ▼
-┌─────────────────────────────────────────────────┐
-│ GitHub Actions:                                 │
-│ G-Auto-merge Feature to Develop.yml             │
-│                                                 │
-│ 1. Detect changes (vision/main/docs)           │
-│ 2. Build changed services                      │
-│ 3. Create PR to develop (if success)           │
-└────────┬────────────────────────────────────────┘
-         │ creates PR
-         ▼
-┌─────────────────┐
-│ Pull Request    │
-│ feature → dev   │
-└────────┬────────┘
-         │ manual review & merge
-         ▼
-┌─────────────────┐
-│ Develop Branch  │
-│ (develop)       │
-└────────┬────────┘
-         │ push
-         ▼
-┌─────────────────────────────────────────────────┐
-│ GitHub Actions:                                 │
-│ G-Auto-merge to Main.yml                        │
-│                                                 │
-│ 1. Build ALL services (G-Build All Services.yml) │
-│ 2. Create PR to main (if all success)          │
-└────────┬────────────────────────────────────────┘
-         │ creates PR
-         ▼
-┌─────────────────┐
-│ Pull Request    │
-│ develop → main  │
-└────────┬────────┘
-         │ manual review & merge
-         ▼
-┌─────────────────┐
-│ Main Branch     │
-│ (main)          │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────┐
-│ Docker Images Published                         │
-│ ghcr.io/krikz/rob_box:*-humble-latest           │
-└─────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282','lineColor':'#2c5282','secondaryColor':'#f0f7ff','tertiaryColor':'#fff'}}}%%
+flowchart TD
+    A[Feature Branch<br/>feature/*] -->|push| B["GitHub Actions:<br/>G-Auto-merge Feature to Develop.yml<br/><br/>1. Detect changes vision/main/docs<br/>2. Build changed services<br/>3. Create PR to develop if success"]
+    B -->|creates PR| C[Pull Request<br/>feature → develop]
+    C -->|manual review & merge| D[Develop Branch<br/>develop]
+    D -->|push| E["GitHub Actions:<br/>G-Auto-merge to Main.yml<br/><br/>1. Build ALL services<br/>2. Create PR to main if all success"]
+    E -->|creates PR| F[Pull Request<br/>develop → main]
+    F -->|manual review & merge| G[Main Branch<br/>main]
+    G --> H[Docker Images Published<br/>ghcr.io/krikz/rob_box:*-humble-latest]
+    
+    style A fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style B fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style C fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style D fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style E fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style F fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style G fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style H fill:#cce5ff,stroke:#004085,stroke-width:2px
 ```
 
 ## Workflows

@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 from contextlib import contextmanager
 from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
+from .audio_playback_manager import AudioPlaybackManager
 
 
 @contextmanager
@@ -82,6 +83,9 @@ class SoundNode(Node):
         # Инициализация аудио устройства
         self.device_index = None
         self.initialize_audio_device()
+        
+        # Менеджер воспроизведения (предотвращает ALSA конфликты)
+        self.playback_manager = AudioPlaybackManager.get_instance()
 
         # Хранилище звуков
         self.sounds: Dict[str, AudioSegment] = {}
@@ -239,12 +243,20 @@ class SoundNode(Node):
             # Нормализация float32
             samples = samples.astype(np.float32) / 32768.0
 
-            # Воспроизведение через sounddevice с автоопределенным устройством
-            # channels определяется автоматически из shape данных
-            sd.play(samples, samplerate=16000, device=self.device_index)
-            sd.wait()
-
-            self.get_logger().info(f"✅ Завершено: {sound_name}")
+            # Воспроизведение через менеджер (защита от ALSA конфликтов)
+            success = self.playback_manager.play_audio(
+                audio_data=samples,
+                sample_rate=16000,
+                device_index=self.device_index,
+                blocking=True,  # Блокирующее воспроизведение для звуков
+                timeout=3.0,  # Меньший timeout для звуковых эффектов
+                node_name="sound_node"
+            )
+            
+            if not success:
+                self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
+            else:
+                self.get_logger().info(f"✅ Завершено: {sound_name}")
 
             # Cleanup для устранения белого шума после воспроизведения
             self.cleanup_playback_noise()

@@ -58,37 +58,52 @@
 
 ### 2.1. Схема подключений
 
-```
-                          РОББОКС
-┌─────────────────────────────────────────────────────────────────┐
-│  ┌─────────────── Vision Pi 5 (8GB) ──────────────────┐         │
-│  │  ┌─────────┐  ┌──────────┐  ┌────────┐  ┌───────┐ │         │
-│  │  │ OAK-D   │  │  LS      │  │ MJPEG  │  │ReSpeaker│        │
-│  │  │ Lite    │  │  LiDAR   │  │ Camera │  │ Mic v2 │ │         │
-│  │  │ (USB3)  │  │  N10     │  │ 720p   │  │ Array  │ │         │
-│  │  └────┬────┘  └────┬─────┘  └───┬────┘  └───┬────┘ │         │
-│  │       │            │(USB)       │(USB)      │(USB)  │         │
-│  │       └────────────┴────────────┴───────────┘       │         │
-│  │                         │ SPI                        │         │
-│  │                    ┌────▼─────┐                      │         │
-│  │                    │ 381 LED  │                      │         │
-│  │                    │ NeoPixel │                      │         │
-│  │                    └──────────┘                      │         │
-│  └──────────────────────┬───────────────────────────────┘         │
-│                         │ GbE (10.1.1.x)                          │
-│  ┌──────────────────────▼──────── Main Pi 5 (16GB) ────┐         │
-│  │  ┌────────────┐      ┌─────────────┐   ┌─────────┐  │         │
-│  │  │  CAN HAT   │◄────►│   ESP32     │   │  2×10S  │  │         │
-│  │  │ (Isolated) │      │ Sensor Hub  │   │  LiPo   │  │         │
-│  │  └──────┬─────┘      │  + BMC      │   │  Battery│  │         │
-│  │         │            └─────────────┘   └────┬────┘  │         │
-│  │    ┌────▼────┐                              │       │         │
-│  │    │ 2× VESC │           Power Rails:       │       │         │
-│  │    │ Motor   │           • 12V Buck (isolated)      │         │
-│  │    │ Control │           • 5V Buck (isolated)       │         │
-│  │    └─────────┘           • Feeds to both Pi & LEDs  │         │
-│  └──────────────────────────────────────────────────────┘         │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282','lineColor':'#2c5282'}}}%%
+graph TB
+    subgraph ROBBOX["🤖 РОББОКС"]
+        subgraph VisionPi["Vision Pi 5 (8GB)"]
+            OAK["OAK-D Lite<br/>(USB3)"]
+            MJPEG["MJPEG Camera<br/>720p (USB)"]
+            ReSpeaker["ReSpeaker<br/>Mic v2 (USB)"]
+            LED["381 LED<br/>NeoPixel (SPI)"]
+            
+            OAK -.USB.-> VisionPi
+            MJPEG -.USB.-> VisionPi
+            ReSpeaker -.USB.-> VisionPi
+            LED -.SPI.-> VisionPi
+        end
+        
+        subgraph MainPi["Main Pi 5 (16GB)"]
+            LIDAR["LS LiDAR N10<br/>(USB ACM)"]
+            CAN["CAN HAT<br/>(Isolated)"]
+            ESP32["ESP32<br/>Sensor Hub + BMC"]
+            VESC["2× VESC<br/>Motor Control"]
+            
+            LIDAR -.USB.-> MainPi
+            CAN <--> ESP32
+            CAN --> VESC
+        end
+        
+        Battery["2×10S LiPo<br/>Battery"]
+        Buck12V["12V Buck<br/>(Isolated)"]
+        Buck5V["5V Buck<br/>(Isolated)"]
+        
+        Battery --> Buck12V
+        Battery --> Buck5V
+        Buck12V -.питание.-> MainPi
+        Buck12V -.питание.-> VisionPi
+        Buck5V -.питание.-> LED
+        Buck12V --> VESC
+        
+        VisionPi <==GbE 10.1.1.x==> MainPi
+    end
+    
+    style VisionPi fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style MainPi fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Battery fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    style Buck12V fill:#ccffcc,stroke:#00cc00,stroke-width:2px
+    style Buck5V fill:#ccffcc,stroke:#00cc00,stroke-width:2px
 ```
 
 ### 2.2. Компоненты по функциям
@@ -136,36 +151,32 @@
 
 Система использует **две независимые сети**:
 
-```
-┌─────────────────────── GIGABIT ETHERNET ────────────────────────┐
-│  Назначение: Передача данных между Pi (images, lidar, etc.)    │
-│  Скорость: 1000 Mbps                                            │
-│                                                                  │
-│    Vision Pi (eth0)                  Main Pi (eth0)             │
-│       10.1.1.11      ◄─────────────► 10.1.1.10                  │
-│         │                                 │                      │
-│         │                                 │                      │
-└─────────┼─────────────────────────────────┼──────────────────────┘
-          │                                 │
-          │                                 │
-┌─────────┼────────────── WIFI ─────────────┼──────────────────────┐
-│  Назначение: SSH доступ, управление, мониторинг                 │
-│  Скорость: 100-300 Mbps                                          │
-│                                                                  │
-│    Vision Pi (wlan0)                Main Pi (wlan0)              │
-│       10.1.1.21      ◄──────────────► 10.1.1.20                  │
-│                              │                                   │
-│                              │                                   │
-│                         ┌────▼─────┐                             │
-│                         │  Router  │                             │
-│                         │  DHCP    │                             │
-│                         └────┬─────┘                             │
-│                              │                                   │
-│                         ┌────▼─────┐                             │
-│                         │ Host PC  │                             │
-│                         │ Foxglove │                             │
-│                         └──────────┘                             │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TB
+    subgraph Ethernet["📡 GIGABIT ETHERNET<br/>Передача данных между Pi (images, lidar, etc.)<br/>Скорость: 1000 Mbps"]
+        VisionEth["Vision Pi (eth0)<br/>10.1.1.11"]
+        MainEth["Main Pi (eth0)<br/>10.1.1.10"]
+        VisionEth <==ROS/Zenoh<br/>данные==> MainEth
+    end
+    
+    subgraph WiFi["📶 WIFI<br/>SSH доступ, управление, мониторинг<br/>Скорость: 100-300 Mbps"]
+        VisionWlan["Vision Pi (wlan0)<br/>10.1.1.21"]
+        MainWlan["Main Pi (wlan0)<br/>10.1.1.20"]
+        Router["Router<br/>DHCP"]
+        HostPC["Host PC<br/>Foxglove<br/>10.1.1.5"]
+        
+        VisionWlan <-.SSH.-> Router
+        MainWlan <-.SSH.-> Router
+        Router <-.-> HostPC
+    end
+    
+    style Ethernet fill:#e8f4f8,stroke:#2c5282,stroke-width:3px
+    style WiFi fill:#fff3cd,stroke:#856404,stroke-width:3px
+    style VisionEth fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style MainEth fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style VisionWlan fill:#f8d7da,stroke:#721c24,stroke-width:2px
+    style MainWlan fill:#f8d7da,stroke:#721c24,stroke-width:2px
 ```
 
 ### 3.2. IP-адресация
@@ -183,35 +194,29 @@
 
 ### 3.3. Zenoh топология
 
-```
-                      ┌─────────────────────┐
-                      │ zenoh.robbox.online │ (Облако)
-                      │      :7447          │
-                      └──────────┬──────────┘
-                                 │
-                                 │ TCP/TLS
-                                 │
-                   ┌─────────────▼──────────────┐
-                   │    Main Pi Zenoh Router    │
-                   │      (10.1.1.10:7447)      │
-                   │      mesh peer mode        │
-                   └──────┬──────────────┬──────┘
-                          │              │
-                   UDP/TCP│              │UDP/TCP
-                          │              │
-          ┌───────────────▼──┐      ┌───▼──────────────────┐
-          │ Vision Pi Zenoh  │      │  Local ROS2 Nodes    │
-          │ Router           │      │  (via rmw_zenoh_cpp) │
-          │ (10.1.1.11:7447) │      │  - rtabmap           │
-          │ client mode      │      │  - twist_mux         │
-          └──────┬───────────┘      │  - nav2              │
-                 │                  └──────────────────────┘
-          ┌──────▼────────────┐
-          │  Local ROS2 Nodes │
-          │  (via rmw_zenoh)  │
-          │  - oak-d          │
-          │    (with AprilTag)│
-          └───────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TB
+    Cloud["☁️ zenoh.robbox.online<br/>:7447<br/>(Облако)"]
+    
+    MainRouter["Main Pi Zenoh Router<br/>10.1.1.10:7447<br/>mesh peer mode"]
+    
+    VisionRouter["Vision Pi Zenoh Router<br/>10.1.1.11:7447<br/>client mode"]
+    
+    MainNodes["Local ROS2 Nodes<br/>via rmw_zenoh_cpp<br/>- rtabmap<br/>- twist_mux<br/>- nav2"]
+    
+    VisionNodes["Local ROS2 Nodes<br/>via rmw_zenoh_cpp<br/>- oak-d<br/>- AprilTag<br/>- voice"]
+    
+    Cloud <==TCP/TLS==> MainRouter
+    MainRouter <==UDP/TCP==> VisionRouter
+    MainRouter --> MainNodes
+    VisionRouter --> VisionNodes
+    
+    style Cloud fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style MainRouter fill:#d4edda,stroke:#28a745,stroke-width:3px
+    style VisionRouter fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style MainNodes fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style VisionNodes fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
 ```
 
 **Режимы работы**:
@@ -225,42 +230,59 @@
 
 ### 4.1. Уровни абстракции
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Application Layer                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Nav2       │  │   Animations │  │   Behaviors  │          │
-│  │  Navigation  │  │   Manager    │  │   (Future)   │          │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
-└─────────┼──────────────────┼──────────────────┼──────────────────┘
-          │                  │                  │
-┌─────────┼──────────────────┼──────────────────┼──────────────────┐
-│         │     ROS 2 Middleware Layer (Zenoh)  │                  │
-│  ┌──────▼──────────────────▼──────────────────▼─────────┐       │
-│  │  Topics  │  Services  │  Actions  │  Parameters       │       │
-│  └──────┬──────────────────┬──────────────────┬─────────┘       │
-└─────────┼──────────────────┼──────────────────┼──────────────────┘
-          │                  │                  │
-┌─────────┼──────────────────┼──────────────────┼──────────────────┐
-│         │      Perception & Control Layer     │                  │
-│  ┌──────▼───────┐  ┌───────▼──────┐  ┌───────▼────┐            │
-│  │   RTAB-Map   │  │   AprilTag   │  │ ros2_control│            │
-│  │     SLAM     │  │   Detector   │  │   (VESC)    │            │
-│  └──────┬───────┘  └───────┬──────┘  └───────┬────┘            │
-└─────────┼──────────────────┼──────────────────┼──────────────────┘
-          │                  │                  │
-┌─────────┼──────────────────┼──────────────────┼──────────────────┐
-│         │         Driver Layer                │                  │
-│  ┌──────▼───────┐  ┌───────▼──────┐  ┌───────▼────────┐        │
-│  │  LS LiDAR    │  │   OAK-D      │  │  VESC CAN      │        │
-│  │   Driver     │  │   Driver     │  │    Driver      │        │
-│  └──────┬───────┘  └───────┬──────┘  └───────┬────────┘        │
-└─────────┼──────────────────┼──────────────────┼──────────────────┘
-          │                  │                  │
-┌─────────▼──────────────────▼──────────────────▼──────────────────┐
-│                      Hardware Layer                               │
-│  LS LiDAR N10  │  OAK-D Lite  │  VESC Controllers  │  Sensors  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TD
+    subgraph AppLayer["📱 Application Layer"]
+        Nav2["Nav2<br/>Navigation"]
+        Anim["Animations<br/>Manager"]
+        Behav["Behaviors<br/>(Future)"]
+    end
+    
+    subgraph Middleware["⚙️ ROS 2 Middleware Layer (Zenoh)"]
+        Topics["Topics | Services | Actions | Parameters"]
+    end
+    
+    subgraph PerceptionControl["🔍 Perception & Control Layer"]
+        RTAB["RTAB-Map<br/>SLAM"]
+        April["AprilTag<br/>Detector"]
+        Control["ros2_control<br/>(VESC)"]
+    end
+    
+    subgraph DriverLayer["🔌 Driver Layer"]
+        LidarDrv["LS LiDAR<br/>Driver"]
+        OAKDrv["OAK-D<br/>Driver"]
+        VESCDrv["VESC CAN<br/>Driver"]
+    end
+    
+    subgraph Hardware["🔩 Hardware Layer"]
+        LidarHW["LS LiDAR N10"]
+        OAKHW["OAK-D Lite"]
+        VESCHW["VESC Controllers"]
+        Sensors["Sensors"]
+    end
+    
+    Nav2 --> Topics
+    Anim --> Topics
+    Behav --> Topics
+    
+    Topics --> RTAB
+    Topics --> April
+    Topics --> Control
+    
+    RTAB --> LidarDrv
+    April --> OAKDrv
+    Control --> VESCDrv
+    
+    LidarDrv --> LidarHW
+    OAKDrv --> OAKHW
+    VESCDrv --> VESCHW
+    
+    style AppLayer fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style Middleware fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style PerceptionControl fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style DriverLayer fill:#f8d7da,stroke:#721c24,stroke-width:2px
+    style Hardware fill:#cccccc,stroke:#666666,stroke-width:2px
 ```
 
 ### 4.2. Компоненты по слоям
