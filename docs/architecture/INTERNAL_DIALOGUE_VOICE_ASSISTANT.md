@@ -21,30 +21,26 @@
 
 РОББОКС имеет **ДВЕ НЕЗАВИСИМЫЕ** системы обработки речи и размышлений:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    ВНЕШНИЙ МИР                              │
-│         /voice/stt/result (распознанная речь)               │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                ┌─────────────┴─────────────┐
-                │                           │
-                ▼                           ▼
-┌───────────────────────────┐  ┌──────────────────────────────┐
-│   ВНУТРЕННИЙ ДИАЛОГ       │  │    ГОЛОСОВОЙ АССИСТЕНТ       │
-│   (Internal Dialogue)     │  │    (Voice Assistant)         │
-├───────────────────────────┤  ├──────────────────────────────┤
-│ • Всегда слушает          │  │ • Только по wake word        │
-│ • Размышляет про себя     │  │ • Публичные ответы           │
-│ • Мысли + публикация TTS  │  │ • Команды + диалог           │
-│ • БЕЗ wake word           │  │ • Wake words: робок, робот.. │
-└───────────────────────────┘  └──────────────────────────────┘
-                │                           │
-                └───────────┬───────────────┘
-                            ▼
-                     ┌──────────────┐
-                     │  TTS + Audio │
-                     └──────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TD
+    External["🌍 ВНЕШНИЙ МИР<br/>/voice/stt/result<br/>распознанная речь"]
+    
+    Internal["💭 ВНУТРЕННИЙ ДИАЛОГ<br/>Internal Dialogue<br/><br/>• Всегда слушает<br/>• Размышляет про себя<br/>• Мысли + публикация TTS<br/>• БЕЗ wake word"]
+    
+    Voice["🎤 ГОЛОСОВОЙ АССИСТЕНТ<br/>Voice Assistant<br/><br/>• Только по wake word<br/>• Публичные ответы<br/>• Команды + диалог<br/>• Wake words: робок, робот..."]
+    
+    TTS["🔊 TTS + Audio"]
+    
+    External --> Internal
+    External --> Voice
+    Internal --> TTS
+    Voice --> TTS
+    
+    style External fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style Internal fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Voice fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style TTS fill:#f8d7da,stroke:#721c24,stroke-width:2px
 ```
 
 ### Ключевое отличие:
@@ -970,68 +966,31 @@ be3e65d feat: добавить периодическую суммаризаци
 
 ## Архитектура: Полная диаграмма
 
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TD
+    External["🌍 EXTERNAL WORLD<br/>/voice/stt/result (STT)"]
+    
+    Context["📊 CONTEXT AGGREGATOR<br/>MPC Lite<br/><br/>Подписан на:<br/>• /voice/stt/result<br/>• /vision_context<br/>• /battery<br/>• /rosout (errors)<br/><br/>Типизация событий:<br/>• speech_events<br/>• vision_events<br/>• system_events<br/><br/>Суммаризация (50+):<br/>• speech_summaries<br/>• vision_summaries<br/>• system_summaries<br/><br/>Публикует:<br/>/perception/context_update"]
+    
+    Voice["🎤 VOICE ASSISTANT<br/><br/>Ноды:<br/>• audio_node<br/>• stt_node (Vosk)<br/>• dialogue_node (DeepSeek)<br/>• command_node<br/>• tts_node (Silero)<br/>• sound_node<br/><br/>State Machine:<br/>IDLE → LISTENING → DIALOGUE<br/><br/>Wake Words:<br/>• робок, робот, роббокс...<br/><br/>Silence Commands:<br/>• помолч, замолч, хватит...<br/><br/>Личные вопросы:<br/>→ ask_reflection"]
+    
+    Internal["💭 INTERNAL DIALOGUE<br/>Reflection<br/><br/>Подписан на:<br/>• /perception/context_update<br/>• /perception/user_speech<br/><br/>Получает:<br/>• Summaries (3 типа)<br/>• Recent events (~10)<br/>• Текущие датчики<br/><br/>Размышляет через:<br/>DeepSeek (reflection)<br/><br/>Публикует:<br/>• /perception/thought<br/>• /voice/tts/speak"]
+    
+    TTS["🔊 TTS + Audio"]
+    
+    External --> Context
+    External --> Voice
+    Context --> Internal
+    Voice -.urgent hook.-> Internal
+    Internal --> TTS
+    
+    style External fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style Context fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Voice fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Internal fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style TTS fill:#f8d7da,stroke:#721c24,stroke-width:2px
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                     EXTERNAL WORLD                             │
-│                  /voice/stt/result (STT)                       │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                ┌─────────────┴─────────────┐
-                │                           │
-                ▼                           ▼
-┌───────────────────────────┐  ┌──────────────────────────────┐
-│  CONTEXT AGGREGATOR       │  │   VOICE ASSISTANT            │
-│  (MPC Lite)               │  │                              │
-├───────────────────────────┤  ├──────────────────────────────┤
-│ • Подписан на:            │  │ Ноды:                        │
-│   - /voice/stt/result     │  │ • audio_node                 │
-│   - /vision_context       │  │ • stt_node (Vosk)            │
-│   - /battery              │  │ • dialogue_node (DeepSeek)   │
-│   - /rosout (errors)      │  │ • command_node               │
-│                           │  │ • tts_node (Silero)          │
-│ • Типизация событий:      │  │ • sound_node                 │
-│   - speech_events         │  │                              │
-│   - vision_events         │  │ State Machine:               │
-│   - system_events         │  │ IDLE → LISTENING → DIALOGUE  │
-│                           │  │                              │
-│ • Суммаризация (50+):     │  │ Wake Words:                  │
-│   - speech_summaries      │  │ • робок, робот, роббокс...   │
-│   - vision_summaries      │  │                              │
-│   - system_summaries      │  │ Silence Commands:            │
-│                           │  │ • помолч, замолч, хватит...  │
-│ • Публикует:              │  │                              │
-│   /perception/            │  │ Личные вопросы:              │
-│    context_update         │  │ → ask_reflection             │
-└───────────────────────────┘  └──────────────────────────────┘
-                │                           │
-                ▼                           │
-┌───────────────────────────┐              │
-│  INTERNAL DIALOGUE        │              │
-│  (Reflection)             │              │
-├───────────────────────────┤              │
-│ • Подписан на:            │              │
-│   - /perception/          │◄─────────────┘
-│      context_update       │   (urgent hook)
-│   - /perception/          │
-│      user_speech          │
-│                           │
-│ • Получает:               │
-│   - Summaries (3 типа)    │
-│   - Recent events (~10)   │
-│   - Текущие датчики       │
-│                           │
-│ • Размышляет через:       │
-│   DeepSeek (reflection)   │
-│                           │
-│ • Публикует:              │
-│   - /perception/thought   │
-│   - /voice/tts/speak      │
-└───────────────────────────┘
-                │
-                ▼
-        ┌──────────────┐
-        │  TTS + Audio │
-        └──────────────┘
 ```
 
 ---
