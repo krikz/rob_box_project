@@ -23,32 +23,39 @@
 
 ### 1.1. Технологический стек
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   Application Layer                              │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐   │
-│  │ Nav2      │  │ RTAB-Map  │  │Animations │  │ Behaviors │   │
-│  │Navigation │  │   SLAM    │  │  Manager  │  │ (Future)  │   │
-│  └───────────┘  └───────────┘  └───────────┘  └───────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                             ↕
-┌─────────────────────────────────────────────────────────────────┐
-│                  ROS 2 Middleware (Zenoh)                        │
-│   Topics  │  Services  │  Actions  │  Parameters  │  TF         │
-└─────────────────────────────────────────────────────────────────┘
-                             ↕
-┌─────────────────────────────────────────────────────────────────┐
-│               Drivers & Hardware Abstraction                     │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ LiDAR    │  │ OAK-D    │  │  VESC    │  │  LED     │       │
-│  │ Driver   │  │ Driver   │  │ Driver   │  │ Matrix   │       │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
-└─────────────────────────────────────────────────────────────────┘
-                             ↕
-┌─────────────────────────────────────────────────────────────────┐
-│                    Hardware Layer                                │
-│   Sensors  │  Cameras  │  Motors  │  LED Panels                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
+graph TD
+    subgraph App["📱 Application Layer"]
+        Nav2[Nav2<br/>Navigation]
+        RTAB[RTAB-Map<br/>SLAM]
+        Anim[Animations<br/>Manager]
+        Behav[Behaviors<br/>Future]
+    end
+    
+    subgraph Middleware["⚙️ ROS 2 Middleware (Zenoh)"]
+        Topics[Topics | Services | Actions | Parameters | TF]
+    end
+    
+    subgraph Drivers["🔌 Drivers & Hardware Abstraction"]
+        LiDARDrv[LiDAR<br/>Driver]
+        OAKDrv[OAK-D<br/>Driver]
+        VESCDrv[VESC<br/>Driver]
+        LEDDrv[LED<br/>Matrix]
+    end
+    
+    subgraph Hardware["🔩 Hardware Layer"]
+        Sensors[Sensors | Cameras | Motors | LED Panels]
+    end
+    
+    App --> Middleware
+    Middleware --> Drivers
+    Drivers --> Hardware
+    
+    style App fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style Middleware fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Drivers fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Hardware fill:#cccccc,stroke:#666666,stroke-width:2px
 ```
 
 ### 1.2. Основные технологии
