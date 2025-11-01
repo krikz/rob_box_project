@@ -8,6 +8,11 @@
 - Голосовых команд управления громкостью
 - Опционального "эффекта бурундука" через параметры
 
+**⚠️ ВАЖНОЕ ОБНОВЛЕНИЕ (Ноябрь 2025):**
+После PR #20 была обнаружена проблема "обратного бурундука" (голос звучал слишком медленно и глубоко). 
+Это было исправлено добавлением ресэмплинга аудио с оригинальной частоты (22050 Hz) на частоту ReSpeaker (16000 Hz).
+См. [REVERSE_CHIPMUNK_FIX.md](REVERSE_CHIPMUNK_FIX.md) для деталей.
+
 ## 🎯 Проблема
 
 ### Оригинальный эффект "бурундука"
@@ -37,14 +42,38 @@ def play_audio_segment(audio_data):
 
 ### 1. Нормальная Скорость Воспроизведения
 
-Параметры TTS Node изменены по умолчанию:
+**Исправление sample rate (Ноябрь 2025):**
+
+Добавлен ресэмплинг аудио перед воспроизведением для исправления "обратного бурундука":
+
+```python
+def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Ресэмплинг аудио с оригинальной частоты на целевую"""
+    if orig_sr == target_sr:
+        return audio
+    
+    duration = len(audio) / orig_sr
+    target_length = int(duration * target_sr)
+    
+    orig_indices = np.linspace(0, len(audio) - 1, len(audio))
+    target_indices = np.linspace(0, len(audio) - 1, target_length)
+    
+    resampled = np.interp(target_indices, orig_indices, audio)
+    return resampled
+
+# В коде воспроизведения:
+if sample_rate != target_rate:  # 22050 Hz → 16000 Hz
+    audio_np = resample_audio(audio_np, sample_rate, target_rate)
+```
+
+**Параметры TTS Node изменены по умолчанию:**
 
 ```python
 self.declare_parameter("chipmunk_mode", False)  # ❌ Эффект бурундука ВЫКЛЮЧЕН
 self.declare_parameter("pitch_shift", 1.0)       # ✅ Нормальная скорость (1.0x)
 ```
 
-Код воспроизведения:
+**Код воспроизведения:**
 
 ```python
 if self.chipmunk_mode and self.pitch_shift > 1.0:
