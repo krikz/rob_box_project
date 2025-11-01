@@ -737,6 +737,9 @@ class TTSNode(Node):
             elif param.name == "chipmunk_mode":
                 self.chipmunk_mode = param.value
                 self.get_logger().info(f"🐿️ Chipmunk mode: {self.chipmunk_mode}")
+            elif param.name == "yandex_speed":
+                self.yandex_speed = param.value
+                self.get_logger().info(f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}")
 
         return SetParametersResult(successful=True)
 

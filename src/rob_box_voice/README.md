@@ -257,6 +257,18 @@ ros2 run rob_box_voice led_node
 Робот: "Нормальная громкость" [громкость -3 dB]
 ```
 
+**Управление высотой голоса (pitch):**
+```
+Пользователь: "Роббокс, говори выше"
+Робот: "Говорю выше" [yandex_speed увеличивается на 0.2]
+
+Пользователь: "Роббокс, говори ниже"
+Робот: "Говорю ниже" [yandex_speed уменьшается на 0.2]
+
+Пользователь: "Роббокс, говори нормально"
+Робот: "Нормальный голос" [yandex_speed устанавливается в 1.0]
+```
+
 ### Параметры TTS Node
 
 **Оригинальный голос ROBBOX:**
@@ -288,6 +300,11 @@ ros2 param set /tts_node pitch_shift 2.0
 # Изменить громкость
 ros2 param set /tts_node volume_db 0.0   # 0 dB = 100%
 ros2 param set /tts_node volume_db -6.0  # -6 dB = 50%
+
+# Изменить высоту голоса (pitch через yandex_speed)
+ros2 param set /tts_node yandex_speed 1.2  # Выше
+ros2 param set /tts_node yandex_speed 0.8  # Ниже
+ros2 param set /tts_node yandex_speed 1.0  # Нормально
 ```
 
 ### SSML Управление

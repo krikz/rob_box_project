@@ -464,7 +464,16 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
             return
 
-        # ============ ПРИОРИТЕТ 6: Проверка Mapping Commands ============
+        # ============ ПРИОРИТЕТ 6: Проверка Pitch Control Commands ============
+        pitch_intent = self._detect_pitch_intent(user_message_lower)
+        if pitch_intent:
+            self.get_logger().info(f"🎵 Обнаружена pitch команда: {pitch_intent}")
+            response = self._handle_pitch_command(pitch_intent)
+            self._speak_simple(response)
+            self.dialogue_in_progress = False
+            return
+
+        # ============ ПРИОРИТЕТ 7: Проверка Mapping Commands ============
         mapping_intent = self._detect_mapping_intent(user_message_lower)
         if mapping_intent:
             self.get_logger().info(f"🗺️ Обнаружена mapping команда: {mapping_intent}")
@@ -482,7 +491,7 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
                 return
 
-        # ============ ПРИОРИТЕТ 7: Проверка доступности интернета ============
+        # ============ ПРИОРИТЕТ 8: Проверка доступности интернета ============
         if not self.internet_available:
             self.get_logger().warning("⚠️  Интернет недоступен - используем fallback")
             fallback_response = self._generate_fallback_response(user_message)
@@ -490,7 +499,7 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
             return
 
-        # ============ ПРИОРИТЕТ 8: Обычный диалог с LLM ============
+        # ============ ПРИОРИТЕТ 9: Обычный диалог с LLM ============
         # Добавляем в историю
         self.conversation_history.append({"role": "user", "content": user_message})
 
@@ -802,6 +811,136 @@ class DialogueNode(Node):
             
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка изменения громкости: {e}")
+            return "Извините, произошла ошибка."
+
+    # ============================================================
+    # Pitch Control Commands
+    # ============================================================
+
+    def _detect_pitch_intent(self, text: str):
+        """Определить intent для команд управления высотой голоса (pitch)
+        
+        Returns:
+            str: 'higher', 'lower', 'normal', None
+        """
+        text_lower = text.lower()
+        
+        # Паттерны для различных команд pitch
+        pitch_patterns = {
+            'higher': [
+                r'говори выше',
+                r'голос выше',
+                r'повыс\w* голос',
+                r'выше говор',
+            ],
+            'lower': [
+                r'говори ниже',
+                r'голос ниже',
+                r'пониж\w* голос',
+                r'ниже говор',
+            ],
+            'normal': [
+                r'нормальн\w* голос',
+                r'обычн\w* голос',
+                r'говори нормально',
+            ],
+        }
+        
+        for intent, patterns in pitch_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return intent
+        
+        return None
+    
+    def _handle_pitch_command(self, intent: str) -> str:
+        """Обработка команды изменения высоты голоса через yandex_speed
+        
+        Args:
+            intent: 'higher', 'lower', 'normal'
+            
+        Returns:
+            str: Ответ для пользователя
+        """
+        # Управляем pitch через yandex_speed параметр
+        # Более высокая скорость = более высокий голос
+        # Более низкая скорость = более низкий голос
+        try:
+            from rcl_interfaces.srv import GetParameters, SetParameters
+            from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+            
+            # Создаем клиенты для работы с параметрами TTS ноды
+            tts_get_params_client = self.create_client(GetParameters, '/tts_node/get_parameters')
+            tts_set_params_client = self.create_client(SetParameters, '/tts_node/set_parameters')
+            
+            # Ждем доступности сервисов
+            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().error("❌ TTS node параметры недоступны")
+                return "Извините, не могу изменить высоту голоса. Система недоступна."
+            
+            # Получаем текущий yandex_speed
+            get_request = GetParameters.Request()
+            get_request.names = ['yandex_speed']
+            future = tts_get_params_client.call_async(get_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+            
+            if future.result() is None:
+                self.get_logger().error("❌ Не удалось получить yandex_speed")
+                return "Извините, не могу изменить высоту голоса."
+            
+            # yandex_speed может быть int или double
+            param_value = future.result().values[0]
+            if param_value.type == ParameterType.PARAMETER_INTEGER:
+                current_speed = float(param_value.integer_value)
+            else:
+                current_speed = param_value.double_value
+            
+            self.get_logger().info(f"📊 Текущий pitch (yandex_speed): {current_speed:.2f}")
+            
+            # Вычисляем новую скорость (pitch)
+            # Диапазон: 0.5 (низкий) - 2.0 (высокий), нормальный = 1.0
+            new_speed = current_speed
+            response_text = ""
+            
+            if intent == 'higher':
+                new_speed = min(current_speed + 0.2, 2.0)  # +0.2, макс 2.0
+                response_text = "Говорю выше"
+            elif intent == 'lower':
+                new_speed = max(current_speed - 0.2, 0.5)  # -0.2, мин 0.5
+                response_text = "Говорю ниже"
+            elif intent == 'normal':
+                new_speed = 1.0  # Нормальная высота
+                response_text = "Нормальный голос"
+            
+            # Проверяем изменение
+            if abs(new_speed - current_speed) < 0.01:
+                # Pitch уже на пределе
+                if intent == 'higher':
+                    return "Голос уже максимально высокий"
+                elif intent == 'lower':
+                    return "Голос уже максимально низкий"
+            
+            # Устанавливаем параметры для TTS ноды
+            set_request = SetParameters.Request()
+            param = Parameter()
+            param.name = 'yandex_speed'
+            param.value = ParameterValue()
+            param.value.type = ParameterType.PARAMETER_DOUBLE
+            param.value.double_value = new_speed
+            set_request.parameters = [param]
+            
+            future = tts_set_params_client.call_async(set_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+            
+            if future.result() is None or not future.result().results[0].successful:
+                self.get_logger().error("❌ Не удалось установить yandex_speed для TTS")
+                return "Извините, не могу изменить высоту голоса."
+            
+            self.get_logger().info(f"✅ Pitch изменен: {current_speed} → {new_speed}")
+            return response_text
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка изменения pitch: {e}")
             return "Извините, произошла ошибка."
 
     # ============================================================
