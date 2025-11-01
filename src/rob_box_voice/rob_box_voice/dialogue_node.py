@@ -473,7 +473,16 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
             return
 
-        # ============ ПРИОРИТЕТ 7: Проверка Mapping Commands ============
+        # ============ ПРИОРИТЕТ 7: Проверка Speed Control Commands ============
+        speed_intent = self._detect_speed_intent(user_message_lower)
+        if speed_intent:
+            self.get_logger().info(f"⚡ Обнаружена speed команда: {speed_intent}")
+            response = self._handle_speed_command(speed_intent)
+            self._speak_simple(response)
+            self.dialogue_in_progress = False
+            return
+
+        # ============ ПРИОРИТЕТ 8: Проверка Mapping Commands ============
         mapping_intent = self._detect_mapping_intent(user_message_lower)
         if mapping_intent:
             self.get_logger().info(f"🗺️ Обнаружена mapping команда: {mapping_intent}")
@@ -863,8 +872,9 @@ class DialogueNode(Node):
             str: Ответ для пользователя
         """
         # Управляем pitch через pitch_shift параметр
-        # Более высокий pitch_shift = более высокий голос (chipmunk effect)
-        # Более низкий pitch_shift = более низкий голос
+        # Более высокий pitch_shift = более высокий голос (chipmunk effect сильнее)
+        # Более низкий pitch_shift = более низкий голос (chipmunk effect слабее)
+        # ВАЖНО: chipmunk_mode всегда остаётся True для сохранения эффекта ROBBOX
         try:
             from rcl_interfaces.srv import GetParameters, SetParameters
             from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
@@ -884,61 +894,191 @@ class DialogueNode(Node):
             future = tts_get_params_client.call_async(get_request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
             
-            if future.result() is None:
-                self.get_logger().error("❌ Не удалось получить pitch_shift")
+            if future.result() is None or len(future.result().values) < 1:
+                self.get_logger().error("❌ Не удалось получить параметры TTS")
                 return "Извините, не могу изменить высоту голоса."
             
-            # pitch_shift всегда double (float)
-            param_value = future.result().values[0]
-            current_pitch = param_value.double_value
+            # Извлекаем текущее значение pitch_shift
+            current_pitch = future.result().values[0].double_value
             
-            self.get_logger().info(f"📊 Текущий pitch (pitch_shift): {current_pitch:.2f}")
+            self.get_logger().info(f"📊 Текущий pitch_shift: {current_pitch:.2f}")
             
-            # Вычисляем новый pitch
-            # Диапазон: 1.0 (нормальный) - 3.0 (очень высокий)
-            # Для chipmunk эффекта: 2.0 = оригинальный ROBBOX
+            # Вычисляем новое значение pitch_shift
+            # Диапазон: 1.5 (низкий голос с лёгким эффектом) - 3.0 (очень высокий бурундук)
+            # ROBBOX стандарт: 2.0 = оригинальный голос бурундука
             new_pitch = current_pitch
             response_text = ""
             
             if intent == 'higher':
+                # Увеличиваем pitch - делаем голос выше
                 new_pitch = min(current_pitch + 0.2, 3.0)  # +0.2, макс 3.0
                 response_text = "Говорю выше"
             elif intent == 'lower':
-                new_pitch = max(current_pitch - 0.2, 1.0)  # -0.2, мин 1.0 (без эффекта)
+                # Уменьшаем pitch - делаем голос ниже
+                new_pitch = max(current_pitch - 0.2, 1.5)  # -0.2, мин 1.5 (сохраняем эффект)
                 response_text = "Говорю ниже"
             elif intent == 'normal':
-                new_pitch = 2.0  # Нормальный ROBBOX голос (chipmunk)
+                # Нормальный ROBBOX голос с эффектом бурундука
+                new_pitch = 2.0
                 response_text = "Нормальный голос"
             
-            # Проверяем изменение
+            # Проверяем изменение pitch
             if abs(new_pitch - current_pitch) < 0.01:
-                # Pitch уже на пределе
+                # Параметр не изменился
                 if intent == 'higher':
                     return "Голос уже максимально высокий"
                 elif intent == 'lower':
                     return "Голос уже минимально низкий"
             
-            # Устанавливаем параметры для TTS ноды
+            # Устанавливаем новый pitch_shift для TTS ноды
+            set_request = SetParameters.Request()
+            
+            param_pitch = Parameter()
+            param_pitch.name = 'pitch_shift'
+            param_pitch.value = ParameterValue()
+            param_pitch.value.type = ParameterType.PARAMETER_DOUBLE
+            param_pitch.value.double_value = new_pitch
+            
+            set_request.parameters = [param_pitch]
+            
+            future = tts_set_params_client.call_async(set_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+            
+            if future.result() is None:
+                self.get_logger().error("❌ Не удалось установить параметры TTS")
+                return "Извините, не могу изменить высоту голоса."
+            
+            # Проверяем успешность установки
+            if not future.result().results[0].successful:
+                self.get_logger().error("❌ Параметр pitch_shift не установился")
+                return "Извините, не могу изменить высоту голоса."
+            
+            self.get_logger().info(f"✅ Pitch изменён: {current_pitch:.2f} → {new_pitch:.2f}")
+            return response_text
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка изменения pitch: {e}")
+            return "Извините, произошла ошибка."
+
+    # ============================================================
+    # Speed Control Commands
+    # ============================================================
+
+    def _detect_speed_intent(self, text: str):
+        """Определить intent для команд управления скоростью речи
+        
+        Returns:
+            str: 'faster', 'slower', 'normal', None
+        """
+        text_lower = text.lower()
+        
+        # Паттерны для различных команд скорости
+        speed_patterns = {
+            'faster': [
+                r'говори быстрее',
+                r'быстрее',
+                r'ускор\w*',
+                r'побыстрее',
+            ],
+            'slower': [
+                r'говори медленнее',
+                r'медленнее',
+                r'замедл\w*',
+                r'помедленнее',
+            ],
+            'normal': [
+                r'нормальн\w* скорост',
+                r'обычн\w* скорост',
+            ],
+        }
+        
+        for intent, patterns in speed_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return intent
+        
+        return None
+    
+    def _handle_speed_command(self, intent: str) -> str:
+        """Обработка команды изменения скорости речи через yandex_speed
+        
+        Args:
+            intent: 'faster', 'slower', 'normal'
+            
+        Returns:
+            str: Ответ для пользователя
+        """
+        # Управляем скоростью синтеза через yandex_speed параметр
+        # Диапазон: 0.1-3.0, где 1.0 = нормальная скорость
+        try:
+            from rcl_interfaces.srv import GetParameters, SetParameters
+            from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+            
+            # Создаем клиенты для работы с параметрами TTS ноды
+            tts_get_params_client = self.create_client(GetParameters, '/tts_node/get_parameters')
+            tts_set_params_client = self.create_client(SetParameters, '/tts_node/set_parameters')
+            
+            # Ждем доступности сервисов
+            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().error("❌ TTS node параметры недоступны")
+                return "Извините, не могу изменить скорость речи. Система недоступна."
+            
+            # Получаем текущий yandex_speed
+            get_request = GetParameters.Request()
+            get_request.names = ['yandex_speed']
+            future = tts_get_params_client.call_async(get_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+            
+            if future.result() is None or len(future.result().values) < 1:
+                self.get_logger().error("❌ Не удалось получить yandex_speed")
+                return "Извините, не могу изменить скорость речи."
+            
+            current_speed = future.result().values[0].double_value
+            self.get_logger().info(f"📊 Текущая скорость синтеза: {current_speed:.2f}")
+            
+            # Вычисляем новую скорость
+            # Диапазон: 0.5 (медленно) - 2.0 (быстро), 1.0 = нормально
+            new_speed = current_speed
+            response_text = ""
+            
+            if intent == 'faster':
+                new_speed = min(current_speed + 0.2, 2.0)  # +0.2, макс 2.0
+                response_text = "Говорю быстрее"
+            elif intent == 'slower':
+                new_speed = max(current_speed - 0.2, 0.5)  # -0.2, мин 0.5
+                response_text = "Говорю медленнее"
+            elif intent == 'normal':
+                new_speed = 1.0  # Нормальная скорость
+                response_text = "Нормальная скорость"
+            
+            # Проверяем изменение
+            if abs(new_speed - current_speed) < 0.01:
+                if intent == 'faster':
+                    return "Скорость уже максимальная"
+                elif intent == 'slower':
+                    return "Скорость уже минимальная"
+            
+            # Устанавливаем новую скорость
             set_request = SetParameters.Request()
             param = Parameter()
-            param.name = 'pitch_shift'
+            param.name = 'yandex_speed'
             param.value = ParameterValue()
             param.value.type = ParameterType.PARAMETER_DOUBLE
-            param.value.double_value = new_pitch
+            param.value.double_value = new_speed
             set_request.parameters = [param]
             
             future = tts_set_params_client.call_async(set_request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
             
             if future.result() is None or not future.result().results[0].successful:
-                self.get_logger().error("❌ Не удалось установить pitch_shift для TTS")
-                return "Извините, не могу изменить высоту голоса."
+                self.get_logger().error("❌ Не удалось установить yandex_speed")
+                return "Извините, не могу изменить скорость речи."
             
-            self.get_logger().info(f"✅ Pitch изменен: {current_pitch} → {new_pitch}")
+            self.get_logger().info(f"✅ Скорость изменена: {current_speed:.2f} → {new_speed:.2f}")
             return response_text
             
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка изменения pitch: {e}")
+            self.get_logger().error(f"❌ Ошибка изменения скорости: {e}")
             return "Извините, произошла ошибка."
 
     # ============================================================
