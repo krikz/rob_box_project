@@ -174,18 +174,36 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
     > /etc/udev/rules.d/60-respeaker.rules
 
 # Скачивание и установка STT/TTS моделей (offline)
-# Модели большие (145 MB) и никогда не меняются - кешируем
-RUN mkdir -p /models && \
+# Модели большие (145 MB) и никогда не меняются - используем BuildKit cache
+# Cache mount обеспечивает быструю повторную сборку (секунды вместо минут)
+RUN --mount=type=cache,target=/model_cache,sharing=locked \
+    mkdir -p /models && \
     # Vosk STT: Russian small model (45 MB, fast)
-    wget -q -O /tmp/vosk-model.zip \
-    https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
+    # Проверяем кеш перед загрузкой
+    if [ -f /model_cache/vosk-model-small-ru-0.22.zip ]; then \
+        echo "✅ Using cached Vosk model"; \
+        cp /model_cache/vosk-model-small-ru-0.22.zip /tmp/vosk-model.zip; \
+    else \
+        echo "⬇️ Downloading Vosk model (45 MB)..."; \
+        wget -q -O /tmp/vosk-model.zip \
+            https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
+        cp /tmp/vosk-model.zip /model_cache/vosk-model-small-ru-0.22.zip; \
+    fi && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     rm /tmp/vosk-model.zip && \
     # Silero TTS v4: Russian model (100 MB, neural TTS, 4 voices, SSML support)
     # Голоса: aidar (нейтральный М), baya (спокойный М), kseniya (нейтральный Ж), xenia (энергичный Ж)
-    wget -q -O /models/silero_v4_ru.pt \
-    https://models.silero.ai/models/tts/ru/v4_ru.pt && \
-    echo "✅ STT/TTS models downloaded: Vosk (45 MB) + Silero v4 (100 MB)"
+    # Проверяем кеш перед загрузкой
+    if [ -f /model_cache/silero_v4_ru.pt ]; then \
+        echo "✅ Using cached Silero model"; \
+        cp /model_cache/silero_v4_ru.pt /models/silero_v4_ru.pt; \
+    else \
+        echo "⬇️ Downloading Silero model (100 MB)..."; \
+        wget -q -O /models/silero_v4_ru.pt \
+            https://models.silero.ai/models/tts/ru/v4_ru.pt && \
+        cp /models/silero_v4_ru.pt /model_cache/silero_v4_ru.pt; \
+    fi && \
+    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v4 (100 MB)"
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ

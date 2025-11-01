@@ -95,19 +95,37 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
 
 # ============================================================================
 # Скачивание STT/TTS моделей (offline inference)
+# Используем BuildKit cache mount для кеширования загруженных файлов
 # ============================================================================
-RUN mkdir -p /models && \
+RUN --mount=type=cache,target=/model_cache,sharing=locked \
+    mkdir -p /models && \
     # Vosk STT: Russian small model (45 MB, быстрая инференция)
-    wget -q -O /tmp/vosk-model.zip \
-        https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
+    # Проверяем кеш перед загрузкой
+    if [ -f /model_cache/vosk-model-small-ru-0.22.zip ]; then \
+        echo "✅ Using cached Vosk model"; \
+        cp /model_cache/vosk-model-small-ru-0.22.zip /tmp/vosk-model.zip; \
+    else \
+        echo "⬇️ Downloading Vosk model (45 MB)..."; \
+        wget -q -O /tmp/vosk-model.zip \
+            https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
+        cp /tmp/vosk-model.zip /model_cache/vosk-model-small-ru-0.22.zip; \
+    fi && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     mv /models/vosk-model-small-ru-0.22 /models/vosk-model-ru && \
     rm /tmp/vosk-model.zip && \
     # Silero TTS v4: Russian model (100 MB, нейронная TTS)
     # Голоса: aidar, baya, kseniya, xenia
-    wget -q -O /models/silero_v4_ru.pt \
-        https://models.silero.ai/models/tts/ru/v4_ru.pt && \
-    echo "✅ Downloaded STT/TTS models: Vosk (45 MB) + Silero v4 (100 MB)"
+    # Проверяем кеш перед загрузкой
+    if [ -f /model_cache/silero_v4_ru.pt ]; then \
+        echo "✅ Using cached Silero model"; \
+        cp /model_cache/silero_v4_ru.pt /models/silero_v4_ru.pt; \
+    else \
+        echo "⬇️ Downloading Silero model (100 MB)..."; \
+        wget -q -O /models/silero_v4_ru.pt \
+            https://models.silero.ai/models/tts/ru/v4_ru.pt && \
+        cp /models/silero_v4_ru.pt /model_cache/silero_v4_ru.pt; \
+    fi && \
+    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v4 (100 MB)"
 
 # ============================================================================
 # Клонирование audio_common для audio_common_msgs
