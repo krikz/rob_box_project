@@ -3,6 +3,10 @@
 Test resampling function for TTS Node
 
 Verifies that audio resampling from 22050 Hz to 16000 Hz works correctly.
+
+Note: This test duplicates the resample_audio() function from tts_node.py
+to allow standalone testing without importing the entire tts_node module
+(which has many heavy dependencies like grpc, torch, ROS2, etc.).
 """
 
 import numpy as np
@@ -12,6 +16,8 @@ import sys
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     """
     Resample audio from original sample rate to target sample rate using linear interpolation.
+    
+    This is a copy of the function from tts_node.py for standalone testing.
     
     Args:
         audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
