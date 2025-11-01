@@ -44,6 +44,25 @@ cd ~/rob_box_project/docker/vision
 - **Логи** - все контейнеры с меткой `logging: "promtail"`
 - **Системные логи** - `/var/log/*.log` на обоих Pi
 
+## 🎯 Демонстрационные дашборды
+
+Доступны **4 специализированных дашборда** для демо-стенда с 4 мониторами:
+
+1. **Системный обзор и ошибки** - мониторы CPU/Memory, графики нагрузки, все ошибки
+2. **Навигация и движение** - RTAB-Map, Nav2, ROS2 Control, LiDAR (~18 нод)
+3. **Восприятие и сенсоры** - OAK-D, камеры, micro-ROS, perception (~10 нод)
+4. **Голос и интерфейс** - voice-assistant, LED-matrix, Zenoh (~10 нод)
+
+**Киоск-режим URL:**
+```
+http://10.1.1.10:3000/d/rob_box_demo_1?kiosk
+http://10.1.1.10:3000/d/rob_box_demo_2?kiosk
+http://10.1.1.10:3000/d/rob_box_demo_3?kiosk
+http://10.1.1.10:3000/d/rob_box_demo_4?kiosk
+```
+
+📖 **Документация:** [DEMO_DASHBOARDS.md](../docker/monitoring/DEMO_DASHBOARDS.md)
+
 ## 🔗 Доступ к сервисам
 
 | Сервис     | URL                    | Описание              |
