@@ -51,7 +51,10 @@ def test_moscow_timezone():
 
 
 def test_moscow_timezone_offset():
-    """Test that Moscow timezone has correct UTC offset (+3 hours)."""
+    """Test that Moscow timezone has correct UTC offset (+3 hours).
+
+    Note: Russia abolished DST in 2014, Moscow permanently uses UTC+3 (MSK).
+    """
     from rob_box_perception.utils.time_provider import TimeAwarenessProvider
 
     provider = TimeAwarenessProvider(timezone='Europe/Moscow')
@@ -59,8 +62,8 @@ def test_moscow_timezone_offset():
 
     # Parse the datetime with timezone info
     dt_str = time_context['datetime']
-    assert '+03:00' in dt_str or '+04:00' in dt_str, \
-        f"Moscow time should have UTC+3 or UTC+4 offset (DST), got: {dt_str}"
+    assert '+03:00' in dt_str, \
+        f"Moscow time should have UTC+3 offset (MSK), got: {dt_str}"
 
 
 def test_time_consistency():
