@@ -872,8 +872,10 @@ class DialogueNode(Node):
             str: Ответ для пользователя
         """
         # Управляем pitch через pitch_shift параметр
-        # Более высокий pitch_shift = более высокий голос (chipmunk effect сильнее)
-        # Более низкий pitch_shift = более низкий голос (chipmunk effect слабее)
+        # pitch_shift - это дополнительный множитель к базовому эффекту бурундука (2.0x)
+        # pitch_shift=1.0 → стандартный ROBBOX (2.0x эффект)
+        # pitch_shift=1.5 → голос ещё выше (3.0x эффект)
+        # pitch_shift=0.8 → голос ниже (1.6x эффект)
         # ВАЖНО: chipmunk_mode всегда остаётся True для сохранения эффекта ROBBOX
         try:
             from rcl_interfaces.srv import GetParameters, SetParameters
@@ -901,25 +903,25 @@ class DialogueNode(Node):
             # Извлекаем текущее значение pitch_shift
             current_pitch = future.result().values[0].double_value
             
-            self.get_logger().info(f"📊 Текущий pitch_shift: {current_pitch:.2f}")
+            self.get_logger().info(f"📊 Текущий pitch_shift: {current_pitch:.2f} (итого: {2.0 * current_pitch:.1f}x эффект)")
             
             # Вычисляем новое значение pitch_shift
-            # Диапазон: 1.5 (низкий голос с лёгким эффектом) - 3.0 (очень высокий бурундук)
-            # ROBBOX стандарт: 2.0 = оригинальный голос бурундука
+            # Диапазон: 0.5 (низкий бурундук, 1.0x эффект) - 2.0 (очень высокий, 4.0x эффект)
+            # ROBBOX стандарт: 1.0 = оригинальный голос бурундука (2.0x эффект)
             new_pitch = current_pitch
             response_text = ""
             
             if intent == 'higher':
                 # Увеличиваем pitch - делаем голос выше
-                new_pitch = min(current_pitch + 0.2, 3.0)  # +0.2, макс 3.0
+                new_pitch = min(current_pitch + 0.2, 2.0)  # +0.2, макс 2.0 (4.0x эффект!)
                 response_text = "Говорю выше"
             elif intent == 'lower':
-                # Уменьшаем pitch - делаем голос ниже
-                new_pitch = max(current_pitch - 0.2, 1.5)  # -0.2, мин 1.5 (сохраняем эффект)
+                # Уменьшаем pitch - делаем голос ниже (но всё ещё бурундук!)
+                new_pitch = max(current_pitch - 0.2, 0.5)  # -0.2, мин 0.5 (1.0x эффект - лёгкий)
                 response_text = "Говорю ниже"
             elif intent == 'normal':
                 # Нормальный ROBBOX голос с эффектом бурундука
-                new_pitch = 2.0
+                new_pitch = 1.0  # 2.0x эффект - как в оригинале!
                 response_text = "Нормальный голос"
             
             # Проверяем изменение pitch
@@ -953,7 +955,10 @@ class DialogueNode(Node):
                 self.get_logger().error("❌ Параметр pitch_shift не установился")
                 return "Извините, не могу изменить высоту голоса."
             
-            self.get_logger().info(f"✅ Pitch изменён: {current_pitch:.2f} → {new_pitch:.2f}")
+            self.get_logger().info(
+                f"✅ Pitch изменён: {current_pitch:.2f} → {new_pitch:.2f} "
+                f"(эффект: {2.0 * current_pitch:.1f}x → {2.0 * new_pitch:.1f}x)"
+            )
             return response_text
             
         except Exception as e:
