@@ -99,16 +99,20 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
 # ============================================================================
 RUN --mount=type=cache,target=/model_cache,sharing=locked \
     mkdir -p /models && \
+    # Переменные для удобства обновления версий
+    VOSK_MODEL_FILE="vosk-model-small-ru-0.22.zip" && \
+    VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
+    SILERO_MODEL_FILE="silero_v4_ru.pt" && \
+    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v4_ru.pt" && \
     # Vosk STT: Russian small model (45 MB, быстрая инференция)
     # Проверяем кеш перед загрузкой
-    if [ -f /model_cache/vosk-model-small-ru-0.22.zip ]; then \
+    if [ -f "/model_cache/${VOSK_MODEL_FILE}" ]; then \
         echo "✅ Using cached Vosk model"; \
-        cp /model_cache/vosk-model-small-ru-0.22.zip /tmp/vosk-model.zip; \
+        cp "/model_cache/${VOSK_MODEL_FILE}" /tmp/vosk-model.zip; \
     else \
         echo "⬇️ Downloading Vosk model (45 MB)..."; \
-        wget -q -O /tmp/vosk-model.zip \
-            https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
-        cp /tmp/vosk-model.zip /model_cache/vosk-model-small-ru-0.22.zip; \
+        wget -q -O /tmp/vosk-model.zip "${VOSK_MODEL_URL}" && \
+        cp /tmp/vosk-model.zip "/model_cache/${VOSK_MODEL_FILE}"; \
     fi && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     mv /models/vosk-model-small-ru-0.22 /models/vosk-model-ru && \
@@ -116,14 +120,13 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
     # Silero TTS v4: Russian model (100 MB, нейронная TTS)
     # Голоса: aidar, baya, kseniya, xenia
     # Проверяем кеш перед загрузкой
-    if [ -f /model_cache/silero_v4_ru.pt ]; then \
+    if [ -f "/model_cache/${SILERO_MODEL_FILE}" ]; then \
         echo "✅ Using cached Silero model"; \
-        cp /model_cache/silero_v4_ru.pt /models/silero_v4_ru.pt; \
+        cp "/model_cache/${SILERO_MODEL_FILE}" /models/silero_v4_ru.pt; \
     else \
         echo "⬇️ Downloading Silero model (100 MB)..."; \
-        wget -q -O /models/silero_v4_ru.pt \
-            https://models.silero.ai/models/tts/ru/v4_ru.pt && \
-        cp /models/silero_v4_ru.pt /model_cache/silero_v4_ru.pt; \
+        wget -q -O /models/silero_v4_ru.pt "${SILERO_MODEL_URL}" && \
+        cp /models/silero_v4_ru.pt "/model_cache/${SILERO_MODEL_FILE}"; \
     fi && \
     echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v4 (100 MB)"
 
