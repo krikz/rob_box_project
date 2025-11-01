@@ -520,21 +520,25 @@ class TTSNode(Node):
             # - pitch_shift параметр: множитель для ускорения (1.0 = нормально, 2.0 = 2x быстрее)
             
             if self.chipmunk_mode and self.pitch_shift > 1.0:
-                # Эффект бурундука через decimation (пропуск сэмплов)
-                # Это ускоряет воспроизведение и повышает pitch
-                decimation_factor = int(self.pitch_shift)
-                audio_processed = audio_np[::decimation_factor]
+                # Эффект бурундука через изменение эффективной частоты
+                # pitch_shift = 2.0 означает, что аудио будет воспроизводиться в 2 раза быстрее
+                # Достигается через ресэмплинг: уменьшаем количество сэмплов, сохраняя содержимое
                 
-                # После decimation нужно подогнать под target_rate
-                # Если оригинал 22050 Hz, decimation 2x даёт 11025 эффективных Hz
-                # Ресэмплим это до 16000 Hz для ReSpeaker
-                effective_rate = sample_rate // decimation_factor
+                # Вычисляем эффективную частоту после "ускорения"
+                # Если pitch_shift=2.0, то 22050 Hz → 11025 Hz эффективно
+                # Если pitch_shift=2.2, то 22050 Hz → 10023 Hz эффективно
+                effective_rate = int(sample_rate / self.pitch_shift)
+                
+                # Сначала ресэмплим до эффективной частоты (ускорение)
+                audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
+                
+                # Затем ресэмплим до target_rate для ReSpeaker
                 if effective_rate != target_rate:
                     audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
                 
                 self.get_logger().info(
                     f"🐿️  Эффект бурундука: {len(audio_np)} → {len(audio_processed)} samples "
-                    f"({self.pitch_shift}x ускорение, {sample_rate}Hz → {effective_rate}Hz → {target_rate}Hz)"
+                    f"({self.pitch_shift:.1f}x ускорение, {sample_rate}Hz → {effective_rate}Hz → {target_rate}Hz)"
                 )
             else:
                 # Нормальное воспроизведение БЕЗ pitch shift
