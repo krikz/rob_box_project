@@ -447,6 +447,41 @@ git push origin develop
 
 **Результат:** Pull Request создан автоматически, но merge в main требует ручного подтверждения перед релизом.
 
+### Создание релиза с версией
+
+После успешного мерджа в `main`, создайте тег релиза:
+
+```bash
+# 1. Убедиться что вы на ветке main с последними изменениями
+git checkout main
+git pull origin main
+
+# 2. Создать релиз автоматически (интерактивный режим)
+./scripts/create_release.sh
+
+# Скрипт:
+# - Найдёт последнюю версию из git тегов
+# - Предложит выбрать тип релиза (major/minor/patch)
+# - Автоматически вычислит следующую версию
+# - Создаст аннотированный git тег
+# - Опционально отправит тег в GitHub
+
+# 3. Альтернативно: создать релиз в автоматическом режиме
+./scripts/create_release.sh minor   # для minor релиза
+./scripts/create_release.sh major   # для major релиза
+./scripts/create_release.sh patch   # для patch релиза
+
+# 4. После создания тега, создать GitHub Release
+# Перейти на: https://github.com/krikz/rob_box_project/releases/new
+# Или использовать GitHub CLI:
+gh release create v1.2.0 --generate-notes
+```
+
+**Семантическое версионирование:**
+- **Major (X.0.0)** - несовместимые изменения API
+- **Minor (x.Y.0)** - новая функциональность, обратно совместимо  
+- **Patch (x.y.Z)** - исправления ошибок
+
 ### Hotfix
 
 ```bash
