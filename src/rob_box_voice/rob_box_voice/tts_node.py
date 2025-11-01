@@ -52,6 +52,35 @@ def ignore_stderr(enable=True):
         yield
 
 
+def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """
+    Resample audio from original sample rate to target sample rate using linear interpolation.
+    
+    Args:
+        audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
+        orig_sr: Original sample rate (e.g., 22050)
+        target_sr: Target sample rate (e.g., 16000)
+    
+    Returns:
+        Resampled audio at target sample rate
+    """
+    if orig_sr == target_sr:
+        return audio
+    
+    # Calculate the resampling ratio
+    duration = len(audio) / orig_sr
+    target_length = int(duration * target_sr)
+    
+    # Create new time indices for interpolation
+    orig_indices = np.linspace(0, len(audio) - 1, len(audio))
+    target_indices = np.linspace(0, len(audio) - 1, target_length)
+    
+    # Linear interpolation
+    resampled = np.interp(target_indices, orig_indices, audio)
+    
+    return resampled
+
+
 # Импортируем text_normalizer и Yandex gRPC
 scripts_path = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(scripts_path))
@@ -481,6 +510,19 @@ class TTSNode(Node):
             # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
             target_rate = 16000
 
+            # КРИТИЧНО: Resample audio to target rate BEFORE processing!
+            # Это исправляет "обратный бурундук" эффект (голос из преисподней)
+            # Проблема была: Yandex возвращает 22050 Hz, но мы играли на 16000 Hz
+            # Результат: 22050/16000 = 1.378x МЕДЛЕННЕЕ = голос слишком глубокий и медленный
+            if sample_rate != target_rate:
+                self.get_logger().info(
+                    f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz "
+                    f"({len(audio_np)} samples)"
+                )
+                audio_np = resample_audio(audio_np, sample_rate, target_rate)
+                self.get_logger().info(f"✅ Resampled to {len(audio_np)} samples @ {target_rate} Hz")
+                sample_rate = target_rate  # Update sample rate after resampling
+
             # Эффект "бурундука" ROBBOX (опционально):
             # В оригинале: Yandex возвращает 22050 Hz, читаем сырые PCM, воспроизводим на 44100 Hz
             # Результат: 2x pitch shift (голос выше и быстрее)
@@ -695,6 +737,9 @@ class TTSNode(Node):
             elif param.name == "chipmunk_mode":
                 self.chipmunk_mode = param.value
                 self.get_logger().info(f"🐿️ Chipmunk mode: {self.chipmunk_mode}")
+            elif param.name == "yandex_speed":
+                self.yandex_speed = param.value
+                self.get_logger().info(f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}")
 
         return SetParametersResult(successful=True)
 
