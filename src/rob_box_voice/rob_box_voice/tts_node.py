@@ -56,6 +56,13 @@ def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.nd
     """
     Resample audio from original sample rate to target sample rate using linear interpolation.
     
+    This is a lightweight resampling implementation suitable for TTS audio where:
+    - Low latency is important (no heavy dependencies like scipy/librosa)
+    - Audio quality is acceptable for voice synthesis
+    - Minimal artifacts for pitch shifting within reasonable range (1.0-3.0x)
+    
+    For higher quality resampling, consider using scipy.signal.resample or librosa.resample.
+    
     Args:
         audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
         orig_sr: Original sample rate (e.g., 22050 or 10022.7 for fractional rates)

@@ -888,15 +888,9 @@ class DialogueNode(Node):
                 self.get_logger().error("❌ Не удалось получить pitch_shift")
                 return "Извините, не могу изменить высоту голоса."
             
-            # pitch_shift обычно double
+            # pitch_shift всегда double (float)
             param_value = future.result().values[0]
-            if param_value.type == ParameterType.PARAMETER_INTEGER:
-                current_pitch = float(param_value.integer_value)
-            elif param_value.type == ParameterType.PARAMETER_DOUBLE:
-                current_pitch = param_value.double_value
-            else:
-                self.get_logger().error(f"❌ Неожиданный тип параметра pitch_shift: {param_value.type}")
-                return "Извините, не могу изменить высоту голоса."
+            current_pitch = param_value.double_value
             
             self.get_logger().info(f"📊 Текущий pitch (pitch_shift): {current_pitch:.2f}")
             

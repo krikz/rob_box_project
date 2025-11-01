@@ -86,13 +86,15 @@ ros2 param set /tts_node chipmunk_mode false
 
 ```python
 if self.chipmunk_mode and self.pitch_shift > 1.0:
-    # Эффект бурундука через decimation (пропуск сэмплов)
-    decimation_factor = int(self.pitch_shift)
-    audio_processed = audio_np[::decimation_factor]
+    # Эффект бурундука через ресэмплинг с изменением частоты
+    # Вычисляем эффективную частоту (поддержка дробных значений!)
+    effective_rate = sample_rate / self.pitch_shift  # float для точности
     
-    # После decimation подгоняем под target_rate
-    effective_rate = sample_rate // decimation_factor
-    if effective_rate != target_rate:
+    # Сначала ресэмплим до эффективной частоты (ускорение)
+    audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
+    
+    # Затем ресэмплим до target_rate для ReSpeaker
+    if abs(effective_rate - target_rate) > 0.01:
         audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
 else:
     # Нормальное воспроизведение БЕЗ pitch shift
