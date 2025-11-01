@@ -51,7 +51,8 @@ print_error() {
 # Получить последний тег версии
 get_latest_version() {
     # Получаем все теги, которые соответствуют формату v?.?.? или ?.?.?
-    local tags=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1)
+    local tags
+    tags=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1)
     
     if [ -z "$tags" ]; then
         echo "0.0.0"
@@ -142,12 +143,13 @@ create_and_push_tag() {
     print_header "Создание тега"
     
     # Проверяем что мы на правильной ветке
-    local current_branch=$(git rev-parse --abbrev-ref HEAD)
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD)
     print_info "Текущая ветка: ${current_branch}"
     
     if [ "$current_branch" != "main" ] && [ "$current_branch" != "master" ]; then
         print_warning "Вы не на ветке main/master"
-        read -p "Продолжить создание тега на ветке ${current_branch}? (y/n): " -n 1 -r
+        read -r -p "Продолжить создание тега на ветке ${current_branch}? (y/n): " -n 1 REPLY
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             print_info "Отменено пользователем"
@@ -167,7 +169,7 @@ create_and_push_tag() {
     # Запрашиваем описание релиза
     echo ""
     echo "Введите описание релиза (или нажмите Enter для использования по умолчанию):"
-    read -p "> " release_description
+    read -r release_description
     
     if [ -z "$release_description" ]; then
         release_description="Release version ${version}"
@@ -222,7 +224,8 @@ main() {
     
     # Получаем текущую версию
     print_info "Поиск существующих тегов версий..."
-    local current_version=$(get_latest_version)
+    local current_version
+    current_version=$(get_latest_version)
     
     if [ "$current_version" = "0.0.0" ]; then
         print_warning "Теги версий не найдены. Начинаем с версии 0.0.0"
@@ -237,7 +240,7 @@ main() {
         # Интерактивный режим
         while true; do
             show_menu "$current_version"
-            read -p "Ваш выбор: " choice
+            read -r -p "Ваш выбор: " choice
             
             case $choice in
                 1)
@@ -280,7 +283,8 @@ main() {
     fi
     
     # Вычисляем новую версию
-    local new_version=$(bump_version "$release_type" "$current_version")
+    local new_version
+    new_version=$(bump_version "$release_type" "$current_version")
     
     print_header "Подтверждение"
     echo "Текущая версия: ${YELLOW}${current_version}${NC}"
@@ -290,14 +294,14 @@ main() {
     
     # Спрашиваем нужно ли пушить тег
     local push_tag=false
-    read -p "Отправить тег в удалённый репозиторий сразу? (y/n): " -n 1 -r
+    read -r -p "Отправить тег в удалённый репозиторий сразу? (y/n): " -n 1 REPLY
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         push_tag=true
     fi
     
     echo ""
-    read -p "Создать релиз с версией ${new_version}? (y/n): " -n 1 -r
+    read -r -p "Создать релиз с версией ${new_version}? (y/n): " -n 1 REPLY
     echo
     
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
