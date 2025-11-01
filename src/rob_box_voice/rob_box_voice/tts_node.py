@@ -52,19 +52,19 @@ def ignore_stderr(enable=True):
         yield
 
 
-def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
     """
     Resample audio from original sample rate to target sample rate using linear interpolation.
     
     Args:
         audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
-        orig_sr: Original sample rate (e.g., 22050)
+        orig_sr: Original sample rate (e.g., 22050 or 10022.7 for fractional rates)
         target_sr: Target sample rate (e.g., 16000)
     
     Returns:
         Resampled audio at target sample rate
     """
-    if orig_sr == target_sr:
+    if abs(orig_sr - target_sr) < 0.01:  # Use epsilon comparison for floats
         return audio
     
     # Calculate the resampling ratio
@@ -525,20 +525,21 @@ class TTSNode(Node):
                 # Достигается через ресэмплинг: уменьшаем количество сэмплов, сохраняя содержимое
                 
                 # Вычисляем эффективную частоту после "ускорения"
-                # Если pitch_shift=2.0, то 22050 Hz → 11025 Hz эффективно
-                # Если pitch_shift=2.2, то 22050 Hz → 10023 Hz эффективно
-                effective_rate = int(sample_rate / self.pitch_shift)
+                # Если pitch_shift=2.0, то 22050 Hz → 11025.0 Hz эффективно
+                # Если pitch_shift=2.2, то 22050 Hz → 10022.7 Hz эффективно
+                # Используем float для сохранения точности
+                effective_rate = sample_rate / self.pitch_shift
                 
                 # Сначала ресэмплим до эффективной частоты (ускорение)
                 audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
                 
                 # Затем ресэмплим до target_rate для ReSpeaker
-                if effective_rate != target_rate:
+                if abs(effective_rate - target_rate) > 0.01:
                     audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
                 
                 self.get_logger().info(
                     f"🐿️  Эффект бурундука: {len(audio_np)} → {len(audio_processed)} samples "
-                    f"({self.pitch_shift:.1f}x ускорение, {sample_rate}Hz → {effective_rate}Hz → {target_rate}Hz)"
+                    f"({self.pitch_shift:.1f}x ускорение, {sample_rate}Hz → {effective_rate:.1f}Hz → {target_rate}Hz)"
                 )
             else:
                 # Нормальное воспроизведение БЕЗ pitch shift
