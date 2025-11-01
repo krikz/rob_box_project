@@ -260,13 +260,13 @@ ros2 run rob_box_voice led_node
 **Управление высотой голоса (pitch):**
 ```
 Пользователь: "Роббокс, говори выше"
-Робот: "Говорю выше" [yandex_speed увеличивается на 0.2]
+Робот: "Говорю выше" [pitch_shift увеличивается на 0.2]
 
 Пользователь: "Роббокс, говори ниже"
-Робот: "Говорю ниже" [yandex_speed уменьшается на 0.2]
+Робот: "Говорю ниже" [pitch_shift уменьшается на 0.2]
 
 Пользователь: "Роббокс, говори нормально"
-Робот: "Нормальный голос" [yandex_speed устанавливается в 1.0]
+Робот: "Нормальный голос" [pitch_shift устанавливается в 2.0 - оригинальный ROBBOX]
 ```
 
 ### Параметры TTS Node
@@ -301,10 +301,11 @@ ros2 param set /tts_node pitch_shift 2.0
 ros2 param set /tts_node volume_db 0.0   # 0 dB = 100%
 ros2 param set /tts_node volume_db -6.0  # -6 dB = 50%
 
-# Изменить высоту голоса (pitch через yandex_speed)
-ros2 param set /tts_node yandex_speed 1.2  # Выше
-ros2 param set /tts_node yandex_speed 0.8  # Ниже
-ros2 param set /tts_node yandex_speed 1.0  # Нормально
+# Изменить высоту голоса (pitch через pitch_shift)
+ros2 param set /tts_node pitch_shift 2.4  # Выше (более высокий chipmunk)
+ros2 param set /tts_node pitch_shift 1.8  # Ниже (менее высокий)
+ros2 param set /tts_node pitch_shift 2.0  # Нормально (оригинальный ROBBOX)
+ros2 param set /tts_node pitch_shift 1.0  # Без эффекта бурундука
 ```
 
 ### SSML Управление

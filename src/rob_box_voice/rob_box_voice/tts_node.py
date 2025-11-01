@@ -52,19 +52,26 @@ def ignore_stderr(enable=True):
         yield
 
 
-def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
     """
     Resample audio from original sample rate to target sample rate using linear interpolation.
     
+    This is a lightweight resampling implementation suitable for TTS audio where:
+    - Low latency is important (no heavy dependencies like scipy/librosa)
+    - Audio quality is acceptable for voice synthesis
+    - Minimal artifacts for pitch shifting within reasonable range (1.0-3.0x)
+    
+    For higher quality resampling, consider using scipy.signal.resample or librosa.resample.
+    
     Args:
         audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
-        orig_sr: Original sample rate (e.g., 22050)
+        orig_sr: Original sample rate (e.g., 22050 or 10022.7 for fractional rates)
         target_sr: Target sample rate (e.g., 16000)
     
     Returns:
         Resampled audio at target sample rate
     """
-    if orig_sr == target_sr:
+    if abs(orig_sr - target_sr) < 0.01:  # Use epsilon comparison for floats
         return audio
     
     # Calculate the resampling ratio
@@ -116,15 +123,15 @@ class TTSNode(Node):
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
         self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
-        self.declare_parameter("yandex_speed", 1)  # 0.1-3.0 (0.4 = ОРИГИНАЛЬНАЯ СКОРОСТЬ РОББОКСА!)
+        self.declare_parameter("yandex_speed", 0.4)  # 0.1-3.0 (0.4 = ОРИГИНАЛЬНАЯ СКОРОСТЬ РОББОКСА!)
 
         # Silero TTS (fallback)
         self.declare_parameter("silero_speaker", "baya")  # aidar (male) | baya (female) | kseniya | xenia
         self.declare_parameter("silero_sample_rate", 24000)
 
         # Общие параметры
-        self.declare_parameter("chipmunk_mode", False)  # ИЗМЕНЕНО: False по умолчанию для оригинального голоса
-        self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0x = нормальная скорость)
+        self.declare_parameter("chipmunk_mode", True)  # ИЗМЕНЕНО: True для восстановления оригинального голоса ROBBOX
+        self.declare_parameter("pitch_shift", 2.0)  # Множитель для playback rate (2.0x = оригинальный бурундук)
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
@@ -510,39 +517,49 @@ class TTSNode(Node):
             # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
             target_rate = 16000
 
-            # КРИТИЧНО: Resample audio to target rate BEFORE processing!
-            # Это исправляет "обратный бурундук" эффект (голос из преисподней)
-            # Проблема была: Yandex возвращает 22050 Hz, но мы играли на 16000 Hz
-            # Результат: 22050/16000 = 1.378x МЕДЛЕННЕЕ = голос слишком глубокий и медленный
-            if sample_rate != target_rate:
-                self.get_logger().info(
-                    f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz "
-                    f"({len(audio_np)} samples)"
-                )
-                audio_np = resample_audio(audio_np, sample_rate, target_rate)
-                self.get_logger().info(f"✅ Resampled to {len(audio_np)} samples @ {target_rate} Hz")
-                sample_rate = target_rate  # Update sample rate after resampling
-
-            # Эффект "бурундука" ROBBOX (опционально):
+            # Эффект "бурундука" ROBBOX:
             # В оригинале: Yandex возвращает 22050 Hz, читаем сырые PCM, воспроизводим на 44100 Hz
             # Результат: 2x pitch shift (голос выше и быстрее)
             # 
             # Новая реализация:
-            # - chipmunk_mode=False (по умолчанию): воспроизведение на нормальной скорости
-            # - chipmunk_mode=True: эффект бурундука через sample decimation
+            # - chipmunk_mode=False: resample + нормальное воспроизведение
+            # - chipmunk_mode=True: sample decimation + воспроизведение (эффект бурундука)
             # - pitch_shift параметр: множитель для ускорения (1.0 = нормально, 2.0 = 2x быстрее)
             
             if self.chipmunk_mode and self.pitch_shift > 1.0:
-                # Уменьшаем количество сэмплов (эффект ускорения)
-                decimation_factor = int(self.pitch_shift)
-                audio_processed = audio_np[::decimation_factor]
+                # Эффект бурундука через изменение эффективной частоты
+                # pitch_shift = 2.0 означает, что аудио будет воспроизводиться в 2 раза быстрее
+                # Достигается через ресэмплинг: уменьшаем количество сэмплов, сохраняя содержимое
+                
+                # Вычисляем эффективную частоту после "ускорения"
+                # Если pitch_shift=2.0, то 22050 Hz → 11025.0 Hz эффективно
+                # Если pitch_shift=2.2, то 22050 Hz → 10022.7 Hz эффективно
+                # Используем float для сохранения точности
+                effective_rate = sample_rate / self.pitch_shift
+                
+                # Сначала ресэмплим до эффективной частоты (ускорение)
+                audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
+                
+                # Затем ресэмплим до target_rate для ReSpeaker
+                if abs(effective_rate - target_rate) > 0.01:
+                    audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
+                
                 self.get_logger().info(
                     f"🐿️  Эффект бурундука: {len(audio_np)} → {len(audio_processed)} samples "
-                    f"({self.pitch_shift}x ускорение)"
+                    f"({self.pitch_shift:.1f}x ускорение, {sample_rate}Hz → {effective_rate:.1f}Hz → {target_rate}Hz)"
                 )
             else:
-                # Нормальное воспроизведение без искажений
-                audio_processed = audio_np
+                # Нормальное воспроизведение БЕЗ pitch shift
+                # Resample audio to target rate для правильной скорости
+                if sample_rate != target_rate:
+                    self.get_logger().info(
+                        f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz "
+                        f"({len(audio_np)} samples)"
+                    )
+                    audio_processed = resample_audio(audio_np, sample_rate, target_rate)
+                    self.get_logger().info(f"✅ Resampled to {len(audio_processed)} samples @ {target_rate} Hz")
+                else:
+                    audio_processed = audio_np
                 self.get_logger().info(f"🎵 Нормальная скорость: {len(audio_processed)} samples")
 
             # Применяем громкость
