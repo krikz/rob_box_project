@@ -50,7 +50,7 @@
       # Yandex TTS settings (primary provider)
       yandex:
         voice: "anton"            # Мужской голос (оригинальный ROBBOX!)
-        speed: 0.4                # Скорость речи (0.1-3.0)
+        speed: 1.0                # Скорость речи (0.1-3.0)
         emotion: "neutral"        # neutral/good/evil
 
       # Кэширование
