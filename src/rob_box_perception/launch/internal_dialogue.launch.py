@@ -42,6 +42,7 @@ def generate_launch_description():
             parameters=[{
                 'publish_rate': 2.0,  # 2 Hz - частота событий
                 'memory_window': 60,  # 60 сек
+                'timezone': 'Europe/Moscow',  # Default: Moscow (MSK)
             }],
         ),
         

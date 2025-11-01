@@ -25,6 +25,7 @@ def generate_launch_description():
     # Context Aggregator параметры
     context_publish_rate = float(os.getenv('CONTEXT_PUBLISH_RATE', '2.0'))
     memory_window = int(os.getenv('MEMORY_WINDOW', '60'))
+    timezone = os.getenv('TIMEZONE', 'Europe/Moscow')  # Default: Moscow (MSK)
     
     return LaunchDescription([
         # Health Monitor - мониторинг здоровья системы
@@ -51,6 +52,7 @@ def generate_launch_description():
             parameters=[{
                 'publish_rate': context_publish_rate,
                 'memory_window': memory_window,
+                'timezone': timezone,
             }],
         ),
         

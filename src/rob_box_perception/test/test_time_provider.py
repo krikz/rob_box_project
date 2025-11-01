@@ -81,5 +81,34 @@ def test_time_consistency():
         f"time_only hour ({time_only_hour}) doesn't match hour field ({time_context['hour']})"
 
 
+def test_timezone_parameter_flexibility():
+    """Test that TimeAwarenessProvider accepts different timezone parameters."""
+    from rob_box_perception.utils.time_provider import TimeAwarenessProvider
+
+    # Test multiple timezones
+    timezones_to_test = [
+        ('Europe/Moscow', '+03:00'),
+        ('America/New_York', '-04:00', '-05:00'),  # EDT or EST
+        ('Asia/Tokyo', '+09:00'),
+        ('UTC', '+00:00'),
+    ]
+
+    for tz_data in timezones_to_test:
+        timezone = tz_data[0]
+        expected_offsets = tz_data[1:] if len(tz_data) > 1 else (tz_data[1],)
+
+        provider = TimeAwarenessProvider(timezone=timezone)
+        time_context = provider.get_current_time_context()
+
+        # Verify timezone is set correctly
+        assert time_context['timezone'] == timezone, \
+            f"Expected timezone {timezone}, got {time_context['timezone']}"
+
+        # Verify offset is in expected range
+        dt_str = time_context['datetime']
+        assert any(offset in dt_str for offset in expected_offsets), \
+            f"Timezone {timezone} should have offset in {expected_offsets}, got: {dt_str}"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
