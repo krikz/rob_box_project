@@ -123,7 +123,7 @@ class TTSNode(Node):
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
         self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
-        self.declare_parameter("yandex_speed", 0.4)  # 0.1-3.0 (0.4 = медленный синтез для эффекта бурундука!)
+        self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
 
         # Silero TTS (fallback)
         self.declare_parameter("silero_speaker", "baya")  # aidar (male) | baya (female) | kseniya | xenia
