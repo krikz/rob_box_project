@@ -135,7 +135,6 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
-        # animation_node,  # NOT included in headless launch (runs on Main Pi)
         dialogue_node,
         tts_node,
         stt_node,
