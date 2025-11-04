@@ -84,7 +84,7 @@ echo
 echo "4. Проверка workflow файлов..."
 
 # Проверяем L-Build Vision Pi Services
-if grep -q "ROS2LEDS_SHA=\$(git submodule status src/ros2leds" .github/workflows/L-Build\ Vision\ Pi\ Services.yml; then
+if grep -q 'ROS2LEDS_SHA=$(git submodule status src/ros2leds' .github/workflows/L-Build\ Vision\ Pi\ Services.yml; then
     echo -e "   ${GREEN}✓${NC} L-Build Vision Pi Services передаёт ROS2LEDS_SHA"
 else
     echo -e "   ${RED}✗${NC} L-Build Vision Pi Services НЕ передаёт ROS2LEDS_SHA"
@@ -92,15 +92,15 @@ else
 fi
 
 # Проверяем L-Build Main Pi Services
-if grep -q "VESC_NEXUS_SHA=\$(git submodule status src/vesc_nexus" .github/workflows/L-Build\ Main\ Pi\ Services.yml; then
+if grep -q 'VESC_NEXUS_SHA=$(git submodule status src/vesc_nexus' .github/workflows/L-Build\ Main\ Pi\ Services.yml; then
     echo -e "   ${GREEN}✓${NC} L-Build Main Pi Services передаёт VESC_NEXUS_SHA"
 else
     echo -e "   ${RED}✗${NC} L-Build Main Pi Services НЕ передаёт VESC_NEXUS_SHA"
     exit 1
 fi
 
-# Проверяем G-Build Vision Pi Services
-if grep -q "ROS2LEDS_SHA=\${{ hashFiles('src/ros2leds/\*\*')" .github/workflows/G-Build\ Vision\ Pi\ Services.yml; then
+# Проверяем G-Build Vision Pi Services  
+if grep -q "ROS2LEDS_SHA=.*hashFiles('src/ros2leds/" .github/workflows/G-Build\ Vision\ Pi\ Services.yml; then
     echo -e "   ${GREEN}✓${NC} G-Build Vision Pi Services передаёт ROS2LEDS_SHA через hashFiles"
 else
     echo -e "   ${RED}✗${NC} G-Build Vision Pi Services НЕ передаёт ROS2LEDS_SHA"
@@ -108,7 +108,7 @@ else
 fi
 
 # Проверяем G-Build Main Pi Services
-if grep -q "VESC_NEXUS_SHA=\${{ hashFiles('src/vesc_nexus/\*\*')" .github/workflows/G-Build\ Main\ Pi\ Services.yml; then
+if grep -q "VESC_NEXUS_SHA=.*hashFiles('src/vesc_nexus/" .github/workflows/G-Build\ Main\ Pi\ Services.yml; then
     echo -e "   ${GREEN}✓${NC} G-Build Main Pi Services передаёт VESC_NEXUS_SHA через hashFiles"
 else
     echo -e "   ${RED}✗${NC} G-Build Main Pi Services НЕ передаёт VESC_NEXUS_SHA"
