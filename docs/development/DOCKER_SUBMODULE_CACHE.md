@@ -76,8 +76,10 @@ COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 - **led-matrix** → использует субмодуль `ros2leds` → ARG `ROS2LEDS_SHA`
 
 ### Main Pi
-- **vesc-nexus** → использует субмодуль `vesc_nexus` → ARG `VESC_NEXUS_SHA`
 - **ros2-control** → использует субмодуль `vesc_nexus` → ARG `VESC_NEXUS_SHA`
+- **vesc-nexus** (standalone) → использует субмодуль `vesc_nexus` → ARG `VESC_NEXUS_SHA`
+  - **Примечание:** В production используется только ros2-control образ
+  - vesc-nexus Dockerfile сохранён для разработки и тестирования
 
 ## Тестирование
 
