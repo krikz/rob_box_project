@@ -3,9 +3,9 @@
 # в логические группы для Rob Box
 #
 # Физическое подключение (цепочка через SPI):
-#   Panel 0-3: 4× 8×8 панели (фары) = 256 LEDs
-#   Panel 4-8: 5× 5×5 панели (main_display) = 125 LEDs
-#   Total: 381 LEDs
+#   Panel 0-1: 2× 8×8 панели (передние фары) = 128 LEDs
+#   Panel 2-6: 5× 5×5 панели (main_display) = 125 LEDs
+#   Total: 253 LEDs (задние фары пока не подключены)
 
 led_matrix_compositor:
   ros__parameters:
@@ -22,14 +22,14 @@ led_matrix_compositor:
         snake_connection: true
 
       # Задняя левая фара 8×8
-      - width: 8
-        height: 8
-        snake_connection: true
+      #- width: 8
+      #  height: 8
+      #  snake_connection: true
 
       # Задняя правая фара 8×8
-      - width: 8
-        height: 8
-        snake_connection: true
+      #- width: 8
+      #  height: 8
+      #  snake_connection: true
 
       # Main display: 5 панелей 5×5 соединенных в линию (5×25)
       - width: 5
@@ -65,23 +65,23 @@ led_matrix_compositor:
         flip_y: false
         snake_arrangement: false
 
-      - name: "wheel_rear_left"
-        physical_indices: [2]       # Panel 2
-        arrangement: [1, 1]
-        flip_x: false
-        flip_y: false
-        snake_arrangement: false
+      #- name: "wheel_rear_left"
+      #  physical_indices: [2]       # Panel 2
+      #  arrangement: [1, 1]
+      #  flip_x: false
+      #  flip_y: false
+      #  snake_arrangement: false
 
-      - name: "wheel_rear_right"
-        physical_indices: [3]       # Panel 3
-        arrangement: [1, 1]
-        flip_x: false
-        flip_y: false
-        snake_arrangement: false
+      #- name: "wheel_rear_right"
+      #  physical_indices: [3]       # Panel 3
+      #  arrangement: [1, 1]
+      #  flip_x: false
+      #  flip_y: false
+      #  snake_arrangement: false
 
       # Главный дисплей: 5 панелей объединены горизонтально
       - name: "main_display"
-        physical_indices: [4, 5, 6, 7, 8]  # Panels 4-8
+        physical_indices: [2, 3, 4, 5, 6]  # Panels 2-6 (после закомментирования задних)
         arrangement: [5, 1]                 # 5 панелей в ряд, 1 ряд
         flip_x: false
         flip_y: true                        # Перевернуть по Y для правильной ориентации
@@ -96,17 +96,17 @@ led_matrix_compositor:
         snake_arrangement: false
 
       # Задние колёса как группа
-      - name: "wheels_rear"
-        physical_indices: [2, 3]            # Panels 2-3
-        arrangement: [2, 1]
-        flip_x: false
-        flip_y: false
-        snake_arrangement: false
+      #- name: "wheels_rear"
+      #  physical_indices: [2, 3]            # Panels 2-3
+      #  arrangement: [2, 1]
+      #  flip_x: false
+      #  flip_y: false
+      #  snake_arrangement: false
 
-      # Все колёса вместе
+      # Все передние колёса (только активные панели)
       - name: "wheels_all"
-        physical_indices: [0, 1, 2, 3]     # Panels 0-3
-        arrangement: [2, 2]                 # 2×2 сетка
+        physical_indices: [0, 1]           # Только передние панели 0-1
+        arrangement: [2, 1]                 # 2 панели в ряд
         flip_x: false
         flip_y: false
         snake_arrangement: false
