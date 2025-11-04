@@ -130,7 +130,7 @@ class TTSNode(Node):
         self.declare_parameter("silero_sample_rate", 24000)
 
         # Общие параметры
-        self.declare_parameter("chipmunk_mode", False)  # ОТКЛЮЧЕНО: False для нормального голоса без эффекта бурундука
+        self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
         self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0 = нормальная скорость)
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
