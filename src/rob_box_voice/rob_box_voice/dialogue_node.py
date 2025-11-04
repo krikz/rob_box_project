@@ -156,6 +156,7 @@ class DialogueNode(Node):
         self.last_query_time = None  # Timestamp последнего запроса
         self.accumulation_timer = None  # Таймер для проверки накопления
         self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
+        self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
 
         # ============ RTABMap Control (Mapping Commands) ============
         # Service clients для управления картографией
@@ -572,7 +573,8 @@ class DialogueNode(Node):
         
         # Проверяем: прошло ли достаточно времени с последнего запроса
         if self.last_query_time:
-            time_since_last = time.time() - self.last_query_time
+            current_time = time.time()
+            time_since_last = current_time - self.last_query_time
             if time_since_last < self.query_accumulation_timeout:
                 # Ещё рано, перезапускаем таймер
                 remaining = self.query_accumulation_timeout - time_since_last
@@ -781,7 +783,7 @@ class DialogueNode(Node):
             if self.pending_queries:
                 self.get_logger().info(f"📬 В очереди есть запросы ({len(self.pending_queries)}), пробую снова...")
                 # Небольшая задержка перед повтором при ошибке
-                self.accumulation_timer = self.create_timer(1.0, self._check_and_process_queue)
+                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
 
     def _trigger_sound(self, sound_name: str):
         """Триггер звукового эффекта (Phase 4)"""
