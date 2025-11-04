@@ -790,8 +790,11 @@ class DialogueNode(Node):
                 # Обновляем время последнего запроса
                 self.last_query_time = time.time()
                 # Небольшая задержка перед повтором при ошибке
-                if self.accumulation_timer is None:
-                    self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
+                # Отменяем существующий таймер если есть
+                if self.accumulation_timer is not None:
+                    self.accumulation_timer.cancel()
+                # Создаём новый таймер с задержкой для повтора
+                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
 
     def _trigger_sound(self, sound_name: str):
         """Триггер звукового эффекта (Phase 4)"""
