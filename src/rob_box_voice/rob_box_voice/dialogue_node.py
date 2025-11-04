@@ -592,13 +592,10 @@ class DialogueNode(Node):
             combined_message = queries_to_process[0]
             self.get_logger().info(f"💬 Один запрос: {combined_message}")
         else:
-            # Несколько запросов - объединяем с указанием порядка
-            combined_parts = [f"У меня несколько вопросов ({query_count} штук), отвечай на них все сразу по порядку:"]
-            for i, query in enumerate(queries_to_process, 1):
-                combined_parts.append(f"{i}. {query}")
-
-            combined_message = "\n".join(combined_parts)
-            self.get_logger().info(f"💬 Пакетный запрос:\n{combined_message}")
+            # Несколько запросов - объединяем БЕЗ повторения текста вопросов
+            # DeepSeek должен сам ответить, не повторяя вопросы вслух
+            combined_message = " ".join(queries_to_process)
+            self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов): {combined_message}")
 
         # Добавляем в историю диалога
         self.conversation_history.append({"role": "user", "content": combined_message})
