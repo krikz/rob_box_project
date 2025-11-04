@@ -186,6 +186,9 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
+          # Получаем SHA субмодуля vesc_nexus для инвалидации кэша
+          VESC_NEXUS_SHA=$(git submodule status src/vesc_nexus | awk '{print $1}' | sed 's/^[+-]//')
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -195,6 +198,7 @@ jobs:
             --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="VESC_NEXUS_SHA=${VESC_NEXUS_SHA}" \
             .
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then

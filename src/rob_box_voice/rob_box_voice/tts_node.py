@@ -52,6 +52,42 @@ def ignore_stderr(enable=True):
         yield
 
 
+def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
+    """
+    Resample audio from original sample rate to target sample rate using linear interpolation.
+    
+    This is a lightweight resampling implementation suitable for TTS audio where:
+    - Low latency is important (no heavy dependencies like scipy/librosa)
+    - Audio quality is acceptable for voice synthesis
+    - Minimal artifacts for pitch shifting within reasonable range (1.0-3.0x)
+    
+    For higher quality resampling, consider using scipy.signal.resample or librosa.resample.
+    
+    Args:
+        audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
+        orig_sr: Original sample rate (e.g., 22050 or 10022.7 for fractional rates)
+        target_sr: Target sample rate (e.g., 16000)
+    
+    Returns:
+        Resampled audio at target sample rate
+    """
+    if abs(orig_sr - target_sr) < 0.01:  # Use epsilon comparison for floats
+        return audio
+    
+    # Calculate the resampling ratio
+    duration = len(audio) / orig_sr
+    target_length = int(duration * target_sr)
+    
+    # Create new time indices for interpolation
+    orig_indices = np.linspace(0, len(audio) - 1, len(audio))
+    target_indices = np.linspace(0, len(audio) - 1, target_length)
+    
+    # Linear interpolation
+    resampled = np.interp(target_indices, orig_indices, audio)
+    
+    return resampled
+
+
 # Импортируем text_normalizer и Yandex gRPC
 scripts_path = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(scripts_path))
@@ -87,15 +123,15 @@ class TTSNode(Node):
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
         self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
-        self.declare_parameter("yandex_speed", 1)  # 0.1-3.0 (0.4 = ОРИГИНАЛЬНАЯ СКОРОСТЬ РОББОКСА!)
+        self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
 
         # Silero TTS (fallback)
         self.declare_parameter("silero_speaker", "baya")  # aidar (male) | baya (female) | kseniya | xenia
         self.declare_parameter("silero_sample_rate", 24000)
 
         # Общие параметры
-        self.declare_parameter("chipmunk_mode", False)  # ИЗМЕНЕНО: False по умолчанию для оригинального голоса
-        self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0x = нормальная скорость)
+        self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
+        self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0 = нормальная скорость)
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
@@ -182,13 +218,16 @@ class TTSNode(Node):
         self.get_logger().info("✅ TTSNode инициализирован")
         self.get_logger().info("  Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero (fallback)")
         self.get_logger().info(
-            f"  Yandex gRPC v3: voice={self.yandex_voice} (ROBBOX original!), speed={self.yandex_speed}"
+            f"  Yandex gRPC v3: voice={self.yandex_voice} (ROBBOX original!), speed={self.yandex_speed} (медленный синтез)"
         )
         self.get_logger().info(f"  Silero: speaker={self.silero_speaker}, rate={self.silero_sample_rate} Hz")
         self.get_logger().info(f"  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)")
         self.get_logger().info(f"  Chipmunk mode: {self.chipmunk_mode}")
         if self.chipmunk_mode:
-            self.get_logger().info(f"  Pitch shift: {self.pitch_shift}x (ускоряем воспроизведение)")
+            self.get_logger().info(
+                f"  Pitch shift: {self.pitch_shift}x "
+                f"(эмуляция оригинального ROBBOX: медленный синтез + быстрое воспроизведение)"
+            )
 
         if not self.yandex_stub:
             self.get_logger().warn("⚠️  Yandex gRPC не подключен - будет использован только Silero fallback")
@@ -481,26 +520,54 @@ class TTSNode(Node):
             # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
             target_rate = 16000
 
-            # Эффект "бурундука" ROBBOX (опционально):
-            # В оригинале: Yandex возвращает 22050 Hz, читаем сырые PCM, воспроизводим на 44100 Hz
-            # Результат: 2x pitch shift (голос выше и быстрее)
+            # Эффект "бурундука" ROBBOX:
+            # В оригинале: Yandex возвращает ~22050 Hz (speed=0.4), читаем сырые PCM, воспроизводим на 44100 Hz
+            # Результат: 44100/22050 = 2x pitch shift (голос выше и быстрее)
             # 
-            # Новая реализация:
-            # - chipmunk_mode=False (по умолчанию): воспроизведение на нормальной скорости
-            # - chipmunk_mode=True: эффект бурундука через sample decimation
-            # - pitch_shift параметр: множитель для ускорения (1.0 = нормально, 2.0 = 2x быстрее)
+            # Новая реализация (правильная):
+            # - chipmunk_mode=False: правильный resample для корректного воспроизведения
+            # - chipmunk_mode=True: эмуляция оригинала через изменение эффективной частоты
+            # - pitch_shift параметр: дополнительный множитель (1.0 = стандарт, 1.5 = ещё выше, 0.8 = ниже)
+            #
+            # Оригинальный ROBBOX эффект:
+            # Yandex с speed=0.4 → ~22050 Hz → воспроизведение как 44100 Hz = 2x эффект
+            # Но ReSpeaker работает на 16000 Hz, поэтому эмулируем через:
+            # 22050 Hz → 11025 Hz (эффективно, делим на 2) → 16000 Hz
             
-            if self.chipmunk_mode and self.pitch_shift > 1.0:
-                # Уменьшаем количество сэмплов (эффект ускорения)
-                decimation_factor = int(self.pitch_shift)
-                audio_processed = audio_np[::decimation_factor]
+            if self.chipmunk_mode:
+                # Эффект бурундука через изменение эффективной частоты
+                # Оригинальный ROBBOX: соотношение 44100/22050 = 2.0
+                # С учётом ReSpeaker 16kHz: применяем базовый множитель 2.0 * pitch_shift
+                base_multiplier = 2.0  # Оригинальное соотношение частот в ROBBOX
+                effective_multiplier = base_multiplier * self.pitch_shift
+                
+                # Вычисляем эффективную частоту после "ускорения"
+                # Например: 22050 / (2.0 * 1.0) = 11025 Hz
+                effective_rate = sample_rate / effective_multiplier
+                
+                # Сначала ресэмплим до эффективной частоты (ускорение)
+                audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
+                
+                # Затем ресэмплим до target_rate для ReSpeaker
+                if abs(effective_rate - target_rate) > 0.01:
+                    audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
+                
                 self.get_logger().info(
-                    f"🐿️  Эффект бурундука: {len(audio_np)} → {len(audio_processed)} samples "
-                    f"({self.pitch_shift}x ускорение)"
+                    f"🐿️  Эффект бурундука ROBBOX: {len(audio_np)} → {len(audio_processed)} samples "
+                    f"({effective_multiplier:.1f}x ускорение, {sample_rate}Hz → {effective_rate:.1f}Hz → {target_rate}Hz)"
                 )
             else:
-                # Нормальное воспроизведение без искажений
-                audio_processed = audio_np
+                # Нормальное воспроизведение БЕЗ pitch shift
+                # Resample audio to target rate для правильной скорости
+                if sample_rate != target_rate:
+                    self.get_logger().info(
+                        f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz "
+                        f"({len(audio_np)} samples)"
+                    )
+                    audio_processed = resample_audio(audio_np, sample_rate, target_rate)
+                    self.get_logger().info(f"✅ Resampled to {len(audio_processed)} samples @ {target_rate} Hz")
+                else:
+                    audio_processed = audio_np
                 self.get_logger().info(f"🎵 Нормальная скорость: {len(audio_processed)} samples")
 
             # Применяем громкость
@@ -695,6 +762,9 @@ class TTSNode(Node):
             elif param.name == "chipmunk_mode":
                 self.chipmunk_mode = param.value
                 self.get_logger().info(f"🐿️ Chipmunk mode: {self.chipmunk_mode}")
+            elif param.name == "yandex_speed":
+                self.yandex_speed = param.value
+                self.get_logger().info(f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}")
 
         return SetParametersResult(successful=True)
 

@@ -49,6 +49,7 @@ class DialogueNode(Node):
         self.declare_parameter("system_prompt_file", "master_prompt_simple.txt")
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
+        self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
 
         api_key = self.get_parameter("api_key").value
         if not api_key:
@@ -148,6 +149,15 @@ class DialogueNode(Node):
         # Dialogue session tracking (для синхронизации с TTS)
         self.current_dialogue_id = None
 
+        # ============ Query Queue System ============
+        # Очередь накопленных запросов для пакетной обработки
+        self.pending_queries = []  # List of user messages
+        self.query_accumulation_timeout = self.get_parameter("query_accumulation_timeout").value
+        self.last_query_time = None  # Timestamp последнего запроса
+        self.accumulation_timer = None  # Таймер для проверки накопления
+        self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
+        self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
+
         # ============ RTABMap Control (Mapping Commands) ============
         # Service clients для управления картографией
         self.reset_memory_client = self.create_client(Empty, "/rtabmap/reset_memory")
@@ -199,6 +209,7 @@ class DialogueNode(Node):
         self.get_logger().info(f"  Temperature: {self.temperature}")
         self.get_logger().info(f"  Max tokens: {self.max_tokens}")
         self.get_logger().info(f"  Dialogue timeout: {self.dialogue_timeout}s")
+        self.get_logger().info(f"  Query accumulation timeout: {self.query_accumulation_timeout}s")
 
     def _load_system_prompt(self) -> str:
         """Загрузить упрощённый system prompt"""
@@ -266,19 +277,34 @@ class DialogueNode(Node):
             except Exception as e:
                 self.get_logger().error(f"Ошибка прерывания stream: {e}")
 
-        # 2. Отправить STOP в TTS
+        # 2. Очистить очередь запросов
+        if self.pending_queries:
+            cleared_count = len(self.pending_queries)
+            self.pending_queries.clear()
+            self.get_logger().info(f"  → Очищено {cleared_count} запросов из очереди")
+
+        # 3. Остановить таймер накопления
+        if self.accumulation_timer is not None:
+            self.accumulation_timer.cancel()
+            self.accumulation_timer = None
+            self.get_logger().info("  → Таймер накопления остановлен")
+
+        # 4. Сбросить флаги обработки
+        self.llm_processing = False
+
+        # 5. Отправить STOP в TTS
         stop_msg = String()
         stop_msg.data = "STOP"
         self.tts_control_pub.publish(stop_msg)
         self.get_logger().info("  → STOP отправлен в TTS")
 
-        # 3. Перейти в SILENCED на 5 минут
+        # 6. Перейти в SILENCED на 5 минут
         self.state = "SILENCED"
         self.silence_until = time.time() + 300  # 5 минут
         self._publish_state()
         self.get_logger().info("  → State: SILENCED (5 минут)")
 
-        # 4. Короткое подтверждение (через TTS напрямую)
+        # 7. Короткое подтверждение (через TTS напрямую)
         self._speak_simple("Хорошо, молчу")
 
     def _speak_simple(self, text: str):
@@ -464,7 +490,25 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
             return
 
-        # ============ ПРИОРИТЕТ 6: Проверка Mapping Commands ============
+        # ============ ПРИОРИТЕТ 6: Проверка Pitch Control Commands ============
+        pitch_intent = self._detect_pitch_intent(user_message_lower)
+        if pitch_intent:
+            self.get_logger().info(f"🎵 Обнаружена pitch команда: {pitch_intent}")
+            response = self._handle_pitch_command(pitch_intent)
+            self._speak_simple(response)
+            self.dialogue_in_progress = False
+            return
+
+        # ============ ПРИОРИТЕТ 7: Проверка Speed Control Commands ============
+        speed_intent = self._detect_speed_intent(user_message_lower)
+        if speed_intent:
+            self.get_logger().info(f"⚡ Обнаружена speed команда: {speed_intent}")
+            response = self._handle_speed_command(speed_intent)
+            self._speak_simple(response)
+            self.dialogue_in_progress = False
+            return
+
+        # ============ ПРИОРИТЕТ 8: Проверка Mapping Commands ============
         mapping_intent = self._detect_mapping_intent(user_message_lower)
         if mapping_intent:
             self.get_logger().info(f"🗺️ Обнаружена mapping команда: {mapping_intent}")
@@ -482,7 +526,7 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
                 return
 
-        # ============ ПРИОРИТЕТ 7: Проверка доступности интернета ============
+        # ============ ПРИОРИТЕТ 8: Проверка доступности интернета ============
         if not self.internet_available:
             self.get_logger().warning("⚠️  Интернет недоступен - используем fallback")
             fallback_response = self._generate_fallback_response(user_message)
@@ -490,16 +534,78 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
             return
 
-        # ============ ПРИОРИТЕТ 8: Обычный диалог с LLM ============
-        # Добавляем в историю
-        self.conversation_history.append({"role": "user", "content": user_message})
+        # ============ ПРИОРИТЕТ 9: Обычный диалог с LLM ============
+        # Добавляем запрос в очередь для накопления
+        self.pending_queries.append(user_message)
+        self.last_query_time = time.time()
+
+        self.get_logger().info(f"📥 Запрос добавлен в очередь (всего: {len(self.pending_queries)})")
+
+        # Если LLM уже обрабатывает запрос - просто добавляем в очередь и ждём
+        if self.llm_processing:
+            self.get_logger().info("⏳ LLM занят, запрос будет обработан после завершения текущего")
+            return
+
+        # Если это первый запрос или прошло достаточно времени - начинаем накопление
+        if self.accumulation_timer is None:
+            # Создаём таймер для проверки когда можно обработать накопленные запросы
+            self.accumulation_timer = self.create_timer(self.query_accumulation_timeout, self._check_and_process_queue)
+            self.get_logger().info(f"⏰ Запущен таймер накопления ({self.query_accumulation_timeout}s)")
+
+        # Триггер звука "thinking" только при первом запросе
+        if len(self.pending_queries) == 1:
+            self._trigger_sound("thinking")
+
+    def _check_and_process_queue(self):
+        """Проверить очередь и обработать накопленные запросы"""
+        # Останавливаем таймер
+        if self.accumulation_timer is not None:
+            self.accumulation_timer.cancel()
+            self.accumulation_timer = None
+
+        # Если очередь пуста - ничего не делаем
+        if not self.pending_queries:
+            self.get_logger().debug("📭 Очередь пуста, нечего обрабатывать")
+            return
+
+        # Проверяем: прошло ли достаточно времени с последнего запроса
+        if self.last_query_time:
+            current_time = time.time()
+            time_since_last = current_time - self.last_query_time
+            if time_since_last < self.query_accumulation_timeout:
+                # Ещё рано, перезапускаем таймер
+                remaining = self.query_accumulation_timeout - time_since_last
+                self.accumulation_timer = self.create_timer(remaining, self._check_and_process_queue)
+                self.get_logger().debug(f"⏰ Ещё рано, жду {remaining:.1f}s")
+                return
+
+        # Забираем все накопленные запросы
+        queries_to_process = self.pending_queries.copy()
+        self.pending_queries.clear()
+
+        query_count = len(queries_to_process)
+        self.get_logger().info(f"🔄 Обрабатываю {query_count} накопленных запросов")
+
+        # Объединяем запросы в один контекст
+        if query_count == 1:
+            # Один запрос - обрабатываем как обычно
+            combined_message = queries_to_process[0]
+            self.get_logger().info(f"💬 Один запрос: {combined_message}")
+        else:
+            # Несколько запросов - объединяем БЕЗ повторения текста вопросов
+            # DeepSeek должен сам ответить, не повторяя вопросы вслух
+            combined_message = " ".join(queries_to_process)
+            self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов): {combined_message}")
+
+        # Добавляем в историю диалога
+        self.conversation_history.append({"role": "user", "content": combined_message})
 
         # Ограничиваем историю (последние 10 сообщений)
         if len(self.conversation_history) > 10:
             self.conversation_history = self.conversation_history[-10:]
 
-        # Триггер звука "thinking" (Phase 4)
-        self._trigger_sound("thinking")
+        # Устанавливаем флаг обработки
+        self.llm_processing = True
 
         # Запрос к DeepSeek (streaming)
         self._ask_deepseek_streaming()
@@ -649,13 +755,49 @@ class DialogueNode(Node):
 
             self.get_logger().info(f"✅ DeepSeek ответил ({chunk_count} chunks)")
 
-            # Сбрасываем флаг после успешного ответа
-            self.dialogue_in_progress = False
+            # Сбрасываем флаг обработки LLM
+            self.llm_processing = False
+
+            # Проверяем очередь - есть ли ещё накопленные запросы
+            if self.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
+                # Обновляем время последнего запроса для корректного накопления
+                self.last_query_time = time.time()
+                # Запускаем таймер накопления чтобы дождаться возможных дополнительных запросов
+                if self.accumulation_timer is None:
+                    self.accumulation_timer = self.create_timer(
+                        self.query_accumulation_timeout, self._check_and_process_queue
+                    )
+                    self.get_logger().info(
+                        f"⏰ Запущен таймер накопления для оставшихся запросов ({self.query_accumulation_timeout}s)"
+                    )
+                # Не сбрасываем dialogue_in_progress - ещё есть запросы в очереди
+            else:
+                # Очередь пуста - завершаем диалог
+                self.dialogue_in_progress = False
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка DeepSeek: {e}")
-            # Сбрасываем флаг даже при ошибке
-            self.dialogue_in_progress = False
+            # Сбрасываем флаг обработки LLM
+            self.llm_processing = False
+
+            # Проверяем очередь даже при ошибке
+            if self.pending_queries:
+                self.get_logger().info(
+                    f"📬 В очереди есть запросы ({len(self.pending_queries)}), пробую снова после задержки..."
+                )
+                # Обновляем время последнего запроса
+                self.last_query_time = time.time()
+                # Небольшая задержка перед повтором при ошибке
+                # Отменяем существующий таймер если есть
+                if self.accumulation_timer is not None:
+                    self.accumulation_timer.cancel()
+                # Создаём новый таймер с задержкой для повтора
+                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
+                # Не сбрасываем dialogue_in_progress - ещё есть запросы для повтора
+            else:
+                # Очередь пуста - завершаем диалог даже при ошибке
+                self.dialogue_in_progress = False
 
     def _trigger_sound(self, sound_name: str):
         """Триггер звукового эффекта (Phase 4)"""
@@ -673,135 +815,401 @@ class DialogueNode(Node):
 
     def _detect_volume_intent(self, text: str):
         """Определить intent для команд управления громкостью
-        
+
         Returns:
             str: 'louder', 'quieter', 'max', 'normal', None
         """
         text_lower = text.lower()
-        
+
         # Паттерны для различных команд громкости
         volume_patterns = {
-            'louder': [
-                r'громче',
-                r'громко',
-                r'прибав\w* громкост',
-                r'увелич\w* громкост',
+            "louder": [
+                r"громче",
+                r"громко",
+                r"прибав\w* громкост",
+                r"увелич\w* громкост",
             ],
-            'quieter': [
-                r'тише',
-                r'потише',
-                r'убав\w* громкост',
-                r'уменьш\w* громкост',
+            "quieter": [
+                r"тише",
+                r"потише",
+                r"убав\w* громкост",
+                r"уменьш\w* громкост",
             ],
-            'max': [
-                r'говори громко',
-                r'максимальн\w* громкост',
-                r'на полную громкост',
+            "max": [
+                r"говори громко",
+                r"максимальн\w* громкост",
+                r"на полную громкост",
             ],
-            'normal': [
-                r'нормальн\w* громкост',
-                r'стандартн\w* громкост',
-                r'обычн\w* громкост',
+            "normal": [
+                r"нормальн\w* громкост",
+                r"стандартн\w* громкост",
+                r"обычн\w* громкост",
             ],
         }
-        
+
         for intent, patterns in volume_patterns.items():
             for pattern in patterns:
                 if re.search(pattern, text_lower):
                     return intent
-        
+
         return None
-    
+
     def _handle_volume_command(self, intent: str) -> str:
         """Обработка команды изменения громкости
-        
+
         Args:
             intent: 'louder', 'quieter', 'max', 'normal'
-            
+
         Returns:
             str: Ответ для пользователя
         """
         # Получаем текущую громкость TTS ноды через ROS параметры
         try:
+            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
             from rcl_interfaces.srv import GetParameters, SetParameters
-            from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
-            
+
             # Создаем клиенты для работы с параметрами TTS и Sound нод
-            tts_get_params_client = self.create_client(GetParameters, '/tts_node/get_parameters')
-            tts_set_params_client = self.create_client(SetParameters, '/tts_node/set_parameters')
-            sound_set_params_client = self.create_client(SetParameters, '/sound_node/set_parameters')
-            
+            tts_get_params_client = self.create_client(GetParameters, "/tts_node/get_parameters")
+            tts_set_params_client = self.create_client(SetParameters, "/tts_node/set_parameters")
+            sound_set_params_client = self.create_client(SetParameters, "/sound_node/set_parameters")
+
             # Ждем доступности сервисов
             if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().error("❌ TTS node параметры недоступны")
                 return "Извините, не могу изменить громкость. Система недоступна."
-            
+
             # Получаем текущий volume_db
             get_request = GetParameters.Request()
-            get_request.names = ['volume_db']
+            get_request.names = ["volume_db"]
             future = tts_get_params_client.call_async(get_request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-            
+
             if future.result() is None:
                 self.get_logger().error("❌ Не удалось получить volume_db")
                 return "Извините, не могу изменить громкость."
-            
+
             current_volume_db = future.result().values[0].double_value
             self.get_logger().info(f"📊 Текущая громкость: {current_volume_db:.1f} dB")
-            
+
             # Вычисляем новую громкость
             new_volume_db = current_volume_db
             response_text = ""
-            
-            if intent == 'louder':
+
+            if intent == "louder":
                 new_volume_db = min(current_volume_db + 3.0, 6.0)  # +3dB, макс +6dB
                 response_text = "Делаю громче"
-            elif intent == 'quieter':
+            elif intent == "quieter":
                 new_volume_db = max(current_volume_db - 3.0, -20.0)  # -3dB, мин -20dB
                 response_text = "Делаю тише"
-            elif intent == 'max':
+            elif intent == "max":
                 new_volume_db = 6.0  # Максимальная громкость +6dB (~2x)
                 response_text = "Максимальная громкость"
-            elif intent == 'normal':
+            elif intent == "normal":
                 new_volume_db = -3.0  # Нормальная громкость -3dB (70%)
                 response_text = "Нормальная громкость"
-            
+
             # Устанавливаем новую громкость
             if abs(new_volume_db - current_volume_db) < 0.1:
                 # Громкость уже на пределе
-                if intent == 'louder':
+                if intent == "louder":
                     return "Громкость уже максимальная"
-                elif intent == 'quieter':
+                elif intent == "quieter":
                     return "Громкость уже минимальная"
-            
+
             # Устанавливаем параметры для TTS ноды
             set_request = SetParameters.Request()
             param = Parameter()
-            param.name = 'volume_db'
+            param.name = "volume_db"
             param.value = ParameterValue()
             param.value.type = ParameterType.PARAMETER_DOUBLE
             param.value.double_value = new_volume_db
             set_request.parameters = [param]
-            
+
             future = tts_set_params_client.call_async(set_request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-            
+
             if future.result() is None or not future.result().results[0].successful:
                 self.get_logger().error("❌ Не удалось установить volume_db для TTS")
                 return "Извините, не могу изменить громкость."
-            
+
             # Также устанавливаем для Sound ноды (если доступна)
             if sound_set_params_client.wait_for_service(timeout_sec=0.5):
                 future = sound_set_params_client.call_async(set_request)
                 rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
                 if future.result() and future.result().results[0].successful:
                     self.get_logger().info("✅ Громкость звуков также изменена")
-            
+
             self.get_logger().info(f"✅ Громкость изменена: {current_volume_db:.1f} → {new_volume_db:.1f} dB")
             return response_text
-            
+
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка изменения громкости: {e}")
+            return "Извините, произошла ошибка."
+
+    # ============================================================
+    # Pitch Control Commands
+    # ============================================================
+
+    def _detect_pitch_intent(self, text: str):
+        """Определить intent для команд управления высотой голоса (pitch)
+
+        Returns:
+            str: 'higher', 'lower', 'normal', None
+        """
+        text_lower = text.lower()
+
+        # Паттерны для различных команд pitch
+        pitch_patterns = {
+            "higher": [
+                r"говори выше",
+                r"голос выше",
+                r"повыс\w* голос",
+                r"выше говор",
+            ],
+            "lower": [
+                r"говори ниже",
+                r"голос ниже",
+                r"пониж\w* голос",
+                r"ниже говор",
+            ],
+            "normal": [
+                r"нормальн\w* голос",
+                r"обычн\w* голос",
+                r"говори нормально",
+            ],
+        }
+
+        for intent, patterns in pitch_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return intent
+
+        return None
+
+    def _handle_pitch_command(self, intent: str) -> str:
+        """Обработка команды изменения высоты голоса через pitch_shift
+
+        Args:
+            intent: 'higher', 'lower', 'normal'
+
+        Returns:
+            str: Ответ для пользователя
+        """
+        # Управляем pitch через pitch_shift параметр
+        # pitch_shift - это дополнительный множитель к базовому эффекту бурундука (2.0x)
+        # pitch_shift=1.0 → стандартный ROBBOX (2.0x эффект)
+        # pitch_shift=1.5 → голос ещё выше (3.0x эффект)
+        # pitch_shift=0.8 → голос ниже (1.6x эффект)
+        # ВАЖНО: chipmunk_mode всегда остаётся True для сохранения эффекта ROBBOX
+        try:
+            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+            from rcl_interfaces.srv import GetParameters, SetParameters
+
+            # Создаем клиенты для работы с параметрами TTS ноды
+            tts_get_params_client = self.create_client(GetParameters, "/tts_node/get_parameters")
+            tts_set_params_client = self.create_client(SetParameters, "/tts_node/set_parameters")
+
+            # Ждем доступности сервисов
+            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().error("❌ TTS node параметры недоступны")
+                return "Извините, не могу изменить высоту голоса. Система недоступна."
+
+            # Получаем текущий pitch_shift
+            get_request = GetParameters.Request()
+            get_request.names = ["pitch_shift"]
+            future = tts_get_params_client.call_async(get_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+
+            if future.result() is None or len(future.result().values) < 1:
+                self.get_logger().error("❌ Не удалось получить параметры TTS")
+                return "Извините, не могу изменить высоту голоса."
+
+            # Извлекаем текущее значение pitch_shift
+            current_pitch = future.result().values[0].double_value
+
+            self.get_logger().info(
+                f"📊 Текущий pitch_shift: {current_pitch:.2f} (итого: {2.0 * current_pitch:.1f}x эффект)"
+            )
+
+            # Вычисляем новое значение pitch_shift
+            # Диапазон: 0.5 (низкий бурундук, 1.0x эффект) - 2.0 (очень высокий, 4.0x эффект)
+            # ROBBOX стандарт: 1.0 = оригинальный голос бурундука (2.0x эффект)
+            new_pitch = current_pitch
+            response_text = ""
+
+            if intent == "higher":
+                # Увеличиваем pitch - делаем голос выше
+                new_pitch = min(current_pitch + 0.2, 2.0)  # +0.2, макс 2.0 (4.0x эффект!)
+                response_text = "Говорю выше"
+            elif intent == "lower":
+                # Уменьшаем pitch - делаем голос ниже (но всё ещё бурундук!)
+                new_pitch = max(current_pitch - 0.2, 0.5)  # -0.2, мин 0.5 (1.0x эффект - лёгкий)
+                response_text = "Говорю ниже"
+            elif intent == "normal":
+                # Нормальный ROBBOX голос с эффектом бурундука
+                new_pitch = 1.0  # 2.0x эффект - как в оригинале!
+                response_text = "Нормальный голос"
+
+            # Проверяем изменение pitch
+            if abs(new_pitch - current_pitch) < 0.01:
+                # Параметр не изменился
+                if intent == "higher":
+                    return "Голос уже максимально высокий"
+                elif intent == "lower":
+                    return "Голос уже минимально низкий"
+
+            # Устанавливаем новый pitch_shift для TTS ноды
+            set_request = SetParameters.Request()
+
+            param_pitch = Parameter()
+            param_pitch.name = "pitch_shift"
+            param_pitch.value = ParameterValue()
+            param_pitch.value.type = ParameterType.PARAMETER_DOUBLE
+            param_pitch.value.double_value = new_pitch
+
+            set_request.parameters = [param_pitch]
+
+            future = tts_set_params_client.call_async(set_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+
+            if future.result() is None:
+                self.get_logger().error("❌ Не удалось установить параметры TTS")
+                return "Извините, не могу изменить высоту голоса."
+
+            # Проверяем успешность установки
+            if not future.result().results[0].successful:
+                self.get_logger().error("❌ Параметр pitch_shift не установился")
+                return "Извините, не могу изменить высоту голоса."
+
+            self.get_logger().info(
+                f"✅ Pitch изменён: {current_pitch:.2f} → {new_pitch:.2f} "
+                f"(эффект: {2.0 * current_pitch:.1f}x → {2.0 * new_pitch:.1f}x)"
+            )
+            return response_text
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка изменения pitch: {e}")
+            return "Извините, произошла ошибка."
+
+    # ============================================================
+    # Speed Control Commands
+    # ============================================================
+
+    def _detect_speed_intent(self, text: str):
+        """Определить intent для команд управления скоростью речи
+
+        Returns:
+            str: 'faster', 'slower', 'normal', None
+        """
+        text_lower = text.lower()
+
+        # Паттерны для различных команд скорости
+        speed_patterns = {
+            "faster": [
+                r"говори быстрее",
+                r"быстрее",
+                r"ускор\w*",
+                r"побыстрее",
+            ],
+            "slower": [
+                r"говори медленнее",
+                r"медленнее",
+                r"замедл\w*",
+                r"помедленнее",
+            ],
+            "normal": [
+                r"нормальн\w* скорост",
+                r"обычн\w* скорост",
+            ],
+        }
+
+        for intent, patterns in speed_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return intent
+
+        return None
+
+    def _handle_speed_command(self, intent: str) -> str:
+        """Обработка команды изменения скорости речи через yandex_speed
+
+        Args:
+            intent: 'faster', 'slower', 'normal'
+
+        Returns:
+            str: Ответ для пользователя
+        """
+        # Управляем скоростью синтеза через yandex_speed параметр
+        # Диапазон: 0.1-3.0, где 1.0 = нормальная скорость
+        try:
+            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+            from rcl_interfaces.srv import GetParameters, SetParameters
+
+            # Создаем клиенты для работы с параметрами TTS ноды
+            tts_get_params_client = self.create_client(GetParameters, "/tts_node/get_parameters")
+            tts_set_params_client = self.create_client(SetParameters, "/tts_node/set_parameters")
+
+            # Ждем доступности сервисов
+            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().error("❌ TTS node параметры недоступны")
+                return "Извините, не могу изменить скорость речи. Система недоступна."
+
+            # Получаем текущий yandex_speed
+            get_request = GetParameters.Request()
+            get_request.names = ["yandex_speed"]
+            future = tts_get_params_client.call_async(get_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+
+            if future.result() is None or len(future.result().values) < 1:
+                self.get_logger().error("❌ Не удалось получить yandex_speed")
+                return "Извините, не могу изменить скорость речи."
+
+            current_speed = future.result().values[0].double_value
+            self.get_logger().info(f"📊 Текущая скорость синтеза: {current_speed:.2f}")
+
+            # Вычисляем новую скорость
+            # Диапазон: 0.5 (медленно) - 2.0 (быстро), 1.0 = нормально
+            new_speed = current_speed
+            response_text = ""
+
+            if intent == "faster":
+                new_speed = min(current_speed + 0.2, 2.0)  # +0.2, макс 2.0
+                response_text = "Говорю быстрее"
+            elif intent == "slower":
+                new_speed = max(current_speed - 0.2, 0.5)  # -0.2, мин 0.5
+                response_text = "Говорю медленнее"
+            elif intent == "normal":
+                new_speed = 1.0  # Нормальная скорость
+                response_text = "Нормальная скорость"
+
+            # Проверяем изменение
+            if abs(new_speed - current_speed) < 0.01:
+                if intent == "faster":
+                    return "Скорость уже максимальная"
+                elif intent == "slower":
+                    return "Скорость уже минимальная"
+
+            # Устанавливаем новую скорость
+            set_request = SetParameters.Request()
+            param = Parameter()
+            param.name = "yandex_speed"
+            param.value = ParameterValue()
+            param.value.type = ParameterType.PARAMETER_DOUBLE
+            param.value.double_value = new_speed
+            set_request.parameters = [param]
+
+            future = tts_set_params_client.call_async(set_request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+
+            if future.result() is None or not future.result().results[0].successful:
+                self.get_logger().error("❌ Не удалось установить yandex_speed")
+                return "Извините, не могу изменить скорость речи."
+
+            self.get_logger().info(f"✅ Скорость изменена: {current_speed:.2f} → {new_speed:.2f}")
+            return response_text
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка изменения скорости: {e}")
             return "Извините, произошла ошибка."
 
     # ============================================================

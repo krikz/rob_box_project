@@ -61,7 +61,21 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
-    # НЕТ animation_node - он запускается отдельно на Main Pi
+    # === Animation Player Node ===
+    animation_node = Node(
+        package='rob_box_animations',
+        executable='animation_player_node.py',
+        name='voice_animation_player',
+        namespace=namespace,
+        parameters=[{
+            'animations_path': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
+            'default_animation': 'idle_subtle',
+            'autoplay': True
+        }],
+        output='screen',
+        respawn=True,
+        respawn_delay=3.0
+    )
     
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     dialogue_node = Node(
@@ -133,7 +147,7 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
-        # НЕТ animation_node!
+        animation_node,
         dialogue_node,
         tts_node,
         stt_node,

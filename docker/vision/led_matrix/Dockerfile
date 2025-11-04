@@ -12,6 +12,7 @@
 
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
+ARG ROS2LEDS_SHA=unknown
 
 FROM ${BASE_IMAGE}
 
@@ -49,6 +50,10 @@ RUN mkdir -p src
 # ============================================================
 # ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
 # ============================================================
+
+# Инвалидация кэша при изменении субмодуля ros2leds
+# Этот ARG используется для принудительной пересборки при обновлении субмодуля
+RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}"
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/

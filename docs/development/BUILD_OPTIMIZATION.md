@@ -278,6 +278,50 @@ grep -A 10 "volumes:" docker/*/docker-compose.yaml
 # - ./{service}/scripts:/scripts:ro
 ```
 
+## Оптимизация загрузки моделей ML/AI
+
+### Проблема
+
+Модели машинного обучения (Vosk STT, Silero TTS) имеют большой размер (145 MB) и загружаются из внешних источников во время Docker build. Это замедляет сборку на 10+ минут при каждом изменении.
+
+### Решение: BuildKit Cache Mounts
+
+Используйте Docker BuildKit cache mounts для кеширования загруженных файлов между сборками:
+
+```dockerfile
+# ❌ ПЛОХО - скачивается каждый раз при пересборке
+RUN wget -O /models/model.pt https://example.com/model.pt
+
+# ✅ ХОРОШО - кешируется между сборками
+RUN --mount=type=cache,target=/model_cache,sharing=locked \
+    mkdir -p /models && \
+    # Проверяем кеш перед загрузкой
+    if [ -f /model_cache/model.pt ]; then \
+        echo "✅ Using cached model"; \
+        cp /model_cache/model.pt /models/model.pt; \
+    else \
+        echo "⬇️ Downloading model..."; \
+        wget -O /models/model.pt https://example.com/model.pt && \
+        cp /models/model.pt /model_cache/model.pt; \
+    fi
+```
+
+**Преимущества:**
+- ✅ Первая сборка: скачивает модели и сохраняет в кеш (10+ минут)
+- ✅ Последующие сборки: копирует из кеша (секунды)
+- ✅ Работает для локальных сборок и GitHub Actions
+- ✅ Кеш сохраняется между разными Docker образами
+- ✅ Не требует коммита больших файлов в Git
+
+**Где используется:**
+- `docker/vision/voice_base/Dockerfile` - Vosk + Silero модели
+- `docker/vision/voice_assistant/Dockerfile` - Vosk + Silero модели
+
+**Важно:** 
+- Используйте `sharing=locked` для безопасности при параллельных сборках
+- BuildKit включен по умолчанию в GitHub Actions (`docker/setup-buildx-action@v3`)
+- Локальные сборки требуют `DOCKER_BUILDKIT=1` (или Docker 23.0+)
+
 ## Документация
 
 См. также:
@@ -288,5 +332,6 @@ grep -A 10 "volumes:" docker/*/docker-compose.yaml
 ---
 
 **Создано**: 2025-10-10  
+**Обновлено**: 2025-11-01 (добавлена оптимизация кеширования моделей)  
 **Автор**: КУКОРЕКЕН  
 **Проект**: rob_box_project

@@ -138,7 +138,7 @@ def main():
     print("ТЕСТ YANDEX TTS API V3 (gRPC)")
     print("=" * 60)
     print(f"Voice: anton")
-    print(f"Speed: 0.4")
+    print(f"speed: 1.0")
     print(f"Текст: {TEST_PHRASE}")
     print("=" * 60)
     print()

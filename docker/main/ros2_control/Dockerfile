@@ -9,6 +9,7 @@
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
 # Версия сборки для инвалидации кеша при изменении зависимостей
 ARG BUILD_VERSION=2025-10-12-rtabmap
+ARG VESC_NEXUS_SHA=unknown
 
 FROM ${BASE_IMAGE}
 
@@ -49,6 +50,10 @@ RUN apt-get update && apt-get install -y \
 # Рабочая директория
 WORKDIR /ws
 RUN mkdir -p src
+
+# Инвалидация кэша при изменении субмодуля vesc_nexus
+# Этот ARG используется для принудительной пересборки при обновлении субмодуля
+RUN echo "Building with vesc_nexus SHA: ${VESC_NEXUS_SHA}"
 
 # Копируем vesc_nexus пакеты (vesc_msgs и vesc_nexus) из их src/
 # vesc_nexus - это отдельный репозиторий, пакеты находятся в vesc_nexus/src/
