@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Headless Voice Assistant Launch для Vision Pi
-БЕЗ animation_player_node (он только на Main Pi)
+Включает animation_player_node для LED анимаций
 """
 
 from launch import LaunchDescription
@@ -61,9 +61,22 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
-    # NOTE: Animation Player Node is NOT included in headless launch
-    # It runs on Main Pi, not Vision Pi
-    # See: docker/main/config/animations/animation_player.launch.py
+    # === Animation Player Node ===
+    # Интегрирован с голосовым ассистентом для LED анимаций
+    animation_node = Node(
+        package='rob_box_animations',
+        executable='animation_player_node.py',
+        name='voice_animation_player',
+        namespace=namespace,
+        parameters=[{
+            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
+            'autostart_animation': 'idle_subtle',
+            'loop': True
+        }],
+        output='screen',
+        respawn=True,
+        respawn_delay=3.0
+    )
     
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     dialogue_node = Node(
@@ -135,6 +148,7 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
+        animation_node,
         dialogue_node,
         tts_node,
         stt_node,
