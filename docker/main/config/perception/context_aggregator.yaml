@@ -1,0 +1,25 @@
+# Context Aggregator Node Configuration
+# Параметры для агрегатора контекста восприятия
+
+/**:
+  ros__parameters:
+    # Timezone configuration - Default: Moscow (MSK, UTC+3)
+    # Часовой пояс для времени - По умолчанию: Москва (МСК, UTC+3)
+    # Examples: 'Europe/Moscow', 'America/New_York', 'Asia/Tokyo', 'UTC'
+    timezone: 'Europe/Moscow'
+
+    # Publishing rate for perception events (Hz)
+    # Частота публикации событий восприятия (Гц)
+    publish_rate: 2.0
+
+    # Memory window for recent events (seconds)
+    # Окно памяти для недавних событий (секунды)
+    memory_window: 60
+
+    # Summarization threshold (number of events before auto-summarize)
+    # Порог суммаризации (количество событий до авто-суммаризации)
+    summarization_threshold: 50
+
+    # Enable automatic summarization via DeepSeek API
+    # Включить автоматическую суммаризацию через DeepSeek API
+    enable_summarization: true

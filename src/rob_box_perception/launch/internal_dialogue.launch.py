@@ -11,13 +11,35 @@ internal_dialogue.launch.py - Запуск Internal Dialogue Agent v2.0
 
 Поток данных:
   [Sensors] → context_aggregator → [PerceptionEvent] → reflection_node → [Speech]
+
+Параметры загружаются из config файла (если доступен)
 """
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
+import os
 
 
 def generate_launch_description():
+    # Config file path (для локальной разработки может не существовать)
+    # Path to config file (may not exist for local development)
+    config_file = '/config/perception/context_aggregator.yaml'
+
+    # Check if config file exists, otherwise use inline parameters
+    # Проверяем существование config файла, иначе используем параметры по умолчанию
+    use_config_file = os.path.exists(config_file)
+
+    if use_config_file:
+        # Load from config file
+        context_aggregator_params = [config_file]
+    else:
+        # Use inline parameters (fallback for local development)
+        context_aggregator_params = [{
+            'publish_rate': 2.0,  # 2 Hz - частота событий
+            'memory_window': 60,  # 60 сек
+            'timezone': 'Europe/Moscow',  # Default: Moscow (MSK)
+        }]
+
     return LaunchDescription([
         # Vision Stub - заглушка для камеры
         Node(
@@ -32,19 +54,17 @@ def generate_launch_description():
                 ('/oak/rgb/image_raw/compressed', '/oak/rgb/image_raw/compressed'),
             ]
         ),
-        
+
         # Context Aggregator - сборщик контекста (MPC lite)
+        # Параметры загружаются из config файла (если доступен)
         Node(
             package='rob_box_perception',
             executable='context_aggregator',
             name='context_aggregator',
             output='screen',
-            parameters=[{
-                'publish_rate': 2.0,  # 2 Hz - частота событий
-                'memory_window': 60,  # 60 сек
-            }],
+            parameters=context_aggregator_params,
         ),
-        
+
         # Reflection Node v2.0 - внутренний диалог (event-driven)
         Node(
             package='rob_box_perception',
@@ -59,4 +79,3 @@ def generate_launch_description():
             }],
         ),
     ])
-

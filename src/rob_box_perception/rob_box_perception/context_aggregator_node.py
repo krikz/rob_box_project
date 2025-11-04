@@ -66,11 +66,13 @@ class ContextAggregatorNode(Node):
         self.declare_parameter('memory_window', 60)  # секунды
         self.declare_parameter('summarization_threshold', 50)  # событий для суммаризации
         self.declare_parameter('enable_summarization', True)  # включить авто-суммаризацию
+        self.declare_parameter('timezone', 'Europe/Moscow')  # Часовой пояс для времени
         
         self.publish_rate = self.get_parameter('publish_rate').value
         self.memory_window = self.get_parameter('memory_window').value
         self.summarization_threshold = self.get_parameter('summarization_threshold').value
         self.enable_summarization = self.get_parameter('enable_summarization').value
+        self.timezone = self.get_parameter('timezone').value
         
         # ============ Текущее состояние (кэш) ============
         self.current_vision: Optional[Dict] = None
@@ -107,10 +109,11 @@ class ContextAggregatorNode(Node):
         # Internet connectivity monitor
         self.internet_monitor = InternetConnectivityMonitor(self, check_interval=30.0)
         
-        # Time awareness provider
-        self.time_provider = TimeAwarenessProvider(timezone='Europe/Moscow')
+        # Time awareness provider (using timezone parameter)
+        self.time_provider = TimeAwarenessProvider(timezone=self.timezone)
         
         self.get_logger().info('✅ Monitoring components initialized')
+        self.get_logger().info(f'   Timezone: {self.timezone}')
         
         # ============ Подписки ============
         
