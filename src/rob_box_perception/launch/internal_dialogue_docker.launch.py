@@ -7,7 +7,7 @@ internal_dialogue_docker.launch.py - Запуск для Docker контейне
 - reflection_node v2.0 - размышляет на основе событий
 
 Без vision_stub (будет отдельный контейнер с AI HAT)
-Параметры из environment variables
+Параметры из config файла с возможностью override через environment variables
 """
 
 from launch import LaunchDescription
@@ -21,12 +21,21 @@ def generate_launch_description():
     enable_speech = os.getenv('ENABLE_SPEECH', 'true').lower() == 'true'
     system_prompt_file = os.getenv('SYSTEM_PROMPT_FILE', 'reflection_prompt.txt')
     urgent_response_timeout = float(os.getenv('URGENT_RESPONSE_TIMEOUT', '2.0'))
-    
-    # Context Aggregator параметры
-    context_publish_rate = float(os.getenv('CONTEXT_PUBLISH_RATE', '2.0'))
-    memory_window = int(os.getenv('MEMORY_WINDOW', '60'))
-    timezone = os.getenv('TIMEZONE', 'Europe/Moscow')  # Default: Moscow (MSK)
-    
+
+    # Context Aggregator config file path
+    # Config файл находится в /config/perception/context_aggregator.yaml (монтирован через docker)
+    config_file = '/config/perception/context_aggregator.yaml'
+
+    # Environment variable overrides для context_aggregator
+    # Если установлены переменные окружения, они переопределят значения из config файла
+    env_overrides = {}
+    if 'CONTEXT_PUBLISH_RATE' in os.environ:
+        env_overrides['publish_rate'] = float(os.environ['CONTEXT_PUBLISH_RATE'])
+    if 'MEMORY_WINDOW' in os.environ:
+        env_overrides['memory_window'] = int(os.environ['MEMORY_WINDOW'])
+    if 'TIMEZONE' in os.environ:
+        env_overrides['timezone'] = os.environ['TIMEZONE']
+
     return LaunchDescription([
         # Health Monitor - мониторинг здоровья системы
         Node(
@@ -42,20 +51,20 @@ def generate_launch_description():
                 'enable_sounds': True,  # Звуки при изменении статуса
             }],
         ),
-        
+
         # Context Aggregator - сборщик контекста (MPC lite)
+        # Параметры загружаются из config файла, но могут быть переопределены через env vars
         Node(
             package='rob_box_perception',
             executable='context_aggregator',
             name='context_aggregator',
             output='screen',
-            parameters=[{
-                'publish_rate': context_publish_rate,
-                'memory_window': memory_window,
-                'timezone': timezone,
-            }],
+            parameters=[
+                config_file,  # Загрузка из config файла
+                env_overrides  # Override из environment variables
+            ],
         ),
-        
+
         # Reflection Node v2.0 - внутренний диалог (event-driven)
         Node(
             package='rob_box_perception',
@@ -69,7 +78,7 @@ def generate_launch_description():
                 'urgent_response_timeout': urgent_response_timeout,
             }],
         ),
-        
+
         # Startup Greeting - приветствие при загрузке
         Node(
             package='rob_box_perception',
@@ -82,22 +91,21 @@ def generate_launch_description():
                 'enable_greeting': True,
             }],
         ),
-        
-        # Vision Stub - заглушка для обработки камеры (до AI HAT)
-    Node(
-        package='rob_box_perception',
-        executable='vision_stub_node',
-        name='vision_stub',
-        output='screen',
-        parameters=[{
-            'publish_rate': 1.0,  # Hz
-            'context_topic': '/perception/vision_context',
-            'camera_topics': [
-                '/camera/rgb/image_raw/compressed',  # OAK-D front camera
-                # '/camera/stereo/image_raw/compressed',  # Раскомментировать для стерео
-                # '/camera_up/rgb/image_raw/compressed',  # Раскомментировать для верхней камеры
-            ],
-        }],
-    ),
-    ])
 
+        # Vision Stub - заглушка для обработки камеры (до AI HAT)
+        Node(
+            package='rob_box_perception',
+            executable='vision_stub_node',
+            name='vision_stub',
+            output='screen',
+            parameters=[{
+                'publish_rate': 1.0,  # Hz
+                'context_topic': '/perception/vision_context',
+                'camera_topics': [
+                    '/camera/rgb/image_raw/compressed',  # OAK-D front camera
+                    # '/camera/stereo/image_raw/compressed',  # Раскомментировать для стерео
+                    # '/camera_up/rgb/image_raw/compressed',  # Раскомментировать для верхней камеры
+                ],
+            }],
+        ),
+    ])
