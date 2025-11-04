@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Headless Voice Assistant Launch для Vision Pi
-БЕЗ animation_player_node (он только на Main Pi)
+Включает animation_player_node для LED анимаций
 """
 
 from launch import LaunchDescription
@@ -62,15 +62,16 @@ def generate_launch_description():
     )
     
     # === Animation Player Node ===
+    # Интегрирован с голосовым ассистентом для LED анимаций
     animation_node = Node(
         package='rob_box_animations',
         executable='animation_player_node.py',
         name='voice_animation_player',
         namespace=namespace,
         parameters=[{
-            'animations_path': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'default_animation': 'idle_subtle',
-            'autoplay': True
+            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
+            'autostart_animation': 'idle_subtle',
+            'loop': True
         }],
         output='screen',
         respawn=True,
