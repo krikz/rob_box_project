@@ -49,6 +49,7 @@ class DialogueNode(Node):
         self.declare_parameter("system_prompt_file", "master_prompt_simple.txt")
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
+        self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
 
         api_key = self.get_parameter("api_key").value
         if not api_key:
@@ -148,6 +149,15 @@ class DialogueNode(Node):
         # Dialogue session tracking (для синхронизации с TTS)
         self.current_dialogue_id = None
 
+        # ============ Query Queue System ============
+        # Очередь накопленных запросов для пакетной обработки
+        self.pending_queries = []  # List of user messages
+        self.query_accumulation_timeout = self.get_parameter("query_accumulation_timeout").value
+        self.last_query_time = None  # Timestamp последнего запроса
+        self.accumulation_timer = None  # Таймер для проверки накопления
+        self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
+        self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
+
         # ============ RTABMap Control (Mapping Commands) ============
         # Service clients для управления картографией
         self.reset_memory_client = self.create_client(Empty, "/rtabmap/reset_memory")
@@ -199,6 +209,7 @@ class DialogueNode(Node):
         self.get_logger().info(f"  Temperature: {self.temperature}")
         self.get_logger().info(f"  Max tokens: {self.max_tokens}")
         self.get_logger().info(f"  Dialogue timeout: {self.dialogue_timeout}s")
+        self.get_logger().info(f"  Query accumulation timeout: {self.query_accumulation_timeout}s")
 
     def _load_system_prompt(self) -> str:
         """Загрузить упрощённый system prompt"""
@@ -266,19 +277,34 @@ class DialogueNode(Node):
             except Exception as e:
                 self.get_logger().error(f"Ошибка прерывания stream: {e}")
 
-        # 2. Отправить STOP в TTS
+        # 2. Очистить очередь запросов
+        if self.pending_queries:
+            cleared_count = len(self.pending_queries)
+            self.pending_queries.clear()
+            self.get_logger().info(f"  → Очищено {cleared_count} запросов из очереди")
+        
+        # 3. Остановить таймер накопления
+        if self.accumulation_timer is not None:
+            self.accumulation_timer.cancel()
+            self.accumulation_timer = None
+            self.get_logger().info("  → Таймер накопления остановлен")
+        
+        # 4. Сбросить флаги обработки
+        self.llm_processing = False
+
+        # 5. Отправить STOP в TTS
         stop_msg = String()
         stop_msg.data = "STOP"
         self.tts_control_pub.publish(stop_msg)
         self.get_logger().info("  → STOP отправлен в TTS")
 
-        # 3. Перейти в SILENCED на 5 минут
+        # 6. Перейти в SILENCED на 5 минут
         self.state = "SILENCED"
         self.silence_until = time.time() + 300  # 5 минут
         self._publish_state()
         self.get_logger().info("  → State: SILENCED (5 минут)")
 
-        # 4. Короткое подтверждение (через TTS напрямую)
+        # 7. Короткое подтверждение (через TTS напрямую)
         self._speak_simple("Хорошо, молчу")
 
     def _speak_simple(self, text: str):
@@ -509,16 +535,86 @@ class DialogueNode(Node):
             return
 
         # ============ ПРИОРИТЕТ 9: Обычный диалог с LLM ============
-        # Добавляем в историю
-        self.conversation_history.append({"role": "user", "content": user_message})
+        # Добавляем запрос в очередь для накопления
+        self.pending_queries.append(user_message)
+        self.last_query_time = time.time()
+        
+        self.get_logger().info(f"📥 Запрос добавлен в очередь (всего: {len(self.pending_queries)})")
+        
+        # Если LLM уже обрабатывает запрос - просто добавляем в очередь и ждём
+        if self.llm_processing:
+            self.get_logger().info("⏳ LLM занят, запрос будет обработан после завершения текущего")
+            return
+        
+        # Если это первый запрос или прошло достаточно времени - начинаем накопление
+        if self.accumulation_timer is None:
+            # Создаём таймер для проверки когда можно обработать накопленные запросы
+            self.accumulation_timer = self.create_timer(
+                self.query_accumulation_timeout,
+                self._check_and_process_queue
+            )
+            self.get_logger().info(f"⏰ Запущен таймер накопления ({self.query_accumulation_timeout}s)")
+        
+        # Триггер звука "thinking" только при первом запросе
+        if len(self.pending_queries) == 1:
+            self._trigger_sound("thinking")
 
+    def _check_and_process_queue(self):
+        """Проверить очередь и обработать накопленные запросы"""
+        # Останавливаем таймер
+        if self.accumulation_timer is not None:
+            self.accumulation_timer.cancel()
+            self.accumulation_timer = None
+        
+        # Если очередь пуста - ничего не делаем
+        if not self.pending_queries:
+            self.get_logger().debug("📭 Очередь пуста, нечего обрабатывать")
+            return
+        
+        # Проверяем: прошло ли достаточно времени с последнего запроса
+        if self.last_query_time:
+            current_time = time.time()
+            time_since_last = current_time - self.last_query_time
+            if time_since_last < self.query_accumulation_timeout:
+                # Ещё рано, перезапускаем таймер
+                remaining = self.query_accumulation_timeout - time_since_last
+                self.accumulation_timer = self.create_timer(remaining, self._check_and_process_queue)
+                self.get_logger().debug(f"⏰ Ещё рано, жду {remaining:.1f}s")
+                return
+        
+        # Забираем все накопленные запросы
+        queries_to_process = self.pending_queries.copy()
+        self.pending_queries.clear()
+        
+        query_count = len(queries_to_process)
+        self.get_logger().info(f"🔄 Обрабатываю {query_count} накопленных запросов")
+        
+        # Объединяем запросы в один контекст
+        if query_count == 1:
+            # Один запрос - обрабатываем как обычно
+            combined_message = queries_to_process[0]
+            self.get_logger().info(f"💬 Один запрос: {combined_message}")
+        else:
+            # Несколько запросов - объединяем с указанием порядка
+            combined_parts = [
+                f"У меня несколько вопросов ({query_count} штук), отвечай на них все сразу по порядку:"
+            ]
+            for i, query in enumerate(queries_to_process, 1):
+                combined_parts.append(f"{i}. {query}")
+            
+            combined_message = "\n".join(combined_parts)
+            self.get_logger().info(f"💬 Пакетный запрос:\n{combined_message}")
+        
+        # Добавляем в историю диалога
+        self.conversation_history.append({"role": "user", "content": combined_message})
+        
         # Ограничиваем историю (последние 10 сообщений)
         if len(self.conversation_history) > 10:
             self.conversation_history = self.conversation_history[-10:]
-
-        # Триггер звука "thinking" (Phase 4)
-        self._trigger_sound("thinking")
-
+        
+        # Устанавливаем флаг обработки
+        self.llm_processing = True
+        
         # Запрос к DeepSeek (streaming)
         self._ask_deepseek_streaming()
 
@@ -667,13 +763,27 @@ class DialogueNode(Node):
 
             self.get_logger().info(f"✅ DeepSeek ответил ({chunk_count} chunks)")
 
-            # Сбрасываем флаг после успешного ответа
+            # Сбрасываем флаги после успешного ответа
             self.dialogue_in_progress = False
+            self.llm_processing = False
+            
+            # Проверяем очередь - есть ли ещё накопленные запросы
+            if self.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)}), обрабатываю...")
+                # Запускаем обработку сразу (без задержки)
+                self._check_and_process_queue()
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка DeepSeek: {e}")
-            # Сбрасываем флаг даже при ошибке
+            # Сбрасываем флаги даже при ошибке
             self.dialogue_in_progress = False
+            self.llm_processing = False
+            
+            # Проверяем очередь даже при ошибке
+            if self.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть запросы ({len(self.pending_queries)}), пробую снова...")
+                # Небольшая задержка перед повтором при ошибке
+                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
 
     def _trigger_sound(self, sound_name: str):
         """Триггер звукового эффекта (Phase 4)"""

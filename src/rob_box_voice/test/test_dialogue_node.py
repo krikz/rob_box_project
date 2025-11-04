@@ -123,6 +123,43 @@ class TestDialogueNode(unittest.TestCase):
         # self.assertLessEqual(len(context), 20)  # Max 20 messages
         pass
 
+    def test_query_queue_accumulation(self):
+        """Test that multiple queries are accumulated in queue"""
+        # TODO: Implement query queue test
+        # Simulate multiple rapid queries
+        # self.node.stt_callback(String(data="Привет"))
+        # self.node.stt_callback(String(data="Как дела?"))
+        # self.node.stt_callback(String(data="Что ты умеешь?"))
+        # self.assertEqual(len(self.node.pending_queries), 3)
+        pass
+
+    def test_query_queue_batch_processing(self):
+        """Test that accumulated queries are processed as a batch"""
+        # TODO: Implement batch processing test
+        # Add multiple queries to queue
+        # self.node.pending_queries = ["Вопрос 1", "Вопрос 2", "Вопрос 3"]
+        # self.node._check_and_process_queue()
+        # Verify that combined message contains all queries
+        # self.assertIn("несколько вопросов", self.node.conversation_history[-1]['content'])
+        pass
+
+    def test_query_queue_cleared_on_silence(self):
+        """Test that queue is cleared when silence command is received"""
+        # TODO: Implement queue clearing test
+        # self.node.pending_queries = ["Вопрос 1", "Вопрос 2"]
+        # self.node._handle_silence_command()
+        # self.assertEqual(len(self.node.pending_queries), 0)
+        pass
+
+    def test_llm_processing_flag(self):
+        """Test that llm_processing flag prevents concurrent processing"""
+        # TODO: Implement concurrent processing test
+        # self.node.llm_processing = True
+        # self.node.stt_callback(String(data="Новый вопрос"))
+        # Verify query is added to queue but not processed immediately
+        # self.assertEqual(len(self.node.pending_queries), 1)
+        pass
+
 
 if __name__ == '__main__':
     unittest.main()
