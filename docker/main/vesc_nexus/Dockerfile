@@ -3,6 +3,7 @@
 
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
+ARG VESC_NEXUS_SHA=unknown
 
 FROM ${BASE_IMAGE}
 
@@ -40,6 +41,10 @@ RUN mkdir -p src
 # ============================================================
 # ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
 # ============================================================
+
+# Инвалидация кэша при изменении субмодуля vesc_nexus
+# Этот ARG используется для принудительной пересборки при обновлении субмодуля
+RUN echo "Building with vesc_nexus SHA: ${VESC_NEXUS_SHA}"
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 COPY src/vesc_nexus/src/vesc_msgs/package.xml /ws/src/vesc_msgs/

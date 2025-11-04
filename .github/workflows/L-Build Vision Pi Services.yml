@@ -93,6 +93,9 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
+          # Получаем SHA субмодуля ros2leds для инвалидации кэша
+          ROS2LEDS_SHA=$(git submodule status src/ros2leds | awk '{print $1}' | sed 's/^[+-]//')
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/${SERVICE}/Dockerfile \
@@ -102,6 +105,7 @@ jobs:
             --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="ROS2LEDS_SHA=${ROS2LEDS_SHA}" \
             .
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
