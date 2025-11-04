@@ -150,6 +150,9 @@
       # Тайминги
       response_timeout_sec: 30.0
       stream_chunk_timeout_sec: 5.0
+      
+      # Накопление запросов (Query Queue System)
+      query_accumulation_timeout: 2.5  # секунд для накопления запросов перед обработкой
 
     # ===== Sound Node (Аудио эффекты) =====
     sound_node:
