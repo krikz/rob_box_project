@@ -164,6 +164,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
+            ROS2LEDS_SHA=${{ hashFiles('src/ros2leds/**') }}
 
   # Ceiling Camera (USB UVC)
   build-ceiling-camera:
