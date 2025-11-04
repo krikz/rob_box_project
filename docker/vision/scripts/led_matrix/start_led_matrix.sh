@@ -120,9 +120,8 @@ echo ""
 echo -e "${GREEN}🚀 Starting LED Matrix System...${NC}"
 echo ""
 
-if [ -f "$COMPOSITOR_CONFIG" ]; then
-    exec ros2 launch led_matrix_compositor led_matrix_compositor_launch.py
-else
-    # Если конфига нет, запускаем с дефолтными параметрами
-    exec ros2 run led_matrix_compositor led_matrix_compositor
-fi
+# Use the launch file from led_matrix_driver package which launches both driver and compositor
+# The compositor does not use YAML config - it has hardcoded configuration
+# If you need to change compositor config, edit the source code:
+# src/ros2leds/led_matrix_compositor/led_matrix_compositor/led_matrix_compositor.py
+exec ros2 launch led_matrix_driver led_matrix_system_launch.py
