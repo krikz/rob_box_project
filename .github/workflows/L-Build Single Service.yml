@@ -347,6 +347,21 @@ jobs:
             BUILD_ARGS="--build-arg=BASE_IMAGE=${{ needs.prepare.outputs.base_image }}"
           fi
 
+          # Добавляем SHA субмодулей для инвалидации кэша Docker
+          # ros2-control использует субмодуль vesc_nexus
+          if [ "${{ needs.prepare.outputs.service_name }}" = "ros2_control" ]; then
+            VESC_NEXUS_SHA=$(git submodule status src/vesc_nexus | awk '{print $1}' | sed 's/^[+-]//')
+            BUILD_ARGS="${BUILD_ARGS} --build-arg=VESC_NEXUS_SHA=${VESC_NEXUS_SHA}"
+            echo "  VESC_NEXUS_SHA: ${VESC_NEXUS_SHA}"
+          fi
+
+          # led_matrix использует субмодуль ros2leds
+          if [ "${{ needs.prepare.outputs.service_name }}" = "led_matrix" ]; then
+            ROS2LEDS_SHA=$(git submodule status src/ros2leds | awk '{print $1}' | sed 's/^[+-]//')
+            BUILD_ARGS="${BUILD_ARGS} --build-arg=ROS2LEDS_SHA=${ROS2LEDS_SHA}"
+            echo "  ROS2LEDS_SHA: ${ROS2LEDS_SHA}"
+          fi
+
           # Сборка образа
           docker buildx build \
             --platform linux/arm64 \
