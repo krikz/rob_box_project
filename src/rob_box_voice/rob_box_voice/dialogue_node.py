@@ -758,8 +758,7 @@ class DialogueNode(Node):
 
             self.get_logger().info(f"✅ DeepSeek ответил ({chunk_count} chunks)")
 
-            # Сбрасываем флаги после успешного ответа
-            self.dialogue_in_progress = False
+            # Сбрасываем флаг обработки LLM
             self.llm_processing = False
 
             # Проверяем очередь - есть ли ещё накопленные запросы
@@ -775,11 +774,14 @@ class DialogueNode(Node):
                     self.get_logger().info(
                         f"⏰ Запущен таймер накопления для оставшихся запросов ({self.query_accumulation_timeout}s)"
                     )
+                # Не сбрасываем dialogue_in_progress - ещё есть запросы в очереди
+            else:
+                # Очередь пуста - завершаем диалог
+                self.dialogue_in_progress = False
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка DeepSeek: {e}")
-            # Сбрасываем флаги даже при ошибке
-            self.dialogue_in_progress = False
+            # Сбрасываем флаг обработки LLM
             self.llm_processing = False
 
             # Проверяем очередь даже при ошибке
@@ -795,6 +797,10 @@ class DialogueNode(Node):
                     self.accumulation_timer.cancel()
                 # Создаём новый таймер с задержкой для повтора
                 self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
+                # Не сбрасываем dialogue_in_progress - ещё есть запросы для повтора
+            else:
+                # Очередь пуста - завершаем диалог даже при ошибке
+                self.dialogue_in_progress = False
 
     def _trigger_sound(self, sound_name: str):
         """Триггер звукового эффекта (Phase 4)"""
