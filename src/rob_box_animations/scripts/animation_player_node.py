@@ -39,13 +39,15 @@ class AnimationPlayerNode(Node):
         # Create player
         self.player = AnimationPlayer(self, animations_dir)
 
-        # Services
-        self.srv_load = self.create_service(
+        # Subscription for loading animations (instead of service)
+        self.load_subscription = self.create_subscription(
             String,
             '~/load_animation',
-            self.load_animation_callback
+            self.load_animation_callback,
+            10
         )
 
+        # Services
         self.srv_play = self.create_service(
             Trigger,
             '~/play',
@@ -89,22 +91,19 @@ class AnimationPlayerNode(Node):
             if self.player.load_animation(f'{autostart}.yaml'):
                 self.player.play()
 
-    def load_animation_callback(self, request, response):
-        """Load animation service callback"""
-        manifest_path = request.data
+    def load_animation_callback(self, msg):
+        """Load animation callback (subscription)"""
+        manifest_path = msg.data
 
         if not manifest_path.endswith('.yaml'):
             manifest_path += '.yaml'
 
         success = self.player.load_animation(manifest_path)
 
-        response.success = success
         if success:
-            response.message = f'Loaded animation: {manifest_path}'
+            self.get_logger().info(f'Loaded animation: {manifest_path}')
         else:
-            response.message = f'Failed to load animation: {manifest_path}'
-
-        return response
+            self.get_logger().error(f'Failed to load animation: {manifest_path}')
 
     def play_callback(self, request, response):
         """Play animation service callback"""
