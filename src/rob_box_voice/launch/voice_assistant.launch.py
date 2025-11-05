@@ -68,7 +68,7 @@ def generate_launch_description():
         namespace=namespace,
         parameters=[{
             'animations_path': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'default_animation': 'idle_subtle',
+            'default_animation': 'idle',
             'autoplay': True
         }],
         output='screen',

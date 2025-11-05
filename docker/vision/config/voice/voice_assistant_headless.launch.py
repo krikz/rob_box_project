@@ -70,7 +70,7 @@ def generate_launch_description():
         namespace=namespace,
         parameters=[{
             'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'autostart_animation': 'idle_subtle',
+            'autostart_animation': 'idle',
             'loop': True
         }],
         output='screen',
