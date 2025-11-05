@@ -41,44 +41,44 @@ led_matrix_compositor:
     # Логические группы (как приложения обращаются к панелям)
     logical_groups:
       # Отдельные матрицы на колёсах (управляются индивидуально)
-      - name: "wheel_front_left"
-        physical_indices: [0]       # Panel 0
-        arrangement: [1, 1]          # 1×1 панель
+      - name: wheel_front_left
+        physical_indices: [0] # Panel 0
+        arrangement: [1, 1] # 1×1 панель
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
-      - name: "wheel_front_right"
-        physical_indices: [1]       # Panel 1
+      - name: wheel_front_right
+        physical_indices: [1] # Panel 1
         arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
       # Главный дисплей: 5 панелей объединены горизонтально
-      - name: "main_display"
-        physical_indices: [2, 3, 4, 5, 6]  # Panels 2-6 (после закомментирования задних)
-        arrangement: [5, 1]                 # 5 панелей в ряд, 1 ряд
+      - name: main_display
+        physical_indices: [2, 3, 4, 5, 6] # Panels 2-6 (после закомментирования задних)
+        arrangement: [5, 1] # 5 панелей в ряд, 1 ряд
         flip_x: false
-        flip_y: true                        # Перевернуть по Y для правильной ориентации
-        snake_arrangement: false            # Панели соединены без змейки
+        flip_y: true # Перевернуть по Y для правильной ориентации
+        snake_arrangement: false # Панели соединены без змейки
 
       # Передние колёса как группа (для синхронных эффектов)
-      - name: "wheels_front"
-        physical_indices: [0, 1]            # Panels 0-1
-        arrangement: [2, 1]                 # 2 панели в ряд
+      - name: wheels_front
+        physical_indices: [0, 1] # Panels 0-1
+        arrangement: [2, 1] # 2 панели в ряд
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
       # Все передние колёса (только активные панели)
-      - name: "wheels_all"
-        physical_indices: [0, 1]           # Только передние панели 0-1
-        arrangement: [2, 1]                 # 2 панели в ряд
+      - name: wheels_all
+        physical_indices: [0, 1] # Только передние панели 0-1
+        arrangement: [2, 1] # 2 панели в ряд
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
     # Топики
-    output_topic: 'led_matrix/data'        # Выход в драйвер
-    input_topic: 'panel_image'             # Вход от приложений (sensor_msgs/Image)
+    output_topic: led_matrix/data # Выход в драйвер
+    input_topic: panel_image # Вход от приложений (sensor_msgs/Image)
