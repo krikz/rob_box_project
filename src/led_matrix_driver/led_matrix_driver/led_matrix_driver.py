@@ -21,7 +21,7 @@ class LEDMatrixSimple(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('num_leds', 125),
+                ('num_leds', 253),
                 ('spi_speed_khz', 1300),
                 ('spi_device', '/dev/spidev0.0'),
                 ('input_topic', 'led_matrix/data')

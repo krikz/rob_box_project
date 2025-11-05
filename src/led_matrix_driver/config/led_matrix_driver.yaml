@@ -1,7 +1,7 @@
 led_matrix_driver:
   ros__parameters:
     # Общее количество светодиодов в цепочке
-    num_leds: 125
+    num_leds: 253
     # Скорость SPI в кГц
     spi_speed_khz: 1300
     # SPI устройство
