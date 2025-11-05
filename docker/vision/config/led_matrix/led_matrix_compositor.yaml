@@ -14,7 +14,7 @@ led_matrix_compositor:
       # Передняя левая фара 8×8
       - width: 8
         height: 8
-        snake_connection: true  # Змейка внутри панели
+        snake_connection: true
 
       # Передняя правая фара 8×8
       - width: 8
