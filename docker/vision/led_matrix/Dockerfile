@@ -52,8 +52,11 @@ RUN mkdir -p src
 # ============================================================
 
 # Инвалидация кэша при изменении субмодуля ros2leds
-# Этот ARG используется для принудительной пересборки при обновлении субмодуля
-RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}"
+# КРИТИЧНО: Записываем SHA в файл для создания зависимости слоя!
+# Docker инвалидирует кэш когда ROS2LEDS_SHA изменится
+RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}" && \
+    echo "${ROS2LEDS_SHA}" > /tmp/ros2leds_build_sha && \
+    echo "Cache breaker created: $(cat /tmp/ros2leds_build_sha)"
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
