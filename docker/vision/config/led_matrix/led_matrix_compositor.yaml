@@ -21,16 +21,6 @@ led_matrix_compositor:
         height: 8
         snake_connection: true
 
-      # Задняя левая фара 8×8
-      #- width: 8
-      #  height: 8
-      #  snake_connection: true
-
-      # Задняя правая фара 8×8
-      #- width: 8
-      #  height: 8
-      #  snake_connection: true
-
       # Main display: 5 панелей 5×5 соединенных в линию (5×25)
       - width: 5
         height: 5
@@ -65,20 +55,6 @@ led_matrix_compositor:
         flip_y: false
         snake_arrangement: false
 
-      #- name: "wheel_rear_left"
-      #  physical_indices: [2]       # Panel 2
-      #  arrangement: [1, 1]
-      #  flip_x: false
-      #  flip_y: false
-      #  snake_arrangement: false
-
-      #- name: "wheel_rear_right"
-      #  physical_indices: [3]       # Panel 3
-      #  arrangement: [1, 1]
-      #  flip_x: false
-      #  flip_y: false
-      #  snake_arrangement: false
-
       # Главный дисплей: 5 панелей объединены горизонтально
       - name: "main_display"
         physical_indices: [2, 3, 4, 5, 6]  # Panels 2-6 (после закомментирования задних)
@@ -94,14 +70,6 @@ led_matrix_compositor:
         flip_x: false
         flip_y: false
         snake_arrangement: false
-
-      # Задние колёса как группа
-      #- name: "wheels_rear"
-      #  physical_indices: [2, 3]            # Panels 2-3
-      #  arrangement: [2, 1]
-      #  flip_x: false
-      #  flip_y: false
-      #  snake_arrangement: false
 
       # Все передние колёса (только активные панели)
       - name: "wheels_all"
