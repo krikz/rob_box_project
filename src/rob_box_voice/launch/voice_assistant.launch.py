@@ -67,9 +67,9 @@ def generate_launch_description():
         name='voice_animation_player',
         namespace=namespace,
         parameters=[{
-            'animations_path': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'default_animation': 'idle',
-            'autoplay': True
+            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
+            'autostart_animation': 'idle',
+            'loop': True
         }],
         output='screen',
         respawn=True,
