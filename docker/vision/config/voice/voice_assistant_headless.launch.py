@@ -78,6 +78,24 @@ def generate_launch_description():
         respawn_delay=3.0
     )
     
+    # === Audio Reactive Animation Node ===
+    # Синхронизация LED рта с уровнем громкости аудио (как у Бендера!)
+    audio_reactive_node = Node(
+        package='rob_box_animations',
+        executable='audio_reactive_animation_node.py',
+        name='audio_reactive_animation',
+        namespace=namespace,
+        parameters=[{
+            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
+            'audio_device_index': -1,  # -1 = default loopback device
+            'sample_rate': 44100,
+            'chunk_size': 1024
+        }],
+        output='screen',
+        respawn=True,
+        respawn_delay=3.0
+    )
+    
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     dialogue_node = Node(
         package='rob_box_voice',
@@ -149,6 +167,7 @@ def generate_launch_description():
         audio_node,
         led_node,
         animation_node,
+        audio_reactive_node,
         dialogue_node,
         tts_node,
         stt_node,
