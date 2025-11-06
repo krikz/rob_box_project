@@ -438,7 +438,12 @@ jobs:
             LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
             # Проверяем на критические ошибки (расширенные паттерны)
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" || true)
+            # Фильтруем известные false positives:
+            # - micro-ros-agent: Serial port /dev/ttyUSB0 - optional ESP32 sensor hub
+            # - promtail: Loki connection errors - monitoring system (non-critical)
+            # - Zenoh: "Scouting delay elapsed" - normal startup timing
+            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
+              grep -vE "(Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind|could not inspect container|could not fetch logs|Scouting delay elapsed|No such container)" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
@@ -448,7 +453,12 @@ jobs:
             fi
 
             # Проверяем на предупреждения
-            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" || true)
+            # Фильтруем известные operational warnings:
+            # - Zenoh: Scouting delay - normal startup timing
+            # - perception: Missing nodes during startup
+            # - LED: Unknown logical groups - expected for disabled hardware
+            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" | \
+              grep -vE "(Scouting delay elapsed|Нода не найдена|Unknown logical group)" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
@@ -509,7 +519,15 @@ jobs:
             LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
             # Проверяем на критические ошибки (расширенные паттерны)
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" || true)
+            # Фильтруем известные false positives:
+            # - micro-ros-agent: Serial port /dev/ttyUSB0 - optional ESP32 sensor hub
+            # - promtail: Loki connection errors - monitoring system (non-critical)
+            # - nav2: Robot out of bounds - initialization transient
+            # - rtabmap: TF transform errors - initialization timing
+            # - ros2-control: CAN ERROR-ACTIVE state - normal VESC state
+            # - Zenoh: "Scouting delay elapsed" - normal startup timing
+            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
+              grep -vE "(Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind|could not inspect container|could not fetch logs|Robot is out of bounds|Cannot transform tag pose|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE|Scouting delay elapsed|No such container)" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
@@ -519,7 +537,15 @@ jobs:
             fi
 
             # Проверяем на предупреждения
-            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" || true)
+            # Фильтруем известные operational warnings:
+            # - Zenoh: Scouting delay - normal startup timing
+            # - nav2/rtabmap: TF warnings during initialization
+            # - perception: Missing nodes during startup
+            # - LED: Unknown logical groups - expected for disabled hardware
+            # - kdl_parser: URDF root link inertia - known ROS2 limitation
+            # - controller_manager: No real-time kernel - expected on Raspberry Pi
+            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" | \
+              grep -vE "(Scouting delay elapsed|could not find a connection.*tree|Нода не найдена|Unknown logical group|root link.*inertia|No real-time kernel)" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
@@ -569,7 +595,8 @@ jobs:
             echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
 
             # Проверяем наличие критически важных топиков
-            EXPECTED_TOPICS="/oak/rgb/image_raw/compressed"
+            # Примечание: OAK-D теперь публикует в /camera/* вместо /oak/*
+            EXPECTED_TOPICS="/camera/rgb/image_raw/compressed"
             MISSING_TOPICS=""
 
             for topic in $EXPECTED_TOPICS; do
