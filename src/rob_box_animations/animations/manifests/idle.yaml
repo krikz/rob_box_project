@@ -78,24 +78,34 @@ panels:
       - image: "frames/idle/wheel_rr_glow_06.png"
         duration_ms: 500
 
-  # Main display - minimal closed
+  # Main display - running lights around mouth perimeter (12 frames)
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/idle/mouth_idle.png"
-        duration_ms: 3000
-      - image: "frames/idle/mouth_01.png"
-        duration_ms: 200
-      - image: "frames/idle/mouth_02.png"
-        duration_ms: 200
-      - image: "frames/idle/mouth_03.png"  # Open
-        duration_ms: 400
-      - image: "frames/idle/mouth_02.png"
-        duration_ms: 200
-      - image: "frames/idle/mouth_01.png"
-        duration_ms: 200
-      - image: "frames/idle/mouth_closed.png"
-        duration_ms: 800
+      - image: "frames/idle/mouth_idle_01.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_02.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_03.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_04.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_05.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_06.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_07.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_08.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_09.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_10.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_11.png"
+        duration_ms: 250
+      - image: "frames/idle/mouth_idle_12.png"
+        duration_ms: 250
 
 metadata:
   priority: "low"
