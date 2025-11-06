@@ -1345,34 +1345,30 @@ class FrameGenerator:
         for x in range(right_x - 1, center_x - 1, -1):  # Start after corner
             right_path.append((x, bottom_y))
         
-        # Combine paths into one full perimeter (left runs counterclockwise, right runs clockwise)
-        # This creates a continuous loop around the mouth
-        full_path = left_path + right_path
-        
         # Calculate trail length (number of lit LEDs in the trail)
         trail_length = 5
-        num_lights = 3  # Three running lights total around the perimeter
         
-        # Animate all 3 lights around the full perimeter
-        if len(full_path) > 0:
-            # Calculate spacing between lights (evenly distributed)
-            spacing = len(full_path) // num_lights
-            
-            for light_idx in range(num_lights):
-                # Offset each light by spacing
-                offset = light_idx * spacing
-                cycle_pos = (int((frame / num_frames) * len(full_path)) + offset) % len(full_path)
-                
-                for i in range(trail_length):
-                    pos_idx = (cycle_pos - i) % len(full_path)
-                    x, y = full_path[pos_idx]
-                    # Brightness decreases along trail
-                    brightness = 1.0 - (i / trail_length)
-                    color = tuple(int(c * brightness) for c in light_color)
-                    
-                    # If pixel already lit (from another light), use max brightness
-                    current = img[y, x]
-                    img[y, x] = tuple(max(current[j], color[j]) for j in range(3))
+        # Animate left half (counterclockwise)
+        if len(left_path) > 0:
+            left_cycle_pos = int((frame / num_frames) * len(left_path)) % len(left_path)
+            for i in range(trail_length):
+                pos_idx = (left_cycle_pos - i) % len(left_path)
+                x, y = left_path[pos_idx]
+                # Brightness decreases along trail
+                brightness = 1.0 - (i / trail_length)
+                color = tuple(int(c * brightness) for c in light_color)
+                img[y, x] = color
+        
+        # Animate right half (clockwise)
+        if len(right_path) > 0:
+            right_cycle_pos = int((frame / num_frames) * len(right_path)) % len(right_path)
+            for i in range(trail_length):
+                pos_idx = (right_cycle_pos - i) % len(right_path)
+                x, y = right_path[pos_idx]
+                # Brightness decreases along trail
+                brightness = 1.0 - (i / trail_length)
+                color = tuple(int(c * brightness) for c in light_color)
+                img[y, x] = color
         
         return img
     
