@@ -422,6 +422,18 @@ jobs:
           CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
 
+          # Define error exclusion patterns
+          # Common patterns (used on both Pi)
+          EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+          
+          # Vision Pi specific exclusions
+          EXCLUDE_VISION="$EXCLUDE_COMMON"
+          
+          # Warning exclusion patterns
+          EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+
           CRITICAL_COUNT=0
           WARNING_COUNT=0
 
@@ -442,8 +454,9 @@ jobs:
             # - micro-ros-agent: Serial port /dev/ttyUSB0 - optional ESP32 sensor hub
             # - promtail: Loki connection errors - monitoring system (non-critical)
             # - Zenoh: "Scouting delay elapsed" - normal startup timing
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
-              grep -vE "(Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind|could not inspect container|could not fetch logs|Scouting delay elapsed|No such container)" || true)
+            CRITICAL=$(echo "$LOGS" | \
+              grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
+              grep -vE "$EXCLUDE_VISION" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
@@ -457,8 +470,9 @@ jobs:
             # - Zenoh: Scouting delay - normal startup timing
             # - perception: Missing nodes during startup
             # - LED: Unknown logical groups - expected for disabled hardware
-            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" | \
-              grep -vE "(Scouting delay elapsed|Нода не найдена|Unknown logical group)" || true)
+            WARNINGS=$(echo "$LOGS" | \
+              grep -iE "(WARN|WARNING)" | \
+              grep -vE "$EXCLUDE_WARN_COMMON" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
@@ -503,6 +517,21 @@ jobs:
           CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
 
+          # Define error exclusion patterns
+          # Common patterns (used on both Pi)
+          EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+          
+          # Main Pi specific exclusions (includes common + additional patterns)
+          EXCLUDE_MAIN="$EXCLUDE_COMMON|Robot is out of bounds|Cannot transform tag pose"
+          EXCLUDE_MAIN="$EXCLUDE_MAIN|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE"
+          
+          # Warning exclusion patterns
+          EXCLUDE_WARN_MAIN="Scouting delay elapsed|could not find a connection.*tree"
+          EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|Нода не найдена|Unknown logical group"
+          EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
+
           CRITICAL_COUNT=0
           WARNING_COUNT=0
 
@@ -526,8 +555,9 @@ jobs:
             # - rtabmap: TF transform errors - initialization timing
             # - ros2-control: CAN ERROR-ACTIVE state - normal VESC state
             # - Zenoh: "Scouting delay elapsed" - normal startup timing
-            CRITICAL=$(echo "$LOGS" | grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
-              grep -vE "(Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind|could not inspect container|could not fetch logs|Robot is out of bounds|Cannot transform tag pose|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE|Scouting delay elapsed|No such container)" || true)
+            CRITICAL=$(echo "$LOGS" | \
+              grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
+              grep -vE "$EXCLUDE_MAIN" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"
@@ -544,8 +574,9 @@ jobs:
             # - LED: Unknown logical groups - expected for disabled hardware
             # - kdl_parser: URDF root link inertia - known ROS2 limitation
             # - controller_manager: No real-time kernel - expected on Raspberry Pi
-            WARNINGS=$(echo "$LOGS" | grep -iE "(WARN|WARNING)" | \
-              grep -vE "(Scouting delay elapsed|could not find a connection.*tree|Нода не найдена|Unknown logical group|root link.*inertia|No real-time kernel)" || true)
+            WARNINGS=$(echo "$LOGS" | \
+              grep -iE "(WARN|WARNING)" | \
+              grep -vE "$EXCLUDE_WARN_MAIN" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
               echo "  ⚠️  Warnings found in $container"
