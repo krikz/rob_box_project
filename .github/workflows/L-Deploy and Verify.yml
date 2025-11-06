@@ -524,7 +524,11 @@ jobs:
           EXCLUDE_MAIN="$EXCLUDE_COMMON|Robot is out of bounds|Cannot transform tag pose"
           EXCLUDE_MAIN="$EXCLUDE_MAIN|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE"
           
-          # Warning exclusion patterns (Main Pi inherits from common + adds specific patterns)
+          # Warning exclusion patterns
+          # Common warning patterns (used on both Pi)
+          EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+          
+          # Main Pi inherits from common + adds specific patterns
           EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_COMMON|could not find a connection.*tree"
           EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
 
