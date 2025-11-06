@@ -32,14 +32,24 @@ class SileroTTS:
         
         print("🔄 Загрузка Silero TTS v4...")
         self.device = torch.device('cpu')
-        self.model, _ = torch.hub.load(
-            repo_or_dir='snakers4/silero-models',
-            model='silero_tts',
-            language='ru',
-            speaker='v4_ru'
-        )
-        self.model.to(self.device)
-        print("✅ Silero TTS загружен\n")
+        
+        # Загружаем локальную модель из /models (предзагружена в Dockerfile)
+        model_path = "/models/silero_v4_ru.pt"
+        if os.path.exists(model_path):
+            print(f"📦 Загрузка Silero из локального файла: {model_path}")
+            self.model = torch.jit.load(model_path, map_location=self.device)
+            print("✅ Silero TTS загружен из локального файла\n")
+        else:
+            # Fallback на онлайн загрузку
+            print(f"⚠️ Локальная модель не найдена: {model_path}, загружаем из GitHub")
+            self.model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-models',
+                model='silero_tts',
+                language='ru',
+                speaker='v4_ru'
+            )
+            self.model.to(self.device)
+            print("✅ Silero TTS загружен из GitHub\n")
     
     def synthesize_and_play(self, text: str, speaker: str = 'aidar'):
         """
