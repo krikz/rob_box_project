@@ -176,6 +176,7 @@ class FrameGenerator:
         # Mouth with running lights animation (12 frames) with trail persistence
         previous_frame = None
         decay_factor = 0.7  # Trail persistence strength (0.0 = no persistence, 1.0 = full)
+        frames = []  # Store all frames for seamless loop
         
         for i in range(12):
             # Generate current frame
@@ -191,11 +192,20 @@ class FrameGenerator:
             else:
                 final_frame = current_frame
             
-            # Save the final frame
-            self._save_frame(final_frame, f"mouth_idle_{i+1:02d}.png", subdir)
+            # Store frame
+            frames.append(final_frame.copy())
             
             # Store for next iteration
             previous_frame = final_frame.copy()
+        
+        # Now regenerate first frame using last frame as previous (for seamless loop)
+        current_frame = self._create_mouth_running_lights(0, num_frames=12)
+        decayed_previous = (frames[-1] * decay_factor).astype(np.uint8)  # Use last frame
+        frames[0] = np.maximum(decayed_previous, current_frame)
+        
+        # Save all frames
+        for i, frame in enumerate(frames):
+            self._save_frame(frame, f"mouth_idle_{i+1:02d}.png", subdir)
     
     def generate_charging(self):
         """Generate charging animation frames"""
