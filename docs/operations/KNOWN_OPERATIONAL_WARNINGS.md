@@ -71,7 +71,7 @@ cd ~/rob_box_project/docker/vision
 
 ### 4. perception: Missing Nodes During Startup
 
-**Pattern:** `Нода не найдена: /oak_d_node`
+**Pattern:** `Нода не найдена: /oak_d_node` (Node not found: /oak_d_node)
 
 **Container:** `perception` (context_aggregator node)
 
@@ -246,6 +246,7 @@ CRITICAL=$(echo "$LOGS" | \
 
 **Warning exclusion (using `EXCLUDE_WARN_COMMON` variable):**
 ```bash
+# Нода не найдена = "Node not found" (Russian)
 EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
 
 # Filter warnings
@@ -273,6 +274,7 @@ CRITICAL=$(echo "$LOGS" | \
 
 **Warning exclusion (using `EXCLUDE_WARN_MAIN` variable):**
 ```bash
+# Нода не найдена = "Node not found" (Russian)
 EXCLUDE_WARN_MAIN="Scouting delay elapsed|could not find a connection.*tree"
 EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|Нода не найдена|Unknown logical group"
 EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
