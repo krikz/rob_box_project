@@ -274,8 +274,8 @@ CRITICAL=$(echo "$LOGS" | \
 
 **Warning exclusion (using `EXCLUDE_WARN_MAIN` variable):**
 ```bash
-# Нода не найдена = "Node not found" (Russian)
 # Main Pi inherits from common warning patterns
+# Нода не найдена = "Node not found" (Russian)
 EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
 
 EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_COMMON|could not find a connection.*tree"

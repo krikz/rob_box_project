@@ -423,6 +423,10 @@ jobs:
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
+          # NOTE: These patterns are redefined in each section (Vision Pi, Main Pi)
+          # because GitHub Actions workflow steps don't share shell variable scope.
+          # This is intentional and not a DRY violation.
+          
           # Common patterns (used on both Pi)
           EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
@@ -515,6 +519,10 @@ jobs:
             'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
+          # NOTE: These patterns are redefined here (same as Vision Pi section)
+          # because GitHub Actions workflow steps don't share shell variable scope.
+          # This is intentional and not a DRY violation.
+          
           # Common patterns (used on both Pi)
           EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
