@@ -173,10 +173,39 @@ class FrameGenerator:
                 self.create_solid_frame(self.HEADLIGHT_SIZE, color, 
                                       f"wheel_{suffix}_glow_{i+1:02d}.png", subdir)
         
-        # Mouth with running lights animation (12 frames)
+        # Mouth with running lights animation (12 frames) with trail persistence
+        previous_frame = None
+        decay_factor = 0.7  # Trail persistence strength (0.0 = no persistence, 1.0 = full)
+        frames = []  # Store all frames for seamless loop
+        
         for i in range(12):
-            img = self._create_mouth_running_lights(i, num_frames=12)
-            self._save_frame(img, f"mouth_idle_{i+1:02d}.png", subdir)
+            # Generate current frame
+            current_frame = self._create_mouth_running_lights(i, num_frames=12)
+            
+            # If we have a previous frame, blend it with decay
+            if previous_frame is not None:
+                # Apply decay to previous frame
+                decayed_previous = (previous_frame * decay_factor).astype(np.uint8)
+                
+                # Blend: take maximum of decayed previous and current frame (for brightness accumulation)
+                final_frame = np.maximum(decayed_previous, current_frame)
+            else:
+                final_frame = current_frame
+            
+            # Store frame
+            frames.append(final_frame.copy())
+            
+            # Store for next iteration
+            previous_frame = final_frame.copy()
+        
+        # Now regenerate first frame using last frame as previous (for seamless loop)
+        current_frame = self._create_mouth_running_lights(0, num_frames=12)
+        decayed_previous = (frames[-1] * decay_factor).astype(np.uint8)  # Use last frame
+        frames[0] = np.maximum(decayed_previous, current_frame)
+        
+        # Save all frames
+        for i, frame in enumerate(frames):
+            self._save_frame(frame, f"mouth_idle_{i+1:02d}.png", subdir)
     
     def generate_charging(self):
         """Generate charging animation frames"""
@@ -1347,6 +1376,29 @@ class FrameGenerator:
         
         # Calculate trail length (number of lit LEDs in the trail)
         trail_length = 5
+        center_y = height // 2  # Center line (y=2 for 5-pixel height)
+        
+        # Helper function to draw trail towards center
+        def draw_center_trail(x_pos, y_pos, base_brightness):
+            """Draw trail from current position towards center line"""
+            if y_pos == center_y:
+                return  # Already at center
+            
+            # Determine direction to center
+            direction = 1 if y_pos < center_y else -1
+            steps = abs(y_pos - center_y)
+            
+            # Draw trail pixels moving towards center
+            for step in range(1, steps + 1):
+                trail_y = y_pos + (direction * step)
+                # Brightness fades as we approach center
+                fade = 1.0 - (step / (steps + 1))
+                trail_brightness = base_brightness * fade * 0.6  # 0.6 = trail intensity multiplier
+                trail_color = tuple(int(c * trail_brightness) for c in light_color)
+                
+                # Blend with existing pixel (max value)
+                current = img[trail_y, x_pos]
+                img[trail_y, x_pos] = tuple(max(current[j], trail_color[j]) for j in range(3))
         
         # Animate left half (counterclockwise)
         if len(left_path) > 0:
@@ -1358,6 +1410,9 @@ class FrameGenerator:
                 brightness = 1.0 - (i / trail_length)
                 color = tuple(int(c * brightness) for c in light_color)
                 img[y, x] = color
+                
+                # Draw additional trail towards center
+                draw_center_trail(x, y, brightness)
         
         # Animate right half (clockwise)
         if len(right_path) > 0:
@@ -1369,6 +1424,9 @@ class FrameGenerator:
                 brightness = 1.0 - (i / trail_length)
                 color = tuple(int(c * brightness) for c in light_color)
                 img[y, x] = color
+                
+                # Draw additional trail towards center
+                draw_center_trail(x, y, brightness)
         
         return img
     
