@@ -280,7 +280,6 @@ EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown
 
 EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_COMMON|could not find a connection.*tree"
 EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
-EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
 
 # Filter warnings
 WARNINGS=$(echo "$LOGS" | \
