@@ -428,9 +428,6 @@ jobs:
           EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
           
-          # Vision Pi specific exclusions
-          EXCLUDE_VISION="$EXCLUDE_COMMON"
-          
           # Warning exclusion patterns
           EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
 
@@ -456,7 +453,7 @@ jobs:
             # - Zenoh: "Scouting delay elapsed" - normal startup timing
             CRITICAL=$(echo "$LOGS" | \
               grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
-              grep -vE "$EXCLUDE_VISION" || true)
+              grep -vE "$EXCLUDE_COMMON" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
               echo "  ❌ CRITICAL errors found in $container"

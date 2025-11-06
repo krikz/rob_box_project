@@ -227,24 +227,66 @@ These errors **ARE** deployment failures and should trigger alerts:
 
 ## 🔧 Workflow Integration
 
-The deployment workflow (`.github/workflows/L-Deploy and Verify.yml`) uses grep filters to exclude known issues:
+The deployment workflow (`.github/workflows/L-Deploy and Verify.yml`) uses grep filters with shell variables to exclude known issues.
 
-**Vision Pi filter:**
+### Vision Pi Log Filtering
+
+**Error exclusion (using `EXCLUDE_COMMON` variable):**
 ```bash
-grep -vE "(Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind|
-          could not inspect container|could not fetch logs|Scouting delay elapsed|
-          No such container|Нода не найдена|Unknown logical group)"
+# Common patterns (used on both Pi)
+EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
+EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
+EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+
+# Filter critical errors
+CRITICAL=$(echo "$LOGS" | \
+  grep -iE "(CRITICAL|FATAL|ERROR|...)" | \
+  grep -vE "$EXCLUDE_COMMON" || true)
 ```
 
-**Main Pi filter:**
+**Warning exclusion (using `EXCLUDE_WARN_COMMON` variable):**
 ```bash
-grep -vE "(Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind|
-          could not inspect container|could not fetch logs|Robot is out of bounds|
-          Cannot transform tag pose|Sensor origin.*out of map bounds|
-          CAN controller state: ERROR-ACTIVE|Scouting delay elapsed|No such container|
-          could not find a connection.*tree|Нода не найдена|Unknown logical group|
-          root link.*inertia|No real-time kernel)"
+EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+
+# Filter warnings
+WARNINGS=$(echo "$LOGS" | \
+  grep -iE "(WARN|WARNING)" | \
+  grep -vE "$EXCLUDE_WARN_COMMON" || true)
 ```
+
+### Main Pi Log Filtering
+
+**Error exclusion (using `EXCLUDE_MAIN` variable):**
+```bash
+# Common patterns
+EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|..."
+
+# Main Pi specific exclusions (includes common + additional patterns)
+EXCLUDE_MAIN="$EXCLUDE_COMMON|Robot is out of bounds|Cannot transform tag pose"
+EXCLUDE_MAIN="$EXCLUDE_MAIN|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE"
+
+# Filter critical errors
+CRITICAL=$(echo "$LOGS" | \
+  grep -iE "(CRITICAL|FATAL|ERROR|...)" | \
+  grep -vE "$EXCLUDE_MAIN" || true)
+```
+
+**Warning exclusion (using `EXCLUDE_WARN_MAIN` variable):**
+```bash
+EXCLUDE_WARN_MAIN="Scouting delay elapsed|could not find a connection.*tree"
+EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|Нода не найдена|Unknown logical group"
+EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
+
+# Filter warnings
+WARNINGS=$(echo "$LOGS" | \
+  grep -iE "(WARN|WARNING)" | \
+  grep -vE "$EXCLUDE_WARN_MAIN" || true)
+```
+
+### Benefits of Variable-Based Approach
+- **Maintainability:** Easy to add/remove patterns in one place
+- **Readability:** Clear separation of Vision Pi vs Main Pi patterns
+- **DRY principle:** Common patterns defined once and reused
 
 ---
 
