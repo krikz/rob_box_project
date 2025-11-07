@@ -52,7 +52,7 @@
       <state_interface name="velocity"/>
       <state_interface name="position"/>
       
-      <param name="can_id">124</param>
+      <param name="can_id">94</param>
       <param name="poles">30</param>
       <param name="min_erpm">100</param>
       <param name="wheel_radius">0.115</param>
@@ -86,7 +86,7 @@
       <state_interface name="velocity"/>
       <state_interface name="position"/>
       
-      <param name="can_id">94</param>
+      <param name="can_id">124</param>
       <param name="poles">30</param>
       <param name="min_erpm">100</param>
       <param name="wheel_radius">0.115</param>
