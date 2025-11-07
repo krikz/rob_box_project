@@ -37,7 +37,7 @@
       <!-- VESC Configuration -->
       <param name="can_id">49</param>              <!-- CAN ID в VESC Tool -->
       <param name="poles">30</param>               <!-- Количество полюсов мотора -->
-      <param name="min_erpm">100</param>           <!-- Минимальный ERPM для движения -->
+      <param name="min_erpm">24</param>           <!-- Минимальный ERPM для движения -->
       <param name="wheel_radius">0.115</param>     <!-- Радиус колеса (м) -->
     </joint>
 
@@ -54,7 +54,7 @@
       
       <param name="can_id">94</param>
       <param name="poles">30</param>
-      <param name="min_erpm">100</param>
+      <param name="min_erpm">24</param>
       <param name="wheel_radius">0.115</param>
     </joint>
 
@@ -71,7 +71,7 @@
       
       <param name="can_id">81</param>
       <param name="poles">30</param>
-      <param name="min_erpm">100</param>
+      <param name="min_erpm">24</param>
       <param name="wheel_radius">0.115</param>
     </joint>
 
@@ -88,7 +88,7 @@
       
       <param name="can_id">124</param>
       <param name="poles">30</param>
-      <param name="min_erpm">100</param>
+      <param name="min_erpm">24</param>
       <param name="wheel_radius">0.115</param>
     </joint>
   </ros2_control>
