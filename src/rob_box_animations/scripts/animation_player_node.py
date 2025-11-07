@@ -47,6 +47,23 @@ class AnimationPlayerNode(Node):
             10
         )
 
+        # Subscription for TTS state (auto-switch animations)
+        self.tts_state_subscription = self.create_subscription(
+            String,
+            '/voice/tts/state',
+            self.tts_state_callback,
+            10
+        )
+
+        # Track TTS state for animation switching
+        self.idle_animation = self.get_parameter('autostart_animation').value or 'idle'
+        self.talking_animation = 'talking'
+        self.is_robot_speaking = False
+
+        self.get_logger().info(f'✅ Subscribed to /voice/tts/state for automatic animation switching')
+        self.get_logger().info(f'   Idle animation: {self.idle_animation}')
+        self.get_logger().info(f'   Talking animation: {self.talking_animation}')
+
         # Services
         self.srv_play = self.create_service(
             Trigger,
@@ -104,6 +121,30 @@ class AnimationPlayerNode(Node):
             self.get_logger().info(f'Loaded animation: {manifest_path}')
         else:
             self.get_logger().error(f'Failed to load animation: {manifest_path}')
+
+    def tts_state_callback(self, msg):
+        """Handle TTS state changes - switch between idle and talking animations"""
+        state = msg.data
+
+        if state in ['synthesizing', 'playing']:
+            # Robot is speaking - switch to talking animation
+            if not self.is_robot_speaking:
+                self.get_logger().info('🗣️ Робот говорит - переключаюсь на talking анимацию')
+                self.is_robot_speaking = True
+                if self.player.load_animation(f'{self.talking_animation}.yaml'):
+                    self.player.play()
+                else:
+                    self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
+
+        elif state in ['ready', 'idle', 'stopped']:
+            # Robot stopped speaking - switch back to idle animation
+            if self.is_robot_speaking:
+                self.get_logger().info('🤐 Робот замолчал - возвращаюсь на idle анимацию')
+                self.is_robot_speaking = False
+                if self.player.load_animation(f'{self.idle_animation}.yaml'):
+                    self.player.play()
+                else:
+                    self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
 
     def play_callback(self, request, response):
         """Play animation service callback"""

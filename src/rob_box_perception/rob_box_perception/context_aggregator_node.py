@@ -189,6 +189,22 @@ class ContextAggregatorNode(Node):
             10
         )
         
+        # Command intents (от CommandNode - распознанные команды)
+        self.command_intent_sub = self.create_subscription(
+            String,
+            '/voice/command/intent',
+            self.on_command_intent,
+            10
+        )
+        
+        # Command feedback (от CommandNode - результаты выполнения)
+        self.command_feedback_sub = self.create_subscription(
+            String,
+            '/voice/command/feedback',
+            self.on_command_feedback,
+            10
+        )
+        
         # ============ Публикации ============
         
         if PerceptionEvent:
@@ -319,6 +335,22 @@ class ContextAggregatorNode(Node):
         """Получена речь пользователя (STT)"""
         text = msg.data.strip()
         if text:
+            # Проверка: это команда движения или диалог?
+            # Команды движения (вперед, назад, налево, направо, стой) НЕ добавляем в память
+            # Они обрабатываются CommandNode и не нужны для диалога
+            movement_keywords = [
+                'вперед', 'вперёд', 'назад', 'влево', 'вправо', 'налево', 'направо',
+                'поверни', 'повернись', 'разверн', 'двигайся', 'иди', 'поезжай', 'езжай',
+                'стой', 'стоп', 'остановись', 'останови'
+            ]
+            
+            is_movement_command = any(keyword in text.lower() for keyword in movement_keywords)
+            
+            if is_movement_command:
+                self.get_logger().debug(f'🎮 Команда движения (пропускаем): "{text}"')
+                # НЕ добавляем в память, НЕ транслируем в рефлексию
+                return
+            
             self.get_logger().info(f'👤 Пользователь: "{text}"')
             self.add_to_memory('user_speech', text, important=True)
             
@@ -345,6 +377,24 @@ class ContextAggregatorNode(Node):
         if text:
             self.get_logger().debug(f'🧠 Мысль: "{text[:50]}..."')
             self.add_to_memory('robot_thought', text, important=False)
+    
+    def on_command_intent(self, msg: String):
+        """Получен intent команды (от CommandNode)"""
+        # Формат: "navigate:0.85" или "stop:1.0"
+        parts = msg.data.split(':')
+        if len(parts) == 2:
+            intent, confidence = parts
+            self.get_logger().debug(f'🎮 Команда: {intent} (conf={confidence})')
+            # Добавляем в системные события (не важные для диалога)
+            self.add_to_memory('command', f'Команда: {intent}', important=False)
+    
+    def on_command_feedback(self, msg: String):
+        """Получен feedback от команды (от CommandNode)"""
+        feedback = msg.data.strip()
+        if feedback:
+            self.get_logger().debug(f'✅ Feedback: "{feedback}"')
+            # Добавляем как robot_response (чтобы reflection знал что робот делает)
+            self.add_to_memory('robot_response', feedback, important=False)
     
     # ============================================================
     # Память событий

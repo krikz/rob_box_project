@@ -183,9 +183,9 @@
 
       # Парсинг команд (список строк pattern|action|params через разделитель)
       command_patterns:
-        - "вперед|forward|move_forward|0.5|0.0"
-        - "назад|back|move_backward|0.5|0.0"
-        - "налево|left|turn_left|0.0|90.0"
-        - "направо|right|turn_right|0.0|90.0"
-        - "стоп|stop|stop|0.0|0.0"
-        - "домой|go home|return_home|0.0|0.0"
+        - "вперед|робот вперед|forward|move_forward|0.5|0.0"
+        - "назад|робот назад|back|move_backward|0.5|0.0"
+        - "налево|робот налево|left|turn_left|0.0|90.0"
+        - "направо|робот направо|right|turn_right|0.0|90.0"
+        - "стоп|робот стоп|stop|stop|0.0|0.0"
+        - "домой|робот домой|go home|return_home|0.0|0.0"

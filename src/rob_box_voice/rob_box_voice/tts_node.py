@@ -269,11 +269,20 @@ class TTSNode(Node):
         torch.set_grad_enabled(False)
 
         try:
-            self.silero_model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-models", model="silero_tts", language="ru", speaker="v4_ru"
-            )
-            self.silero_model.to(self.device)
-            self.get_logger().info("✅ Silero TTS загружен (ARM64 оптимизация)")
+            # Загружаем локальную модель из /models (предзагружена в Dockerfile)
+            model_path = "/models/silero_v4_ru.pt"
+            if os.path.exists(model_path):
+                self.get_logger().info(f"📦 Загрузка Silero из локального файла: {model_path}")
+                self.silero_model = torch.jit.load(model_path, map_location=self.device)
+                self.get_logger().info("✅ Silero TTS загружен из локального файла (ARM64 оптимизация)")
+            else:
+                # Fallback на онлайн загрузку если локальной модели нет
+                self.get_logger().warn(f"⚠️ Локальная модель не найдена: {model_path}, загружаем из GitHub")
+                self.silero_model, _ = torch.hub.load(
+                    repo_or_dir="snakers4/silero-models", model="silero_tts", language="ru", speaker="v4_ru"
+                )
+                self.silero_model.to(self.device)
+                self.get_logger().info("✅ Silero TTS загружен из GitHub (ARM64 оптимизация)")
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка загрузки Silero: {e}")
             self.silero_model = None

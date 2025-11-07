@@ -173,9 +173,39 @@ class FrameGenerator:
                 self.create_solid_frame(self.HEADLIGHT_SIZE, color, 
                                       f"wheel_{suffix}_glow_{i+1:02d}.png", subdir)
         
-        # Mouth closed (minimal)
-        self.create_solid_frame(self.DISPLAY_SIZE, self.BLACK, 
-                              "mouth_idle.png", subdir)
+        # Mouth with running lights animation (12 frames) with trail persistence
+        previous_frame = None
+        decay_factor = 0.7  # Trail persistence strength (0.0 = no persistence, 1.0 = full)
+        frames = []  # Store all frames for seamless loop
+        
+        for i in range(12):
+            # Generate current frame
+            current_frame = self._create_mouth_running_lights(i, num_frames=12)
+            
+            # If we have a previous frame, blend it with decay
+            if previous_frame is not None:
+                # Apply decay to previous frame
+                decayed_previous = (previous_frame * decay_factor).astype(np.uint8)
+                
+                # Blend: take maximum of decayed previous and current frame (for brightness accumulation)
+                final_frame = np.maximum(decayed_previous, current_frame)
+            else:
+                final_frame = current_frame
+            
+            # Store frame
+            frames.append(final_frame.copy())
+            
+            # Store for next iteration
+            previous_frame = final_frame.copy()
+        
+        # Now regenerate first frame using last frame as previous (for seamless loop)
+        current_frame = self._create_mouth_running_lights(0, num_frames=12)
+        decayed_previous = (frames[-1] * decay_factor).astype(np.uint8)  # Use last frame
+        frames[0] = np.maximum(decayed_previous, current_frame)
+        
+        # Save all frames
+        for i, frame in enumerate(frames):
+            self._save_frame(frame, f"mouth_idle_{i+1:02d}.png", subdir)
     
     def generate_charging(self):
         """Generate charging animation frames"""
@@ -1283,6 +1313,120 @@ class FrameGenerator:
             y = int(3 - amplitude * np.sin((x - 5) * np.pi / 15))
             if 0 <= y < height:
                 img[y, x] = (255, 255, 100)  # Yellow smile
+        
+        return img
+    
+    def _create_mouth_running_lights(self, frame: int, num_frames: int = 12) -> np.ndarray:
+        """
+        Create running lights animation around mouth perimeter with rounded corners.
+        Left half runs counterclockwise, right half runs clockwise.
+        Uses full edges of the matrix (0-24 width, 0-4 height) with rounded corners.
+        
+        Args:
+            frame: Current frame number (0-based)
+            num_frames: Total number of frames in animation cycle
+        
+        Returns:
+            LED matrix image array
+        """
+        width, height = self.DISPLAY_SIZE  # 25 x 5
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Use full edges of the matrix with rounded corners
+        # Matrix is 25 pixels wide (0-24), 5 pixels tall (0-4)
+        left_x = 0
+        right_x = 24  # Last column
+        top_y = 0
+        bottom_y = 4  # Last row
+        center_x = width // 2  # 12
+        
+        # Color for the running lights (soft blue-white)
+        light_color = (80, 120, 200)
+        
+        # Define perimeter path WITHOUT corner pixels (rounded corners)
+        # Left half (runs counterclockwise: bottom-left → left → top-left → top-center)
+        left_path = []
+        
+        # Bottom edge (left side): from center going left (excluding bottom-left corner)
+        for x in range(center_x - 1, left_x, -1):  # Stop before corner
+            left_path.append((x, bottom_y))
+        
+        # Left edge bottom to top (excluding both corners)
+        for y in range(bottom_y - 1, top_y, -1):  # Skip corners
+            left_path.append((left_x, y))
+        
+        # Top edge (left side): from left going to center (excluding top-left corner)
+        for x in range(left_x + 1, center_x):  # Start after corner
+            left_path.append((x, top_y))
+        
+        # Right half (runs clockwise: top-center → top-right → right → bottom-right → bottom-center)
+        right_path = []
+        
+        # Top edge (right side): from center going right (excluding top-right corner)
+        for x in range(center_x, right_x):  # Stop before corner
+            right_path.append((x, top_y))
+        
+        # Right edge top to bottom (excluding both corners)
+        for y in range(top_y + 1, bottom_y):  # Skip corners
+            right_path.append((right_x, y))
+        
+        # Bottom edge (right side): from right going to center (excluding bottom-right corner)
+        for x in range(right_x - 1, center_x - 1, -1):  # Start after corner
+            right_path.append((x, bottom_y))
+        
+        # Calculate trail length (number of lit LEDs in the trail)
+        trail_length = 5
+        center_y = height // 2  # Center line (y=2 for 5-pixel height)
+        
+        # Helper function to draw trail towards center
+        def draw_center_trail(x_pos, y_pos, base_brightness):
+            """Draw trail from current position towards center line"""
+            if y_pos == center_y:
+                return  # Already at center
+            
+            # Determine direction to center
+            direction = 1 if y_pos < center_y else -1
+            steps = abs(y_pos - center_y)
+            
+            # Draw trail pixels moving towards center
+            for step in range(1, steps + 1):
+                trail_y = y_pos + (direction * step)
+                # Brightness fades as we approach center
+                fade = 1.0 - (step / (steps + 1))
+                trail_brightness = base_brightness * fade * 0.6  # 0.6 = trail intensity multiplier
+                trail_color = tuple(int(c * trail_brightness) for c in light_color)
+                
+                # Blend with existing pixel (max value)
+                current = img[trail_y, x_pos]
+                img[trail_y, x_pos] = tuple(max(current[j], trail_color[j]) for j in range(3))
+        
+        # Animate left half (counterclockwise)
+        if len(left_path) > 0:
+            left_cycle_pos = int((frame / num_frames) * len(left_path)) % len(left_path)
+            for i in range(trail_length):
+                pos_idx = (left_cycle_pos - i) % len(left_path)
+                x, y = left_path[pos_idx]
+                # Brightness decreases along trail
+                brightness = 1.0 - (i / trail_length)
+                color = tuple(int(c * brightness) for c in light_color)
+                img[y, x] = color
+                
+                # Draw additional trail towards center
+                draw_center_trail(x, y, brightness)
+        
+        # Animate right half (clockwise)
+        if len(right_path) > 0:
+            right_cycle_pos = int((frame / num_frames) * len(right_path)) % len(right_path)
+            for i in range(trail_length):
+                pos_idx = (right_cycle_pos - i) % len(right_path)
+                x, y = right_path[pos_idx]
+                # Brightness decreases along trail
+                brightness = 1.0 - (i / trail_length)
+                color = tuple(int(c * brightness) for c in light_color)
+                img[y, x] = color
+                
+                # Draw additional trail towards center
+                draw_center_trail(x, y, brightness)
         
         return img
     
