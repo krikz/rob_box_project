@@ -220,7 +220,9 @@ class CommandNode(Node):
                             direction = match.group(2) if match.lastindex >= 2 else match.group(1)
                             best_entities = {'direction': direction}
                         elif entity_type == 'turn':
-                            best_entities = {'direction': match.group(2)}
+                            # Поворот может быть в группе 1 (только направление) или 2 (с глаголом)
+                            direction = match.group(2) if match.lastindex >= 2 else match.group(1)
+                            best_entities = {'direction': direction}
         
         return Command(
             intent=best_intent,
