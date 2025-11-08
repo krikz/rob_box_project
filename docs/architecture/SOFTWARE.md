@@ -518,7 +518,7 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 
 ### 3.1. Main Pi сервисы
 
-#### zenoh-router (eclipse/zenoh:latest)
+#### zenoh-router (eclipse/zenoh:1.6.2)
 - **Назначение**: Центральный роутер для связи между Pi
 - **Режим**: `peer` (может работать автономно)
 - **Порты**: 7447 (TCP/UDP), 8000 (HTTP REST API)
@@ -566,7 +566,7 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 
 ### 3.2. Vision Pi сервисы
 
-#### zenoh-router (eclipse/zenoh:latest)
+#### zenoh-router (eclipse/zenoh:1.6.2)
 - **Назначение**: Локальный роутер (client mode)
 - **Режим**: `client` (подключается к Main Pi)
 - **Конфигурация**: `config/zenoh_router_config.json5`

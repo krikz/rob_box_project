@@ -892,13 +892,13 @@ cd ~/rob_box_project/docker/main
 4. Исправлял GPG ключи ROS 2 репозитория
 5. Добавлял `LD_LIBRARY_PATH` для библиотек Zenoh
 
-**В итоге**: Все откатил и перешёл на **стандартный Zenoh router** (`eclipse/zenoh:latest`), который работает напрямую без ROS 2 обёртки.
+**В итоге**: Все откатил и перешёл на **стандартный Zenoh router** (`eclipse/zenoh:1.6.2`), который работает напрямую без ROS 2 обёртки.
 
 ---
 
 ### Ключевые выводы из изменений
 
-1. **Zenoh router**: Используется стандартный `eclipse/zenoh:latest`, НЕ `rmw_zenohd`
+1. **Zenoh router**: Используется стандартный `eclipse/zenoh:1.6.2`, НЕ `rmw_zenohd`
 2. **FastDDS discovery**: Полностью удалён, больше не используется
 3. **Конфигурации Zenoh**: Стандартные из документации, без кастомных модификаций
 4. **Архитектура упрощена**: Меньше зависимостей, меньше кастомных Dockerfiles
@@ -914,7 +914,7 @@ cd ~/rob_box_project/docker/main
 ```yaml
 services:
   zenoh-router:
-    image: eclipse/zenoh:latest
+    image: eclipse/zenoh:1.6.2
     container_name: zenoh-router-vision
     network_mode: host
     environment:
@@ -948,7 +948,7 @@ services:
 ```yaml
 services:
   zenoh-router:
-    image: eclipse/zenoh:latest
+    image: eclipse/zenoh:1.6.2
     container_name: zenoh-router
     network_mode: host
     environment:
@@ -1117,7 +1117,7 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker ps'
    - Проверяйте логи после каждого обновления
 
 5. **Zenoh router**:
-   - Используйте стандартный `eclipse/zenoh:latest`
+   - Используйте стандартный `eclipse/zenoh:1.6.2`
    - НЕ используйте `rmw_zenohd` (откачено пользователем)
    - Конфигурации в `zenoh_router_config.json5` и `zenoh_session_config.json5`
 
@@ -1133,7 +1133,7 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker ps'
 ### Стало (Zenoh)
 - Router-to-router архитектура
 - Vision Pi router ↔ Main Pi router ↔ zenoh.robbox.online
-- Стандартный `eclipse/zenoh:latest` router
+- Стандартный `eclipse/zenoh:1.6.2` router
 - Peer mode для ROS 2 нод (подключение к localhost:7447)
 
 ### Попытки использования rmw_zenohd (откачены)
