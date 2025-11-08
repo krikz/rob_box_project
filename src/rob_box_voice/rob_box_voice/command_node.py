@@ -279,7 +279,7 @@ class CommandNode(Node):
         self.send_nav2_goal(coords['x'], coords['y'], coords['theta'])
     
     def send_nav2_goal(self, x: float, y: float, theta: float):
-        """Отправить цель в Nav2"""
+        """Отправить цель в Nav2 (абсолютные координаты в map frame)"""
         if not self.nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().error('❌ Nav2 action server недоступен')
             self.publish_feedback('Навигация недоступна')
@@ -300,7 +300,37 @@ class CommandNode(Node):
         goal.pose.pose.orientation.w = math.cos(theta / 2.0)
         
         # Отправить goal
-        self.get_logger().info(f'📤 Отправка Nav2 goal: ({x:.2f}, {y:.2f}, {theta:.2f})')
+        self.get_logger().info(f'📤 Отправка Nav2 goal (map): ({x:.2f}, {y:.2f}, {theta:.2f})')
+        future = self.nav_client.send_goal_async(goal, feedback_callback=self.nav_feedback_callback)
+        future.add_done_callback(self.nav_goal_response_callback)
+    
+    def send_relative_nav2_goal(self, x: float, y: float, theta: float):
+        """Отправить цель в Nav2 (относительно текущей позиции в base_link frame)
+        
+        Для команд типа "вперёд на метр", "повернись направо"
+        Nav2 автоматически преобразует base_link в map через TF
+        """
+        if not self.nav_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error('❌ Nav2 action server недоступен')
+            self.publish_feedback('Навигация недоступна')
+            return
+        
+        # Создать goal относительно текущей позиции
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'base_link'  # ← ОТНОСИТЕЛЬНЫЕ координаты!
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        
+        goal.pose.pose.position.x = x
+        goal.pose.pose.position.y = y
+        goal.pose.pose.position.z = 0.0
+        
+        # Ориентация из угла theta
+        import math
+        goal.pose.pose.orientation.z = math.sin(theta / 2.0)
+        goal.pose.pose.orientation.w = math.cos(theta / 2.0)
+        
+        # Отправить goal
+        self.get_logger().info(f'📤 Отправка Nav2 goal (relative): ({x:.2f}, {y:.2f}, {math.degrees(theta):.1f}°)')
         future = self.nav_client.send_goal_async(goal, feedback_callback=self.nav_feedback_callback)
         future.add_done_callback(self.nav_goal_response_callback)
     
@@ -343,27 +373,25 @@ class CommandNode(Node):
     def handle_direction(self, direction: str):
         """Обработка команды поворота/движения в направлении
         
-        ВАЖНО: После перехода на DUTY CYCLE управление VESC (commit b5a9439),
-        linear_x теперь НЕ скорость в м/с, а duty cycle (0-1).
-        При linear_x=0.3 (30% duty) робот едет ~3 м/с (а не 0.3 м/с!)
-        
-        Временное решение до внедрения odometry-based control:
-        - Используем ОЧЕНЬ малые значения linear_x (0.03 = 3% duty)
-        - Короткие длительности (0.5 сек) для ~1 метра
+        Используем Nav2 NavigateToPose вместо прямого cmd_vel!
+        Преимущества:
+        - Точное расстояние через одометрию (closed-loop)
+        - Автоматическое объезжание препятствий
+        - Безопасная остановка при проблемах
+        - Не зависит от duty cycle калибровки VESC
         """
-        from geometry_msgs.msg import Twist
-        import threading
+        import math
         
-        # Маппинг направлений: (linear_x, angular_z, duration, description)
-        # УМЕНЬШЕНО В 10 РАЗ после перехода на duty cycle!
+        # Маппинг направлений: (x, y, theta, description)
+        # Координаты относительно текущей позиции робота (base_link frame)
         direction_map = {
-            'налево': (0.0, 0.05, 0.5, 'поворачиваю налево'),    # 0.5 сек при низком duty
-            'влево': (0.0, 0.05, 0.5, 'поворачиваю влево'),
-            'направо': (0.0, -0.05, 0.5, 'поворачиваю направо'),
-            'вправо': (0.0, -0.05, 0.5, 'поворачиваю вправо'),
-            'вперед': (0.03, 0.0, 0.5, 'двигаюсь вперёд'),       # 3% duty * 0.5 сек ≈ 1 метр
-            'вперёд': (0.03, 0.0, 0.5, 'двигаюсь вперёд'),
-            'назад': (-0.03, 0.0, 0.5, 'двигаюсь назад'),
+            'налево': (0.0, 0.0, math.pi/2, 'поворачиваю налево'),      # 90° влево
+            'влево': (0.0, 0.0, math.pi/2, 'поворачиваю влево'),
+            'направо': (0.0, 0.0, -math.pi/2, 'поворачиваю направо'),   # 90° вправо
+            'вправо': (0.0, 0.0, -math.pi/2, 'поворачиваю вправо'),
+            'вперед': (1.0, 0.0, 0.0, 'двигаюсь вперёд'),               # 1 метр вперёд
+            'вперёд': (1.0, 0.0, 0.0, 'двигаюсь вперёд'),
+            'назад': (-1.0, 0.0, 0.0, 'двигаюсь назад'),                # 1 метр назад
         }
         
         if direction not in direction_map:
@@ -371,37 +399,14 @@ class CommandNode(Node):
             self.publish_feedback(f'Не понимаю куда {direction}')
             return
         
-        linear_x, angular_z, duration, feedback = direction_map[direction]
+        x, y, theta, feedback = direction_map[direction]
         
-        self.get_logger().info(f'🎯 Команда: {feedback}, linear={linear_x}, angular={angular_z}, duration={duration}s')
+        self.get_logger().info(f'🎯 Команда направления: {feedback}')
+        self.get_logger().info(f'   Относительная цель: x={x:.2f}м, y={y:.2f}м, theta={math.degrees(theta):.1f}°')
         self.publish_feedback(feedback.capitalize())
         
-        # Запустить публикацию в отдельном потоке чтобы не блокировать ноду
-        def publish_velocity():
-            twist = Twist()
-            twist.linear.x = linear_x
-            twist.angular.z = angular_z
-            
-            # Публиковать с частотой 20 Hz (каждые 50 мс)
-            # Это выше чем cmd_vel_timeout (0.5 сек), так что команды не потеряются
-            rate_hz = 20
-            sleep_time = 1.0 / rate_hz
-            iterations = int(duration * rate_hz)
-            
-            import time
-            for i in range(iterations):
-                self.cmd_vel_pub.publish(twist)
-                time.sleep(sleep_time)
-            
-            # НЕ публикуем нулевой Twist в конце!
-            # Просто прекращаем публикацию -> twist_mux через timeout (1.0 сек)
-            # переключится на другой источник или освободит колёса
-            
-            self.get_logger().info(f'✅ Выполнено: {feedback}')
-        
-        # Запустить в фоне
-        thread = threading.Thread(target=publish_velocity, daemon=True)
-        thread.start()
+        # Отправить Nav2 goal относительно текущей позиции
+        self.send_relative_nav2_goal(x, y, theta)
     
     def handle_status(self, command: Command):
         """Обработка запроса статуса"""
