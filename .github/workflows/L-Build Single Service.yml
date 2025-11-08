@@ -177,7 +177,7 @@ jobs:
                   IMAGE_NAME="zenoh-router"
                   DOCKERFILE="docker/main/zenoh-router/Dockerfile"
                   BUILD_CONTEXT="docker/main/zenoh-router"
-                  BASE_IMAGE="eclipse/zenoh:latest"
+                  BASE_IMAGE="eclipse/zenoh:1.6.2-12-g58017dfb3"
                   ;;
                 *)
                   echo "❌ Unknown Main Pi service: $SERVICE"
@@ -228,7 +228,7 @@ jobs:
                   IMAGE_NAME="zenoh-router"
                   DOCKERFILE="docker/vision/zenoh-router/Dockerfile"
                   BUILD_CONTEXT="docker/vision/zenoh-router"
-                  BASE_IMAGE="eclipse/zenoh:latest"
+                  BASE_IMAGE="eclipse/zenoh:1.6.2-12-g58017dfb3"
                   ;;
                 *)
                   echo "❌ Unknown Vision Pi service: $SERVICE"

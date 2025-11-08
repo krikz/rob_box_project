@@ -7,7 +7,7 @@
 services:
   # Zenoh Router - центральный роутер для связи между Pi и облаком
   zenoh-router:
-    image: eclipse/zenoh:latest
+    image: eclipse/zenoh:1.6.2-12-g58017dfb3
     container_name: zenoh-router
     network_mode: host
     environment:
