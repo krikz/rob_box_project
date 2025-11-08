@@ -35,6 +35,7 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import Log
+from control_msgs.msg import DynamicJointState
 
 # Monitoring components
 from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
@@ -148,6 +149,14 @@ class ContextAggregatorNode(Node):
         #     self.on_device_snapshot,
         #     10
         # )
+        
+        # Battery monitoring from ros2_control
+        self.joint_states_sub = self.create_subscription(
+            DynamicJointState,
+            '/dynamic_joint_states',
+            self.on_joint_states,
+            10
+        )
         
         # AprilTags
         # self.apriltag_sub = self.create_subscription(
@@ -330,6 +339,15 @@ class ContextAggregatorNode(Node):
             self.recent_warnings.append(warn_info)
             if len(self.recent_warnings) > 5:
                 self.recent_warnings.pop(0)
+    
+    def on_joint_states(self, msg: DynamicJointState):
+        """Обновление данных ros2_control"""
+        for interface_values in msg.interface_values:
+            for name, value in zip(interface_values.interface_names,
+                                   interface_values.values):
+                if name == 'battery/voltage':
+                    self.current_sensors['battery'] = value
+                    break
     
     def on_user_speech(self, msg: String):
         """Получена речь пользователя (STT)"""
@@ -542,7 +560,9 @@ class ContextAggregatorNode(Node):
         
         # Проверка батареи
         battery = self.current_sensors.get('battery', 100.0)
-        if battery > 0 and battery < 11.0:
+        if battery > 0 and battery < 32.0:  # CRITICAL for 36V 10S
+            issues.append(f'КРИТИЧЕСКАЯ БАТАРЕЯ: {battery:.1f}V - СРОЧНО НА ЗАРЯДКУ!')
+        elif battery > 0 and battery < 34.0:  # LOW for 36V 10S
             issues.append(f'Низкая батарея: {battery:.1f}V')
         
         # Проверка нод (добавлено)
