@@ -100,6 +100,10 @@ export LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/
 # Optional: Set ROS_DOMAIN_ID if needed
 # export ROS_DOMAIN_ID=0
 
+# CRITICAL FIX: Prioritize ROS Ogre vendor libraries over system libraries
+# RViz requires Ogre 1.12.1 which is bundled with ROS, not system 1.12.10
+export LD_LIBRARY_PATH="/opt/ros/humble/opt/rviz_ogre_vendor/lib:${LD_LIBRARY_PATH}"
+
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}🚀 Starting RViz2...${NC}"
