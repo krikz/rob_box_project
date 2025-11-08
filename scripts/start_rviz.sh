@@ -50,15 +50,29 @@ fi
 
 echo -e "${GREEN}✓${NC} ROS Distro: ${ROS_DISTRO} (Humble recommended)"
 
-# Zenoh configuration
-ZENOH_CONFIG="$PROJECT_ROOT/local_test/zenoh_client_config.json5"
+# Robot ID from environment or default
+ROBOT_ID="${ROBOT_ID:-RBXU100001}"
 
-if [ ! -f "$ZENOH_CONFIG" ]; then
-    echo -e "${RED}❌ Zenoh config not found: $ZENOH_CONFIG${NC}"
+echo ""
+echo -e "${BLUE}🤖 Robot ID: ${ROBOT_ID}${NC}"
+echo -e "${YELLOW}   Namespace: robots/${ROBOT_ID}${NC}"
+
+# Generate Zenoh configuration with namespace
+ZENOH_CONFIG_TEMPLATE="$PROJECT_ROOT/local_test/zenoh_client_config.json5"
+ZENOH_CONFIG="/tmp/zenoh_rviz_config_${ROBOT_ID}.json5"
+
+if [ ! -f "$ZENOH_CONFIG_TEMPLATE" ]; then
+    echo -e "${RED}❌ Zenoh config template not found: $ZENOH_CONFIG_TEMPLATE${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✓${NC} Zenoh config: $ZENOH_CONFIG"
+# Create config with namespace
+cp "$ZENOH_CONFIG_TEMPLATE" "$ZENOH_CONFIG"
+
+# Add namespace to the config (insert after mode line)
+sed -i 's|"mode": "client",|"mode": "client",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+
+echo -e "${GREEN}✓${NC} Zenoh config generated: $ZENOH_CONFIG"
 
 # Check connectivity to Main Pi
 MAIN_PI_IP="10.1.1.10"
@@ -79,10 +93,16 @@ fi
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ZENOH_CONFIG="$ZENOH_CONFIG"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export ZENOH_ROUTER_CHECK_ATTEMPTS=30
 export RUST_LOG=zenoh=warn
+export LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
 # Optional: Set ROS_DOMAIN_ID if needed
 # export ROS_DOMAIN_ID=0
+
+# CRITICAL FIX: Prioritize ROS Ogre vendor libraries over system libraries
+# RViz requires Ogre 1.12.1 which is bundled with ROS, not system 1.12.10
+export LD_LIBRARY_PATH="/opt/ros/humble/opt/rviz_ogre_vendor/lib:${LD_LIBRARY_PATH}"
 
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
