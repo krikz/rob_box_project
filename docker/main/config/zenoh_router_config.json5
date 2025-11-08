@@ -239,7 +239,7 @@
       /// and peers are configured with gossip target "router".
       /// ROS setting: disabled by default because it serves no purpose when each peer connects directly to all others,
       ///              and it introduces additional management overhead and extra messages during system startup.
-      peers_failover_brokering: false,
+      peers_failover_brokering: true,
       /// Linkstate mode configuration.
       linkstate: {
         /// Weights of the outgoing transports in linkstate mode.
