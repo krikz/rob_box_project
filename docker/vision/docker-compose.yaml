@@ -106,6 +106,7 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/ceiling-camera:/scripts:ro
+      - ./config/ceiling-camera/ceiling_camera.yaml:/root/.ros/camera_info/ceiling_camera.yaml:ro  # Калибровка камеры
       - /dev/shm:/dev/shm
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ceiling_camera.sh"]
     depends_on:
