@@ -7,6 +7,15 @@ positions:
 
 clients:
   - url: http://${LOKI_HOST:-monitoring-machine}:3100/loki/api/v1/push
+    # Настройки для graceful handling недоступного Loki сервера
+    timeout: 10s
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+    # Внешний лейбл для идентификации источника
+    external_labels:
+      host: vision-pi
 
 scrape_configs:
   # Scrape Docker container logs
@@ -25,6 +34,8 @@ scrape_configs:
         target_label: 'logstream'
       - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
         target_label: 'service'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'compose_project'
     pipeline_stages:
       - docker: {}
 
