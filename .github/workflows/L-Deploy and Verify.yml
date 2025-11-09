@@ -431,9 +431,14 @@ jobs:
           EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+          # Promtail connection errors when monitoring system is not available
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|error sending batch.*loki.*push|Post.*loki.*push"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|context deadline exceeded|dial tcp.*3100.*no route to host"
           
           # Warning exclusion patterns
           EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+          # Promtail warnings about monitoring system
+          EXCLUDE_WARN_COMMON="$EXCLUDE_WARN_COMMON|error sending batch.*loki|enable watchConfig"
 
           CRITICAL_COUNT=0
           WARNING_COUNT=0
@@ -527,6 +532,9 @@ jobs:
           EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
           EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+          # Promtail connection errors when monitoring system is not available
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|error sending batch.*loki.*push|Post.*loki.*push"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|context deadline exceeded|dial tcp.*3100.*no route to host"
           
           # Main Pi specific exclusions (includes common + additional patterns)
           EXCLUDE_MAIN="$EXCLUDE_COMMON|Robot is out of bounds|Cannot transform tag pose"
@@ -535,6 +543,8 @@ jobs:
           # Warning exclusion patterns
           # Common warning patterns (used on both Pi)
           EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+          # Promtail warnings about monitoring system
+          EXCLUDE_WARN_COMMON="$EXCLUDE_WARN_COMMON|error sending batch.*loki|enable watchConfig"
           
           # Main Pi inherits from common + adds specific patterns
           EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_COMMON|could not find a connection.*tree"
