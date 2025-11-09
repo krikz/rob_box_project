@@ -639,14 +639,14 @@
           /// then amount of memory being allocated for each queue is SIZE_XXX * LINK_MTU.
           /// If qos is false, then only the DATA priority will be allocated.
           size: {
-            control: 2,
-            real_time: 2,
-            interactive_high: 2,
-            interactive_low: 2,
-            data_high: 2,
-            data: 2,
-            data_low: 2,
-            background: 2,
+            control: 4,
+            real_time: 4,
+            interactive_high: 4,
+            interactive_low: 4,
+            data_high: 4,
+            data: 4,
+            data_low: 4,
+            background: 4,
           },
           /// Congestion occurs when the queue is empty (no available batch).
           congestion_control: {
@@ -661,10 +661,9 @@
             block: {
               /// The maximum time in microseconds to wait for an available batch before closing the transport session when sending a blocking message
               /// if still no batch is available.
-              /// ROS setting: unlike DEFAULT_RMW_ZENOH_SESSION_CONFIG.json5, no change here:
-              ///              as the router is routing messages to outside the robot, possibly over WiFi,
-              ///              keeping a lower value ensure the router is not blocked for too long in case of congestioned WiFi.
-              wait_before_close: 5000000,
+              /// ROS setting: Increased from 5000000 (5s) to 20000000 (20s) to prevent "Unable to push non droppable network message" errors
+              ///              during high-throughput scenarios (camera + LiDAR + TF). See docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md
+              wait_before_close: 20000000,
             },
           },
           /// Perform batching of messages if they are smaller of the batch_size
