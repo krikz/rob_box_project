@@ -187,6 +187,7 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
+      - /etc/machine-id:/etc/machine-id:ro
     command:
       - '--port=8080'
       - '--housekeeping_interval=30s'
