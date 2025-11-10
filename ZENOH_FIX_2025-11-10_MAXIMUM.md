@@ -155,16 +155,17 @@ routing: {
 - `docker/vision/config/oak-d/oak_d_config.yaml`
 - `docker/vision/config/apriltag/apriltag_config.yaml`
 
-**OAK-D Camera - включение встроенной компрессии:**
+**Стратегия: image_transport автоматическая компрессия**
 
 ```diff
+# OAK-D Camera - НЕ включаем встроенную компрессию
 color:
 - i_publish_compressed: false  # ОТКЛЮЧЕНО: пусть image_transport делает сжатие
-+ i_publish_compressed: true   # ✅ ВКЛЮЧЕНО: публикуем сжатые JPEG изображения
++ i_publish_compressed: false  # ОСТАВЛЕНО: image_transport автоматически создаёт compressed топики
 
 depth:
 - i_publish_compressed: false  # ОТКЛЮЧЕНО: пусть image_transport делает сжатие
-+ i_publish_compressed: true   # ✅ ВКЛЮЧЕНО: публикуем сжатые PNG изображения (depth)
++ i_publish_compressed: false  # ОСТАВЛЕНО: image_transport автоматически создаёт compressed топики
 ```
 
 **AprilTag - использование сжатого потока:**
@@ -173,16 +174,33 @@ depth:
 apriltag:
   ros__parameters:
 -   image_transport: raw
-+   image_transport: compressed  # ✅ Подписываемся на сжатый топик
++   image_transport: compressed  # ✅ Подписываемся на compressed топик
 ```
 
-**Эффект:**
-- **RGB изображения:** ~3-6 MB/кадр → ~200-400 KB/кадр (сжатие JPEG ~85%)
-- **Depth изображения:** ~0.5-1 MB/кадр → ~100-200 KB/кадр (сжатие PNG ~80%)
-- **Экономия трафика:** ~20-30 MB/s → ~2-4 MB/s (снижение в **~7 раз!**)
-- AprilTag получает сжатые изображения напрямую, без накладных расходов
+**Как это работает (image_transport магия):**
 
-**Важно:** Компрессия происходит **внутри камеры** перед публикацией в ROS 2, поэтому сжатые данные идут через Zenoh, значительно снижая нагрузку на сеть!
+1. **Камера публикует** (локально на Vision Pi):
+   - `/camera/rgb/image_raw` (несжатый, ~3 MB/кадр)
+
+2. **image_transport плагин автоматически создаёт**:
+   - `/camera/rgb/image_raw/compressed` (JPEG, ~300 KB/кадр)
+
+3. **AprilTag подписывается** с `image_transport: compressed`:
+   - Локально на Vision Pi → получает `/camera/rgb/image_raw` (лучшее качество!)
+   - Zenoh умный и не передаёт несжатый топик если никто удалённо не подписан
+
+4. **Через Zenoh передаётся**:
+   - Только `/camera/rgb/image_raw/compressed` (сжатый!)
+   - Автоматически, без ручной настройки!
+
+**Эффект:**
+- **RGB изображения:** ~3 MB/кадр → ~300 KB/кадр через сеть (сжатие JPEG ~90%)
+- **Depth изображения:** ~0.5 MB/кадр → ~100 KB/кадр через сеть (сжатие PNG ~80%)
+- **Экономия трафика:** ~18 MB/s → ~2 MB/s (снижение в **~9 раз!**)
+- **AprilTag** работает с лучшим качеством локально, но не нагружает сеть
+- **Zenoh** автоматически выбирает передавать только compressed топики
+
+**Важно:** Это стандартный ROS 2 паттерн! image_transport плагин (уже установлен с compressed_image_transport) автоматически создаёт compressed варианты всех image топиков. Zenoh DDS умный и передаёт только те топики, на которые кто-то подписан удалённо.
 
 ---
 

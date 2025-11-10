@@ -19,7 +19,7 @@
       rs_compat: true
     color:
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
-      i_publish_compressed: true  # ✅ ВКЛЮЧЕНО: публикуем сжатые изображения для снижения нагрузки на Zenoh
+      i_publish_compressed: false  # ОТКЛЮЧЕНО: используем image_transport для компрессии (AprilTag подписывается через image_transport: compressed)
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
       i_interleaved: false
@@ -29,7 +29,7 @@
       i_keep_preview_aspect_ratio: false
     depth:
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: для совместимости
-      i_publish_compressed: true  # ✅ ВКЛЮЧЕНО: публикуем сжатые depth изображения (PNG компрессия)
+      i_publish_compressed: false  # ОТКЛЮЧЕНО: используем image_transport для компрессии
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
       i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
