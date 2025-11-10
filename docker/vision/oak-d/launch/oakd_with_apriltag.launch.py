@@ -30,6 +30,7 @@ def generate_launch_description():
             remappings=[
                 ('image_rect', '/camera/camera/color/image_raw'),
                 ('camera_info', '/camera/camera/color/camera_info'),
+                ('detections', '/detections'),  # Публиковать детекции на /detections для RTAB-Map
             ],
         ),
     ])
