@@ -90,9 +90,13 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    /// Vision Pi router слушает на своём конкретном IP адресе eth0 (10.1.1.11)
-    /// НЕ использовать wildcard [::] чтобы избежать конфликта с Main Pi router
-    endpoints: ["tcp/10.1.1.11:7447"],
+    /// РЕШЕНИЕ: Используем ТОЛЬКО IP eth0 (без localhost)
+    /// - Локальные ROS ноды подключаются к 10.1.1.11:7447 (через session config)
+    /// - Весь трафик гарантированно через Gigabit Ethernet (eth0)
+    /// - Нет конфликта портов
+    endpoints: [
+      "tcp/10.1.1.11:7447"            // Все подключения к Vision Pi через eth0 IP
+    ],
 
     /// Global listen configuration,
     /// Accepts a single value or different values for router, peer and client.

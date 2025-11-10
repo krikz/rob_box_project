@@ -40,9 +40,8 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     ///
-    /// Rob Box setting: Подключение к локальному Zenoh router на Vision Pi через eth0
-    /// Используем конкретный IP адрес 10.1.1.11 вместо localhost для гарантии
-    /// что весь трафик идёт через Gigabit Ethernet, а не через loopback
+    /// Vision Pi setting: Подключаемся к локальному роутеру через IP eth0 (НЕ localhost!)
+    /// Это гарантирует что весь трафик идёт через Gigabit Ethernet интерфейс
     endpoints: ["tcp/10.1.1.11:7447"],
 
     /// Global connect configuration,
