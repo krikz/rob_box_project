@@ -459,6 +459,78 @@ cd ~/rob_box_project
 
 ---
 
+### 🔍 diagnose_zenoh_cloud.sh
+
+**Назначение:** Диагностика подключения робота к облачному Zenoh роутеру.
+
+**Использование:**
+```bash
+# На роботе (Main Pi или Vision Pi)
+cd ~/rob_box_project/docker/main  # или docker/vision
+../../scripts/diagnose_zenoh_cloud.sh
+```
+
+**Что проверяет:**
+1. ✅ Переменная окружения ROBOT_ID
+2. ✅ Zenoh Router запущен и подключен к облаку
+3. ✅ twist-mux запущен и подписан на cmd_vel_voice
+4. ✅ Сетевое подключение к zenoh.robbox.online:7447
+5. ✅ REST API облачного роутера доступен
+6. ✅ Режим облачного роутера (должен быть "router")
+7. ✅ Zenoh namespace настроен правильно
+
+**Пример вывода:**
+```
+==========================================
+  🔍 Диагностика Zenoh Cloud подключения
+==========================================
+
+📋 Проверка 1: ROBOT_ID
+✓ ROBOT_ID найден: RBXU100001
+
+📋 Проверка 2: Zenoh Router
+✓ Zenoh Router запущен
+✓ Конфигурация указывает на zenoh.robbox.online
+
+📋 Проверка 3: twist-mux
+✓ twist-mux запущен
+✓ twist-mux подписан на cmd_vel_voice
+
+📋 Проверка 4: Сетевое подключение
+✓ Порт 7447 доступен на zenoh.robbox.online
+
+📋 Проверка 5: Cloud Router REST API
+✓ REST API облачного роутера доступен
+✗ Облачный роутер в режиме: peer
+   ПРОБЛЕМА: Облачный роутер должен быть в режиме 'router'!
+   См. docs/cloud/README.md для исправления
+
+📋 Проверка 6: Zenoh Namespace
+✓ Namespace настроен правильно: robots/RBXU100001
+
+==========================================
+  📊 Итоговая информация
+==========================================
+Robot ID: RBXU100001
+Expected namespace: robots/RBXU100001
+Expected topic key: robots/RBXU100001/0/cmd_vel_voice
+
+Для отправки команды через REST API:
+  curl -X PUT https://zenoh.robbox.online/robots/RBXU100001/0/cmd_vel_voice \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary @twist_message.bin
+```
+
+**Когда использовать:**
+- ❌ Команды через REST API не доходят до робота
+- ❌ Робот не виден в облаке
+- ❌ Проблемы с namespace
+- ❌ После обновления облачного роутера
+
+**Связанная документация:** `docs/cloud/README.md`, `docs/reports/ZENOH_CLOUD_CONFIG_ISSUE_2025-11-10.md`
+
+---
+
 ## Дополнительные ресурсы
 
 - **CI/CD Pipeline:** `docs/CI_CD_PIPELINE.md`
