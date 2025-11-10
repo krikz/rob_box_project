@@ -41,3 +41,35 @@ rtabmap:
     Mem/LaserScanNormalK: "0"  # Отключено для 2D лидара
     RGBD/ProximityPathMaxNeighbors: "10"
     RGBD/OptimizeFromGraphEnd: "true"
+
+# ICP Odometry Node - отдельная конфигурация для icp_odometry ноды
+# Эта нода генерирует одометрию из лазерных сканов методом ICP
+icp_odometry:
+  ros__parameters:
+    # Основные параметры
+    queue_size: 10
+    frame_id: base_link
+    odom_frame_id: odom
+    publish_tf: true
+    wait_for_transform: 0.2
+
+    # ICP параметры - более мягкие лимиты для уменьшения warnings
+    # Оригинальные дефолтные значения: MaxTranslation=0.2, MaxRotation=0.78, CorrespondenceRatio=0.1
+    Reg/Strategy: "1"                    # ICP регистрация
+    Icp/PointToPlane: "false"           # 2D ICP (point-to-point)
+    Icp/Iterations: "30"                # Количество итераций ICP
+    Icp/Epsilon: "0.001"                # Порог сходимости
+    Icp/MaxTranslation: "0.5"           # Увеличено с 0.2м до 0.5м - позволяет большие движения между сканами
+    Icp/MaxRotation: "1.0"              # Увеличено с 0.78 (~45°) до 1.0 рад (~57°) - позволяет более резкие повороты
+    Icp/CorrespondenceRatio: "0.2"      # Снижено с 0.4 до 0.2 - менее строгое требование к совпадению точек
+    Icp/MaxCorrespondenceDistance: "0.1" # Максимальное расстояние для сопоставления точек
+    Icp/VoxelSize: "0.05"               # Voxel фильтрация облака точек (5см)
+
+    # Параметры фильтрации сканов
+    Icp/PointToPlaneK: "0"              # Отключено для 2D
+    Icp/PointToPlaneRadius: "0"         # Отключено для 2D
+
+    # Оптимизация для динамичного движения робота
+    Odom/Strategy: "0"                   # Frame-to-Map (0) или Frame-to-Frame (1)
+    Odom/ResetCountdown: "1"            # Сброс при потере трекинга после 1 неудачи
+    Odom/Holonomic: "false"             # Неголономный робот (дифференциальный привод)
