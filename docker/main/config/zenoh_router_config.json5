@@ -639,14 +639,14 @@
           /// then amount of memory being allocated for each queue is SIZE_XXX * LINK_MTU.
           /// If qos is false, then only the DATA priority will be allocated.
           size: {
-            control: 4,
-            real_time: 4,
+            control: 8,
+            real_time: 8,
             interactive_high: 4,
             interactive_low: 4,
-            data_high: 4,
+            data_high: 6,
             data: 4,
-            data_low: 4,
-            background: 4,
+            data_low: 2,
+            background: 2,
           },
           /// Congestion occurs when the queue is empty (no available batch).
           congestion_control: {
@@ -661,9 +661,10 @@
             block: {
               /// The maximum time in microseconds to wait for an available batch before closing the transport session when sending a blocking message
               /// if still no batch is available.
-              /// ROS setting: Increased from 5000000 (5s) to 20000000 (20s) to prevent "Unable to push non droppable network message" errors
+              /// ROS setting: Increased from 5000000 (5s) to 30000000 (30s) to prevent "Unable to push non droppable network message" errors
               ///              during high-throughput scenarios (camera + LiDAR + TF). See docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md
-              wait_before_close: 20000000,
+              ///              Further increased from 20s to 30s on 2025-11-10 as errors persisted under heavy load.
+              wait_before_close: 30000000,
             },
           },
           /// Perform batching of messages if they are smaller of the batch_size
