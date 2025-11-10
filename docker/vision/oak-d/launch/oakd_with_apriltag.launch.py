@@ -28,8 +28,8 @@ def generate_launch_description():
             output='screen',
             parameters=['/config/apriltag/apriltag_config.yaml'],
             remappings=[
-                ('image_rect', '/camera/rgb/image_raw'),
-                ('camera_info', '/camera/rgb/camera_info'),
+                ('image_rect', '/camera/camera/color/image_raw'),
+                ('camera_info', '/camera/camera/color/camera_info'),
             ],
         ),
     ])

@@ -205,36 +205,36 @@
 			<origin xyz="0 0 0" rpy="0 0 0"/>
 		</joint>
 
-		<!-- Color camera frames -->
-		<link name="${name}_color_frame"/>
-		<joint name="${name}_color_frame_joint" type="fixed">
+		<!-- RGB camera frames (depthai_ros_driver использует именование rgb_camera, не color) -->
+		<link name="${name}_rgb_camera_frame"/>
+		<joint name="${name}_rgb_camera_frame_joint" type="fixed">
 			<parent link="${name}"/>
-			<child link="${name}_color_frame"/>
+			<child link="${name}_rgb_camera_frame"/>
 			<!-- Смещение RGB камеры относительно базы (из calibration) -->
 			<origin xyz="0 0 0" rpy="0 0 0"/>
 		</joint>
 
-		<link name="${name}_color_optical_frame"/>
-		<joint name="${name}_color_optical_frame_joint" type="fixed">
-			<parent link="${name}_color_frame"/>
-			<child link="${name}_color_optical_frame"/>
+		<link name="${name}_rgb_camera_optical_frame"/>
+		<joint name="${name}_rgb_camera_optical_frame_joint" type="fixed">
+			<parent link="${name}_rgb_camera_frame"/>
+			<child link="${name}_rgb_camera_optical_frame"/>
 			<!-- Optical frame: X right, Y down, Z forward (ROS camera convention) -->
 			<origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
 		</joint>
 
 		<!-- Depth/Stereo camera frames -->
-		<link name="${name}_depth_frame"/>
-		<joint name="${name}_depth_frame_joint" type="fixed">
+		<link name="${name}_stereo_camera_frame"/>
+		<joint name="${name}_stereo_camera_frame_joint" type="fixed">
 			<parent link="${name}"/>
-			<child link="${name}_depth_frame"/>
+			<child link="${name}_stereo_camera_frame"/>
 			<!-- Depth камера немного смещена (левая камера stereo пары) -->
 			<origin xyz="0 0.0375 0" rpy="0 0 0"/>
 		</joint>
 
-		<link name="${name}_depth_optical_frame"/>
-		<joint name="${name}_depth_optical_frame_joint" type="fixed">
-			<parent link="${name}_depth_frame"/>
-			<child link="${name}_depth_optical_frame"/>
+		<link name="${name}_stereo_camera_optical_frame"/>
+		<joint name="${name}_stereo_camera_optical_frame_joint" type="fixed">
+			<parent link="${name}_stereo_camera_frame"/>
+			<child link="${name}_stereo_camera_optical_frame"/>
 			<origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
 		</joint>
 
