@@ -40,8 +40,9 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     /// ЯВНОЕ подключение к Main Pi router по Gigabit Ethernet (рекомендация из Articulated Robotics видео)
+    /// КРИТИЧНО: #iface=eth0 принудительно направляет трафик через Gigabit Ethernet вместо WiFi
     endpoints: [
-      "tcp/10.1.1.10:7447"  // Main Pi Ethernet IP
+      "tcp/10.1.1.10:7447#iface=eth0"  // Main Pi Ethernet IP + принудительная привязка к eth0
     ],
 
     /// Global connect configuration,
@@ -89,7 +90,8 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    endpoints: ["tcp/[::]:7447"],
+    /// КРИТИЧНО: #iface=eth0 принимает подключения только через Gigabit Ethernet
+    endpoints: ["tcp/[::]:7447#iface=eth0"],
 
     /// Global listen configuration,
     /// Accepts a single value or different values for router, peer and client.
@@ -239,7 +241,8 @@
       /// and peers are configured with gossip target "router".
       /// ROS setting: disabled by default because it serves no purpose when each peer connects directly to all others,
       ///              and it introduces additional management overhead and extra messages during system startup.
-      peers_failover_brokering: false,
+      ///              MAXIMUM FIX (2025-11-10): Enabled to match Main Pi router and improve peer connectivity.
+      peers_failover_brokering: true,
       /// Linkstate mode configuration.
       linkstate: {
         /// Weights of the outgoing transports in linkstate mode.
@@ -639,12 +642,12 @@
           /// then amount of memory being allocated for each queue is SIZE_XXX * LINK_MTU.
           /// If qos is false, then only the DATA priority will be allocated.
           size: {
-            control: 2,
-            real_time: 2,
-            interactive_high: 2,
-            interactive_low: 2,
-            data_high: 2,
-            data: 2,
+            control: 16,
+            real_time: 16,
+            interactive_high: 4,
+            interactive_low: 4,
+            data_high: 12,
+            data: 4,
             data_low: 2,
             background: 2,
           },
@@ -661,10 +664,11 @@
             block: {
               /// The maximum time in microseconds to wait for an available batch before closing the transport session when sending a blocking message
               /// if still no batch is available.
-              /// ROS setting: unlike DEFAULT_RMW_ZENOH_SESSION_CONFIG.json5, no change here:
-              ///              as the router is routing messages to outside the robot, possibly over WiFi,
-              ///              keeping a lower value ensure the router is not blocked for too long in case of congestioned WiFi.
-              wait_before_close: 5000000,
+              /// ROS setting: Increased from 5000000 (5s) to 30000000 (30s) to prevent "Unable to push non droppable network message" errors
+              ///              during high-throughput scenarios (camera + LiDAR + TF). See docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md
+              ///              Further increased from 20s to 30s on 2025-11-10 as errors persisted under heavy load.
+              ///              MAXIMUM FIX (2025-11-10): Increased from 30s to 60s and queues to maximum (16 batches) as errors continued.
+              wait_before_close: 60000000,
             },
           },
           /// Perform batching of messages if they are smaller of the batch_size
@@ -692,7 +696,9 @@
         /// For very high throughput scenarios, the rx_buffer_size can be increased to accommodate
         /// more in-flight data. This is particularly relevant when dealing with large messages.
         /// E.g. for 16MiB rx_buffer_size set the value to: 16777216.
-        buffer_size: 65535,
+        /// Rob Box setting: Increased to 2MB to handle large camera images (RGB 1-3MB, depth 0.5-1MB)
+        ///                  and LiDAR point clouds (0.1-0.5MB) without excessive fragmentation.
+        buffer_size: 2097152,
         /// Maximum size of the defragmentation buffer at receiver end.
         /// Fragmented messages that are larger than the configured size will be dropped.
         /// The default value is 1GiB. This would work in most scenarios.

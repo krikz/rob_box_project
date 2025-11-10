@@ -28,6 +28,17 @@ if [ -z "${LOKI_HOST}" ]; then
     echo "   Для настройки добавьте в .env файл:"
     echo "   LOKI_HOST=<IP адрес машины мониторинга>"
     echo ""
+else
+    # Проверяем доступность Loki сервера (опционально)
+    echo "Проверка доступности Loki сервера ${LOKI_HOST}:3100..."
+    if timeout 3 bash -c "echo > /dev/tcp/${LOKI_HOST}/3100" 2>/dev/null; then
+        echo "✓ Loki сервер доступен"
+    else
+        echo "⚠️  Предупреждение: Loki сервер ${LOKI_HOST}:3100 недоступен"
+        echo "   Promtail будет пытаться переподключиться автоматически"
+        echo "   Убедитесь что сервер мониторинга запущен"
+        echo ""
+    fi
 fi
 
 echo "✓ Конфигурационные файлы найдены"

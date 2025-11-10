@@ -449,6 +449,52 @@ sudo netstat -tulpn | grep -E ':(3000|3100|9090)'
 # или измените порты в docker-compose.yaml
 ```
 
+### Проблема: Promtail показывает ошибки подключения к Loki
+
+**Симптомы:**
+```
+level=warn caller=client.go:419 msg="error sending batch, will retry"
+error="Post http://10.1.1.249:3100/loki/api/v1/push: context deadline exceeded"
+error="dial tcp 10.1.1.249:3100: connect: no route to host"
+```
+
+**Причина:** Promtail не может подключиться к серверу Loki на машине мониторинга.
+
+**Решение:**
+
+1. Проверьте что LOKI_HOST правильно настроен в `.env`:
+```bash
+# На Main Pi и Vision Pi
+cd ~/rob_box_project/docker/main  # или docker/vision
+cat .env | grep LOKI_HOST
+```
+
+2. Проверьте доступность сервера мониторинга:
+```bash
+# На Raspberry Pi
+ping <LOKI_HOST>
+curl http://<LOKI_HOST>:3100/ready
+```
+
+3. Если сервер мониторинга не используется:
+   - Ошибки можно игнорировать - Promtail будет автоматически переподключаться
+   - Система мониторинга опциональна для работы робота
+   - Для отключения мониторинга: `./scripts/disable_monitoring.sh`
+
+4. Обновите конфигурацию Promtail с правильным LOKI_HOST:
+```bash
+# Остановите мониторинг
+./scripts/disable_monitoring.sh
+
+# Обновите .env файл
+echo "LOKI_HOST=<новый-IP>" >> .env
+
+# Запустите снова
+./scripts/enable_monitoring.sh
+```
+
+**Примечание:** Promtail настроен с автоматическими повторными попытками (до 10 раз с экспоненциальной задержкой до 5 минут). Если сервер Loki станет доступен позже, Promtail автоматически переподключится и начнёт отправлять логи.
+
 ### Проблема: Низкая производительность или высокая нагрузка
 
 **Причина:** Недостаточно ресурсов или слишком частый scraping.
