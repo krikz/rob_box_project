@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-rosidl-default-runtime \
     ros-humble-ament-cmake \
     ros-humble-ament-cmake-python \
+    # ROS 2 message packages
+    ros-humble-control-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория для ROS2 workspace

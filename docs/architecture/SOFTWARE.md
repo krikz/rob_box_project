@@ -153,8 +153,12 @@ base_link (корневой фрейм)
 ├── right_wheel_link
 ├── lidar_link (сенсор LS LiDAR)
 ├── camera_link (OAK-D камера)
-│   ├── camera_rgb_frame
-│   └── camera_depth_frame
+│   ├── camera (intermediate frame)
+│   │   ├── camera_rgb_camera_frame
+│   │   │   └── camera_rgb_camera_optical_frame
+│   │   ├── camera_stereo_camera_frame
+│   │   │   └── camera_stereo_camera_optical_frame
+│   │   └── camera_imu_frame
 └── imu_link (IMU - future)
 ```
 

@@ -8,31 +8,31 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      use_sim_time: False
+      use_sim_time: false
       robot_radius: 0.17
       resolution: 0.05
-      track_unknown_space: True
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      track_unknown_space: true
+      # Rolling window mode для работы без статической карты
+      # Размер 50x50м покрывает типичную область работы робота
+      rolling_window: true
+      width: 50
+      height: 50
+      plugins: ["obstacle_layer", "inflation_layer"]
 
       # Фильтры
       filters: []
 
-      # Static Layer - статическая карта из map_server
-      static_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: True
-
       # Obstacle Layer - динамические препятствия
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: True
+        enabled: true
         observation_sources: scan
 
         scan:
           topic: /scan
           max_obstacle_height: 2.0
-          clearing: True
-          marking: True
+          clearing: true
+          marking: true
           data_type: "LaserScan"
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
@@ -45,4 +45,4 @@ global_costmap:
         cost_scaling_factor: 3.0
         inflation_radius: 0.55
 
-      always_send_full_costmap: True
+      always_send_full_costmap: true

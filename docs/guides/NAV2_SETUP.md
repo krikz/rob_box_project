@@ -138,14 +138,19 @@ allow_unknown: true      # Разрешить проходить через не
 
 #### Global Costmap (Глобальная карта)
 
-**Размер**: Вся карта из RTAB-Map  
-**Фрейм**: `map` (статический)  
+**Размер**: 50×50 метров (rolling window)  
+**Фрейм**: `map`  
 **Обновление**: 1 Hz
 
+**Режим**: Rolling window (вместо static map) для независимости от RTAB-Map  
+**Обоснование**: Гарантирует работу Nav2 с самого старта, без ожидания карты от RTAB-Map
+
 **Слои**:
-- **Static Layer**: Карта из RTAB-Map (`/map` topic)
 - **Obstacle Layer**: Динамические препятствия из `/scan`
+  - `obstacle_max_range: 2.5 м`
+  - `raytrace_max_range: 3.0 м`
 - **Inflation Layer**: Расширение препятствий
+  - `inflation_radius: 0.55 м`
 
 ### 4. Behavior Server (Recovery Behaviors)
 
