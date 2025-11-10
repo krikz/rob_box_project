@@ -37,13 +37,13 @@ else
     SUCCESS=$((SUCCESS + 1))
 fi
 
-# Проверка 2: Vision Pi должен слушать на localhost:7447
-if grep -q '"tcp/localhost:7447"' "$VISION_CONFIG"; then
-    echo -e "${GREEN}✅ OK: Vision Pi роутер слушает на localhost:7447${NC}"
+# Проверка 2: Vision Pi должен слушать на своём IP eth0
+if grep -q '"tcp/10.1.1.11:7447"' "$VISION_CONFIG"; then
+    echo -e "${GREEN}✅ OK: Vision Pi роутер слушает на 10.1.1.11:7447${NC}"
     SUCCESS=$((SUCCESS + 1))
 else
-    echo -e "${RED}❌ ОШИБКА: Vision Pi роутер не слушает на localhost:7447${NC}"
-    echo "   Добавьте 'tcp/localhost:7447' в listen.endpoints"
+    echo -e "${RED}❌ ОШИБКА: Vision Pi роутер не слушает на 10.1.1.11:7447${NC}"
+    echo "   Добавьте 'tcp/10.1.1.11:7447' в listen.endpoints"
     ERRORS=$((ERRORS + 1))
 fi
 
@@ -61,24 +61,36 @@ echo ""
 echo "Проверка Main Pi конфигурации..."
 echo "-----------------------------------"
 
-# Проверка 4: Main Pi должен слушать на eth0:7447
-if grep -q '"tcp/\[::\]:7447#iface=eth0"' "$MAIN_CONFIG"; then
-    echo -e "${GREEN}✅ OK: Main Pi роутер слушает на eth0:7447${NC}"
+# Проверка 4: Main Pi должен слушать на конкретном IP 10.1.1.10:7447
+if grep -q '"tcp/10.1.1.10:7447"' "$MAIN_CONFIG"; then
+    echo -e "${GREEN}✅ OK: Main Pi роутер слушает на 10.1.1.10:7447${NC}"
     SUCCESS=$((SUCCESS + 1))
 else
-    echo -e "${RED}❌ ОШИБКА: Main Pi роутер не слушает на eth0:7447${NC}"
+    echo -e "${RED}❌ ОШИБКА: Main Pi роутер не слушает на 10.1.1.10:7447${NC}"
     echo "   Vision Pi не сможет подключиться!"
-    echo "   Добавьте 'tcp/[::]:7447#iface=eth0' в listen.endpoints"
+    echo "   Добавьте 'tcp/10.1.1.10:7447' в listen.endpoints"
     ERRORS=$((ERRORS + 1))
 fi
 
-# Проверка 5: Main Pi должен слушать на localhost:7447
-if grep -q '"tcp/localhost:7447"' "$MAIN_CONFIG"; then
-    echo -e "${GREEN}✅ OK: Main Pi роутер слушает на localhost:7447${NC}"
-    SUCCESS=$((SUCCESS + 1))
-else
-    echo -e "${YELLOW}⚠️  ПРЕДУПРЕЖДЕНИЕ: Main Pi роутер может не принимать локальные подключения${NC}"
+# Проверка 5: Main Pi НЕ должен использовать localhost (весь трафик через eth0)
+if grep -q '"tcp/127.0.0.1:7447"' "$MAIN_CONFIG" || grep -q '"tcp/localhost:7447"' "$MAIN_CONFIG"; then
+    echo -e "${YELLOW}⚠️  ПРЕДУПРЕЖДЕНИЕ: Main Pi использует localhost${NC}"
+    echo "   Рекомендуется использовать только IP eth0 для всего трафика"
     WARNINGS=$((WARNINGS + 1))
+else
+    echo -e "${GREEN}✅ OK: Main Pi использует только IP eth0 (весь трафик через Gigabit Ethernet)${NC}"
+    SUCCESS=$((SUCCESS + 1))
+fi
+
+# Проверка 6: Main Pi НЕ должен использовать [::]:7447 в listen endpoints
+MAIN_LISTEN_ENDPOINTS=$(awk '/listen:/{flag=1} flag && /endpoints: \[/{getline; while(getline && !/\]/){if(!/^[[:space:]]*\/\//){print}}}' "$MAIN_CONFIG")
+if echo "$MAIN_LISTEN_ENDPOINTS" | grep -q '"tcp/\[::\]:7447'; then
+    echo -e "${RED}❌ ОШИБКА: Main Pi использует [::]:7447 в listen endpoints!${NC}"
+    echo "   Замените на конкретный IP: tcp/10.1.1.10:7447"
+    ERRORS=$((ERRORS + 1))
+else
+    echo -e "${GREEN}✅ OK: Main Pi не использует проблемный [::]:7447${NC}"
+    SUCCESS=$((SUCCESS + 1))
 fi
 
 echo ""
