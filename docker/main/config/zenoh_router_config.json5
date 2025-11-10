@@ -639,11 +639,11 @@
           /// then amount of memory being allocated for each queue is SIZE_XXX * LINK_MTU.
           /// If qos is false, then only the DATA priority will be allocated.
           size: {
-            control: 8,
-            real_time: 8,
+            control: 16,
+            real_time: 16,
             interactive_high: 4,
             interactive_low: 4,
-            data_high: 6,
+            data_high: 12,
             data: 4,
             data_low: 2,
             background: 2,
@@ -664,7 +664,8 @@
               /// ROS setting: Increased from 5000000 (5s) to 30000000 (30s) to prevent "Unable to push non droppable network message" errors
               ///              during high-throughput scenarios (camera + LiDAR + TF). See docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md
               ///              Further increased from 20s to 30s on 2025-11-10 as errors persisted under heavy load.
-              wait_before_close: 30000000,
+              ///              MAXIMUM FIX (2025-11-10): Increased from 30s to 60s and queues to maximum (16 batches) as errors continued.
+              wait_before_close: 60000000,
             },
           },
           /// Perform batching of messages if they are smaller of the batch_size

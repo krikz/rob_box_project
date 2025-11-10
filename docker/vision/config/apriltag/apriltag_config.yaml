@@ -1,7 +1,7 @@
 apriltag:
   ros__parameters:
     # Основные параметры
-    image_transport: raw
+    image_transport: compressed  # ✅ ИЗМЕНЕНО: используем сжатые изображения для снижения нагрузки на Zenoh
     family: 36h11          # Семейство тегов (стандартное)
     size: 0.16             # Размер тега в метрах (16 см)
     profile: false         # Отключить профилирование
