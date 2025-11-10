@@ -12,6 +12,36 @@
 
 ## 🔍 Ключевые находки из сообщества Zenoh
 
+### 🆕 Критически важно: Zenoh 1.5.0 "Hong" (2025)
+
+**Официальный релиз с множеством улучшений транспорта:**
+
+📌 **Ключевые улучшения:**
+- **Increased throughput** - значительное повышение производительности транспорта
+- **Improved memory management** - оптимизация shared memory API
+- **Corrected handling of Reliability QoS for writers** - исправлена обработка QoS надёжности
+- **Explicit CongestionControl::Block** - явный контроль над блокировкой при congestion
+- **Enhanced watchdog performance** - улучшен мониторинг состояния транспортов
+
+📌 **Релевантные PR из последних релизов:**
+- **PR #2075:** Fix multicast transports cleanup on Session:close
+- **PR #1946:** Fix incorrectly set edge weight upon new transport creation
+- **PR #1951:** Fix wrong error log in linkstate peers
+- **Issue #1107:** QoS parameters on queries - улучшена надёжность
+
+**⚠️ ПРОБЛЕМА ДЛЯ ROB BOX:**
+```
+ROS 2 Humble → rmw_zenoh_cpp → Zenoh 0.10.x/0.11.x (СТАРАЯ ВЕРСИЯ)
+                                      ↓
+                    Многие критичные fixes НЕ ВКЛЮЧЕНЫ
+                                      ↓
+            Issue #1876 (indefinite blocking) может быть исправлен в 1.5.0
+```
+
+**Рекомендация:** Проверить возможность обновления rmw_zenoh_cpp до версии с Zenoh 1.5.0+
+
+---
+
 ### 1. Issue #1876: "Blocking push can block the router indefinitely"
 
 **Проблема:**
@@ -280,17 +310,24 @@ Vision Pi Router → Main Pi Router
 
 ## 🔗 Полезные ссылки из community research
 
-**GitHub Issues:**
-- [#1876: Blocking push blocks router indefinitely](https://github.com/eclipse-zenoh/zenoh/issues/1876)
-- [#314: Closing transport with multiple bridges](https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/issues/314)
+### GitHub Issues (eclipse-zenoh/zenoh)
+- [#1876: Blocking push blocks router indefinitely](https://github.com/eclipse-zenoh/zenoh/issues/1876) - **КРИТИЧНО**
+- [#2075: Fix multicast transports cleanup on Session:close](https://github.com/eclipse-zenoh/zenoh/pull/2075) - Fixed in recent release
+- [#2073: Fix client and peer queryable distance](https://github.com/eclipse-zenoh/zenoh/pull/2073)
+- [#1946: Fix incorrectly set edge weight upon new transport creation](https://github.com/eclipse-zenoh/zenoh/pull/1946)
+- [#1951: Fix wrong error log in linkstate peers](https://github.com/eclipse-zenoh/zenoh/pull/1951)
+
+### GitHub Issues (eclipse-zenoh/zenoh-plugin-ros2dds)
+- [#314: Closing transport with multiple bridges](https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/issues/314) - **РЕЛЕВАНТНО**
 - [#371: Ros2dds plugin downsampling issues](https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/issues/371)
 
-**Community Discussions:**
+### Community Discussions
 - [Roadmap #178: Unable to push errors](https://github.com/eclipse-zenoh/roadmap/discussions/178)
 
-**Documentation:**
+### Documentation
 - [Zenoh Troubleshooting Guide](https://zenoh.io/docs/getting-started/troubleshooting/)
 - [Zenoh Deployment Best Practices](https://zenoh.io/docs/getting-started/deployment/)
+- [Zenoh Releases 2024-2025](https://github.com/eclipse-zenoh/zenoh/releases) - Latest transport fixes
 
 ---
 
@@ -311,6 +348,25 @@ Vision Pi Router → Main Pi Router
 3. ⚠️ Bandwidth optimization для больших сообщений
 4. ⚠️ Network infrastructure issues (если они есть)
 
+### Важная находка: Zenoh 1.5.0 "Hong" (2025)
+
+**Ключевые улучшения в новом релизе:**
+- 🚀 **Увеличенная throughput** - значительное повышение производительности
+- 🧠 **Улучшенное управление памятью** - оптимизация shared memory API
+- ⚡ **Улучшенная обработка QoS** - "corrected handling of Reliability QoS for writers"
+- 🔧 **CongestionControl::Block** - явный контроль над blocking при переполнении буфера
+- 📊 **Улучшенная watchdog performance** - лучший мониторинг состояния
+
+**Проблема для Rob Box:**
+- ROS 2 Humble использует rmw_zenoh_cpp на базе **Zenoh 0.10.x/0.11.x** (старая версия)
+- Многие критичные fixes из Zenoh 1.5.0 **НЕ ДОСТУПНЫ** в текущей конфигурации
+- Issue #1876 (indefinite blocking) может быть **исправлен в Zenoh 1.5.0**
+
+**Рекомендация:**
+- Наше решение - это **best effort** для текущей версии Zenoh
+- Следить за обновлениями rmw_zenoh_cpp в ROS 2 Humble
+- Рассмотреть переход на ROS 2 Jazzy/Rolling (если они используют Zenoh 1.x)
+
 ### Рекомендация:
 
 **Развернуть текущее решение как ПЕРВЫЙ ШАГ**, так как оно:
@@ -324,10 +380,11 @@ Vision Pi Router → Main Pi Router
 2. Downsampling в RTAB-Map
 3. Network quality monitoring и optimization
 4. Рассмотреть UDP для sensor streams
+5. **Проверить возможность обновления до Zenoh 1.5.0+** (если доступно для ROS 2 Humble)
 
 **В долгосрочной перспективе:**
 - Следить за updates Zenoh (issue #1876, #314)
-- Рассмотреть обновление до Zenoh 1.0+ когда доступно в ROS 2
+- **Приоритет: обновление до Zenoh 1.5.0+** когда доступно в ROS 2
 - Архитектурные улучшения (dedicated network, edge processing)
 
 ---
