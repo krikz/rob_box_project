@@ -28,9 +28,9 @@
 **Решение:** Добавлен параметр `#iface=eth0` для принудительной маршрутизации через Ethernet  
 **Статус:** ⚠️ Частично эффективно - помогло, но wildcard endpoints всё ещё вызывали проблемы
 
-**Файлы (в корне проекта):**
-- **📄 [ZENOH_ETHERNET_INTERFACE_FIX_2025-11-10.md](../../ZENOH_ETHERNET_INTERFACE_FIX_2025-11-10.md)** - Детальная документация (305 строк)
-- **📄 [ZENOH_ETHERNET_QUICKFIX.md](../../ZENOH_ETHERNET_QUICKFIX.md)** - Краткий справочник (73 строки)
+**Файлы (архив):**
+- **📄 [ZENOH_ETHERNET_INTERFACE_FIX_2025-11-10.md](zenoh_old_fixes/ZENOH_ETHERNET_INTERFACE_FIX_2025-11-10.md)** - Детальная документация (305 строк)
+- **📄 [ZENOH_ETHERNET_QUICKFIX.md](zenoh_old_fixes/ZENOH_ETHERNET_QUICKFIX.md)** - Краткий справочник (73 строки)
 
 **Изменённые конфигурации:**
 ```json5
@@ -48,9 +48,9 @@ listen.endpoints: ["tcp/[::]:7447#iface=eth0"]
 **Решение:** Убраны connect endpoints у роутеров - локальные роутеры без внешних подключений  
 **Статус:** ❌ Закрыт без слияния - альтернативный подход в PR #180
 
-**Файлы (в корне проекта):**
-- **📄 [ZENOH_FIX_2025-11-10_DEPLOYMENT.md](../../ZENOH_FIX_2025-11-10_DEPLOYMENT.md)** - Deployment guide
-- **📄 [ZENOH_FIX_2025-11-10_MAXIMUM.md](../../ZENOH_FIX_2025-11-10_MAXIMUM.md)** - Максимальные исправления
+**Файлы (архив):**
+- **📄 [ZENOH_FIX_2025-11-10_DEPLOYMENT.md](zenoh_old_fixes/ZENOH_FIX_2025-11-10_DEPLOYMENT.md)** - Deployment guide
+- **📄 [ZENOH_FIX_2025-11-10_MAXIMUM.md](zenoh_old_fixes/ZENOH_FIX_2025-11-10_MAXIMUM.md)** - Максимальные исправления
 
 #### 3. PR #180 - Localhost Listen Fix
 
@@ -58,8 +58,8 @@ listen.endpoints: ["tcp/[::]:7447#iface=eth0"]
 **Решение:** Добавлен `tcp/localhost:7447` в listen endpoints вместе с `tcp/[::]:7447#iface=eth0`  
 **Статус:** ⚠️ Частично эффективно - устранило проблему подключения, но не конфликт портов
 
-**Файлы (в корне проекта):**
-- **📄 [ZENOH_FIX_QUICKSTART.md](../../ZENOH_FIX_QUICKSTART.md)** - Quick start guide
+**Файлы (архив):**
+- **📄 [ZENOH_FIX_QUICKSTART.md](zenoh_old_fixes/ZENOH_FIX_QUICKSTART.md)** - Quick start guide
 
 **Изменённые конфигурации:**
 ```json5
@@ -75,8 +75,8 @@ listen.endpoints: [
 **Решение:** Увеличены TX queue sizes до максимума (16 batches), wait_before_close до 60 секунд  
 **Статус:** ⚠️ Частично эффективно - улучшило стабильность, но не устранило корневую причину
 
-**Файлы (в корне проекта):**
-- **📄 [ZENOH_TRANSPORT_FIX_QUICKREF.md](../../ZENOH_TRANSPORT_FIX_QUICKREF.md)** - Quick reference
+**Файлы (архив):**
+- **📄 [ZENOH_TRANSPORT_FIX_QUICKREF.md](zenoh_old_fixes/ZENOH_TRANSPORT_FIX_QUICKREF.md)** - Quick reference
 
 **Изменённые параметры:**
 ```json5

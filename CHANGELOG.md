@@ -48,6 +48,12 @@
 - Ошибки компиляции apriltag и lslidar драйверов в Docker
 - TF трансформации - robot-state-publisher теперь использует Zenoh namespace wrapper (24 октября 2025)
 - Порядок TTS чанков - предотвращение смешивания между сеансами диалога (24 октября 2025)
+- **Zenoh router конфликт портов** - использование конкретных IP адресов вместо wildcard (10 ноября 2025)
+  - Main Pi router: `tcp/10.1.1.10:7447` (вместо `tcp/[::]:7447#iface=eth0`)
+  - Vision Pi router: `tcp/10.1.1.11:7447` (вместо `tcp/[::]:7447#iface=eth0`)
+  - ROS ноды: подключение к конкретным IP вместо localhost
+  - Устранены ошибки: "executor taking service request failed", "Unable to push message. Closing transport!", "Query not found"
+  - См. `docs/reports/ZENOH_PORT_CONFLICT_FIX_2025-11-10.md`
 - Отсутствующие директории scripts/ в Docker volumes (24 октября 2025)
 - Дублирование запусков тестов и линтинга в CI/CD (23 октября 2025)
 - Предупреждение 'PerceptionEvent не найден' в voice-assistant (24 октября 2025)
