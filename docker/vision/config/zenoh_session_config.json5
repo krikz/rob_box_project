@@ -40,8 +40,9 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     ///
-    /// ROS setting: By default connect to the Zenoh router on localhost on port 7447.
-    endpoints: ["tcp/localhost:7447"],
+    /// Vision Pi setting: Подключаемся к локальному роутеру через IP eth0 (НЕ localhost!)
+    /// Это гарантирует что весь трафик идёт через Gigabit Ethernet интерфейс
+    endpoints: ["tcp/10.1.1.11:7447"],
 
     /// Global connect configuration,
     /// Accepts a single value or different values for router, peer and client.
