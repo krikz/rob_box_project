@@ -692,7 +692,9 @@
         /// For very high throughput scenarios, the rx_buffer_size can be increased to accommodate
         /// more in-flight data. This is particularly relevant when dealing with large messages.
         /// E.g. for 16MiB rx_buffer_size set the value to: 16777216.
-        buffer_size: 65535,
+        /// Rob Box setting: Increased to 2MB to handle large camera images (RGB 1-3MB, depth 0.5-1MB)
+        ///                  and LiDAR point clouds (0.1-0.5MB) without excessive fragmentation.
+        buffer_size: 2097152,
         /// Maximum size of the defragmentation buffer at receiver end.
         /// Fragmented messages that are larger than the configured size will be dropped.
         /// The default value is 1GiB. This would work in most scenarios.
