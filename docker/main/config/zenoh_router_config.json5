@@ -89,8 +89,16 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    /// КРИТИЧНО: #iface=eth0 принимает подключения только через Gigabit Ethernet
-    endpoints: ["tcp/[::]:7447#iface=eth0"],
+    /// РЕШЕНИЕ: Используем ТОЛЬКО IP eth0 (без localhost)
+    /// - Локальные ROS ноды подключаются к 10.1.1.10:7447 (через session config)
+    /// - Vision Pi подключается к 10.1.1.10:7447 через eth0
+    /// ПРЕИМУЩЕСТВА:
+    /// - Весь трафик гарантированно через Gigabit Ethernet (eth0)
+    /// - Нет конфликта портов (один endpoint)
+    /// - Простая и понятная конфигурация
+    endpoints: [
+      "tcp/10.1.1.10:7447"            // Все подключения к Main Pi через eth0 IP
+    ],
 
     /// Global listen configuration,
     /// Accepts a single value or different values for router, peer and client.
