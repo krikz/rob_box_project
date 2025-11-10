@@ -1,200 +1,177 @@
-# 🔧 Краткое руководство: Исправление команд через REST API
+# 🔧 Краткое руководство: Возврат к рабочей конфигурации
 
-## 📋 Проблема
-Команды через `https://zenoh.robbox.online/robots/RBXU100001/0/cmd_vel_voice` не доходят до робота.
+## 📋 Ситуация
 
-## 🔍 Причины
+После добавления Zenoh namespace REST API перестал работать с ROS топиками.
 
-### 1. ❌ Неправильный режим облачного роутера
-```json
-// БЫЛО (неправильно):
-{
-  "mode": "peer"  // Не маршрутизирует между клиентами!
-}
+## ✅ Хорошие новости!
 
-// ДОЛЖНО БЫТЬ:
-{
-  "mode": "router",  // Полная маршрутизация
-  "routing": {
-    "router": {
-      "peers_failover_brokering": true  // Пересылка между peers
-    }
-  }
-}
-```
+**Данные УЖЕ идут через облако!** Видны топики: `robots/RBXU100001/0/...`
 
-### 2. ❌ REST API не совместим с ROS топиками напрямую
+- ✅ Namespace работает правильно  
+- ✅ Domain ID (`/0`) - это нормально (часть формата rmw_zenoh)
+- ✅ Данные от робота доходят до облака
 
-**Проблема:** 
-- REST API публикует на: `robots/RBXU100001/0/cmd_vel_voice`
-- ROS подписывается на: `robots/RBXU100001/0/cmd_vel_voice/geometry_msgs::msg::dds_::Twist_/RIHS01_...`
-
-**Ключи не совпадают** → сообщения не доставляются!
+**Проблема:** REST API не может публиковать на сложные ROS ключи с типами.
 
 ---
 
-## ✅ Решение
+## ⭐ РЕШЕНИЕ: Вернуть DDS Bridge
 
-### Шаг 1: Исправить облачный роутер (zenoh.robbox.online)
+**Это работало раньше!** DDS плагин автоматически транслирует между REST/Zenoh и ROS.
+
+### Шаг 1: Настроить облачный роутер
+
+**На zenoh.robbox.online:**
 
 ```bash
 # 1. Остановить Zenoh
 sudo systemctl stop zenoh-router
 
-# 2. Скачать правильную конфигурацию
-wget https://raw.githubusercontent.com/krikz/rob_box_project/main/docs/cloud/zenoh_router_config.json5 \
-  -O /etc/zenoh/config.json5
+# 2. Установить DDS плагин (если ещё не установлен)
+cargo install zenoh-plugin-dds
 
-# 3. Запустить Zenoh
+# 3. Скачать конфигурацию с DDS плагином
+wget https://raw.githubusercontent.com/krikz/rob_box_project/main/docs/cloud/zenoh_router_config.json5 \
+  -O /tmp/zenoh_config.json5
+
+# 4. Раскомментировать секцию DDS
+sed -i 's|^    // dds:|    dds:|' /tmp/zenoh_config.json5
+sed -i 's|^    //   |      |' /tmp/zenoh_config.json5
+
+# Или вручную:
+nano /tmp/zenoh_config.json5
+# Найти секцию "// dds:" и убрать комментарии
+
+# 5. Применить конфигурацию
+sudo cp /tmp/zenoh_config.json5 /etc/zenoh/config.json5
+
+# 6. Запустить Zenoh
 sudo systemctl start zenoh-router
 
-# 4. Проверить режим
-curl http://localhost:8000/@/router/config | grep mode
-# Должно быть: "mode":"router"
+# 7. Проверить логи
+sudo journalctl -u zenoh-router -n 50
+# Должно быть: 
+# - "mode": "router"
+# - DDS plugin loaded
 ```
 
-### Шаг 2: Установить мост на роботе
+### Шаг 2: Проверить конфигурацию
 
 ```bash
-# На роботе (SSH: ros2@10.1.1.20)
+# Режим должен быть router
+curl -s http://localhost:8000/@/router/config | grep -o '"mode":"[^"]*"'
+# Вывод: "mode":"router"
 
-# 1. Установить zenoh-python
-pip3 install eclipse-zenoh
-
-# 2. Скачать скрипт моста
-cd ~/rob_box_project
-git pull
-cp scripts/zenoh_rest_bridge.py ~/
-
-# 3. Запустить мост
-source /opt/ros/humble/setup.bash
-python3 ~/zenoh_rest_bridge.py
-
-# Вы должны увидеть:
-# ✅ Мост запущен и готов к работе!
-# Подписка на Zenoh топик: cmd_vel_web_bridge
-# Публикация в ROS топик: cmd_vel_voice
+# DDS плагин должен быть активен
+curl -s http://localhost:8000/@/router/status | grep -i dds
 ```
 
-### Шаг 3: Протестировать
+### Шаг 3: Тестировать REST API
 
 ```bash
-# С вашей машины отправить команду
-curl -X PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_web_bridge \
+# DDS плагин позволяет использовать ПРОСТЫЕ ключи!
+curl -X PUT http://zenoh.robbox.online/cmd_vel_voice \
   -H "Content-Type: application/json" \
   -d '{"linear":{"x":0.1,"y":0,"z":0},"angular":{"x":0,"y":0,"z":0}}'
 
-# Проверить логи моста на роботе
-# Должно появиться: 📨 Получено и отправлено: linear=(0.10, 0.00, 0.00), ...
-
-# Проверить логи twist_mux
-docker logs -f twist-mux
-# Должно появиться получение команды на cmd_vel_voice
+# Или для веб команд:
+curl -X PUT http://zenoh.robbox.online/cmd_vel_web \
+  -H "Content-Type: application/json" \
+  -d '{"linear":{"x":0.1},"angular":{"z":0.0}}'
 ```
+
+**DDS плагин автоматически:**
+- ✅ Конвертирует JSON → ROS Twist
+- ✅ Добавляет правильные типы сообщений
+- ✅ Публикует в DDS/ROS с namespace
+- ✅ Робот получает команду!
 
 ---
 
-## 📖 Полная документация
+## 📝 Конфигурация DDS плагина
 
-- **Анализ проблемы:** `docs/reports/ZENOH_CLOUD_CONFIG_ISSUE_2025-11-10.md`
-- **Конфигурация облака:** `docs/cloud/README.md`
-- **Диагностика:** `scripts/diagnose_zenoh_cloud.sh`
+В `/etc/zenoh/config.json5` должно быть:
 
----
-
-## 🎯 Systemd сервис для моста (рекомендуется)
-
-Для автозапуска моста при старте робота:
-
-```bash
-# Создать сервис
-sudo nano /etc/systemd/system/zenoh-rest-bridge.service
-```
-
-```ini
-[Unit]
-Description=Zenoh REST to ROS Bridge
-After=network.target docker.service
-
-[Service]
-Type=simple
-User=ros2
-WorkingDirectory=/home/ros2
-Environment="ROS_DOMAIN_ID=0"
-Environment="RMW_IMPLEMENTATION=rmw_zenoh_cpp"
-ExecStartPre=/bin/bash -c 'source /opt/ros/humble/setup.bash'
-ExecStart=/usr/bin/python3 /home/ros2/zenoh_rest_bridge.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-# Включить и запустить
-sudo systemctl enable zenoh-rest-bridge
-sudo systemctl start zenoh-rest-bridge
-sudo systemctl status zenoh-rest-bridge
+```json5
+plugins: {
+  rest: {
+    http_port: 8000,
+  },
+  
+  // ⭐ DDS ПЛАГИН - раскомментируйте это:
+  dds: {
+    domain: 0,           // ROS_DOMAIN_ID
+    mode: "peer",        // Режим DDS
+    allow: {
+      topics: [
+        "cmd_vel_voice",  // Голосовые команды
+        "cmd_vel_web",    // Веб команды
+        "cmd_vel_joy",    // Джойстик
+      ]
+    }
+  },
+  
+  storage_manager: {
+    // ...
+  }
+}
 ```
 
 ---
 
 ## 🔍 Диагностика
 
-Если не работает, запустите диагностику:
+### Проблема: DDS плагин не загружается
 
 ```bash
-cd ~/rob_box_project/docker/main
-../../scripts/diagnose_zenoh_cloud.sh
+# Проверить установлен ли плагин
+ls /usr/local/lib/libzenoh_plugin_dds.so
+# или
+cargo install --list | grep zenoh-plugin-dds
+
+# Переустановить
+cargo install --force zenoh-plugin-dds
 ```
 
-Скрипт проверит:
-- ✅ ROBOT_ID
-- ✅ Zenoh Router запущен
-- ✅ twist-mux подписан
-- ✅ Подключение к облаку
-- ✅ Режим облачного роутера
-- ✅ Namespace конфигурация
+### Проблема: Команды всё ещё не доходят
 
----
+```bash
+# На роботе проверить логи twist_mux
+docker logs -f twist-mux
 
-## 📊 Как это работает
-
+# Должно появиться получение команды на cmd_vel_voice
 ```
-1. Веб UI отправляет:
-   PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_web_bridge
-   {"linear": {"x": 0.1}, "angular": {"z": 0.0}}
-   
-   ↓
 
-2. Облачный Zenoh Router (режим router):
-   Маршрутизирует к роботу
-   
-   ↓
+### Проблема: Нужен отладочный вывод
 
-3. Zenoh REST Bridge на роботе:
-   Получает JSON
-   Конвертирует в ROS Twist
-   
-   ↓
-
-4. ROS топик cmd_vel_voice:
-   Публикует Twist с правильным типом и хашем
-   
-   ↓
-
-5. twist_mux:
-   Получает команду (приоритет 25)
-   
-   ↓
-
-6. /diff_drive_controller/cmd_vel_unstamped:
-   Команда доходит до моторов!
+```bash
+# Запустить Zenoh с debug логами
+RUST_LOG=zenoh=debug,zenoh_plugin_dds=debug zenohd -c /etc/zenoh/config.json5
 ```
 
 ---
 
-**Важно:** Используйте топик **`cmd_vel_web_bridge`**, а не `cmd_vel_voice`!
+## 🎯 Чем это лучше Python моста
 
-**Готово!** 🎉
+| Параметр | DDS Bridge | Python мост |
+|----------|------------|-------------|
+| **Работало раньше** | ✅ Да | ❌ Нет |
+| **Производительность** | ✅ Высокая | ⚠️ Средняя |
+| **Простота REST API** | ✅ Простые ключи | ⚠️ Нужен мост |
+| **Автоматическая конвертация** | ✅ Да | ⚠️ Ручная |
+| **Типы сообщений** | ✅ Автоматически | ⚠️ Только Twist |
+| **Поддержка** | ✅ Официальный плагин | ⚠️ Кастомный скрипт |
+
+---
+
+## 📖 Дополнительно
+
+- **Полная документация:** `docs/cloud/README.md`
+- **Анализ проблемы:** `docs/reports/ZENOH_CLOUD_CONFIG_ISSUE_2025-11-10.md`
+- **Про Domain ID:** `docs/reports/ZENOH_NAMESPACE_AND_DOMAIN_EXPLANATION.md`
+- **Zenoh-plugin-dds:** https://github.com/eclipse-zenoh/zenoh-plugin-dds
+
+---
+
+**Готово!** После применения REST API будет работать как раньше! 🎉
