@@ -70,22 +70,31 @@ curl -s http://localhost:8000/@/router/status | grep -i dds
 ### Шаг 3: Тестировать REST API
 
 ```bash
-# DDS плагин позволяет использовать ПРОСТЫЕ ключи!
-curl -X PUT http://zenoh.robbox.online/cmd_vel_voice \
+# ⭐ ВАЖНО: Namespace ОБЯЗАТЕЛЕН для выбора робота!
+# Формат: http://zenoh.robbox.online/robots/{ROBOT_ID}/{topic}
+
+# Для робота RBXU100001:
+curl -X PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_voice \
   -H "Content-Type: application/json" \
   -d '{"linear":{"x":0.1,"y":0,"z":0},"angular":{"x":0,"y":0,"z":0}}'
 
-# Или для веб команд:
-curl -X PUT http://zenoh.robbox.online/cmd_vel_web \
+# Для веб команд:
+curl -X PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_web \
+  -H "Content-Type: application/json" \
+  -d '{"linear":{"x":0.1},"angular":{"z":0.0}}'
+
+# Для другого робота (например, RBXU100002):
+curl -X PUT http://zenoh.robbox.online/robots/RBXU100002/cmd_vel_voice \
   -H "Content-Type: application/json" \
   -d '{"linear":{"x":0.1},"angular":{"z":0.0}}'
 ```
 
 **DDS плагин автоматически:**
+- ✅ Принимает команду с namespace (выбор робота)
 - ✅ Конвертирует JSON → ROS Twist
-- ✅ Добавляет правильные типы сообщений
-- ✅ Публикует в DDS/ROS с namespace
-- ✅ Робот получает команду!
+- ✅ Добавляет правильные типы сообщений и domain
+- ✅ Публикует в DDS/ROS на конкретном роботе
+- ✅ Только выбранный робот получает команду!
 
 ---
 
@@ -117,6 +126,22 @@ plugins: {
   }
 }
 ```
+
+### ⚠️ Важно про Namespace
+
+**Namespace сохраняется!** DDS плагин работает **ВНУТРИ** namespace каждого робота.
+
+REST API путь: `http://zenoh.robbox.online/robots/{ROBOT_ID}/{topic}`
+
+- `robots/{ROBOT_ID}` - выбор конкретного робота (namespace)
+- `{topic}` - ROS топик (например, `cmd_vel_voice`)
+
+DDS плагин автоматически:
+1. Получает команду с путём `robots/RBXU100001/cmd_vel_voice`
+2. Добавляет domain (`0`), тип сообщения и хаш
+3. Публикует в ROS на **конкретном роботе**
+
+**Каждый робот изолирован через свой namespace!**
 
 ---
 
