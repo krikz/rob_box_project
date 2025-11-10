@@ -89,8 +89,9 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    /// КРИТИЧНО: #iface=eth0 принимает подключения только через Gigabit Ethernet
-    endpoints: ["tcp/[::]:7447#iface=eth0"],
+    /// Main Pi router слушает на своём конкретном IP адресе eth0 (10.1.1.10)
+    /// НЕ использовать wildcard [::] чтобы избежать конфликта с Vision Pi router
+    endpoints: ["tcp/10.1.1.10:7447"],
 
     /// Global listen configuration,
     /// Accepts a single value or different values for router, peer and client.

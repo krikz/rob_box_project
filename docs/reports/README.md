@@ -2,6 +2,76 @@
 
 Технические отчёты, аудиты, исправления проблем и итоги сессий разработки.
 
+## 🎯 КРИТИЧЕСКИЕ исправления Zenoh (2025-11-10)
+
+### ✅ [ZENOH_PORT_CONFLICT_FIX_2025-11-10.md](ZENOH_PORT_CONFLICT_FIX_2025-11-10.md) 🆕 **ПРИОРИТЕТ #1**
+**Исправление конфликта портов Zenoh router**
+
+**Проблема:**
+- ROS service executor errors: "unexpectedly failed: error not set"
+- Zenoh transport errors: "Unable to push non droppable network message. Closing transport!"
+- Query timeouts: "Didn't receive DeclareFinal for interest: Timeout(10s)"
+- Причина: Оба роутера (Main Pi и Vision Pi) слушали на `tcp/[::]:7447#iface=eth0` - конфликт портов!
+
+**Решение:**
+- Main Pi router: `tcp/10.1.1.10:7447` (конкретный IP вместо wildcard)
+- Vision Pi router: `tcp/10.1.1.11:7447` (конкретный IP вместо wildcard)
+- Session configs: подключение к конкретным IP вместо localhost
+- ✅ Все конфигурации исправлены и готовы к развёртыванию
+
+**Результат:**
+- ✅ НЕТ конфликтов портов
+- ✅ ВЕСЬ трафик через Gigabit Ethernet (явные IP 10.1.1.x)
+- ✅ Предсказуемая маршрутизация
+- ✅ Простая диагностика
+
+**📖 Quick Deploy:** [ZENOH_PORT_CONFLICT_QUICKFIX.md](ZENOH_PORT_CONFLICT_QUICKFIX.md)
+
+### 📚 [ZENOH_FIXES_INDEX.md](ZENOH_FIXES_INDEX.md) 🆕
+**Индекс всех Zenoh исправлений**
+
+Полный каталог исправлений Zenoh с хронологией:
+- PR #177 - Ethernet interface fix (#iface=eth0)
+- PR #179 - Router connection fix (closed)
+- PR #180 - Localhost listen fix  
+- PR #182 - TX buffer увеличение (максимум)
+- **РЕШЕНИЕ** - Port conflict fix (текущий)
+
+---
+
+## 📄 Отчёты 2025-11-10
+
+### [ZENOH_COMMUNITY_RESEARCH_2025-11-10.md](ZENOH_COMMUNITY_RESEARCH_2025-11-10.md)
+**Исследование Zenoh community solutions**
+
+Исследование решений из:
+- Eclipse Zenoh GitHub Issues
+- Articulated Robotics рекомендации
+- ROS 2 rmw_zenoh_cpp документация
+
+---
+
+## 📄 Отчёты 2025-11-09
+
+### [ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
+**Детальный анализ Zenoh transport errors**
+
+Глубокий анализ проблемы:
+- Анализ логов и паттернов ошибок
+- TX queue механизмы
+- Эксперименты с настройками
+- Выводы и рекомендации
+
+### [ZENOH_VERSION_RESEARCH_2025-11-09.md](ZENOH_VERSION_RESEARCH_2025-11-09.md)
+**Исследование версий Zenoh**
+
+Compatibility анализ:
+- Zenoh 0.11.x vs 1.0.x
+- ROS 2 Humble rmw_zenoh_cpp
+- Migration paths
+
+---
+
 ## 📄 Отчёты 2025-10-24
 
 ### [TF_TRANSFORMATION_FIX.md](TF_TRANSFORMATION_FIX.md) 🆕
