@@ -1,8 +1,9 @@
 # Анализ ошибки Zenoh Transport "Unable to push non droppable network message"
 
 **Дата:** 2025-11-09  
+**Обновлено:** 2025-11-10  
 **Автор:** AI Agent Analysis  
-**Статус:** 🔍 Анализ завершён, решение предложено
+**Статус:** 🔧 Решение усилено после повторных ошибок
 
 ---
 
@@ -10,10 +11,20 @@
 
 ### Симптомы
 
-Периодически в логах Zenoh роутера появляется критическая ошибка:
+Периодически в логах Zenoh роутера появляются критические ошибки:
 
+**Main Pi Router:**
 ```
-2025-11-09T10:34:02.327078Z ERROR rx-0 ThreadId(07) zenoh_transport::unicast::universal::tx: Unable to push non droppable network message to 42cd01b3a16f7a5c6d7f31bcd507b6dc. Closing transport!
+2025-11-10T07:32:41.482918Z ERROR rx-191 ThreadId(276) zenoh_transport::unicast::universal::tx: Unable to push non droppable network message to 42cd01b3a16f7a5c6d7f31bcd507b6dc. Closing transport!
+
+2025-11-10T07:31:45.874461Z ERROR rx-191 ThreadId(276) zenoh::net::protocol::network: Cannot find link 1
+2025-11-10T07:31:45.874516Z ERROR rx-191 ThreadId(276) zenoh::net::protocol::network: Cannot find link 1
+(повторяется многократно)
+```
+
+**Vision Pi Router:**
+```
+2025-11-09T11:27:21.238683Z ERROR rx-0 ThreadId(06) zenoh_transport::unicast::universal::tx: Unable to push non droppable network message to cbc9ab957b80bce0e95b5d6a17e8af18. Closing transport!
 ```
 
 **Последствия:**
@@ -21,12 +32,15 @@
 - 🔴 Потеря данных ROS 2 (топики, сервисы, TF)
 - 🔴 Переподключение роутера Vision Pi ↔ Main Pi
 - 🔴 Временная недоступность SLAM данных
+- 🔴 Каскадные ошибки "Cannot find link" после закрытия транспорта
 
 ---
 
 ## 🔬 Техническая диагностика
 
-### Расшифровка ошибки
+### Расшифровка ошибок
+
+**Ошибка 1: "Unable to push non droppable network message"**
 
 | Элемент | Значение | Объяснение |
 |---------|----------|------------|
@@ -34,6 +48,20 @@
 | **Проблема** | "Unable to push non droppable network message" | Не удалось поместить КРИТИЧЕСКОЕ сообщение в очередь |
 | **ZID** | `42cd01b3a16f7a5c6d7f31bcd507b6dc` | Zenoh ID удалённого узла (Vision Pi ↔ Main Pi router) |
 | **Действие** | "Closing transport!" | Принудительное закрытие соединения |
+
+**Ошибка 2: "Cannot find link"**
+
+| Элемент | Значение | Объяснение |
+|---------|----------|------------|
+| **Модуль** | `zenoh::net::protocol::network` | Сетевой протокол Zenoh |
+| **Проблема** | "Cannot find link 1" | Link ID 1 отсутствует в `VecMap<Link>` |
+| **Причина** | **Каскадный эффект** после закрытия транспорта | После "Closing transport!" link удаляется, но код пытается к нему обратиться |
+| **Источник** | `network.rs:287` | Метод `get_local_context()` не находит link в `self.links.get(link_id)` |
+
+**Связь между ошибками:**
+```
+Unable to push → Closing transport! → Link удалён из VecMap → Cannot find link 1
+```
 
 ### Механизм возникновения
 
@@ -407,6 +435,115 @@ dpkg -l | grep zenoh
 - ✅ Стабильное соединение между роутерами
 - ✅ Нет разрывов transport при пиковых нагрузках
 - ✅ Использование памяти увеличится на ~1-2 MB на роутер (приемлемо)
+
+**Обновление 2025-11-10:** Если базовое исправление (очереди=4, таймаут=20с) оказалось недостаточным,
+применяется усиленное решение (см. раздел "Усиленное исправление" ниже).
+
+---
+
+## 🔧 Усиленное исправление (2025-11-10)
+
+### Ситуация
+
+После применения первоначального исправления (2025-11-09):
+- ✅ Размер очередей увеличен: 2 → 4 batch
+- ✅ Таймаут увеличен: 5с → 20с
+- ❌ **Ошибки продолжают появляться** под высокой нагрузкой
+
+### Причина недостаточности базового исправления
+
+При **очень высоких пиковых нагрузках**:
+```
+Камера OAK-D (burst):  до 50 MB/s (резкие пики при смене сцены)
+LiDAR (dense scan):     до 5 MB/s (плотные облака точек)
+RTAB-Map (mapping):     до 3 MB/s (активная картография)
+TF + Nav2:              до 2 MB/s
+-------------------------------------------
+ПИКОВАЯ НАГРУЗКА:       до 60 MB/s
+```
+
+Даже с очередями по 4 batch (256 KB):
+- Заполнение за: 256 KB / 60 MB/s ≈ **4 миллисекунды**
+- Таймаут 20 секунд помогает, но при частых пиках система всё равно перегружается
+
+### Усиленное решение: Приоритизация очередей
+
+Вместо равномерного увеличения всех очередей, **приоритизируем критичные**:
+
+```json5
+size: {
+  control: 8,           // Критичные control сообщения (×2)
+  real_time: 8,         // Данные камеры и LiDAR (×2)
+  interactive_high: 4,  // Без изменений
+  interactive_low: 4,   // Без изменений
+  data_high: 6,         // TF и Nav2 (×1.5)
+  data: 4,              // Без изменений
+  data_low: 2,          // Уменьшено (низкий приоритет)
+  background: 2,        // Уменьшено (низкий приоритет)
+}
+```
+
+**Эффект:**
+- **control & real_time**: 512 KB буфер (вместо 256 KB) → заполнение за ~8.5 мс
+- **data_high**: 384 KB буфер (вместо 256 KB) → заполнение за ~6.4 мс
+- **data_low & background**: освобождена память для критичных очередей
+- **Общая память**: ~3 MB на роутер (вместо 2 MB)
+
+**Таймаут:**
+- Увеличен: 20с → **30с**
+- Ещё больше времени на переживание пиковых нагрузок
+
+### Применённые изменения
+
+**Файлы:**
+- `docker/main/config/zenoh_router_config.json5`
+- `docker/vision/config/zenoh_router_config.json5`
+
+**Изменения:**
+```diff
+queue: {
+  size: {
+-   control: 4,
++   control: 8,
+-   real_time: 4,
++   real_time: 8,
+    interactive_high: 4,
+    interactive_low: 4,
+-   data_high: 4,
++   data_high: 6,
+    data: 4,
+-   data_low: 4,
++   data_low: 2,
+-   background: 4,
++   background: 2,
+  },
+  congestion_control: {
+    block: {
+-     wait_before_close: 20000000,  // 20 секунд
++     wait_before_close: 30000000,  // 30 секунд
+    },
+  },
+}
+```
+
+### Применение на роботе
+
+```bash
+# Vision Pi
+sshpass -p 'open' ssh ros2@10.1.1.21 'cd ~/rob_box_project && git pull'
+sshpass -p 'open' ssh ros2@10.1.1.21 'cd ~/rob_box_project/docker/vision && docker compose restart zenoh-router'
+
+# Main Pi  
+sshpass -p 'open' ssh ros2@10.1.1.20 'cd ~/rob_box_project && git pull'
+sshpass -p 'open' ssh ros2@10.1.1.20 'cd ~/rob_box_project/docker/main && docker compose restart zenoh-router'
+```
+
+### Ожидаемый результат
+
+- ✅ Критичные очереди (control, real_time) выдержат в 2 раза больше
+- ✅ Таймаут 30 секунд даёт +50% времени на восстановление
+- ✅ Низкоприоритетный трафик не мешает критичному
+- ✅ "Cannot find link" ошибки исчезнут (так как transport не будет закрываться)
 
 ---
 
