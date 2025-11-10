@@ -131,13 +131,17 @@
     /// 
     /// Преимущества:
     ///   - Автоматическая конвертация DDS ↔ Zenoh
-    ///   - Правильная обработка ROS типов сообщений
+    ///   - Правильная обработка ROS типов сообщений и CDR формата
     ///   - Работает С namespace (изоляция роботов)
     ///   - Нет необходимости в дополнительных мостах
     ///
     /// ВАЖНО: Namespace сохраняется для изоляции роботов!
     /// REST API путь: http://zenoh.robbox.online/robots/{ROBOT_ID}/{topic}
     /// Пример: http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_voice
+    ///
+    /// ФОРМАТ ДАННЫХ: CDR (Common Data Representation) бинарный формат, НЕ JSON!
+    /// REST API принимает сериализованные CDR данные (Content-Type: application/octet-stream)
+    /// См. пример клиента: docs/examples/zenoh_rest_client.ts
     ///
     /// Раскомментируйте для использования:
     // dds: {

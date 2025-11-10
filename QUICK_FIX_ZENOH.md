@@ -1,4 +1,4 @@
-# 🔧 Краткое руководство: Возврат к рабочей конфигурации
+# 🔧 Решение проблемы REST API с rmw_zenoh
 
 ## 📋 Ситуация
 
@@ -11,14 +11,27 @@
 - ✅ Namespace работает правильно  
 - ✅ Domain ID (`/0`) - это нормально (часть формата rmw_zenoh)
 - ✅ Данные от робота доходят до облака
+- ✅ **Все ноды работают напрямую через rmw_zenoh** (переход с DDS для снижения нагрузки на сеть)
 
 **Проблема:** REST API не может публиковать на сложные ROS ключи с типами.
 
 ---
 
-## ⭐ РЕШЕНИЕ: Вернуть DDS Bridge
+## 🎯 Почему rmw_zenoh?
 
-**Это работало раньше!** DDS плагин автоматически транслирует между REST/Zenoh и ROS.
+Проект **специально перешёл с DDS на rmw_zenoh** для:
+- ✅ Снижения нагрузки на сеть
+- ✅ Более эффективной маршрутизации
+- ✅ Лучшей масштабируемости
+- ✅ Поддержки облачных роутеров
+
+**Возврат к DDS bridge НЕ рекомендуется** - это вернёт проблемы с нагрузкой на сеть.
+
+---
+
+## ⭐ РЕШЕНИЕ: Python мост REST → ROS
+
+Легковесный мост для конвертации REST API команд в ROS топики.
 
 ### Шаг 1: Настроить облачный роутер
 
@@ -28,73 +41,75 @@
 # 1. Остановить Zenoh
 sudo systemctl stop zenoh-router
 
-# 2. Установить DDS плагин (если ещё не установлен)
-cargo install zenoh-plugin-dds
-
-# 3. Скачать конфигурацию с DDS плагином
+# 2. Скачать конфигурацию
 wget https://raw.githubusercontent.com/krikz/rob_box_project/main/docs/cloud/zenoh_router_config.json5 \
   -O /tmp/zenoh_config.json5
 
-# 4. Раскомментировать секцию DDS
-sed -i 's|^    // dds:|    dds:|' /tmp/zenoh_config.json5
-sed -i 's|^    //   |      |' /tmp/zenoh_config.json5
-
-# Или вручную:
-nano /tmp/zenoh_config.json5
-# Найти секцию "// dds:" и убрать комментарии
-
-# 5. Применить конфигурацию
+# 3. Применить конфигурацию
 sudo cp /tmp/zenoh_config.json5 /etc/zenoh/config.json5
 
-# 6. Запустить Zenoh
+# 4. Запустить Zenoh
 sudo systemctl start zenoh-router
 
-# 7. Проверить логи
+# 5. Проверить логи
 sudo journalctl -u zenoh-router -n 50
 # Должно быть: 
 # - "mode": "router"
-# - DDS plugin loaded
+# - peers_failover_brokering: true
 ```
 
-### Шаг 2: Проверить конфигурацию
+### Шаг 2: Установить Python мост на роботе
+
+**На роботе (SSH: ros2@10.1.1.20):**
 
 ```bash
-# Режим должен быть router
-curl -s http://localhost:8000/@/router/config | grep -o '"mode":"[^"]*"'
-# Вывод: "mode":"router"
+# 1. Установить zenoh-python
+pip3 install eclipse-zenoh
 
-# DDS плагин должен быть активен
-curl -s http://localhost:8000/@/router/status | grep -i dds
+# 2. Скопировать скрипт моста
+cd ~/rob_box_project
+git pull
+cp scripts/zenoh_rest_bridge.py ~/
+
+# 3. Запустить мост
+source /opt/ros/humble/setup.bash
+python3 ~/zenoh_rest_bridge.py
+
+# Должно появиться:
+# ✅ Мост запущен и готов к работе!
+# Подписка на Zenoh топик: cmd_vel_web_bridge
+# Публикация в ROS топик: cmd_vel_voice
 ```
 
 ### Шаг 3: Тестировать REST API
 
 ```bash
-# ⭐ ВАЖНО: Namespace ОБЯЗАТЕЛЕН для выбора робота!
-# Формат: http://zenoh.robbox.online/robots/{ROBOT_ID}/{topic}
+# ⭐ ВАЖНО: 
+# 1. Namespace ОБЯЗАТЕЛЕН для выбора робота
+# 2. Используется специальный топик для моста: cmd_vel_web_bridge
+# 3. Формат данных: CDR бинарный (НЕ JSON!)
 
-# Для робота RBXU100001:
-curl -X PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_voice \
-  -H "Content-Type: application/json" \
-  -d '{"linear":{"x":0.1,"y":0,"z":0},"angular":{"x":0,"y":0,"z":0}}'
+# Из веб-приложения (TypeScript/JavaScript):
+# См. docs/examples/zenoh_rest_client.ts
+const cdrData = serializeTwist(0.1, 0.0);  // linear, angular
+fetch('http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_web_bridge', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/octet-stream' },
+  body: cdrData
+});
 
-# Для веб команд:
-curl -X PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_web \
-  -H "Content-Type: application/json" \
-  -d '{"linear":{"x":0.1},"angular":{"z":0.0}}'
-
-# Для другого робота (например, RBXU100002):
-curl -X PUT http://zenoh.robbox.online/robots/RBXU100002/cmd_vel_voice \
-  -H "Content-Type: application/json" \
-  -d '{"linear":{"x":0.1},"angular":{"z":0.0}}'
+# Из командной строки (с готовым CDR файлом):
+curl -X PUT http://zenoh.robbox.online/robots/RBXU100001/cmd_vel_web_bridge \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @twist.cdr
 ```
 
-**DDS плагин автоматически:**
-- ✅ Принимает команду с namespace (выбор робота)
-- ✅ Конвертирует JSON → ROS Twist
-- ✅ Добавляет правильные типы сообщений и domain
-- ✅ Публикует в DDS/ROS на конкретном роботе
-- ✅ Только выбранный робот получает команду!
+**Python мост автоматически:**
+- ✅ Получает CDR данные на `cmd_vel_web_bridge`
+- ✅ Декодирует CDR → ROS Twist
+- ✅ Публикует в ROS топик `cmd_vel_voice` с правильным типом
+- ✅ twist_mux получает команду (приоритет 25)
+- ✅ Робот движется!
 
 ---
 
