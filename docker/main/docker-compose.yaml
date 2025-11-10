@@ -140,7 +140,7 @@ services:
       - ./scripts:/ros_scripts:ro
       - ./maps:/maps
     # === RTAB-Map конфигурация для 2D LiDAR SLAM ===
-    # Полная документация: docs/reference/RTABMAP_LIDAR_CONFIG.md
+    # Полная документация: docs/reference/ICP_ODOMETRY_TUNING.md
     #
     # Источники:
     # 1. http://wiki.ros.org/rtabmap_ros/Tutorials/SetupOnYourRobot
@@ -157,6 +157,11 @@ services:
     # • Icp/VoxelSize=0.05 - фильтрация сканов 5см вокселями
     # • Grid/RangeMin=0.2 - игнорировать точки ближе 20см
     # • Grid/Sensor=0 - сетка из лидара (не из depth камеры)
+    #
+    # ICP ODOMETRY ПАРАМЕТРЫ (для уменьшения warnings):
+    # • Icp/MaxTranslation=0.5 - увеличено с 0.2м (позволяет быстрое движение)
+    # • Icp/MaxRotation=1.0 - увеличено с 0.78 рад (позволяет резкие повороты)
+    # • Icp/CorrespondenceRatio=0.2 - снижено с 0.4 (менее строгий порог совпадений)
     #
     # ОЖИДАЕМЫЕ ПОДПИСКИ: /scan, /rtabmap/odom_info
     command:
