@@ -1,9 +1,12 @@
 # Quick Reference: Zenoh Transport Error Fix
 
 **Дата:** 2025-11-09  
-**Обновлено:** 2025-11-10 (Максимальное исправление)  
+**Обновлено:** 2025-11-10 (Максимальное исправление + исследование Kilted)  
 **Проблема:** `ERROR: Unable to push non droppable network message. Closing transport!` + `ERROR: Cannot find link 1`  
 **Статус:** ⚠️ Максимальное исправление применено (2025-11-10), требует тестирования
+
+> 📚 **ВАЖНО:** Исследована миграция на ROS 2 Kilted - см. [ZENOH_KILTED_MIGRATION_RESEARCH.md](ZENOH_KILTED_MIGRATION_RESEARCH.md)  
+> ❌ **Рекомендация:** НЕ мигрировать на Kilted сейчас (использует Zenoh 1.1.1, не 1.5.0)
 
 ---
 
@@ -194,6 +197,10 @@ queue: {
 
 **Максимальное исправление:**  
 📄 [ZENOH_FIX_2025-11-10_MAXIMUM.md](ZENOH_FIX_2025-11-10_MAXIMUM.md)
+
+**Исследование миграции на Kilted:**  
+📄 [ZENOH_KILTED_MIGRATION_RESEARCH.md](ZENOH_KILTED_MIGRATION_RESEARCH.md) - детальное исследование  
+📄 [ZENOH_KILTED_QUICKREF.md](ZENOH_KILTED_QUICKREF.md) - быстрый справочник
 
 **Связанные документы:**
 - [SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md)
