@@ -1,5 +1,72 @@
 # Диагностика и решение проблем
 
+## Проблема: OAK-D камера отключается через несколько часов (X_LINK_ERROR)
+
+### Симптомы
+```
+[ERROR] [camera]: No data on logger queue!
+[ERROR] [camera]: Camera diagnostics error: Communication exception - possible device error/misconfiguration. 
+Original message 'Couldn't read data from stream: 'sys_logger_queue' (X_LINK_ERROR)'
+```
+
+Камера работает нормально в течение нескольких часов (обычно 8+ часов), затем начинает выдавать ошибки связи с USB устройством и перестаёт публиковать данные.
+
+### Причина
+USB autosuspend и нестабильность USB соединения при длительной работе. Это известная проблема DepthAI/OAK-D камер.
+
+### Решение ✅
+
+**Автоматическое исправление уже реализовано!** Необходимо только установить watchdog сервис на Vision Pi.
+
+#### Установка (одноразово на Vision Pi)
+
+```bash
+# 1. Перейти в директорию проекта
+cd ~/rob_box_project/docker/vision
+
+# 2. Обновить код
+git pull origin main
+
+# 3. Установить watchdog service
+cd scripts/oak-d
+./install_watchdog.sh
+
+# 4. Перезапустить контейнер
+cd ~/rob_box_project/docker/vision
+./update_and_restart.sh
+```
+
+#### Что делает исправление
+
+1. **USB Power Management** - отключает автоматическое отключение USB устройств
+2. **Health Watchdog** - мониторит здоровье камеры каждые 30 секунд
+3. **Auto-restart** - автоматически перезапускает контейнер при обнаружении ошибок (после 5 подряд)
+
+#### Проверка работы
+
+```bash
+# Статус watchdog
+sudo systemctl status oak-d-watchdog
+
+# Логи watchdog
+tail -f /tmp/oak-d-watchdog.log
+
+# Логи камеры
+docker logs oak-d -f
+```
+
+#### Управление watchdog
+
+```bash
+sudo systemctl start oak-d-watchdog    # Запустить
+sudo systemctl stop oak-d-watchdog     # Остановить
+sudo systemctl restart oak-d-watchdog  # Перезапустить
+```
+
+📖 **Подробная документация**: `docker/vision/scripts/oak-d/README_OAKD_FIX.md`
+
+---
+
 ## Проблема: RTAB-Map не получает данные от камеры
 
 ### Симптомы
