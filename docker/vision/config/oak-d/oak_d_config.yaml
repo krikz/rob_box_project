@@ -22,7 +22,9 @@
       rs_compat: true
     color:
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
-      i_publish_compressed: false  # ОТКЛЮЧЕНО: используем image_transport для компрессии (AprilTag подписывается через image_transport: compressed)
+      # ОТКЛЮЧЕНО: используем image_transport для компрессии
+      # (AprilTag подписывается через image_transport: compressed)
+      i_publish_compressed: false
       i_fps: 5.0  # СНИЖЕНО до 5 FPS
       i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
       i_interleaved: false

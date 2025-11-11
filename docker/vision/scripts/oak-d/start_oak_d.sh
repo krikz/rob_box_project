@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091
 source /opt/ros/humble/setup.bash
 
 # Настройка USB power management для предотвращения disconnects
@@ -16,5 +17,5 @@ export COMPRESSED_DEPTH_IMAGE_TRANSPORT_PNG_LEVEL=3
 # Запускаем OAK-D с интегрированной детекцией AprilTag
 # Это объединяет камеру и AprilTag детектор в одном контейнере
 # для снижения нагрузки на Vision Pi
-cd /oak-d/launch
+cd /oak-d/launch || exit 1
 exec ros2 launch oakd_with_apriltag.launch.py

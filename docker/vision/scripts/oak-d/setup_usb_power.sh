@@ -19,8 +19,8 @@ else
     
     # Отключаем autosuspend для всех USB устройств Movidius
     for device in /sys/bus/usb/devices/*; do
-        if [ -f "$device/idVendor" ] && [ "$(cat $device/idVendor)" = "03e7" ]; then
-            DEVICE_NAME=$(basename $device)
+        if [ -f "$device/idVendor" ] && [ "$(cat "$device/idVendor")" = "03e7" ]; then
+            DEVICE_NAME=$(basename "$device")
             echo "  Настройка $DEVICE_NAME..."
             
             # Отключаем autosuspend
