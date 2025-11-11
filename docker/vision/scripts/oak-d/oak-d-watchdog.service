@@ -1,0 +1,17 @@
+[Unit]
+Description=OAK-D Camera Health Monitor Watchdog
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ros2
+WorkingDirectory=/home/ros2/rob_box_project/docker/vision
+ExecStart=/home/ros2/rob_box_project/docker/vision/scripts/oak-d/watchdog.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

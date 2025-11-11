@@ -16,6 +16,9 @@
       i_enable_preview: false  # Отключаем preview поток
       i_enable_diagnostics: false  # ОТКЛЮЧАЕМ диагностику - вызывает X_LINK_ERROR
       i_usb_speed: "SUPER"  # Принудительно USB 3.0
+      i_usb_chunk_kb: 64  # Уменьшаем размер USB chunk для стабильности (по умолчанию 256)
+      i_pipeline_dump: ""  # Отключаем pipeline dump для экономии ресурсов
+      i_calibration_dump: false  # Отключаем calibration dump
       rs_compat: true
     color:
       i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
