@@ -86,8 +86,8 @@ RUN apt-get update && apt-get install -y \
 COPY docker/vision/voice_assistant/requirements.txt /tmp/requirements.txt
 
 # Устанавливаем pip, setuptools, wheel и все зависимости одной командой
-# BuildKit cache mount сохраняет загруженные пакеты между сборками
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+# BuildKit cache mount на /root/.cache покрывает pip packages (/root/.cache/pip)
+RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel && \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
