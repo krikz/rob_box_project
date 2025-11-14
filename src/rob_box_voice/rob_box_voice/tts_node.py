@@ -284,19 +284,28 @@ class TTSNode(Node):
         torch.set_grad_enabled(False)
 
         try:
-            # Загружаем локальную модель из /models (предзагружена в Dockerfile)
-            model_path = "/models/silero_v5_ru.pt"
+            # Загружаем локальную модель из /cache/tts (персистентный volume)
+            model_path = "/cache/tts/silero_v5_ru.pt"
+            
             if os.path.exists(model_path):
-                self.get_logger().info(f"📦 Загрузка Silero v5 из локального файла: {model_path}")
+                self.get_logger().info(f"📦 Загрузка Silero v5 из кеша: {model_path}")
                 self.silero_model = torch.jit.load(model_path, map_location=self.device)
-                self.get_logger().info("✅ Silero TTS v5 загружен из локального файла (ARM64 оптимизация)")
+                self.get_logger().info("✅ Silero TTS v5 загружен из кеша (ARM64 оптимизация)")
             else:
-                # Fallback на онлайн загрузку если локальной модели нет
-                self.get_logger().warn(f"⚠️ Локальная модель не найдена: {model_path}, загружаем из GitHub")
+                # Fallback на онлайн загрузку и сохранение в /cache/tts
+                self.get_logger().warn(f"⚠️ Модель не найдена в кеше: {model_path}, загружаем из GitHub")
                 self.silero_model, _ = torch.hub.load(
                     repo_or_dir="snakers4/silero-models", model="silero_tts", language="ru", speaker="v5_ru"
                 )
                 self.silero_model.to(self.device)
+                
+                # Сохраняем модель в персистентный volume для следующих запусков
+                try:
+                    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                    torch.jit.save(self.silero_model, model_path)
+                    self.get_logger().info(f"💾 Модель v5 сохранена в {model_path}")
+                except Exception as save_error:
+                    self.get_logger().error(f"⚠️ Не удалось сохранить модель: {save_error}")
                 self.get_logger().info("✅ Silero TTS v5 загружен из GitHub (ARM64 оптимизация)")
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка загрузки Silero: {e}")
