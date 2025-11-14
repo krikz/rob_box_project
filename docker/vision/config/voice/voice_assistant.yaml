@@ -110,9 +110,15 @@
 
       # Silero TTS (Alternative: More voices, slower)
       silero:
-        speaker: "baya"  # aidar (male) | baya (female) | kseniya | xenia
-        sample_rate: 48000
+        speaker: "baya"  # aidar (male) | baya (female) | kseniya | xenia | eugene (NEW in v5!)
+        sample_rate: 48000  # v5: повышено для лучшего качества (было 24000 в v4)
         device: "cpu"
+
+        # Silero v5: новые флаги для расстановки ударений (НОВОЕ!)
+        put_accent: true        # Ударения в обычных словах
+        put_yo: true            # Автоматическая буква ё
+        put_stress_homo: true   # Ударения в омографах (замОк/зАмок)
+        put_yo_homo: true       # Ударения в омографах с ё
 
       # Yandex Cloud (Fallback: Best quality with emotions)
       yandex:
@@ -150,7 +156,7 @@
       # Тайминги
       response_timeout_sec: 30.0
       stream_chunk_timeout_sec: 5.0
-      
+
       # Накопление запросов (Query Queue System)
       query_accumulation_timeout: 2.5  # секунд для накопления запросов перед обработкой
 

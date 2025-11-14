@@ -181,8 +181,8 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
     # Переменные для удобства обновления версий
     VOSK_MODEL_FILE="vosk-model-small-ru-0.22.zip" && \
     VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
-    SILERO_MODEL_FILE="silero_v4_ru.pt" && \
-    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v4_ru.pt" && \
+    SILERO_MODEL_FILE="silero_v5_ru.pt" && \
+    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
     # Vosk STT: Russian small model (45 MB, fast)
     # Проверяем кеш перед загрузкой
     if [ -f "/model_cache/${VOSK_MODEL_FILE}" ]; then \
@@ -195,18 +195,23 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
     fi && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     rm /tmp/vosk-model.zip && \
-    # Silero TTS v4: Russian model (100 MB, neural TTS, 4 voices, SSML support)
-    # Голоса: aidar (нейтральный М), baya (спокойный М), kseniya (нейтральный Ж), xenia (энергичный Ж)
+    # Silero TTS v5: Russian model (140 MB, нейронная TTS с улучшениями)
+    # Голоса: aidar (нейтральный М), baya (спокойный М), kseniya (нейтральный Ж), 
+    #         xenia (энергичный Ж), eugene (новый М в v5!)
+    # Новые возможности v5:
+    #   - В 1.5-2x быстрее v4 (критично для Raspberry Pi!)
+    #   - Автоматическая расстановка ударений в омографах (замОк/зАмок, гОтов/готОв)
+    #   - Улучшенное качество звучания и стабильность генерации
     # Проверяем кеш перед загрузкой
     if [ -f "/model_cache/${SILERO_MODEL_FILE}" ]; then \
-        echo "✅ Using cached Silero model"; \
-        cp "/model_cache/${SILERO_MODEL_FILE}" /models/silero_v4_ru.pt; \
+        echo "✅ Using cached Silero v5 model"; \
+        cp "/model_cache/${SILERO_MODEL_FILE}" /models/silero_v5_ru.pt; \
     else \
-        echo "⬇️ Downloading Silero model (100 MB)..."; \
-        wget -q -O /models/silero_v4_ru.pt "${SILERO_MODEL_URL}" && \
-        cp /models/silero_v4_ru.pt "/model_cache/${SILERO_MODEL_FILE}"; \
+        echo "⬇️ Downloading Silero v5 model (140 MB)..."; \
+        wget -q -O /models/silero_v5_ru.pt "${SILERO_MODEL_URL}" && \
+        cp /models/silero_v5_ru.pt "/model_cache/${SILERO_MODEL_FILE}"; \
     fi && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v4 (100 MB)"
+    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (140 MB)"
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
