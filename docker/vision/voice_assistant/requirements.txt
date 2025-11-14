@@ -33,9 +33,11 @@ pyusb
 # CRITICAL: PyTorch 2.9.0+ required for ARM64 compatibility!
 # PyTorch 2.1.0 has broken MKLDNN matmul primitives on aarch64
 # PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
+# scipy: Required by Silero v5 for audio resampling and processing
 # =============================================================================
 torch>=2.9.0
 torchaudio>=2.9.0
+scipy
 
 # =============================================================================
 # Speech-to-Text: Vosk (offline, lightweight Russian STT)

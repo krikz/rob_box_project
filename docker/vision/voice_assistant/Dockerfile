@@ -202,16 +202,11 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
     #   - В 1.5-2x быстрее v4 (критично для Raspberry Pi!)
     #   - Автоматическая расстановка ударений в омографах (замОк/зАмок, гОтов/готОв)
     #   - Улучшенное качество звучания и стабильность генерации
-    # Проверяем кеш перед загрузкой
-    if [ -f "/model_cache/${SILERO_MODEL_FILE}" ]; then \
-        echo "✅ Using cached Silero v5 model"; \
-        cp "/model_cache/${SILERO_MODEL_FILE}" /models/silero_v5_ru.pt; \
-    else \
-        echo "⬇️ Downloading Silero v5 model (140 MB)..."; \
-        wget -q -O /models/silero_v5_ru.pt "${SILERO_MODEL_URL}" && \
-        cp /models/silero_v5_ru.pt "/model_cache/${SILERO_MODEL_FILE}"; \
-    fi && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (140 MB)"
+    # ВАЖНО: Silero v5 загружается через torch.hub.load() из GitHub (139 MB zip)
+    # Предзагружаем модель в образ используя cache mount для ускорения повторных сборок
+    echo "⬇️ Pre-downloading Silero v5 model via torch.hub (139 MB zip)..." && \
+    python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru')" && \
+    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (139 MB)"
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
