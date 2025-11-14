@@ -39,10 +39,10 @@ class InternetConnectivityMonitor:
         self.last_check_time = None
         self.check_interval = check_interval
 
-        # Список серверов для проверки
+        # Список серверов для проверки (веб-сайты, а не DNS)
         self.test_hosts = [
-            "8.8.8.8",  # Google DNS
-            "1.1.1.1",  # Cloudflare DNS
+            "google.com",       # Google (надёжный)
+            "cloudflare.com",   # Cloudflare (надёжный)
         ]
 
         # Таймер проверки
