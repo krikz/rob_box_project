@@ -174,36 +174,37 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
     > /etc/udev/rules.d/60-respeaker.rules
 
 # Скачивание и установка STT/TTS моделей (offline)
-# Модели большие (145 MB) и никогда не меняются - используем BuildKit cache
-# Cache mount обеспечивает быструю повторную сборку (секунды вместо минут)
-RUN --mount=type=cache,target=/model_cache,sharing=locked \
-    mkdir -p /models && \
+# Модели большие (184 MB total) и никогда не меняются - используем BuildKit cache
+# Cache mount на /root/.cache покрывает pip, torch.hub и наш Vosk model
+RUN --mount=type=cache,target=/root/.cache,sharing=locked \
+    mkdir -p /models /root/.cache/models && \
     # Переменные для удобства обновления версий
     VOSK_MODEL_FILE="vosk-model-small-ru-0.22.zip" && \
     VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
-    SILERO_MODEL_FILE="silero_v5_ru.pt" && \
-    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
     # Vosk STT: Russian small model (45 MB, fast)
-    # Проверяем кеш перед загрузкой
-    if [ -f "/model_cache/${VOSK_MODEL_FILE}" ]; then \
+    # Проверяем кеш перед загрузкой (новый путь в /root/.cache/models/)
+    if [ -f "/root/.cache/models/${VOSK_MODEL_FILE}" ]; then \
         echo "✅ Using cached Vosk model"; \
-        cp "/model_cache/${VOSK_MODEL_FILE}" /tmp/vosk-model.zip; \
+        cp "/root/.cache/models/${VOSK_MODEL_FILE}" /tmp/vosk-model.zip; \
     else \
         echo "⬇️ Downloading Vosk model (45 MB)..."; \
         wget -q -O /tmp/vosk-model.zip "${VOSK_MODEL_URL}" && \
-        cp /tmp/vosk-model.zip "/model_cache/${VOSK_MODEL_FILE}"; \
+        cp /tmp/vosk-model.zip "/root/.cache/models/${VOSK_MODEL_FILE}"; \
     fi && \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     rm /tmp/vosk-model.zip && \
-    # Silero TTS v5: Russian model (140 MB, нейронная TTS с улучшениями)
+    # Silero TTS v5: Russian model (139 MB zip from GitHub, нейронная TTS с улучшениями)
     # Голоса: aidar (нейтральный М), baya (спокойный М), kseniya (нейтральный Ж), 
     #         xenia (энергичный Ж), eugene (новый М в v5!)
     # Новые возможности v5:
     #   - В 1.5-2x быстрее v4 (критично для Raspberry Pi!)
     #   - Автоматическая расстановка ударений в омографах (замОк/зАмок, гОтов/готОв)
     #   - Улучшенное качество звучания и стабильность генерации
-    # ВАЖНО: Silero v5 загружается через torch.hub.load() из GitHub (139 MB zip)
-    # Предзагружаем модель в образ используя cache mount для ускорения повторных сборок
+    # ВАЖНО: Silero v5 загружается через torch.hub.load() из GitHub
+    # torch.hub скачивает в /root/.cache/torch/hub/ (hardcoded путь)
+    # BuildKit cache mount на /root/.cache ТЕПЕРЬ покрывает этот путь!
+    # Первая сборка: скачает 139 MB zip и распакует
+    # Повторные сборки: используют кешированную версию (секунды вместо минут!)
     echo "⬇️ Pre-downloading Silero v5 model via torch.hub (139 MB zip)..." && \
     python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru')" && \
     echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (139 MB)"
