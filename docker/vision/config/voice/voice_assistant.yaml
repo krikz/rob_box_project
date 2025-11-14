@@ -13,6 +13,11 @@
       vad_threshold: 500  # ReSpeaker builtin VAD (0-1000)
       vad_debounce_ms: 300
 
+      # Обнаружение фраз (phrase boundary detection)
+      speech_continuation: 1.5  # Время тишины для завершения фразы (сек)
+      speech_min_duration: 0.3  # Минимальная длительность фразы (сек)
+      speech_max_duration: 15.0  # Максимальная длительность фразы (сек)
+
       # DoA (Direction of Arrival)
       publish_doa: true
       doa_rate_hz: 5.0
