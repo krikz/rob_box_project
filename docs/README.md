@@ -59,6 +59,7 @@
 
 - [**README.md**](guides/README.md) - Навигация по руководствам
 - [**QUICK_START.md**](guides/QUICK_START.md) - Быстрый старт
+- [**GROK_API_QUICKSTART.md**](guides/GROK_API_QUICKSTART.md) - 🆕 Быстрый старт Grok API (ноябрь 2025)
 - [**NAV2_SETUP.md**](guides/NAV2_SETUP.md) - Настройка навигации Nav2
 - [**CAN_SETUP.md**](guides/CAN_SETUP.md) - Настройка CAN шины
 - [**LSLIDAR_SETUP.md**](guides/LSLIDAR_SETUP.md) - Настройка LSLIDAR
@@ -76,6 +77,7 @@
 Технические отчёты, аудиты, итоги сессий.
 
 - [**README.md**](reports/README.md) - Навигация по отчётам
+- [**GROK_VOICE_MODE_ANALYSIS.md**](reports/GROK_VOICE_MODE_ANALYSIS.md) - 🆕 Анализ Grok API для voice assistant (ноябрь 2025)
 - [**VISION_PI_USB_POWER_AUDIT_2025-10-13.md**](reports/VISION_PI_USB_POWER_AUDIT_2025-10-13.md)
 - [**VISION_PI_CONTAINERS_FIX_2025-10-13.md**](reports/VISION_PI_CONTAINERS_FIX_2025-10-13.md)
 - [**DOCKER_BUILD_FIX_2025-10-18.md**](reports/DOCKER_BUILD_FIX_2025-10-18.md)

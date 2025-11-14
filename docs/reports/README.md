@@ -2,6 +2,32 @@
 
 Технические отчёты, аудиты, исправления проблем и итоги сессий разработки.
 
+## 📄 Отчёты 2025-11-14
+
+### [GROK_VOICE_MODE_ANALYSIS.md](GROK_VOICE_MODE_ANALYSIS.md) 🆕
+**Анализ интеграции Grok API Voice Mode**
+
+**Задача:**
+- Исследование возможности перехода на xAI Grok API
+- Анализ voice mode capabilities
+- Сравнение с текущим решением (DeepSeek + Vosk/Whisper + Yandex TTS)
+
+**Результаты:**
+- Grok voice mode — это UI feature, не API feature
+- Grok API работает только с текстом (как DeepSeek)
+- Voice assistant требует отдельных STT/TTS сервисов
+- Рекомендован гибридный подход (DeepSeek + Grok для сложных запросов)
+
+**Выводы:**
+- ✅ Можно интегрировать Grok как альтернативный LLM провайдер
+- ❌ НЕ заменяет весь voice assistant
+- ✅ Улучшает качество диалогов и function calling
+- ❌ Значительно дороже (~20-70x чем DeepSeek)
+
+**См. также:**
+- [Быстрый старт Grok API](../guides/GROK_API_QUICKSTART.md)
+- [Пример интеграции](../examples/grok_api_integration_example.py)
+
 ## 📄 Отчёты 2025-10-24
 
 ### [TF_TRANSFORMATION_FIX.md](TF_TRANSFORMATION_FIX.md) 🆕
