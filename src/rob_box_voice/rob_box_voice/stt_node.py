@@ -262,11 +262,16 @@ class STTNode(Node):
     
     def _recognize_vosk(self, audio_bytes: bytes) -> Optional[str]:
         """Распознавание через Vosk (fallback)"""
-        if self.recognizer.AcceptWaveform(audio_bytes):
-            result = json.loads(self.recognizer.Result())
-        else:
-            result = json.loads(self.recognizer.FinalResult())
+        # Кормим Vosk по кусочкам, как Yandex (4KB chunks)
+        # Это важно! Vosk работает в streaming режиме и не может обработать всю фразу сразу
+        chunk_size = 4096
         
+        for i in range(0, len(audio_bytes), chunk_size):
+            chunk = audio_bytes[i:i + chunk_size]
+            self.recognizer.AcceptWaveform(chunk)
+        
+        # После всех чанков получаем финальный результат
+        result = json.loads(self.recognizer.FinalResult())
         text = result.get('text', '').strip()
         
         # Сбросить распознаватель для следующей фразы
