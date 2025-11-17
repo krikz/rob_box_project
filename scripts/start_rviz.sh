@@ -70,7 +70,12 @@ fi
 cp "$ZENOH_CONFIG_TEMPLATE" "$ZENOH_CONFIG"
 
 # Add namespace to the config (insert after mode line)
-sed -i 's|"mode": "client",|"mode": "client",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+# Support both "client" and "peer" modes
+if grep -q '"mode": "peer"' "$ZENOH_CONFIG"; then
+  sed -i 's|"mode": "peer",|"mode": "peer",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+else
+  sed -i 's|"mode": "client",|"mode": "client",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+fi
 
 echo -e "${GREEN}✓${NC} Zenoh config generated: $ZENOH_CONFIG"
 
