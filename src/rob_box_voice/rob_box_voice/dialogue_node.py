@@ -10,7 +10,6 @@ DialogueNode - LLM диалоговая система с DeepSeek API (streamin
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 import uuid
@@ -19,7 +18,7 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from std_srvs.srv import Empty
+from std_srvs.srv import Empty, Trigger
 
 # Импортируем из scripts
 scripts_path = Path(__file__).parent.parent / "scripts"
@@ -163,6 +162,9 @@ class DialogueNode(Node):
         self.reset_memory_client = self.create_client(Empty, "/rtabmap/reset_memory")
         self.set_mode_mapping_client = self.create_client(Empty, "/rtabmap/set_mode_mapping")
         self.set_mode_localization_client = self.create_client(Empty, "/rtabmap/set_mode_localization")
+        
+        # Service client для удаления БД (через rtabmap_manager)
+        self.delete_all_data_client = self.create_client(Trigger, "/rtabmap_manager/delete_all_data")
 
         # Mapping intent patterns
         self.mapping_intents = {
@@ -192,10 +194,19 @@ class DialogueNode(Node):
                 r"хватит исследовать",
                 r"закончить",
             ],
+            "delete_all_maps": [
+                r"удали все карты",
+                r"удалить все карты",
+                r"очисти все карты",
+                r"стереть все карты",
+                r"удали базу данных",
+                r"очистить память",
+                r"сбрось всю память",
+            ],
         }
 
-        # Система подтверждения (для start_mapping)
-        self.pending_confirmation = None  # 'start_mapping' или None
+        # Система подтверждения (для start_mapping и delete_all_maps)
+        self.pending_confirmation = None  # 'start_mapping', 'delete_all_maps' или None
         self.confirmation_time = None  # Timestamp запроса подтверждения
         self.confirmation_timeout = 30.0  # секунд для ответа
 
@@ -459,6 +470,21 @@ class DialogueNode(Node):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     response = loop.run_until_complete(self._confirm_start_mapping())
+                    loop.close()
+
+                    self.pending_confirmation = None
+                    self.confirmation_time = None
+                    self._speak_simple(response)
+                    self.dialogue_in_progress = False
+                    return
+                
+                elif self.pending_confirmation == "delete_all_maps":
+                    # Выполнить удаление ВСЕХ карт
+                    import asyncio
+
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    response = loop.run_until_complete(self._confirm_delete_all_maps())
                     loop.close()
 
                     self.pending_confirmation = None
@@ -1228,38 +1254,27 @@ class DialogueNode(Node):
         return None
 
     async def _backup_rtabmap_db(self) -> bool:
-        """Создать backup текущей БД RTABMap через Docker"""
-        try:
-            # Docker exec на Main Pi для backup
-            # Предполагается что контейнер rtabmap доступен
-            result = subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "rtabmap",
-                    "bash",
-                    "-c",
-                    "mkdir -p /maps/backups && "
-                    "cp /maps/rtabmap.db /maps/backups/rtabmap_backup_$(date +%Y%m%d_%H%M%S).db && "
-                    "echo OK",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-
-            if result.returncode == 0 and "OK" in result.stdout:
-                self.get_logger().info("✅ RTABMap backup создан")
-                return True
-            else:
-                self.get_logger().error(f"❌ Backup failed: {result.stderr}")
-                return False
-        except subprocess.TimeoutExpired:
-            self.get_logger().error("❌ Backup timeout (10s)")
-            return False
-        except Exception as e:
-            self.get_logger().error(f"❌ Backup error: {e}")
-            return False
+        """
+        DEPRECATED: Автоматический backup через docker exec невозможен из контейнера.
+        
+        ВАЖНО: RTABMap использует multi-session подход:
+        - reset_memory НЕ удаляет старые данные из rtabmap.db
+        - Старая карта остаётся в БД как неактивная сессия
+        - Новая сессия создаётся в той же БД
+        
+        Ручной backup (если нужно полностью сохранить rtabmap.db):
+        - SSH на Main Pi: cp ~/rob_box_project/docker/main/maps/rtabmap.db ~/backups/
+        - Или настроить автоматический backup через cron/systemd
+        
+        Returns:
+            bool: Always returns True (backup skipped, not needed for reset_memory)
+        """
+        self.get_logger().info(
+            "ℹ️  RTABMap reset_memory сохраняет старую карту в БД как неактивную сессию. "
+            "Автоматический backup не требуется."
+        )
+        # Возвращаем True - backup не критичен для reset_memory
+        return True
 
     async def _handle_mapping_command(self, intent: str, text: str) -> str:
         """Обработка команд картографии"""
@@ -1270,7 +1285,7 @@ class DialogueNode(Node):
             self.pending_confirmation = "start_mapping"
             self.confirmation_time = time.time()
             self._trigger_sound("confused")  # Звук вопроса
-            return "Начать новое исследование? Старая карта будет сохранена в резервную копию."
+            return "Начать новое исследование? Текущая сессия будет завершена, старая карта сохранится в базе данных."
 
         elif intent == "continue_mapping":
             # Переключить в mapping mode
@@ -1297,30 +1312,88 @@ class DialogueNode(Node):
                 self.get_logger().error(f"❌ Ошибка set_mode_localization: {e}")
                 self._trigger_sound("confused")
                 return "Извините, не удалось переключить в режим локализации."
+        
+        elif intent == "delete_all_maps":
+            # Запрос подтверждения для удаления ВСЕХ данных
+            self.pending_confirmation = "delete_all_maps"
+            self.confirmation_time = time.time()
+            self._trigger_sound("confused")  # Звук вопроса
+            return "ВНИМАНИЕ! Удалить ВСЕ карты из базы данных? Это действие нельзя отменить. Будет создана резервная копия."
 
         return None
 
     async def _confirm_start_mapping(self) -> str:
-        """Подтверждение start_mapping - создать backup и reset БД"""
+        """Подтверждение start_mapping - reset памяти RTABMap (начать новую сессию)"""
         self.get_logger().warning("🗺️ Подтверждение start_mapping...")
 
-        # 1. Backup
+        # RTABMap multi-session: reset_memory сохраняет старую карту в БД
+        # Backup не требуется, см. docstring _backup_rtabmap_db
         backup_ok = await self._backup_rtabmap_db()
         if not backup_ok:
+            # Не должно произойти (всегда True), но на всякий случай
             self._trigger_sound("angry_2")
-            return "Не удалось создать резервную копию карты. Операция отменена."
+            return "Не удалось подготовиться к созданию новой карты. Операция отменена."
 
-        # 2. Reset memory
+        # Reset memory - создать новую сессию
         try:
-            self.get_logger().info("  → Reset RTABMap memory...")
+            self.get_logger().info("  → Reset RTABMap memory (создание новой сессии)...")
             _future = self.reset_memory_client.call_async(Empty.Request())  # noqa: F841
             # Не ждём ответа (async)
             self._trigger_sound("cute")  # Звук успеха
-            return "Начинаю исследование. Старая карта сохранена в резервной копии."
+            return "Начинаю новое исследование. Создана новая сессия картографии."
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка reset_memory: {e}")
             self._trigger_sound("angry_2")
             return "Не удалось сбросить память RTABMap. Попробуйте позже."
+    
+    async def _confirm_delete_all_maps(self) -> str:
+        """Подтверждение delete_all_maps - полное удаление БД RTABMap"""
+        self.get_logger().warning("🗑️  Подтверждение delete_all_maps...")
+
+        # Проверить доступность сервиса
+        if not self.delete_all_data_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error("❌ Сервис rtabmap_manager недоступен")
+            self._trigger_sound("angry_2")
+            return "Извините, сервис управления картами недоступен. Проверьте что rtabmap_manager запущен."
+
+        # Вызвать сервис удаления
+        try:
+            self.get_logger().info("  → Вызов /rtabmap_manager/delete_all_data...")
+            future = self.delete_all_data_client.call_async(Trigger.Request())
+            
+            # Ждём ответа (максимум 5 секунд)
+            import asyncio
+            try:
+                await asyncio.wait_for(
+                    asyncio.ensure_future(self._wait_for_service_response(future)),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                self.get_logger().error("❌ Timeout при удалении БД")
+                self._trigger_sound("angry_2")
+                return "Операция удаления заняла слишком много времени. Проверьте статус вручную."
+            
+            # Проверить результат
+            response = future.result()
+            if response.success:
+                self.get_logger().info(f"✅ {response.message}")
+                self._trigger_sound("cute")  # Звук успеха
+                return f"Все карты удалены. {response.message}"
+            else:
+                self.get_logger().error(f"❌ {response.message}")
+                self._trigger_sound("angry_2")
+                return f"Не удалось удалить карты. {response.message}"
+                
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка delete_all_data: {e}")
+            self._trigger_sound("angry_2")
+            return "Произошла ошибка при удалении карт. Попробуйте позже."
+    
+    async def _wait_for_service_response(self, future):
+        """Вспомогательная функция для ожидания ответа от сервиса"""
+        while not future.done():
+            await asyncio.sleep(0.1)
+        return future.result()
 
     def command_feedback_callback(self, msg: String):
         """Обработка feedback от command_node (Phase 5)"""
