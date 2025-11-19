@@ -34,7 +34,7 @@ class DummyJointStatePublisher(Node):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         
-        # Все continuous joints (колеса)
+        # Все continuous joints (колеса) - naming matches robot_controller.yaml
         msg.name = [
             'rear_left_wheel_joint',
             'front_left_wheel_joint',
