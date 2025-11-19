@@ -306,7 +306,7 @@
 	<!-- OAK-D-Lite камера: Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
 	<!-- Потолочная USB камера (направлена вертикально вверх): Rigid 1 joint xyz="0.065 0.170663 0.4615" -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.171 0.462" origin_rpy="0 -1.5708 0"/>
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.170663 0.4615" origin_rpy="0 -1.5708 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
