@@ -480,7 +480,50 @@ rviz2
 
 ---
 
+## 🔄 UPDATE: ПРОБЛЕМА РЕШЕНА (2025-11-17)
+
+### Оказалось: Namespace БЫЛ добавлен правильно!
+
+**Повторная проверка показала:**
+- ✅ Namespace `robots/RBXU100001` присутствует в `/tmp/zenoh_rviz_config_RBXU100001.json5`
+- ✅ start_rviz.sh успешно добавляет namespace (строка 77 для client mode)
+- ✅ sed паттерн работает для client mode template (с кавычками `"mode": "client"`)
+
+**Реальная проблема:** НЕПРАВИЛЬНЫЙ ENDPOINT!
+
+### Что было не так:
+```json5
+"connect": {
+  "endpoints": ["tcp/10.1.1.10:7447"]  // ❌ Прямое подключение к Main Pi
+}
+```
+
+**RViz подключался напрямую к Main Pi router**, обходя локальный Zenoh router на build машине!
+
+### Правильная топология:
+```
+RViz (client) → Local Router (10.1.1.249:7447) → Main Pi Router (10.1.1.10:7447) → Robot nodes
+```
+
+### Решение:
+Исправлен endpoint в `local_test/zenoh_client_config.json5`:
+```json5
+"connect": {
+  "endpoints": ["tcp/10.1.1.249:7447"]  // ✅ Подключение к локальному router
+}
+```
+
+### Результат:
+- ✅ RViz ВИДИТ топики робота: `/rtabmap/localization_pose`, `/map`, `/tf`
+- ✅ Transform tree работает: `lslidar_n10 → map`
+- ✅ Сетевая архитектура соответствует Vision Pi
+
+### Полный отчёт:
+См. **`RVIZ_ZENOH_FIX_FINAL.md`** для детального описания решения.
+
+---
+
 **Автор:** AI Agent (Claude Sonnet 4)  
 **Дата создания:** 2025-11-17  
-**Последнее обновление:** 2025-11-17  
-**Версия:** 1.0
+**Последнее обновление:** 2025-11-17 (+ UPDATE с решением)  
+**Версия:** 1.1 (RESOLVED)

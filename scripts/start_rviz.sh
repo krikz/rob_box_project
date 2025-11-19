@@ -28,6 +28,15 @@ fi
 
 echo -e "${GREEN}✓${NC} ROS 2 Distro: ${ROS_DISTRO}"
 
+# Source workspace if available (for URDF meshes and custom packages)
+if [ -f "$PROJECT_ROOT/install/setup.bash" ]; then
+    source "$PROJECT_ROOT/install/setup.bash"
+    echo -e "${GREEN}✓${NC} Workspace sourced (rob_box packages available)"
+else
+    echo -e "${YELLOW}⚠️  Workspace not built (meshes may not load)${NC}"
+    echo -e "${YELLOW}   Build with: cd $PROJECT_ROOT && colcon build${NC}"
+fi
+
 # Check if RViz is installed
 if ! command -v rviz2 &> /dev/null; then
     echo -e "${RED}❌ RViz2 is not installed!${NC}"
