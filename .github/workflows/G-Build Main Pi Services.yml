@@ -116,6 +116,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
+            URDF_FILES_HASH=${{ hashFiles('src/rob_box_description/urdf/**/*.xacro', 'src/rob_box_description/urdf/**/*.urdf') }}
           build-contexts: |
             docker/main/robot_state_publisher=docker/main/robot_state_publisher
 
