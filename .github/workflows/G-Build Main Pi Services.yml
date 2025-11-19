@@ -103,6 +103,18 @@ jobs:
               github.ref == 'refs/heads/main' }}
             type=sha,prefix=robot-state-publisher-${{ env.ROS_DISTRO }}-
 
+      - name: Calculate URDF files hash
+        id: urdf-hash
+        run: |
+          # Вычисляем хеш всех важных файлов описания робота
+          HASH="${{ hashFiles(
+            'src/rob_box_description/**/*.xacro',
+            'src/rob_box_description/**/*.urdf',
+            'src/rob_box_description/**/package.xml',
+            'src/rob_box_description/**/CMakeLists.txt'
+          ) }}"
+          echo "hash=${HASH}" >> $GITHUB_OUTPUT
+
       - name: Build and push robot-state-publisher
         uses: docker/build-push-action@v5
         with:
@@ -116,7 +128,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
-            URDF_FILES_HASH=${{ hashFiles('src/rob_box_description/urdf/**/*.xacro', 'src/rob_box_description/urdf/**/*.urdf') }}
+            URDF_FILES_HASH=${{ steps.urdf-hash.outputs.hash }}
           build-contexts: |
             docker/main/robot_state_publisher=docker/main/robot_state_publisher
 

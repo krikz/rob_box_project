@@ -62,8 +62,11 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
-          # Вычисляем хеш URDF файлов для инвалидации кеша при изменении
-          URDF_FILES_HASH=$(find src/rob_box_description/urdf -type f -name "*.xacro" -o -name "*.urdf" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          # Вычисляем хеш всех важных файлов описания робота для инвалидации кеша при изменении
+          # Включаем: .xacro, .urdf, package.xml, CMakeLists.txt из src/rob_box_description
+          URDF_FILES_HASH=$(find src/rob_box_description -type f \
+            \( -name "*.xacro" -o -name "*.urdf" -o -name "package.xml" -o -name "CMakeLists.txt" \) \
+            | sort | xargs sha256sum | sha256sum | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
