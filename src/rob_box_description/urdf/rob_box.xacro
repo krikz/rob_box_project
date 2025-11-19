@@ -51,19 +51,18 @@
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link -->
-	<!-- base_footprint - фрейм на уровне пола, base_link поднят на высоту колеса -->
-	<!-- ВАЖНО: Поворот НЕ применяется - Fusion 360 модель уже в правильной ориентации ROS -->
+	<!-- Джойнт base_footprint -> base_link с поворотом на -90° вокруг Z -->
+	<!-- Это исправляет ориентацию: Fusion 360 использует Y вперёд, ROS использует X вперёд -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- Только поднятие на высоту wheel_radius для base_footprint на уровне пола -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+		<!-- Поворот на -π/2 вокруг Z + поднятие на высоту wheel_radius для base_footprint на уровне пола -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
 	</joint>
 
 	<!-- Макросы -->
 	<!-- Wheel Macro - обновлено из Fusion 360 Export (прямое подключение к base_link, без rocker) -->
-	<xacro:macro name="wheel" params="name origin_xyz axis_xyz">
+	<xacro:macro name="wheel" params="name origin_xyz axis_xyz visual_origin_xyz">
 		<link name="${name}">
 			<!-- Инерциальные параметры из Fusion 360 -->
 			<inertial>
@@ -73,8 +72,8 @@
 				<inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
 			<visual>
-				<!-- Visual origin: меш в локальных координатах линка колеса -->
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Visual origin: offset меша относительно линка (из Fusion 360) -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -83,8 +82,8 @@
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision: меш в локальных координатах линка колеса -->
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Collision: используем меш как в Fusion 360 -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -293,18 +292,22 @@
 	<!-- Left wheels -->
 	<xacro:wheel name="rear_left_wheel" 
 	             origin_xyz="0.195 0.143797 0.028767" 
-	             axis_xyz="1.0 0.0 0.0"/>
+	             axis_xyz="1.0 0.0 0.0"
+	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
 	<xacro:wheel name="front_left_wheel" 
 	             origin_xyz="0.195 -0.145731 0.0289" 
-	             axis_xyz="1.0 0.0 0.0"/>
+	             axis_xyz="1.0 0.0 0.0"
+	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
 	
 	<!-- Right wheels -->
 	<xacro:wheel name="front_right_wheel" 
 	             origin_xyz="-0.195967 -0.144669 0.0289" 
-	             axis_xyz="-1.0 0.0 0.0"/>
+	             axis_xyz="-1.0 0.0 0.0"
+	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
 	<xacro:wheel name="rear_right_wheel" 
 	             origin_xyz="-0.195 0.143797 0.028767" 
-	             axis_xyz="-1.0 0.0 0.0"/>
+	             axis_xyz="-1.0 0.0 0.0"
+	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
 
 	<!-- Сенсоры - позиции из Fusion 360 Export (URDF_ROBBOX.xacro) -->
 	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
