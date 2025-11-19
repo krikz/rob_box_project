@@ -11,7 +11,19 @@
 	<xacro:property name="rocker_mass" value="3"/>
 	<xacro:property name="base_mass" value="62.64527022934752"/>  <!-- От Fusion 360: 62.65 кг -->
 
+	<!-- base_footprint - корневой фрейм робота на уровне пола -->
+	<!-- Используется как reference frame в соответствии с REP-120 -->
+	<link name="base_footprint">
+		<visual>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<geometry>
+				<sphere radius="0.001"/>
+			</geometry>
+		</visual>
+	</link>
+
 	<!-- Основное шасси - обновлено из Fusion 360 Export -->
+	<!-- Повёрнуто на -90° вокруг Z для соответствия ROS convention (X - вперёд, Y - влево) -->
 	<link name="base_link">
 		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
 		<inertial>
@@ -38,6 +50,15 @@
 			</geometry>
 		</collision>
 	</link>
+
+	<!-- Джойнт base_footprint -> base_link с поворотом на -90° вокруг Z -->
+	<!-- Это исправляет ориентацию: Fusion 360 использует Y вперёд, ROS использует X вперёд -->
+	<joint name="base_footprint_joint" type="fixed">
+		<parent link="base_footprint"/>
+		<child link="base_link"/>
+		<!-- Поворот на -π/2 вокруг Z + поднятие на высоту wheel_radius для base_footprint на уровне пола -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
+	</joint>
 
 	<!-- Макросы -->
 	<!-- Wheel Macro - обновлено из Fusion 360 Export (прямое подключение к base_link, без rocker) -->
@@ -267,22 +288,23 @@
 
 	<!-- Использование макросов - позиции из Fusion 360 Export -->
 	<!-- Колёса подключены напрямую к base_link (упрощённая модель без rocker-bogie) -->
+	<!-- Naming convention: matches robot_controller.yaml (front/rear_left/right_wheel) -->
 	<!-- Left wheels -->
-	<xacro:wheel name="wheel_rear_left_1" 
+	<xacro:wheel name="rear_left_wheel" 
 	             origin_xyz="0.195 0.143797 0.028767" 
 	             axis_xyz="1.0 0.0 0.0"
 	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
-	<xacro:wheel name="wheel_front_left_1" 
+	<xacro:wheel name="front_left_wheel" 
 	             origin_xyz="0.195 -0.145731 0.0289" 
 	             axis_xyz="1.0 0.0 0.0"
 	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
 	
 	<!-- Right wheels -->
-	<xacro:wheel name="wheel_front_right_1" 
+	<xacro:wheel name="front_right_wheel" 
 	             origin_xyz="-0.195967 -0.144669 0.0289" 
 	             axis_xyz="-1.0 0.0 0.0"
 	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
-	<xacro:wheel name="wheel_rear_right_1" 
+	<xacro:wheel name="rear_right_wheel" 
 	             origin_xyz="-0.195 0.143797 0.028767" 
 	             axis_xyz="-1.0 0.0 0.0"
 	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
