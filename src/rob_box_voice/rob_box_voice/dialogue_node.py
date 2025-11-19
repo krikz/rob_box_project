@@ -592,10 +592,10 @@ class DialogueNode(Node):
             combined_message = queries_to_process[0]
             self.get_logger().info(f"💬 Один запрос: {combined_message}")
         else:
-            # Несколько запросов - объединяем БЕЗ повторения текста вопросов
-            # DeepSeek должен сам ответить, не повторяя вопросы вслух
-            combined_message = " ".join(queries_to_process)
-            self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов): {combined_message}")
+            # Несколько запросов - формируем нумерованный список для понятности LLM
+            questions_list = "\n".join([f"{i+1}. {q}" for i, q in enumerate(queries_to_process)])
+            combined_message = f"Ответь на следующие вопросы:\n{questions_list}"
+            self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов):\n{combined_message}")
 
         # Добавляем в историю диалога
         self.conversation_history.append({"role": "user", "content": combined_message})

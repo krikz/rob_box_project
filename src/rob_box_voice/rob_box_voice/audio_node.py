@@ -95,10 +95,10 @@ class AudioNode(Node):
         self.audio_thread: Optional[threading.Thread] = None
         
         # Параметры VAD
-        self.declare_parameter('speech_continuation', 0.5)  # Время после окончания речи
+        self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
         self.declare_parameter('speech_prefetch', 0.5)      # Буфер перед началом речи
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
-        self.declare_parameter('speech_max_duration', 10.0) # Максимальная длительность
+        self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
         
         self.speech_continuation = self.get_parameter('speech_continuation').value
         self.speech_prefetch = self.get_parameter('speech_prefetch').value

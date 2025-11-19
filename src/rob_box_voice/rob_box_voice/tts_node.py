@@ -126,8 +126,14 @@ class TTSNode(Node):
         self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
 
         # Silero TTS (fallback)
-        self.declare_parameter("silero_speaker", "baya")  # aidar (male) | baya (female) | kseniya | xenia
-        self.declare_parameter("silero_sample_rate", 24000)
+        self.declare_parameter("silero_speaker", "baya")  # aidar (male) | baya (female) | kseniya | xenia | eugene (NEW in v5!)
+        self.declare_parameter("silero_sample_rate", 48000)  # v5: можно повысить до 48000 для лучшего качества
+        
+        # Silero v5: новые флаги для расстановки ударений
+        self.declare_parameter("silero_put_accent", True)  # Ударения в обычных словах
+        self.declare_parameter("silero_put_yo", True)  # Автоматическая буква ё
+        self.declare_parameter("silero_put_stress_homo", True)  # Ударения в омографах (замОк/зАмок)
+        self.declare_parameter("silero_put_yo_homo", True)  # Ударения в омографах с ё
 
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
@@ -146,6 +152,12 @@ class TTSNode(Node):
         # Silero
         self.silero_speaker = self.get_parameter("silero_speaker").value
         self.silero_sample_rate = self.get_parameter("silero_sample_rate").value
+        
+        # Silero v5: новые флаги
+        self.silero_put_accent = self.get_parameter("silero_put_accent").value
+        self.silero_put_yo = self.get_parameter("silero_put_yo").value
+        self.silero_put_stress_homo = self.get_parameter("silero_put_stress_homo").value
+        self.silero_put_yo_homo = self.get_parameter("silero_put_yo_homo").value
 
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
@@ -216,11 +228,14 @@ class TTSNode(Node):
         self.publish_state("ready")
 
         self.get_logger().info("✅ TTSNode инициализирован")
-        self.get_logger().info("  Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero (fallback)")
+        self.get_logger().info("  Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero v5 (fallback)")
         self.get_logger().info(
             f"  Yandex gRPC v3: voice={self.yandex_voice} (ROBBOX original!), speed={self.yandex_speed} (медленный синтез)"
         )
-        self.get_logger().info(f"  Silero: speaker={self.silero_speaker}, rate={self.silero_sample_rate} Hz")
+        self.get_logger().info(
+            f"  Silero v5: speaker={self.silero_speaker}, rate={self.silero_sample_rate} Hz, "
+            f"homograph_stress={self.silero_put_stress_homo}"
+        )
         self.get_logger().info(f"  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)")
         self.get_logger().info(f"  Chipmunk mode: {self.chipmunk_mode}")
         if self.chipmunk_mode:
@@ -261,7 +276,7 @@ class TTSNode(Node):
             return
 
         self.silero_loading = True
-        self.get_logger().info("🔄 Загрузка Silero TTS v4...")
+        self.get_logger().info("🔄 Загрузка Silero TTS v5...")
 
         # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
         torch.set_num_threads(4)
@@ -269,20 +284,29 @@ class TTSNode(Node):
         torch.set_grad_enabled(False)
 
         try:
-            # Загружаем локальную модель из /models (предзагружена в Dockerfile)
-            model_path = "/models/silero_v4_ru.pt"
+            # Загружаем локальную модель из /cache/tts (персистентный volume)
+            model_path = "/cache/tts/silero_v5_ru.pt"
+            
             if os.path.exists(model_path):
-                self.get_logger().info(f"📦 Загрузка Silero из локального файла: {model_path}")
+                self.get_logger().info(f"📦 Загрузка Silero v5 из кеша: {model_path}")
                 self.silero_model = torch.jit.load(model_path, map_location=self.device)
-                self.get_logger().info("✅ Silero TTS загружен из локального файла (ARM64 оптимизация)")
+                self.get_logger().info("✅ Silero TTS v5 загружен из кеша (ARM64 оптимизация)")
             else:
-                # Fallback на онлайн загрузку если локальной модели нет
-                self.get_logger().warn(f"⚠️ Локальная модель не найдена: {model_path}, загружаем из GitHub")
+                # Fallback на онлайн загрузку и сохранение в /cache/tts
+                self.get_logger().warn(f"⚠️ Модель не найдена в кеше: {model_path}, загружаем из GitHub")
                 self.silero_model, _ = torch.hub.load(
-                    repo_or_dir="snakers4/silero-models", model="silero_tts", language="ru", speaker="v4_ru"
+                    repo_or_dir="snakers4/silero-models", model="silero_tts", language="ru", speaker="v5_ru"
                 )
                 self.silero_model.to(self.device)
-                self.get_logger().info("✅ Silero TTS загружен из GitHub (ARM64 оптимизация)")
+                
+                # Сохраняем модель в персистентный volume для следующих запусков
+                try:
+                    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                    torch.jit.save(self.silero_model, model_path)
+                    self.get_logger().info(f"💾 Модель v5 сохранена в {model_path}")
+                except Exception as save_error:
+                    self.get_logger().error(f"⚠️ Не удалось сохранить модель: {save_error}")
+                self.get_logger().info("✅ Silero TTS v5 загружен из GitHub (ARM64 оптимизация)")
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка загрузки Silero: {e}")
             self.silero_model = None
@@ -490,7 +514,7 @@ class TTSNode(Node):
                     raise Exception("Silero fallback недоступен - не удалось загрузить модель!")
 
                 self.publish_state("synthesizing")
-                self.get_logger().info("🔊 Синтез через Silero (fallback)...")
+                self.get_logger().info("🔊 Синтез через Silero v5 (fallback)...")
 
                 # Логируем SSML атрибуты если есть (для консистентности с Yandex)
                 if ssml_attributes:
@@ -503,12 +527,22 @@ class TTSNode(Node):
                 else:
                     ssml_text = ssml
 
+                # Используем новые флаги v5 для расстановки ударений
                 audio = self.silero_model.apply_tts(
-                    ssml_text=ssml_text, speaker=self.silero_speaker, sample_rate=self.silero_sample_rate
+                    ssml_text=ssml_text, 
+                    speaker=self.silero_speaker, 
+                    sample_rate=self.silero_sample_rate,
+                    put_accent=self.silero_put_accent,
+                    put_yo=self.silero_put_yo,
+                    put_stress_homo=self.silero_put_stress_homo,
+                    put_yo_homo=self.silero_put_yo_homo
                 )
                 audio_np = audio.numpy()
-                sample_rate = self.silero_sample_rate  # 24000 Hz
-                self.get_logger().info(f"✅ Silero fallback успешен: {len(audio_np)} samples @ {sample_rate} Hz")
+                sample_rate = self.silero_sample_rate  # 48000 Hz (v5)
+                self.get_logger().info(
+                    f"✅ Silero v5 fallback успешен: {len(audio_np)} samples @ {sample_rate} Hz "
+                    f"(homograph_stress={self.silero_put_stress_homo})"
+                )
 
             # Публикуем в ROS topic
             self._publish_audio(audio_np)

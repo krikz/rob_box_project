@@ -62,6 +62,9 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
+          # Вычисляем хеш URDF файлов для инвалидации кеша при изменении
+          URDF_FILES_HASH=$(find src/rob_box_description/urdf -type f -name "*.xacro" -o -name "*.urdf" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/main/${SERVICE}/Dockerfile \
@@ -71,6 +74,7 @@ jobs:
             --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="URDF_FILES_HASH=${URDF_FILES_HASH}" \
             .
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then

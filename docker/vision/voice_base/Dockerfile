@@ -102,8 +102,8 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
     # Переменные для удобства обновления версий
     VOSK_MODEL_FILE="vosk-model-small-ru-0.22.zip" && \
     VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
-    SILERO_MODEL_FILE="silero_v4_ru.pt" && \
-    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v4_ru.pt" && \
+    SILERO_MODEL_FILE="silero_v5_ru.pt" && \
+    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
     # Vosk STT: Russian small model (45 MB, быстрая инференция)
     # Проверяем кеш перед загрузкой
     if [ -f "/model_cache/${VOSK_MODEL_FILE}" ]; then \
@@ -117,18 +117,19 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
     unzip -q /tmp/vosk-model.zip -d /models/ && \
     mv /models/vosk-model-small-ru-0.22 /models/vosk-model-ru && \
     rm /tmp/vosk-model.zip && \
-    # Silero TTS v4: Russian model (100 MB, нейронная TTS)
-    # Голоса: aidar, baya, kseniya, xenia
+    # Silero TTS v5: Russian model (140 MB, нейронная TTS с улучшениями)
+    # Голоса: aidar, baya, kseniya, xenia, eugene (NEW!)
+    # Новые возможности v5: расстановка ударений в омографах, в 1.5-2x быстрее v4
     # Проверяем кеш перед загрузкой
     if [ -f "/model_cache/${SILERO_MODEL_FILE}" ]; then \
         echo "✅ Using cached Silero model"; \
-        cp "/model_cache/${SILERO_MODEL_FILE}" /models/silero_v4_ru.pt; \
+        cp "/model_cache/${SILERO_MODEL_FILE}" /models/silero_v5_ru.pt; \
     else \
-        echo "⬇️ Downloading Silero model (100 MB)..."; \
-        wget -q -O /models/silero_v4_ru.pt "${SILERO_MODEL_URL}" && \
-        cp /models/silero_v4_ru.pt "/model_cache/${SILERO_MODEL_FILE}"; \
+        echo "⬇️ Downloading Silero v5 model (140 MB)..."; \
+        wget -q -O /models/silero_v5_ru.pt "${SILERO_MODEL_URL}" && \
+        cp /models/silero_v5_ru.pt "/model_cache/${SILERO_MODEL_FILE}"; \
     fi && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v4 (100 MB)"
+    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (140 MB)"
 
 # ============================================================================
 # Клонирование audio_common для audio_common_msgs

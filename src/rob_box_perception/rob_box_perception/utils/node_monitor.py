@@ -35,16 +35,16 @@ class NodeAvailabilityMonitor:
             expected_nodes: Список ожидаемых нод (опционально)
         """
         self.node = node
-        self.expected_nodes = expected_nodes or [
+        self.expected_nodes = [
             "/audio_node",
             "/stt_node",
             "/tts_node",
             "/dialogue_node",
             "/reflection_node",
             "/context_aggregator",
-            "/oak_d_node",
-            "/lslidar_node",
-            "/rtabmap",
+            "/camera",               # OAK-D camera node (oak-d container)
+            "/lslidar_driver_node",  # LS LiDAR driver node (lslidar container)
+            "/rtabmap/rtabmap",      # RTAB-Map SLAM node (rtabmap container, namespaced)
         ]
         self.node_status: Dict[str, Dict] = {}
 

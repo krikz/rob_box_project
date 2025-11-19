@@ -2,6 +2,7 @@
 # Использует базовый образ ros2-zenoh из GitHub Container Registry
 # Локальная сборка: docker build --build-arg BASE_IMAGE=rob_box_base:ros2-zenoh
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
+ARG URDF_FILES_HASH=unknown
 FROM ${BASE_IMAGE}
 
 # Установка специфичных пакетов для robot_state_publisher
@@ -9,6 +10,11 @@ RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
     ros-humble-xacro \
     && rm -rf /var/lib/apt/lists/*
+
+# Инвалидация кеша при изменении URDF файлов
+# Этот ARG используется для принудительной пересборки при обновлении URDF
+ARG URDF_FILES_HASH
+RUN echo "Building with URDF files hash: ${URDF_FILES_HASH}"
 
 # Рабочая директория
 WORKDIR /workspace
