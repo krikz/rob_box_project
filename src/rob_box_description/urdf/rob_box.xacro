@@ -51,13 +51,13 @@
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link с поворотом на -90° вокруг Z -->
+	<!-- Джойнт base_footprint -> base_link с поворотом на +90° вокруг Z -->
 	<!-- Это исправляет ориентацию: Fusion 360 использует Y вперёд, ROS использует X вперёд -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- Поворот на -π/2 вокруг Z + поднятие на высоту wheel_radius для base_footprint на уровне пола -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
+		<!-- Поворот на +π/2 вокруг Z + поднятие на высоту wheel_radius для base_footprint на уровне пола -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 1.5708"/>
 	</joint>
 
 	<!-- Макросы -->
