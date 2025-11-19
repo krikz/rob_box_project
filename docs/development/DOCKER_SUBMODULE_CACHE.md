@@ -1,8 +1,8 @@
-# Инвалидация кэша Docker при изменениях субмодулей
+# Инвалидация кэша Docker при изменениях субмодулей и внешних файлов
 
 ## Проблема
 
-При использовании git submodules в Docker build контексте, Docker не отслеживает изменения внутри субмодулей. Это приводит к следующей ситуации:
+При использовании git submodules или внешних файлов (URDF, конфиги) в Docker build контексте, Docker не отслеживает изменения в этих файлах. Это приводит к следующей ситуации:
 
 1. Субмодуль обновляется (новый коммит)
 2. Docker build запускается
@@ -80,6 +80,9 @@ COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 - **vesc-nexus** (standalone) → использует субмодуль `vesc_nexus` → ARG `VESC_NEXUS_SHA`
   - **Примечание:** В production используется только ros2-control образ
   - vesc-nexus Dockerfile сохранён для разработки и тестирования
+- **robot-state-publisher** → использует URDF файлы из `src/rob_box_description/urdf/` → ARG `URDF_FILES_HASH`
+  - **Примечание:** URDF файлы не копируются в образ, монтируются через volumes
+  - Хеш вычисляется из всех `.xacro` и `.urdf` файлов для инвалидации кеша
 
 ## Тестирование
 
@@ -134,6 +137,46 @@ COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 **Почему не используем `COPY .gitmodules`:**
 - Не отслеживает фактические изменения в коде
 - Только факт что субмодуль подключен
+
+### 📝 Случай с URDF файлами (robot-state-publisher)
+
+URDF файлы представляют особый случай — они **НЕ копируются в образ**, а монтируются через volumes в runtime. Это создаёт проблему: Docker не видит изменений в URDF файлах.
+
+**Решение:** Вычисляем хеш всех URDF/xacro файлов и передаём как build argument.
+
+#### Пример для robot-state-publisher
+
+**В Dockerfile:**
+```dockerfile
+ARG URDF_FILES_HASH=unknown
+
+# Инвалидация кеша при изменении URDF файлов
+ARG URDF_FILES_HASH
+RUN echo "Building with URDF files hash: ${URDF_FILES_HASH}"
+```
+
+**В L-workflow (локальные runners):**
+```bash
+# Вычисляем хеш всех URDF/xacro файлов
+URDF_FILES_HASH=$(find src/rob_box_description/urdf -type f \( -name "*.xacro" -o -name "*.urdf" \) | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+docker buildx build \
+  --build-arg="URDF_FILES_HASH=${URDF_FILES_HASH}" \
+  ...
+```
+
+**В G-workflow (GitHub-hosted runners):**
+```yaml
+build-args: |
+  BASE_IMAGE=...
+  URDF_FILES_HASH=${{ hashFiles('src/rob_box_description/urdf/**/*.xacro', 'src/rob_box_description/urdf/**/*.urdf') }}
+```
+
+**Почему не копируем URDF в образ:**
+- Соответствует принципу проекта: "конфиги монтируются, не копируются"
+- URDF файлы — это конфигурация робота, может меняться между запусками
+- Позволяет обновлять URDF без пересборки образа (в development режиме)
+- Единообразие с другими конфигами (Zenoh, launch файлы)
 
 ## Отладка
 
