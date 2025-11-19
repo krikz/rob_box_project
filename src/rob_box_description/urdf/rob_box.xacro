@@ -1,39 +1,42 @@
 <?xml version="1.0"?>
 <robot name="rob_box" xmlns:xacro="http://www.ros.org/wiki/xacro">
-	<!-- Переменные -->
-	<xacro:property name="base_size" value="0.4757 0.238 0.1885"/>
+	<!-- Переменные - обновлено из Fusion 360 Export -->
+	<xacro:property name="base_size" value="0.4757 0.238 0.1885"/>  <!-- Legacy collision box, use mesh instead -->
 	<xacro:property name="wheel_radius" value="0.115"/>
 	<xacro:property name="wheel_length" value="0.05"/>
 	<xacro:property name="rocker_length" value="0.28934"/>
 	<xacro:property name="rocker_width" value="0.05"/>
 	<xacro:property name="rocker_thickness" value="0.01"/>
-	<xacro:property name="wheel_mass" value="2"/>
+	<xacro:property name="wheel_mass" value="21.68159743475603"/>  <!-- От Fusion 360: 21.68 кг -->
 	<xacro:property name="rocker_mass" value="3"/>
-	<xacro:property name="base_mass" value="10"/>
+	<xacro:property name="base_mass" value="62.64527022934752"/>  <!-- От Fusion 360: 62.65 кг -->
 
-	<!-- Основное шасси -->
+	<!-- Основное шасси - обновлено из Fusion 360 Export -->
 	<link name="base_link">
-		<!-- Меш body_case.stl -->
+		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
+		<inertial>
+			<!-- Инерциальные параметры из Fusion 360 -->
+			<origin xyz="-2.4090750286344156e-05 0.025488169162562517 0.14529190576177464" rpy="0 0 0"/>
+			<mass value="${base_mass}"/>
+			<inertia ixx="2.829827" iyy="1.926172" izz="3.653023" ixy="-0.001791" iyz="-0.302171" ixz="-0.001655"/>
+		</inertial>
 		<visual>
-			<origin xyz="0 -0.18 -0.02" rpy="0 0 -1.5708"/>
+			<!-- Меш без offset - base_link в (0,0,0) как требуется -->
+			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
-				<mesh filename="package://rob_box_description/meshes/body_case.stl" scale="0.001 0.001 0.001"/>
+				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
 			<material name="silver">
 				<color rgba="0.75 0.75 0.75 1"/>
 			</material>
 		</visual>
 		<collision>
-			<origin xyz="0 0 0.0565" rpy="0 0 0"/>
+			<!-- Используем тот же меш для collision -->
+			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
-				<box size="${base_size}"/>
+				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
 		</collision>
-		<inertial>
-			<mass value="${base_mass}"/>
-			<origin xyz="0 0 0.0565"/>
-			<inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/>
-		</inertial>
 	</link>
 
 	<!-- Макросы -->
@@ -297,12 +300,13 @@
 	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
 	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
 
-	<!-- Сенсоры -->
-	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="0.25 0 0.2" topic_name="/scan"/>
-	<!-- OAK-D-Lite камера на передней части робота -->
-	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="0.25 0 0.167" origin_rpy="0 0 0"/>
-	<!-- Потолочная USB камера (направлена вертикально вверх) - координаты из Fusion 360 -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.171 0.462" origin_rpy="0 -1.5708 0"/>
+	<!-- Сенсоры - позиции из Fusion 360 Export (URDF_ROBBOX.xacro) -->
+	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" topic_name="/scan"/>
+	<!-- OAK-D-Lite камера: Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера (направлена вертикально вверх): Rigid 1 joint xyz="0.065 0.170663 0.4615" -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.170663 0.4615" origin_rpy="0 -1.5708 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
