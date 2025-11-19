@@ -1,32 +1,20 @@
 {
-  "mode": "client",
-  
-  // Connect to LOCAL Zenoh router in CLIENT mode
-  // Local router (10.1.1.249:7447) bridges to Main Pi router (10.1.1.10:7447)
-  // This is the correct topology: RViz -> Local Router -> Main Pi Router -> Robot nodes
+  "mode": "peer",
   "connect": {
-    "endpoints": [
-      "tcp/10.1.1.249:7447"
-    ]
+    "endpoints": ["tcp/10.1.1.249:7447"]
   },
-  
-  // CRITICAL: Listen endpoint required for gossip discovery!
-  // Without this, peer cannot receive topic declarations from router
-  // Port 0 = let system choose random port (suitable for peer mode)
   "listen": {
-    "endpoints": [
-      "tcp/[::]:0"
-    ]
+    "endpoints": ["tcp/localhost:0"]
   },
-  
   "scouting": {
     "multicast": {
       "enabled": false
     },
-    // Gossip scouting configuration (like Main Pi router has)
     "gossip": {
       "enabled": true,
-      // Auto-connect to discovered routers and peers (like Vision Pi)
+      "target": {
+        "peer": ["router"]
+      },
       "autoconnect": {
         "peer": ["router", "peer"]
       }

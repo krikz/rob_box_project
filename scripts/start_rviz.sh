@@ -105,7 +105,7 @@ fi
 
 # Set environment variables
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG="$ZENOH_CONFIG"
+export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 export ZENOH_ROUTER_CHECK_ATTEMPTS=30
 export RUST_LOG=zenoh=warn
