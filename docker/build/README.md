@@ -11,6 +11,7 @@
 - [Использование](#использование)
 - [Интеграция с CI/CD](#интеграция-с-cicd)
 - [Обслуживание](#обслуживание)
+- [Очистка Registry](#очистка-registry)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -561,6 +562,49 @@ docker exec build-github-runner cat /runner/.runner
 
 ---
 
+## 🧹 Очистка Registry
+
+### Быстрое удаление конкретного образа
+
+Используйте специальный скрипт для удаления всех версий конкретного образа:
+
+```bash
+cd ~/rob_box_project/docker/build
+./scripts/delete_image_from_registry.sh <имя-образа>
+```
+
+**Примеры:**
+```bash
+# Удалить robot-state-publisher перед пересборкой
+./scripts/delete_image_from_registry.sh robot-state-publisher
+
+# Удалить voice-assistant
+./scripts/delete_image_from_registry.sh voice-assistant
+```
+
+**Скрипт автоматически:**
+1. ✅ Удаляет теги из Registry API
+2. ✅ Останавливает registry для безопасного доступа к файлам
+3. ✅ Удаляет директории тегов из файловой системы
+4. ✅ Перезапускает registry
+5. ✅ Запускает garbage collection
+6. ✅ Удаляет локальные Docker образы
+7. ✅ Чистит buildx cache
+
+📖 **Подробная документация:** [docs/REGISTRY_CLEANUP.md](docs/REGISTRY_CLEANUP.md)
+
+### Полная очистка registry
+
+Для удаления ВСЕХ неиспользуемых blob'ов:
+
+```bash
+./scripts/cleanup_registry.sh --all
+```
+
+**⚠️ Внимание:** Это удалит все неиспользуемые слои и освободит место, но НЕ удалит сами теги/образы.
+
+---
+
 ## 📚 Дополнительные ресурсы
 
 ### Документация компонентов
@@ -592,6 +636,11 @@ docker exec build-github-runner cat /runner/.runner
 
 ## 📝 Changelog
 
+### 2025-11-10
+- ✅ Добавлен скрипт delete_image_from_registry.sh для удаления конкретных образов
+- ✅ Создана документация REGISTRY_CLEANUP.md
+- ✅ Оптимизирован процесс очистки registry (filesystem deletion + garbage collection)
+
 ### 2025-10-28
 - ✅ Оптимизирована конфигурация APT Cacher NG для 8 параллельных runners
 - ✅ Увеличены таймауты для стабильности ARM64 QEMU сборок
@@ -610,4 +659,4 @@ docker exec build-github-runner cat /runner/.runner
 ---
 
 **Maintained by:** Rob Box Project Team  
-**Last Updated:** 2025-10-28
+**Last Updated:** 2025-11-10
