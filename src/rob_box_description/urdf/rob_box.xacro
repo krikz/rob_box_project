@@ -40,66 +40,39 @@
 	</link>
 
 	<!-- Макросы -->
-	<xacro:macro name="wheel" params="name parent_link origin_xyz rotation_z side">
+	<!-- Wheel Macro - обновлено из Fusion 360 Export (прямое подключение к base_link, без rocker) -->
+	<xacro:macro name="wheel" params="name origin_xyz axis_xyz visual_origin_xyz">
 		<link name="${name}">
-			<visual>
-				<origin xyz="${-0.0035*side} 0 0.1451" rpy="1.5708 0 ${rotation_z}"/>
-				<geometry>
-					<mesh filename="package://rob_box_description/meshes/wheel.stl" scale="0.001 0.001 0.001"/>
-				</geometry>
-				<material name="black">
-					<color rgba="0 0 0 1"/>
-				</material>
-			</visual>
-			<collision>
-				<origin xyz="0 ${0.05*side} 0" rpy="1.5708 0 0"/>
-				<geometry>
-					<cylinder radius="${wheel_radius}" length="${wheel_length}"/>
-				</geometry>
-			</collision>
+			<!-- Инерциальные параметры из Fusion 360 -->
 			<inertial>
 				<mass value="${wheel_mass}"/>
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+				<!-- Inertial origin: смещение центра масс колеса -->
+				<origin xyz="0.0375 0 0"/>
+				<inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
-		</link>
-		<joint name="${name}_joint" type="continuous">
-			<parent link="${parent_link}"/>
-			<child link="${name}"/>
-			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
-			<axis xyz="0 1 0"/>
-		</joint>
-	</xacro:macro>
-
-	<xacro:macro name="rocker" params="name side side_x">
-		<link name="${name}">
 			<visual>
-				<origin xyz="0 0 -0.11" rpy="0 3.1416 -1.5708"/>
+				<!-- Visual origin: offset меша относительно линка (из Fusion 360) -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
-					<mesh filename="package://rob_box_description/meshes/rocker.stl" scale="${side * 0.001} 0.001 0.001"/>
+					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
-				<material name="silver">
-					<color rgba="0.5 0.5 0.5 1"/>
+				<material name="black">
+					<color rgba="0.1 0.1 0.1 1"/>
 				</material>
 			</visual>
 			<collision>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Collision: используем меш как в Fusion 360 -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
-					<box size="${rocker_length} ${rocker_width} ${rocker_thickness}"/>
+					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 			</collision>
-			<inertial>
-				<mass value="${rocker_mass}"/>
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
-			</inertial>
 		</link>
-		<joint name="${name}_joint" type="fixed">
+		<joint name="${name}_joint" type="continuous">
 			<parent link="base_link"/>
 			<child link="${name}"/>
-			<origin xyz="0 ${side * 0.23048 + side_x} 0.09425" rpy="0 0 0"/>
-			<axis xyz="0 1 0"/>
-			<limit effort="10" velocity="1" lower="-0.3" upper="0.3"/>
+			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
+			<axis xyz="${axis_xyz}"/>
 		</joint>
 	</xacro:macro>
 
@@ -292,13 +265,27 @@
 		</joint>
 	</xacro:macro>
 
-	<!-- Использование макросов -->
-	<xacro:rocker name="left_rocker" side="1" side_x="-0.05"/>
-	<xacro:rocker name="right_rocker" side="-1" side_x="0.05"/>
-	<xacro:wheel name="left_front_wheel" parent_link="left_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
-	<xacro:wheel name="left_rear_wheel" parent_link="left_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="1.5708" side="1"/>
-	<xacro:wheel name="right_front_wheel" parent_link="right_rocker" origin_xyz="0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
-	<xacro:wheel name="right_rear_wheel" parent_link="right_rocker" origin_xyz="-0.14467 0 -0.11" rotation_z="-1.5708" side="-1"/>
+	<!-- Использование макросов - позиции из Fusion 360 Export -->
+	<!-- Колёса подключены напрямую к base_link (упрощённая модель без rocker-bogie) -->
+	<!-- Left wheels -->
+	<xacro:wheel name="wheel_rear_left_1" 
+	             origin_xyz="0.195 0.143797 0.028767" 
+	             axis_xyz="1.0 0.0 0.0"
+	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
+	<xacro:wheel name="wheel_front_left_1" 
+	             origin_xyz="0.195 -0.145731 0.0289" 
+	             axis_xyz="1.0 0.0 0.0"
+	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
+	
+	<!-- Right wheels -->
+	<xacro:wheel name="wheel_front_right_1" 
+	             origin_xyz="-0.195967 -0.144669 0.0289" 
+	             axis_xyz="-1.0 0.0 0.0"
+	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
+	<xacro:wheel name="wheel_rear_right_1" 
+	             origin_xyz="-0.195 0.143797 0.028767" 
+	             axis_xyz="-1.0 0.0 0.0"
+	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
 
 	<!-- Сенсоры - позиции из Fusion 360 Export (URDF_ROBBOX.xacro) -->
 	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
