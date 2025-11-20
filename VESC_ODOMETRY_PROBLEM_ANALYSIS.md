@@ -191,19 +191,30 @@ distance = 10.47 × 0.02 = 0.209 м = 209 мм  ← В 8.7 РАЗ БОЛЬШЕ!
 
 ## 🔧 Исправления
 
-### Исправление #1: Конвертация RPM в м/с
+### Исправление #1: Конвертация RPM в м/с и правильный расчёт позиции
 
 **Файл**: `src/vesc_nexus/src/vesc_nexus/src/vesc_system_hardware_interface.cpp`
 
-**Строка 146**:
+**Строки 146-153**:
 ```diff
 -hw_velocities_[i] = rpm * (2.0 * M_PI / 60.0);  // RPM → rad/s
-+// RPM → линейная скорость (м/с)
-+// v = ω × r = (RPM × 2π / 60) × wheel_radius
+-hw_positions_[i] += hw_velocities_[i] * (1.0 / publish_rate_);
++// ИСПРАВЛЕНИЕ: Конвертация RPM → линейная скорость (м/с)
++// Формула: v = ω × r = (RPM × 2π / 60) × wheel_radius
 +double angular_velocity = rpm * (2.0 * M_PI / 60.0);  // RPM → рад/с
 +double wheel_radius = vesc_handlers_[i]->getWheelRadius();
 +hw_velocities_[i] = angular_velocity * wheel_radius;  // рад/с → м/с
++
++// ИСПРАВЛЕНИЕ: hw_positions должна быть в радианах (угловая позиция колеса)
++// diff_drive_controller ожидает угловую позицию, а не линейное перемещение!
++double period = 1.0 / publish_rate_;  // секунды
++hw_positions_[i] += angular_velocity * period;  // радианы
 ```
+
+**Пояснение**:
+- `hw_velocities_[i]` - линейная скорость колеса в **м/с** (для diff_drive_controller)
+- `hw_positions_[i]` - угловая позиция колеса в **радианах** (для diff_drive_controller)
+- diff_drive_controller сам конвертирует угловую позицию в линейное перемещение: `Δs = Δθ × wheel_radius`
 
 ### Исправление #2: Убрать лишнее умножение в write()
 

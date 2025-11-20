@@ -1,0 +1,66 @@
+diff --git a/src/vesc_nexus/include/vesc_nexus/vesc_handler.hpp b/src/vesc_nexus/include/vesc_nexus/vesc_handler.hpp
+index 0b1120d..7ac8f25 100644
+--- a/src/vesc_nexus/include/vesc_nexus/vesc_handler.hpp
++++ b/src/vesc_nexus/include/vesc_nexus/vesc_handler.hpp
+@@ -31,6 +31,7 @@ public:
+     uint8_t getCanId() const;
+     std::string getLabel() const;
+     vesc_msgs::msg::VescState getLastState() const;
++    double getWheelRadius() const;
+ 
+ private:
+     uint8_t can_id_;
+diff --git a/src/vesc_nexus/src/vesc_handler.cpp b/src/vesc_nexus/src/vesc_handler.cpp
+index 673e892..0563a26 100644
+--- a/src/vesc_nexus/src/vesc_handler.cpp
++++ b/src/vesc_nexus/src/vesc_handler.cpp
+@@ -151,4 +151,8 @@ std::string VescHandler::getLabel() const {
+ 
+ vesc_msgs::msg::VescState VescHandler::getLastState() const {
+     return last_state_;
++}
++
++double VescHandler::getWheelRadius() const {
++    return wheel_radius_;
+ }
+\ No newline at end of file
+diff --git a/src/vesc_nexus/src/vesc_system_hardware_interface.cpp b/src/vesc_nexus/src/vesc_system_hardware_interface.cpp
+index 29fe619..64d839d 100644
+--- a/src/vesc_nexus/src/vesc_system_hardware_interface.cpp
++++ b/src/vesc_nexus/src/vesc_system_hardware_interface.cpp
+@@ -143,8 +143,18 @@ hardware_interface::return_type VescSystemHardwareInterface::read(
+   for (size_t i = 0; i < vesc_handlers_.size(); ++i) {
+     const auto& state = vesc_handlers_[i]->getLastState();
+     double rpm = state.speed_rpm;
+-    hw_velocities_[i] = rpm * (2.0 * M_PI / 60.0);  // RPM → rad/s
+-    hw_positions_[i] += hw_velocities_[i] * (1.0 / publish_rate_);
++    
++    // ИСПРАВЛЕНИЕ: Конвертация RPM → линейная скорость (м/с)
++    // Формула: v = ω × r = (RPM × 2π / 60) × wheel_radius
++    double angular_velocity = rpm * (2.0 * M_PI / 60.0);  // RPM → рад/с
++    double wheel_radius = vesc_handlers_[i]->getWheelRadius();
++    hw_velocities_[i] = angular_velocity * wheel_radius;  // рад/с → м/с
++    
++    // ИСПРАВЛЕНИЕ: hw_positions должна быть в радианах (угловая позиция колеса)
++    // Интегрируем угловую скорость, а не линейную
++    double period = 1.0 / publish_rate_;  // секунды
++    hw_positions_[i] += angular_velocity * period;  // радианы
++    
+     hw_efforts_[i] = state.current_motor;  // Пример: ток как "усилие"
+   }
+   
+@@ -170,10 +180,12 @@ hardware_interface::return_type VescSystemHardwareInterface::write(
+   bool all_motors_idle = true;
+   
+   for (size_t i = 0; i < vesc_handlers_.size(); ++i) {
+-    double linear_speed = cmd_velocities_[i] * wheel_radius_;  // rad/s → m/s
++    // ИСПРАВЛЕНИЕ: cmd_velocities_[i] уже в м/с от diff_drive_controller
++    // НЕ нужно умножать на wheel_radius!
++    double linear_speed = cmd_velocities_[i];  // м/с
+     
+     // Проверяем, есть ли ненулевая команда
+-    if (std::abs(cmd_velocities_[i]) > 0.001) {  // Порог ~0.001 rad/s (игнорируем шум)
++    if (std::abs(cmd_velocities_[i]) > 0.001) {  // Порог ~0.001 м/с (игнорируем шум)
+       // Активная команда - обновляем timestamp и отправляем
+       last_nonzero_cmd_time_[i] = time;
+       vesc_handlers_[i]->sendSpeed(linear_speed);
