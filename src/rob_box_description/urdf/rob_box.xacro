@@ -57,7 +57,7 @@
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
 		<!-- Без поворота - модель и навигация используют одну ориентацию -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 1.5708"/>
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
 	</joint>
 
 	<!-- Макросы -->
