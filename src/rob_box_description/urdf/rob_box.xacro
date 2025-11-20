@@ -98,7 +98,7 @@
 	</xacro:macro>
 
 	<!-- Сенсоры -->
-	<xacro:macro name="lidar" params="name parent_link origin_xyz topic_name">
+	<xacro:macro name="lidar" params="name parent_link origin_xyz origin_rpy:='0 0 0' topic_name">
 		<link name="${name}">
 			<visual>
 				<origin xyz="0 0 0" rpy="0 0 0"/>
@@ -124,7 +124,7 @@
 		<joint name="${name}_joint" type="fixed">
 			<parent link="${parent_link}"/>
 			<child link="${name}"/>
-			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
+			<origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
 		</joint>
 		<gazebo reference="${name}">
 			<sensor name="${name}_sensor" type="gpu_lidar">
