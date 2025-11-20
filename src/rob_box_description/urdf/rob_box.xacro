@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
-<robot name="rob_box" xmlns:xacro="http://www.ros.or		<visual>
+<robot name="rob_box" xmlns:xacro="http://www.ros.org/wiki/xacro">
+	<!-- Переменные - обновлено из Fusion 360 Export -->
+		<visual>
 			<!-- Visual origin: offset меша + поворот для соответствия ROS convention -->
 			<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
 			<geometry>
