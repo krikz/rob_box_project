@@ -86,7 +86,7 @@
     # Исходящие топики
     odom_topic: "/odom"
     odom_frame_id: "odom"
-    base_frame_id: "base_link"
+    base_frame_id: "base_footprint"
 
     # Топики состояния моторов
     motor_state_topic_prefix: "/sensors/motor_state/"
@@ -94,7 +94,7 @@
     # ═══════════════════════════════════════════════════════════════
     # Advanced Settings
     # ═══════════════════════════════════════════════════════════════
-    # Публикация TF трансформации odom → base_link
+    # Публикация TF трансформации odom → base_footprint
     publish_tf: true
 
     # Режим управления моторами (rpm, current, duty, position)
