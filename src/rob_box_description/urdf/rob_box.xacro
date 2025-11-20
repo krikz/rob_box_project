@@ -73,8 +73,8 @@
 				<inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
 			<visual>
-				<!-- Visual origin: offset меша относительно линка (из Fusion 360) -->
-				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
+				<!-- Visual origin: offset меша относительно линка + поворот на +90° вокруг Z для соответствия base_link -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -83,8 +83,8 @@
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision: используем меш как в Fusion 360 -->
-				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
+				<!-- Collision: также поворачиваем для соответствия визуализации -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -167,7 +167,8 @@
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Поворот на +90° вокруг Z для соответствия base_link ориентации -->
+				<origin xyz="0 0 0" rpy="0 0 1.5708"/>
 				<geometry>
 					<box size="0.097 0.0275 0.0214"/>  <!-- Размеры OAK-D-Lite -->
 				</geometry>
@@ -176,7 +177,8 @@
 				</material>
 			</visual>
 			<collision>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Collision также повернут -->
+				<origin xyz="0 0 0" rpy="0 0 1.5708"/>
 				<geometry>
 					<box size="0.097 0.0275 0.0214"/>
 				</geometry>
