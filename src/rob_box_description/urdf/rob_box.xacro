@@ -51,13 +51,14 @@
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link -->
-	<!-- base_footprint на уровне пола, base_link поднят на высоту колеса -->
+	<!-- Джойнт base_footprint -> base_link с поворотом на +90° вокруг Z -->
+	<!-- Модель из Fusion 360 имеет ось Y вперёд, но ROS использует ось X вперёд -->
+	<!-- LiDAR физически установлен так, что его 0° смотрит вперёд по оси Y модели -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- Поднятие на высоту wheel_radius для base_footprint на уровне пола -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+		<!-- Поворот на +π/2 вокруг Z для выравнивания модели с физической ориентацией -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 1.5708"/>
 	</joint>
 
 	<!-- Макросы -->
@@ -310,8 +311,8 @@
 	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
 
 	<!-- Сенсоры - позиции из Fusion 360 Export (URDF_ROBBOX.xacro) -->
-	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" (повёрнут на -90° для выравнивания с осью X) -->
-	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" origin_rpy="0 0 -1.5708" topic_name="/scan"/>
+	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" (без поворота - физически установлен правильно) -->
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" topic_name="/scan"/>
 	<!-- OAK-D-Lite камера: Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
 	<!-- Потолочная USB камера (направлена вертикально вверх): Rigid 1 joint xyz="0.065 0.170663 0.4615" -->
