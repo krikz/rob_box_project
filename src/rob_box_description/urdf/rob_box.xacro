@@ -167,26 +167,26 @@
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
-				<!-- БЕЗ ПОВОРОТА - frame base_link уже повернут через base_footprint_joint -->
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Visual offset из экспорта Fusion (компенсация позиции меша) -->
+				<origin xyz="0.115772 0.000238 -0.4595" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.097 0.0275 0.0214"/>  <!-- Размеры OAK-D-Lite -->
+					<mesh filename="package://rob_box_description/meshes/camera_oak.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 				<material name="dark_grey">
 					<color rgba="0.2 0.2 0.2 1"/>
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision также БЕЗ ПОВОРОТА -->
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Collision offset из экспорта Fusion -->
+				<origin xyz="0.115772 0.000238 -0.4595" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.097 0.0275 0.0214"/>
+					<mesh filename="package://rob_box_description/meshes/camera_oak.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 			</collision>
 			<inertial>
-				<mass value="0.061"/>  <!-- 61g вес OAK-D-Lite -->
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+				<mass value="0.350"/>  <!-- 350g из экспорта Fusion -->
+				<origin xyz="0.00875 0.015 0"/>  <!-- Из экспорта Fusion -->
+				<inertia ixx="0.000264" ixy="0" ixz="0" iyy="0.000032" iyz="0" izz="0.00025"/>
 			</inertial>
 		</link>
 
@@ -252,8 +252,8 @@
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
-				<!-- Visual offset из экспорта Fusion + поворот на 90° по X (ориентация меша в STL) -->
-				<origin xyz="0.170663 -0.065 -0.4615" rpy="1.5708 0 0"/>
+				<!-- Visual offset из экспорта Fusion (компенсация позиции меша) -->
+				<origin xyz="0.170663 -0.065 -0.4615" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/camera_rpi.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -262,8 +262,8 @@
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision offset из экспорта Fusion + поворот на 90° по X -->
-				<origin xyz="0.170663 -0.065 -0.4615" rpy="1.5708 0 0"/>
+				<!-- Collision offset из экспорта Fusion -->
+				<origin xyz="0.170663 -0.065 -0.4615" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/camera_rpi.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -321,12 +321,10 @@
 	<!-- Сенсоры - ОБНОВЛЕНО из Fusion 360 Export (исправленный экспорт 2e0e5f8) -->
 	<!-- LiDAR: Fusion 360 исправленный экспорт xyz="-0.170806 -0.000331 0.4765" -->
 	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.170806 -0.000331 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
-	<!-- OAK-D-Lite камера: Fusion 360 исправленный экспорт xyz="-0.115772 -0.000238 0.4595" -->
-	<!-- Поворот на 90° вокруг Z для компенсации изменения системы координат -->
-	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="1.5708 0 1.5708"/>
-	<!-- Потолочная USB камера: Fusion 360 исправленный экспорт xyz="-0.170663 0.065 0.4615" -->
-	<!-- Потолочная камера смотрит вверх, поворот: -90° вокруг Y (Z вверх) + 90° вокруг Z (компенсация) -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 1.5708"/>
+	<!-- OAK-D-Lite камера: Fusion 360 исправленный экспорт xyz="-0.115772 -0.000238 0.4595" rpy="0 0 0" -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера: Fusion 360 исправленный экспорт xyz="-0.170663 0.065 0.4615" rpy="0 0 0" -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
