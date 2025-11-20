@@ -33,8 +33,9 @@
 			<inertia ixx="2.829827" iyy="1.926172" izz="3.653023" ixy="-0.001791" iyz="-0.302171" ixz="-0.001655"/>
 		</inertial>
 		<visual>
-			<!-- Меш без offset - base_link в (0,0,0) как требуется -->
-			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<!-- Меш повернут на +90° вокруг Z для соответствия физической ориентации -->
+			<!-- Fusion 360 экспортировал модель с другой ориентацией относительно ROS convention -->
+			<origin xyz="0 0 0" rpy="0 0 1.5708"/>
 			<geometry>
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
@@ -43,22 +44,21 @@
 			</material>
 		</visual>
 		<collision>
-			<!-- Используем тот же меш для collision -->
-			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<!-- Collision также поворачиваем для соответствия визуализации -->
+			<origin xyz="0 0 0" rpy="0 0 1.5708"/>
 			<geometry>
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link С ПОВОРОТОМ -90° вокруг Z -->
+	<!-- Джойнт base_footprint -> base_link БЕЗ ПОВОРОТА -->
 	<!-- base_footprint на уровне пола, base_link поднят на высоту колеса -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- Поворот -90° вокруг Z для соответствия ROS convention (X - вперёд, Y - влево) -->
-		<!-- Fusion 360 экспортировал модель с другой ориентацией -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
+		<!-- БЕЗ ПОВОРОТА - одометрия и TF tree должны быть без дополнительных трансформаций -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
 	</joint>
 
 	<!-- Макросы -->
