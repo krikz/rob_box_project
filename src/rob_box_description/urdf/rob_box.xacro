@@ -51,13 +51,14 @@
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link без поворота -->
+	<!-- Джойнт base_footprint -> base_link С ПОВОРОТОМ -90° вокруг Z -->
 	<!-- base_footprint на уровне пола, base_link поднят на высоту колеса -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- Без поворота - модель и навигация используют одну ориентацию -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+		<!-- Поворот -90° вокруг Z для соответствия ROS convention (X - вперёд, Y - влево) -->
+		<!-- Fusion 360 экспортировал модель с другой ориентацией -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
 	</joint>
 
 	<!-- Макросы -->
