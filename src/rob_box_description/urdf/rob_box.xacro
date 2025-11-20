@@ -23,14 +23,14 @@
 	</link>
 
 	<!-- Основное шасси - обновлено из Fusion 360 Export -->
-	<!-- base_link БЕЗ ПОВОРОТА - визуал и одометрия соответствуют физическому роботу -->
+	<!-- base_link в системе ROS (X вперед, Y влево) - исправленный экспорт из Fusion -->
 	<link name="base_link">
 		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
 		<inertial>
-			<!-- Инерциальные параметры из Fusion 360 -->
-			<origin xyz="-2.4090750286344156e-05 0.025488169162562517 0.14529190576177464" rpy="0 0 0"/>
+			<!-- Инерциальные параметры из Fusion 360 (исправленный экспорт 2e0e5f8) -->
+			<origin xyz="-0.025488169162561854 -2.4090750285970683e-05 0.14529190576177384" rpy="0 0 0"/>
 			<mass value="${base_mass}"/>
-			<inertia ixx="2.829827" iyy="1.926172" izz="3.653023" ixy="-0.001791" iyz="-0.302171" ixz="-0.001655"/>
+			<inertia ixx="1.926172" iyy="2.829827" izz="3.653023" ixy="0.001791" iyz="-0.001655" ixz="0.302171"/>
 		</inertial>
 		<visual>
 			<!-- Меш БЕЗ ПОВОРОТА - frame base_link уже повернут через base_footprint_joint -->
@@ -61,15 +61,15 @@
 	</joint>
 
 	<!-- Макросы -->
-	<!-- Wheel Macro - обновлено из Fusion 360 Export (прямое подключение к base_link, без rocker) -->
+	<!-- Wheel Macro - обновлено из Fusion 360 Export (исправленный экспорт 2e0e5f8) -->
 	<xacro:macro name="wheel" params="name origin_xyz axis_xyz visual_origin_xyz">
 		<link name="${name}">
-			<!-- Инерциальные параметры из Fusion 360 -->
+			<!-- Инерциальные параметры из Fusion 360 (исправленный экспорт) -->
 			<inertial>
 				<mass value="${wheel_mass}"/>
 				<!-- Inertial origin: смещение центра масс колеса -->
-				<origin xyz="0.0375 0 0"/>
-				<inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
+				<origin xyz="0 0.0375 0"/>
+				<inertia ixx="0.073667" iyy="0.129466" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
 			<visual>
 				<!-- Visual origin: offset меша относительно линка БЕЗ ПОВОРОТА -->
@@ -289,40 +289,40 @@
 		</joint>
 	</xacro:macro>
 
-	<!-- Использование макросов - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 -->
-	<!-- Оси колес в системе Fusion 360 (X-axis) -->
+	<!-- Использование макросов - ОБНОВЛЕНО из Fusion 360 (исправленный экспорт 2e0e5f8) -->
+	<!-- Система координат теперь соответствует ROS: X вперед, Y влево -->
 	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
-	<!-- Left Rear: Fusion 360 origin="0.195 0.143797 0.028767" visual="-0.195 -0.143797 -0.028767" -->
+	<!-- Left Rear: Fusion 360 исправленный экспорт origin="-0.143797 0.195 0.028767" -->
 	<xacro:wheel name="left_rear_wheel" 
-	             origin_xyz="0.195 0.143797 0.028767" 
-	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
-	<!-- Left Front: Fusion 360 origin="0.195 -0.145731 0.0289" visual="-0.195 0.145731 -0.0289" -->
+	             origin_xyz="-0.143797 0.195 0.028767" 
+	             axis_xyz="0.0 1.0 0.0"
+	             visual_origin_xyz="0.143797 -0.195 -0.028767"/>
+	<!-- Left Front: Fusion 360 исправленный экспорт origin="0.145731 0.195 0.0289" -->
 	<xacro:wheel name="left_front_wheel" 
-	             origin_xyz="0.195 -0.145731 0.0289" 
-	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
+	             origin_xyz="0.145731 0.195 0.0289" 
+	             axis_xyz="0.0 1.0 0.0"
+	             visual_origin_xyz="-0.145731 -0.195 -0.0289"/>
 	
 	<!-- Right wheels -->
-	<!-- Right Front: Fusion 360 origin="-0.195967 -0.144669 0.0289" visual="0.195967 0.144669 -0.0289" -->
+	<!-- Right Front: Fusion 360 исправленный экспорт origin="0.144669 -0.195967 0.0289" -->
 	<xacro:wheel name="right_front_wheel" 
-	             origin_xyz="-0.195967 -0.144669 0.0289" 
-	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
-	<!-- Right Rear: Fusion 360 origin="-0.195 0.143797 0.028767" visual="0.195 -0.143797 -0.028767" -->
+	             origin_xyz="0.144669 -0.195967 0.0289" 
+	             axis_xyz="0.0 -1.0 0.0"
+	             visual_origin_xyz="-0.144669 0.195967 -0.0289"/>
+	<!-- Right Rear: Fusion 360 исправленный экспорт origin="-0.143797 -0.195 0.028767" -->
 	<xacro:wheel name="right_rear_wheel" 
-	             origin_xyz="-0.195 0.143797 0.028767" 
-	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
+	             origin_xyz="-0.143797 -0.195 0.028767" 
+	             axis_xyz="0.0 -1.0 0.0"
+	             visual_origin_xyz="0.143797 0.195 -0.028767"/>
 
-	<!-- Сенсоры - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 Export -->
-	<!-- LiDAR: Fusion 360 Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
-	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
-	<!-- OAK-D-Lite камера: Fusion 360 Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
-	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
-	<!-- Потолочная USB камера: Fusion 360 xyz="0.065 0.170663 0.4615" -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.170663 0.4615" origin_rpy="0 0 0"/>
+	<!-- Сенсоры - ОБНОВЛЕНО из Fusion 360 Export (исправленный экспорт 2e0e5f8) -->
+	<!-- LiDAR: Fusion 360 исправленный экспорт xyz="-0.170806 -0.000331 0.4765" -->
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.170806 -0.000331 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
+	<!-- OAK-D-Lite камера: Fusion 360 исправленный экспорт xyz="-0.115772 -0.000238 0.4595" -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера: Fusion 360 исправленный экспорт xyz="-0.170663 -0.065 0.4615" -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 -0.065 0.4615" origin_rpy="0 0 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
