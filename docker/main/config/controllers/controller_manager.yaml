@@ -75,7 +75,7 @@ diff_drive_controller:
 
     # Frame IDs для одометрии
     odom_frame_id: odom
-    base_frame_id: base_link
+    base_frame_id: base_footprint
 
     # Использовать только реальные колеса (не виртуальные)
     open_loop: false
