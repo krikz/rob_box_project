@@ -36,10 +36,10 @@ class DummyJointStatePublisher(Node):
         
         # Все continuous joints (колеса) - naming matches robot_controller.yaml
         msg.name = [
-            'rear_left_wheel_joint',
-            'front_left_wheel_joint',
-            'front_right_wheel_joint',
-            'rear_right_wheel_joint'
+            'left_rear_wheel_joint',
+            'left_front_wheel_joint',
+            'right_front_wheel_joint',
+            'right_rear_wheel_joint'
         ]
         
         # Увеличиваем угол вращения
