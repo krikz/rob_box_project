@@ -35,7 +35,7 @@ rtabmap:
     Icp/Epsilon: "0.001"
     Icp/MaxTranslation: "0.3"
     Icp/MaxRotation: "0.78"  # ~45 градусов
-    Icp/CorrespondenceRatio: "0.4"
+    Icp/CorrespondenceRatio: "0.05"  # Понижено с 0.4 до 0.05 для работы при малом количестве точек
 
     # Loop closure для навигации
     Mem/LaserScanNormalK: "0"  # Отключено для 2D лидара
