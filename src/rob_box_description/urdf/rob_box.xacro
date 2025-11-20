@@ -326,7 +326,7 @@
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 1.5708"/>
 	<!-- Потолочная USB камера: Fusion 360 исправленный экспорт xyz="-0.170663 0.065 0.4615" -->
 	<!-- Потолочная камера смотрит вверх, поворот: -90° вокруг Y (Z вверх) + 90° вокруг Z (компенсация) -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 -1.5708 1.5708"/>
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 1.5708"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
