@@ -23,7 +23,7 @@
 	</link>
 
 	<!-- Основное шасси - обновлено из Fusion 360 Export -->
-	<!-- Frame base_link повернут на -90° вокруг Z через base_footprint_joint -->
+	<!-- base_link БЕЗ ПОВОРОТА - визуал и одометрия соответствуют физическому роботу -->
 	<link name="base_link">
 		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
 		<inertial>
@@ -51,14 +51,13 @@
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link С ПОВОРОТОМ -->
+	<!-- Джойнт base_footprint -> base_link БЕЗ ПОВОРОТА -->
 	<!-- base_footprint на уровне пола, base_link поднят на высоту колеса -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- ПОВОРОТ НА -90° вокруг Z для соответствия ROS convention (X вперёд) -->
-		<!-- Fusion 360: Y вперёд → ROS: X вперёд → поворот на -90° -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
+		<!-- БЕЗ ПОВОРОТА - визуал и одометрия должны соответствовать физическому роботу -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
 	</joint>
 
 	<!-- Макросы -->
@@ -291,34 +290,33 @@
 	</xacro:macro>
 
 	<!-- Использование макросов - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 -->
-	<!-- Frame base_link повернут на -90° через base_footprint_joint, поэтому позиции остаются как в Fusion -->
+	<!-- Оси колес повернуты на 90° для соответствия ROS convention -->
 	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
 	<!-- Left Rear: Fusion 360 origin="0.195 0.143797 0.028767" visual="-0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="left_rear_wheel" 
 	             origin_xyz="0.195 0.143797 0.028767" 
-	             axis_xyz="1.0 0.0 0.0"
+	             axis_xyz="0.0 1.0 0.0"
 	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
 	<!-- Left Front: Fusion 360 origin="0.195 -0.145731 0.0289" visual="-0.195 0.145731 -0.0289" -->
 	<xacro:wheel name="left_front_wheel" 
 	             origin_xyz="0.195 -0.145731 0.0289" 
-	             axis_xyz="1.0 0.0 0.0"
+	             axis_xyz="0.0 1.0 0.0"
 	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
 	
 	<!-- Right wheels -->
 	<!-- Right Front: Fusion 360 origin="-0.195967 -0.144669 0.0289" visual="0.195967 0.144669 -0.0289" -->
 	<xacro:wheel name="right_front_wheel" 
 	             origin_xyz="-0.195967 -0.144669 0.0289" 
-	             axis_xyz="-1.0 0.0 0.0"
+	             axis_xyz="0.0 -1.0 0.0"
 	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
 	<!-- Right Rear: Fusion 360 origin="-0.195 0.143797 0.028767" visual="0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="right_rear_wheel" 
 	             origin_xyz="-0.195 0.143797 0.028767" 
-	             axis_xyz="-1.0 0.0 0.0"
+	             axis_xyz="0.0 -1.0 0.0"
 	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
 
 	<!-- Сенсоры - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 Export -->
-	<!-- Frame base_link повернут на -90° через base_footprint_joint, поэтому позиции остаются как в Fusion -->
 	<!-- LiDAR: Fusion 360 Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
 	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
 	<!-- OAK-D-Lite камера: Fusion 360 Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->

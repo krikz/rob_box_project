@@ -65,9 +65,9 @@ diff_drive_controller:
 
     # Публикация одометрии в /odom
     odom_frame_id: odom
-    base_frame_id: base_footprint
+    base_frame_id: base_link
 
-    # Публикация TF трансформации odom → base_footprint
+    # Публикация TF трансформации odom → base_link
     enable_odom_tf: true
 
     # Ковариация одометрии (неопределенность)
