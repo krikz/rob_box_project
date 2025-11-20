@@ -300,36 +300,41 @@
 		</joint>
 	</xacro:macro>
 
-	<!-- Использование макросов - позиции из Fusion 360 Export -->
-	<!-- Колёса подключены напрямую к base_link (упрощённая модель без rocker-bogie) -->
+	<!-- Использование макросов - позиции ПЕРЕСЧИТАНЫ для поворота base_link на +90° вокруг Z -->
+	<!-- Формула: new_x = -old_y, new_y = old_x, new_z = old_z -->
 	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
+	<!-- Left Rear: Original origin="0.195 0.143797 0.028767" visual="-0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="left_rear_wheel" 
-	             origin_xyz="0.195 0.143797 0.028767" 
+	             origin_xyz="-0.143797 0.195 0.028767" 
 	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
+	             visual_origin_xyz="0.143797 -0.195 -0.028767"/>
+	<!-- Left Front: Original origin="0.195 -0.145731 0.0289" visual="-0.195 0.145731 -0.0289" -->
 	<xacro:wheel name="left_front_wheel" 
-	             origin_xyz="0.195 -0.145731 0.0289" 
+	             origin_xyz="0.145731 0.195 0.0289" 
 	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
+	             visual_origin_xyz="-0.145731 -0.195 -0.0289"/>
 	
 	<!-- Right wheels -->
+	<!-- Right Front: Original origin="-0.195967 -0.144669 0.0289" visual="0.195967 0.144669 -0.0289" -->
 	<xacro:wheel name="right_front_wheel" 
-	             origin_xyz="-0.195967 -0.144669 0.0289" 
+	             origin_xyz="0.144669 -0.195967 0.0289" 
 	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
+	             visual_origin_xyz="-0.144669 0.195967 -0.0289"/>
+	<!-- Right Rear: Original origin="-0.195 0.143797 0.028767" visual="0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="right_rear_wheel" 
-	             origin_xyz="-0.195 0.143797 0.028767" 
+	             origin_xyz="-0.143797 -0.195 0.028767" 
 	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
+	             visual_origin_xyz="0.143797 0.195 -0.028767"/>
 
-	<!-- Сенсоры - позиции из Fusion 360 Export (URDF_ROBBOX.xacro) -->
-	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" (повёрнут на +90° для выравнивания) -->
-	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
-	<!-- OAK-D-Lite камера: Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
-	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
-	<!-- Потолочная USB камера (направлена вертикально вверх): Rigid 1 joint xyz="0.065 0.170663 0.4615" -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.170663 0.4615" origin_rpy="0 0 0"/>
+	<!-- Сенсоры - позиции ПЕРЕСЧИТАНЫ для поворота base_link на +90° вокруг Z -->
+	<!-- Формула: new_x = -old_y, new_y = old_x, new_z = old_z -->
+	<!-- LiDAR: Original xyz="-0.000331 0.170806 0.4765" → Rotated -->
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.170806 -0.000331 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
+	<!-- OAK-D-Lite камера: Original xyz="-0.000238 0.115772 0.4595" → Rotated -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера: Original xyz="0.065 0.170663 0.4615" → Rotated -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
