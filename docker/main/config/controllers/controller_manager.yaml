@@ -70,8 +70,9 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
     # Odometry Configuration
     # ───────────────────────────────────────────────────────────────
-    # Опубликовывать TF трансформацию odom → base_link
-    enable_odom_tf: true
+    # Отключено: используем ICP odometry от RTAB-Map вместо wheel odometry
+    # Wheel odometry накапливает большую ошибку из-за проскальзывания и дрейфа энкодеров
+    enable_odom_tf: false
 
     # Frame IDs для одометрии
     odom_frame_id: odom
