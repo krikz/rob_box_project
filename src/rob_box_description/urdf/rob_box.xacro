@@ -23,7 +23,7 @@
 	</link>
 
 	<!-- Основное шасси - обновлено из Fusion 360 Export -->
-	<!-- Повёрнуто на -90° вокруг Z для соответствия ROS convention (X - вперёд, Y - влево) -->
+	<!-- Frame base_link повернут на -90° вокруг Z через base_footprint_joint -->
 	<link name="base_link">
 		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
 		<inertial>
@@ -33,9 +33,8 @@
 			<inertia ixx="2.829827" iyy="1.926172" izz="3.653023" ixy="-0.001791" iyz="-0.302171" ixz="-0.001655"/>
 		</inertial>
 		<visual>
-			<!-- Меш повернут на +90° вокруг Z для соответствия физической ориентации -->
-			<!-- Fusion 360 экспортировал модель с другой ориентацией относительно ROS convention -->
-			<origin xyz="0 0 0" rpy="0 0 1.5708"/>
+			<!-- Меш БЕЗ ПОВОРОТА - frame base_link уже повернут через base_footprint_joint -->
+			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
@@ -44,21 +43,22 @@
 			</material>
 		</visual>
 		<collision>
-			<!-- Collision также поворачиваем для соответствия визуализации -->
-			<origin xyz="0 0 0" rpy="0 0 1.5708"/>
+			<!-- Collision также БЕЗ ПОВОРОТА -->
+			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link БЕЗ ПОВОРОТА -->
+	<!-- Джойнт base_footprint -> base_link С ПОВОРОТОМ -->
 	<!-- base_footprint на уровне пола, base_link поднят на высоту колеса -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- БЕЗ ПОВОРОТА - одометрия и TF tree должны быть без дополнительных трансформаций -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+		<!-- ПОВОРОТ НА -90° вокруг Z для соответствия ROS convention (X вперёд) -->
+		<!-- Fusion 360: Y вперёд → ROS: X вперёд → поворот на -90° -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
 	</joint>
 
 	<!-- Макросы -->
@@ -73,8 +73,9 @@
 				<inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
 			<visual>
-				<!-- Visual origin: offset меша относительно линка + поворот на +90° вокруг Z для соответствия base_link -->
-				<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
+				<!-- Visual origin: offset меша относительно линка БЕЗ ПОВОРОТА -->
+				<!-- Frame base_link уже повернут через base_footprint_joint -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -83,8 +84,8 @@
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision: также поворачиваем для соответствия визуализации -->
-				<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
+				<!-- Collision также БЕЗ ПОВОРОТА -->
+				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
@@ -167,8 +168,8 @@
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
-				<!-- Поворот на +90° вокруг Z для соответствия base_link ориентации -->
-				<origin xyz="0 0 0" rpy="0 0 1.5708"/>
+				<!-- БЕЗ ПОВОРОТА - frame base_link уже повернут через base_footprint_joint -->
+				<origin xyz="0 0 0" rpy="0 0 0"/>
 				<geometry>
 					<box size="0.097 0.0275 0.0214"/>  <!-- Размеры OAK-D-Lite -->
 				</geometry>
@@ -177,8 +178,8 @@
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision также повернут -->
-				<origin xyz="0 0 0" rpy="0 0 1.5708"/>
+				<!-- Collision также БЕЗ ПОВОРОТА -->
+				<origin xyz="0 0 0" rpy="0 0 0"/>
 				<geometry>
 					<box size="0.097 0.0275 0.0214"/>
 				</geometry>
@@ -289,41 +290,41 @@
 		</joint>
 	</xacro:macro>
 
-	<!-- Использование макросов - позиции ПЕРЕСЧИТАНЫ для поворота base_link на +90° вокруг Z -->
-	<!-- Формула: new_x = -old_y, new_y = old_x, new_z = old_z -->
+	<!-- Использование макросов - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 -->
+	<!-- Frame base_link повернут на -90° через base_footprint_joint, поэтому позиции остаются как в Fusion -->
 	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
-	<!-- Left Rear: Original origin="0.195 0.143797 0.028767" visual="-0.195 -0.143797 -0.028767" -->
+	<!-- Left Rear: Fusion 360 origin="0.195 0.143797 0.028767" visual="-0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="left_rear_wheel" 
-	             origin_xyz="-0.143797 0.195 0.028767" 
+	             origin_xyz="0.195 0.143797 0.028767" 
 	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="0.143797 -0.195 -0.028767"/>
-	<!-- Left Front: Original origin="0.195 -0.145731 0.0289" visual="-0.195 0.145731 -0.0289" -->
+	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
+	<!-- Left Front: Fusion 360 origin="0.195 -0.145731 0.0289" visual="-0.195 0.145731 -0.0289" -->
 	<xacro:wheel name="left_front_wheel" 
-	             origin_xyz="0.145731 0.195 0.0289" 
+	             origin_xyz="0.195 -0.145731 0.0289" 
 	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.145731 -0.195 -0.0289"/>
+	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
 	
 	<!-- Right wheels -->
-	<!-- Right Front: Original origin="-0.195967 -0.144669 0.0289" visual="0.195967 0.144669 -0.0289" -->
+	<!-- Right Front: Fusion 360 origin="-0.195967 -0.144669 0.0289" visual="0.195967 0.144669 -0.0289" -->
 	<xacro:wheel name="right_front_wheel" 
-	             origin_xyz="0.144669 -0.195967 0.0289" 
+	             origin_xyz="-0.195967 -0.144669 0.0289" 
 	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="-0.144669 0.195967 -0.0289"/>
-	<!-- Right Rear: Original origin="-0.195 0.143797 0.028767" visual="0.195 -0.143797 -0.028767" -->
+	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
+	<!-- Right Rear: Fusion 360 origin="-0.195 0.143797 0.028767" visual="0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="right_rear_wheel" 
-	             origin_xyz="-0.143797 -0.195 0.028767" 
+	             origin_xyz="-0.195 0.143797 0.028767" 
 	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.143797 0.195 -0.028767"/>
+	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
 
-	<!-- Сенсоры - позиции ПЕРЕСЧИТАНЫ для поворота base_link на +90° вокруг Z -->
-	<!-- Формула: new_x = -old_y, new_y = old_x, new_z = old_z -->
-	<!-- LiDAR: Original xyz="-0.000331 0.170806 0.4765" → Rotated -->
-	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.170806 -0.000331 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
-	<!-- OAK-D-Lite камера: Original xyz="-0.000238 0.115772 0.4595" → Rotated -->
-	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 0"/>
-	<!-- Потолочная USB камера: Original xyz="0.065 0.170663 0.4615" → Rotated -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 0"/>
+	<!-- Сенсоры - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 Export -->
+	<!-- Frame base_link повернут на -90° через base_footprint_joint, поэтому позиции остаются как в Fusion -->
+	<!-- LiDAR: Fusion 360 Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
+	<!-- OAK-D-Lite камера: Fusion 360 Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера: Fusion 360 xyz="0.065 0.170663 0.4615" -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.170663 0.4615" origin_rpy="0 0 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>
