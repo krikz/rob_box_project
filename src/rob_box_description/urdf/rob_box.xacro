@@ -1,21 +1,6 @@
 <?xml version="1.0"?>
 <robot name="rob_box" xmlns:xacro="http://www.ros.org/wiki/xacro">
 	<!-- Переменные - обновлено из Fusion 360 Export -->
-		<visual>
-			<!-- Visual origin: offset меша + поворот для соответствия ROS convention -->
-			<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
-			<geometry>
-				<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
-			</geometry>
-			<material name="black">
-				<color rgba="0.1 0.1 0.1 1"/>
-			</material>
-		</visual>
-		<collision>
-			<!-- Collision: используем меш как в Fusion 360 + поворот -->
-			<origin xyz="${visual_origin_xyz}" rpy="0 0 1.5708"/>
-			<geometry>
-				<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>	<!-- Переменные - обновлено из Fusion 360 Export -->
 	<xacro:property name="base_size" value="0.4757 0.238 0.1885"/>  <!-- Legacy collision box, use mesh instead -->
 	<xacro:property name="wheel_radius" value="0.115"/>
 	<xacro:property name="wheel_length" value="0.05"/>
