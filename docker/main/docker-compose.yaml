@@ -169,7 +169,7 @@ services:
       - subscribe_scan:=true
       - scan_topic:=/scan
       - icp_odometry:=true
-      - frame_id:=base_link
+      - frame_id:=base_footprint
       - odom_frame_id:=odom
       - odom_topic:=odom
       - apriltag_topic:=/detections
