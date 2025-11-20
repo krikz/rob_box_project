@@ -254,7 +254,7 @@
 			<visual>
 				<origin xyz="0 0 0" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.03 0.03 0.02"/>  <!-- Размеры generic USB камеры -->
+					<mesh filename="package://rob_box_description/meshes/camera_rpi.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 				<material name="black">
 					<color rgba="0.1 0.1 0.1 1"/>
@@ -263,13 +263,13 @@
 			<collision>
 				<origin xyz="0 0 0" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.03 0.03 0.02"/>
+					<mesh filename="package://rob_box_description/meshes/camera_rpi.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 			</collision>
 			<inertial>
-				<mass value="0.05"/>  <!-- ~50g -->
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+				<mass value="0.029"/>  <!-- 29g из экспорта Fusion -->
+				<origin xyz="0 0 0.008"/>  <!-- Из экспорта Fusion -->
+				<inertia ixx="0.000002" ixy="0" ixz="0" iyy="0.000002" iyz="0" izz="0.000001"/>
 			</inertial>
 		</link>
 
