@@ -288,23 +288,23 @@
 
 	<!-- Использование макросов - позиции из Fusion 360 Export -->
 	<!-- Колёса подключены напрямую к base_link (упрощённая модель без rocker-bogie) -->
-	<!-- Naming convention: matches robot_controller.yaml (front/rear_left/right_wheel) -->
+	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
-	<xacro:wheel name="rear_left_wheel" 
+	<xacro:wheel name="left_rear_wheel" 
 	             origin_xyz="0.195 0.143797 0.028767" 
 	             axis_xyz="1.0 0.0 0.0"
 	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
-	<xacro:wheel name="front_left_wheel" 
+	<xacro:wheel name="left_front_wheel" 
 	             origin_xyz="0.195 -0.145731 0.0289" 
 	             axis_xyz="1.0 0.0 0.0"
 	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
 	
 	<!-- Right wheels -->
-	<xacro:wheel name="front_right_wheel" 
+	<xacro:wheel name="right_front_wheel" 
 	             origin_xyz="-0.195967 -0.144669 0.0289" 
 	             axis_xyz="-1.0 0.0 0.0"
 	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
-	<xacro:wheel name="rear_right_wheel" 
+	<xacro:wheel name="right_rear_wheel" 
 	             origin_xyz="-0.195 0.143797 0.028767" 
 	             axis_xyz="-1.0 0.0 0.0"
 	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
