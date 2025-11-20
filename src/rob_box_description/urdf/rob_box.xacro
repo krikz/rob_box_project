@@ -290,30 +290,30 @@
 	</xacro:macro>
 
 	<!-- Использование макросов - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 -->
-	<!-- Оси колес повернуты на 90° для соответствия ROS convention -->
+	<!-- Оси колес в системе Fusion 360 (X-axis) -->
 	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
 	<!-- Left Rear: Fusion 360 origin="0.195 0.143797 0.028767" visual="-0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="left_rear_wheel" 
 	             origin_xyz="0.195 0.143797 0.028767" 
-	             axis_xyz="0.0 1.0 0.0"
+	             axis_xyz="1.0 0.0 0.0"
 	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
 	<!-- Left Front: Fusion 360 origin="0.195 -0.145731 0.0289" visual="-0.195 0.145731 -0.0289" -->
 	<xacro:wheel name="left_front_wheel" 
 	             origin_xyz="0.195 -0.145731 0.0289" 
-	             axis_xyz="0.0 1.0 0.0"
+	             axis_xyz="1.0 0.0 0.0"
 	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
 	
 	<!-- Right wheels -->
 	<!-- Right Front: Fusion 360 origin="-0.195967 -0.144669 0.0289" visual="0.195967 0.144669 -0.0289" -->
 	<xacro:wheel name="right_front_wheel" 
 	             origin_xyz="-0.195967 -0.144669 0.0289" 
-	             axis_xyz="0.0 -1.0 0.0"
+	             axis_xyz="-1.0 0.0 0.0"
 	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
 	<!-- Right Rear: Fusion 360 origin="-0.195 0.143797 0.028767" visual="0.195 -0.143797 -0.028767" -->
 	<xacro:wheel name="right_rear_wheel" 
 	             origin_xyz="-0.195 0.143797 0.028767" 
-	             axis_xyz="0.0 -1.0 0.0"
+	             axis_xyz="-1.0 0.0 0.0"
 	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
 
 	<!-- Сенсоры - ОРИГИНАЛЬНЫЕ позиции из Fusion 360 Export -->
