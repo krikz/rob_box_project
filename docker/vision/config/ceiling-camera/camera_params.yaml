@@ -2,10 +2,14 @@
   ros__parameters:
     # USB Camera settings
     video_device: "/dev/video0"
-    framerate: 10.0
+    framerate: 5.0  # СНИЖЕНО с 10.0 до 5.0 Hz для уменьшения нагрузки на Vision Pi
     image_width: 1280
     image_height: 720
-    pixel_format: "yuyv"
+
+    # Используем MJPEG для прямой публикации сжатых изображений без CPU overhead
+    # Если камера не поддерживает MJPEG, usb_cam автоматически fallback на yuyv
+    pixel_format: "mjpeg"  # ИЗМЕНЕНО с "yuyv" - публикует напрямую в compressed topic
+    av_device_format: "MJPG"  # Формат устройства для MJPEG
 
     # Camera info
     camera_name: "ceiling_camera"
@@ -13,7 +17,7 @@
     camera_info_url: "file:///root/.ros/camera_info/ceiling_camera.yaml"  # Калибровка (default uncalibrated)
 
     # Image transport settings
-    # Публикуем в raw, а сжатие будет через image_transport
+    # При pixel_format: mjpeg публикуется только compressed topic без декодирования
     io_method: "mmap"
 
     # Auto exposure (можно настроить)

@@ -101,7 +101,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
-      - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85  # JPEG качество для compressed transport
+      - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=75  # СНИЖЕНО с 85 для уменьшения размера
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
