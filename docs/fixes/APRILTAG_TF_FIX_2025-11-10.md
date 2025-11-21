@@ -153,8 +153,8 @@ docker logs rtabmap --tail 50 | grep "Cannot transform"
 
 ## 📚 Связанные документы
 
-- [APRILTAG_INTEGRATION_QUICKREF.md](APRILTAG_INTEGRATION_QUICKREF.md) - Быстрый справочник по интеграции AprilTag
-- [docs/architecture/SOFTWARE.md](docs/architecture/SOFTWARE.md) - Полная документация программного стека
+- [APRILTAG_INTEGRATION_QUICKREF.md](../guides/APRILTAG_INTEGRATION_QUICKREF.md) - Быстрый справочник по интеграции AprilTag
+- [SOFTWARE.md](../architecture/SOFTWARE.md) - Полная документация программного стека
 - [src/rob_box_description/urdf/rob_box.xacro](src/rob_box_description/urdf/rob_box.xacro) - URDF модель робота
 
 ---

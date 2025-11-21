@@ -75,7 +75,7 @@
 - Список найденных битых ссылок
 - Рекомендации по исправлению
 
-### [2025-10-15-ros2-yaml-parser-issue.md](2025-10-15-ros2-yaml-parser-issue.md)
+### [ROS2_YAML_PARSER_ISSUE_2025-10-15.md](ROS2_YAML_PARSER_ISSUE_2025-10-15.md)
 **ROS2 YAML Parser Issue**
 
 - Проблема с парсингом конфигурационных файлов

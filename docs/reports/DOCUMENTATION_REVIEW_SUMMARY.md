@@ -315,14 +315,14 @@ flowchart TD
 ## 📎 Полезные ссылки
 
 **Созданная документация:**
-- [Руководство по Mermaid](docs/MERMAID_DIAGRAMS.md)
+- [Руководство по Mermaid](../MERMAID_DIAGRAMS.md)
 
 **Изменённые файлы:**
-- [Инструкции Copilot](.github/copilot-instructions.md)
-- [CI/CD Pipeline](docs/CI_CD_PIPELINE.md)
-- [System Overview](docs/architecture/SYSTEM_OVERVIEW.md)
-- [Internal Dialogue](docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
-- [Monitoring System](docs/guides/MONITORING_SYSTEM.md)
+- [Инструкции Copilot](../../.github/copilot-instructions.md)
+- [CI/CD Pipeline](../CI_CD_PIPELINE.md)
+- [System Overview](../architecture/SYSTEM_OVERVIEW.md)
+- [Internal Dialogue](../architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
+- [Monitoring System](../guides/MONITORING_SYSTEM.md)
 
 **Внешние ресурсы:**
 - [Mermaid Documentation](https://mermaid.js.org/)

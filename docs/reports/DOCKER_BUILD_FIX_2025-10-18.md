@@ -338,7 +338,7 @@ diff <(grep "install(DIRECTORY" CMakeLists.txt | cut -d/ -f1) \
 
 - [CI/CD Pipeline](../CI_CD_PIPELINE.md) - Автоматическая сборка образов
 - [Vision Pi Containers Fix](VISION_PI_CONTAINERS_FIX_2025-10-13.md) - Предыдущие проблемы с контейнерами
-- [ROS2 YAML Parser Issue](2025-10-15-ros2-yaml-parser-issue.md) - Другие ROS2 проблемы
+- [ROS2 YAML Parser Issue](ROS2_YAML_PARSER_ISSUE_2025-10-15.md) - Другие ROS2 проблемы
 
 ---
 

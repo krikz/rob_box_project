@@ -472,11 +472,11 @@ rviz2
 
 ## 🔗 Связанные документы
 
-- `docs/architecture/SYSTEM_OVERVIEW.md` - Архитектура Zenoh
-- `docs/guides/TROUBLESHOOTING.md` - Общая диагностика
+- `../architecture/SYSTEM_OVERVIEW.md` - Архитектура Zenoh
+- `../guides/TROUBLESHOOTING.md` - Общая диагностика
 - `ZENOH_FIX_SUMMARY_2025-11-10.md` - Предыдущие исправления Zenoh
-- `docker/main/scripts/ros_with_namespace.sh` - Скрипт добавления namespace (робот)
-- `scripts/start_rviz.sh` - Скрипт запуска RViz (Host PC)
+- `../../docker/main/scripts/ros_with_namespace.sh` - Скрипт добавления namespace (робот)
+- `../../scripts/start_rviz.sh` - Скрипт запуска RViz (Host PC)
 
 ---
 
