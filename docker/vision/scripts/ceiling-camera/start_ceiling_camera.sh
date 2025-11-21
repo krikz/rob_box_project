@@ -21,7 +21,8 @@ if [ ! -e /dev/video0 ]; then
   exit 1
 fi
 
-# Проверяем поддерживаемые форматы камеры
+# Проверяем поддерживаемые форматы камеры (информационно, для диагностики)
+# usb_cam автоматически fallback на YUYV если MJPEG не поддерживается
 echo "Checking camera supported formats..."
 if command -v v4l2-ctl &> /dev/null; then
   v4l2-ctl --list-formats-ext --device /dev/video0 | grep -i mjpeg && echo "MJPEG supported" || echo "MJPEG not found, will use YUYV"

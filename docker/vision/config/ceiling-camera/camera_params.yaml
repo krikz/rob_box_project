@@ -8,6 +8,7 @@
 
     # Используем MJPEG для прямой публикации сжатых изображений без CPU overhead
     # Если камера не поддерживает MJPEG, usb_cam автоматически fallback на yuyv
+    # NOTE: pixel_format использует lowercase, av_device_format - uppercase (требование usb_cam)
     pixel_format: "mjpeg"  # ИЗМЕНЕНО с "yuyv" - публикует напрямую в compressed topic
     av_device_format: "MJPG"  # Формат устройства для MJPEG
 
