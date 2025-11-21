@@ -95,6 +95,13 @@
 - LED анимации
 - Performance troubleshooting
 
+### [TROUBLESHOOTING_MAIN_PI_PORT_CONFLICT.md](TROUBLESHOOTING_MAIN_PI_PORT_CONFLICT.md)
+**Устранение ошибки "Address in use" на Main Pi**
+
+- Диагностика конфликта портов
+- Решение проблемы Zenoh router
+- Проверка результатов
+
 ## 🏗️ Сборка и развертывание
 
 ### [SINGLE_SERVICE_BUILD.md](SINGLE_SERVICE_BUILD.md)
@@ -106,6 +113,38 @@
 - Сборка на локальном runner
 - Main Pi, Vision Pi, и базовые образы
 - Пошаговые инструкции
+
+## 🔄 Миграции и интеграции
+
+### [MIGRATION_APRILTAG_INTEGRATION.md](MIGRATION_APRILTAG_INTEGRATION.md)
+**Руководство по интеграции AprilTag**
+
+- Обзор изменений
+- Миграция конфигурации
+- Обновление Docker образов
+- Тестирование интеграции
+
+### [MIGRATION_PERCEPTION_LSLIDAR.md](MIGRATION_PERCEPTION_LSLIDAR.md)
+**Миграция Perception & LSLIDAR на Main Pi**
+
+- Изменения в архитектуре
+- Перемещение сервисов
+- Обновление конфигурации
+- Проверка работоспособности
+
+### [APRILTAG_INTEGRATION_QUICKREF.md](APRILTAG_INTEGRATION_QUICKREF.md)
+**AprilTag Integration - Quick Reference**
+
+- Быстрый обзор изменений
+- Основные команды
+- Типичные проблемы
+
+### [ZENOH_FIX_QUICKSTART.md](ZENOH_FIX_QUICKSTART.md)
+**Быстрая инструкция: Применение максимального исправления Zenoh**
+
+- Что исправляет
+- Быстрый деплой
+- Проверка результатов
 
 ### [HEALTH_MONITORING.md](HEALTH_MONITORING.md)
 **Мониторинг здоровья системы** 🏥
