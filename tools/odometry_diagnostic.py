@@ -35,8 +35,9 @@ class OdometryDiagnostic:
         """
         Конвертация ERPM (Electrical RPM) в механические обороты колеса.
 
-        Формула: Mechanical RPM = ERPM / (pole_pairs)
-        где pole_pairs = wheel_poles / 2
+        Формула согласно документации VESC:
+        ERPM = Mechanical_RPM × motor_poles
+        Поэтому: Mechanical_RPM = ERPM / motor_poles
 
         Args:
             erpm: Electrical RPM от VESC
@@ -44,8 +45,7 @@ class OdometryDiagnostic:
         Returns:
             Механические обороты колеса в минуту (RPM)
         """
-        pole_pairs = self.wheel_poles / 2.0
-        return erpm / pole_pairs
+        return erpm / float(self.wheel_poles)
 
     def rpm_to_linear_velocity(self, rpm: float) -> float:
         """
@@ -247,14 +247,14 @@ def run_diagnostic_scenarios():
     print("СЦЕНАРИЙ 4: Проверка формул")
     print("═" * 60)
     print(f"\nФормула ERPM → Механические обороты:")
-    print(f"  RPM = ERPM / (poles/2)")
-    print(f"  RPM = ERPM / {poles/2}")
+    print(f"  RPM = ERPM / motor_poles")
+    print(f"  RPM = ERPM / {poles}")
     print(f"\nФормула RPM → Линейная скорость:")
     print(f"  v = (RPM / 60) × 2πr")
     print(f"  v = (RPM / 60) × {2*math.pi*radius:.4f} м/с")
     print(f"\nПолная формула ERPM → скорость:")
-    print(f"  v = (ERPM / {poles/2}) / 60 × {2*math.pi*radius:.4f}")
-    print(f"  v = ERPM × {(2*math.pi*radius)/(60*poles/2):.8f}")
+    print(f"  v = (ERPM / {poles}) / 60 × {2*math.pi*radius:.4f}")
+    print(f"  v = ERPM × {(2*math.pi*radius)/(60*poles):.8f}")
 
 
 def main():
