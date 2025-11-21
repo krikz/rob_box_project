@@ -216,7 +216,7 @@ docker logs oak-d 2>&1 | grep -i "error\|fail\|apriltag"
 
 - [DepthAI ROS Driver Documentation](https://docs.luxonis.com/software/ros/depthai-ros/driver/)
 - [AprilTag ROS 2 Documentation](https://docs.ros.org/en/ros2_packages/humble/api/apriltag_ros/)
-- [OAK-D Lite Hardware Specs](../docs/architecture/HARDWARE.md)
+- [OAK-D Lite Hardware Specs](../architecture/HARDWARE.md)
 
 ---
 

@@ -72,6 +72,16 @@
 - [**MAPPING_PRACTICES_RESEARCH.md**](guides/MAPPING_PRACTICES_RESEARCH.md) - 🆕 Исследование практик маппинга (октябрь 2025)
 - [**INTERNAL_DIALOGUE_USAGE.md**](guides/INTERNAL_DIALOGUE_USAGE.md) - ⚠️ УСТАРЕЛО (см. architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
 
+### 🔧 [fixes/](fixes/) - Исправления и фиксы
+Документация по исправлениям проблем, багфиксам и решениям.
+
+- [**README.md**](fixes/README.md) - Навигация по исправлениям
+- **Zenoh исправления** - 9 документов по Zenoh и сети
+- **RViz исправления** - 4 документа по визуализации
+- **Docker исправления** - 3 документа по сборке
+- **Robot/URDF исправления** - 3 документа по модели робота
+- **ROS2 исправления** - 3 документа по нодам
+
 ### 📊 [reports/](reports/) - Отчёты и аудиты
 Технические отчёты, аудиты, итоги сессий.
 

@@ -303,9 +303,9 @@ build-perception:
 9. **Single source of truth**: Keep IP addresses and other infrastructure configuration in one place at the top of the workflow file. This makes updates easier and reduces errors.
 
 ## Related Documentation
-- [AGENT_GUIDE.md](docs/development/AGENT_GUIDE.md) - Docker architecture
-- [DOCKER_STANDARDS.md](docs/development/DOCKER_STANDARDS.md) - Docker best practices
-- [IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md](IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md) - Local registry setup
+- [AGENT_GUIDE.md](../development/AGENT_GUIDE.md) - Docker architecture
+- [DOCKER_STANDARDS.md](../development/DOCKER_STANDARDS.md) - Docker best practices
+- [IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md](../reports/IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md) - Local registry setup
 
 ## References
 - Failed run (build context): https://github.com/krikz/rob_box_project/actions/runs/18818952962
