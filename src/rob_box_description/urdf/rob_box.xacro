@@ -23,17 +23,17 @@
 	</link>
 
 	<!-- Основное шасси - обновлено из Fusion 360 Export -->
-	<!-- Повёрнуто на -90° вокруг Z для соответствия ROS convention (X - вперёд, Y - влево) -->
+	<!-- base_link в системе ROS (X вперед, Y влево) - исправленный экспорт из Fusion -->
 	<link name="base_link">
 		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
 		<inertial>
-			<!-- Инерциальные параметры из Fusion 360 -->
-			<origin xyz="-2.4090750286344156e-05 0.025488169162562517 0.14529190576177464" rpy="0 0 0"/>
+			<!-- Инерциальные параметры из Fusion 360 (исправленный экспорт 2e0e5f8) -->
+			<origin xyz="-0.025488169162561854 -2.4090750285970683e-05 0.14529190576177384" rpy="0 0 0"/>
 			<mass value="${base_mass}"/>
-			<inertia ixx="2.829827" iyy="1.926172" izz="3.653023" ixy="-0.001791" iyz="-0.302171" ixz="-0.001655"/>
+			<inertia ixx="1.926172" iyy="2.829827" izz="3.653023" ixy="0.001791" iyz="-0.001655" ixz="0.302171"/>
 		</inertial>
 		<visual>
-			<!-- Меш без offset - base_link в (0,0,0) как требуется -->
+			<!-- Меш БЕЗ ПОВОРОТА - frame base_link уже повернут через base_footprint_joint -->
 			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
@@ -43,7 +43,7 @@
 			</material>
 		</visual>
 		<collision>
-			<!-- Используем тот же меш для collision -->
+			<!-- Collision также БЕЗ ПОВОРОТА -->
 			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
@@ -51,28 +51,29 @@
 		</collision>
 	</link>
 
-	<!-- Джойнт base_footprint -> base_link с поворотом на -90° вокруг Z -->
-	<!-- Это исправляет ориентацию: Fusion 360 использует Y вперёд, ROS использует X вперёд -->
+	<!-- Джойнт base_footprint -> base_link БЕЗ ПОВОРОТА -->
+	<!-- base_footprint на уровне пола, base_link поднят на высоту колеса -->
 	<joint name="base_footprint_joint" type="fixed">
 		<parent link="base_footprint"/>
 		<child link="base_link"/>
-		<!-- Поворот на -π/2 вокруг Z + поднятие на высоту wheel_radius для base_footprint на уровне пола -->
-		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 -1.5708"/>
+		<!-- БЕЗ ПОВОРОТА - визуал и одометрия должны соответствовать физическому роботу -->
+		<origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
 	</joint>
 
 	<!-- Макросы -->
-	<!-- Wheel Macro - обновлено из Fusion 360 Export (прямое подключение к base_link, без rocker) -->
+	<!-- Wheel Macro - обновлено из Fusion 360 Export (исправленный экспорт 2e0e5f8) -->
 	<xacro:macro name="wheel" params="name origin_xyz axis_xyz visual_origin_xyz">
 		<link name="${name}">
-			<!-- Инерциальные параметры из Fusion 360 -->
+			<!-- Инерциальные параметры из Fusion 360 (исправленный экспорт) -->
 			<inertial>
 				<mass value="${wheel_mass}"/>
 				<!-- Inertial origin: смещение центра масс колеса -->
-				<origin xyz="0.0375 0 0"/>
-				<inertia ixx="0.129466" iyy="0.073667" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
+				<origin xyz="0 0.0375 0"/>
+				<inertia ixx="0.073667" iyy="0.129466" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
 			<visual>
-				<!-- Visual origin: offset меша относительно линка (из Fusion 360) -->
+				<!-- Visual origin: offset меша относительно линка БЕЗ ПОВОРОТА -->
+				<!-- Frame base_link уже повернут через base_footprint_joint -->
 				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
@@ -82,7 +83,7 @@
 				</material>
 			</visual>
 			<collision>
-				<!-- Collision: используем меш как в Fusion 360 -->
+				<!-- Collision также БЕЗ ПОВОРОТА -->
 				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
 				<geometry>
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
@@ -98,7 +99,7 @@
 	</xacro:macro>
 
 	<!-- Сенсоры -->
-	<xacro:macro name="lidar" params="name parent_link origin_xyz topic_name">
+	<xacro:macro name="lidar" params="name parent_link origin_xyz origin_rpy:='0 0 0' topic_name">
 		<link name="${name}">
 			<visual>
 				<origin xyz="0 0 0" rpy="0 0 0"/>
@@ -124,7 +125,7 @@
 		<joint name="${name}_joint" type="fixed">
 			<parent link="${parent_link}"/>
 			<child link="${name}"/>
-			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
+			<origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
 		</joint>
 		<gazebo reference="${name}">
 			<sensor name="${name}_sensor" type="gpu_lidar">
@@ -166,24 +167,26 @@
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Visual offset из экспорта Fusion (компенсация позиции меша) -->
+				<origin xyz="0.115772 0.000238 -0.4595" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.097 0.0275 0.0214"/>  <!-- Размеры OAK-D-Lite -->
+					<mesh filename="package://rob_box_description/meshes/camera_oak.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 				<material name="dark_grey">
 					<color rgba="0.2 0.2 0.2 1"/>
 				</material>
 			</visual>
 			<collision>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Collision offset из экспорта Fusion -->
+				<origin xyz="0.115772 0.000238 -0.4595" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.097 0.0275 0.0214"/>
+					<mesh filename="package://rob_box_description/meshes/camera_oak.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 			</collision>
 			<inertial>
-				<mass value="0.061"/>  <!-- 61g вес OAK-D-Lite -->
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+				<mass value="0.350"/>  <!-- 350g из экспорта Fusion -->
+				<origin xyz="0.00875 0.015 0"/>  <!-- Из экспорта Fusion -->
+				<inertia ixx="0.000264" ixy="0" ixz="0" iyy="0.000032" iyz="0" izz="0.00025"/>
 			</inertial>
 		</link>
 
@@ -240,7 +243,7 @@
 		<joint name="${name}_imu_frame_joint" type="fixed">
 			<parent link="${name}"/>
 			<child link="${name}_imu_frame"/>
-			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<origin xyz="0 0 0" rpy="3.14159 0 1.5708"/>
 		</joint>
 	</xacro:macro>
 
@@ -249,24 +252,26 @@
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Visual offset из экспорта Fusion (компенсация позиции меша) -->
+				<origin xyz="0.170663 -0.065 -0.4615" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.03 0.03 0.02"/>  <!-- Размеры generic USB камеры -->
+					<mesh filename="package://rob_box_description/meshes/camera_rpi.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 				<material name="black">
 					<color rgba="0.1 0.1 0.1 1"/>
 				</material>
 			</visual>
 			<collision>
-				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<!-- Collision offset из экспорта Fusion -->
+				<origin xyz="0.170663 -0.065 -0.4615" rpy="0 0 0"/>
 				<geometry>
-					<box size="0.03 0.03 0.02"/>
+					<mesh filename="package://rob_box_description/meshes/camera_rpi.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 			</collision>
 			<inertial>
-				<mass value="0.05"/>  <!-- ~50g -->
-				<origin xyz="0 0 0"/>
-				<inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+				<mass value="0.029"/>  <!-- 29g из экспорта Fusion -->
+				<origin xyz="0 0 0.008"/>  <!-- Из экспорта Fusion -->
+				<inertia ixx="0.000002" ixy="0" ixz="0" iyy="0.000002" iyz="0" izz="0.000001"/>
 			</inertial>
 		</link>
 
@@ -286,36 +291,41 @@
 		</joint>
 	</xacro:macro>
 
-	<!-- Использование макросов - позиции из Fusion 360 Export -->
-	<!-- Колёса подключены напрямую к base_link (упрощённая модель без rocker-bogie) -->
-	<!-- Naming convention: matches robot_controller.yaml (front/rear_left/right_wheel) -->
+	<!-- Использование макросов - ОБНОВЛЕНО из Fusion 360 (исправленный экспорт 2e0e5f8) -->
+	<!-- Система координат теперь соответствует ROS: X вперед, Y влево -->
+	<!-- Naming convention: matches controller_manager.yaml (left/right_front/rear_wheel) -->
 	<!-- Left wheels -->
-	<xacro:wheel name="rear_left_wheel" 
-	             origin_xyz="0.195 0.143797 0.028767" 
-	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.195 -0.143797 -0.028767"/>
-	<xacro:wheel name="front_left_wheel" 
-	             origin_xyz="0.195 -0.145731 0.0289" 
-	             axis_xyz="1.0 0.0 0.0"
-	             visual_origin_xyz="-0.195 0.145731 -0.0289"/>
+	<!-- Left Rear: Fusion 360 исправленный экспорт origin="-0.143797 0.195 0.028767" -->
+	<xacro:wheel name="left_rear_wheel" 
+	             origin_xyz="-0.143797 0.195 0.028767" 
+	             axis_xyz="0.0 1.0 0.0"
+	             visual_origin_xyz="0.143797 -0.195 -0.028767"/>
+	<!-- Left Front: Fusion 360 исправленный экспорт origin="0.145731 0.195 0.0289" -->
+	<xacro:wheel name="left_front_wheel" 
+	             origin_xyz="0.145731 0.195 0.0289" 
+	             axis_xyz="0.0 1.0 0.0"
+	             visual_origin_xyz="-0.145731 -0.195 -0.0289"/>
 	
 	<!-- Right wheels -->
-	<xacro:wheel name="front_right_wheel" 
-	             origin_xyz="-0.195967 -0.144669 0.0289" 
-	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.195967 0.144669 -0.0289"/>
-	<xacro:wheel name="rear_right_wheel" 
-	             origin_xyz="-0.195 0.143797 0.028767" 
-	             axis_xyz="-1.0 0.0 0.0"
-	             visual_origin_xyz="0.195 -0.143797 -0.028767"/>
+	<!-- Right Front: Fusion 360 исправленный экспорт origin="0.144669 -0.195967 0.0289" -->
+	<xacro:wheel name="right_front_wheel" 
+	             origin_xyz="0.144669 -0.195967 0.0289" 
+	             axis_xyz="0.0 -1.0 0.0"
+	             visual_origin_xyz="-0.144669 0.195967 -0.0289"/>
+	<!-- Right Rear: Fusion 360 исправленный экспорт origin="-0.143797 -0.195 0.028767" -->
+	<xacro:wheel name="right_rear_wheel" 
+	             origin_xyz="-0.143797 -0.195 0.028767" 
+	             axis_xyz="0.0 -1.0 0.0"
+	             visual_origin_xyz="0.143797 0.195 -0.028767"/>
 
-	<!-- Сенсоры - позиции из Fusion 360 Export (URDF_ROBBOX.xacro) -->
-	<!-- LiDAR: Rigid 2 joint xyz="-0.000331 0.170806 0.4765" -->
-	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.000331 0.170806 0.4765" topic_name="/scan"/>
-	<!-- OAK-D-Lite камера: Rigid 3 joint xyz="-0.000238 0.115772 0.4595" -->
-	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.000238 0.115772 0.4595" origin_rpy="0 0 0"/>
-	<!-- Потолочная USB камера (направлена вертикально вверх): Rigid 1 joint xyz="0.065 0.170663 0.4615" -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="0.065 0.170663 0.4615" origin_rpy="0 0 0"/>
+	<!-- Сенсоры - ОБНОВЛЕНО из Fusion 360 Export (исправленный экспорт 2e0e5f8) -->
+	<!-- LiDAR: Fusion 360 исправленный экспорт xyz="-0.170806 -0.000331 0.4765" -->
+	<xacro:lidar name="lslidar_n10" parent_link="base_link" origin_xyz="-0.170806 -0.000331 0.4765" origin_rpy="0 0 0" topic_name="/scan"/>
+	<!-- OAK-D-Lite камера: Fusion 360 исправленный экспорт xyz="-0.115772 -0.000238 0.4595" rpy="0 0 0" -->
+	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 0"/>
+	<!-- Потолочная USB камера: Fusion 360 исправленный экспорт xyz="-0.170663 0.065 0.4615" -->
+	<!-- Поворот на 90° по часовой стрелке вокруг Y (pitch=-90°) для правильной ориентации -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 0"/>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>

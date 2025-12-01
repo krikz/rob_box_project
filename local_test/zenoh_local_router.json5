@@ -1,0 +1,40 @@
+{
+  // Local Zenoh router on dev machine
+  // Connects to Main Pi router (like Vision Pi does)
+  // ROS nodes connect to this local router
+  
+  mode: "router",
+  
+  // Connect to Main Pi router (eth0 IP)
+  // КРИТИЧНО: #iface=wlo1 принудительно направляет трафик через WiFi (как на Vision Pi #iface=eth0)
+  connect: {
+    endpoints: ["tcp/10.1.1.10:7447#iface=wlo1"],
+    timeout_ms: { router: -1, peer: -1, client: 0 },
+    exit_on_failure: { router: false, peer: false, client: true },
+    retry: {
+      period_init_ms: 1000,
+      period_max_ms: 4000,
+      period_increase_factor: 2,
+    }
+  },
+  
+  // Listen for local ROS nodes
+  // Слушаем на IP wlo1 (не localhost) - как Vision Pi слушает на eth0 IP
+  listen: {
+    endpoints: ["tcp/10.1.1.249:7447"],
+    timeout_ms: 0
+  },
+  
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  },
+  
+  routing: {
+    router: {
+      // Enable brokering like on Main Pi
+      peers_failover_brokering: true
+    }
+  }
+}

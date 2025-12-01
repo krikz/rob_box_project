@@ -206,7 +206,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'ip -s link show eth0'
 
 ### 3. Рассмотреть дополнительные меры
 
-См. раздел "Если проблема сохранится" в [ZENOH_FIX_2025-11-10_MAXIMUM.md](ZENOH_FIX_2025-11-10_MAXIMUM.md):
+См. раздел "Если проблема сохранится" в [ZENOH_FIX_2025-11-10_MAXIMUM.md](../fixes/ZENOH_FIX_2025-11-10_MAXIMUM.md):
 - Проверка сетевой инфраструктуры (кабель, коммутатор)
 - Дополнительная оптимизация данных (downsampling LiDAR)
 - Выделенный Ethernet для SLAM данных
@@ -214,9 +214,9 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'ip -s link show eth0'
 
 ## 📚 Дополнительная информация
 
-- **Полная документация:** [ZENOH_FIX_2025-11-10_MAXIMUM.md](ZENOH_FIX_2025-11-10_MAXIMUM.md)
-- **Краткий справочник:** [ZENOH_TRANSPORT_FIX_QUICKREF.md](ZENOH_TRANSPORT_FIX_QUICKREF.md)
-- **Технический анализ:** [docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
+- **Полная документация:** [ZENOH_FIX_2025-11-10_MAXIMUM.md](../fixes/ZENOH_FIX_2025-11-10_MAXIMUM.md)
+- **Краткий справочник:** [ZENOH_TRANSPORT_FIX_QUICKREF.md](../fixes/ZENOH_TRANSPORT_FIX_QUICKREF.md)
+- **Технический анализ:** [ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](../reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
 
 ---
 

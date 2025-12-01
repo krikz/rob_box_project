@@ -283,7 +283,7 @@ docker compose restart zenoh-router
 
 ## 📚 Дополнительная информация
 
-- **Полный анализ:** [docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
+- **Полный анализ:** [ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](../reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
 - **Быстрый справочник:** [ZENOH_TRANSPORT_FIX_QUICKREF.md](ZENOH_TRANSPORT_FIX_QUICKREF.md)
 - **Исходный код Zenoh (ошибка "Cannot find link"):** https://github.com/eclipse-zenoh/zenoh/blob/main/zenoh/src/net/protocol/network.rs#L287
 

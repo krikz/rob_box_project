@@ -190,15 +190,15 @@ queue: {
 ## 🔗 Дополнительная информация
 
 **Полный анализ:**  
-📄 [ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](docs/reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
+📄 [ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](../reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md)
 
 **Максимальное исправление:**  
 📄 [ZENOH_FIX_2025-11-10_MAXIMUM.md](ZENOH_FIX_2025-11-10_MAXIMUM.md)
 
 **Связанные документы:**
-- [SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md)
-- [SOFTWARE.md](docs/architecture/SOFTWARE.md)
-- [DOCKER_STANDARDS.md](docs/development/DOCKER_STANDARDS.md)
+- [SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md)
+- [SOFTWARE.md](../architecture/SOFTWARE.md)
+- [DOCKER_STANDARDS.md](../development/DOCKER_STANDARDS.md)
 
 ---
 

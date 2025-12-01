@@ -75,12 +75,98 @@
 - Список найденных битых ссылок
 - Рекомендации по исправлению
 
-### [2025-10-15-ros2-yaml-parser-issue.md](2025-10-15-ros2-yaml-parser-issue.md)
+### [ROS2_YAML_PARSER_ISSUE_2025-10-15.md](ROS2_YAML_PARSER_ISSUE_2025-10-15.md)
 **ROS2 YAML Parser Issue**
 
 - Проблема с парсингом конфигурационных файлов
 - Workaround решения
 - Обновление до исправленной версии
+
+## 📄 Новые отчёты 2025-10-28+
+
+### [FIX_APT_PROXY_FALLBACK_2025-10-28.md](FIX_APT_PROXY_FALLBACK_2025-10-28.md)
+**Исправление apt proxy fallback**
+
+- Проблема с apt proxy
+- Fallback конфигурация
+- Проверка работоспособности
+
+### [FIX_ORPHANED_WORKFLOW_2025-10-28.md](FIX_ORPHANED_WORKFLOW_2025-10-28.md)
+**Исправление orphaned workflow**
+
+- Анализ orphaned workflows
+- Очистка старых workflows
+- Оптимизация CI/CD
+
+### [DEPLOYMENT_WORKFLOW_SSH_VERIFICATION_2025-10-29.md](DEPLOYMENT_WORKFLOW_SSH_VERIFICATION_2025-10-29.md)
+**Проверка SSH в deployment workflow**
+
+- Верификация SSH подключения
+- Автоматизация деплоя
+- Проверка результатов
+
+## 📄 Implementation Summaries
+
+### [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)
+**Docker Image Tag Management - Implementation Summary**
+
+- Управление тегами Docker образов
+- Автоматизация версионирования
+- Интеграция с CI/CD
+
+### [IMPLEMENTATION_SUMMARY_BUILD_MACHINE.md](IMPLEMENTATION_SUMMARY_BUILD_MACHINE.md)
+**Build Machine Implementation Summary**
+
+- Настройка build машины
+- Оптимизация процесса сборки
+- Производительность
+
+### [IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md](IMPLEMENTATION_SUMMARY_LOCAL_REGISTRY.md)
+**Universal Build System с Local Registry**
+
+- Локальный Docker registry
+- Build система
+- Кэширование образов
+
+### [IMPLEMENTATION_SUMMARY_TIME_FIX.md](IMPLEMENTATION_SUMMARY_TIME_FIX.md)
+**Fix: Robot Unable to Tell Time - Implementation Summary**
+
+- Проблема с определением времени
+- Синхронизация времени
+- Решение проблемы
+
+## 📄 Analysis Reports
+
+### [SENSOR_ORIENTATION_ANALYSIS_2025-11-20.md](SENSOR_ORIENTATION_ANALYSIS_2025-11-20.md)
+**Анализ ориентации сенсоров Rob Box**
+
+- Анализ ориентации всех сенсоров
+- Координатные системы
+- Рекомендации по исправлению
+
+### [DOCUMENTATION_REVIEW_SUMMARY.md](DOCUMENTATION_REVIEW_SUMMARY.md)
+**Резюме: Ревью документации и перевод на русский язык**
+
+- Статистика изменений
+- Перевод документации
+- Конвертация диаграмм в Mermaid
+- Улучшения визуализации
+
+## 📄 Testing Reports
+
+### [TESTING_APRILTAG_TF_FIX.md](TESTING_APRILTAG_TF_FIX.md)
+**Быстрая проверка исправления AprilTag TF**
+
+- Развертывание на Pi
+- Тестирование TF трансформаций
+- Валидация результатов
+
+### [TESTING_ORIENTATION_FIX.md](TESTING_ORIENTATION_FIX.md)
+**Quick Testing Guide - Robot Orientation Fix**
+
+- Быстрое тестирование
+- Проверка в RViz
+- Валидация ориентации
 
 ## 📄 Отчёты 2025-10-13
 

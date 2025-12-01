@@ -83,7 +83,7 @@
 
 ### 5. PR Template - Для обсуждения
 
-**[PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md](../.github/PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md)** (6KB)
+**[PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md](../../.github/PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md)** (6KB)
 - 📋 Чеклист для review
 - 🎯 Вопросы для обсуждения
 - 🧪 Инструкции по тестированию
@@ -289,7 +289,7 @@
 
 1. **Прочитать:** [PERCEPTION_VOICE_REVIEW_SUMMARY.md](./PERCEPTION_VOICE_REVIEW_SUMMARY.md)
 2. **Оценить:** Приоритеты этапов (Stage 1-4)
-3. **Обсудить:** С командой через [PR Template](../.github/PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md)
+3. **Обсудить:** С командой через [PR Template](../../.github/PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md)
 
 ### Для Architects
 
@@ -307,7 +307,7 @@
 
 **Для вопросов:**
 - Создайте Issue в GitHub
-- Используйте [PR Template](../.github/PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md) для обсуждения
+- Используйте [PR Template](../../.github/PULL_REQUEST_TEMPLATE_PERCEPTION_REVIEW.md) для обсуждения
 
 **Документация проекта:**
 - `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`

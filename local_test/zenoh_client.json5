@@ -1,0 +1,16 @@
+{
+  // CLIENT mode connection to Main Pi router
+  // Clients get message brokering from router!
+  
+  mode: "client",
+  
+  connect: {
+    endpoints: ["tcp/10.1.1.10:7447"]
+  },
+  
+  scouting: {
+    multicast: {
+      enabled: false  // Don't use multicast, only explicit connection
+    }
+  }
+}

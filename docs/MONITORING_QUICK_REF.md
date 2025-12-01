@@ -116,4 +116,4 @@ docker exec promtail-vision wget -qO- http://10.1.1.10:3100/ready
 
 ## 📖 Полная документация
 
-См. [MONITORING_SYSTEM.md](../guides/MONITORING_SYSTEM.md)
+См. [MONITORING_SYSTEM.md](guides/MONITORING_SYSTEM.md)

@@ -1,0 +1,12 @@
+{
+  mode: "peer",
+  connect: {
+    endpoints: ["tcp/10.1.1.249:7447"]
+  },
+  // namespace: "my/namespace",
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  }
+}

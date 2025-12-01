@@ -28,6 +28,15 @@ fi
 
 echo -e "${GREEN}✓${NC} ROS 2 Distro: ${ROS_DISTRO}"
 
+# Source workspace if available (for URDF meshes and custom packages)
+if [ -f "$PROJECT_ROOT/install/setup.bash" ]; then
+    source "$PROJECT_ROOT/install/setup.bash"
+    echo -e "${GREEN}✓${NC} Workspace sourced (rob_box packages available)"
+else
+    echo -e "${YELLOW}⚠️  Workspace not built (meshes may not load)${NC}"
+    echo -e "${YELLOW}   Build with: cd $PROJECT_ROOT && colcon build${NC}"
+fi
+
 # Check if RViz is installed
 if ! command -v rviz2 &> /dev/null; then
     echo -e "${RED}❌ RViz2 is not installed!${NC}"
@@ -70,7 +79,12 @@ fi
 cp "$ZENOH_CONFIG_TEMPLATE" "$ZENOH_CONFIG"
 
 # Add namespace to the config (insert after mode line)
-sed -i 's|"mode": "client",|"mode": "client",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+# Support both "client" and "peer" modes
+if grep -q '"mode": "peer"' "$ZENOH_CONFIG"; then
+  sed -i 's|"mode": "peer",|"mode": "peer",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+else
+  sed -i 's|"mode": "client",|"mode": "client",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
+fi
 
 echo -e "${GREEN}✓${NC} Zenoh config generated: $ZENOH_CONFIG"
 
@@ -91,7 +105,7 @@ fi
 
 # Set environment variables
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG="$ZENOH_CONFIG"
+export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 export ZENOH_ROUTER_CHECK_ATTEMPTS=30
 export RUST_LOG=zenoh=warn
