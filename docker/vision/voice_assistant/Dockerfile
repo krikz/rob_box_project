@@ -200,14 +200,24 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     #   - В 1.5-2x быстрее v4 (критично для Raspberry Pi!)
     #   - Автоматическая расстановка ударений в омографах (замОк/зАмок, гОтов/готОв)
     #   - Улучшенное качество звучания и стабильность генерации
-    # ВАЖНО: Silero v5 загружается через torch.hub.load() из GitHub
-    # torch.hub скачивает в /root/.cache/torch/hub/ (hardcoded путь)
-    # BuildKit cache mount на /root/.cache ТЕПЕРЬ покрывает этот путь!
-    # Первая сборка: скачает 139 MB zip и распакует
-    # Повторные сборки: используют кешированную версию (секунды вместо минут!)
-    echo "⬇️ Pre-downloading Silero v5 model via torch.hub (139 MB zip)..." && \
-    python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru')" && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (139 MB)"
+    # Silero TTS v5: скачиваем напрямую и сохраняем в /models/silero/
+    # ВАЖНО: torch.hub.load() сохраняет в /root/.cache (cache mount) - теряется после сборки!
+    # Поэтому скачиваем .pt файл напрямую через wget и сохраняем в постоянный путь
+    SILERO_MODEL_FILE="v5_ru.pt" && \
+    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
+    mkdir -p /models/silero && \
+    if [ -f "/root/.cache/models/${SILERO_MODEL_FILE}" ]; then \
+        echo "✅ Using cached Silero v5 model"; \
+        cp "/root/.cache/models/${SILERO_MODEL_FILE}" /models/silero/v5_ru.pt; \
+    else \
+        echo "⬇️ Downloading Silero v5 model (68 MB)..."; \
+        wget -q --show-progress -O /models/silero/v5_ru.pt "${SILERO_MODEL_URL}" && \
+        cp /models/silero/v5_ru.pt "/root/.cache/models/${SILERO_MODEL_FILE}"; \
+    fi && \
+    # Также скачиваем репозиторий silero-models для hubconf.py (нужен для загрузки модели)
+    echo "⬇️ Pre-downloading Silero repository for torch.hub..." && \
+    python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru', source='github')" || true && \
+    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (68 MB)"
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
