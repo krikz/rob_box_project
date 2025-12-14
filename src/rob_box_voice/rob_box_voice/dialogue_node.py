@@ -67,13 +67,13 @@ class DialogueNode(Node):
 
         # DeepSeek client с timeout для предотвращения зависания
         # timeout: (connect_timeout, read_timeout) в секундах
-        # - connect: 10 сек на установку соединения
-        # - read: 30 сек на получение ответа (streaming может быть долгим)
+        # - connect: 5 сек на установку соединения
+        # - read: 15 сек на получение ответа (если нет данных 15s - timeout)
         from httpx import Timeout
         self.client = OpenAI(
             api_key=api_key, 
             base_url=base_url,
-            timeout=Timeout(30.0, connect=10.0)  # 30s read, 10s connect
+            timeout=Timeout(15.0, connect=5.0)  # 15s read, 5s connect
         )
 
         # Accent replacer
