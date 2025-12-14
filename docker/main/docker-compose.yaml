@@ -151,7 +151,7 @@ services:
     # • depth:=false - КРИТИЧНО! Отключает RGB/Depth подписку
     #   (По умолчанию depth=true → subscribe_rgb=true → камерные топики)
     # • subscribe_scan:=true - включает LaserScan
-    # • icp_odometry:=false - используем wheel odometry (ICP плохо работает на 2D лидаре в помещении)
+    # • icp_odometry:=true - используем wheel odometry (ICP плохо работает на 2D лидаре в помещении)
     # • Reg/Strategy=1 - ICP регистрация (0=Visual, 1=ICP, 2=Visual+ICP)
     # • Reg/Force3DoF=true - 2D SLAM (только x, y, yaw)
     # • Icp/VoxelSize=0.05 - фильтрация сканов 5см вокселями
@@ -168,7 +168,7 @@ services:
       - depth:=false
       - subscribe_scan:=true
       - scan_topic:=/scan
-      - icp_odometry:=false
+      - icp_odometry:=true
       - frame_id:=base_footprint
       - odom_frame_id:=odom
       - odom_topic:=/odom
