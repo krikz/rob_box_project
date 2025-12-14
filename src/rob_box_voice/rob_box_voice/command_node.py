@@ -369,13 +369,34 @@ class CommandNode(Node):
         self.get_logger().info('🛑 Остановка')
         self.publish_feedback('Останавливаюсь')
         
-        # Отменить Nav2 goal если есть
-        if self.enable_navigation and self.current_goal_handle is not None:
-            self.get_logger().info('🛑 Отменяю Nav2 goal...')
-            cancel_future = self.current_goal_handle.cancel_goal_async()
-            cancel_future.add_done_callback(self.nav_cancel_callback)
-        else:
-            self.get_logger().info('ℹ️ Нет активного Nav2 goal для отмены')
+        # Отменить ВСЕ Nav2 goals через cancel service
+        if self.enable_navigation:
+            try:
+                from action_msgs.srv import CancelGoal
+                from action_msgs.msg import GoalInfo
+                
+                # Создаём клиент для cancel service (если ещё нет)
+                if not hasattr(self, 'cancel_client'):
+                    self.cancel_client = self.create_client(
+                        CancelGoal,
+                        '/navigate_to_pose/_action/cancel_goal'
+                    )
+                
+                if self.cancel_client.wait_for_service(timeout_sec=0.5):
+                    # Пустой GoalInfo = отменить все goals
+                    request = CancelGoal.Request()
+                    request.goal_info = GoalInfo()  # Пустой = все goals
+                    
+                    self.get_logger().info('🛑 Отменяю все Nav2 goals...')
+                    future = self.cancel_client.call_async(request)
+                    future.add_done_callback(self.nav_cancel_callback)
+                else:
+                    self.get_logger().warn('⚠️ Nav2 cancel service недоступен')
+            except Exception as e:
+                self.get_logger().error(f'❌ Ошибка отмены: {e}')
+        
+        # Очистить наш локальный handle
+        self.current_goal_handle = None
     
     def nav_cancel_callback(self, future):
         """Callback отмены Nav2 goal"""
