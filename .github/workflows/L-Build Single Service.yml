@@ -92,6 +92,7 @@ jobs:
         with:
           ref: ${{ inputs.branch }}
           submodules: recursive
+          clean: true
 
       - name: Set build configuration
         id: set-config
@@ -325,6 +326,7 @@ jobs:
         with:
           ref: ${{ inputs.branch }}
           submodules: recursive
+          clean: true
 
       - name: Build ${{ needs.prepare.outputs.service_name }}
         run: |
