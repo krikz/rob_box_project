@@ -667,7 +667,7 @@ class DialogueNode(Node):
         self.get_logger().info("🤔 Запрос к DeepSeek...")
 
         # Timeout для всего streaming запроса (секунды)
-        STREAM_TOTAL_TIMEOUT = 60.0
+        STREAM_TOTAL_TIMEOUT = 15.0
 
         # Результаты streaming (для передачи между потоками)
         streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
@@ -811,6 +811,8 @@ class DialogueNode(Node):
 
         except FuturesTimeoutError:
             self.get_logger().error(f"⏱️ TIMEOUT: DeepSeek streaming не ответил за {STREAM_TOTAL_TIMEOUT}s")
+            # Говорим fallback ответ
+            self._speak_simple("Извините, я сейчас не в настроении думать")
             # Сбрасываем флаг обработки LLM
             self.llm_processing = False
             self.dialogue_in_progress = False
