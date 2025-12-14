@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 import rclpy
@@ -652,7 +653,7 @@ class DialogueNode(Node):
         return base_prompt
 
     def _ask_deepseek_streaming(self):
-        """Streaming запрос к DeepSeek с парсингом JSON chunks"""
+        """Streaming запрос к DeepSeek с парсингом JSON chunks и timeout"""
         # Генерируем новый dialogue_id для этого диалога
         dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
@@ -665,7 +666,20 @@ class DialogueNode(Node):
 
         self.get_logger().info("🤔 Запрос к DeepSeek...")
 
-        try:
+        # Timeout для всего streaming запроса (секунды)
+        STREAM_TOTAL_TIMEOUT = 60.0
+
+        # Результаты streaming (для передачи между потоками)
+        streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
+
+        def _do_streaming():
+            """Внутренняя функция для streaming в отдельном потоке"""
+            full_response = ""
+            current_chunk = ""
+            brace_count = 0
+            in_json = False
+            chunk_count = 0
+
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -674,20 +688,12 @@ class DialogueNode(Node):
                 stream=True,
             )
 
-            # Накопление response
-            full_response = ""
-            current_chunk = ""
-            brace_count = 0
-            in_json = False
-            chunk_count = 0
-
-            # Обработка streaming chunks
             for chunk in stream:
                 # Проверяем finish_reason для корректного завершения stream
                 if chunk.choices[0].finish_reason:
                     self.get_logger().debug(f"🏁 Stream завершён: {chunk.choices[0].finish_reason}")
                     break
-                    
+
                 if chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
                     full_response += token
@@ -763,6 +769,20 @@ class DialogueNode(Node):
                         in_json = False
                         brace_count = 0
 
+            # Сохраняем результаты
+            streaming_result["full_response"] = full_response
+            streaming_result["chunk_count"] = chunk_count
+
+        # Запускаем streaming в отдельном потоке с timeout
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_do_streaming)
+                future.result(timeout=STREAM_TOTAL_TIMEOUT)
+
+            # Streaming успешно завершён
+            full_response = streaming_result["full_response"]
+            chunk_count = streaming_result["chunk_count"]
+
             # Сохраняем ответ в историю
             self.conversation_history.append({"role": "assistant", "content": full_response})
 
@@ -788,6 +808,12 @@ class DialogueNode(Node):
             else:
                 # Очередь пуста - завершаем диалог
                 self.dialogue_in_progress = False
+
+        except FuturesTimeoutError:
+            self.get_logger().error(f"⏱️ TIMEOUT: DeepSeek streaming не ответил за {STREAM_TOTAL_TIMEOUT}s")
+            # Сбрасываем флаг обработки LLM
+            self.llm_processing = False
+            self.dialogue_in_progress = False
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка DeepSeek: {e}")
