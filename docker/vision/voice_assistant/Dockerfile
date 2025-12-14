@@ -141,6 +141,15 @@ COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
 # Шаг 8: Копируем animations data
 COPY src/rob_box_animations/animations /ws/src/rob_box_animations/animations
 
+# ============================================================
+# ИНВАЛИДАЦИЯ КЕША ДЛЯ PYTHON КОДА
+# ============================================================
+# BuildKit кеширует COPY layers по content hash файлов.
+# Но на self-hosted runners кеш может быть stale.
+# SOURCE_HASH передаётся из workflow и инвалидирует кеш при изменении кода.
+ARG SOURCE_HASH=unknown
+RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
+
 # Шаг 9: Копируем исходный код Python (меняется чаще всего - последний слой!)
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
 COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations

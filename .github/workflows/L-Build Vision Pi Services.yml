@@ -163,6 +163,9 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
+          # Вычисляем hash Python исходников для инвалидации кеша
+          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
           docker buildx build \
             --platform linux/arm64 \
             --file docker/vision/${SERVICE}/Dockerfile \
@@ -172,6 +175,7 @@ jobs:
             --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
             .
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
