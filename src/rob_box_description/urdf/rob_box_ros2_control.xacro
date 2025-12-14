@@ -21,6 +21,10 @@
       
       <!-- Default wheel radius (может быть переопределен для каждого колеса) -->
       <param name="wheel_radius">0.115</param>
+      
+      <!-- Минимальный duty cycle для преодоления мёртвой зоны VESC -->
+      <!-- Калибровка 2025-12-14: duty=0.05 еле крутится, duty=0.10 нормально -->
+      <param name="min_duty">0.08</param>
     </hardware>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -39,6 +43,7 @@
       <param name="poles">30</param>               <!-- Количество полюсов мотора -->
       <param name="min_erpm">24</param>           <!-- Минимальный ERPM для движения -->
       <param name="wheel_radius">0.115</param>     <!-- Радиус колеса (м) -->
+      <param name="max_rps">11.83</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -56,6 +61,7 @@
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
       <param name="wheel_radius">0.115</param>
+      <param name="max_rps">11.53</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -73,6 +79,7 @@
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
       <param name="wheel_radius">0.115</param>
+      <param name="max_rps">11.70</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -90,6 +97,7 @@
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
       <param name="wheel_radius">0.115</param>
+      <param name="max_rps">11.93</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
   </ros2_control>
 
