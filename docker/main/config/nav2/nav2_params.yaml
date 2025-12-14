@@ -82,7 +82,13 @@ controller_server:
       xy_goal_tolerance: 0.15
       yaw_goal_tolerance: 0.15
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "dwb_core::DWBLocalPlanner"
+      angular_dist_threshold: 0.5  # ~30 deg - rotate in place if heading differs more
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 1.0  # rad/s for in-place rotation
+      max_angular_accel: 1.5
+      simulate_ahead_time: 1.0
       debug_trajectory_details: true
       min_vel_x: -0.1
       min_vel_y: 0.0
