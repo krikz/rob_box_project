@@ -64,7 +64,7 @@ bt_navigator:
 controller_server:
   ros__parameters:
     use_sim_time: false
-    controller_frequency: 20.0
+    controller_frequency: 10.0  # Reduced from 20.0 - Pi4 can't handle 20Hz
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
@@ -84,9 +84,10 @@ controller_server:
     FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "dwb_core::DWBLocalPlanner"
-      angular_dist_threshold: 0.5  # ~30 deg - rotate in place if heading differs more
-      forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 1.0  # rad/s for in-place rotation
+      angular_dist_threshold: 0.2  # ~11 deg - rotate in place if heading differs more
+      forward_sampling_distance: 0.3
+      rotate_to_heading_angular_vel: 0.8  # rad/s for in-place rotation
+      rotate_to_heading_min_angular_vel: 0.4  # minimum rotation speed
       max_angular_accel: 1.5
       simulate_ahead_time: 1.0
       debug_trajectory_details: true
