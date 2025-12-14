@@ -88,16 +88,16 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.2  # Reduced from 0.5 for safer testing
       max_vel_y: 0.0
-      max_vel_theta: 0.5  # Reduced from 1.2 rad/s (~28 deg/s)
+      max_vel_theta: 1.2  # ~68 deg/s - for tank turns
       min_speed_xy: 0.0
       max_speed_xy: 0.2
-      min_speed_theta: 0.0
+      min_speed_theta: 0.3  # Minimum rotation speed to overcome friction
       acc_lim_x: 0.2  # Reduced acceleration
       acc_lim_y: 0.0
-      acc_lim_theta: 0.5
+      acc_lim_theta: 1.5  # Faster rotation acceleration
       decel_lim_x: -0.2
       decel_lim_y: 0.0
-      decel_lim_theta: -0.5
+      decel_lim_theta: -1.5  # Faster rotation deceleration
       vx_samples: 20
       vy_samples: 0
       vtheta_samples: 40
