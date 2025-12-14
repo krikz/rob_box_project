@@ -683,6 +683,11 @@ class DialogueNode(Node):
 
             # Обработка streaming chunks
             for chunk in stream:
+                # Проверяем finish_reason для корректного завершения stream
+                if chunk.choices[0].finish_reason:
+                    self.get_logger().debug(f"🏁 Stream завершён: {chunk.choices[0].finish_reason}")
+                    break
+                    
                 if chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
                     full_response += token
