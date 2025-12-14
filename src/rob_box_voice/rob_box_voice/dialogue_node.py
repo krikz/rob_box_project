@@ -64,8 +64,16 @@ class DialogueNode(Node):
         self.temperature = self.get_parameter("temperature").value
         self.max_tokens = self.get_parameter("max_tokens").value
 
-        # DeepSeek client
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # DeepSeek client с timeout для предотвращения зависания
+        # timeout: (connect_timeout, read_timeout) в секундах
+        # - connect: 10 сек на установку соединения
+        # - read: 30 сек на получение ответа (streaming может быть долгим)
+        from httpx import Timeout
+        self.client = OpenAI(
+            api_key=api_key, 
+            base_url=base_url,
+            timeout=Timeout(30.0, connect=10.0)  # 30s read, 10s connect
+        )
 
         # Accent replacer
         self.accent_replacer = AccentReplacer()
