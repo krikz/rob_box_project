@@ -239,6 +239,7 @@ behavior_server:
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
+      simulate_ahead_time: 0.5  # Reduced - less collision checking during spin
     backup:
       plugin: "nav2_behaviors/BackUp"
     drive_on_heading:
@@ -247,12 +248,12 @@ behavior_server:
       plugin: "nav2_behaviors/Wait"
     global_frame: map
     robot_base_frame: base_link
-    transform_tolerance: 0.1
+    transform_tolerance: 0.5  # Increased from 0.1 for slower TF updates
     use_sim_time: false
-    simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 3.2
+    simulate_ahead_time: 0.5  # Reduced for spin
+    max_rotational_vel: 1.2  # Increased from 1.0 for faster spin
+    min_rotational_vel: 0.5  # Increased from 0.4 to overcome friction
+    rotational_acc_lim: 2.0  # Reduced from 3.2 for smoother acceleration
 
 waypoint_follower:
   ros__parameters:
