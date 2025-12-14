@@ -70,9 +70,9 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
     # Odometry Configuration
     # ───────────────────────────────────────────────────────────────
-    # Отключено: используем ICP odometry от RTAB-Map вместо wheel odometry
-    # Wheel odometry накапливает большую ошибку из-за проскальзывания и дрейфа энкодеров
-    enable_odom_tf: false
+    # Включено: публикуем TF odom → base_footprint для RTAB-Map
+    # ICP odometry будет использовать этот TF как начальную оценку
+    enable_odom_tf: true
 
     # Frame IDs для одометрии
     odom_frame_id: odom
@@ -107,11 +107,11 @@ diff_drive_controller:
 
     # Угловая скорость (повороты)
     angular.z.has_velocity_limits: true
-    angular.z.max_velocity: 2.0       # rad/s (TODO: настроить после тестов)
-    angular.z.min_velocity: -2.0      # rad/s
+    angular.z.max_velocity: 15.0      # rad/s - увеличено для нормального поворота
+    angular.z.min_velocity: -15.0     # rad/s
     angular.z.has_acceleration_limits: true
-    angular.z.max_acceleration: 1.5   # rad/s²
-    angular.z.min_acceleration: -1.5  # rad/s²
+    angular.z.max_acceleration: 10.0  # rad/s² - увеличено
+    angular.z.min_acceleration: -10.0 # rad/s²
     angular.z.has_jerk_limits: false
 
     # ───────────────────────────────────────────────────────────────
