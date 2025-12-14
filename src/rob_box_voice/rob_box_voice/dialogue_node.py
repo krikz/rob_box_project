@@ -679,6 +679,8 @@ class DialogueNode(Node):
             brace_count = 0
             in_json = False
             chunk_count = 0
+            start_time = time.time()  # Засекаем время начала
+            last_chunk_time = start_time  # Время последнего chunk с контентом
 
             stream = self.client.chat.completions.create(
                 model=self.model,
@@ -689,6 +691,13 @@ class DialogueNode(Node):
             )
 
             for chunk in stream:
+                # Timeout если между chunks прошло слишком много времени
+                # Проверяем на каждой итерации - защита от зависания на любом этапе
+                elapsed_since_content = time.time() - last_chunk_time
+                if elapsed_since_content > STREAM_TOTAL_TIMEOUT:
+                    streaming_result["error"] = f"No data for {elapsed_since_content:.1f}s (after {chunk_count} chunks)"
+                    return
+
                 # Проверяем finish_reason для корректного завершения stream
                 if chunk.choices[0].finish_reason:
                     self.get_logger().debug(f"🏁 Stream завершён: {chunk.choices[0].finish_reason}")
@@ -698,6 +707,7 @@ class DialogueNode(Node):
                     token = chunk.choices[0].delta.content
                     full_response += token
                     current_chunk += token
+                    last_chunk_time = time.time()  # Обновляем время - контент идёт
 
                     # Подсчёт скобок для определения границ JSON
                     for char in token:
@@ -779,6 +789,10 @@ class DialogueNode(Node):
                 future = executor.submit(_do_streaming)
                 future.result(timeout=STREAM_TOTAL_TIMEOUT)
 
+            # Проверяем внутренний timeout
+            if streaming_result["error"]:
+                raise TimeoutError(streaming_result["error"])
+
             # Streaming успешно завершён
             full_response = streaming_result["full_response"]
             chunk_count = streaming_result["chunk_count"]
@@ -809,8 +823,8 @@ class DialogueNode(Node):
                 # Очередь пуста - завершаем диалог
                 self.dialogue_in_progress = False
 
-        except FuturesTimeoutError:
-            self.get_logger().error(f"⏱️ TIMEOUT: DeepSeek streaming не ответил за {STREAM_TOTAL_TIMEOUT}s")
+        except (FuturesTimeoutError, TimeoutError) as e:
+            self.get_logger().error(f"⏱️ TIMEOUT: DeepSeek streaming не ответил за {STREAM_TOTAL_TIMEOUT}s - {e}")
             # Говорим fallback ответ
             self._speak_simple("Извините, я сейчас не в настроении думать")
             # Сбрасываем флаг обработки LLM
