@@ -88,6 +88,7 @@ class CommandNode(Node):
         # Action clients
         if self.enable_navigation:
             self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+            self.current_goal_handle = None  # Для отмены текущего goal
         
         # Словарь команд (паттерны)
         self._build_command_patterns()
@@ -124,8 +125,8 @@ class CommandNode(Node):
             ],
             # Остановка
             IntentType.STOP: [
-                (r'(стой|стоп|остановись|останови|halt)', None),
-                (r'(отмени|cancel)\s+(движение|навигацию)', None),
+                (r'(стой|стоп|остановись|останови|halt|стоять|хватит|замри)', None),
+                (r'(отмени|cancel)\s+(движение|навигацию|задание)', None),
             ],
             # Следование
             IntentType.FOLLOW: [
@@ -340,9 +341,11 @@ class CommandNode(Node):
         if not goal_handle.accepted:
             self.get_logger().warn('⚠️ Nav2 goal отклонён')
             self.publish_feedback('Не могу выполнить навигацию')
+            self.current_goal_handle = None
             return
         
         self.get_logger().info('✅ Nav2 goal принят')
+        self.current_goal_handle = goal_handle  # Сохраняем для отмены
         
         # Ожидать результата
         result_future = goal_handle.get_result_async()
@@ -357,6 +360,7 @@ class CommandNode(Node):
     def nav_result_callback(self, future):
         """Callback результата Nav2"""
         result = future.result().result
+        self.current_goal_handle = None  # Очищаем после завершения
         self.get_logger().info(f'✅ Nav2 завершён: {result}')
         self.publish_feedback('Прибыл в точку назначения')
     
@@ -365,10 +369,23 @@ class CommandNode(Node):
         self.get_logger().info('🛑 Остановка')
         self.publish_feedback('Останавливаюсь')
         
-        # Отменить Nav2 goal
-        if self.enable_navigation and hasattr(self, 'nav_client'):
-            # TODO: Cancel current goal
-            pass
+        # Отменить Nav2 goal если есть
+        if self.enable_navigation and self.current_goal_handle is not None:
+            self.get_logger().info('🛑 Отменяю Nav2 goal...')
+            cancel_future = self.current_goal_handle.cancel_goal_async()
+            cancel_future.add_done_callback(self.nav_cancel_callback)
+        else:
+            self.get_logger().info('ℹ️ Нет активного Nav2 goal для отмены')
+    
+    def nav_cancel_callback(self, future):
+        """Callback отмены Nav2 goal"""
+        try:
+            cancel_response = future.result()
+            self.get_logger().info(f'✅ Nav2 goal отменён: {cancel_response}')
+        except Exception as e:
+            self.get_logger().error(f'❌ Ошибка отмены Nav2 goal: {e}')
+        finally:
+            self.current_goal_handle = None
     
     def handle_direction(self, direction: str):
         """Обработка команды поворота/движения в направлении
