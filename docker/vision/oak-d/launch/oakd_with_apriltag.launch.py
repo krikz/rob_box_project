@@ -22,7 +22,7 @@ def generate_launch_description():
         
         # AprilTag Detection Node (runs in the same container)
         # NOTE: image_transport: compressed в apriltag_config.yaml автоматически
-        # подписывается на /camera/camera/color/image_raw/compressed
+        # подписывается на /camera/rgb/image_raw/compressed
         Node(
             package='apriltag_ros',
             executable='apriltag_node',
@@ -30,8 +30,8 @@ def generate_launch_description():
             output='screen',
             parameters=['/config/apriltag/apriltag_config.yaml'],
             remappings=[
-                ('image_rect', '/camera/camera/color/image_raw'),  # image_transport добавит /compressed
-                ('camera_info', '/camera/camera/color/camera_info'),
+                ('image_rect', '/camera/rgb/image_raw'),  # image_transport добавит /compressed
+                ('camera_info', '/camera/rgb/camera_info'),
                 ('detections', '/detections'),  # Публиковать детекции на /detections для RTAB-Map
             ],
         ),
