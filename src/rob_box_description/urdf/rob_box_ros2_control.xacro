@@ -2,11 +2,7 @@
 <!-- 
   rob_box_ros2_control.xacro
   
-  ros2_control интеграция с VESC Nex      <param name="can_id">124</param>
-      <param name="poles">30</param>
-      <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.138</param>
-      <param name="max_rps">11.93</param>          <!-- Калибровка: об/сек при duty=100% -->rdware interface
+  ros2_control интеграция с VESC Nexus hardware interface
   Определяет 4 колеса с VESC моторами через CAN
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
