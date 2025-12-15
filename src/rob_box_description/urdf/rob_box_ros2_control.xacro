@@ -2,7 +2,11 @@
 <!-- 
   rob_box_ros2_control.xacro
   
-  ros2_control интеграция с VESC Nexus hardware interface
+  ros2_control интеграция с VESC Nex      <param name="can_id">124</param>
+      <param name="poles">30</param>
+      <param name="min_erpm">24</param>
+      <param name="wheel_radius">0.138</param>
+      <param name="max_rps">11.93</param>          <!-- Калибровка: об/сек при duty=100% -->rdware interface
   Определяет 4 колеса с VESC моторами через CAN
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
@@ -20,7 +24,7 @@
       <param name="publish_rate">50.0</param>
       
       <!-- Default wheel radius (может быть переопределен для каждого колеса) -->
-      <param name="wheel_radius">0.115</param>
+      <param name="wheel_radius">0.138</param>
       
       <!-- Минимальный duty cycle для преодоления мёртвой зоны VESC -->
       <!-- Калибровка 2025-12-14: duty=0.05 еле крутится, duty=0.10 нормально -->
@@ -43,7 +47,7 @@
       <param name="can_id">49</param>              <!-- CAN ID в VESC Tool -->
       <param name="poles">30</param>               <!-- Количество полюсов мотора -->
       <param name="min_erpm">24</param>           <!-- Минимальный ERPM для движения -->
-      <param name="wheel_radius">0.115</param>     <!-- Радиус колеса (м) -->
+      <param name="wheel_radius">0.138</param>     <!-- Калиброван: 0.115 × 1.2 = 0.138 -->
       <param name="max_rps">11.83</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
 
@@ -61,7 +65,7 @@
       <param name="can_id">94</param>
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.115</param>
+      <param name="wheel_radius">0.138</param>
       <param name="max_rps">11.53</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
 
@@ -79,7 +83,7 @@
       <param name="can_id">81</param>
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.115</param>
+      <param name="wheel_radius">0.138</param>
       <param name="max_rps">11.70</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
 
@@ -97,7 +101,7 @@
       <param name="can_id">124</param>
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.115</param>
+      <param name="wheel_radius">0.138</param>
       <param name="max_rps">11.93</param>          <!-- Калибровка: об/сек при duty=100% -->
     </joint>
   </ros2_control>
