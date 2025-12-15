@@ -86,9 +86,9 @@ controller_server:
       primary_controller: "dwb_core::DWBLocalPlanner"
       angular_dist_threshold: 0.15  # ~8 deg - rotate in place more often
       forward_sampling_distance: 0.25
-      rotate_to_heading_angular_vel: 1.0  # Increased for better rotation torque
-      rotate_to_heading_min_angular_vel: 0.6  # Increased from 0.4 to overcome friction
-      max_angular_accel: 1.5  # Reduced from 2.0 for smoother rotation
+      rotate_to_heading_angular_vel: 1.5  # Increased for strong rotation torque
+      rotate_to_heading_min_angular_vel: 1.0  # Increased from 0.6 - need duty > 0.08
+      max_angular_accel: 2.0  # Increased for faster rotation start
       simulate_ahead_time: 0.8
       debug_trajectory_details: true
       min_vel_x: -0.1
@@ -98,7 +98,7 @@ controller_server:
       max_vel_theta: 1.0  # Reduced from 1.5 - ICP needs slower rotation
       min_speed_xy: 0.0
       max_speed_xy: 0.2
-      min_speed_theta: 0.6  # Increased from 0.4 to overcome friction at low speeds
+      min_speed_theta: 1.0  # Increased from 0.6 - need wheel duty > 0.08 for rotation
       acc_lim_x: 0.2  # Reduced acceleration
       acc_lim_y: 0.0
       acc_lim_theta: 1.5  # Reduced from 2.0 for smoother rotation
