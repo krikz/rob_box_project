@@ -84,34 +84,34 @@ controller_server:
     FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "dwb_core::DWBLocalPlanner"
-      angular_dist_threshold: 0.2  # ~11 deg - rotate in place if heading differs more
-      forward_sampling_distance: 0.3
-      rotate_to_heading_angular_vel: 0.8  # rad/s for in-place rotation
-      rotate_to_heading_min_angular_vel: 0.4  # minimum rotation speed
-      max_angular_accel: 1.5
-      simulate_ahead_time: 1.0
+      angular_dist_threshold: 0.15  # ~8 deg - rotate in place more often
+      forward_sampling_distance: 0.25
+      rotate_to_heading_angular_vel: 1.0  # Increased from 0.8 rad/s
+      rotate_to_heading_min_angular_vel: 0.5  # Increased from 0.4
+      max_angular_accel: 2.0  # Increased from 1.5
+      simulate_ahead_time: 0.8
       debug_trajectory_details: true
       min_vel_x: -0.1
       min_vel_y: 0.0
       max_vel_x: 0.2  # Reduced from 0.5 for safer testing
       max_vel_y: 0.0
-      max_vel_theta: 1.2  # ~68 deg/s - for tank turns
+      max_vel_theta: 1.5  # Increased from 1.2 - ~86 deg/s for tank turns
       min_speed_xy: 0.0
       max_speed_xy: 0.2
-      min_speed_theta: 0.3  # Minimum rotation speed to overcome friction
+      min_speed_theta: 0.4  # Increased from 0.3 to overcome friction
       acc_lim_x: 0.2  # Reduced acceleration
       acc_lim_y: 0.0
-      acc_lim_theta: 1.5  # Faster rotation acceleration
+      acc_lim_theta: 2.0  # Increased from 1.5 for snappier rotation
       decel_lim_x: -0.2
       decel_lim_y: 0.0
-      decel_lim_theta: -1.5  # Faster rotation deceleration
+      decel_lim_theta: -2.0  # Increased from 1.5
       vx_samples: 20
       vy_samples: 0
       vtheta_samples: 40
-      sim_time: 1.7
+      sim_time: 1.2  # Reduced from 1.7 - faster decisions
       linear_granularity: 0.05
       angular_granularity: 0.025
-      transform_tolerance: 0.2
+      transform_tolerance: 0.3  # Increased from 0.2
       xy_goal_tolerance: 0.15
       trans_stopped_velocity: 0.15
       short_circuit_trajectory_evaluation: true
@@ -250,10 +250,10 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.5  # Increased from 0.1 for slower TF updates
     use_sim_time: false
-    simulate_ahead_time: 0.5  # Reduced for spin
-    max_rotational_vel: 1.2  # Increased from 1.0 for faster spin
-    min_rotational_vel: 0.5  # Increased from 0.4 to overcome friction
-    rotational_acc_lim: 2.0  # Reduced from 3.2 for smoother acceleration
+    simulate_ahead_time: 0.3  # Reduced from 0.5 - less collision prediction
+    max_rotational_vel: 1.5  # Increased from 1.2 for faster spin
+    min_rotational_vel: 0.6  # Increased from 0.5 to overcome friction
+    rotational_acc_lim: 2.5  # Increased from 2.0 for snappier spin
 
 waypoint_follower:
   ros__parameters:
@@ -272,13 +272,13 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.5, 0.0, 1.2]
-    min_velocity: [-0.3, 0.0, -1.2]
-    max_accel: [0.5, 0.0, 1.5]
-    max_decel: [-0.5, 0.0, -1.5]
+    max_velocity: [0.5, 0.0, 1.5]  # Increased angular from 1.2
+    min_velocity: [-0.3, 0.0, -1.5]  # Increased angular from -1.2
+    max_accel: [0.5, 0.0, 2.0]  # Increased angular from 1.5
+    max_decel: [-0.5, 0.0, -2.0]  # Increased angular from -1.5
     odom_topic: "odom"
     odom_duration: 0.1
-    deadband_velocity: [0.05, 0.0, 0.3]  # Min velocities - angular 0.3 rad/s to overcome friction
+    deadband_velocity: [0.05, 0.0, 0.4]  # Increased angular from 0.3 to 0.4 rad/s
     velocity_timeout: 1.0
 
 lifecycle_manager_navigation:
