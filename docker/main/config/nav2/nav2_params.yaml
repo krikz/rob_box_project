@@ -86,8 +86,8 @@ controller_server:
       primary_controller: "dwb_core::DWBLocalPlanner"
       angular_dist_threshold: 0.15  # ~8 deg - rotate in place more often
       forward_sampling_distance: 0.25
-      rotate_to_heading_angular_vel: 0.8  # Reduced from 1.0 for ICP stability
-      rotate_to_heading_min_angular_vel: 0.4  # Reduced from 0.5
+      rotate_to_heading_angular_vel: 1.0  # Increased for better rotation torque
+      rotate_to_heading_min_angular_vel: 0.6  # Increased from 0.4 to overcome friction
       max_angular_accel: 1.5  # Reduced from 2.0 for smoother rotation
       simulate_ahead_time: 0.8
       debug_trajectory_details: true
@@ -98,7 +98,7 @@ controller_server:
       max_vel_theta: 1.0  # Reduced from 1.5 - ICP needs slower rotation
       min_speed_xy: 0.0
       max_speed_xy: 0.2
-      min_speed_theta: 0.4  # Increased from 0.3 to overcome friction
+      min_speed_theta: 0.6  # Increased from 0.4 to overcome friction at low speeds
       acc_lim_x: 0.2  # Reduced acceleration
       acc_lim_y: 0.0
       acc_lim_theta: 1.5  # Reduced from 2.0 for smoother rotation
@@ -278,7 +278,7 @@ velocity_smoother:
     max_decel: [-0.5, 0.0, -1.5]  # Reduced angular from -2.0
     odom_topic: "odom"
     odom_duration: 0.1
-    deadband_velocity: [0.05, 0.0, 0.35]  # Reduced angular from 0.4 to 0.35 rad/s
+    deadband_velocity: [0.05, 0.0, 0.5]  # Increased angular deadband to 0.5 rad/s
     velocity_timeout: 1.0
 
 lifecycle_manager_navigation:
