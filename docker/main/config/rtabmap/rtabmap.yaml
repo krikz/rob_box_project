@@ -41,9 +41,3 @@ rtabmap:
     Mem/LaserScanNormalK: "0"  # Отключено для 2D лидара
     RGBD/ProximityPathMaxNeighbors: "10"
     RGBD/OptimizeFromGraphEnd: "true"
-    
-    # Отключаем loop closure (без камеры работает плохо)
-    RGBD/LoopClosureReextractFeatures: "false"
-    Kp/MaxFeatures: "0"  # Отключить visual features
-    Vis/MaxFeatures: "0"
-    Mem/RehearsalSimilarity: "1.0"  # Не объединять похожие ноды
