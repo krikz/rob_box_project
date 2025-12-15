@@ -151,14 +151,17 @@ services:
     # • depth:=false - КРИТИЧНО! Отключает RGB/Depth подписку
     #   (По умолчанию depth=true → subscribe_rgb=true → камерные топики)
     # • subscribe_scan:=true - включает LaserScan
-    # • icp_odometry:=false - используем wheel odometry (ros2-control публикует TF)
-    # • Reg/Strategy=1 - ICP регистрация для SLAM (не для odometry!)
+    # • icp_odometry:=true - ICP одометрия корректирует wheel odometry используя лидар
+    # • odom_guess_frame_id:=odom - wheel odometry как guess для ICP
+    # • vo_frame_id:=icp_odom - ICP публикует в свой frame
+    # • Reg/Strategy=1 - ICP регистрация для SLAM
     # • Reg/Force3DoF=true - 2D SLAM (только x, y, yaw)
     # • Icp/VoxelSize=0.05 - фильтрация сканов 5см вокселями
     # • Grid/RangeMin=0.2 - игнорировать точки ближе 20см
     # • Grid/Sensor=0 - сетка из лидара (не из depth камеры)
     #
-    # ОЖИДАЕМЫЕ ПОДПИСКИ: /scan, /odom, /camera/imu/data
+    # ОЖИДАЕМЫЕ ПОДПИСКИ: /scan, /odom (wheel), /camera/imu/data
+    # ICP одометрия публикует: odom→icp_odom TF, RTABMAP использует icp_odom
     command:
       - /ros_scripts/ros_with_namespace.sh
       - ros2
@@ -168,9 +171,11 @@ services:
       - depth:=false
       - subscribe_scan:=true
       - scan_topic:=/scan
-      - icp_odometry:=false
+      - icp_odometry:=true
+      - odom_guess_frame_id:=odom
+      - vo_frame_id:=icp_odom
       - frame_id:=base_footprint
-      - odom_frame_id:=odom
+      - odom_frame_id:=icp_odom
       - odom_topic:=/odom
       - imu_topic:=/camera/imu/data
       - wait_imu_to_init:=false

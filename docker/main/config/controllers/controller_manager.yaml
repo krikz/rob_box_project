@@ -70,8 +70,9 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
     # Odometry Configuration
     # ───────────────────────────────────────────────────────────────
-    # ВКЛЮЧЕНО: wheel odometry публикует TF odom → base_footprint
-    # ICP odometry отключен (icp_odometry:=false в docker-compose)
+    # Wheel odometry публикует TF odom → base_footprint
+    # ICP odometry использует это как guess и публикует icp_odom → base_footprint
+    # RTABMAP использует icp_odom (скорректированную лидаром одометрию)
     enable_odom_tf: true
 
     # Frame IDs для одометрии
