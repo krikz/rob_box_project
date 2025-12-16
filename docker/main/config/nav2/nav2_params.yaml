@@ -86,18 +86,18 @@ controller_server:
       debug_trajectory_details: true
       min_vel_x: -0.1
       min_vel_y: 0.0
-      max_vel_x: 0.15  # Reduced for smoother approach
+      max_vel_x: 0.12  # Very conservative for smooth approach (was 0.15)
       max_vel_y: 0.0
-      max_vel_theta: 0.6  # ~34 deg/s - smooth rotation compatible with ICP (was 0.5)
+      max_vel_theta: 0.4  # ~23 deg/s - very slow rotation for ICP stability (was 0.6)
       min_speed_xy: 0.0
-      max_speed_xy: 0.15
-      min_speed_theta: 0.1  # Allow very slow rotation (duty ~0.01-0.02, was 0.0)
-      acc_lim_x: 0.15  # Smooth linear acceleration
+      max_speed_xy: 0.12
+      min_speed_theta: 0.05  # Allow extremely slow rotation (duty ~0.005, was 0.1)
+      acc_lim_x: 0.1  # Very smooth linear acceleration (was 0.15)
       acc_lim_y: 0.0
-      acc_lim_theta: 0.6  # Smooth angular acceleration (was 0.5)
-      decel_lim_x: -0.15  # Smooth linear deceleration
+      acc_lim_theta: 0.4  # Very smooth angular acceleration (was 0.6)
+      decel_lim_x: -0.1  # Very smooth linear deceleration (was -0.15)
       decel_lim_y: 0.0
-      decel_lim_theta: -0.6  # Smooth angular deceleration (was -0.5)
+      decel_lim_theta: -0.4  # Very smooth angular deceleration (was -0.6)
       vx_samples: 20
       vy_samples: 0
       vtheta_samples: 30  # Reduced from 40 - faster computation
@@ -109,17 +109,19 @@ controller_server:
       trans_stopped_velocity: 0.10  # Reduced from 0.15 - detect stop earlier
       short_circuit_trajectory_evaluation: true
       stateful: true
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "PreferForward"]
       BaseObstacle.scale: 0.02
-      PathAlign.scale: 40.0  # Increased from 32.0 - prefer following path smoothly
-      PathAlign.forward_point_distance: 0.15  # Increased from 0.1 - look further ahead
-      GoalAlign.scale: 20.0  # Reduced from 24.0 - less aggressive goal alignment
-      GoalAlign.forward_point_distance: 0.15  # Increased from 0.1
-      PathDist.scale: 36.0  # Increased from 32.0 - stay closer to path
-      GoalDist.scale: 30.0  # Increased from 24.0 - but not overshoot
-      RotateToGoal.scale: 25.0  # Reduced from 32.0 - less aggressive final rotation
-      RotateToGoal.slowing_factor: 8.0  # Increased from 5.0 - slow down more near goal
+      PathAlign.scale: 40.0  # Prefer following path smoothly
+      PathAlign.forward_point_distance: 0.15  # Look further ahead
+      GoalAlign.scale: 20.0  # Less aggressive goal alignment
+      GoalAlign.forward_point_distance: 0.15
+      PathDist.scale: 36.0  # Stay closer to path
+      GoalDist.scale: 30.0  # Approach goal but don't overshoot
+      RotateToGoal.scale: 25.0  # Less aggressive final rotation
+      RotateToGoal.slowing_factor: 8.0  # Slow down more near goal
       RotateToGoal.lookahead_time: -1.0
+      PreferForward.scale: 10.0  # Prefer forward motion over rotation
+      PreferForward.penalty: 2.0  # Penalty for backward motion
 
 local_costmap:
   local_costmap:
@@ -265,10 +267,10 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.2, 0.0, 0.6]  # Match DWB limits: linear 0.2, angular 0.6 rad/s
-    min_velocity: [-0.15, 0.0, -0.6]  # Symmetric limits
-    max_accel: [0.2, 0.0, 0.6]  # Match DWB acceleration limits
-    max_decel: [-0.2, 0.0, -0.6]  # Match DWB deceleration limits
+    max_velocity: [0.12, 0.0, 0.4]  # Ultra-conservative: linear 0.12 m/s, angular 0.4 rad/s
+    min_velocity: [-0.12, 0.0, -0.4]  # Symmetric limits
+    max_accel: [0.15, 0.0, 0.4]  # Smooth acceleration
+    max_decel: [-0.15, 0.0, -0.4]  # Smooth deceleration
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.02, 0.0, 0.05]  # Small deadband: linear 2cm/s, angular ~3deg/s
