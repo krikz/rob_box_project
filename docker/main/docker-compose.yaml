@@ -181,7 +181,7 @@ services:
       - wait_imu_to_init:=false
       - apriltag_topic:=/detections
       - qos:=1
-      - approx_sync:=false
+      - approx_sync:=true
       - rtabmap_viz:=false
       - rviz:=false
       - visual_odometry:=false
