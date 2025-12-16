@@ -5,7 +5,7 @@
 set -e
 
 # Build machine IP (update this to match your build machine)
-BUILD_MACHINE_IP="${BUILD_MACHINE_IP:-10.1.1.5}"
+BUILD_MACHINE_IP="${BUILD_MACHINE_IP:-10.1.1.249}"
 REGISTRY_PORT="${REGISTRY_PORT:-5000}"
 APT_CACHE_PORT="${APT_CACHE_PORT:-3142}"
 

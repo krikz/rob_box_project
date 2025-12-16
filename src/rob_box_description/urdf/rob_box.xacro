@@ -2,7 +2,7 @@
 <robot name="rob_box" xmlns:xacro="http://www.ros.org/wiki/xacro">
 	<!-- Переменные - обновлено из Fusion 360 Export -->
 	<xacro:property name="base_size" value="0.4757 0.238 0.1885"/>  <!-- Legacy collision box, use mesh instead -->
-	<xacro:property name="wheel_radius" value="0.115"/>
+	<xacro:property name="wheel_radius" value="0.138"/>  <!-- Калибровочный: 0.115 × 1.2 -->
 	<xacro:property name="wheel_length" value="0.05"/>
 	<xacro:property name="rocker_length" value="0.28934"/>
 	<xacro:property name="rocker_width" value="0.05"/>
