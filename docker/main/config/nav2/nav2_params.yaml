@@ -85,11 +85,11 @@ controller_server:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: true
       min_vel_x: -0.1
-      min_vel_y: 0.05
+      min_vel_y: 0.0
       max_vel_x: 0.15  # Reduced for smoother approach
       max_vel_y: 0.0
       max_vel_theta: 0.6  # ~34 deg/s - stable value from e367f09
-      min_speed_xy: 0.05  # 50 mm/s - minimum speed due to min_duty=0.06
+      min_speed_xy: 0.10  # 50 mm/s - minimum speed due to min_duty=0.06
       max_speed_xy: 0.15
       min_speed_theta: 0.1  # Stable value from e367f09 (week ago)
       acc_lim_x: 0.15  # Original working value from e367f09
