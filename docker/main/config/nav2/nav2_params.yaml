@@ -264,13 +264,13 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.2, 0.0, 0.6]  # Match DWB limits: linear 0.2, angular 0.6 rad/s
-    min_velocity: [-0.15, 0.0, -0.6]  # Symmetric limits
-    max_accel: [2.0, 0.0, 3.0]  # INCREASED 10x: allow fast acceleration to reach commanded speed
-    max_decel: [-2.0, 0.0, -3.0]  # INCREASED 10x: allow fast deceleration
+    max_velocity: [0.85, 0.0, 0.6]  # Increased to match max_speed_xy=0.80 + margin
+    min_velocity: [-0.15, 0.0, -0.6]  # Symmetric limits for reverse
+    max_accel: [2.5, 0.0, 3.0]  # High acceleration to quickly reach min_speed_xy=0.42
+    max_decel: [-2.5, 0.0, -3.0]  # High deceleration for quick stops
     odom_topic: "odom"
     odom_duration: 0.1
-    deadband_velocity: [0.0, 0.0, 0.0]  # DISABLED: let Nav2 handle deadband via min_speed_xy
+    deadband_velocity: [0.0, 0.0, 0.0]  # DISABLED: Nav2 handles via min_speed_xy=0.42
     velocity_timeout: 1.0
 
 lifecycle_manager_navigation:
