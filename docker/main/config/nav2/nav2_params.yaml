@@ -88,16 +88,16 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.15  # Reduced for smoother approach
       max_vel_y: 0.0
-      max_vel_theta: 0.8  # ~46 deg/s - better maneuverability for 20-30kg robot
+      max_vel_theta: 0.6  # ~34 deg/s - stable value from e367f09
       min_speed_xy: 0.0
       max_speed_xy: 0.15
-      min_speed_theta: 0.0  # Allow micro-adjustments (TurtleBot3 uses 0.0)
-      acc_lim_x: 0.8  # Appropriate for 20-30kg robot (was 0.15, TurtleBot3: 2.5, Jackal: ~1.5)
+      min_speed_theta: 0.1  # Stable value from e367f09 (week ago)
+      acc_lim_x: 0.15  # Original working value from e367f09
       acc_lim_y: 0.0
-      acc_lim_theta: 1.5  # Better angular acceleration for heavy robot (was 0.6, TurtleBot3: 3.2)
-      decel_lim_x: -1.0  # Stronger deceleration to avoid overshoot (was -0.15)
+      acc_lim_theta: 0.6  # Original working value from e367f09
+      decel_lim_x: -0.15  # Original working value from e367f09
       decel_lim_y: 0.0
-      decel_lim_theta: -1.8  # Stronger angular deceleration (was -0.6)
+      decel_lim_theta: -0.6  # Original working value from e367f09
       vx_samples: 20
       vy_samples: 0  # Differential drive cannot move sideways
       vtheta_samples: 40  # More samples for better trajectory selection
@@ -243,9 +243,9 @@ behavior_server:
     transform_tolerance: 0.5  # Increased for ICP latency tolerance
     use_sim_time: false
     simulate_ahead_time: 0.5  # Increased for higher accelerations
-    max_rotational_vel: 0.8  # Match DWB max_vel_theta for consistency
+    max_rotational_vel: 0.6  # Original value from e367f09
     min_rotational_vel: 0.2  # Allow slow spins
-    rotational_acc_lim: 1.5  # Match DWB acc_lim_theta for smooth motion
+    rotational_acc_lim: 0.6  # Original value from e367f09, match DWB
 
 waypoint_follower:
   ros__parameters:
