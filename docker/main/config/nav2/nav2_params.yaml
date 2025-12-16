@@ -89,8 +89,8 @@ controller_server:
       max_vel_x: 0.15  # Reduced for smoother approach
       max_vel_y: 0.0
       max_vel_theta: 0.6  # ~34 deg/s - stable value from e367f09
-      min_speed_xy: 0.10  # 50 mm/s - minimum speed due to min_duty=0.06
-      max_speed_xy: 0.15
+      min_speed_xy: 0.42  # 50 mm/s - minimum speed due to min_duty=0.06
+      max_speed_xy: 0.80
       min_speed_theta: 0.1  # Stable value from e367f09 (week ago)
       acc_lim_x: 0.15  # Original working value from e367f09
       acc_lim_y: 0.0
