@@ -111,6 +111,7 @@ controller_server:
       stateful: true
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.02
+      Oscillation.scale: 0.5  # Reduced from default (1.0) - less strict oscillation detection
       PathAlign.scale: 40.0  # Increased from 32.0 - prefer following path smoothly
       PathAlign.forward_point_distance: 0.15  # Increased from 0.1 - look further ahead
       GoalAlign.scale: 20.0  # Reduced from 24.0 - less aggressive goal alignment

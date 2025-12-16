@@ -188,7 +188,7 @@ services:
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false
-      - args:=--delete_db_on_start -p Reg/Strategy:1 -p Reg/Force3DoF:true -p Icp/VoxelSize:0.05 -p Icp/MaxCorrespondenceDistance:0.1 -p RGBD/NeighborLinkRefining:true -p RGBD/ProximityBySpace:true -p Grid/RangeMin:0.2 -p Grid/Sensor:0 -p Optimizer/GravitySigma:0 -p Odom/ResetCountdown:1
+      - args:=--delete_db_on_start -p Reg/Strategy:1 -p Reg/Force3DoF:true -p Icp/VoxelSize:0.05 -p Icp/MaxCorrespondenceDistance:0.1 -p RGBD/NeighborLinkRefining:true -p RGBD/ProximityBySpace:true -p Grid/RangeMin:0.2 -p Grid/Sensor:0 -p Optimizer/GravitySigma:0 -p Odom/ResetCountdown:1 -p RGBD/OptimizeMaxError:5.0
     depends_on:
       - zenoh-router
     restart: unless-stopped
