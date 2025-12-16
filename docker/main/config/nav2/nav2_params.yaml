@@ -129,13 +129,13 @@ local_costmap:
       width: 5
       height: 5
       resolution: 0.05
-      # Footprint for 600x600mm square robot (in meters, centered at base_link)
-      footprint: "[[-0.3, -0.3], [0.3, -0.3], [0.3, 0.3], [-0.3, 0.3]]"
+      # Footprint: 600x600mm robot + 200mm safety margin = 1000x1000mm (in meters, centered at base_link)
+      footprint: "[[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]"
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.5  # Must be >= inscribed_radius (0.422) for safety
+        inflation_radius: 0.55  # Increased to match new inscribed_radius (~0.707m diagonal / 2)
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: true
@@ -169,8 +169,8 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: false
-      # Footprint for 600x600mm square robot
-      footprint: "[[-0.3, -0.3], [0.3, -0.3], [0.3, 0.3], [-0.3, 0.3]]"
+      # Footprint: 600x600mm robot + 200mm safety margin = 1000x1000mm
+      footprint: "[[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]"
       resolution: 0.05
       track_unknown_space: true
       # Rolling window mode для работы без статической карты
@@ -196,7 +196,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        inflation_radius: 0.6  # Increased for 1m x 1m footprint with safety margin
       always_send_full_costmap: true
 
 planner_server:
