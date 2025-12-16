@@ -4,7 +4,7 @@
 /**:
   ros__parameters:
     queue_size: 10
-    approx_sync: true  # Approximate sync - защита от несинхронизированных данных
+    approx_sync: false  # Для LaserScan не требуется синхронизация
 
 rtabmap:
   ros__parameters:
