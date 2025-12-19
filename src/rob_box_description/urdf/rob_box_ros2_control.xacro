@@ -30,7 +30,7 @@
       <!-- PWM модуляция для ультра-низких скоростей (ниже min_duty) -->
       <!-- Калибровка 2025-12-18: тесты показали что PWM 0.01-0.1 дает 5-69 RPM -->
       <!-- Включить: true для использования PWM при скоростях требующих duty < min_duty -->
-      <param name="pwm_modulation_enabled">true</param>
+      <param name="pwm_modulation_enabled">false</param>
       <param name="pwm_duty_low">0.05</param>      <!-- Низкий duty для PWM (0.01-0.03) -->
       <param name="pwm_duty_high">0.1</param>      <!-- Высокий duty для PWM (обычно = min_duty) -->
       <param name="pwm_frequency">50.0</param>     <!-- Частота PWM в Гц -->
