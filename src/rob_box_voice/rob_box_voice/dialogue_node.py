@@ -46,7 +46,7 @@ class DialogueNode(Node):
         self.declare_parameter("base_url", "https://api.deepseek.com")
         self.declare_parameter("model", "deepseek-chat")
         self.declare_parameter("temperature", 0.7)
-        self.declare_parameter("max_tokens", 1000)
+        self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_simple.txt")
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
