@@ -800,7 +800,7 @@ class DialogueNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка DeepSeek API: {e}")
-            self._send_error_response("Извини, у меня проблемы с подключением к серверу мышления.")
+            self._speak_simple("Извини, у меня проблемы с подключением к серверу мышления.")
 
         finally:
             # Сбрасываем флаг обработки LLM
