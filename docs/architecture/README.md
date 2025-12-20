@@ -35,6 +35,15 @@
 - Docker архитектура
 - Zenoh middleware
 
+### [ICP_ODOMETRY.md](ICP_ODOMETRY.md)
+**ICP Одометрия и Wheel Odometry Fusion**
+
+- Что такое ICP (Iterative Closest Point)
+- Архитектура fusion: wheel odometry + ICP
+- Роли узлов: ros2-control, icp_odometry, rtabmap
+- TF дерево и потоки данных
+- Параметры ICP алгоритма
+
 ### [ZENOH_CLOUD_NAMESPACES.md](ZENOH_CLOUD_NAMESPACES.md)
 **Zenoh: Облачное подключение и Namespaces**
 
