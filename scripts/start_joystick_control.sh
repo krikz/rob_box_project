@@ -50,7 +50,7 @@ echo "   Starting teleop_node..."
         -r cmd_vel:=cmd_vel_joy \
         -p axis_linear.x:=1 \
         -p axis_angular.yaw:=4 \
-        -p scale_linear.x:=-1.5 \
+        -p scale_linear.x:=-1.0 \
         -p scale_angular.yaw:=4.0 \
         -p require_enable_button:=true \
         -p enable_button:=0 \
