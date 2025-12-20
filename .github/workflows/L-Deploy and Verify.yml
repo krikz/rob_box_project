@@ -256,11 +256,11 @@ jobs:
           echo "📥 Updating Vision Pi code from branch: ${{ inputs.branch }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project && \
-             git fetch origin && \
+             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git fetch origin && \
              git checkout ${{ inputs.branch }} && \
-             git pull origin ${{ inputs.branch }}"
+             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ inputs.branch }}"
 
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -310,11 +310,11 @@ jobs:
           echo "📥 Updating Main Pi code from branch: ${{ inputs.branch }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project && \
-             git fetch origin && \
+             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git fetch origin && \
              git checkout ${{ inputs.branch }} && \
-             git pull origin ${{ inputs.branch }}"
+             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ inputs.branch }}"
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
