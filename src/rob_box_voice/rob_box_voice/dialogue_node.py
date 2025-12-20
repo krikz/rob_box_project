@@ -719,82 +719,62 @@ class DialogueNode(Node):
             # Сохраняем ответ в историю
             self.conversation_history.append({"role": "assistant", "content": full_response})
 
-            # Парсим и отправляем ответ посимвольно для извлечения JSON chunks
+            # Парсим JSON chunks из полного ответа с помощью регулярного выражения
             chunk_count = 0
-            current_chunk = ""
-            brace_count = 0
-            in_json = False
+            
+            # Убираем markdown обёртки если есть
+            clean_response = re.sub(r'```(?:json)?\s*', '', full_response).strip()
+            
+            # Ищем все JSON объекты в ответе
+            # Паттерн: { ... } с учётом вложенности
+            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            json_matches = re.finditer(json_pattern, clean_response)
+            
+            for match in json_matches:
+                json_text = match.group(0)
+                
+                try:
+                    chunk_data = json.loads(json_text)
+                    
+                    # ============ ПРОВЕРКА: ask_reflection команда ============
+                    if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
+                        question = chunk_data.get("question", "")
+                        self.get_logger().warning(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
 
-            for char in full_response:
-                current_chunk += char
+                        # Публикуем в /perception/user_speech для reflection_node
+                        reflection_msg = String()
+                        reflection_msg.data = question
+                        self.reflection_request_pub.publish(reflection_msg)
+                        self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+                        continue
 
-                # Подсчёт скобок для определения границ JSON
-                if char == "{":
-                    brace_count += 1
-                    in_json = True
-                elif char == "}":
-                    brace_count -= 1
+                    # Применяем автоударения
+                    if "ssml" in chunk_data:
+                        ssml = chunk_data["ssml"]
+                        ssml_with_accents = self.accent_replacer.add_accents(ssml)
+                        chunk_data["ssml"] = ssml_with_accents
 
-                # Если скобки сбалансированы - парсим JSON chunk
-                if in_json and brace_count == 0:
-                    json_text = current_chunk.strip()
+                        # Добавляем dialogue_id к chunk
+                        chunk_data["dialogue_id"] = dialogue_id
 
-                    # Убираем markdown ```json если есть
-                    if json_text.startswith("```json"):
-                        json_text = json_text.replace("```json", "").replace("```", "").strip()
+                        # Публикуем chunk
+                        chunk_count += 1
+                        self.get_logger().info(
+                            f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
+                        )
 
-                    # Парсим JSON
-                    try:
-                        chunk_data = json.loads(json_text)
+                        # Обновляем время взаимодействия
+                        self.last_interaction_time = time.time()
 
-                        # ============ ПРОВЕРКА: ask_reflection команда ============
-                        if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
-                            question = chunk_data.get("question", "")
-                            self.get_logger().warning(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
+                        response_msg = String()
+                        response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                        self.response_pub.publish(response_msg)
 
-                            # Публикуем в /perception/user_speech для reflection_node
-                            reflection_msg = String()
-                            reflection_msg.data = question
-                            self.reflection_request_pub.publish(reflection_msg)
-                            self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+                        self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
 
-                            # Сброс для следующего chunk
-                            current_chunk = ""
-                            in_json = False
-                            brace_count = 0
-                            continue
-
-                        # Применяем автоударения
-                        if "ssml" in chunk_data:
-                            ssml = chunk_data["ssml"]
-                            ssml_with_accents = self.accent_replacer.add_accents(ssml)
-                            chunk_data["ssml"] = ssml_with_accents
-
-                            # Добавляем dialogue_id к chunk
-                            chunk_data["dialogue_id"] = dialogue_id
-
-                            # Публикуем chunk
-                            chunk_count += 1
-                            self.get_logger().info(
-                                f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
-                            )
-
-                            # Обновляем время взаимодействия
-                            self.last_interaction_time = time.time()
-
-                            response_msg = String()
-                            response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                            self.response_pub.publish(response_msg)
-
-                            self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
-
-                    except json.JSONDecodeError:
-                        pass  # Ждём больше данных
-
-                    # Сброс для следующего chunk
-                    current_chunk = ""
-                    in_json = False
-                    brace_count = 0
+                except json.JSONDecodeError as e:
+                    self.get_logger().warning(f"⚠️ Не удалось распарсить JSON chunk: {e}")
+                    continue
 
             self.get_logger().info(f"✅ DeepSeek ответил ({chunk_count} chunks)")
 
