@@ -52,7 +52,8 @@ echo "   Starting teleop_node..."
         -p axis_angular.yaw:=4 \
         -p scale_linear.x:=-1.5 \
         -p scale_angular.yaw:=4.0 \
-        -p require_enable_button:=false \
+        -p require_enable_button:=true \
+        -p enable_button:=0 \
         2>&1 | sed 's/^/[teleop] /'
 ) &
 TELEOP_PID=$!
