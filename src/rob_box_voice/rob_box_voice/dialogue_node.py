@@ -51,6 +51,11 @@ class DialogueNode(Node):
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
+        
+        # 🔧 Режим работы DeepSeek API
+        # False = non-streaming (стабильно, 2-3s ответ, работает всегда) ✅ RECOMMENDED
+        # True = streaming (нестабильно, таймауты ~30s, проблемы на стороне DeepSeek)
+        self.declare_parameter("use_streaming", False)
 
         api_key = self.get_parameter("api_key").value
         if not api_key:
@@ -64,6 +69,7 @@ class DialogueNode(Node):
         self.model = self.get_parameter("model").value
         self.temperature = self.get_parameter("temperature").value
         self.max_tokens = self.get_parameter("max_tokens").value
+        self.use_streaming = self.get_parameter("use_streaming").value
 
         # DeepSeek client с timeout для предотвращения зависания
         # timeout: (connect_timeout, read_timeout) в секундах
@@ -75,6 +81,10 @@ class DialogueNode(Node):
             base_url=base_url,
             timeout=Timeout(15.0, connect=5.0)  # 15s read, 5s connect
         )
+        
+        # Логируем режим работы
+        mode_str = "streaming" if self.use_streaming else "non-streaming"
+        self.get_logger().info(f"🔧 DeepSeek режим: {mode_str} (модель: {self.model})")
 
         # Accent replacer
         self.accent_replacer = AccentReplacer()
@@ -653,7 +663,160 @@ class DialogueNode(Node):
         return base_prompt
 
     def _ask_deepseek_streaming(self):
-        """Streaming запрос к DeepSeek с парсингом JSON chunks и timeout"""
+        """Запрос к DeepSeek с поддержкой streaming и non-streaming режимов"""
+        # Проверяем режим и вызываем соответствующий метод
+        if self.use_streaming:
+            return self._ask_deepseek_streaming_mode()
+        else:
+            return self._ask_deepseek_non_streaming_mode()
+    
+    def _ask_deepseek_non_streaming_mode(self):
+        """Non-streaming запрос к DeepSeek (стабильный, быстрый)"""
+        # Генерируем новый dialogue_id для этого диалога
+        dialogue_id = str(uuid.uuid4())
+        self.current_dialogue_id = dialogue_id
+        self.get_logger().info(f"🆔 Новый диалог: {dialogue_id[:8]}...")
+
+        # Используем system prompt с контекстом времени
+        system_prompt_with_context = self._build_system_prompt_with_context()
+        messages = [{"role": "system", "content": system_prompt_with_context}, *self.conversation_history]
+
+        self.get_logger().info("🤔 Запрос к DeepSeek (non-streaming)...")
+        start_time = time.time()
+
+        try:
+            # Non-streaming запрос
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=False,
+            )
+
+            # Получаем полный ответ
+            full_response = response.choices[0].message.content
+            elapsed = time.time() - start_time
+            
+            # Логируем статистику
+            self.get_logger().info(f"💬 DeepSeek ответил за {elapsed:.2f}s ({len(full_response)} символов)")
+            
+            # Логируем cache statistics если доступны
+            if hasattr(response, 'usage'):
+                usage = response.usage
+                total_prompt = usage.prompt_tokens
+                cache_hit = getattr(usage, 'prompt_cache_hit_tokens', 0)
+                cache_miss = getattr(usage, 'prompt_cache_miss_tokens', total_prompt)
+                
+                if cache_hit > 0:
+                    cache_efficiency = (cache_hit / total_prompt) * 100 if total_prompt > 0 else 0
+                    cost_saved = cache_hit * (0.14 - 0.014) / 1_000_000
+                    self.get_logger().info(
+                        f"💾 Cache: {cache_hit}/{total_prompt} tokens ({cache_efficiency:.1f}% hit), "
+                        f"saved ${cost_saved:.6f}"
+                    )
+
+            # Сохраняем ответ в историю
+            self.conversation_history.append({"role": "assistant", "content": full_response})
+
+            # Парсим и отправляем ответ посимвольно для извлечения JSON chunks
+            chunk_count = 0
+            current_chunk = ""
+            brace_count = 0
+            in_json = False
+
+            for char in full_response:
+                current_chunk += char
+
+                # Подсчёт скобок для определения границ JSON
+                if char == "{":
+                    brace_count += 1
+                    in_json = True
+                elif char == "}":
+                    brace_count -= 1
+
+                # Если скобки сбалансированы - парсим JSON chunk
+                if in_json and brace_count == 0:
+                    json_text = current_chunk.strip()
+
+                    # Убираем markdown ```json если есть
+                    if json_text.startswith("```json"):
+                        json_text = json_text.replace("```json", "").replace("```", "").strip()
+
+                    # Парсим JSON
+                    try:
+                        chunk_data = json.loads(json_text)
+
+                        # ============ ПРОВЕРКА: ask_reflection команда ============
+                        if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
+                            question = chunk_data.get("question", "")
+                            self.get_logger().warning(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
+
+                            # Публикуем в /perception/user_speech для reflection_node
+                            reflection_msg = String()
+                            reflection_msg.data = question
+                            self.reflection_request_pub.publish(reflection_msg)
+                            self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+
+                            # Сброс для следующего chunk
+                            current_chunk = ""
+                            in_json = False
+                            brace_count = 0
+                            continue
+
+                        # Применяем автоударения
+                        if "ssml" in chunk_data:
+                            ssml = chunk_data["ssml"]
+                            ssml_with_accents = self.accent_replacer.add_accents(ssml)
+                            chunk_data["ssml"] = ssml_with_accents
+
+                            # Добавляем dialogue_id к chunk
+                            chunk_data["dialogue_id"] = dialogue_id
+
+                            # Публикуем chunk
+                            chunk_count += 1
+                            self.get_logger().info(
+                                f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
+                            )
+
+                            # Обновляем время взаимодействия
+                            self.last_interaction_time = time.time()
+
+                            response_msg = String()
+                            response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                            self.response_pub.publish(response_msg)
+
+                            self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
+
+                    except json.JSONDecodeError:
+                        pass  # Ждём больше данных
+
+                    # Сброс для следующего chunk
+                    current_chunk = ""
+                    in_json = False
+                    brace_count = 0
+
+            self.get_logger().info(f"✅ DeepSeek ответил ({chunk_count} chunks)")
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка DeepSeek API: {e}")
+            self._send_error_response("Извини, у меня проблемы с подключением к серверу мышления.")
+
+        finally:
+            # Сбрасываем флаг обработки LLM
+            self.llm_processing = False
+
+            # Проверяем очередь
+            if self.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
+                self.last_query_time = time.time()
+                if self.accumulation_timer is None:
+                    self.accumulation_timer = self.create_timer(
+                        self.query_accumulation_timeout, self._check_and_process_queue
+                    )
+
+    def _ask_deepseek_streaming_mode(self):
+        """Streaming запрос к DeepSeek (UNSTABLE - имеет проблемы с timeout)"""
         # Генерируем новый dialogue_id для этого диалога
         dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
