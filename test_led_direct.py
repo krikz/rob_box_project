@@ -15,7 +15,7 @@ except ImportError:
 # Конфигурация
 SPI_DEVICE = '/dev/spidev0.0'
 NUM_LEDS = 253
-SPI_SPEED = 800  # kHz
+SPI_SPEED = 1000  # kHz
 BRIGHTNESS = 25  # 0-255
 
 def main():
