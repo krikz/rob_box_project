@@ -245,7 +245,7 @@ jobs:
           echo "🛑 Stopping Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
@@ -270,7 +270,7 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -284,7 +284,7 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -299,7 +299,7 @@ jobs:
           echo "🛑 Stopping Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
@@ -324,7 +324,7 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -338,7 +338,7 @@ jobs:
           echo "🚀 Starting Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -365,7 +365,7 @@ jobs:
           echo "🔍 Checking Vision Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
 
           echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
@@ -390,7 +390,7 @@ jobs:
           echo "🔍 Checking Main Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json')
 
           echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
@@ -420,7 +420,7 @@ jobs:
           echo "" > $LOGS_FILE
 
           # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
@@ -448,9 +448,9 @@ jobs:
             echo "Checking logs for: $container"
 
             # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
             
             # Объединяем логи для анализа
@@ -521,7 +521,7 @@ jobs:
           echo "" > $LOGS_FILE
 
           # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
@@ -558,9 +558,9 @@ jobs:
             echo "Checking logs for: $container"
 
             # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
             
             # Объединяем логи для анализа
@@ -634,7 +634,7 @@ jobs:
 
           # Проверяем топики OAK-D камеры
           echo "Checking oak-d container topics..."
-          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.vision_pi_ip }} \
+          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             "docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then
@@ -674,7 +674,7 @@ jobs:
 
           # Проверяем топики в rtabmap контейнере
           echo "Checking rtabmap container topics..."
-          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@${{ env.main_pi_ip }} \
+          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then
