@@ -814,11 +814,8 @@ class DialogueNode(Node):
                     streaming_result["error"] = f"No data for {elapsed_since_content:.1f}s (after {chunk_count} chunks)"
                     return
 
-                # Проверяем finish_reason для корректного завершения stream
-                if chunk.choices[0].finish_reason:
-                    self.get_logger().info(f"🏁 Stream завершён: {chunk.choices[0].finish_reason} (обработано {chunk_count} chunks)")
-                    break
-
+                # ВАЖНО: Сначала обрабатываем content, потом проверяем finish_reason!
+                # У Qwen последний chunk может содержать и content и finish_reason одновременно
                 if chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
                     full_response += token
@@ -838,82 +835,91 @@ class DialogueNode(Node):
 
                     # Если скобки сбалансированы - парсим
                     if in_json and brace_count == 0:
-                        json_text = current_chunk.strip()
+                        # Может быть несколько JSON объектов в current_chunk
+                        # Разбиваем по паттерну }{ чтобы обработать все
+                        import re
+                        json_objects = re.split(r'(?<=\})(?=\{)', current_chunk.strip())
                         
-                        # DEBUG: Показываем что пытаемся парсить
-                        self.get_logger().info(f"🔍 Пытаюсь парсить JSON: {json_text[:200]}...")
+                        for json_text in json_objects:
+                            json_text = json_text.strip()
+                            if not json_text:
+                                continue
+                            
+                            # DEBUG: Показываем что пытаемся парсить
+                            self.get_logger().info(f"🔍 Пытаюсь парсить JSON: {json_text[:200]}...")
 
-                        # Убираем markdown ```json если есть
-                        if json_text.startswith("```json"):
-                            json_text = json_text.replace("```json", "").replace("```", "").strip()
+                            # Убираем markdown ```json если есть
+                            if json_text.startswith("```json"):
+                                json_text = json_text.replace("```json", "").replace("```", "").strip()
 
-                        # Парсим JSON
-                        try:
-                            chunk_data = json.loads(json_text)
-                            self.get_logger().info(f"✅ JSON успешно распарсен: chunk={chunk_data.get('chunk', '?')}, emotion={chunk_data.get('emotion', '?')}")
+                            # Парсим JSON
+                            try:
+                                chunk_data = json.loads(json_text)
+                                self.get_logger().info(f"✅ JSON успешно распарсен: chunk={chunk_data.get('chunk', '?')}, emotion={chunk_data.get('emotion', '?')}")
 
-                            # ============ ПРОВЕРКА: ask_reflection команда ============
-                            if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
-                                question = chunk_data.get("question", "")
-                                self.get_logger().warning(f'🔁 LLM перенаправляет к Reflection: "{question}"')
+                                # ============ ПРОВЕРКА: ask_reflection команда ============
+                                if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
+                                    question = chunk_data.get("question", "")
+                                    self.get_logger().warning(f'🔁 LLM перенаправляет к Reflection: "{question}"')
 
-                                # Публикуем в /perception/user_speech для reflection_node
-                                reflection_msg = String()
-                                reflection_msg.data = question
-                                self.reflection_request_pub.publish(reflection_msg)
-                                self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+                                    # Публикуем в /perception/user_speech для reflection_node
+                                    reflection_msg = String()
+                                    reflection_msg.data = question
+                                    self.reflection_request_pub.publish(reflection_msg)
+                                    self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+                                    continue  # Не обрабатываем дальше как обычный chunk
 
-                                # Сброс для следующего chunk
-                                current_chunk = ""
-                                in_json = False
-                                brace_count = 0
-                                continue  # Не обрабатываем дальше как обычный chunk
+                                # Применяем автоударения
+                                if "ssml" in chunk_data:
+                                    ssml = chunk_data["ssml"]
+                                    ssml_with_accents = self.accent_replacer.add_accents(ssml)
+                                    chunk_data["ssml"] = ssml_with_accents
 
-                            # Применяем автоударения
-                            if "ssml" in chunk_data:
-                                ssml = chunk_data["ssml"]
-                                ssml_with_accents = self.accent_replacer.add_accents(ssml)
-                                chunk_data["ssml"] = ssml_with_accents
+                                    # Добавляем dialogue_id к chunk
+                                    chunk_data["dialogue_id"] = dialogue_id
 
-                                # Добавляем dialogue_id к chunk
-                                chunk_data["dialogue_id"] = dialogue_id
-
-                                # Публикуем chunk
-                                chunk_count += 1
-                                
-                                # Публикуем анимацию для первого chunk (до начала речи)
-                                if chunk_count == 1:
-                                    emotion = chunk_data.get("emotion", "neutral")
-                                    animation_name = self._map_emotion_to_animation(emotion)
+                                    # Публикуем chunk
+                                    chunk_count += 1
                                     
-                                    if animation_name and animation_name != "idle":
-                                        anim_msg = String()
-                                        anim_msg.data = animation_name
-                                        self.animation_pub.publish(anim_msg)
-                                        self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
-                                
-                                self.get_logger().info(
-                                    f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
-                                )
+                                    # Публикуем анимацию для первого chunk (до начала речи)
+                                    if chunk_count == 1:
+                                        emotion = chunk_data.get("emotion", "neutral")
+                                        animation_name = self._map_emotion_to_animation(emotion)
+                                        
+                                        if animation_name and animation_name != "idle":
+                                            anim_msg = String()
+                                            anim_msg.data = animation_name
+                                            self.animation_pub.publish(anim_msg)
+                                            self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
+                                    
+                                    self.get_logger().info(
+                                        f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
+                                    )
 
-                                # Обновляем время взаимодействия (робот говорит)
-                                self.last_interaction_time = time.time()
+                                    # Обновляем время взаимодействия (робот говорит)
+                                    self.last_interaction_time = time.time()
 
-                                response_msg = String()
-                                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                                self.response_pub.publish(response_msg)
-                                # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
+                                    response_msg = String()
+                                    response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                    self.response_pub.publish(response_msg)
+                                    # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
 
-                                self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
+                                    self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
 
-                        except json.JSONDecodeError as e:
-                            self.get_logger().debug(f"⚠️  JSON decode failed: {e}, buffer: {current_chunk[:100]}...")
-                            pass  # Ждём больше данных
+                            except json.JSONDecodeError as e:
+                                self.get_logger().debug(f"⚠️  JSON decode failed: {e}, text: {json_text[:100]}...")
+                                pass  # Этот JSON неполный
 
                         # Сброс для следующего chunk
                         current_chunk = ""
                         in_json = False
                         brace_count = 0
+
+                # ВАЖНО: Проверяем finish_reason ПОСЛЕ обработки всего content
+                # У Qwen последний chunk может содержать и content и finish_reason
+                if chunk.choices[0].finish_reason:
+                    self.get_logger().info(f"🏁 Stream завершён: {chunk.choices[0].finish_reason} (обработано {chunk_count} chunks)")
+                    break
 
             # Сохраняем результаты
             streaming_result["full_response"] = full_response
