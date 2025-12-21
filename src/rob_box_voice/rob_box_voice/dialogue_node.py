@@ -890,6 +890,9 @@ class DialogueNode(Node):
                 # Пытаемся распарсить как один JSON объект
                 response_json = json.loads(full_response)
                 
+                # DEBUG: Логируем полный JSON
+                self.get_logger().info(f"🔍 DeepSeek JSON: {json.dumps(response_json, ensure_ascii=False)[:500]}...")
+                
                 # Проверяем наличие action для перенаправления к reflection
                 if "action" in response_json:
                     if response_json["action"] == "ask_reflection" and "question" in response_json:
