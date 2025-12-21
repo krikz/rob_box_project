@@ -804,6 +804,9 @@ class DialogueNode(Node):
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 stream=True,
+                extra_body={
+                    "enable_search": True  # Включаем веб-поиск для Qwen
+                }
             )
 
             for chunk in stream:
@@ -1071,6 +1074,9 @@ class DialogueNode(Node):
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 stream=False,
+                extra_body={
+                    "enable_search": True  # Включаем веб-поиск для Qwen
+                }
             )
 
             # Получаем полный ответ
