@@ -75,7 +75,7 @@ class DialogueNode(Node):
         self.client = OpenAI(
             api_key=api_key, 
             base_url=base_url,
-            timeout=Timeout(15.0, connect=5.0)  # 15s read, 5s connect
+            timeout=Timeout(60.0, connect=10.0)  # 60s read, 10s connect (для non-streaming с длинными контекстами)
         )
 
         # Accent replacer
@@ -105,6 +105,9 @@ class DialogueNode(Node):
 
         # Публикация звуковых триггеров (Phase 4)
         self.sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+
+        # Публикация запросов анимаций (emotion-based)
+        self.animation_pub = self.create_publisher(String, "/voice/animation/request", 10)
 
         # Публикация control commands в TTS
         self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
@@ -241,6 +244,22 @@ class DialogueNode(Node):
         except Exception as e:
             self.get_logger().warning(f"⚠ Не удалось загрузить prompt: {e}")
             return 'Ты ROBBOX - мобильный робот-ассистент. Отвечай в JSON: {"ssml": "<speak>...</speak>"}'
+
+    def _map_emotion_to_animation(self, emotion: str) -> str:
+        """Маппинг эмоций от DeepSeek в имена анимаций"""
+        emotion_map = {
+            "happy": "happy",
+            "sad": "sad",
+            "angry": "angry",
+            "surprised": "surprised",
+            "neutral": "idle",
+            "thinking": "thinking",
+            "excited": "victory",
+            "confused": "thinking",
+            "worried": "sad",
+            "calm": "idle"
+        }
+        return emotion_map.get(emotion.lower(), "idle")
 
     # ============================================================
     # Wake Word & Silence Detection
@@ -904,12 +923,22 @@ class DialogueNode(Node):
 
                 # Обычный ответ с SSML
                 if "ssml" in response_json:
+                    # Получаем эмоцию и публикуем анимацию
+                    emotion = response_json.get("emotion", "neutral")
+                    animation_name = self._map_emotion_to_animation(emotion)
+                    
+                    if animation_name and animation_name != "idle":
+                        anim_msg = String()
+                        anim_msg.data = animation_name
+                        self.animation_pub.publish(anim_msg)
+                        self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
+                    
                     # Публикуем как один chunk
                     chunk_msg = String()
                     chunk_msg.data = json.dumps({
                         "chunk": 1,
                         "ssml": response_json["ssml"],
-                        "emotion": response_json.get("emotion", "neutral"),
+                        "emotion": emotion,
                         "commands": response_json.get("commands", [])
                     })
                     self.response_pub.publish(chunk_msg)

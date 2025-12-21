@@ -12,6 +12,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger, SetBool
 from ament_index_python.packages import get_package_share_directory
 import os
+import random
 
 from rob_box_animations.animation_player import AnimationPlayer
 
@@ -67,6 +68,8 @@ class AnimationPlayerNode(Node):
         self.idle_animation = self.get_parameter('autostart_animation').value or 'idle'
         self.talking_animation = 'talking'
         self.is_robot_speaking = False
+        self.manual_animation_active = False  # Флаг ручной анимации
+        self.emotion_timer = None  # Таймер для возврата из эмоциональной анимации
 
         self.get_logger().info(f'✅ Subscribed to /voice/tts/state for automatic animation switching')
         self.get_logger().info(f'   Idle animation: {self.idle_animation}')
@@ -139,16 +142,62 @@ class AnimationPlayerNode(Node):
         if not animation_name.endswith('.yaml'):
             animation_name += '.yaml'
         
+        # Отменяем предыдущий таймер если есть
+        if self.emotion_timer is not None:
+            self.emotion_timer.cancel()
+            self.emotion_timer = None
+        
+        # Устанавливаем флаг ручной анимации
+        self.manual_animation_active = True
+        
         # Load and play the animation
         if self.player.load_animation(animation_name):
             self.player.play()
-            self.get_logger().info(f'✅ Анимация {animation_name} загружена и запущена')
+            self.get_logger().info(f'✅ Анимация {animation_name} загружена и запущена (ручной режим)')
+            
+            # Запускаем таймер возврата к idle (5-10 секунд)
+            timeout = random.uniform(5.0, 10.0)
+            self.get_logger().info(f'⏱️  Таймер возврата к idle: {timeout:.1f}s')
+            self.emotion_timer = self.create_timer(timeout, self._return_to_idle)
         else:
             self.get_logger().error(f'❌ Не удалось загрузить анимацию: {animation_name}')
+            self.manual_animation_active = False
+    
+    def _return_to_idle(self):
+        """Callback для возврата к idle анимации после эмоциональной анимации"""
+        if self.emotion_timer is not None:
+            self.emotion_timer.cancel()
+            self.emotion_timer = None
+        
+        self.manual_animation_active = False
+        
+        # Если робот не говорит - возвращаемся к idle
+        if not self.is_robot_speaking:
+            self.get_logger().info('⏰ Таймер истёк - возврат к idle анимации')
+            if self.player.load_animation(f'{self.idle_animation}.yaml'):
+                self.player.play()
+            else:
+                self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
+        else:
+            # Если робот говорит - переключаемся на talking
+            self.get_logger().info('⏰ Таймер истёк - переключение на talking (робот говорит)')
+            if self.player.load_animation(f'{self.talking_animation}.yaml'):
+                self.player.play()
+            else:
+                self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
     def tts_state_callback(self, msg):
         """Handle TTS state changes - switch between idle and talking animations"""
         state = msg.data
+
+        # Если активна ручная анимация - не переключаем автоматически
+        if self.manual_animation_active:
+            self.get_logger().debug(f'⏸️  Пропуск авто-переключения: активна ручная анимация (TTS state: {state})')
+            # Сбрасываем флаг при завершении речи, чтобы вернуться к idle
+            if state in ['ready', 'idle', 'stopped']:
+                self.manual_animation_active = False
+                self.get_logger().info('🔄 Ручной режим завершён, возврат к автопереключению')
+            return
 
         if state in ['synthesizing', 'playing']:
             # Robot is speaking - switch to talking animation
