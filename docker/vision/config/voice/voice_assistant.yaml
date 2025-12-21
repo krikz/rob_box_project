@@ -155,7 +155,7 @@
         stream: true
 
       # Промпт система
-      system_prompt_file: "/ws/install/rob_box_voice/share/rob_box_voice/prompts/master_prompt.txt"
+      system_prompt_file: "/ws/install/rob_box_voice/share/rob_box_voice/prompts/master_prompt_compact.txt"
       context_window: 10  # Последние N сообщений
 
       # Тайминги

@@ -91,12 +91,13 @@
       # LLM
       llm_provider: "deepseek"    # "deepseek" или "local" (Ollama)
       model: "deepseek-chat"      # Или "llama3" для local
+      system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 
       # История
       history_size: 10            # пар user/assistant (20 сообщений)
 
       # Streaming
-      streaming: true             # Потоковый вывод LLM
+      streaming: false             # Потоковый вывод LLM (false = один JSON ответ)
       sentence_split: true        # Разбивать на предложения для TTS
 
     # ========== Sound Node ==========
