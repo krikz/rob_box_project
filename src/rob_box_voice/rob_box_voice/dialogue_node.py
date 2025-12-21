@@ -308,12 +308,11 @@ class DialogueNode(Node):
         self.streaming = self.get_parameter("streaming").value
         
         # Создаём OpenAI клиент с timeout
-        # Увеличенный timeout для enable_search (веб-поиск занимает время)
         from httpx import Timeout
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=Timeout(120.0, connect=10.0)  # 120s для запросов с веб-поиском
+            timeout=Timeout(60.0, connect=10.0)
         )
         
         self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_config['name']}")
@@ -785,8 +784,8 @@ class DialogueNode(Node):
 
         # Timeout между chunks - если нет данных 15 секунд, прерываем
         CHUNK_TIMEOUT = 15.0
-        # Общий timeout для всего запроса - 120 секунд (для enable_search с веб-поиском)
-        TOTAL_REQUEST_TIMEOUT = 120.0
+        # Общий timeout для всего запроса - 60 секунд
+        TOTAL_REQUEST_TIMEOUT = 60.0
 
         # Результаты streaming (для передачи между потоками)
         streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
@@ -801,15 +800,18 @@ class DialogueNode(Node):
             start_time = time.time()  # Засекаем время начала
             last_chunk_time = start_time  # Время последнего chunk с контентом
 
+            # Формируем extra_body в зависимости от провайдера
+            extra_body = {}
+            if self.current_provider == 0:  # Qwen поддерживает enable_search
+                extra_body["enable_search"] = True
+
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 stream=True,
-                extra_body={
-                    "enable_search": True  # Включаем веб-поиск для Qwen
-                }
+                extra_body=extra_body
             )
 
             for chunk in stream:
@@ -1070,6 +1072,11 @@ class DialogueNode(Node):
             provider_name = self.PROVIDERS[self.current_provider]["name"]
             self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
 
+            # Формируем extra_body в зависимости от провайдера
+            extra_body = {}
+            if self.current_provider == 0:  # Qwen поддерживает enable_search
+                extra_body["enable_search"] = True
+
             # Делаем синхронный запрос
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -1077,9 +1084,7 @@ class DialogueNode(Node):
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 stream=False,
-                extra_body={
-                    "enable_search": True  # Включаем веб-поиск для Qwen
-                }
+                extra_body=extra_body
             )
 
             # Получаем полный ответ
