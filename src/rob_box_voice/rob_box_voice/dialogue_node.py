@@ -836,9 +836,23 @@ class DialogueNode(Node):
                     # Если скобки сбалансированы - парсим
                     if in_json and brace_count == 0:
                         # Может быть несколько JSON объектов в current_chunk
-                        # Разбиваем по паттерну }{ чтобы обработать все
+                        # Два формата:
+                        # 1. DeepSeek: {"chunk":1}{"chunk":2} (без переносов)
+                        # 2. Qwen: {"chunk":1}\n{"chunk":2} (с переносами)
+                        # Универсальное решение: split по \n, потом по }{
                         import re
-                        json_objects = re.split(r'(?<=\})(?=\{)', current_chunk.strip())
+                        json_objects = []
+                        
+                        # Разбиваем по переносам строк
+                        lines = current_chunk.strip().split('\n')
+                        
+                        for line in lines:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            # В каждой строке может быть несколько JSON подряд: }{
+                            parts = re.split(r'(?<=\})(?=\{)', line)
+                            json_objects.extend([p.strip() for p in parts if p.strip()])
                         
                         for json_text in json_objects:
                             json_text = json_text.strip()
