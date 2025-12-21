@@ -907,7 +907,7 @@ class DialogueNode(Node):
                                     self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
 
                             except json.JSONDecodeError as e:
-                                self.get_logger().debug(f"⚠️  JSON decode failed: {e}, text: {json_text[:100]}...")
+                                self.get_logger().warning(f"⚠️  JSON decode failed: {e}, text: {json_text[:200]}...")
                                 pass  # Этот JSON неполный
 
                         # Сброс для следующего chunk
