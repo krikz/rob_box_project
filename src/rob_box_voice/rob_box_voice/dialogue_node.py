@@ -47,8 +47,8 @@ class DialogueNode(Node):
         self.declare_parameter("model", "deepseek-chat")
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
-        self.declare_parameter("system_prompt_file", "master_prompt_simple.txt")
-        self.declare_parameter("streaming", True)  # Enable/disable streaming mode
+        self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")  # Компактный промпт по умолчанию
+        self.declare_parameter("streaming", False)  # Отключаем streaming по умолчанию
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
