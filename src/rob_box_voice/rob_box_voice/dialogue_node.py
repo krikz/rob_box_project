@@ -816,7 +816,7 @@ class DialogueNode(Node):
 
                 # Проверяем finish_reason для корректного завершения stream
                 if chunk.choices[0].finish_reason:
-                    self.get_logger().debug(f"🏁 Stream завершён: {chunk.choices[0].finish_reason}")
+                    self.get_logger().info(f"🏁 Stream завершён: {chunk.choices[0].finish_reason} (обработано {chunk_count} chunks)")
                     break
 
                 if chunk.choices[0].delta.content:
@@ -824,6 +824,9 @@ class DialogueNode(Node):
                     full_response += token
                     current_chunk += token
                     last_chunk_time = time.time()  # Обновляем время - контент идёт
+                    
+                    # DEBUG: Показываем сырые данные
+                    self.get_logger().debug(f"📦 Raw token: {repr(token[:100])}")
 
                     # Подсчёт скобок для определения границ JSON
                     for char in token:
@@ -836,6 +839,9 @@ class DialogueNode(Node):
                     # Если скобки сбалансированы - парсим
                     if in_json and brace_count == 0:
                         json_text = current_chunk.strip()
+                        
+                        # DEBUG: Показываем что пытаемся парсить
+                        self.get_logger().info(f"🔍 Пытаюсь парсить JSON: {json_text[:200]}...")
 
                         # Убираем markdown ```json если есть
                         if json_text.startswith("```json"):
@@ -844,6 +850,7 @@ class DialogueNode(Node):
                         # Парсим JSON
                         try:
                             chunk_data = json.loads(json_text)
+                            self.get_logger().info(f"✅ JSON успешно распарсен: chunk={chunk_data.get('chunk', '?')}, emotion={chunk_data.get('emotion', '?')}")
 
                             # ============ ПРОВЕРКА: ask_reflection команда ============
                             if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
@@ -899,7 +906,8 @@ class DialogueNode(Node):
 
                                 self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
 
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as e:
+                            self.get_logger().debug(f"⚠️  JSON decode failed: {e}, buffer: {current_chunk[:100]}...")
                             pass  # Ждём больше данных
 
                         # Сброс для следующего chunk
@@ -910,6 +918,11 @@ class DialogueNode(Node):
             # Сохраняем результаты
             streaming_result["full_response"] = full_response
             streaming_result["chunk_count"] = chunk_count
+            
+            # DEBUG: Итоговая статистика
+            self.get_logger().info(f"📊 Stream завершён: {len(full_response)} chars, {chunk_count} chunks")
+            if chunk_count == 0 and len(full_response) > 0:
+                self.get_logger().warning(f"⚠️  Получен ответ ({len(full_response)} chars) но 0 chunks! Full response: {full_response[:500]}...")
 
         # Запускаем streaming в отдельном потоке с timeout
         try:
