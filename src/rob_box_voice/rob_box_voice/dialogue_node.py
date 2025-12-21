@@ -782,8 +782,10 @@ class DialogueNode(Node):
         provider_name = self.PROVIDERS[self.current_provider]["name"]
         self.get_logger().info(f"🤔 Запрос к {provider_name}...")
 
-        # Timeout для всего streaming запроса (секунды)
-        STREAM_TOTAL_TIMEOUT = 15.0
+        # Timeout между chunks - если нет данных 15 секунд, прерываем
+        CHUNK_TIMEOUT = 15.0
+        # Общий timeout для всего запроса - 60 секунд (для длинных ответов)
+        TOTAL_REQUEST_TIMEOUT = 60.0
 
         # Результаты streaming (для передачи между потоками)
         streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
@@ -813,7 +815,7 @@ class DialogueNode(Node):
                 # Timeout если между chunks прошло слишком много времени
                 # Проверяем на каждой итерации - защита от зависания на любом этапе
                 elapsed_since_content = time.time() - last_chunk_time
-                if elapsed_since_content > STREAM_TOTAL_TIMEOUT:
+                if elapsed_since_content > CHUNK_TIMEOUT:
                     streaming_result["error"] = f"No data for {elapsed_since_content:.1f}s (after {chunk_count} chunks)"
                     return
 
@@ -951,7 +953,7 @@ class DialogueNode(Node):
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_do_streaming)
-                future.result(timeout=STREAM_TOTAL_TIMEOUT)
+                future.result(timeout=TOTAL_REQUEST_TIMEOUT)
 
             # Проверяем внутренний timeout
             if streaming_result["error"]:
@@ -995,7 +997,7 @@ class DialogueNode(Node):
 
         except (FuturesTimeoutError, TimeoutError) as e:
             provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().error(f"⏱️ TIMEOUT: {provider_name} streaming не ответил за {STREAM_TOTAL_TIMEOUT}s - {e}")
+            self.get_logger().error(f"⏱️ TIMEOUT: {provider_name} streaming не ответил за {TOTAL_REQUEST_TIMEOUT}s - {e}")
             
             # Увеличиваем счётчик ошибок
             self.provider_error_count += 1
