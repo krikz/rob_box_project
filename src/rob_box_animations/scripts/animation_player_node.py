@@ -47,6 +47,14 @@ class AnimationPlayerNode(Node):
             10
         )
 
+        # Subscription for voice animation requests (from GUI or dialogue)
+        self.voice_animation_subscription = self.create_subscription(
+            String,
+            '/voice/animation/request',
+            self.voice_animation_callback,
+            10
+        )
+
         # Subscription for TTS state (auto-switch animations)
         self.tts_state_subscription = self.create_subscription(
             String,
@@ -121,6 +129,22 @@ class AnimationPlayerNode(Node):
             self.get_logger().info(f'Loaded animation: {manifest_path}')
         else:
             self.get_logger().error(f'Failed to load animation: {manifest_path}')
+
+    def voice_animation_callback(self, msg):
+        """Handle voice animation requests from GUI or dialogue node"""
+        animation_name = msg.data.strip()
+        
+        self.get_logger().info(f'🎨 Получен запрос на анимацию: {animation_name}')
+        
+        if not animation_name.endswith('.yaml'):
+            animation_name += '.yaml'
+        
+        # Load and play the animation
+        if self.player.load_animation(animation_name):
+            self.player.play()
+            self.get_logger().info(f'✅ Анимация {animation_name} загружена и запущена')
+        else:
+            self.get_logger().error(f'❌ Не удалось загрузить анимацию: {animation_name}')
 
     def tts_state_callback(self, msg):
         """Handle TTS state changes - switch between idle and talking animations"""
