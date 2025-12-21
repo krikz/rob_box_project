@@ -48,6 +48,7 @@ class DialogueNode(Node):
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_simple.txt")
+        self.declare_parameter("streaming", True)  # Enable/disable streaming mode
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
@@ -64,6 +65,7 @@ class DialogueNode(Node):
         self.model = self.get_parameter("model").value
         self.temperature = self.get_parameter("temperature").value
         self.max_tokens = self.get_parameter("max_tokens").value
+        self.streaming = self.get_parameter("streaming").value  # Streaming mode flag
 
         # DeepSeek client с timeout для предотвращения зависания
         # timeout: (connect_timeout, read_timeout) в секундах
@@ -616,8 +618,11 @@ class DialogueNode(Node):
         # Устанавливаем флаг обработки
         self.llm_processing = True
 
-        # Запрос к DeepSeek (streaming)
-        self._ask_deepseek_streaming()
+        # Запрос к DeepSeek (streaming или обычный)
+        if self.streaming:
+            self._ask_deepseek_streaming()
+        else:
+            self._ask_deepseek_non_streaming()
 
     # Marker for inserting time context in system prompt
     TIME_CONTEXT_MARKER = "# Формат ответа"
@@ -852,6 +857,99 @@ class DialogueNode(Node):
                 # Не сбрасываем dialogue_in_progress - ещё есть запросы для повтора
             else:
                 # Очередь пуста - завершаем диалог даже при ошибке
+                self.dialogue_in_progress = False
+
+    def _ask_deepseek_non_streaming(self):
+        """Non-streaming запрос к DeepSeek - один JSON ответ"""
+        try:
+            # Собираем все сообщения для контекста
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self.conversation_history)
+
+            self.get_logger().info(f"🤖 DeepSeek запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
+
+            # Делаем синхронный запрос
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=False,
+            )
+
+            # Получаем полный ответ
+            full_response = response.choices[0].message.content
+
+            self.get_logger().info(f"📥 DeepSeek ответ получен: {len(full_response)} символов")
+
+            # Сохраняем в историю
+            self.conversation_history.append({"role": "assistant", "content": full_response})
+
+            # Парсим JSON и публикуем
+            try:
+                # Пытаемся распарсить как один JSON объект
+                response_json = json.loads(full_response)
+                
+                # Проверяем наличие action для перенаправления к reflection
+                if "action" in response_json:
+                    if response_json["action"] == "ask_reflection" and "question" in response_json:
+                        self.get_logger().info(f"🔄 Перенаправление к внутреннему диалогу: {response_json['question']}")
+                        msg = String()
+                        msg.data = response_json["question"]
+                        self.reflection_request_pub.publish(msg)
+                        return
+
+                # Обычный ответ с SSML
+                if "ssml" in response_json:
+                    # Публикуем как один chunk
+                    chunk_msg = String()
+                    chunk_msg.data = json.dumps({
+                        "chunk": 1,
+                        "ssml": response_json["ssml"],
+                        "emotion": response_json.get("emotion", "neutral"),
+                        "commands": response_json.get("commands", [])
+                    })
+                    self.response_pub.publish(chunk_msg)
+                    self.get_logger().info(f"✅ Ответ опубликован")
+
+                    # Финальный chunk
+                    end_msg = String()
+                    end_msg.data = json.dumps({"chunk": "end"})
+                    self.response_pub.publish(end_msg)
+                else:
+                    self.get_logger().warning("⚠️ JSON без поля 'ssml'")
+                    self._speak_simple("Извините, я запутался")
+
+            except json.JSONDecodeError as e:
+                self.get_logger().error(f"❌ Не удалось распарсить JSON: {e}")
+                self.get_logger().error(f"Ответ: {full_response[:200]}")
+                self._speak_simple("Извините, я немного запутался в формате ответа")
+
+            # Сбрасываем флаг обработки LLM
+            self.llm_processing = False
+
+            # Проверяем очередь - есть ли ещё накопленные запросы
+            if self.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
+                self.last_query_time = time.time()
+                if self.accumulation_timer is None:
+                    self.accumulation_timer = self.create_timer(
+                        self.query_accumulation_timeout, self._check_and_process_queue
+                    )
+            else:
+                self.dialogue_in_progress = False
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка DeepSeek non-streaming: {e}")
+            self.llm_processing = False
+            self._speak_simple("Извините, возникла проблема с ответом")
+            
+            if self.pending_queries:
+                self.last_query_time = time.time()
+                if self.accumulation_timer is not None:
+                    self.accumulation_timer.cancel()
+                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
+            else:
                 self.dialogue_in_progress = False
 
     def _trigger_sound(self, sound_name: str):
