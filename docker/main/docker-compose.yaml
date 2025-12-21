@@ -285,7 +285,7 @@ services:
       # Python
       - PYTHONUNBUFFERED=1
     env_file:
-      - .env.secrets  # API keys: DEEPSEEK_API_KEY
+      - .env.secrets  # API keys: QWEN_API_KEY, DEEPSEEK_API_KEY (для fallback)
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
