@@ -43,15 +43,15 @@ class DialogueNode(Node):
         "qwen": {
             "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             "model": "qwen-max",
-            "env_var": "LLM_API_KEY",  # Унифицированная переменная
-            "fallback_env": "QWEN_API_KEY",  # Специфичная для Qwen
+            "env_var": "QWEN_API_KEY",  # Основная переменная для Qwen
+            "fallback_env": "LLM_API_KEY",  # Fallback на унифицированную
             "name": "Qwen",
         },
         "deepseek": {
             "base_url": "https://api.deepseek.com",
             "model": "deepseek-chat",
-            "env_var": "LLM_API_KEY",  # Унифицированная переменная
-            "fallback_env": "DEEPSEEK_API_KEY",  # Специфичная для DeepSeek
+            "env_var": "DEEPSEEK_API_KEY",  # Основная переменная для DeepSeek
+            "fallback_env": "LLM_API_KEY",  # Fallback на унифицированную
             "name": "DeepSeek",
         }
     }

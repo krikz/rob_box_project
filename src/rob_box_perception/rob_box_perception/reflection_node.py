@@ -90,23 +90,36 @@ class ReflectionNode(Node):
         self.last_speech_time: Optional[float] = None  # Когда последний раз говорили
         self.speech_debounce_interval = 30.0  # Не говорить чаще чем раз в 30 секунд
         
-        # ============ DeepSeek API ============
-        self.deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
+        # ============ LLM API (Qwen/DeepSeek) ============
+        # Проверяем API ключи (приоритет: специфичные → унифицированный)
+        self.llm_api_key = os.getenv('QWEN_API_KEY') or os.getenv('LLM_API_KEY')
+        self.llm_base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        self.llm_model = "qwen-max"
+        self.llm_provider = "Qwen"
+        
+        # Fallback на DeepSeek если Qwen недоступен
+        if not self.llm_api_key:
+            self.llm_api_key = os.getenv('DEEPSEEK_API_KEY')
+            if self.llm_api_key:
+                self.llm_base_url = "https://api.deepseek.com"
+                self.llm_model = "deepseek-chat"
+                self.llm_provider = "DeepSeek"
+        
         self.deepseek_client = None
         
-        if not self.deepseek_api_key:
-            self.get_logger().warn('⚠️  DEEPSEEK_API_KEY не найден! Используется заглушка.')
+        if not self.llm_api_key:
+            self.get_logger().warn('⚠️  QWEN_API_KEY или DEEPSEEK_API_KEY не найдены! Используется заглушка.')
         elif not OPENAI_AVAILABLE:
             self.get_logger().warn('⚠️  OpenAI библиотека не установлена!')
         else:
             try:
                 self.deepseek_client = OpenAI(
-                    api_key=self.deepseek_api_key,
-                    base_url="https://api.deepseek.com"
+                    api_key=self.llm_api_key,
+                    base_url=self.llm_base_url
                 )
-                self.get_logger().info('✅ DeepSeek API клиент инициализирован')
+                self.get_logger().info(f'✅ {self.llm_provider} API клиент инициализирован ({self.llm_model})')
             except Exception as e:
-                self.get_logger().error(f'❌ Ошибка инициализации DeepSeek: {e}')
+                self.get_logger().error(f'❌ Ошибка инициализации {self.llm_provider}: {e}')
         
         # Загрузка системного промпта
         self.system_prompt = self._load_system_prompt()
@@ -657,7 +670,7 @@ class ReflectionNode(Node):
         
         try:
             response = self.deepseek_client.chat.completions.create(
-                model="deepseek-chat",
+                model=self.llm_model,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": prompt}
@@ -687,7 +700,7 @@ class ReflectionNode(Node):
         
         try:
             response = self.deepseek_client.chat.completions.create(
-                model="deepseek-chat",
+                model=self.llm_model,
                 messages=[
                     {"role": "system", "content": self.user_response_prompt},
                     {"role": "user", "content": user_prompt}
