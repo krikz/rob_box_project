@@ -949,8 +949,27 @@ class DialogueNode(Node):
             
             # DEBUG: Итоговая статистика
             self.get_logger().info(f"📊 Stream завершён: {len(full_response)} chars, {chunk_count} chunks")
+            
+            # FALLBACK: Если получен ответ без JSON разметки - отправляем как plain text
             if chunk_count == 0 and len(full_response) > 0:
-                self.get_logger().warning(f"⚠️  Получен ответ ({len(full_response)} chars) но 0 chunks! Full response: {full_response[:500]}...")
+                self.get_logger().warning(f"⚠️  Получен plain text без JSON ({len(full_response)} chars), отправляю как один chunk")
+                
+                # Формируем JSON с текстом
+                chunk_data = {
+                    "chunk": "end",
+                    "text": full_response.strip(),
+                    "emotion": "neutral"
+                }
+                
+                # Публикуем в response (tts_node подписан на него)
+                response_msg = String()
+                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                self.response_pub.publish(response_msg)
+                
+                chunk_count = 1  # Считаем это как 1 chunk
+                streaming_result["chunk_count"] = 1
+                
+                self.get_logger().info(f"🔊 Plain text отправлен в TTS как 1 chunk")
 
         # Запускаем streaming в отдельном потоке с timeout
         try:
