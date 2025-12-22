@@ -4,6 +4,17 @@
 
 ## 🤖 Исправления роботной платформы
 
+### [NAV2_NAVIGATION_TUNING_2025-12-16.md](NAV2_NAVIGATION_TUNING_2025-12-16.md) 🆕
+**Настройка навигации Nav2 для плавного движения и стабильности карты**
+
+- Исправление агрессивного поведения робота
+- Решение проблемы отката назад (backup recovery)
+- Устранение "взлета" на карте RTAB-Map
+- Добавление transform_tolerance для ICP delay
+- Увеличение RGBD/OptimizeMaxError для loop closures
+- Снижение Oscillation critic для плавного движения
+- Safety margin 200mm для избежания столкновений
+
 ### [ROBOT_ORIENTATION_FIX.md](ROBOT_ORIENTATION_FIX.md)
 **Исправление ориентации робота в RViz**
 

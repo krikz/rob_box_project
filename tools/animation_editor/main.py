@@ -19,14 +19,26 @@ def main():
     parser.add_argument(
         '--animations-dir',
         type=Path,
-        default='src/rob_box_animations/animations',
-        help='Path to animations directory (default: src/rob_box_animations/animations)'
+        default=None,
+        help='Path to animations directory'
     )
     
     args = parser.parse_args()
     
-    # Проверить директорию
-    animations_dir = Path(args.animations_dir)
+    # Определить правильный путь к директории анимаций
+    if args.animations_dir:
+        animations_dir = Path(args.animations_dir)
+    else:
+        # Найти корень проекта (где находится tools/)
+        script_dir = Path(__file__).parent.resolve()
+        project_root = script_dir.parent.parent  # tools/animation_editor -> tools -> project_root
+        animations_dir = project_root / 'src' / 'rob_box_animations' / 'animations'
+    
+    animations_dir = animations_dir.resolve()
+    animations_dir = animations_dir.resolve()
+    
+    print(f"Using animations directory: {animations_dir}")
+    
     if not animations_dir.exists():
         print(f"Creating animations directory: {animations_dir}")
         animations_dir.mkdir(parents=True, exist_ok=True)

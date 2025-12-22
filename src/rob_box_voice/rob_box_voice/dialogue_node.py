@@ -36,45 +36,52 @@ except ImportError as e:
 
 
 class DialogueNode(Node):
-    """ROS2 нода для LLM диалога с DeepSeek"""
+    """ROS2 нода для LLM диалога с поддержкой Qwen и DeepSeek"""
+
+    # Конфигурации провайдеров
+    PROVIDERS = {
+        "qwen": {
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "model": "qwen-max",
+            "env_var": "QWEN_API_KEY",  # Основная переменная для Qwen
+            "fallback_env": "LLM_API_KEY",  # Fallback на унифицированную
+            "name": "Qwen",
+        },
+        "deepseek": {
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+            "env_var": "DEEPSEEK_API_KEY",  # Основная переменная для DeepSeek
+            "fallback_env": "LLM_API_KEY",  # Fallback на унифицированную
+            "name": "DeepSeek",
+        }
+    }
 
     def __init__(self):
         super().__init__("dialogue_node")
 
         # Параметры
+        self.declare_parameter("provider", "qwen")  # qwen | deepseek
+        self.declare_parameter("enable_fallback", True)  # Автоматический fallback на другой провайдер
         self.declare_parameter("api_key", "")
-        self.declare_parameter("base_url", "https://api.deepseek.com")
-        self.declare_parameter("model", "deepseek-chat")
+        self.declare_parameter("base_url", "")  # Если пусто - берём из PROVIDERS
+        self.declare_parameter("model", "")      # Если пусто - берём из PROVIDERS
         self.declare_parameter("temperature", 0.7)
-        self.declare_parameter("max_tokens", 1000)
-        self.declare_parameter("system_prompt_file", "master_prompt_simple.txt")
+        self.declare_parameter("max_tokens", 500)
+        self.declare_parameter("system_prompt_file", "master_prompt.txt")  # Полный мастер промпт
+        self.declare_parameter("streaming", True)  # Включаем streaming
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
 
-        api_key = self.get_parameter("api_key").value
-        if not api_key:
-            api_key = os.getenv("DEEPSEEK_API_KEY")
-
-        if not api_key:
-            self.get_logger().error("❌ DEEPSEEK_API_KEY не найден!")
-            raise RuntimeError("DEEPSEEK_API_KEY required")
-
-        base_url = self.get_parameter("base_url").value
-        self.model = self.get_parameter("model").value
-        self.temperature = self.get_parameter("temperature").value
-        self.max_tokens = self.get_parameter("max_tokens").value
-
-        # DeepSeek client с timeout для предотвращения зависания
-        # timeout: (connect_timeout, read_timeout) в секундах
-        # - connect: 5 сек на установку соединения
-        # - read: 15 сек на получение ответа (если нет данных 15s - timeout)
-        from httpx import Timeout
-        self.client = OpenAI(
-            api_key=api_key, 
-            base_url=base_url,
-            timeout=Timeout(15.0, connect=5.0)  # 15s read, 5s connect
-        )
+        # Выбор провайдера с fallback
+        self.primary_provider = self.get_parameter("provider").value
+        self.enable_fallback = self.get_parameter("enable_fallback").value
+        self.current_provider = self.primary_provider
+        self.provider_error_count = 0  # Счётчик ошибок текущего провайдера
+        self.provider_error_threshold = 3  # Порог для переключения на fallback
+        
+        # Инициализация клиента с выбранным провайдером
+        self._init_llm_client()
 
         # Accent replacer
         self.accent_replacer = AccentReplacer()
@@ -103,6 +110,9 @@ class DialogueNode(Node):
 
         # Публикация звуковых триггеров (Phase 4)
         self.sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+
+        # Публикация запросов анимаций (emotion-based)
+        self.animation_pub = self.create_publisher(String, "/voice/animation/request", 10)
 
         # Публикация control commands в TTS
         self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
@@ -212,9 +222,9 @@ class DialogueNode(Node):
         self.timeout_timer = self.create_timer(5.0, self._check_dialogue_timeout)
 
         self.get_logger().info("✅ DialogueNode инициализирован")
+        self.get_logger().info(f"  🤖 Provider: {self.PROVIDERS[self.current_provider]['name']} (fallback: {'ON' if self.enable_fallback else 'OFF'})")
         self.get_logger().info(f'  Wake words: {", ".join(self.wake_words)}')
         self.get_logger().info(f'  Silence commands: {", ".join(self.silence_commands)}')
-        self.get_logger().info(f"  Model: {self.model}")
         self.get_logger().info(f"  Temperature: {self.temperature}")
         self.get_logger().info(f"  Max tokens: {self.max_tokens}")
         self.get_logger().info(f"  Dialogue timeout: {self.dialogue_timeout}s")
@@ -239,6 +249,108 @@ class DialogueNode(Node):
         except Exception as e:
             self.get_logger().warning(f"⚠ Не удалось загрузить prompt: {e}")
             return 'Ты ROBBOX - мобильный робот-ассистент. Отвечай в JSON: {"ssml": "<speak>...</speak>"}'
+
+    def _map_emotion_to_animation(self, emotion: str) -> str:
+        """Маппинг эмоций от DeepSeek в имена анимаций"""
+        emotion_map = {
+            "happy": "happy",
+            "sad": "sad",
+            "angry": "angry",
+            "surprised": "surprised",
+            "neutral": "idle",
+            "thinking": "thinking",
+            "excited": "victory",
+            "confused": "thinking",
+            "worried": "sad",
+            "calm": "idle"
+        }
+        return emotion_map.get(emotion.lower(), "idle")
+
+    def _init_llm_client(self):
+        """Инициализация LLM клиента с выбранным провайдером"""
+        provider_name = self.current_provider
+        
+        if provider_name not in self.PROVIDERS:
+            self.get_logger().error(f"❌ Неизвестный провайдер: {provider_name}")
+            raise RuntimeError(f"Unknown provider: {provider_name}")
+        
+        provider_config = self.PROVIDERS[provider_name]
+        
+        # API Key - проверяем параметр, потом env переменные
+        api_key = self.get_parameter("api_key").value
+        if not api_key:
+            # Пробуем унифицированную переменную
+            api_key = os.getenv(provider_config["env_var"])
+        if not api_key:
+            # Пробуем специфичную для провайдера
+            api_key = os.getenv(provider_config["fallback_env"])
+        
+        if not api_key:
+            self.get_logger().error(
+                f"❌ API ключ не найден для {provider_config['name']}! "
+                f"Установите {provider_config['env_var']} или {provider_config['fallback_env']}"
+            )
+            raise RuntimeError(f"API key required for {provider_name}")
+        
+        # Base URL - из параметра или конфига провайдера
+        base_url = self.get_parameter("base_url").value
+        if not base_url:
+            base_url = provider_config["base_url"]
+        
+        # Model - из параметра или конфига провайдера
+        model = self.get_parameter("model").value
+        if not model:
+            model = provider_config["model"]
+        
+        self.model = model
+        self.temperature = self.get_parameter("temperature").value
+        self.max_tokens = self.get_parameter("max_tokens").value
+        self.streaming = self.get_parameter("streaming").value
+        
+        # Создаём OpenAI клиент с timeout
+        from httpx import Timeout
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=Timeout(60.0, connect=10.0)
+        )
+        
+        self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_config['name']}")
+        self.get_logger().info(f"  📡 Base URL: {base_url}")
+        self.get_logger().info(f"  🤖 Model: {self.model}")
+        self.get_logger().info(f"  🌊 Streaming: {self.streaming}")
+    
+    def _try_fallback_provider(self):
+        """Попытка переключиться на резервный провайдер"""
+        if not self.enable_fallback:
+            self.get_logger().warning("⚠️ Fallback отключён в настройках")
+            return False
+        
+        # Определяем fallback провайдера
+        fallback_provider = "deepseek" if self.current_provider == "qwen" else "qwen"
+        
+        if fallback_provider not in self.PROVIDERS:
+            self.get_logger().error(f"❌ Fallback провайдер недоступен: {fallback_provider}")
+            return False
+        
+        self.get_logger().warning(f"🔄 Переключение на резервный провайдер: {self.PROVIDERS[fallback_provider]['name']}")
+        
+        try:
+            # Сохраняем текущий провайдер
+            old_provider = self.current_provider
+            self.current_provider = fallback_provider
+            
+            # Пробуем инициализировать нового провайдера
+            self._init_llm_client()
+            
+            self.get_logger().info(f"✅ Успешно переключились с {self.PROVIDERS[old_provider]['name']} на {self.PROVIDERS[fallback_provider]['name']}")
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Не удалось переключиться на fallback: {e}")
+            # Восстанавливаем старый провайдер
+            self.current_provider = old_provider
+            return False
 
     # ============================================================
     # Wake Word & Silence Detection
@@ -616,8 +728,11 @@ class DialogueNode(Node):
         # Устанавливаем флаг обработки
         self.llm_processing = True
 
-        # Запрос к DeepSeek (streaming)
-        self._ask_deepseek_streaming()
+        # Запрос к LLM (streaming или обычный)
+        if self.streaming:
+            self._ask_llm_streaming()
+        else:
+            self._ask_llm_non_streaming()
 
     # Marker for inserting time context in system prompt
     TIME_CONTEXT_MARKER = "# Формат ответа"
@@ -652,8 +767,8 @@ class DialogueNode(Node):
 
         return base_prompt
 
-    def _ask_deepseek_streaming(self):
-        """Streaming запрос к DeepSeek с парсингом JSON chunks и timeout"""
+    def _ask_llm_streaming(self):
+        """Streaming запрос к LLM провайдеру с парсингом JSON chunks и timeout"""
         # Генерируем новый dialogue_id для этого диалога
         dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
@@ -664,10 +779,13 @@ class DialogueNode(Node):
 
         messages = [{"role": "system", "content": system_prompt_with_context}, *self.conversation_history]
 
-        self.get_logger().info("🤔 Запрос к DeepSeek...")
+        provider_name = self.PROVIDERS[self.current_provider]["name"]
+        self.get_logger().info(f"🤔 Запрос к {provider_name}...")
 
-        # Timeout для всего streaming запроса (секунды)
-        STREAM_TOTAL_TIMEOUT = 15.0
+        # Timeout между chunks - если нет данных 15 секунд, прерываем
+        CHUNK_TIMEOUT = 15.0
+        # Общий timeout для всего запроса - 60 секунд
+        TOTAL_REQUEST_TIMEOUT = 60.0
 
         # Результаты streaming (для передачи между потоками)
         streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
@@ -687,27 +805,27 @@ class DialogueNode(Node):
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                stream=True,
+                stream=True
             )
 
             for chunk in stream:
                 # Timeout если между chunks прошло слишком много времени
                 # Проверяем на каждой итерации - защита от зависания на любом этапе
                 elapsed_since_content = time.time() - last_chunk_time
-                if elapsed_since_content > STREAM_TOTAL_TIMEOUT:
+                if elapsed_since_content > CHUNK_TIMEOUT:
                     streaming_result["error"] = f"No data for {elapsed_since_content:.1f}s (after {chunk_count} chunks)"
                     return
 
-                # Проверяем finish_reason для корректного завершения stream
-                if chunk.choices[0].finish_reason:
-                    self.get_logger().debug(f"🏁 Stream завершён: {chunk.choices[0].finish_reason}")
-                    break
-
+                # ВАЖНО: Сначала обрабатываем content, потом проверяем finish_reason!
+                # У Qwen последний chunk может содержать и content и finish_reason одновременно
                 if chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
                     full_response += token
                     current_chunk += token
                     last_chunk_time = time.time()  # Обновляем время - контент идёт
+                    
+                    # DEBUG: Показываем сырые данные
+                    self.get_logger().debug(f"📦 Raw token: {repr(token[:100])}")
 
                     # Подсчёт скобок для определения границ JSON
                     for char in token:
@@ -719,75 +837,139 @@ class DialogueNode(Node):
 
                     # Если скобки сбалансированы - парсим
                     if in_json and brace_count == 0:
-                        json_text = current_chunk.strip()
+                        # Может быть несколько JSON объектов в current_chunk
+                        # Два формата:
+                        # 1. DeepSeek: {"chunk":1}{"chunk":2} (без переносов)
+                        # 2. Qwen: {"chunk":1}\n{"chunk":2} (с переносами)
+                        # Универсальное решение: split по \n, потом по }{
+                        import re
+                        json_objects = []
+                        
+                        # Разбиваем по переносам строк
+                        lines = current_chunk.strip().split('\n')
+                        
+                        for line in lines:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            # В каждой строке может быть несколько JSON подряд: }{
+                            parts = re.split(r'(?<=\})(?=\{)', line)
+                            json_objects.extend([p.strip() for p in parts if p.strip()])
+                        
+                        for json_text in json_objects:
+                            json_text = json_text.strip()
+                            if not json_text:
+                                continue
+                            
+                            # DEBUG: Показываем что пытаемся парсить
+                            self.get_logger().info(f"🔍 Пытаюсь парсить JSON: {json_text[:200]}...")
 
-                        # Убираем markdown ```json если есть
-                        if json_text.startswith("```json"):
-                            json_text = json_text.replace("```json", "").replace("```", "").strip()
+                            # Убираем markdown ```json если есть
+                            if json_text.startswith("```json"):
+                                json_text = json_text.replace("```json", "").replace("```", "").strip()
 
-                        # Парсим JSON
-                        try:
-                            chunk_data = json.loads(json_text)
+                            # Парсим JSON
+                            try:
+                                chunk_data = json.loads(json_text)
+                                self.get_logger().info(f"✅ JSON успешно распарсен: chunk={chunk_data.get('chunk', '?')}, emotion={chunk_data.get('emotion', '?')}")
 
-                            # ============ ПРОВЕРКА: ask_reflection команда ============
-                            if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
-                                question = chunk_data.get("question", "")
-                                self.get_logger().warning(f'🔁 DeepSeek перенаправляет к Reflection: "{question}"')
+                                # ============ ПРОВЕРКА: ask_reflection команда ============
+                                if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
+                                    question = chunk_data.get("question", "")
+                                    self.get_logger().warning(f'🔁 LLM перенаправляет к Reflection: "{question}"')
 
-                                # Публикуем в /perception/user_speech для reflection_node
-                                reflection_msg = String()
-                                reflection_msg.data = question
-                                self.reflection_request_pub.publish(reflection_msg)
-                                self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+                                    # Публикуем в /perception/user_speech для reflection_node
+                                    reflection_msg = String()
+                                    reflection_msg.data = question
+                                    self.reflection_request_pub.publish(reflection_msg)
+                                    self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
+                                    continue  # Не обрабатываем дальше как обычный chunk
 
-                                # Сброс для следующего chunk
-                                current_chunk = ""
-                                in_json = False
-                                brace_count = 0
-                                continue  # Не обрабатываем дальше как обычный chunk
+                                # Применяем автоударения
+                                if "ssml" in chunk_data:
+                                    ssml = chunk_data["ssml"]
+                                    ssml_with_accents = self.accent_replacer.add_accents(ssml)
+                                    chunk_data["ssml"] = ssml_with_accents
 
-                            # Применяем автоударения
-                            if "ssml" in chunk_data:
-                                ssml = chunk_data["ssml"]
-                                ssml_with_accents = self.accent_replacer.add_accents(ssml)
-                                chunk_data["ssml"] = ssml_with_accents
+                                    # Добавляем dialogue_id к chunk
+                                    chunk_data["dialogue_id"] = dialogue_id
 
-                                # Добавляем dialogue_id к chunk
-                                chunk_data["dialogue_id"] = dialogue_id
+                                    # Публикуем chunk
+                                    chunk_count += 1
+                                    
+                                    # Публикуем анимацию для первого chunk (до начала речи)
+                                    if chunk_count == 1:
+                                        emotion = chunk_data.get("emotion", "neutral")
+                                        animation_name = self._map_emotion_to_animation(emotion)
+                                        
+                                        if animation_name and animation_name != "idle":
+                                            anim_msg = String()
+                                            anim_msg.data = animation_name
+                                            self.animation_pub.publish(anim_msg)
+                                            self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
+                                    
+                                    self.get_logger().info(
+                                        f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
+                                    )
 
-                                # Публикуем chunk
-                                chunk_count += 1
-                                self.get_logger().info(
-                                    f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
-                                )
+                                    # Обновляем время взаимодействия (робот говорит)
+                                    self.last_interaction_time = time.time()
 
-                                # Обновляем время взаимодействия (робот говорит)
-                                self.last_interaction_time = time.time()
+                                    response_msg = String()
+                                    response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                    self.response_pub.publish(response_msg)
+                                    # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
 
-                                response_msg = String()
-                                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                                self.response_pub.publish(response_msg)
-                                # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
+                                    self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
 
-                                self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
-
-                        except json.JSONDecodeError:
-                            pass  # Ждём больше данных
+                            except json.JSONDecodeError as e:
+                                self.get_logger().warning(f"⚠️  JSON decode failed: {e}, text: {json_text[:200]}...")
+                                pass  # Этот JSON неполный
 
                         # Сброс для следующего chunk
                         current_chunk = ""
                         in_json = False
                         brace_count = 0
 
+                # ВАЖНО: Проверяем finish_reason ПОСЛЕ обработки всего content
+                # У Qwen последний chunk может содержать и content и finish_reason
+                if chunk.choices[0].finish_reason:
+                    self.get_logger().info(f"🏁 Stream завершён: {chunk.choices[0].finish_reason} (обработано {chunk_count} chunks)")
+                    break
+
             # Сохраняем результаты
             streaming_result["full_response"] = full_response
             streaming_result["chunk_count"] = chunk_count
+            
+            # DEBUG: Итоговая статистика
+            self.get_logger().info(f"📊 Stream завершён: {len(full_response)} chars, {chunk_count} chunks")
+            
+            # FALLBACK: Если получен ответ без JSON разметки - отправляем как plain text
+            if chunk_count == 0 and len(full_response) > 0:
+                self.get_logger().warning(f"⚠️  Получен plain text без JSON ({len(full_response)} chars), отправляю как один chunk")
+                
+                # Формируем JSON с текстом
+                chunk_data = {
+                    "chunk": "end",
+                    "text": full_response.strip(),
+                    "emotion": "neutral"
+                }
+                
+                # Публикуем в response (tts_node подписан на него)
+                response_msg = String()
+                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                self.response_pub.publish(response_msg)
+                
+                chunk_count = 1  # Считаем это как 1 chunk
+                streaming_result["chunk_count"] = 1
+                
+                self.get_logger().info(f"🔊 Plain text отправлен в TTS как 1 chunk")
 
         # Запускаем streaming в отдельном потоке с timeout
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_do_streaming)
-                future.result(timeout=STREAM_TOTAL_TIMEOUT)
+                future.result(timeout=TOTAL_REQUEST_TIMEOUT)
 
             # Проверяем внутренний timeout
             if streaming_result["error"]:
@@ -800,7 +982,13 @@ class DialogueNode(Node):
             # Сохраняем ответ в историю
             self.conversation_history.append({"role": "assistant", "content": full_response})
 
-            self.get_logger().info(f"✅ DeepSeek ответил ({chunk_count} chunks)")
+            # Успешный запрос - сбрасываем счётчик ошибок
+            if self.provider_error_count > 0:
+                self.get_logger().info(f"✅ Провайдер работает! Сброс счётчика ошибок ({self.provider_error_count} → 0)")
+                self.provider_error_count = 0
+
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().info(f"✅ {provider_name} ответил ({chunk_count} chunks)")
 
             # Сбрасываем флаг обработки LLM
             self.llm_processing = False
@@ -824,7 +1012,28 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
 
         except (FuturesTimeoutError, TimeoutError) as e:
-            self.get_logger().error(f"⏱️ TIMEOUT: DeepSeek streaming не ответил за {STREAM_TOTAL_TIMEOUT}s - {e}")
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().error(f"⏱️ TIMEOUT: {provider_name} streaming не ответил за {TOTAL_REQUEST_TIMEOUT}s - {e}")
+            
+            # Увеличиваем счётчик ошибок
+            self.provider_error_count += 1
+            self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
+            
+            # Пробуем fallback если превысили порог
+            if self.provider_error_count >= self.provider_error_threshold:
+                self.get_logger().warning(f"🔄 Слишком много ошибок, пытаемся переключиться на fallback...")
+                if self._try_fallback_provider():
+                    self.provider_error_count = 0  # Сбрасываем счётчик
+                    # Пробуем снова с новым провайдером если есть запросы в очереди
+                    if self.pending_queries:
+                        self.get_logger().info("♻️ Повторяем запрос с новым провайдером")
+                        self.llm_processing = False
+                        self.last_query_time = time.time()
+                        if self.accumulation_timer is not None:
+                            self.accumulation_timer.cancel()
+                        self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
+                        return
+            
             # Говорим fallback ответ
             self._speak_simple("Извините, я сейчас не в настроении думать")
             # Сбрасываем флаг обработки LLM
@@ -832,7 +1041,19 @@ class DialogueNode(Node):
             self.dialogue_in_progress = False
 
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка DeepSeek: {e}")
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().error(f"❌ Ошибка {provider_name}: {e}")
+            
+            # Увеличиваем счётчик ошибок
+            self.provider_error_count += 1
+            self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
+            
+            # Пробуем fallback если превысили порог
+            if self.provider_error_count >= self.provider_error_threshold:
+                self.get_logger().warning(f"🔄 Слишком много ошибок, пытаемся переключиться на fallback...")
+                if self._try_fallback_provider():
+                    self.provider_error_count = 0  # Сбрасываем счётчик
+            
             # Сбрасываем флаг обработки LLM
             self.llm_processing = False
 
@@ -852,6 +1073,138 @@ class DialogueNode(Node):
                 # Не сбрасываем dialogue_in_progress - ещё есть запросы для повтора
             else:
                 # Очередь пуста - завершаем диалог даже при ошибке
+                self.dialogue_in_progress = False
+
+    def _ask_llm_non_streaming(self):
+        """Non-streaming запрос к LLM провайдеру - один JSON ответ"""
+        try:
+            # Собираем все сообщения для контекста
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self.conversation_history)
+
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
+
+            # Формируем extra_body в зависимости от провайдера
+            extra_body = {}
+            if self.current_provider == 0:  # Qwen поддерживает enable_search
+                extra_body["enable_search"] = True
+
+            # Делаем синхронный запрос
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=False,
+                extra_body=extra_body
+            )
+
+            # Получаем полный ответ
+            full_response = response.choices[0].message.content
+
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().info(f"📥 {provider_name} ответ получен: {len(full_response)} символов")
+
+            # Успешный запрос - сбрасываем счётчик ошибок
+            if self.provider_error_count > 0:
+                self.get_logger().info(f"✅ Провайдер работает! Сброс счётчика ошибок ({self.provider_error_count} → 0)")
+                self.provider_error_count = 0
+
+            # Сохраняем в историю
+            self.conversation_history.append({"role": "assistant", "content": full_response})
+
+            # Парсим JSON и публикуем
+            try:
+                # Пытаемся распарсить как один JSON объект
+                response_json = json.loads(full_response)
+                
+                # DEBUG: Логируем полный JSON
+                provider_name = self.PROVIDERS[self.current_provider]["name"]
+                self.get_logger().info(f"🔍 {provider_name} JSON: {json.dumps(response_json, ensure_ascii=False)[:500]}...")
+                
+                # Проверяем наличие action для перенаправления к reflection
+                if "action" in response_json:
+                    if response_json["action"] == "ask_reflection" and "question" in response_json:
+                        self.get_logger().info(f"🔄 Перенаправление к внутреннему диалогу: {response_json['question']}")
+                        msg = String()
+                        msg.data = response_json["question"]
+                        self.reflection_request_pub.publish(msg)
+                        return
+
+                # Обычный ответ с SSML
+                if "ssml" in response_json:
+                    # Получаем эмоцию и публикуем анимацию
+                    emotion = response_json.get("emotion", "neutral")
+                    animation_name = self._map_emotion_to_animation(emotion)
+                    
+                    if animation_name and animation_name != "idle":
+                        anim_msg = String()
+                        anim_msg.data = animation_name
+                        self.animation_pub.publish(anim_msg)
+                        self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
+                    
+                    # Публикуем как один chunk
+                    chunk_msg = String()
+                    chunk_msg.data = json.dumps({
+                        "chunk": 1,
+                        "ssml": response_json["ssml"],
+                        "emotion": emotion,
+                        "commands": response_json.get("commands", [])
+                    })
+                    self.response_pub.publish(chunk_msg)
+                    self.get_logger().info(f"✅ Ответ опубликован")
+
+                    # Финальный chunk
+                    end_msg = String()
+                    end_msg.data = json.dumps({"chunk": "end"})
+                    self.response_pub.publish(end_msg)
+                else:
+                    self.get_logger().warning("⚠️ JSON без поля 'ssml'")
+                    self._speak_simple("Извините, я запутался")
+
+            except json.JSONDecodeError as e:
+                self.get_logger().error(f"❌ Не удалось распарсить JSON: {e}")
+                self.get_logger().error(f"Ответ: {full_response[:200]}")
+                self._speak_simple("Извините, я немного запутался в формате ответа")
+
+            # Сбрасываем флаг обработки LLM
+            self.llm_processing = False
+
+            # Проверяем очередь - есть ли ещё накопленные запросы
+            if self.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
+                self.last_query_time = time.time()
+                if self.accumulation_timer is None:
+                    self.accumulation_timer = self.create_timer(
+                        self.query_accumulation_timeout, self._check_and_process_queue
+                    )
+            else:
+                self.dialogue_in_progress = False
+
+        except Exception as e:
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().error(f"❌ Ошибка {provider_name} non-streaming: {e}")
+            
+            # Увеличиваем счётчик ошибок
+            self.provider_error_count += 1
+            self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
+            
+            # Пробуем fallback если превысили порог
+            if self.provider_error_count >= self.provider_error_threshold:
+                self.get_logger().warning(f"🔄 Слишком много ошибок, пытаемся переключиться на fallback...")
+                if self._try_fallback_provider():
+                    self.provider_error_count = 0  # Сбрасываем счётчик
+            
+            self.llm_processing = False
+            self._speak_simple("Извините, возникла проблема с ответом")
+            
+            if self.pending_queries:
+                self.last_query_time = time.time()
+                if self.accumulation_timer is not None:
+                    self.accumulation_timer.cancel()
+                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
+            else:
                 self.dialogue_in_progress = False
 
     def _trigger_sound(self, sound_name: str):

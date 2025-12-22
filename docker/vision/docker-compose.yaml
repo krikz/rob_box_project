@@ -143,7 +143,7 @@ services:
       # Python для audio
       - PYTHONUNBUFFERED=1
     env_file:
-      - .env.secrets  # API keys: DEEPSEEK_API_KEY, YANDEX_API_KEY, YANDEX_FOLDER_ID
+      - .env.secrets  # API keys: QWEN_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
