@@ -677,10 +677,7 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150 if urgent else 200,
-                response_format={"type": "json_object"},
-                extra_body={
-                    "enable_search": True  # Включаем веб-поиск для Qwen
-                }
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
@@ -710,10 +707,7 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150,
-                response_format={"type": "json_object"},
-                extra_body={
-                    "enable_search": True  # Включаем веб-поиск для Qwen
-                }
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)

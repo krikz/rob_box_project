@@ -800,18 +800,12 @@ class DialogueNode(Node):
             start_time = time.time()  # Засекаем время начала
             last_chunk_time = start_time  # Время последнего chunk с контентом
 
-            # Формируем extra_body в зависимости от провайдера
-            extra_body = {}
-            if self.current_provider == 0:  # Qwen поддерживает enable_search
-                extra_body["enable_search"] = True
-
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                stream=True,
-                extra_body=extra_body
+                stream=True
             )
 
             for chunk in stream:
