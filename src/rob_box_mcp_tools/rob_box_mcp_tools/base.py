@@ -3,7 +3,8 @@
 base.py - Базовые классы для MCP-подобной системы инструментов
 
 MCPTool - базовый класс для всех инструментов, которые LLM может вызывать.
-Каждый инструмент описывает свои параметры в формате JSON Schema (DeepSeek Tool Calls).
+Каждый инструмент описывает свои параметры в формате JSON Schema (OpenAI Tool Calls format).
+Совместимо с DeepSeek, Qwen, OpenAI и другими LLM провайдерами.
 """
 
 from abc import ABC, abstractmethod
@@ -26,7 +27,7 @@ class MCPToolParameter:
     default: Optional[Any] = None
 
     def to_json_schema(self) -> Dict[str, Any]:
-        """Конвертировать в JSON Schema для DeepSeek Tool Calls"""
+        """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата"""
         schema: Dict[str, Any] = {
             "type": self.type,
             "description": self.description,
@@ -126,9 +127,11 @@ class MCPTool(ABC):
         """
         pass
 
-    def to_deepseek_function(self) -> Dict[str, Any]:
+    def to_openai_tool_format(self) -> Dict[str, Any]:
         """
-        Конвертировать инструмент в формат DeepSeek Tool Calls
+        Конвертировать инструмент в OpenAI Tool Calls формат
+        
+        Совместимо с DeepSeek, Qwen, OpenAI и другими провайдерами.
 
         Returns:
             Dict в формате:
@@ -167,6 +170,11 @@ class MCPTool(ABC):
                 },
             },
         }
+    
+    # Backward compatibility alias
+    def to_deepseek_function(self) -> Dict[str, Any]:
+        """Устаревший метод. Используйте to_openai_tool_format()"""
+        return self.to_openai_tool_format()
 
     def validate_parameters(self, **kwargs) -> tuple[bool, Optional[str]]:
         """

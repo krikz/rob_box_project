@@ -4,9 +4,9 @@ dialogue_node_mcp_integration.py - Пример интеграции MCP tools �
 
 Этот файл показывает как интегрировать MCP инструменты в dialogue_node.
 Основные изменения:
-1. Добавить DeepSeekToolCallAdapter для обработки tool_calls
+1. Добавить LLMToolCallAdapter для обработки tool_calls
 2. Получать список инструментов из MCP сервера
-3. Передавать tools в DeepSeek API
+3. Передавать tools в LLM API (DeepSeek, Qwen, или любой OpenAI-совместимый)
 4. Обрабатывать tool_calls из streaming ответов
 """
 
@@ -21,7 +21,7 @@ from std_msgs.msg import String
 
 # Импорт MCP адаптера
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from rob_box_mcp_tools.deepseek_adapter import DeepSeekToolCallAdapter
+from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
 try:
     from openai import OpenAI
@@ -35,9 +35,9 @@ class DialogueNodeWithMCP(Node):
     Пример dialogue_node с интеграцией MCP tools
 
     ОСНОВНЫЕ ИЗМЕНЕНИЯ от оригинального dialogue_node:
-    1. Добавлен DeepSeekToolCallAdapter для обработки tool calls
+    1. Добавлен LLMToolCallAdapter для обработки tool calls
     2. Добавлена подписка на /mcp/tools для получения списка инструментов
-    3. Tools передаются в DeepSeek API при каждом запросе
+    3. Tools передаются в LLM API при каждом запросе (работает с DeepSeek, Qwen, и др.)
     4. Tool calls обрабатываются в streaming режиме
     """
 
@@ -46,25 +46,30 @@ class DialogueNodeWithMCP(Node):
 
         # ========== НОВОЕ: MCP Integration ==========
         # Адаптер для обработки tool calls
-        self.mcp_adapter = DeepSeekToolCallAdapter(self)
+        self.mcp_adapter = LLMToolCallAdapter(self)
 
         # Подписка на список доступных инструментов
         self.tools_sub = self.create_subscription(String, "/mcp/tools", self.on_tools_update, 10)
 
-        # Кэш доступных инструментов (в формате DeepSeek)
+        # Кэш доступных инструментов (OpenAI Tool Calls format)
         self.available_tools = []
 
         # ========== Оригинальная конфигурация dialogue_node ==========
+        # Пример с DeepSeek, но можно использовать любой OpenAI-совместимый API
         self.declare_parameter("provider", "deepseek")
         self.declare_parameter("api_key", "")
+        self.declare_parameter("base_url", "https://api.deepseek.com")  # Или Qwen, OpenAI, и др.
+        self.declare_parameter("model", "deepseek-chat")  # Или qwen-max, gpt-4, и др.
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt.txt")
 
-        # LLM клиент
-        api_key = self.get_parameter("api_key").value or os.getenv("DEEPSEEK_API_KEY")
-        self.client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        self.model = "deepseek-chat"
+        # LLM клиент (универсальный для любого OpenAI-совместимого API)
+        api_key = self.get_parameter("api_key").value or os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+        base_url = self.get_parameter("base_url").value
+        self.model = self.get_parameter("model").value
+        
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.temperature = self.get_parameter("temperature").value
         self.max_tokens = self.get_parameter("max_tokens").value
 
@@ -100,7 +105,7 @@ class DialogueNodeWithMCP(Node):
         """
         НОВОЕ: Обработка обновления списка инструментов из MCP сервера
 
-        Получаем список инструментов в формате DeepSeek Tool Calls
+        Получаем список инструментов в OpenAI Tool Calls формате
         """
         try:
             self.available_tools = json.loads(msg.data)
@@ -136,7 +141,7 @@ class DialogueNodeWithMCP(Node):
         """
         messages = [{"role": "system", "content": self.system_prompt}, *self.conversation_history]
 
-        self.get_logger().info(f"🤖 Запрос к DeepSeek с {len(self.available_tools)} доступными инструментами")
+        self.get_logger().info(f"🤖 Запрос к LLM с {len(self.available_tools)} доступными инструментами")
 
         try:
             # ========== НОВОЕ: Передаём tools в API ==========

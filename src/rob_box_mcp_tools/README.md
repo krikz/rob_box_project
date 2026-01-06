@@ -4,7 +4,7 @@ MCP-подобная система инструментов для интегр
 
 ## 📋 Описание
 
-Этот пакет предоставляет архитектуру для создания и управления инструментами (tools), которые может вызывать LLM (Large Language Model) для управления роботом. Система основана на концепции Model Context Protocol (MCP) и интегрируется с DeepSeek Tool Calls API.
+Этот пакет предоставляет архитектуру для создания и управления инструментами (tools), которые может вызывать LLM (Large Language Model) для управления роботом. Система основана на концепции Model Context Protocol (MCP) и интегрируется с OpenAI Tool Calls format API.
 
 ## 🏗️ Архитектура
 
@@ -16,8 +16,9 @@ MCP-подобная система инструментов для интегр
        │ tools parameter
        ▼
 ┌─────────────┐     tool_calls     ┌─────────────┐
-│  DeepSeek   │ ─────────────────→ │     MCP     │
-│     API     │                     │   Adapter   │
+│  LLM API    │ ─────────────────→ │  LLM Tool   │
+│ (DeepSeek/  │                     │   Adapter   │
+│  Qwen/etc)  │                     │             │
 └─────────────┘                     └──────┬──────┘
                                            │ /mcp/execute
                                            ▼
@@ -88,25 +89,25 @@ MCP Server автоматически:
 Пример интеграции см. в `examples/dialogue_node_mcp_integration.py`
 
 Основные шаги:
-1. Создать `DeepSeekToolCallAdapter`
+1. Создать `LLMToolCallAdapter`
 2. Подписаться на `/mcp/tools` для получения списка инструментов
-3. Передать `tools` в DeepSeek API при запросе
+3. Передать `tools` в LLM API (OpenAI-compatible) при запросе
 4. Обработать `tool_calls` из streaming ответа
 5. Выполнить инструменты через MCP адаптер
 6. Отправить результаты обратно в LLM
 
 ```python
-from rob_box_mcp_tools.deepseek_adapter import DeepSeekToolCallAdapter
+from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
 # В __init__ вашей ноды:
-self.mcp_adapter = DeepSeekToolCallAdapter(self)
+self.mcp_adapter = LLMToolCallAdapter(self)
 self.tools_sub = self.create_subscription(
     String, "/mcp/tools", self.on_tools_update, 10
 )
 
 # При запросе к LLM:
 stream = self.client.chat.completions.create(
-    model="deepseek-chat",
+    model="your-model",
     messages=messages,
     tools=self.available_tools,  # ← Передаём инструменты
     stream=True
@@ -129,7 +130,7 @@ rob_box_mcp_tools/
 │   ├── base.py                 # Базовые классы (MCPTool, MCPToolResult)
 │   ├── registry.py             # Реестр инструментов
 │   ├── mcp_server.py           # Главная ROS 2 нода
-│   ├── deepseek_adapter.py     # Адаптер для DeepSeek API
+│   ├── llm_adapter.py     # Адаптер для LLM API (OpenAI-compatible)
 │   └── tools/
 │       ├── __init__.py
 │       ├── navigation.py       # Инструменты навигации
@@ -251,7 +252,7 @@ ros2 topic echo /mcp/result --once
 
 ## 📚 Ссылки
 
-- [DeepSeek Tool Calls Documentation](https://api-docs.deepseek.com/guides/tool_calls)
+- [OpenAI Tool Calls format Documentation](https://api-docs.deepseek.com/guides/tool_calls)
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 - [Rob Box Project Documentation](../../docs/)
 

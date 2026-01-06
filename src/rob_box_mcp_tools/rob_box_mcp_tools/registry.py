@@ -71,14 +71,21 @@ class MCPToolRegistry:
         """
         return list(self._tools.keys())
 
-    def get_deepseek_tools(self) -> List[Dict[str, Any]]:
+    def get_openai_tools(self) -> List[Dict[str, Any]]:
         """
-        Получить список всех инструментов в формате DeepSeek Tool Calls
+        Получить список всех инструментов в OpenAI Tool Calls формате
+        
+        Совместимо с DeepSeek, Qwen, OpenAI и другими провайдерами.
 
         Returns:
-            Список словарей в формате DeepSeek functions
+            Список словарей в формате OpenAI functions
         """
-        return [tool.to_deepseek_function() for tool in self._tools.values()]
+        return [tool.to_openai_tool_format() for tool in self._tools.values()]
+    
+    # Backward compatibility alias
+    def get_deepseek_tools(self) -> List[Dict[str, Any]]:
+        """Устаревший метод. Используйте get_openai_tools()"""
+        return self.get_openai_tools()
 
     def execute(self, name: str, **kwargs) -> MCPToolResult:
         """

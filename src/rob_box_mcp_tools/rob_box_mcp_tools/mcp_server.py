@@ -4,7 +4,7 @@ mcp_server.py - MCP Server для предоставления инструме�
 
 Эта нода:
 1. Регистрирует все доступные MCP инструменты
-2. Публикует список инструментов в формате DeepSeek Tool Calls
+2. Публикует список инструментов в OpenAI Tool Calls формате (совместимо с DeepSeek, Qwen, и др.)
 3. Принимает запросы на выполнение инструментов
 4. Возвращает результаты выполнения
 
@@ -117,8 +117,8 @@ class MCPServer(Node):
         self.registry.register(PlaySoundTool(self))
 
     def publish_tools(self):
-        """Публикация списка доступных инструментов в формате DeepSeek"""
-        tools = self.registry.get_deepseek_tools()
+        """Публикация списка доступных инструментов в OpenAI Tool Calls формате"""
+        tools = self.registry.get_openai_tools()
         msg = String()
         msg.data = json.dumps(tools, ensure_ascii=False, indent=2)
         self.tools_pub.publish(msg)

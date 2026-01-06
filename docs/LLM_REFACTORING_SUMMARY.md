@@ -2,7 +2,7 @@
 
 ## 📋 Краткое описание
 
-Проведён рефакторинг подсистем работы с LLM в проекте Rob Box для создания модульной архитектуры на основе концепции MCP (Model Context Protocol) с интеграцией DeepSeek Tool Calls API.
+Проведён рефакторинг подсистем работы с LLM в проекте Rob Box для создания модульной архитектуры на основе концепции MCP (Model Context Protocol) с интеграцией OpenAI Tool Calls format (совместимо с DeepSeek, Qwen, и др.) API.
 
 ## 🎯 Достигнутые цели
 
@@ -19,7 +19,7 @@
   - `MCPToolRegistry` - центральное хранилище инструментов
   - Поддержка регистрации/удаления инструментов
   - Валидация параметров перед выполнением
-  - Конвертация в формат DeepSeek Tool Calls
+  - Конвертация в формат OpenAI Tool Calls format (совместимо с DeepSeek, Qwen, и др.)
 
 - **MCP Server** (`mcp_server.py`)
   - ROS 2 нода для управления инструментами
@@ -27,8 +27,8 @@
   - Обработка запросов на выполнение (`/mcp/execute`)
   - Публикация результатов (`/mcp/result`)
 
-- **DeepSeek Adapter** (`deepseek_adapter.py`)
-  - Интеграция с DeepSeek Tool Calls API
+- **DeepSeek Adapter** (`llm_adapter.py`)
+  - Интеграция с OpenAI Tool Calls format (совместимо с DeepSeek, Qwen, и др.) API
   - Обработка tool_calls из streaming ответов
   - Синхронное и асинхронное выполнение инструментов
 
@@ -81,14 +81,14 @@
 │  │ 1. Получает список инструментов из /mcp/tools             │ │
 │  │ 2. Формирует запрос к DeepSeek с tools parameter          │ │
 │  │ 3. Обрабатывает tool_calls из streaming ответа            │ │
-│  │ 4. Выполняет инструменты через DeepSeekToolCallAdapter    │ │
+│  │ 4. Выполняет инструменты через LLMToolCallAdapter    │ │
 │  │ 5. Отправляет результаты обратно в LLM                    │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └──────────┬──────────────────────────────────────────────────────┘
            │
            ▼
     ┌──────────────┐
-    │ DeepSeek API │ ← Streaming + Tool Calls
+    │ LLM API │ ← Streaming + Tool Calls
     └──────────────┘
            │
            │ tool_calls
@@ -133,7 +133,7 @@
    - Получает "иди к кухне"
    - Формирует messages для LLM с system prompt и историей
    - Добавляет `tools` parameter со списком инструментов
-4. **DeepSeek API**: 
+4. **LLM API**: 
    - Анализирует запрос
    - Решает использовать `navigate_to_waypoint`
    - Возвращает `tool_call` в streaming ответе
@@ -178,14 +178,14 @@ Node(
 #### 2.1. Импорты
 
 ```python
-from rob_box_mcp_tools.deepseek_adapter import DeepSeekToolCallAdapter
+from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 ```
 
 #### 2.2. Инициализация в `__init__`
 
 ```python
 # MCP Integration
-self.mcp_adapter = DeepSeekToolCallAdapter(self)
+self.mcp_adapter = LLMToolCallAdapter(self)
 self.tools_sub = self.create_subscription(
     String, "/mcp/tools", self.on_tools_update, 10
 )
@@ -489,7 +489,7 @@ def handle_navigate(self, command: Command):
 ## 📚 Ссылки на документацию
 
 - [MCP Tools README](../src/rob_box_mcp_tools/README.md)
-- [DeepSeek Tool Calls API](https://api-docs.deepseek.com/guides/tool_calls)
+- [OpenAI Tool Calls format (совместимо с DeepSeek, Qwen, и др.) API](https://api-docs.deepseek.com/guides/tool_calls)
 - [Пример интеграции с dialogue_node](../src/rob_box_mcp_tools/examples/dialogue_node_mcp_integration.py)
 - [Rob Box Architecture](../docs/architecture/SYSTEM_OVERVIEW.md)
 
@@ -499,7 +499,7 @@ def handle_navigate(self, command: Command):
 
 - ✅ Создана модульная архитектура MCP tools
 - ✅ Реализовано 18 инструментов в 6 категориях
-- ✅ Полная интеграция с DeepSeek Tool Calls API
+- ✅ Полная интеграция с OpenAI Tool Calls format (совместимо с DeepSeek, Qwen, и др.) API
 - ✅ Документация и примеры готовы к использованию
 - ✅ Готово к интеграции в production код
 
