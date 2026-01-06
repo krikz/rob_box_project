@@ -32,6 +32,12 @@ from .tools import (
     GetRobotStatusTool,
     GetPerceptionContextTool,
     GetBatteryLevelTool,
+    StartMappingTool,
+    ContinueMappingTool,
+    FinishMappingTool,
+    PlayAnimationTool,
+    SetEmotionTool,
+    PlaySoundTool,
 )
 
 
@@ -97,6 +103,18 @@ class MCPServer(Node):
         self.battery_tool = GetBatteryLevelTool(self)
         self.registry.register(self.perception_context_tool)
         self.registry.register(self.battery_tool)
+
+        # Mapping tools
+        self.registry.register(StartMappingTool(self))
+        self.registry.register(ContinueMappingTool(self))
+        self.registry.register(FinishMappingTool(self))
+
+        # Animation tools
+        self.registry.register(PlayAnimationTool(self))
+        self.registry.register(SetEmotionTool(self))
+
+        # Sound tools
+        self.registry.register(PlaySoundTool(self))
 
     def publish_tools(self):
         """Публикация списка доступных инструментов в формате DeepSeek"""
