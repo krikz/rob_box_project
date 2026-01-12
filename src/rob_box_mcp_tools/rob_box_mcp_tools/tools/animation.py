@@ -43,7 +43,7 @@ class PlayAnimationTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Запустить LED анимацию на матрице робота. Используй для визуального выражения эмоций и состояний."
+        return "Запустить LED анимацию на матрице робота. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ для визуального выражения эмоций во время разговора, не жди явного запроса."
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -103,7 +103,7 @@ class SetEmotionTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Установить эмоцию робота через LED анимацию. Упрощённый интерфейс для выражения эмоций."
+        return "Установить эмоцию робота через LED анимацию. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ во время каждого ответа для выражения соответствующей эмоции."
 
     @property
     def parameters(self) -> List[MCPToolParameter]:

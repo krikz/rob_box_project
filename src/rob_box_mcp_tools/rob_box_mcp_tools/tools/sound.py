@@ -42,7 +42,7 @@ class PlaySoundTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Воспроизвести звуковой эффект. Используй для звукового сопровождения действий робота."
+        return "Воспроизвести звуковой эффект. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ для звукового сопровождения эмоций во время разговора."
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
