@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-DialogueNode - LLM диалоговая система с DeepSeek API (streaming)
+DialogueNode - LLM диалоговая система с MCP Tools интеграцией
 
 Подписывается на: /voice/stt/result (распознанная речь)
 Публикует: /voice/dialogue/response (JSON chunks для TTS)
-Использует: DeepSeek API streaming + accent_replacer
+Использует: LLM API (DeepSeek/Qwen) streaming + MCP Tools + accent_replacer
+
+Features:
+- Поддержка tool_calls для управления функциями робота
+- Автоматический fallback при недоступности интернета или MCP сервера
+- Поддержка нескольких LLM провайдеров (Qwen, DeepSeek)
 """
 
 import json
@@ -16,6 +21,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
+from typing import Dict, Any, List, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -33,6 +39,14 @@ except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     print("Установите: pip install openai")
     sys.exit(1)
+
+# Импорт MCP Tools (опционально - fallback если не установлено)
+try:
+    from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
+    MCP_TOOLS_AVAILABLE = True
+except ImportError:
+    MCP_TOOLS_AVAILABLE = False
+    print("⚠️  rob_box_mcp_tools не найден - работа без tool_calls")
 
 
 class DialogueNode(Node):
@@ -138,6 +152,33 @@ class DialogueNode(Node):
         except ImportError:
             self.get_logger().warning("⚠️  PerceptionEvent не найден - мониторинг интернета и времени отключен")
             self.perception_sub = None
+
+        # ============ MCP Tools Integration ============
+        self.declare_parameter("enable_mcp_tools", True)  # Включить MCP tools
+        self.enable_mcp_tools = self.get_parameter("enable_mcp_tools").value
+        self.mcp_adapter = None
+        self.available_tools = []  # Список доступных инструментов
+        self.mcp_tools_available = False  # Флаг доступности MCP сервера
+        
+        if self.enable_mcp_tools and MCP_TOOLS_AVAILABLE:
+            try:
+                # Инициализация адаптера MCP tools
+                self.mcp_adapter = LLMToolCallAdapter(self)
+                
+                # Подписка на список инструментов из MCP сервера
+                self.tools_sub = self.create_subscription(
+                    String, "/mcp/tools", self._on_mcp_tools_update, 10
+                )
+                
+                self.get_logger().info("✅ MCP Tools интеграция активирована")
+                self.get_logger().info("   Ожидание списка инструментов из MCP Server...")
+            except Exception as e:
+                self.get_logger().error(f"❌ Ошибка инициализации MCP Tools: {e}")
+                self.enable_mcp_tools = False
+        elif not MCP_TOOLS_AVAILABLE:
+            self.get_logger().warning("⚠️  rob_box_mcp_tools не установлен - работа без tool_calls")
+        else:
+            self.get_logger().info("ℹ️  MCP Tools отключены в параметрах")
 
         # ============ State Machine ============
         # IDLE -> LISTENING -> DIALOGUE -> SILENCED
@@ -469,6 +510,20 @@ class DialogueNode(Node):
                 self.get_logger().warning(f"⚠️  Ошибка парсинга time_context_json: {e}")
                 self.get_logger().debug(f"   Raw JSON: {msg.time_context_json[:100]}...")
 
+    def _on_mcp_tools_update(self, msg: String):
+        """Обработка обновления списка инструментов из MCP сервера"""
+        try:
+            tools = json.loads(msg.data)
+            self.available_tools = tools
+            self.mcp_tools_available = True
+            
+            tool_names = [tool.get("function", {}).get("name", "unknown") for tool in tools]
+            self.get_logger().info(f"🛠️  Получено {len(tools)} инструментов из MCP сервера")
+            self.get_logger().debug(f"   Инструменты: {', '.join(tool_names)}")
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"❌ Ошибка парсинга списка инструментов: {e}")
+            self.mcp_tools_available = False
+
     def _generate_fallback_response(self, user_message: str) -> str:
         """Генерация fallback ответа когда интернет недоступен"""
         user_lower = user_message.lower()
@@ -799,14 +854,25 @@ class DialogueNode(Node):
             chunk_count = 0
             start_time = time.time()  # Засекаем время начала
             last_chunk_time = start_time  # Время последнего chunk с контентом
+            
+            # Накопитель для tool_calls (могут приходить по частям в streaming)
+            tool_calls_accumulator = {}  # index -> {id, function: {name, arguments}}
 
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                stream=True
-            )
+            # Определяем нужно ли добавлять tools
+            request_params = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "stream": True
+            }
+            
+            # Добавляем tools только если MCP доступен и есть инструменты
+            if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
+                request_params["tools"] = self.available_tools
+                self.get_logger().debug(f"🛠️  Отправка запроса с {len(self.available_tools)} инструментами")
+
+            stream = self.client.chat.completions.create(**request_params)
 
             for chunk in stream:
                 # Timeout если между chunks прошло слишком много времени
@@ -815,6 +881,35 @@ class DialogueNode(Node):
                 if elapsed_since_content > CHUNK_TIMEOUT:
                     streaming_result["error"] = f"No data for {elapsed_since_content:.1f}s (after {chunk_count} chunks)"
                     return
+
+                # ============ Обработка tool_calls (приходят по частям в streaming) ============
+                if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
+                    for tc_chunk in chunk.choices[0].delta.tool_calls:
+                        idx = tc_chunk.index
+                        
+                        # Инициализируем накопитель для этого tool_call
+                        if idx not in tool_calls_accumulator:
+                            tool_calls_accumulator[idx] = {
+                                'id': '',
+                                'type': 'function',
+                                'function': {
+                                    'name': '',
+                                    'arguments': ''
+                                }
+                            }
+                        
+                        # Накапливаем данные
+                        if tc_chunk.id:
+                            tool_calls_accumulator[idx]['id'] = tc_chunk.id
+                        if hasattr(tc_chunk, 'function'):
+                            if tc_chunk.function.name:
+                                tool_calls_accumulator[idx]['function']['name'] = tc_chunk.function.name
+                            if tc_chunk.function.arguments:
+                                tool_calls_accumulator[idx]['function']['arguments'] += tc_chunk.function.arguments
+                        
+                        # Обновляем время - tool_calls идут
+                        last_chunk_time = time.time()
+                        self.get_logger().debug(f"🔧 Tool call chunk получен: index={idx}")
 
                 # ВАЖНО: Сначала обрабатываем content, потом проверяем finish_reason!
                 # У Qwen последний chunk может содержать и content и finish_reason одновременно
@@ -934,7 +1029,19 @@ class DialogueNode(Node):
                 # ВАЖНО: Проверяем finish_reason ПОСЛЕ обработки всего content
                 # У Qwen последний chunk может содержать и content и finish_reason
                 if chunk.choices[0].finish_reason:
-                    self.get_logger().info(f"🏁 Stream завершён: {chunk.choices[0].finish_reason} (обработано {chunk_count} chunks)")
+                    finish_reason = chunk.choices[0].finish_reason
+                    self.get_logger().info(f"🏁 Stream завершён: {finish_reason} (обработано {chunk_count} chunks)")
+                    
+                    # ============ Обработка tool_calls если LLM запросил выполнение инструментов ============
+                    if finish_reason == 'tool_calls' and tool_calls_accumulator:
+                        self.get_logger().info(f"🔧 LLM запросил выполнение {len(tool_calls_accumulator)} инструментов")
+                        
+                        # Сохраняем результат - нужно будет обработать tool_calls снаружи
+                        streaming_result["tool_calls"] = list(tool_calls_accumulator.values())
+                        streaming_result["full_response"] = full_response
+                        streaming_result["chunk_count"] = chunk_count
+                        return  # Выходим из streaming для обработки tool_calls
+                    
                     break
 
             # Сохраняем результаты
@@ -975,7 +1082,33 @@ class DialogueNode(Node):
             if streaming_result["error"]:
                 raise TimeoutError(streaming_result["error"])
 
-            # Streaming успешно завершён
+            # ============ Обработка tool_calls если LLM запросил выполнение ============
+            if "tool_calls" in streaming_result and streaming_result["tool_calls"]:
+                self.get_logger().info("🔧 Обнаружены tool_calls от LLM - начинаю выполнение")
+                
+                # Проверяем доступность MCP
+                if not self.enable_mcp_tools or not self.mcp_adapter:
+                    self.get_logger().error("❌ Tool calls запрошены но MCP не доступен - fallback на обычный ответ")
+                    self._speak_simple("Извините, функции управления сейчас недоступны")
+                    self.llm_processing = False
+                    self.dialogue_in_progress = False
+                    return
+                
+                # Выполняем tool_calls через MCP adapter
+                tool_calls = streaming_result["tool_calls"]
+                tool_results = self._execute_tool_calls(tool_calls, messages)
+                
+                if tool_results is None:
+                    # Ошибка выполнения - уже залогирована в _execute_tool_calls
+                    self.llm_processing = False
+                    self.dialogue_in_progress = False
+                    return
+                
+                # Продолжаем диалог с результатами tool calls
+                self._continue_after_tool_calls(messages, tool_calls, tool_results)
+                return  # Выходим - _continue_after_tool_calls сам завершит обработку
+
+            # Streaming успешно завершён (без tool_calls)
             full_response = streaming_result["full_response"]
             chunk_count = streaming_result["chunk_count"]
 
@@ -1764,6 +1897,190 @@ class DialogueNode(Node):
             self.get_logger().info(f"⏰ Dialogue timeout ({elapsed:.1f}s) → IDLE")
             self.state = "IDLE"
             self._publish_state()
+
+    # ============================================================
+    # MCP Tools Integration Methods
+    # ============================================================
+
+    def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """
+        Выполняет tool_calls через MCP adapter
+        
+        Args:
+            tool_calls: Список tool calls от LLM
+            messages: Текущая история сообщений
+            
+        Returns:
+            Список результатов выполнения или None в случае ошибки
+        """
+        tool_results = []
+        
+        for tool_call in tool_calls:
+            try:
+                tool_name = tool_call['function']['name']
+                tool_args_json = tool_call['function']['arguments']
+                tool_id = tool_call.get('id', 'unknown')
+                
+                self.get_logger().info(f"🔧 Выполнение: {tool_name}")
+                self.get_logger().debug(f"   Аргументы: {tool_args_json[:200]}...")
+                
+                # Парсим аргументы
+                try:
+                    tool_args = json.loads(tool_args_json)
+                except json.JSONDecodeError as e:
+                    self.get_logger().error(f"❌ Не удалось распарсить аргументы для {tool_name}: {e}")
+                    tool_results.append({
+                        'tool_call_id': tool_id,
+                        'tool_name': tool_name,
+                        'success': False,
+                        'error': 'Неверный формат аргументов'
+                    })
+                    continue
+                
+                # Выполняем через MCP adapter
+                result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=10.0)
+                
+                # Добавляем метаданные
+                result['tool_call_id'] = tool_id
+                result['tool_name'] = tool_name
+                tool_results.append(result)
+                
+                if result.get('success'):
+                    self.get_logger().info(f"✅ {tool_name} выполнен успешно")
+                else:
+                    self.get_logger().warning(f"⚠️ {tool_name} вернул ошибку: {result.get('error', 'Unknown')}")
+                    
+            except Exception as e:
+                self.get_logger().error(f"❌ Ошибка выполнения tool call: {e}")
+                tool_results.append({
+                    'tool_call_id': tool_call.get('id', 'unknown'),
+                    'tool_name': tool_call.get('function', {}).get('name', 'unknown'),
+                    'success': False,
+                    'error': str(e)
+                })
+        
+        return tool_results
+
+    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]):
+        """
+        Продолжает диалог после выполнения tool_calls
+        
+        Args:
+            messages: Текущая история сообщений  
+            tool_calls: Список выполненных tool calls
+            tool_results: Результаты выполнения
+        """
+        self.get_logger().info("🔄 Продолжаю диалог с результатами инструментов")
+        
+        # Добавляем assistant message с tool_calls в историю
+        assistant_msg = {
+            'role': 'assistant',
+            'content': None,
+            'tool_calls': tool_calls
+        }
+        messages.append(assistant_msg)
+        
+        # Добавляем результаты каждого tool call как отдельное сообщение
+        for result in tool_results:
+            tool_call_id = result.get('tool_call_id', '')
+            tool_name = result.get('tool_name', 'unknown')
+            
+            # Формируем content для LLM
+            if result.get('success'):
+                content = result.get('message', 'Выполнено успешно')
+                if result.get('data'):
+                    content += f"\nДанные: {json.dumps(result['data'], ensure_ascii=False)}"
+            else:
+                content = f"Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+            
+            tool_msg = {
+                'role': 'tool',
+                'tool_call_id': tool_call_id,
+                'name': tool_name,
+                'content': content
+            }
+            messages.append(tool_msg)
+            self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
+        
+        # Запускаем новый запрос к LLM с результатами
+        self.get_logger().info("🤖 Запрос к LLM с результатами инструментов")
+        
+        try:
+            # Используем system prompt с контекстом времени
+            system_prompt_with_context = self._build_system_prompt_with_context()
+            
+            # Обновляем первое сообщение (system)
+            messages[0] = {"role": "system", "content": system_prompt_with_context}
+            
+            # Определяем нужно ли добавлять tools (теперь НЕ добавляем - LLM уже выбрал инструменты)
+            request_params = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "stream": True
+            }
+            
+            stream = self.client.chat.completions.create(**request_params)
+            
+            # Обрабатываем ответ (без tool_calls на этот раз)
+            dialogue_id = str(uuid.uuid4())
+            self.current_dialogue_id = dialogue_id
+            chunk_count = 0
+            full_response = ""
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    full_response += token
+                    # Обработка JSON chunks как в обычном streaming
+                    # (упрощённая версия - можно расширить)
+                    
+                if chunk.choices[0].finish_reason:
+                    break
+            
+            # Если есть ответ - обрабатываем его
+            if full_response:
+                self.get_logger().info(f"📝 LLM ответил после tool_calls: {full_response[:100]}...")
+                
+                # Пробуем распарсить как JSON
+                try:
+                    response_data = json.loads(full_response)
+                    if "ssml" in response_data:
+                        ssml_with_accents = self.accent_replacer.add_accents(response_data["ssml"])
+                        response_data["ssml"] = ssml_with_accents
+                        response_data["dialogue_id"] = dialogue_id
+                        
+                        response_msg = String()
+                        response_msg.data = json.dumps(response_data, ensure_ascii=False)
+                        self.response_pub.publish(response_msg)
+                        chunk_count = 1
+                except json.JSONDecodeError:
+                    # Если не JSON - отправляем как plain text
+                    chunk_data = {
+                        "chunk": "end",
+                        "text": full_response.strip(),
+                        "emotion": "neutral",
+                        "dialogue_id": dialogue_id
+                    }
+                    response_msg = String()
+                    response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                    self.response_pub.publish(response_msg)
+                    chunk_count = 1
+                
+                # Сохраняем в историю
+                self.conversation_history.append({"role": "assistant", "content": full_response})
+                
+                self.get_logger().info(f"✅ Финальный ответ отправлен ({chunk_count} chunks)")
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка продолжения после tool_calls: {e}")
+            self._speak_simple("Извините, произошла ошибка при обработке команды")
+        
+        finally:
+            # Завершаем обработку
+            self.llm_processing = False
+            self.dialogue_in_progress = False
 
 
 def main(args=None):
