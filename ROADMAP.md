@@ -42,27 +42,25 @@
 ### 🔥 Tier S - Cutting Edge (На пике технологий, высокий спрос)
 
 **Реализовано:**
-- ✅ **Voice Assistant с LLM** - DeepSeek + Vosk STT + Silero TTS (offline-first)
-- ✅ **Internal Dialogue** - AI размышления без wake word, context-aware
+- ✅ **Voice Assistant с LLM** - DeepSeek/Qwen + Vosk STT + Silero TTS (offline fallback)
 - ✅ **Zenoh DDS** - современная альтернатива CycloneDDS с облачной интеграцией
 - ✅ **Build Machine** - локальная CI/CD инфраструктура (10-20x ускорение)
 - ✅ **Dual Raspberry Pi 5** - распределённая обработка (16GB + 8GB)
 
 **Планируется:**
 - 🔮 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (как в PR #362)
-- 🔮 **Vision Language Models** - multimodal AI для понимания сцены (GPT-4V/Claude/LLaVA)
 - 🔮 **AI HAT (Hailo-8L NPU)** - hardware-accelerated inference для YOLO (10-30x speedup)
 - 🔮 **Stereo Visual Odometry** - visual SLAM от OAK-D камеры
 - 🔮 **Sensor Fusion (EKF)** - объединение всех источников одометрии
+- 🔮 **Self-Hosted LLM Infrastructure** - собственные сервера для LLM моделей
 
 ### 💎 Tier A - Advanced (Продвинутые, востребованные)
 
 **Реализовано:**
 - ✅ **RTAB-Map SLAM** - RGB-D + 2D LiDAR fusion с оптимизацией для Pi
-- ✅ **Nav2 Navigation** - автономная навигация с obstacle avoidance
+- ✅ **Nav2 Navigation** - автономная навигация с obstacle avoidance (⚠️ в процессе оптимизации)
 - ✅ **Monitoring Stack** - Grafana + Prometheus + Loki (20+ dashboard panels)
 - ✅ **381 LED Matrix** - композитор панелей с анимациями и эмоциями
-- ✅ **Context Aggregator** - MPC lite для AI агента
 
 **Планируется:**
 - 🔮 **Semantic Mapping** - разметка карты с точками интереса (kitchen, bedroom, charging station)
@@ -70,6 +68,8 @@
 - 🔮 **Dynamic Obstacle Avoidance** - real-time детекция и prediction траекторий людей
 - 🔮 **Ceiling AprilTag Localization** - абсолютное позиционирование без дрейфа
 - 🔮 **Client App** - Web/Mobile для заказа доставки с tracking
+- 🔮 **Face Recognition & User Database** - распознавание лиц и база пользователей
+- 🔮 **QR Code Authorization** - авторизация по QR-коду для доступа к грузу
 
 ### 🛠️ Tier B - Solid (Надёжные, проверенные)
 
@@ -93,18 +93,8 @@
 **Планируется:**
 - 🔮 **UWB Localization** - ultra-wideband для больших помещений/улицы (10-30 см точность)
 - 🔮 **RTK GPS** - для работы на открытых территориях (1-2 см точность)
-- 🔮 **Reinforcement Learning** - learned policies для навигации (Sim2Real)
 - 🔮 **Multi-Floor Navigation** - elevator detection, 3D mapping
 - 🔮 **Multi-Robot Fleet** - координация нескольких роботов, charging queue
-
-### 📊 Статистика по тирам
-
-| Tier | Реализовано | Планируется | Технологическая зрелость | Востребованность |
-|------|-------------|-------------|--------------------------|------------------|
-| **S** | 5 фич | 5 фич | 🔥🔥🔥 Cutting-edge | ⭐⭐⭐ Очень высокая |
-| **A** | 5 фич | 5 фич | 💎💎 Advanced | ⭐⭐ Высокая |
-| **B** | 6 фич | 5 фич | 🛠️ Solid | ⭐ Средняя |
-| **C** | 0 фич | 5 фич | 🔬 Experimental | 💡 Нишевая |
 
 ---
 
@@ -305,8 +295,8 @@
 **Стек:** DepthAI, depthai-ros  
 **Документация:** `docs/development/BUILD_OPTIMIZATION.md`
 
-#### ✅ Context Aggregator (MPC Lite)
-- **Централизованное хранилище контекста** робота
+#### 🔄 Context Aggregator (MPC Lite)
+- **Централизованное хранилище контекста** робота (⚠️ в процессе доработки)
 - **События от всех систем:**
   - Vision события (object detection, person detection)
   - Sensor events (температура, вес, RPM вентиляторов)
@@ -318,8 +308,8 @@
 **Пакет:** `rob_box_perception`  
 **Документация:** `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`
 
-#### ✅ Health Monitor
-- **Мониторинг температуры** компонентов (8× AHT30 сенсоров)
+#### 🔄 Health Monitor
+- **Мониторинг температуры** компонентов (8× AHT30 сенсоров) (⚠️ требует переработки)
 - **Контроль оборотов вентиляторов** (RPM monitoring)
 - **Измерение веса груза** (HX711 тензодатчик)
 - **Публикация событий** при аномалиях (overheating, fan failure)
@@ -367,29 +357,32 @@
 
 ### 🤖 Взаимодействие с пользователем
 
-#### ✅ Голосовой ассистент (Voice Assistant)
+#### 🔄 Голосовой ассистент (Voice Assistant)
 - **Wake word detection:** робок, робот, роббокс, робокос (6 вариантов)
 - **Speech-to-Text (STT):** Vosk offline модель для русского языка
 - **Text-to-Speech (TTS):** Silero V4 (качественный русский голос)
-- **Dialogue с LLM:** интеграция с DeepSeek через API
+- **Dialogue с LLM:** 
+  - Основные модели: DeepSeek, Qwen (через API)
+  - Локальные модели используются как fallback при недоступности облачных
+  - 🔮 **В планах:** собственные сервера для размещения LLM моделей
 - **Command execution:** распознавание и выполнение команд навигации
 - **Hardware AEC:** подавление эха на ReSpeaker Mic Array
 - **Команда "помолчи":** переход в SILENCED режим
 - **Time awareness:** робот знает текущее время и дату
 - **Синхронизация TTS чанков:** dialogue_id для предотвращения смешивания между сеансами
 
-**Стек:** Vosk, Silero, DeepSeek, ReSpeaker  
+**Стек:** Vosk, Silero, DeepSeek/Qwen, ReSpeaker  
 **Пакет:** `rob_box_voice`  
 **Документация:** `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`
 
-#### ✅ Internal Dialogue (Внутренний диалог)
-- **Постоянное размышление** без wake word
+#### 🔄 Internal Dialogue (Внутренний диалог)
+- **Постоянное размышление** без wake word (⚠️ в процессе доработки)
 - **Context-aware:** получает события от Context Aggregator
 - **Может вмешаться** когда релевантно (даже без wake word)
 - **Продолжает работу** даже в SILENCED режиме
 - **Reflection mechanism:** анализ событий и принятие решений
 
-**Стек:** DeepSeek, Python  
+**Стек:** DeepSeek/Qwen, Python  
 **Пакет:** `rob_box_perception`  
 **Документация:** `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`
 
@@ -560,6 +553,7 @@
   - YOLO (YOLOv5, YOLOv8, YOLOv11) для object detection
   - Segmentation models для семантической сегментации
   - Pose estimation для детекции людей
+  - Face recognition для идентификации пользователей
   - Custom models для специфичных задач
 - **Преимущества:**
   - Ускорение inference в 10-30x по сравнению с CPU
@@ -568,6 +562,8 @@
 - **Use cases:**
   - Real-time object detection для навигации
   - Person detection для social navigation
+  - Face recognition и user database
+  - QR code recognition для авторизации
   - Gesture recognition для взаимодействия
   - Package/cargo recognition для доставки
 
@@ -600,9 +596,14 @@
 - **Object recognition** через multimodal LLM
 - **Visual question answering:** "Что на столе?"
 - **Grounding:** связывание текстовых описаний с визуальными объектами
+- **Требования к ресурсам:**
+  - Модели типа LLaVA-1.5 (7B): ~14GB VRAM
+  - Qwen-VL: ~8-16GB VRAM в зависимости от версии
+  - Для Raspberry Pi: inference через облачные API (GPT-4V, Claude 3)
+  - Альтернатива: квантизованные модели на отдельном GPU-сервере
 
-**Технологии:** GPT-4V, Claude 3, LLaVA, Qwen-VL  
-**Зависимости:** OAK-D camera  
+**Технологии:** GPT-4V/Claude 3 (облачные), LLaVA/Qwen-VL (локальные на GPU-сервере)  
+**Зависимости:** OAK-D camera, GPU-сервер (опционально для локальных моделей)  
 **Приоритет:** 🟡 Средний
 
 #### 🔮 Behavior Tree планирование
@@ -610,20 +611,11 @@
 - **Reactive behaviors:** быстрая реакция на события
 - **Композируемые behaviors:** переиспользование подзадач
 - **Groot visualization:** визуальное редактирование деревьев
+- **Железо:** работает на Raspberry Pi (Nav2 уже использует BehaviorTree.CPP)
 
 **Технологии:** BehaviorTree.CPP, Groot  
 **Зависимости:** Nav2 (уже использует BT)  
 **Приоритет:** 🟡 Средний
-
-#### 🔮 Reinforcement Learning для навигации
-- **Learned policies** для избежания препятствий
-- **Sim2Real transfer:** обучение в симуляции, применение на роботе
-- **Adaptive behavior:** улучшение с опытом
-- **Use case:** сложные сценарии навигации (узкие проходы, толпа)
-
-**Технологии:** PyTorch, Stable Baselines3, Isaac Sim/Gazebo  
-**Зависимости:** Simulator, Nav2  
-**Приоритет:** ⚪ Низкий (исследовательская задача)
 
 ---
 
@@ -721,13 +713,18 @@
 **Зависимости:** Monitoring system (уже есть)  
 **Приоритет:** ⚪ Низкий
 
-#### 🔮 OTA Updates
-- **Over-The-Air обновление** Docker образов
-- **Rollback mechanism:** автоматический откат при сбое
-- **Staged rollout:** постепенное обновление флота
-- **Version management:** контроль версий на каждом роботе
+#### ✅ OTA Updates (реализовано через Docker)
+- **Over-The-Air обновление** Docker образов (уже работает)
+  - Pull свежих образов из registry
+  - Restart контейнеров с новыми версиями
+  - Используется через `docker compose pull && docker compose up -d`
+- 🔮 **Планируется улучшение:**
+  - Автоматический rollback при сбое
+  - Staged rollout для постепенного обновления флота
+  - Version management и контроль версий на каждом роботе
+  - Интеграция с Watchtower для автоматических обновлений
 
-**Технологии:** Watchtower, Docker, GitHub Actions  
+**Технологии:** Docker, Docker Compose, Watchtower (планируется)  
 **Зависимости:** CI/CD (уже есть)  
 **Приоритет:** 🟡 Средний
 
@@ -835,7 +832,7 @@
 
 ## Этапы развития
 
-### 🎯 Этап 1: Базовая автономия (ЗАВЕРШЁН ✅)
+### 🎯 Этап 1: Базовая автономия (В ПРОЦЕССЕ ДОРАБОТКИ 🔄)
 **Цель:** Робот может самостоятельно перемещаться в помещении
 
 - [x] Построение карты помещения (RTAB-Map SLAM)
@@ -846,8 +843,9 @@
 - [x] Распределённая архитектура (2× Raspberry Pi)
 - [x] CI/CD pipeline для автоматической сборки
 - [x] Система мониторинга (Grafana, Prometheus, Loki)
+- [ ] **Оптимизация скорости навигации** - замена колёс на более медленные для улучшения планирования траектории
 
-**Статус:** ✅ Реализовано (Октябрь 2025)
+**Статус:** ⚠️ В процессе оптимизации (Октябрь 2025)
 
 ---
 
@@ -855,10 +853,11 @@
 **Цель:** Робот понимает речь и может поддерживать диалог
 
 - [x] Голосовой ассистент с wake word detection
-- [x] STT + TTS (offline)
-- [x] Dialogue с LLM (DeepSeek)
-- [x] Internal Dialogue (рефлексия)
-- [x] Context Aggregator для хранения событий
+- [x] STT + TTS (offline/cloud hybrid)
+- [x] Dialogue с LLM (DeepSeek/Qwen)
+- [x] LED индикация и анимации
+- [ ] **Internal Dialogue (рефлексия)** - в процессе доработки
+- [ ] **Context Aggregator** - в процессе доработки
 - [ ] **Semantic mapping** - разметка карты с точками доставки
 - [ ] **Голосовые команды навигации** - "Иди на кухню"
 - [ ] **LLM-powered агент** для автономного поведения
