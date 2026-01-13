@@ -31,6 +31,80 @@
   - [Расширение инфраструктуры](#расширение-инфраструктуры)
 - [Технологический стек](#технологический-стек)
 - [Этапы развития](#этапы-развития)
+- [⭐ Быстрый обзор фич по тирам](#-быстрый-обзор-фич-по-тирам)
+
+---
+
+## ⭐ Быстрый обзор фич по тирам
+
+Упрощенный список ключевых фич без дублей, организованных по актуальности и технологической продвинутости.
+
+### 🔥 Tier S - Cutting Edge (На пике технологий, высокий спрос)
+
+**Реализовано:**
+- ✅ **Voice Assistant с LLM** - DeepSeek + Vosk STT + Silero TTS (offline-first)
+- ✅ **Internal Dialogue** - AI размышления без wake word, context-aware
+- ✅ **Zenoh DDS** - современная альтернатива CycloneDDS с облачной интеграцией
+- ✅ **Build Machine** - локальная CI/CD инфраструктура (10-20x ускорение)
+- ✅ **Dual Raspberry Pi 5** - распределённая обработка (16GB + 8GB)
+
+**Планируется:**
+- 🔮 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (как в PR #362)
+- 🔮 **Vision Language Models** - multimodal AI для понимания сцены (GPT-4V/Claude/LLaVA)
+- 🔮 **AI HAT (Hailo-8L NPU)** - hardware-accelerated inference для YOLO (10-30x speedup)
+- 🔮 **Stereo Visual Odometry** - visual SLAM от OAK-D камеры
+- 🔮 **Sensor Fusion (EKF)** - объединение всех источников одометрии
+
+### 💎 Tier A - Advanced (Продвинутые, востребованные)
+
+**Реализовано:**
+- ✅ **RTAB-Map SLAM** - RGB-D + 2D LiDAR fusion с оптимизацией для Pi
+- ✅ **Nav2 Navigation** - автономная навигация с obstacle avoidance
+- ✅ **Monitoring Stack** - Grafana + Prometheus + Loki (20+ dashboard panels)
+- ✅ **381 LED Matrix** - композитор панелей с анимациями и эмоциями
+- ✅ **Context Aggregator** - MPC lite для AI агента
+
+**Планируется:**
+- 🔮 **Semantic Mapping** - разметка карты с точками интереса (kitchen, bedroom, charging station)
+- 🔮 **Auto-Docking Station** - визуальная локализация + зарядка (±1-2 см точность)
+- 🔮 **Dynamic Obstacle Avoidance** - real-time детекция и prediction траекторий людей
+- 🔮 **Ceiling AprilTag Localization** - абсолютное позиционирование без дрейфа
+- 🔮 **Client App** - Web/Mobile для заказа доставки с tracking
+
+### 🛠️ Tier B - Solid (Надёжные, проверенные)
+
+**Реализовано:**
+- ✅ **VESC Motor Control** - CAN Bus управление с wheel odometry (50 Hz)
+- ✅ **ros2_control** - стандартный hardware interface для моторов
+- ✅ **OAK-D Lite** - RGB-D камера с оптимизацией трафика (~85% сжатие)
+- ✅ **AprilTag Detection** - визуальные маркеры для локализации
+- ✅ **ESP32 Sensor Hub** - температура, вес, вентиляторы (micro-ROS)
+- ✅ **Docker Microservices** - контейнеризация с volume-монтированием конфигов
+
+**Планируется:**
+- 🔮 **Behavior Trees** - иерархическое планирование задач (Groot visualization)
+- 🔮 **Backend API** - управление заказами, routing optimization
+- 🔮 **Cargo Management** - погрузка/разгрузка с weight verification
+- 🔮 **Simulator** - Gazebo/Isaac Sim для тестирования
+- 🔮 **OTA Updates** - over-the-air обновления с rollback
+
+### 🔬 Tier C - Experimental (Исследовательские, нишевые)
+
+**Планируется:**
+- 🔮 **UWB Localization** - ultra-wideband для больших помещений/улицы (10-30 см точность)
+- 🔮 **RTK GPS** - для работы на открытых территориях (1-2 см точность)
+- 🔮 **Reinforcement Learning** - learned policies для навигации (Sim2Real)
+- 🔮 **Multi-Floor Navigation** - elevator detection, 3D mapping
+- 🔮 **Multi-Robot Fleet** - координация нескольких роботов, charging queue
+
+### 📊 Статистика по тирам
+
+| Tier | Реализовано | Планируется | Технологическая зрелость | Востребованность |
+|------|-------------|-------------|--------------------------|------------------|
+| **S** | 5 фич | 5 фич | 🔥🔥🔥 Cutting-edge | ⭐⭐⭐ Очень высокая |
+| **A** | 5 фич | 5 фич | 💎💎 Advanced | ⭐⭐ Высокая |
+| **B** | 6 фич | 5 фич | 🛠️ Solid | ⭐ Средняя |
+| **C** | 0 фич | 5 фич | 🔬 Experimental | 💡 Нишевая |
 
 ---
 
