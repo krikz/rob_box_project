@@ -125,7 +125,7 @@
 ### 🏗️ Инфраструктура
 
 #### ✅ CI/CD Pipeline
-- **GitHub Actions workflows** для автоматической сборки
+- **GitHub Actions workflows** для автоматической сборки (текущее решение)
   - Отдельные workflows для Main Pi и Vision Pi
   - Автоматическая сборка базовых образов (ros2-zenoh, rtabmap, depthai, pcl)
   - Conditional build - сборка только изменённых сервисов
@@ -134,6 +134,7 @@
 - **Docker Registry** интеграция с GitHub Container Registry (ghcr.io)
 - **Semantic versioning** для Docker образов (`-latest`, `-dev`, `-test`, `-rc-X.X.X`)
 - **Скрипт управления тегами** (`scripts/set-docker-tags.sh`)
+- 🔮 **В планах:** переход на собственную CI/CD инфраструктуру для ускорения
 
 **Стек:** GitHub Actions, Docker, ghcr.io  
 **Документация:** `docs/CI_CD_PIPELINE.md`
@@ -728,6 +729,24 @@
 
 **Технологии:** Watchtower, Docker, GitHub Actions  
 **Зависимости:** CI/CD (уже есть)  
+**Приоритет:** 🟡 Средний
+
+#### 🔮 Self-Hosted CI/CD Infrastructure
+- **Собственные мощности** для CI/CD вместо GitHub Actions
+- **Преимущества:**
+  - Значительное ускорение сборки (нативный ARM64 без эмуляции)
+  - Отсутствие лимитов на минуты сборки
+  - Полный контроль над окружением
+  - Интеграция с локальным Build Machine
+- **Компоненты:**
+  - Jenkins/GitLab CI/Drone на выделенном сервере
+  - ARM64 build agents для нативной сборки
+  - Интеграция с локальным Docker Registry
+  - Webhook integration с GitHub
+- **Результат:** 2-5x ускорение по сравнению с GitHub Actions на эмуляции
+
+**Технологии:** Jenkins/GitLab CI/Drone, ARM64 hardware  
+**Зависимости:** Build Machine (уже есть)  
 **Приоритет:** 🟡 Средний
 
 #### 🔮 Multi-robot coordination
