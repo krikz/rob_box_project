@@ -133,6 +133,7 @@
   - ReSpeaker Mic Array v2.0
   - LED Matrix драйвер (381 LEDs)
   - Voice Assistant
+  - 🔮 **AI HAT** (планируется) - для ускорения AI моделей (YOLO, etc.)
 
 **Стек:** Raspberry Pi 5 (2.4GHz ARM Cortex-A76)  
 **Документация:** `docs/architecture/HARDWARE.md`
@@ -401,8 +402,8 @@
 - **Adaptive replanning** при появлении препятствий
 - **Social navigation:** вежливое поведение рядом с людьми
 
-**Технологии:** OAK-D depth, YOLO для детекции людей  
-**Зависимости:** OAK-D, Nav2  
+**Технологии:** OAK-D depth, YOLO для детекции людей, AI HAT для ускорения  
+**Зависимости:** OAK-D, Nav2, AI HAT (опционально)  
 **Приоритет:** 🟡 Средний
 
 #### 🔮 Multi-floor navigation
@@ -477,6 +478,28 @@
 ---
 
 ### 🤖 AI и автономность
+
+#### 🔮 AI HAT для Vision Pi
+- **Hardware-accelerated AI inference** на Raspberry Pi
+- **Поддержка моделей:**
+  - YOLO (YOLOv5, YOLOv8, YOLOv11) для object detection
+  - Segmentation models для семантической сегментации
+  - Pose estimation для детекции людей
+  - Custom models для специфичных задач
+- **Преимущества:**
+  - Ускорение inference в 10-30x по сравнению с CPU
+  - Низкая задержка для real-time обработки
+  - Освобождение CPU для других задач
+- **Use cases:**
+  - Real-time object detection для навигации
+  - Person detection для social navigation
+  - Gesture recognition для взаимодействия
+  - Package/cargo recognition для доставки
+
+**Технологии:** Raspberry Pi AI HAT, Hailo-8L NPU (13 TOPS)  
+**Hardware:** AI HAT (~$70-100)  
+**Зависимости:** Vision Pi, OAK-D camera  
+**Приоритет:** 🔴 Высокий
 
 #### 🔮 LLM-powered агент (как в PR #362)
 - **Полноценный AI агент** для автономного поведения
