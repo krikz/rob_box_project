@@ -48,7 +48,7 @@
 - ✅ **Dual Raspberry Pi 5** - распределённая обработка (16GB + 8GB)
 
 **Планируется:**
-- 🔮 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (как в PR #362)
+- 🔄 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (PR #362, активное тестирование)
 - 🔮 **AI HAT (Hailo-8L NPU)** - hardware-accelerated inference для YOLO (10-30x speedup)
 - 🔮 **Stereo Visual Odometry** - visual SLAM от OAK-D камеры
 - 🔮 **Sensor Fusion (EKF)** - объединение всех источников одометрии
@@ -57,8 +57,8 @@
 ### 💎 Tier A - Advanced (Продвинутые, востребованные)
 
 **Реализовано:**
-- ✅ **RTAB-Map SLAM** - RGB-D + 2D LiDAR fusion с оптимизацией для Pi
-- ✅ **Nav2 Navigation** - автономная навигация с obstacle avoidance (⚠️ в процессе оптимизации)
+- ✅ **RTAB-Map SLAM** - RGB-D + 2D LiDAR fusion с оптимизацией для Pi (🔧 активное тестирование совместимости)
+- ✅ **Nav2 Navigation** - автономная навигация с obstacle avoidance (🔧 активное тестирование настройки и оптимизация)
 - ✅ **Monitoring Stack** - Grafana + Prometheus + Loki (20+ dashboard panels)
 - ✅ **381 LED Matrix** - композитор панелей с анимациями и эмоциями
 
@@ -240,7 +240,7 @@
 
 ### 🗺️ Навигация и локализация
 
-#### ✅ RTAB-Map SLAM
+#### ✅ RTAB-Map SLAM (🔧 активное тестирование совместимости)
 - **RGB-D + 2D LiDAR fusion** для построения карты
 - **3D облако точек + 2D occupancy grid**
 - **Loop closure detection** для коррекции дрейфа
@@ -254,7 +254,7 @@
 **Стек:** RTAB-Map, PCL, OpenCV  
 **Документация:** `docs/guides/MAPPING_PRACTICES_RESEARCH.md`
 
-#### ✅ Nav2 Navigation Stack
+#### ✅ Nav2 Navigation Stack (🔧 активное тестирование настройки и оптимизация)
 - **Глобальное планирование:** NavFn Planner (A* на сетке)
 - **Локальное следование:** DWB Controller (Dynamic Window Approach)
 - **Избежание препятствий:** Local/Global Costmaps
@@ -572,7 +572,7 @@
 **Зависимости:** Vision Pi, OAK-D camera  
 **Приоритет:** 🔴 Высокий
 
-#### 🔮 LLM-powered агент (как в PR #362)
+#### 🔄 LLM-powered агент (PR #362 - в активном тестировании)
 - **Полноценный AI агент** для автономного поведения
 - **Perception → Reasoning → Action** цикл
 - **Multi-modal reasoning:**
