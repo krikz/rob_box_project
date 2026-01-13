@@ -48,7 +48,7 @@
 - ✅ **Dual Raspberry Pi 5** - распределённая обработка (16GB + 8GB)
 
 **Планируется:**
-- 🔄 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (PR #362, активное тестирование)
+- 🔄 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (PR #362, в активной разработке)
 - 🔮 **AI HAT (Hailo-8L NPU)** - hardware-accelerated inference для YOLO (10-30x speedup)
 - 🔮 **Stereo Visual Odometry** - visual SLAM от OAK-D камеры
 - 🔮 **Sensor Fusion (EKF)** - объединение всех источников одометрии
@@ -572,7 +572,7 @@
 **Зависимости:** Vision Pi, OAK-D camera  
 **Приоритет:** 🔴 Высокий
 
-#### 🔄 LLM-powered агент (PR #362 - в активном тестировании)
+#### 🔄 LLM-powered агент (PR #362 - в активной разработке)
 - **Полноценный AI агент** для автономного поведения
 - **Perception → Reasoning → Action** цикл
 - **Multi-modal reasoning:**
