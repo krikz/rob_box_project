@@ -233,6 +233,407 @@ class TestReflectionNodeMemory(unittest.TestCase):
         self.assertEqual(len(self.node.last_sound_time), 0)
 
 
+class TestPersonalQuestions(unittest.TestCase):
+    """Тесты _is_personal_question()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        with patch('rob_box_perception.reflection_node.OpenAI'):
+            self.node = ReflectionNode()
+
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_is_personal_question_kak_dela(self):
+        """Тест: 'как дела' распознается"""
+        self.assertTrue(self.node._is_personal_question("Как дела?"))
+        self.assertTrue(self.node._is_personal_question("Привет, как у тебя дела?"))
+
+    def test_is_personal_question_kak_ty(self):
+        """Тест: 'как ты' распознается"""
+        self.assertTrue(self.node._is_personal_question("Как ты?"))
+
+    def test_is_personal_question_chto_u_tebya(self):
+        """Тест: 'что у тебя' распознается"""
+        self.assertTrue(self.node._is_personal_question("Что у тебя происходит?"))
+
+    def test_is_personal_question_nastroenie(self):
+        """Тест: 'настроение/самочувствие' распознается"""
+        self.assertTrue(self.node._is_personal_question("Как твоё настроение?"))
+        self.assertTrue(self.node._is_personal_question("Как твое самочувствие?"))
+
+    def test_is_personal_question_chto_delaesh(self):
+        """Тест: 'что делаешь' распознается"""
+        self.assertTrue(self.node._is_personal_question("Что делаешь?"))
+
+    def test_is_personal_question_kak_sebya(self):
+        """Тест: 'как себя чувствуешь' распознается"""
+        self.assertTrue(self.node._is_personal_question("Как себя чувствуешь?"))
+
+    def test_is_personal_question_negative(self):
+        """Тест: обычный вопрос НЕ распознается"""
+        self.assertFalse(self.node._is_personal_question("Поехали вперёд"))
+        self.assertFalse(self.node._is_personal_question("Стоп"))
+
+
+class TestSilenceCommand(unittest.TestCase):
+    """Тесты _is_silence_command()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        with patch('rob_box_perception.reflection_node.OpenAI'):
+            self.node = ReflectionNode()
+
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_is_silence_command_pomolchi(self):
+        """Тест: 'помолчи' распознается"""
+        self.assertTrue(self.node._is_silence_command("помолчи"))
+        self.assertTrue(self.node._is_silence_command("Помолчите"))
+
+    def test_is_silence_command_zamolchi(self):
+        """Тест: 'замолчи' распознается"""
+        self.assertTrue(self.node._is_silence_command("замолчи"))
+
+    def test_is_silence_command_hvatit(self):
+        """Тест: 'хватит' распознается"""
+        self.assertTrue(self.node._is_silence_command("хватит"))
+
+    def test_is_silence_command_zakroy(self):
+        """Тест: 'закрой' распознается"""
+        self.assertTrue(self.node._is_silence_command("закройся"))
+
+    def test_is_silence_command_zatknis(self):
+        """Тест: 'заткнись' распознается"""
+        self.assertTrue(self.node._is_silence_command("заткнись"))
+
+    def test_is_silence_command_ne_meshay(self):
+        """Тест: 'не мешай' распознается"""
+        self.assertTrue(self.node._is_silence_command("не мешай мне"))
+
+    def test_is_silence_command_negative(self):
+        """Тест: обычная фраза НЕ распознается"""
+        self.assertFalse(self.node._is_silence_command("Привет"))
+        self.assertFalse(self.node._is_silence_command("Как дела?"))
+
+
+class TestHealthStatusChange(unittest.TestCase):
+    """Тесты _check_health_status_change()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        with patch('rob_box_perception.reflection_node.OpenAI'):
+            self.node = ReflectionNode()
+        self.mock_ctx = MagicMock()
+        self.mock_ctx.system_health_status = 'HEALTHY'
+        self.mock_ctx.health_issues = []
+
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_health_status_change_to_healthy_first_start(self):
+        """Тест: первый запуск (None → HEALTHY)"""
+        with patch.object(self.node, '_publish_speech') as mock_speech:
+            self.mock_ctx.system_health_status = 'HEALTHY'
+            self.node.event_states['health_status'] = None
+            
+            self.node._check_health_status_change(self.mock_ctx)
+            
+            mock_speech.assert_called_once()
+            args = mock_speech.call_args[0][0]
+            self.assertIn('готов к работе', args.lower())
+
+    def test_health_status_change_to_healthy_recovery(self):
+        """Тест: восстановление (DEGRADED → HEALTHY)"""
+        with patch.object(self.node, '_publish_speech') as mock_speech:
+            self.node.event_states['health_status'] = 'DEGRADED'
+            self.mock_ctx.system_health_status = 'HEALTHY'
+            
+            self.node._check_health_status_change(self.mock_ctx)
+            
+            mock_speech.assert_called_once()
+            args = mock_speech.call_args[0][0]
+            self.assertIn('восстановлен', args.lower())
+
+    def test_health_status_change_to_degraded(self):
+        """Тест: ухудшение (HEALTHY → DEGRADED)"""
+        with patch.object(self.node, '_publish_speech') as mock_speech:
+            self.node.event_states['health_status'] = 'HEALTHY'
+            self.mock_ctx.system_health_status = 'DEGRADED'
+            self.mock_ctx.health_issues = ['Low battery', 'High CPU']
+            
+            self.node._check_health_status_change(self.mock_ctx)
+            
+            mock_speech.assert_called_once()
+            args = mock_speech.call_args[0][0]
+            self.assertIn('проблем', args.lower())
+
+    def test_health_status_change_to_unhealthy(self):
+        """Тест: критическое состояние (DEGRADED → UNHEALTHY)"""
+        with patch.object(self.node, '_publish_speech') as mock_speech:
+            self.node.event_states['health_status'] = 'DEGRADED'
+            self.mock_ctx.system_health_status = 'UNHEALTHY'
+            
+            self.node._check_health_status_change(self.mock_ctx)
+            
+            mock_speech.assert_called_once()
+            args = mock_speech.call_args[0][0]
+            self.assertIn('критическ', args.lower())
+
+    def test_health_status_periodic_check_degraded(self):
+        """Тест: periodic check для DEGRADED (1 минута прошла)"""
+        with patch.object(self.node, '_publish_speech') as mock_speech:
+            self.node.event_states['health_status'] = 'DEGRADED'
+            self.node.event_last_reaction['health_status'] = time.time() - 65  # 65 сек назад
+            self.mock_ctx.system_health_status = 'DEGRADED'
+            
+            self.node._check_health_status_change(self.mock_ctx)
+            
+            mock_speech.assert_called_once()
+            args = mock_speech.call_args[0][0]
+            self.assertIn('всё ещё', args.lower())
+
+    def test_health_status_no_periodic_check_for_healthy(self):
+        """Тест: periodic check НЕ срабатывает для HEALTHY"""
+        with patch.object(self.node, '_publish_speech') as mock_speech:
+            self.node.event_states['health_status'] = 'HEALTHY'
+            self.node.event_last_reaction['health_status'] = time.time() - 65
+            self.mock_ctx.system_health_status = 'HEALTHY'
+            
+            self.node._check_health_status_change(self.mock_ctx)
+            
+            mock_speech.assert_not_called()
+
+
+class TestPublishSpeech(unittest.TestCase):
+    """Тесты _publish_speech() и _publish_speech_ssml()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        with patch('rob_box_perception.reflection_node.OpenAI'):
+            self.node = ReflectionNode()
+
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_publish_speech_normal(self):
+        """Тест: обычная публикация речи"""
+        with patch.object(self.node.tts_pub, 'publish') as mock_pub:
+            self.node._publish_speech("Тестовая речь")
+            
+            mock_pub.assert_called_once()
+            msg = mock_pub.call_args[0][0]
+            import json
+            data = json.loads(msg.data)
+            self.assertIn('ssml', data)
+            self.assertIn('Тестовая речь', data['ssml'])
+
+    def test_publish_speech_during_silence_mode(self):
+        """Тест: НЕ публикует речь в silence mode"""
+        with patch.object(self.node.tts_pub, 'publish') as mock_pub:
+            self.node.silence_until = time.time() + 10  # 10 сек молчания
+            
+            self.node._publish_speech("Не должно быть опубликовано")
+            
+            mock_pub.assert_not_called()
+
+    def test_publish_speech_ssml_normal(self):
+        """Тест: публикация SSML ответа пользователю"""
+        with patch.object(self.node.tts_pub, 'publish') as mock_pub:
+            ssml = "<speak>Привет!<break time='300ms'/></speak>"
+            
+            self.node._publish_speech_ssml(ssml)
+            
+            mock_pub.assert_called_once()
+            msg = mock_pub.call_args[0][0]
+            import json
+            data = json.loads(msg.data)
+            self.assertEqual(data['ssml'], ssml)
+
+    def test_publish_speech_ssml_during_silence_mode(self):
+        """Тест: НЕ публикует SSML в silence mode"""
+        with patch.object(self.node.tts_pub, 'publish') as mock_pub:
+            self.node.silence_until = time.time() + 10
+            
+            self.node._publish_speech_ssml("<speak>Test</speak>")
+            
+            mock_pub.assert_not_called()
+
+
+class TestSoundTriggers(unittest.TestCase):
+    """Тесты _trigger_sound_for_thought() и _play_sound()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        with patch('rob_box_perception.reflection_node.OpenAI'):
+            self.node = ReflectionNode()
+
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_trigger_sound_surprise(self):
+        """Тест: триггер 'surprise' для удивления"""
+        with patch.object(self.node, '_play_sound') as mock_play:
+            self.node._trigger_sound_for_thought("Удивительно! Новый объект!")
+            
+            mock_play.assert_called_once_with('surprise')
+
+    def test_trigger_sound_thinking(self):
+        """Тест: триггер 'thinking' для размышления"""
+        with patch.object(self.node, '_play_sound') as mock_play:
+            self.node._trigger_sound_for_thought("Думаю, что делать дальше")
+            
+            mock_play.assert_called_once_with('thinking')
+
+    def test_trigger_sound_confused(self):
+        """Тест: триггер 'confused' для замешательства"""
+        with patch.object(self.node, '_play_sound') as mock_play:
+            self.node._trigger_sound_for_thought("Не уверен в правильности")
+            
+            mock_play.assert_called_once_with('confused')
+
+    def test_trigger_sound_angry(self):
+        """Тест: триггер 'angry' для критической проблемы"""
+        with patch.object(self.node, '_play_sound') as mock_play:
+            self.node._trigger_sound_for_thought("Критическая ошибка датчика!")
+            
+            mock_play.assert_called_once_with('angry')
+
+    def test_trigger_sound_cute(self):
+        """Тест: триггер 'cute' для позитива"""
+        with patch.object(self.node, '_play_sound') as mock_play:
+            self.node._trigger_sound_for_thought("Отлично! Готов к работе")
+            
+            mock_play.assert_called_once_with('cute')
+
+    def test_play_sound_normal(self):
+        """Тест: обычное воспроизведение звука"""
+        with patch.object(self.node.sound_pub, 'publish') as mock_pub:
+            self.node._play_sound('thinking')
+            
+            mock_pub.assert_called_once()
+            msg = mock_pub.call_args[0][0]
+            self.assertEqual(msg.data, 'thinking')
+
+    def test_play_sound_debounce(self):
+        """Тест: debounce блокирует повторный звук"""
+        with patch.object(self.node.sound_pub, 'publish') as mock_pub:
+            self.node._play_sound('cute')
+            self.node._play_sound('cute')  # Второй раз сразу
+            
+            # Должен быть только один вызов (debounce заблокировал второй)
+            self.assertEqual(mock_pub.call_count, 1)
+
+    def test_play_sound_debounce_different_sounds(self):
+        """Тест: debounce НЕ блокирует разные звуки"""
+        with patch.object(self.node.sound_pub, 'publish') as mock_pub:
+            self.node._play_sound('cute')
+            self.node._play_sound('thinking')
+            
+            self.assertEqual(mock_pub.call_count, 2)
+
+
+class TestContextCallbacks(unittest.TestCase):
+    """Тесты on_context_update(), on_user_speech(), on_robot_response()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        with patch('rob_box_perception.reflection_node.OpenAI'):
+            self.node = ReflectionNode()
+
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_on_context_update_stores_context(self):
+        """Тест: контекст сохраняется"""
+        mock_event = MagicMock()
+        mock_event.system_health_status = 'HEALTHY'
+        
+        self.node.on_context_update(mock_event)
+        
+        self.assertEqual(self.node.last_context, mock_event)
+
+    def test_on_context_update_processes_pending_speech(self):
+        """Тест: обработка pending speech при получении контекста"""
+        with patch.object(self.node, 'process_urgent_question') as mock_process:
+            self.node.pending_user_speech = "Как дела?"
+            mock_event = MagicMock()
+            mock_event.system_health_status = 'HEALTHY'
+            
+            self.node.on_context_update(mock_event)
+            
+            mock_process.assert_called_once_with("Как дела?")
+            self.assertIsNone(self.node.pending_user_speech)
+
+    def test_on_user_speech_silence_command(self):
+        """Тест: команда silence устанавливает флаг"""
+        msg = String()
+        msg.data = "помолчи"
+        
+        self.node.on_user_speech(msg)
+        
+        self.assertIsNotNone(self.node.silence_until)
+        self.assertGreater(self.node.silence_until, time.time())
+
+    def test_on_user_speech_personal_question_with_context(self):
+        """Тест: личный вопрос с контекстом → немедленный ответ"""
+        with patch.object(self.node, 'process_urgent_question') as mock_process:
+            self.node.last_context = MagicMock()
+            msg = String()
+            msg.data = "Как дела?"
+            
+            self.node.on_user_speech(msg)
+            
+            mock_process.assert_called_once_with("Как дела?")
+
+    def test_on_user_speech_personal_question_no_context(self):
+        """Тест: личный вопрос без контекста → ожидает"""
+        self.node.last_context = None
+        msg = String()
+        msg.data = "Как ты?"
+        
+        self.node.on_user_speech(msg)
+        
+        self.assertEqual(self.node.pending_user_speech, "Как ты?")
+
+    def test_on_robot_response_updates_timestamp(self):
+        """Тест: ответ робота обновляет timestamp"""
+        msg = String()
+        msg.data = "Ответ робота"
+        
+        time_before = time.time()
+        self.node.on_robot_response(msg)
+        time_after = time.time()
+        
+        self.assertGreaterEqual(self.node.last_user_speech_time, time_before)
+        self.assertLessEqual(self.node.last_user_speech_time, time_after)
+
+
 class TestReflectionNodeIntegration(unittest.TestCase):
     """Интеграционные тесты ReflectionNode"""
 
