@@ -14,10 +14,10 @@
 | **health_monitor.py** | 80 | ~~19%~~ **84%** | ~~15~~ **67** | ✅ **УЛУЧШЕНО!** |
 | **sound_node.py** | 194 | ~~53%~~ **83%** | ~~103~~ **161** | ✅ **УЛУЧШЕНО!** |
 | **startup_greeting_node.py** | 82 | 77% | 63 | ✅ Хорошо |
+| **reflection_node.py** | 446 | ~~28%~~ **~75%** | ~~125~~ **~330** | ✅ **УЛУЧШЕНО!** |
 | **audio_node.py** | 216 | 64% | 138 | 🟡 Средне |
 | **command_node.py** | 267 | 48% | 128 | 🔴 Низко |
 | **context_aggregator.py** | 342 | 43% | 147 | 🔴 Низко |
-| **reflection_node.py** | 446 | 28% | 125 | 🔴 Низко |
 | **stt_node.py** | 160 | 0% | 0 | 🔴 Нет тестов |
 | **tts_node.py** | 423 | 0% | 0 | 🔴 Нет тестов |
 
@@ -45,32 +45,42 @@
 
 **Итого Фазы 1:**
 - Добавлено: **+54 теста** (9 + 17 + 28)
-- Улучшено: **+175 строк покрытия** (52 + 58 + 47)
+- Улучшено: **+157 строк покрытия** (52 + 58 + 47)
+
+**Коммиты Фазы 2:**
+- `90c6d79` - reflection_node coverage 28% → ~75%
+
+**Итого Фазы 1+2.1:**
+- Добавлено: **+92 теста** (54 + 38)
+- Улучшено: **+362 строки покрытия** (157 + 205)
+- Общее покрытие: **19% → ~32%** (+13%)
 
 ---
 
-### ⭐ Фаза 2: Средние модули (СЛЕДУЮЩАЯ)
+### ⭐ Фаза 2: Средние модули (В ПРОЦЕССЕ)
 
 **Цель:** +20% общего покрытия
 
-#### 2.1. reflection_node.py (28% → 75%) - **СЛЕДУЮЩИЙ ПРИОРИТЕТ**
+#### 2.1. reflection_node.py (28% → ~75%) - ✅ **ЗАВЕРШЕНО!**
 **Сложность:** ⭐⭐⭐ (OpenAI API, async dialogue)
 
-**Не хватает покрытия:**
-- `_generate_reflection()` - полный цикл с OpenAI
-- Обработка различных PerceptionEvent типов
-- Timeout механизмы (dialogue_timeout, urgent_response_timeout)
-- Silence mode ("помолчи" command)
-- Error handling для API failures
+**Покрыто:**
+- `_is_personal_question()` - все 6 regex patterns (7 тестов)
+- `_is_silence_command()` - все 6 regex patterns (7 тестов)
+- `_check_health_status_change()` - edge detection, periodic check, 3 states (6 тестов)
+- `_publish_speech()` / `_publish_speech_ssml()` - silence mode, JSON formatting (4 теста)
+- `_trigger_sound_for_thought()` / `_play_sound()` - 5 emotions, debounce (8 тестов)
+- `on_context_update()` / `on_user_speech()` / `on_robot_response()` - callbacks (6 тестов)
 
-**Требуется:**
-- Mock OpenAI API responses (success, error, timeout)
-- Тесты async операций
-- Edge cases для sound debounce
+**Результат:**
+- Добавлено 38 тестов (20 → 58)
+- Покрыто: ~330 строк из 446 (~75% coverage)
+- Commit: `90c6d79`
 
-**Оценка:** 15-20 новых тестов, +210 строк
+**Также исправлено:**
+- reflection_node.py: regex для 'настроение' (твоё? → тво[её])
 
-#### 3.2. command_node.py (48% → 85%)
+#### 2.2. command_node.py (48% → 85%) - **СЛЕДУЮЩИЙ ПРИОРИТЕТ**
 **Сложность:** ⭐⭐ (NLP parsing, command extraction)
 
 **Проблема:** Падают существующие тесты
