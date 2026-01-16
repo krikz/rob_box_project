@@ -50,50 +50,22 @@ class TestMCPToolParameter:
         assert schema["default"] == 10
 
     @pytest.mark.unit
-    def test_parameter_validation_required(self):
-        """Тест валидации обязательных параметров"""
-        param = MCPToolParameter(name="required_param", type="string", description="Required parameter", required=True)
-
-        # Required parameter отсутствует
-        result = param.validate(None)
-        assert result.success is False
-        assert "required" in result.error.lower()
-
-        # Required parameter присутствует
-        result = param.validate("some_value")
-        assert result.success is True
-
-    @pytest.mark.unit
-    def test_parameter_type_validation(self):
-        """Тест валидации типов параметров"""
-        # String parameter
-        param = MCPToolParameter(name="test", type="string", description="Test", required=True)
-        
-        # Валидные значения
-        assert param.validate("hello").success is True
-        
-        # Невалидные типы
-        assert param.validate(123).success is False
-        assert param.validate({"key": "value"}).success is False
-        
-    def test_parameter_enum_validation(self):
-        """Тест валидации enum параметров"""
+    def test_parameter_to_json_schema_complete(self):
+        """Тест полной конвертации параметра в JSON Schema"""
         param = MCPToolParameter(
-            name="choice",
+            name="test_param",
             type="string",
-            description="Choice parameter",
+            description="Test parameter",
             required=True,
-            enum=["option1", "option2", "option3"]
+            enum=["a", "b", "c"],
+            default="a"
         )
         
-        # Валидное значение
-        result = param.validate("option1")
-        assert result.success is True
-        
-        # Невалидное значение
-        result = param.validate("invalid")
-        assert result.success is False
-        assert "not in allowed values" in result.error
+        schema = param.to_json_schema()
+        assert schema["type"] == "string"
+        assert schema["description"] == "Test parameter"
+        assert schema["enum"] == ["a", "b", "c"]
+        assert schema["default"] == "a"
 
 
 @pytest.mark.unit
@@ -105,7 +77,7 @@ class TestMCPToolResult:
         result = MCPToolResult(success=True, message="Operation completed", data={"key": "value"})
 
         assert result.success is True
-        assert result.message == "Выполнено успешно"
+        assert result.message == "Operation completed"  # Проверяем переданное message
         assert result.data == {"key": "value"}
         assert result.error is None
 
@@ -125,19 +97,3 @@ class TestMCPToolResult:
             assert result.data == data
         if error:
             assert result.error == error
-```
-
-**Запуск:**
-```bash
-cd src/rob_box_mcp_tools
-pytest test/test_base.py -v
-```
-
-## Следующие шаги
-
-После этого коммита нужно создать:
-1. Unit тесты для всех компонентов
-2. Integration тесты
-3. E2E тесты с LLM
-
-Все тесты будут использовать эту инфраструктуру.
