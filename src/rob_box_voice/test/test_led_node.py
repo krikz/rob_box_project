@@ -242,6 +242,293 @@ class TestLEDNode(unittest.TestCase):
         self.assertGreaterEqual(brightness, 0)
         self.assertLessEqual(brightness, 31)  # 0-31 по спецификации
 
+    def test_voice_state_callback_error(self):
+        """Тест: состояние 'error' отображается красным"""
+        msg = String()
+        msg.data = 'error'
+        self.node.state_callback(msg)
+        
+        # Проверяем что mono был вызван с красным цветом
+        self.mock_ring_instance.mono.assert_called_once()
+        args = self.mock_ring_instance.mono.call_args[0]
+        self.assertEqual(args, tuple(self.node.colors['error']))
+
+    def test_voice_state_callback_trace(self):
+        """Тест: состояние 'trace' активирует trace режим"""
+        msg = String()
+        msg.data = 'trace'
+        self.node.state_callback(msg)
+        
+        self.mock_ring_instance.trace.assert_called_once()
+
+    def test_voice_state_callback_generating(self):
+        """Тест: состояние 'generating' активирует think режим"""
+        msg = String()
+        msg.data = 'generating'
+        self.node.state_callback(msg)
+        
+        self.mock_ring_instance.think.assert_called_once()
+
+    def test_voice_state_callback_case_insensitive(self):
+        """Тест: состояния обрабатываются без учёта регистра"""
+        test_cases = ['LISTENING', 'Listening', 'LiStEnInG']
+        
+        for state in test_cases:
+            self.mock_ring_instance.reset_mock()
+            msg = String()
+            msg.data = state
+            self.node.state_callback(msg)
+            
+            # Все варианты должны вызвать mono
+            self.mock_ring_instance.mono.assert_called_once()
+
+    def test_initialize_hardware_success(self):
+        """Тест: успешная инициализация оборудования"""
+        # Создаём новый экземпляр с чистыми моками
+        with patch('usb.core.find'), \
+             patch('rob_box_voice.led_node.PixelRingLite') as mock_ring_class:
+            
+            mock_ring = MagicMock()
+            mock_ring_class.return_value = mock_ring
+            mock_ring.connect.return_value = True
+            
+            node = LEDNode()
+            
+            # Проверяем что hardware был инициализирован
+            mock_ring.connect.assert_called_once()
+            mock_ring.set_brightness.assert_called_once()
+            mock_ring.set_color_palette.assert_called_once()
+            mock_ring.off.assert_called_once()
+            
+            node.destroy_node()
+
+    def test_initialize_hardware_failure(self):
+        """Тест: неудачная инициализация оборудования"""
+        with patch('usb.core.find'), \
+             patch('rob_box_voice.led_node.PixelRingLite') as mock_ring_class:
+            
+            mock_ring = MagicMock()
+            mock_ring_class.return_value = mock_ring
+            mock_ring.connect.return_value = False  # Устройство не найдено
+            
+            node = LEDNode()
+            
+            # Проверяем что connect был вызван, но дальнейшая настройка не произошла
+            mock_ring.connect.assert_called_once()
+            mock_ring.set_brightness.assert_not_called()
+            
+            node.destroy_node()
+
+    def test_set_mode_manual_off(self):
+        """Тест: ручная установка режима 'off'"""
+        # Сбрасываем mock чтобы не считать вызов при инициализации
+        self.mock_ring_instance.off.reset_mock()
+        
+        self.node.set_mode_manual('off')
+        self.mock_ring_instance.off.assert_called_once()
+
+    def test_set_mode_manual_trace(self):
+        """Тест: ручная установка режима 'trace'"""
+        self.node.set_mode_manual('trace')
+        self.mock_ring_instance.trace.assert_called_once()
+
+    def test_set_mode_manual_listen(self):
+        """Тест: ручная установка режима 'listen'"""
+        self.node.set_mode_manual('listen')
+        self.mock_ring_instance.listen.assert_called_once()
+
+    def test_set_mode_manual_think(self):
+        """Тест: ручная установка режима 'think'"""
+        self.node.set_mode_manual('think')
+        self.mock_ring_instance.think.assert_called_once()
+
+    def test_set_mode_manual_speak(self):
+        """Тест: ручная установка режима 'speak'"""
+        self.node.set_mode_manual('speak')
+        self.mock_ring_instance.speak.assert_called_once()
+
+    def test_set_mode_manual_spin(self):
+        """Тест: ручная установка режима 'spin'"""
+        self.node.set_mode_manual('spin')
+        self.mock_ring_instance.spin.assert_called_once()
+
+    def test_shutdown(self):
+        """Тест: корректное завершение работы"""
+        self.node.shutdown()
+        
+        # Проверяем что LED выключены при завершении
+        self.mock_ring_instance.off.assert_called()
+
+    def test_pixel_ring_off(self):
+        """Тест: PixelRingLite.off() отправляет команду"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.off()
+            
+            # Проверяем что была отправлена команда MONO с нулями
+            calls = mock_dev.ctrl_transfer.call_args_list
+            self.assertGreater(len(calls), 0)
+
+    def test_pixel_ring_mono(self):
+        """Тест: PixelRingLite.mono() устанавливает цвет"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.mono(255, 128, 64)
+            
+            # Команда была отправлена
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_trace(self):
+        """Тест: PixelRingLite.trace() активирует режим"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.trace()
+            
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_listen(self):
+        """Тест: PixelRingLite.listen() активирует режим"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.listen()
+            
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_think(self):
+        """Тест: PixelRingLite.think() активирует пульсацию"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.think()
+            
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_speak(self):
+        """Тест: PixelRingLite.speak() активирует вращение"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.speak()
+            
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_spin(self):
+        """Тест: PixelRingLite.spin() активирует быстрое вращение"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.spin()
+            
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_set_brightness(self):
+        """Тест: PixelRingLite.set_brightness() устанавливает яркость"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.set_brightness(20)
+            
+            # Проверяем что яркость сохранена
+            self.assertEqual(ring._brightness, 20)
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_brightness_clamping(self):
+        """Тест: яркость ограничена диапазоном 0-31"""
+        ring = PixelRingLite()
+        
+        # Тест верхней границы
+        with patch.object(ring, '_send_command') as mock_send:
+            ring.set_brightness(100)
+            self.assertEqual(ring._brightness, 31)
+        
+        # Тест нижней границы
+        with patch.object(ring, '_send_command') as mock_send:
+            ring.set_brightness(-10)
+            self.assertEqual(ring._brightness, 0)
+
+    def test_pixel_ring_set_color_palette(self):
+        """Тест: PixelRingLite.set_color_palette() устанавливает палитру"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.set_color_palette((255, 0, 0), (0, 255, 0))
+            
+            # Команда отправлена
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_set_volume(self):
+        """Тест: PixelRingLite.set_volume() показывает уровень"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            ring.set_volume(8)
+            
+            self.assertTrue(mock_dev.ctrl_transfer.called)
+
+    def test_pixel_ring_send_command_no_device(self):
+        """Тест: _send_command() возвращает False если нет устройства"""
+        ring = PixelRingLite()
+        # Не подключаем устройство
+        result = ring._send_command(PixelRingLite.CMD_MONO)
+        self.assertFalse(result)
+
+    def test_pixel_ring_send_command_exception(self):
+        """Тест: _send_command() обрабатывает исключения"""
+        with patch('usb.core.find') as mock_find:
+            mock_dev = MagicMock()
+            mock_dev.ctrl_transfer.side_effect = Exception('USB error')
+            mock_find.return_value = mock_dev
+            
+            ring = PixelRingLite()
+            ring.connect()
+            result = ring._send_command(PixelRingLite.CMD_MONO)
+            
+            # Команда вернула False при ошибке
+            self.assertFalse(result)
+
+    def test_colors_parameter(self):
+        """Тест: параметры цветов загружены корректно"""
+        self.assertIsInstance(self.node.colors, dict)
+        self.assertIn('idle', self.node.colors)
+        self.assertIn('listening', self.node.colors)
+        self.assertIn('thinking', self.node.colors)
+        self.assertIn('speaking', self.node.colors)
+        self.assertIn('error', self.node.colors)
+
 
 class TestLEDNodeIntegration(unittest.TestCase):
     """Интеграционные тесты LEDNode"""
