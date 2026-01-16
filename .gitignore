@@ -7,6 +7,8 @@ __pycache__/
 build/
 # Allow docker/build directory (build machine infrastructure)
 !docker/build/
+# Allow scripts/build directory (build scripts)
+!scripts/build/
 develop-eggs/
 dist/
 downloads/
