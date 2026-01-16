@@ -195,6 +195,224 @@ class TestHealthMonitor(unittest.TestCase):
         # По умолчанию должен быть True
         self.assertTrue(self.node.enable_sounds)
 
+    @patch('builtins.print')
+    def test_status_healthy(self, mock_print):
+        """Тест: Статус HEALTHY (нет критичных ошибок, <5 за минуту)"""
+        # Добавляем 2 некритичных ошибки
+        for i in range(2):
+            log_msg = Log()
+            log_msg.level = 40  # ERROR (не FATAL)
+            log_msg.name = f'node_{i}'
+            log_msg.msg = f'Error {i}'
+            log_msg.stamp = self.node.get_clock().now().to_msg()
+            self.node.on_log(log_msg)
+        
+        # Вызываем отчёт
+        self.node.print_report()
+        
+        # Проверяем что статус HEALTHY
+        calls = ' '.join([str(call) for call in mock_print.call_args_list])
+        self.assertIn('HEALTHY', calls)
+
+    @patch('builtins.print')
+    def test_status_degraded(self, mock_print):
+        """Тест: Статус DEGRADED (5+ ошибок за последнюю минуту)"""
+        # Добавляем 6 ошибок с текущим временем
+        current_time = time.time()
+        for i in range(6):
+            log_msg = Log()
+            log_msg.level = 40  # ERROR
+            log_msg.name = f'node_{i}'
+            log_msg.msg = f'Recent error {i}'
+            log_msg.stamp = self.node.get_clock().now().to_msg()
+            self.node.on_log(log_msg)
+            # Убеждаемся что время меньше 60 сек назад
+            self.node.errors[-1]['time'] = current_time
+        
+        # Вызываем отчёт
+        self.node.print_report()
+        
+        # Проверяем статус DEGRADED
+        calls = ' '.join([str(call) for call in mock_print.call_args_list])
+        self.assertIn('DEGRADED', calls)
+
+    @patch('builtins.print')
+    def test_status_critical(self, mock_print):
+        """Тест: Статус CRITICAL (есть FATAL ошибка)"""
+        # Добавляем FATAL ошибку
+        log_msg = Log()
+        log_msg.level = 50  # FATAL
+        log_msg.name = 'critical_node'
+        log_msg.msg = 'Fatal crash!'
+        log_msg.stamp = self.node.get_clock().now().to_msg()
+        self.node.on_log(log_msg)
+        
+        # Вызываем отчёт
+        self.node.print_report()
+        
+        # Проверяем статус CRITICAL
+        calls = ' '.join([str(call) for call in mock_print.call_args_list])
+        self.assertIn('CRITICAL', calls)
+
+    @patch('builtins.print')
+    def test_sound_trigger_on_status_change_to_critical(self, mock_print):
+        """Тест: Звуковой сигнал при переходе в CRITICAL"""
+        # Mock sound publisher
+        self.node.sound_pub.publish = MagicMock()
+        
+        # Сначала здоровая система
+        self.node.print_report()
+        self.assertEqual(self.node.last_status, '✅ HEALTHY')
+        
+        # Теперь добавляем FATAL ошибку
+        log_msg = Log()
+        log_msg.level = 50
+        log_msg.name = 'crash_node'
+        log_msg.msg = 'System crash'
+        log_msg.stamp = self.node.get_clock().now().to_msg()
+        self.node.on_log(log_msg)
+        
+        # Триггерим новый отчёт
+        self.node.print_report()
+        
+        # Проверяем что статус изменился
+        self.assertEqual(self.node.last_status, '🚨 CRITICAL')
+        
+        # Проверяем что был вызван звук 'angry_2'
+        self.assertTrue(self.node.sound_pub.publish.called)
+        published_msg = self.node.sound_pub.publish.call_args[0][0]
+        self.assertEqual(published_msg.data, 'angry_2')
+
+    @patch('builtins.print')
+    def test_sound_trigger_on_status_change_to_degraded(self, mock_print):
+        """Тест: Звуковой сигнал при переходе в DEGRADED"""
+        self.node.sound_pub.publish = MagicMock()
+        
+        # Сначала здоровая система
+        self.node.print_report()
+        
+        # Добавляем 5+ ошибок за последнюю минуту
+        current_time = time.time()
+        for i in range(6):
+            log_msg = Log()
+            log_msg.level = 40
+            log_msg.name = f'node_{i}'
+            log_msg.msg = f'Error {i}'
+            log_msg.stamp = self.node.get_clock().now().to_msg()
+            self.node.on_log(log_msg)
+            self.node.errors[-1]['time'] = current_time
+        
+        # Триггерим отчёт
+        self.node.print_report()
+        
+        # Проверяем звук 'confused'
+        self.assertEqual(self.node.last_status, '⚠️  DEGRADED')
+        published_msg = self.node.sound_pub.publish.call_args[0][0]
+        self.assertEqual(published_msg.data, 'confused')
+
+    @patch('builtins.print')
+    def test_sound_trigger_on_recovery(self, mock_print):
+        """Тест: Звуковой сигнал при восстановлении (DEGRADED → HEALTHY)"""
+        self.node.sound_pub.publish = MagicMock()
+        
+        # Сначала добавляем 5+ ошибок (DEGRADED)
+        current_time = time.time()
+        for i in range(6):
+            log_msg = Log()
+            log_msg.level = 40
+            log_msg.name = f'node_{i}'
+            log_msg.msg = f'Error {i}'
+            log_msg.stamp = self.node.get_clock().now().to_msg()
+            self.node.on_log(log_msg)
+            self.node.errors[-1]['time'] = current_time
+        
+        self.node.print_report()  # Устанавливаем DEGRADED
+        self.assertEqual(self.node.last_status, '⚠️  DEGRADED')
+        
+        # Теперь "стареем" ошибки (делаем их старше 60 сек)
+        old_time = current_time - 120  # 2 минуты назад
+        for error in self.node.errors:
+            error['time'] = old_time
+        
+        # Сбрасываем mock
+        self.node.sound_pub.publish.reset_mock()
+        
+        # Триггерим новый отчёт - должен показать HEALTHY
+        self.node.print_report()
+        
+        # Проверяем восстановление и звук 'cute'
+        self.assertEqual(self.node.last_status, '✅ HEALTHY')
+        self.assertTrue(self.node.sound_pub.publish.called)
+        published_msg = self.node.sound_pub.publish.call_args[0][0]
+        self.assertEqual(published_msg.data, 'cute')
+
+    def test_sound_disabled(self):
+        """Тест: Звуки не проигрываются когда enable_sounds=False"""
+        # Создаём ноду с отключенными звуками
+        self.node.destroy_node()
+        self.node = HealthMonitor()
+        self.node.enable_sounds = False
+        self.node.sound_pub.publish = MagicMock()
+        
+        # Добавляем FATAL ошибку
+        log_msg = Log()
+        log_msg.level = 50
+        log_msg.name = 'crash_node'
+        log_msg.msg = 'Fatal error'
+        log_msg.stamp = self.node.get_clock().now().to_msg()
+        self.node.on_log(log_msg)
+        
+        # Триггерим отчёт
+        with patch('builtins.print'):
+            self.node.print_report()
+        
+        # Звук НЕ должен быть вызван
+        self.assertFalse(self.node.sound_pub.publish.called)
+
+    def test_play_sound_exception_handling(self):
+        """Тест: Обработка ошибок в _play_sound()"""
+        # Мокаем publisher чтобы выбросить исключение
+        self.node.sound_pub.publish = MagicMock(side_effect=Exception('Publish failed'))
+        
+        # Вызываем _play_sound - не должен упасть
+        try:
+            self.node._play_sound('test_sound')
+        except Exception:
+            self.fail('_play_sound() should not raise exception')
+
+    @patch('builtins.print')
+    def test_recent_errors_calculation(self, mock_print):
+        """Тест: Подсчёт ошибок за последние 60 секунд"""
+        current_time = time.time()
+        
+        # Добавляем 3 свежих ошибки (меньше минуты назад)
+        for i in range(3):
+            log_msg = Log()
+            log_msg.level = 40
+            log_msg.name = f'recent_node_{i}'
+            log_msg.msg = f'Recent error {i}'
+            log_msg.stamp = self.node.get_clock().now().to_msg()
+            self.node.on_log(log_msg)
+            self.node.errors[-1]['time'] = current_time - 30  # 30 сек назад
+        
+        # Добавляем 2 старые ошибки (больше минуты назад)
+        for i in range(2):
+            log_msg = Log()
+            log_msg.level = 40
+            log_msg.name = f'old_node_{i}'
+            log_msg.msg = f'Old error {i}'
+            log_msg.stamp = self.node.get_clock().now().to_msg()
+            self.node.on_log(log_msg)
+            self.node.errors[-1]['time'] = current_time - 120  # 2 минуты назад
+        
+        # Вызываем отчёт
+        self.node.print_report()
+        
+        # Проверяем что в выводе указано только 3 свежих ошибки
+        calls = ' '.join([str(call) for call in mock_print.call_args_list])
+        # Должно быть: "Total Errors: 5 (последние 3 за минуту)"
+        self.assertIn('3', calls)  # 3 свежих ошибки
+
 
 if __name__ == '__main__':
     unittest.main()
