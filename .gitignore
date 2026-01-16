@@ -50,8 +50,12 @@ docker-compose.override.yml
 # Temporary files
 *.tmp
 *.bak
-*.log
 .cache/
+
+# Build and diagnostic logs (only in root)
+/*.log
+/frames_*.gv
+/frames_*.pdf
 
 # System files
 .Trash-*/
