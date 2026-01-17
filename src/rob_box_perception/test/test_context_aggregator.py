@@ -202,5 +202,222 @@ class TestContextAggregator(unittest.TestCase):
             self.assertIsInstance(time_str, str)
 
 
+class TestCallbacks(unittest.TestCase):
+    """Тесты для дополнительных callbacks"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        self.node = ContextAggregatorNode()
+        
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_on_robot_response(self):
+        """Тест: callback robot_response"""
+        msg = String()
+        msg.data = '{"ssml": "<speak>Привет!</speak>"}'
+        
+        self.node.on_robot_response(msg)
+        
+        # Проверяем что добавлено в robot_response_events
+        self.assertGreater(len(self.node.robot_response_events), 0)
+        self.assertEqual(self.node.robot_response_events[-1]['type'], 'robot_response')
+
+    def test_on_robot_thought(self):
+        """Тест: callback robot_thought"""
+        msg = String()
+        msg.data = "Думаю о маршруте"
+        
+        self.node.on_robot_thought(msg)
+        
+        # Проверяем что добавлено в robot_thought_events
+        self.assertGreater(len(self.node.robot_thought_events), 0)
+        self.assertEqual(self.node.robot_thought_events[-1]['type'], 'robot_thought')
+
+    def test_on_command_intent(self):
+        """Тест: callback command_intent"""
+        msg = String()
+        msg.data = "navigate:0.85"
+        
+        self.node.on_command_intent(msg)
+        
+        # Проверяем что добавлено в recent_events
+        self.assertGreater(len(self.node.recent_events), 0)
+
+    def test_on_command_feedback(self):
+        """Тест: callback command_feedback"""
+        msg = String()
+        msg.data = "Иду к точке назначения"
+        
+        self.node.on_command_feedback(msg)
+        
+        # Проверяем что добавлено как robot_response
+        self.assertGreater(len(self.node.robot_response_events), 0)
+
+    def test_on_user_speech_movement_command_filtered(self):
+        """Тест: команды движения фильтруются"""
+        msg = String()
+        msg.data = "вперёд"
+        
+        initial_count = len(self.node.speech_events)
+        self.node.on_user_speech(msg)
+        
+        # Команда движения НЕ должна быть добавлена
+        self.assertEqual(len(self.node.speech_events), initial_count)
+
+    def test_on_user_speech_dialogue(self):
+        """Тест: диалоговая речь добавляется"""
+        msg = String()
+        msg.data = "Как дела?"
+        
+        self.node.on_user_speech(msg)
+        
+        # Диалоговая речь должна быть добавлена
+        self.assertGreater(len(self.node.speech_events), 0)
+        self.assertEqual(self.node.speech_events[-1]['content'], "Как дела?")
+
+
+class TestMemoryManagement(unittest.TestCase):
+    """Тесты управления памятью"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        self.node = ContextAggregatorNode()
+        
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_add_to_memory_speech(self):
+        """Тест: добавление события speech"""
+        self.node.add_to_memory('user_speech', 'Привет', important=True)
+        
+        self.assertGreater(len(self.node.speech_events), 0)
+        self.assertGreater(len(self.node.recent_events), 0)
+        self.assertEqual(self.node.speech_events[-1]['content'], 'Привет')
+        self.assertTrue(self.node.speech_events[-1]['important'])
+
+    def test_add_to_memory_vision(self):
+        """Тест: добавление события vision"""
+        self.node.add_to_memory('vision', 'Вижу стол', important=False)
+        
+        self.assertGreater(len(self.node.vision_events), 0)
+        self.assertEqual(self.node.vision_events[-1]['type'], 'vision')
+
+    def test_add_to_memory_system(self):
+        """Тест: добавление события system"""
+        self.node.add_to_memory('error', 'Ошибка сенсора', important=True)
+        
+        self.assertGreater(len(self.node.system_events), 0)
+        self.assertEqual(self.node.system_events[-1]['type'], 'error')
+
+    def test_memory_window_cleanup(self):
+        """Тест: очистка старых событий"""
+        self.node.memory_window = 1  # 1 секунда
+        
+        # Добавляем событие
+        self.node.add_to_memory('user_speech', 'Старое событие')
+        self.assertEqual(len(self.node.speech_events), 1)
+        
+        # Ждём чуть больше memory_window
+        time.sleep(1.2)
+        
+        # Добавляем новое событие (должно очистить старое)
+        self.node.add_to_memory('user_speech', 'Новое событие')
+        
+        # Старое событие должно быть удалено
+        self.assertEqual(len(self.node.speech_events), 1)
+        self.assertEqual(self.node.speech_events[0]['content'], 'Новое событие')
+
+    def test_get_memory_summary_empty(self):
+        """Тест: summary пустой памяти"""
+        summary = self.node.get_memory_summary()
+        self.assertEqual(summary, "Недавних событий нет")
+
+    def test_get_memory_summary_with_events(self):
+        """Тест: summary с событиями"""
+        self.node.add_to_memory('user_speech', 'Тест 1', important=True)
+        self.node.add_to_memory('robot_response', 'Тест 2', important=False)
+        
+        summary = self.node.get_memory_summary()
+        self.assertIn('user_speech', summary)
+        self.assertIn('Тест 1', summary)
+
+
+class TestPublishEvent(unittest.TestCase):
+    """Тесты publish_event()"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
+        self.node = ContextAggregatorNode()
+        
+    def tearDown(self):
+        self.node.destroy_node()
+
+    def test_publish_event_calls_publisher(self):
+        """Тест: publish_event публикует событие"""
+        with patch.object(self.node.event_pub, 'publish') as mock_publish:
+            self.node.publish_event()
+            mock_publish.assert_called_once()
+
+    def test_check_system_health_healthy(self):
+        """Тест: здоровье системы healthy"""
+        self.node.current_sensors = {'battery': 40.0}
+        self.node.recent_errors = []
+        
+        status, issues = self.node.check_system_health()
+        
+        # При полной батарее и без ошибок должен быть healthy
+        # Но могут быть проблемы с нодами/интернетом
+        self.assertIn(status, ['healthy', 'degraded'])
+
+    def test_check_system_health_low_battery(self):
+        """Тест: низкая батарея"""
+        self.node.current_sensors = {'battery': 33.0}
+        self.node.recent_errors = []
+        
+        status, issues = self.node.check_system_health()
+        
+        self.assertGreater(len(issues), 0)
+        self.assertTrue(any('батарея' in issue.lower() or 'батаре' in issue.lower() for issue in issues))
+
+    def test_check_system_health_critical_battery(self):
+        """Тест: критическая батарея"""
+        self.node.current_sensors = {'battery': 31.0}
+        
+        status, issues = self.node.check_system_health()
+        
+        self.assertGreater(len(issues), 0)
+        self.assertTrue(any('критическ' in issue.lower() for issue in issues))
+
+    def test_check_system_health_many_errors(self):
+        """Тест: много ошибок"""
+        # Добавляем 5 недавних ошибок
+        current_time = time.time()
+        self.node.recent_errors = [
+            {'time': current_time - 10, 'message': 'Error 1'},
+            {'time': current_time - 15, 'message': 'Error 2'},
+            {'time': current_time - 20, 'message': 'Error 3'},
+            {'time': current_time - 25, 'message': 'Error 4'},
+            {'time': current_time - 28, 'message': 'Error 5'},
+        ]
+        
+        status, issues = self.node.check_system_health()
+        
+        self.assertGreater(len(issues), 0)
+        self.assertTrue(any('ошибок' in issue.lower() for issue in issues))
+
+
 if __name__ == '__main__':
     unittest.main()
