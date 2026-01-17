@@ -38,6 +38,8 @@ from .tools import (
     PlayAnimationTool,
     SetEmotionTool,
     PlaySoundTool,
+    SpeakTextTool,
+    ListenForResponseTool,
 )
 
 
@@ -115,6 +117,10 @@ class MCPServer(Node):
 
         # Sound tools
         self.registry.register(PlaySoundTool(self))
+
+        # Dialogue tools (критично для агентного диалога!)
+        self.registry.register(SpeakTextTool(self))
+        self.registry.register(ListenForResponseTool(self))
 
     def publish_tools(self):
         """Публикация списка доступных инструментов в OpenAI Tool Calls формате"""

@@ -8,6 +8,7 @@ tools - Коллекция MCP инструментов для Rob Box
 - mapping: Управление картографированием (RTABMap)
 - animation: Управление LED анимациями
 - sound: Управление звуковыми эффектами
+- dialogue: Управление диалогом (TTS, STT)
 """
 
 from .navigation import *
@@ -16,6 +17,7 @@ from .perception import *
 from .mapping import *
 from .animation import *
 from .sound import *
+from .dialogue import *
 
 __all__ = [
     # Navigation tools
@@ -40,4 +42,7 @@ __all__ = [
     "SetEmotionTool",
     # Sound tools
     "PlaySoundTool",
+    # Dialogue tools
+    "SpeakTextTool",
+    "ListenForResponseTool",
 ]
