@@ -2009,14 +2009,14 @@ class DialogueNode(Node):
 
     def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]):
         """
-        Продолжает диалог после выполнения tool_calls
+        Продолжает агентный диалог после выполнения tool_calls (рекурсивно)
         
         Args:
             messages: Текущая история сообщений  
             tool_calls: Список выполненных tool calls
             tool_results: Результаты выполнения
         """
-        self.get_logger().info("🔄 Продолжаю диалог с результатами инструментов")
+        self.get_logger().info("🔄 Продолжаю агентный диалог с результатами инструментов")
         
         # Добавляем assistant message с tool_calls в историю
         assistant_msg = {
@@ -2025,6 +2025,7 @@ class DialogueNode(Node):
             'tool_calls': tool_calls
         }
         messages.append(assistant_msg)
+        self.conversation_history.append(assistant_msg)
         
         # Добавляем результаты каждого tool call как отдельное сообщение
         for result in tool_results:
@@ -2046,10 +2047,11 @@ class DialogueNode(Node):
                 'content': content
             }
             messages.append(tool_msg)
+            self.conversation_history.append(tool_msg)
             self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
         
-        # Запускаем новый запрос к LLM с результатами
-        self.get_logger().info("🤖 Запрос к LLM с результатами инструментов")
+        # Запускаем новый запрос к LLM с результатами (АГЕНТНЫЙ ЦИКЛ)
+        self.get_logger().info("🤖 Рекурсивный запрос к LLM с результатами инструментов")
         
         try:
             # Используем system prompt с контекстом времени
@@ -2058,7 +2060,7 @@ class DialogueNode(Node):
             # Обновляем первое сообщение (system)
             messages[0] = {"role": "system", "content": system_prompt_with_context}
             
-            # Определяем нужно ли добавлять tools (теперь НЕ добавляем - LLM уже выбрал инструменты)
+            # ВАЖНО: Добавляем tools снова для агентного цикла!
             request_params = {
                 "model": self.model,
                 "messages": messages,
@@ -2067,42 +2069,111 @@ class DialogueNode(Node):
                 "stream": True
             }
             
+            # Добавляем tools для продолжения агентного цикла
+            if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
+                request_params["tools"] = self.available_tools
+                self.get_logger().info(f"🛠️  Рекурсивный запрос С {len(self.available_tools)} MCP инструментами")
+            
             stream = self.client.chat.completions.create(**request_params)
             
-            # Обрабатываем ответ (без tool_calls на этот раз)
+            # Накопитель для tool_calls (могут быть снова!)
+            tool_calls_accumulator = {}
             dialogue_id = str(uuid.uuid4())
             self.current_dialogue_id = dialogue_id
             chunk_count = 0
             full_response = ""
+            current_chunk = ""
+            brace_count = 0
+            in_json = False
             
             for chunk in stream:
+                # ============ СНОВА проверяем tool_calls (агентный цикл!) ============
+                if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
+                    for tc_chunk in chunk.choices[0].delta.tool_calls:
+                        idx = tc_chunk.index
+                        
+                        if idx not in tool_calls_accumulator:
+                            tool_calls_accumulator[idx] = {
+                                'id': '',
+                                'type': 'function',
+                                'function': {
+                                    'name': '',
+                                    'arguments': ''
+                                }
+                            }
+                        
+                        if tc_chunk.id:
+                            tool_calls_accumulator[idx]['id'] = tc_chunk.id
+                        if hasattr(tc_chunk, 'function'):
+                            if tc_chunk.function.name:
+                                tool_calls_accumulator[idx]['function']['name'] = tc_chunk.function.name
+                            if tc_chunk.function.arguments:
+                                tool_calls_accumulator[idx]['function']['arguments'] += tc_chunk.function.arguments
+                
+                # Обработка content (как обычно)
                 if chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
                     full_response += token
-                    # Обработка JSON chunks как в обычном streaming
-                    # (упрощённая версия - можно расширить)
+                    current_chunk += token
                     
+                    # Парсинг JSON chunks (упрощенно)
+                    for char in token:
+                        if char == "{":
+                            brace_count += 1
+                            in_json = True
+                        elif char == "}":
+                            brace_count -= 1
+                    
+                    if in_json and brace_count == 0:
+                        try:
+                            chunk_data = json.loads(current_chunk.strip())
+                            if "ssml" in chunk_data:
+                                ssml_with_accents = self.accent_replacer.add_accents(chunk_data["ssml"])
+                                chunk_data["ssml"] = ssml_with_accents
+                                chunk_data["dialogue_id"] = dialogue_id
+                                
+                                chunk_count += 1
+                                response_msg = String()
+                                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                self.response_pub.publish(response_msg)
+                        except json.JSONDecodeError:
+                            pass
+                        
+                        current_chunk = ""
+                        in_json = False
+                        brace_count = 0
+                
+                # Проверка finish_reason
                 if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+                    self.get_logger().info(f"🏁 Рекурсивный stream завершён: {finish_reason}")
+                    
+                    # ============ РЕКУРСИЯ: если снова tool_calls! ============
+                    if finish_reason == 'tool_calls' and tool_calls_accumulator:
+                        self.get_logger().info(f"🔧 LLM снова запросил {len(tool_calls_accumulator)} инструментов - продолжаю агентный цикл")
+                        
+                        # Выполняем tool_calls
+                        new_tool_calls = list(tool_calls_accumulator.values())
+                        new_tool_results = self._execute_tool_calls(new_tool_calls, messages)
+                        
+                        if new_tool_results is None:
+                            self.get_logger().error("❌ Ошибка выполнения инструментов в рекурсии")
+                            self.llm_processing = False
+                            self.dialogue_in_progress = False
+                            return
+                        
+                        # РЕКУРСИВНЫЙ ВЫЗОВ самого себя
+                        self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results)
+                        return  # Выходим - рекурсия сама завершит обработку
+                    
                     break
             
-            # Если есть ответ - обрабатываем его
+            # Если дошли сюда - финальный ответ БЕЗ tool_calls
             if full_response:
-                self.get_logger().info(f"📝 LLM ответил после tool_calls: {full_response[:100]}...")
+                self.get_logger().info(f"📝 LLM финальный ответ: {full_response[:100]}...")
                 
-                # Пробуем распарсить как JSON
-                try:
-                    response_data = json.loads(full_response)
-                    if "ssml" in response_data:
-                        ssml_with_accents = self.accent_replacer.add_accents(response_data["ssml"])
-                        response_data["ssml"] = ssml_with_accents
-                        response_data["dialogue_id"] = dialogue_id
-                        
-                        response_msg = String()
-                        response_msg.data = json.dumps(response_data, ensure_ascii=False)
-                        self.response_pub.publish(response_msg)
-                        chunk_count = 1
-                except json.JSONDecodeError:
-                    # Если не JSON - отправляем как plain text
+                # Fallback для plain text
+                if chunk_count == 0 and len(full_response) > 0:
                     chunk_data = {
                         "chunk": "end",
                         "text": full_response.strip(),
@@ -2117,14 +2188,14 @@ class DialogueNode(Node):
                 # Сохраняем в историю
                 self.conversation_history.append({"role": "assistant", "content": full_response})
                 
-                self.get_logger().info(f"✅ Финальный ответ отправлен ({chunk_count} chunks)")
+                self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks)")
             
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка продолжения после tool_calls: {e}")
-            self._speak_simple("Извините, произошла ошибка при обработке команды")
+            self.get_logger().error(f"❌ Ошибка в агентном цикле: {e}")
+            self._speak_simple("Извините, произошла ошибка")
         
         finally:
-            # Завершаем обработку
+            # Завершаем обработку (только если это конечная рекурсия)
             self.llm_processing = False
             self.dialogue_in_progress = False
 
