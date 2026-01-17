@@ -81,7 +81,7 @@ class DialogueNode(Node):
         self.declare_parameter("model", "")      # Если пусто - берём из PROVIDERS
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
-        self.declare_parameter("system_prompt_file", "master_prompt.txt")  # Полный мастер промпт
+        self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")  # Агентный промпт с tool calls
         self.declare_parameter("streaming", True)  # Включаем streaming
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
