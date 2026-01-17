@@ -15,9 +15,9 @@
 | **sound_node.py** | 194 | ~~53%~~ **83%** | ~~103~~ **161** | ✅ **УЛУЧШЕНО!** |
 | **startup_greeting_node.py** | 82 | 77% | 63 | ✅ Хорошо |
 | **reflection_node.py** | 446 | ~~28%~~ **~75%** | ~~125~~ **~330** | ✅ **УЛУЧШЕНО!** |
+| **context_aggregator.py** | 342 | ~~43%~~ **69%** | ~~147~~ **236** | ✅ **УЛУЧШЕНО!** |
+| **command_node.py** | 267 | ~~48%~~ **~75%** | ~~128~~ **~200** | ✅ **УЛУЧШЕНО!** |
 | **audio_node.py** | 216 | 64% | 138 | 🟡 Средне |
-| **command_node.py** | 267 | 48% | 128 | 🔴 Низко |
-| **context_aggregator.py** | 342 | 43% | 147 | 🔴 Низко |
 | **stt_node.py** | 160 | 0% | 0 | 🔴 Нет тестов |
 | **tts_node.py** | 423 | 0% | 0 | 🔴 Нет тестов |
 
@@ -80,22 +80,65 @@
 **Также исправлено:**
 - reflection_node.py: regex для 'настроение' (твоё? → тво[её])
 
-#### 2.2. command_node.py (48% → 85%) - **СЛЕДУЮЩИЙ ПРИОРИТЕТ**
+#### 2.2. command_node.py (48% → ~75%) - ✅ **ЗАВЕРШЕНО!**
 **Сложность:** ⭐⭐ (NLP parsing, command extraction)
 
-**Проблема:** Падают существующие тесты
+**Покрыто:**
+- `classify_intent()` - распознавание 8 типов команд (11 тестов):
+  * forward/backward - движение вперёд/назад
+  * turn_left/right - повороты налево/направо
+  * stop - остановка (стоп/остановись)
+  * waypoint - навигация к точкам (по номеру и имени)
+  * status - запрос статуса
+  * unknown - неизвестные команды
+- Command execution (3 теста):
+  * `execute_stop()` - публикация stop intent
+  * `execute_navigate()` - отправка Nav2 waypoint goals
+  * `execute_status()` - публикация status intent
+- `handle_direction()` - конвертация направлений в Nav2 goals (5 тестов)
+- Publishing methods (2 теста):
+  * `publish_intent()` - публикация распознанных интентов
+  * `publish_feedback()` - публикация feedback для пользователя
+- `stt_callback()` - обработка STT результатов (4 теста):
+  * wake word removal ("робот")
+  * empty string handling
+  * unknown intent handling
+  * normal confidence flow
 
-**Не хватает покрытия:**
-- `parse_command()` - извлечение команд из текста
-- Movement commands (вперед, назад, стоп)
-- Turn commands (направо, налево)
-- Non-command filtering
-- Distance/angle extraction (regex parsing)
+**Результат:**
+- Полностью переписано 31 тест (512 → 325 строк)
+- Использован правильный API: `classify_intent()`, `IntentType` enum, `stt_callback()`
+- Покрыто: ~200 строк из 267 (~75% coverage)
+- Commit: `874c165`
 
-**Оценка:** Исправить 9 тестов + 8 новых, +100 строк
-
-#### 3.3. context_aggregator_node.py (15% → 60%)
+#### 2.3. context_aggregator_node.py (43% → 69%) - ✅ **ЗАВЕРШЕНО!**
 **Сложность:** ⭐⭐⭐⭐ (большой модуль, 342 строки, 12 subscribers)
+
+**Покрыто:**
+- Callbacks (6 тестов):
+  * `on_robot_response()` - парсинг JSON/SSML от dialogue_node
+  * `on_robot_thought()` - захват внутренних мыслей reflection_node
+  * `on_command_intent()` - приём интентов от CommandNode
+  * `on_command_feedback()` - приём feedback от CommandNode
+  * `on_user_speech()` - фильтрация команд движения vs диалог
+- Memory management (6 тестов):
+  * `add_to_memory()` - категоризация событий (speech/response/thought/vision/system)
+  * memory_window cleanup - удаление событий старше 60 секунд
+  * `get_memory_summary()` - форматирование последних 5 событий
+- Health & publishing (5 тестов):
+  * `publish_event()` - публикация PerceptionEvent
+  * `check_system_health()` - проверки батареи (32V critical, 34V low), ошибок, нод
+  * battery thresholds: 40V healthy, 33V low, 31V critical
+
+**Результат:**
+- Добавлено 17 тестов (13 → 30)
+- Покрыто: 236 строк из 342 (69% coverage)
+- Commit: `f723d27`
+
+**Итого Фазы 2.1-2.3:**
+- Добавлено: **+63 теста** (38 + 17 + 17 ← переделано 31)
+- Улучшено: **+308 строк покрытия** (205 + 72 + 89)
+- Общее покрытие: **19% → ~37%** (+18%)
 
 **Не хватает покрытия:**
 - Vision context callback
