@@ -1211,19 +1211,14 @@ class DialogueNode(Node):
                 self.dialogue_in_progress = False
 
     def _ask_llm_non_streaming(self):
-        """Non-streaming запрос к LLM провайдеру - один JSON ответ"""
+        """Non-streaming запрос к LLM провайдеру с поддержкой tool calls"""
         try:
             # Собираем все сообщения для контекста
-            messages = [{"role": "system", "content": self.system_prompt}]
+            messages = [{"role": "system", "content": self._build_system_prompt_with_context()}]
             messages.extend(self.conversation_history)
 
             provider_name = self.PROVIDERS[self.current_provider]["name"]
             self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
-
-            # Формируем extra_body в зависимости от провайдера
-            extra_body = {}
-            if self.current_provider == "qwen":  # Qwen поддерживает enable_search
-                extra_body["enable_search"] = True
 
             # Параметры запроса
             request_params = {
@@ -1232,86 +1227,125 @@ class DialogueNode(Node):
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
                 "stream": False,
-                "extra_body": extra_body
             }
+
+            # Формируем extra_body в зависимости от провайдера
+            if self.current_provider == "qwen":
+                request_params["extra_body"] = {"enable_search": True}
 
             # Добавляем tools только если MCP доступен и есть инструменты
             if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
                 request_params["tools"] = self.available_tools
                 self.get_logger().info(f"🛠️  Отправка non-streaming запроса с {len(self.available_tools)} MCP инструментами")
             else:
-                self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены в non-streaming (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
+                self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
-            # Делаем синхронный запрос
-            response = self.client.chat.completions.create(**request_params)
+            # Цикл обработки tool calls (агентный workflow)
+            max_iterations = 10  # Защита от бесконечного цикла
+            iteration = 0
 
-            # Получаем полный ответ
-            full_response = response.choices[0].message.content
+            while iteration < max_iterations:
+                iteration += 1
+                self.get_logger().info(f"🔄 Агентный цикл: итерация {iteration}/{max_iterations}")
 
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().info(f"📥 {provider_name} ответ получен: {len(full_response)} символов")
+                # Делаем запрос к LLM
+                response = self.client.chat.completions.create(**request_params)
+                message = response.choices[0].message
 
-            # Успешный запрос - сбрасываем счётчик ошибок
-            if self.provider_error_count > 0:
-                self.get_logger().info(f"✅ Провайдер работает! Сброс счётчика ошибок ({self.provider_error_count} → 0)")
-                self.provider_error_count = 0
+                # Проверяем наличие tool_calls
+                if hasattr(message, 'tool_calls') and message.tool_calls:
+                    tool_calls = message.tool_calls
+                    self.get_logger().info(f"🔧 LLM вернул {len(tool_calls)} tool_calls")
 
-            # Сохраняем в историю
-            self.conversation_history.append({"role": "assistant", "content": full_response})
+                    # Добавляем assistant message с tool_calls в историю
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            }
+                            for tc in tool_calls
+                        ]
+                    }
+                    self.conversation_history.append(assistant_message)
+                    messages.append(assistant_message)
 
-            # Парсим JSON и публикуем
-            try:
-                # Пытаемся распарсить как один JSON объект
-                response_json = json.loads(full_response)
-                
-                # DEBUG: Логируем полный JSON
-                provider_name = self.PROVIDERS[self.current_provider]["name"]
-                self.get_logger().info(f"🔍 {provider_name} JSON: {json.dumps(response_json, ensure_ascii=False)[:500]}...")
-                
-                # Проверяем наличие action для перенаправления к reflection
-                if "action" in response_json:
-                    if response_json["action"] == "ask_reflection" and "question" in response_json:
-                        self.get_logger().info(f"🔄 Перенаправление к внутреннему диалогу: {response_json['question']}")
-                        msg = String()
-                        msg.data = response_json["question"]
-                        self.reflection_request_pub.publish(msg)
-                        return
+                    # Выполняем tool_calls через LLMToolCallAdapter
+                    for tool_call in tool_calls:
+                        tool_name = tool_call.function.name
+                        tool_args_str = tool_call.function.arguments
+                        tool_id = tool_call.id
 
-                # Обычный ответ с SSML
-                if "ssml" in response_json:
-                    # Получаем эмоцию и публикуем анимацию
-                    emotion = response_json.get("emotion", "neutral")
-                    animation_name = self._map_emotion_to_animation(emotion)
-                    
-                    if animation_name and animation_name != "idle":
-                        anim_msg = String()
-                        anim_msg.data = animation_name
-                        self.animation_pub.publish(anim_msg)
-                        self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
-                    
-                    # Публикуем как один chunk
-                    chunk_msg = String()
-                    chunk_msg.data = json.dumps({
-                        "chunk": 1,
-                        "ssml": response_json["ssml"],
-                        "emotion": emotion,
-                        "commands": response_json.get("commands", [])
-                    })
-                    self.response_pub.publish(chunk_msg)
-                    self.get_logger().info(f"✅ Ответ опубликован")
+                        self.get_logger().info(f"🛠️  Выполнение: {tool_name}({tool_args_str[:100]}...)")
 
-                    # Финальный chunk
-                    end_msg = String()
-                    end_msg.data = json.dumps({"chunk": "end"})
-                    self.response_pub.publish(end_msg)
+                        # Парсим аргументы
+                        try:
+                            tool_args = json.loads(tool_args_str)
+                        except json.JSONDecodeError as e:
+                            self.get_logger().error(f"❌ Не удалось распарсить аргументы для {tool_name}: {e}")
+                            result = {
+                                'success': False,
+                                'error': f'Неверный формат аргументов: {e}'
+                            }
+                        else:
+                            # Используем синхронное выполнение через MCP adapter
+                            result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=10.0)
+
+                        # Добавляем результат в историю
+                        tool_result_message = {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "name": tool_name,
+                            "content": json.dumps(result, ensure_ascii=False)
+                        }
+                        self.conversation_history.append(tool_result_message)
+                        messages.append(tool_result_message)
+
+                        if result.get('success'):
+                            self.get_logger().info(f"✅ {tool_name} выполнен: {result.get('message', 'OK')[:50]}")
+                        else:
+                            self.get_logger().warning(f"⚠️  {tool_name} вернул ошибку: {result.get('error', 'Unknown')}")
+
+
+                    # Обновляем request_params для следующей итерации
+                    request_params["messages"] = messages
+
                 else:
-                    self.get_logger().warning("⚠️ JSON без поля 'ssml'")
-                    self._speak_simple("Извините, я запутался")
+                    # Нет tool_calls - это финальный ответ
+                    final_content = message.content or ""
+                    self.get_logger().info(f"📥 {provider_name} финальный ответ: {len(final_content)} символов")
 
-            except json.JSONDecodeError as e:
-                self.get_logger().error(f"❌ Не удалось распарсить JSON: {e}")
-                self.get_logger().error(f"Ответ: {full_response[:200]}")
-                self._speak_simple("Извините, я немного запутался в формате ответа")
+                    # Успешный запрос - сбрасываем счётчик ошибок
+                    if self.provider_error_count > 0:
+                        self.get_logger().info(f"✅ Провайдер работает! Сброс счётчика ({self.provider_error_count} → 0)")
+                        self.provider_error_count = 0
+
+                    # Сохраняем финальный ответ в историю
+                    self.conversation_history.append({"role": "assistant", "content": final_content})
+
+                    # Если есть текст - публикуем как финальный chunk (для legacy совместимости)
+                    if final_content.strip():
+                        self.get_logger().info(f"💬 Финальное сообщение от LLM: {final_content[:100]}...")
+                        # Публикуем простой текстовый ответ
+                        end_msg = String()
+                        end_msg.data = json.dumps({
+                            "chunk": "final",
+                            "text": final_content,
+                            "message": "LLM завершил агентный диалог"
+                        })
+                        self.response_pub.publish(end_msg)
+
+                    # Выход из цикла - диалог завершен
+                    break
+
+            if iteration >= max_iterations:
+                self.get_logger().warning(f"⚠️  Достигнут лимит итераций ({max_iterations}), завершаю агентный цикл")
 
             # Сбрасываем флаг обработки LLM
             self.llm_processing = False
