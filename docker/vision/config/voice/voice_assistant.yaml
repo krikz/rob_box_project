@@ -164,7 +164,7 @@
         stream: true
 
       # Промпт система
-      system_prompt_file: "/ws/install/rob_box_voice/share/rob_box_voice/prompts/master_prompt_compact.txt"
+      system_prompt_file: "master_prompt_compact.txt"  # Агентный промпт с tool calls (только имя файла!)
       context_window: 10  # Последние N сообщений
 
       # Тайминги
