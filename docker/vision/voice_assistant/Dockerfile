@@ -94,7 +94,7 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_voice src/rob_box_animations
+RUN mkdir -p src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
@@ -112,21 +112,25 @@ RUN cd /ws/src && \
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
 COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
 
 # Шаг 3: Установка ROS зависимостей через rosdep
 # Этот слой кешируется пока package.xml не изменяется
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs --ignore-src -r -y || true
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools --ignore-src -r -y || true
 
 # Шаг 4: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
 COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
+COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
+COPY src/rob_box_mcp_tools/setup.cfg /ws/src/rob_box_mcp_tools/
 
 # Шаг 5: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
+COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
 COPY sound_pack /ws/sound_pack
 
 # Шаг 6: Копируем launch файлы и конфигурации
@@ -153,6 +157,7 @@ RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
 # Шаг 9: Копируем исходный код Python (меняется чаще всего - последний слой!)
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
 COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
+COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
 
 # Шаг 10: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
@@ -238,7 +243,7 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
 # Используем --symlink-install для избежания копирования Python файлов.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select audio_common_msgs rob_box_perception_msgs rob_box_voice rob_box_animations \
+    --packages-select audio_common_msgs rob_box_perception_msgs rob_box_mcp_tools rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
