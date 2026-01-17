@@ -790,7 +790,7 @@ class DialogueNode(Node):
             self._ask_llm_non_streaming()
 
     # Marker for inserting time context in system prompt
-    TIME_CONTEXT_MARKER = "# Формат ответа"
+    TIME_CONTEXT_MARKER = "# Формат ответа"  # Частичное совпадение для всех вариантов промптов
     TIME_CONTEXT_SECTION_TITLE = "# Текущее время"
 
     def _build_system_prompt_with_context(self) -> str:
@@ -809,10 +809,10 @@ class DialogueNode(Node):
             time_info = "\n".join(time_context)
 
             # Вставляем время после характеристик робота, перед форматом ответа
-            # Используем маркер для надёжного определения места вставки
-            if self.TIME_CONTEXT_MARKER in base_prompt:
-                prompt_parts = base_prompt.split(self.TIME_CONTEXT_MARKER, 1)
-                return f"{prompt_parts[0]}{time_info}\n\n{self.TIME_CONTEXT_MARKER}{prompt_parts[1]}"
+            # Ищем маркер (поддерживаем разные варианты: "# Формат ответа", "# Формат ответа - JSON", etc)
+            marker_index = base_prompt.find(self.TIME_CONTEXT_MARKER)
+            if marker_index != -1:
+                return f"{base_prompt[:marker_index]}{time_info}\n\n{base_prompt[marker_index:]}"
             else:
                 # Если маркер не найден, добавляем в конец
                 self.get_logger().warning(
