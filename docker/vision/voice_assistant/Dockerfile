@@ -240,7 +240,10 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
 # которые мешают правильному поиску библиотек через CMake package config.
 # Sourcing /opt/ros/humble/setup.sh достаточно для правильной настройки путей.
 # Используем --symlink-install для избежания копирования Python файлов.
+# ДОПОЛНИТЕЛЬНО: очищаем CMake кеш перед сборкой для избежания проблем с base image
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
+    ldconfig && \
     colcon build \
     --packages-select audio_common_msgs rob_box_perception_msgs rob_box_mcp_tools rob_box_voice rob_box_animations \
     --symlink-install \
