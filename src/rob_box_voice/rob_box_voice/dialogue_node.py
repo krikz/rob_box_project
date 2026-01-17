@@ -870,7 +870,9 @@ class DialogueNode(Node):
             # Добавляем tools только если MCP доступен и есть инструменты
             if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
                 request_params["tools"] = self.available_tools
-                self.get_logger().debug(f"🛠️  Отправка запроса с {len(self.available_tools)} инструментами")
+                self.get_logger().info(f"🛠️  Отправка запроса с {len(self.available_tools)} MCP инструментами")
+            else:
+                self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
             stream = self.client.chat.completions.create(**request_params)
 
@@ -1220,18 +1222,28 @@ class DialogueNode(Node):
 
             # Формируем extra_body в зависимости от провайдера
             extra_body = {}
-            if self.current_provider == 0:  # Qwen поддерживает enable_search
+            if self.current_provider == "qwen":  # Qwen поддерживает enable_search
                 extra_body["enable_search"] = True
 
+            # Параметры запроса
+            request_params = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "stream": False,
+                "extra_body": extra_body
+            }
+
+            # Добавляем tools только если MCP доступен и есть инструменты
+            if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
+                request_params["tools"] = self.available_tools
+                self.get_logger().info(f"🛠️  Отправка non-streaming запроса с {len(self.available_tools)} MCP инструментами")
+            else:
+                self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены в non-streaming (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
+
             # Делаем синхронный запрос
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                stream=False,
-                extra_body=extra_body
-            )
+            response = self.client.chat.completions.create(**request_params)
 
             # Получаем полный ответ
             full_response = response.choices[0].message.content
