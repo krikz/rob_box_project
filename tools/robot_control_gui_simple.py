@@ -77,17 +77,21 @@ class RobotControlGUI:
         left_frame = ttk.LabelFrame(main_frame, text="🎛️ Управление", padding="5")
         left_frame.grid(row=0, column=0, rowspan=4, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5)
         
-        # TTS кнопки
-        ttk.Label(left_frame, text="📢 TTS команды:", font=("Arial", 10, "bold")).pack(pady=5)
+        # TTS кнопки - Новогоднее поздравление (по частям)
+        ttk.Label(left_frame, text="🎄 Новогоднее поздравление:", font=("Arial", 10, "bold")).pack(pady=5)
         
-        tts_buttons = [
-            ("Привет", '{"ssml": "<speak><prosody pitch=\'high\'>Привет!</prosody><break time=\'300ms\'/></speak>", "emotion": "happy"}'),
-            ("Вперёд", '{"ssml": "<speak>Еду вперёд.<break time=\'300ms\'/></speak>", "commands": ["move_forward:0.3"]}'),
-            ("Стоп", '{"ssml": "<speak>Останавливаюсь.<break time=\'300ms\'/></speak>", "commands": ["stop"]}'),
-            ("Анекдот", '{"ssml": "<speak>Идёт программист.<break time=\'300ms\'/></speak>", "emotion": "happy"}'),
+        greeting_parts = [
+            ("Часть 1", '<speak>Приветствую всех членов ученого совета!<break time="700ms"/></speak>'),
+            ("Часть 2", '<speak>Разрешите от лица нейросетей, генетических алгоритмов, от всех моих душевных микросхем и простых датчиков, а также сотрудников управления информатизации поздравить вас с наступающим новым годом.<break time="700ms"/></speak>'),
+            ("Часть 3", '<speak>В будущем году желаю Вам творческого успеха, семейного благополучия.<break time="700ms"/></speak>'),
+            ("Часть 4", '<speak>Каждому вашему гаджету приложений без вирусов, хорошего интернета, не зависать по мелочам.<break time="700ms"/></speak>'),
+            ("Часть 5", '<speak>Пусть всю работу за вас делают роботы, а вы только будете направлять нас на новые свершения.<break time="700ms"/></speak>'),
+            ("Часть 6", '<speak>А теперь давайте все вместе позовем деда мороза и снегурочку!<break time="700ms"/></speak>'),
+            ("Часть 7", '<speak><prosody rate="x-slow" volume="loud">Де<break time="400ms"/> ду<break time="400ms"/> шка<break time="600ms"/> мо<break time="400ms"/> роз!<break time="800ms"/> Сне<break time="400ms"/> гу<break time="400ms"/> ро<break time="400ms"/> чка!<break time="1000ms"/> Де<break time="400ms"/> ду<break time="400ms"/> шка<break time="600ms"/> мо<break time="400ms"/> роз!<break time="800ms"/> Сне<break time="400ms"/> гу<break time="400ms"/> ро<break time="400ms"/> чка!</prosody><break time="700ms"/></speak>'),
         ]
         
-        for label, data in tts_buttons:
+        for label, ssml in greeting_parts:
+            data = json.dumps({"ssml": ssml, "emotion": "happy"})
             ttk.Button(left_frame, text=label, command=lambda d=data: self.send_tts(d)).pack(fill=tk.X, pady=2)
         
         ttk.Separator(left_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)

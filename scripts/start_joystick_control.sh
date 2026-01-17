@@ -19,13 +19,46 @@ fi
 
 # Setup Zenoh config
 ROBOT_ID="${ROBOT_ID:-RBXU100001}"
-ZENOH_CONFIG="/tmp/zenoh_rviz_config_${ROBOT_ID}.json5"
+ZENOH_CONFIG="/tmp/zenoh_joystick_config_${ROBOT_ID}.json5"
 
-if [ ! -f "$ZENOH_CONFIG" ]; then
-    echo "❌ Error: Zenoh config not found: $ZENOH_CONFIG"
-    echo "   Please run start_rviz.sh first to generate config"
-    exit 1
+# Detect Main or Vision Pi
+if ip addr show | grep -q "10.1.1.10\|10.1.1.20"; then
+    # Main Pi - connect to local peer
+    ZENOH_ENDPOINT="tcp/10.1.1.10:7447"
+    echo "   Detected Main Pi (peer mode)"
+elif ip addr show | grep -q "10.1.1.11\|10.1.1.21"; then
+    # Vision Pi - connect to local peer
+    ZENOH_ENDPOINT="tcp/10.1.1.11:7447"
+    echo "   Detected Vision Pi (peer mode)"
+else
+    # Development machine - connect to LOCAL Zenoh router
+    ZENOH_ENDPOINT="tcp/10.1.1.249:7447"
+    echo "   Dev machine mode (connecting to local Zenoh router at 10.1.1.249:7447)"
+    
+    # Check if local router is running
+    if ! docker ps | grep -q zenoh-router-local; then
+        echo "❌ Error: Local Zenoh router is not running"
+        echo "   Start it with: docker start zenoh-router-local"
+        exit 1
+    fi
 fi
+
+# Create Zenoh config with namespace
+echo "   Creating Zenoh config: $ZENOH_CONFIG"
+cat > "$ZENOH_CONFIG" << EOF
+{
+  mode: "peer",
+  namespace: "robots/${ROBOT_ID}",
+  connect: {
+    endpoints: ["${ZENOH_ENDPOINT}"]
+  },
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  }
+}
+EOF
 
 echo "   Starting joy_node..."
 (
@@ -51,7 +84,7 @@ echo "   Starting teleop_node..."
         -p axis_linear.x:=1 \
         -p axis_angular.yaw:=4 \
         -p scale_linear.x:=-1.0 \
-        -p scale_angular.yaw:=4.0 \
+        -p scale_angular.yaw:=15.0 \
         -p require_enable_button:=true \
         -p enable_button:=0 \
         2>&1 | sed 's/^/[teleop] /'
