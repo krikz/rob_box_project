@@ -12,15 +12,6 @@ name: "L: Deploy and Verify"
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Ветка для деплоя'
-        required: true
-        default: 'main'
-        type: choice
-        options:
-          - main
-          - develop
-          - feature/test
       environment:
         description: 'Целевое окружение'
         required: true
@@ -60,7 +51,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ github.ref_name }}
           fetch-depth: 1
           clean: true
 
@@ -104,7 +95,7 @@ jobs:
               ;;
           esac
 
-          echo "branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
           # Установка sshpass для автоматической аутентификации
@@ -228,7 +219,7 @@ jobs:
           echo "🔍 DRY RUN MODE - No actual deployment"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          echo "Branch: ${{ inputs.branch }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Environment: ${{ inputs.environment }}"
           echo "Image Tag: ${{ env.IMAGE_TAG }}"
           echo "Registry: ${{ env.registry_display }}"
@@ -253,14 +244,14 @@ jobs:
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📥 Updating Vision Pi code from branch: ${{ inputs.branch }}"
+          echo "📥 Updating Vision Pi code from branch: ${{ github.ref_name }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project && \
              GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git fetch origin && \
-             git checkout ${{ inputs.branch }} && \
-             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ inputs.branch }}"
+             git checkout ${{ github.ref_name }} && \
+             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ github.ref_name }}"
 
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -307,14 +298,14 @@ jobs:
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📥 Updating Main Pi code from branch: ${{ inputs.branch }}"
+          echo "📥 Updating Main Pi code from branch: ${{ github.ref_name }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project && \
              GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git fetch origin && \
-             git checkout ${{ inputs.branch }} && \
-             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ inputs.branch }}"
+             git checkout ${{ github.ref_name }} && \
+             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ github.ref_name }}"
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -738,7 +729,7 @@ jobs:
           # Формируем описание issue
           ISSUE_BODY="## Deployment Issue Report
 
-          **Branch:** \`${{ inputs.branch }}\`
+          **Branch:** \`${{ github.ref_name }}\`
           **Environment:** \`${{ inputs.environment }}\`
           **Timestamp:** ${{ steps.setup.outputs.timestamp }}
           **Workflow Run:** [#${{ github.run_number }}](${{
@@ -807,7 +798,7 @@ jobs:
 
           # Создаем issue
           gh issue create \
-            --title "$TITLE: ${{ inputs.branch }} → ${{ inputs.environment }}" \
+            --title "$TITLE: ${{ github.ref_name }} → ${{ inputs.environment }}" \
             --body "$ISSUE_BODY" \
             --label "$LABEL" \
             --assignee "$ASSIGNEE"
@@ -823,7 +814,7 @@ jobs:
           echo "📊 DEPLOYMENT SUMMARY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          echo "Branch: ${{ inputs.branch }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Environment: ${{ inputs.environment }}"
           echo "Image Tag: ${{ env.IMAGE_TAG }}"
           echo "Registry: ${{ env.registry_display }}"
@@ -872,7 +863,7 @@ jobs:
           echo ""
           echo "This was a dry run. No actual deployment was performed."
           echo "The workflow would have deployed:"
-          echo "  Branch: ${{ inputs.branch }}"
+          echo "  Branch: ${{ github.ref_name }}"
           echo "  Environment: ${{ inputs.environment }}"
           echo "  Image Tag: ${{ env.IMAGE_TAG }}"
           echo "  Registry: ${{ env.registry_display }}"
