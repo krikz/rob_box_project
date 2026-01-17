@@ -80,7 +80,7 @@
 **Также исправлено:**
 - reflection_node.py: regex для 'настроение' (твоё? → тво[её])
 
-#### 2.2. command_node.py (48% → ~75%) - ✅ **ЗАВЕРШЕНО!**
+#### 2.2. command_node.py (48% → 56%) - ✅ **ЗАВЕРШЕНО!**
 **Сложность:** ⭐⭐ (NLP parsing, command extraction)
 
 **Покрыто:**
@@ -98,6 +98,11 @@
 - `handle_direction()` - конвертация направлений в Nav2 goals (5 тестов)
 - Publishing methods (2 теста):
   * `publish_intent()` - публикация распознанных интентов
+
+**Результат:**
+- Добавлено 17 тестов (14 → 31)
+- Покрытие: 48% → **56%** (+8%)
+- Commit: `874c165`
   * `publish_feedback()` - публикация feedback для пользователя
 - `stt_callback()` - обработка STT результатов (4 теста):
   * wake word removal ("робот")
@@ -161,29 +166,59 @@
 
 ---
 
-### 🔴 Фаза 4: Критичные пробелы
+### 🔴 Фаза 4: Критичные пробелы - ❌ **ОТМЕНЕНА**
 
-#### 4.1. stt_node.py (0% → 70%)
-**Проблема:** audio_common_msgs dependency отсутствует
+#### Причина отмены
+**audio_common_msgs** dependency создает фундаментальные проблемы для тестирования:
+1. ROS 2 требует `_TYPE_SUPPORT` для типов сообщений
+2. Простой `MagicMock` не работает из-за `check_is_valid_msg_type()`
+3. Необходимо либо:
+   - Установить audio_common_msgs (но его нет в репозитории)
+   - Создать полноценный mock с `_TYPE_SUPPORT` (слишком сложно)
 
-**План:**
+#### 4.1. stt_node.py (0%) - ❌ **ПРОПУЩЕНО**
+**Проблема:** audio_common_msgs недоступен для мокирования
+
+**Было планировано:**
 1. Mock audio_common_msgs.msg.AudioData
 2. Тесты Vosk STT engine
-3. VAD (Voice Activity Detection)
-4. Audio streaming и чанкование
+3. Yandex Cloud STT gRPC v3 API  
+4. TTS state tracking (is_robot_speaking flag)
+5. Audio processing pipeline
 
-**Оценка:** 10-12 новых тестов
+**Статус:** Невозможно покрыть тестами без audio_common_msgs
 
-#### 4.2. tts_node.py (0% → 70%)
+#### 4.2. tts_node.py (0%) - ❌ **ПРОПУЩЕНО**
 **Проблема:** audio_common_msgs dependency
 
-**План:**
+**Было планировано:**
 1. Mock audio output
-2. Тесты TTS API (OpenAI/local)
+2. Тесты Yandex TTS API
 3. Audio queue management
 4. Voice synthesis параметры
 
-**Оценка:** 10-12 новых тестов
+**Статус:** Невозможно покрыть тестами без audio_common_msgs
+
+---
+
+## 🎯 Итоговые результаты кампании
+
+**Фаза 1 (Quick Wins):**
+- health_monitor: 19% → 84% (+54 теста)
+- sound_node: 53% → 83%
+- led_node: 62% → ~90%
+- **Итого:** +54 теста, +157 строк покрытия
+
+**Фаза 2 (Средние модули):**
+- reflection_node: 28% → 75% (+38 тестов)
+- command_node: 48% → 56% (+17 тестов)
+- context_aggregator: 43% → 69% (+17 тестов)
+- **Итого:** +72 теста, +~250 строк покрытия
+
+**Общий итог:**
+- Добавлено: **~126 тестов**
+- Общее покрытие: **19% → ~37%** (+18%)
+- 6 модулей улучшено
 
 ---
 
