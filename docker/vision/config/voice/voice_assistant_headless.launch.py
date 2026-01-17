@@ -5,7 +5,7 @@ Headless Voice Assistant Launch для Vision Pi
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -143,6 +143,16 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
+    # === MCP Server (Model Context Protocol Tools) ===
+    # ⚠️ Workaround: Python entry points not recognized by ROS 2
+    # Using ExecuteProcess instead of Node to run Python module directly
+    mcp_server = ExecuteProcess(
+        cmd=['python3', '-m', 'rob_box_mcp_tools.mcp_server', '--ros-args', '--log-level', 'info'],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0
+    )
+    
     return LaunchDescription([
         config_file_arg,
         namespace_arg,
@@ -153,5 +163,6 @@ def generate_launch_description():
         tts_node,
         stt_node,
         sound_node,
-        command_node
+        command_node,
+        mcp_server
     ])
