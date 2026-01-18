@@ -7,10 +7,13 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-joy-linux \
     joystick \
     jstest-gtk \
-    python3-bleak \
-    python3-dbus-fast \
     bluez \
+    python3-pip \
+    python3-dbus \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Python BLE libraries via pip (not available in Ubuntu 22.04 apt)
+RUN pip3 install --no-cache-dir bleak dbus-fast
 
 # Copy workspace source (пакет rob_box_teleop)
 COPY --chown=ros2:ros2 src/rob_box_teleop /workspace/src/rob_box_teleop
