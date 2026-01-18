@@ -17,7 +17,6 @@ from typing import Optional
 
 import rclpy
 from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
@@ -96,7 +95,19 @@ class JoystickControlNode(Node):
             if not BLEAK_AVAILABLE:
                 self.get_logger().error("❌ Bleak library not available! Install python3-bleak")
                 raise RuntimeError("Bleak not available")
-            asyncio.create_task(self.connect_ble_joystick())
+            # Start BLE connection in separate thread
+            import threading
+            self.ble_thread = threading.Thread(target=self._run_ble_connection, daemon=True)
+            self.ble_thread.start()
+
+    def _run_ble_connection(self):
+        """Run BLE connection in separate thread with its own event loop."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.connect_ble_joystick())
+        finally:
+            loop.close()
 
     async def connect_ble_joystick(self):
         """Connect to BLE joystick and setup notifications."""
@@ -292,19 +303,18 @@ def main(args=None):
     rclpy.init(args=args)
     node = JoystickControlNode()
 
-    # Create executor for running async tasks
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
-
     try:
-        # Run executor in thread to allow asyncio event loop
-        executor.spin()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.publish_stop()
         if node.ble_client and node.ble_client.is_connected:
-            asyncio.get_event_loop().run_until_complete(node.ble_client.disconnect())
+            # Disconnect BLE in blocking way
+            import asyncio
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(node.ble_client.disconnect())
+            loop.close()
         node.destroy_node()
         rclpy.shutdown()
 
