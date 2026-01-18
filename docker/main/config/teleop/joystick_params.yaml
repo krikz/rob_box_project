@@ -1,9 +1,13 @@
 # Joystick Control Configuration for Rob Box - Docker Version
-# ExpressLRS Joystick HID mapping
+# ExpressLRS Joystick via BLE direct connection (bypasses HID subsystem issues)
 
 joystick_control_node:
   ros__parameters:
-    # Device settings
+    # Connection mode
+    use_ble: true  # true = BLE direct (no HID), false = traditional /dev/input/js0
+    ble_mac: "8C:4F:00:C2:04:96"  # ExpressLRS Joystick MAC address
+    
+    # Device settings (for HID mode, if use_ble=false)
     device_path: "/dev/input/js0"
     device_name: "ExpressLRS Joystick"
     check_interval: 2.0  # seconds

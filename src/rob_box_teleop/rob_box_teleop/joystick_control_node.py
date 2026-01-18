@@ -3,21 +3,30 @@
 Joystick Control Node for Rob Box.
 
 Provides direct joystick control with voice feedback:
-- Detects joystick connection
+- Reads ExpressLRS BLE joystick directly via Bleak
 - ARM button activates motors with voice confirmation
 - Publishes cmd_vel_joy for robot control
 """
 
+import asyncio
 import os
+import struct
 import time
 from pathlib import Path
 from typing import Optional
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
+
+try:
+    from bleak import BleakClient, BleakScanner
+    BLEAK_AVAILABLE = True
+except ImportError:
+    BLEAK_AVAILABLE = False
 
 
 class JoystickControlNode(Node):
@@ -27,6 +36,8 @@ class JoystickControlNode(Node):
         super().__init__("joystick_control_node")
 
         # Parameters
+        self.declare_parameter("use_ble", True)  # True for BLE, False for /dev/input/js0
+        self.declare_parameter("ble_mac", "8C:4F:00:C2:04:96")
         self.declare_parameter("device_path", "/dev/input/js0")
         self.declare_parameter("device_name", "ExpressLRS Joystick")
         self.declare_parameter("check_interval", 2.0)
@@ -38,6 +49,8 @@ class JoystickControlNode(Node):
         self.declare_parameter("deadzone", 0.1)
         self.declare_parameter("enable_voice_feedback", True)
 
+        self.use_ble = self.get_parameter("use_ble").value
+        self.ble_mac = self.get_parameter("ble_mac").value
         self.device_path = self.get_parameter("device_path").value
         self.device_name = self.get_parameter("device_name").value
         self.check_interval = self.get_parameter("check_interval").value
@@ -52,28 +65,142 @@ class JoystickControlNode(Node):
         # State
         self.device_connected = False
         self.last_joy_msg: Optional[Joy] = None
-        self.was_enabled = False  # Для отслеживания изменения состояния
+        self.was_enabled = False
+        self.ble_client: Optional[BleakClient] = None
+        self.joy_axes = [0.0] * 8  # 8 axes for ExpressLRS
+        self.joy_buttons = [0] * 16  # 16 buttons
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
         self.tts_pub = self.create_publisher(String, "/tts/speak", 10)
+        self.joy_pub = self.create_publisher(Joy, "joy", 10)
 
-        # Subscriber
-        self.joy_sub = self.create_subscription(Joy, "joy", self.joy_callback, 10)
+        # Subscriber (only if not using BLE)
+        if not self.use_ble:
+            self.joy_sub = self.create_subscription(Joy, "joy", self.joy_callback, 10)
 
-        # Timer for device monitoring
-        self.device_check_timer = self.create_timer(self.check_interval, self.check_device)
+        # Timer for publishing joy messages from BLE data
+        if self.use_ble:
+            self.joy_timer = self.create_timer(0.05, self.publish_joy_from_ble)  # 20Hz
 
         self.get_logger().info(
             f"🎮 Joystick Control Node started\n"
-            f"   Device: {self.device_path}\n"
-            f"   Expected: {self.device_name}\n"
+            f"   Mode: {'BLE Direct' if self.use_ble else 'HID via joy_node'}\n"
+            f"   Device: {self.ble_mac if self.use_ble else self.device_path}\n"
             f"   Enable button: {self.enable_button} (hold to enable)\n"
             f"   Max speeds: linear={self.max_linear} m/s, angular={self.max_angular} rad/s"
         )
 
-        # Initial device check
-        self.check_device()
+        # Start BLE connection if enabled
+        if self.use_ble:
+            if not BLEAK_AVAILABLE:
+                self.get_logger().error("❌ Bleak library not available! Install python3-bleak")
+                raise RuntimeError("Bleak not available")
+            asyncio.create_task(self.connect_ble_joystick())
+
+    async def connect_ble_joystick(self):
+        """Connect to BLE joystick and setup notifications."""
+        self.get_logger().info(f"🔍 Scanning for {self.device_name} ({self.ble_mac})...")
+        
+        try:
+            # Scan for device
+            devices = await BleakScanner.discover(timeout=10.0)
+            joystick = None
+            for device in devices:
+                if device.address.upper() == self.ble_mac.upper():
+                    joystick = device
+                    break
+            
+            if not joystick:
+                self.get_logger().error(f"❌ Joystick not found! Turn it on and retry.")
+                if self.enable_voice:
+                    self.speak("Джойстик не найден, проверь что он включен")
+                return
+            
+            self.get_logger().info(f"✅ Found: {joystick.name}")
+            self.get_logger().info(f"🔌 Connecting to BLE device...")
+            
+            async with BleakClient(self.ble_mac) as client:
+                self.ble_client = client
+                self.device_connected = True
+                self.get_logger().info(f"✅ Connected!")
+                
+                if self.enable_voice:
+                    self.speak("Джойстик подключен по блютус")
+                
+                # Find HID Report characteristic (UUID 0x2A4D or custom)
+                # ExpressLRS typically uses HID Report for input
+                hid_report_uuid = "00002a4d-0000-1000-8000-00805f9b34fb"
+                
+                # Subscribe to all notify characteristics
+                for service in client.services:
+                    for char in service.characteristics:
+                        if "notify" in char.properties:
+                            self.get_logger().info(f"📡 Subscribing to {char.uuid}")
+                            await client.start_notify(char.uuid, self.ble_notification_handler)
+                
+                # Keep connection alive
+                while client.is_connected:
+                    await asyncio.sleep(1.0)
+                
+                self.get_logger().warn("⚠️  BLE connection lost")
+                self.device_connected = False
+                if self.enable_voice:
+                    self.speak("Джойстик отключен")
+                    
+        except Exception as e:
+            self.get_logger().error(f"❌ BLE error: {e}")
+            self.device_connected = False
+
+    def ble_notification_handler(self, sender, data: bytearray):
+        """Handle BLE notifications from joystick."""
+        # ExpressLRS joystick sends HID reports
+        # Standard HID joystick report format (varies by device):
+        # Byte 0: Buttons (bitmap)
+        # Bytes 1-2: X axis (int16)
+        # Bytes 3-4: Y axis (int16)
+        # Bytes 5-6: Z axis (int16)
+        # Bytes 7-8: RZ axis (int16)
+        # etc.
+        
+        if len(data) < 2:
+            return
+        
+        try:
+            # Parse buttons (first byte typically)
+            if len(data) >= 1:
+                button_byte = data[0]
+                for i in range(8):
+                    self.joy_buttons[i] = 1 if (button_byte & (1 << i)) else 0
+            
+            # Parse axes (as int16, normalized to [-1.0, 1.0])
+            offset = 1
+            axis_idx = 0
+            while offset + 1 < len(data) and axis_idx < 8:
+                raw_value = struct.unpack_from('<h', data, offset)[0]  # signed int16 little-endian
+                # Normalize from [-32768, 32767] to [-1.0, 1.0]
+                self.joy_axes[axis_idx] = raw_value / 32768.0
+                offset += 2
+                axis_idx += 1
+                
+        except Exception as e:
+            self.get_logger().debug(f"Parse error: {e}")
+
+    def publish_joy_from_ble(self):
+        """Publish Joy message from BLE data and process it."""
+        if not self.device_connected:
+            return
+        
+        joy_msg = Joy()
+        joy_msg.header.stamp = self.get_clock().now().to_msg()
+        joy_msg.axes = self.joy_axes.copy()
+        joy_msg.buttons = self.joy_buttons.copy()
+        
+        # Publish to /joy topic (for compatibility with joy_node)
+        self.joy_pub.publish(joy_msg)
+        
+        # Process for cmd_vel
+        self.joy_callback(joy_msg)
 
     def check_device(self):
         """Check if joystick device is connected."""
@@ -165,12 +292,19 @@ def main(args=None):
     rclpy.init(args=args)
     node = JoystickControlNode()
 
+    # Create executor for running async tasks
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        # Run executor in thread to allow asyncio event loop
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         node.publish_stop()
+        if node.ble_client and node.ble_client.is_connected:
+            asyncio.get_event_loop().run_until_complete(node.ble_client.disconnect())
         node.destroy_node()
         rclpy.shutdown()
 
