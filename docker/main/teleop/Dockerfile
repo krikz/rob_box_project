@@ -1,19 +1,14 @@
 # syntax=docker/dockerfile:1
 FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
 
-# Install joy node from ROS 2 packages and Bluetooth dependencies
+# Install joy node from ROS 2 packages and Serial dependencies
 RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-joy \
     ros-${ROS_DISTRO}-joy-linux \
     joystick \
     jstest-gtk \
-    bluez \
-    python3-pip \
-    python3-dbus \
+    python3-serial \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Python BLE libraries via pip (not available in Ubuntu 22.04 apt)
-RUN pip3 install --no-cache-dir bleak dbus-fast
 
 # Copy workspace source (пакет rob_box_teleop)
 COPY --chown=ros2:ros2 src/rob_box_teleop /workspace/src/rob_box_teleop

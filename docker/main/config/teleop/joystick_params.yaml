@@ -1,30 +1,34 @@
-# Joystick Control Configuration for Rob Box - Docker Version
-# ExpressLRS Joystick via BLE direct connection (bypasses HID subsystem issues)
+# Joystick Control Configuration for Rob Box - SBUS Mode
+# ExpressLRS SBUS receiver via USB-UART adapter (/dev/ttyACM0)
 
 joystick_control_node:
   ros__parameters:
     # Connection mode
-    use_ble: true  # true = BLE direct (no HID), false = traditional /dev/input/js0
-    ble_mac: "8C:4F:00:C2:04:96"  # ExpressLRS Joystick MAC address
+    use_sbus: true  # true = SBUS serial, false = traditional /dev/input/js0
+    serial_port: "/dev/ttyACM0"  # USB-UART adapter (CH340G)
+    serial_baudrate: 100000  # SBUS standard: 100000 baud, 8E2
     
-    # Device settings (for HID mode, if use_ble=false)
+    # Device settings (for HID mode, if use_sbus=false)
     device_path: "/dev/input/js0"
-    device_name: "ExpressLRS Joystick"
-    check_interval: 2.0  # seconds
+    device_name: "ExpressLRS SBUS"
 
-    # Joystick mapping (zero-indexed)
-    # ExpressLRS typical mapping:
-    # Axes: 0=Roll, 1=Pitch, 2=Throttle, 3=Yaw
-    # Buttons: varies by controller
-    axis_linear_x: 1      # Pitch (forward/backward)
-    axis_angular_z: 4     # Yaw (left/right rotation) - ПРОТЕСТИРОВАНО!
+    # SBUS channel mapping (zero-indexed: 0-15)
+    # Typical ELRS mapping:
+    # Ch1(0)=Roll, Ch2(1)=Pitch, Ch3(2)=Throttle, Ch4(3)=Yaw, Ch5(4)=ARM
+    channel_roll: 0       # Roll (left/right strafe - not used for diff drive)
+    channel_pitch: 1      # Pitch -> linear.x (forward/backward)
+    channel_throttle: 2   # Throttle (not used for ground robot)
+    channel_yaw: 3        # Yaw -> angular.z (rotation)
+    channel_arm: 4        # ARM switch (HIGH = motors enabled)
     
-    # Enable button (HOLD to drive, release to stop)
-    enable_button: 0      # Кнопка безопасности - ДЕРЖАТЬ ЗАЖАТОЙ для управления
+    # For non-SBUS mode
+    axis_linear_x: 1      # Pitch (forward/backward)
+    axis_angular_z: 4     # Yaw (left/right rotation)
+    enable_button: 0      # Safety button
 
-    # Speed limits (ПРОТЕСТИРОВАННЫЕ ЗНАЧЕНИЯ из старого скрипта!)
-    max_linear_speed: 1.0   # m/s (scale_linear.x: -1.0)
-    max_angular_speed: 15.0  # rad/s (scale_angular.yaw: 15.0)
+    # Speed limits
+    max_linear_speed: 1.0   # m/s
+    max_angular_speed: 15.0  # rad/s
     
     # Deadzone to prevent drift
     deadzone: 0.1

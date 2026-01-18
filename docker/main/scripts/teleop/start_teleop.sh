@@ -12,24 +12,31 @@ PARAMS_FILE="/config/teleop/joystick_params.yaml"
 if [ -f "$PARAMS_FILE" ]; then
     echo "   Loading parameters from: $PARAMS_FILE"
     
-    # Check if BLE mode is enabled
-    USE_BLE=$(grep -A 1 "use_ble:" "$PARAMS_FILE" | grep "true" || echo "")
-    BLE_MAC=$(grep "ble_mac:" "$PARAMS_FILE" | awk '{print $2}' | tr -d '"' || echo "")
+    # Check if SBUS mode is enabled
+    USE_SBUS=$(grep -A 1 "use_sbus:" "$PARAMS_FILE" | grep "true" || echo "")
+    SERIAL_PORT=$(grep "serial_port:" "$PARAMS_FILE" | awk '{print $2}' | tr -d '"' || echo "")
     
-    if [ -n "$USE_BLE" ] && [ -n "$BLE_MAC" ]; then
-        echo "📡 BLE Direct mode enabled - joystick_control_node will connect via Bluetooth"
-        echo "   No joy_node needed (bypassing HID subsystem)"
+    if [ -n "$USE_SBUS" ] && [ -n "$SERIAL_PORT" ]; then
+        echo "📡 SBUS Serial mode enabled - joystick_control_node will read from $SERIAL_PORT"
+        echo "   No joy_node needed"
+        
+        # Check if serial port exists
+        if [ -e "$SERIAL_PORT" ]; then
+            echo "✅ Serial port found: $SERIAL_PORT"
+        else
+            echo "⚠️  Warning: Serial port not found: $SERIAL_PORT"
+        fi
     else
         echo "🎮 HID mode - will use joy_linux_node with /dev/input/event* devices"
     fi
 else
     echo "⚠️  Warning: Config file not found: $PARAMS_FILE"
     PARAMS_FILE=""
-    USE_BLE=""
+    USE_SBUS=""
 fi
 
-# Start joy_node ONLY if NOT using BLE mode
-if [ -z "$USE_BLE" ]; then
+# Start joy_node ONLY if NOT using SBUS mode
+if [ -z "$USE_SBUS" ]; then
     echo "🚀 Starting joy_linux_node..."
     
     # Wait for joystick device (with timeout)
@@ -60,13 +67,6 @@ if [ -z "$USE_BLE" ]; then
 fi
 
 echo "🚀 Starting joystick_control_node..."
-
-# Disconnect joystick from bluetoothctl right before starting Python node
-if [ -n "$USE_BLE" ] && [ -n "$BLE_MAC" ]; then
-    echo "   Disconnecting $BLE_MAC from bluetoothctl (if connected)..."
-    bluetoothctl disconnect "$BLE_MAC" 2>/dev/null || true
-    sleep 0.5
-fi
 
 # Start joystick_control_node
 # Note: due to --symlink-install, the executable is named .py
