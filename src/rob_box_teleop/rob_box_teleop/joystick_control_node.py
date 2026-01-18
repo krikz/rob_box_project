@@ -106,7 +106,16 @@ class JoystickControlNode(Node):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self.connect_ble_joystick())
+            # Infinite retry loop - keep trying to connect
+            while True:
+                try:
+                    loop.run_until_complete(self.connect_ble_joystick())
+                except Exception as e:
+                    self.get_logger().warn(f"⚠️  Connection lost or failed: {e}")
+                    self.device_connected = False
+                    self.get_logger().info("🔄 Retrying in 5 seconds...")
+                    import time
+                    time.sleep(5)
         finally:
             loop.close()
 
