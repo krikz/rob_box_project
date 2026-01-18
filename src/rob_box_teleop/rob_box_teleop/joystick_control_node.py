@@ -114,22 +114,9 @@ class JoystickControlNode(Node):
         self.get_logger().info(f"🔍 Scanning for {self.device_name} ({self.ble_mac})...")
         
         try:
-            # Scan for device
-            devices = await BleakScanner.discover(timeout=10.0)
-            joystick = None
-            for device in devices:
-                if device.address.upper() == self.ble_mac.upper():
-                    joystick = device
-                    break
-            
-            if not joystick:
-                self.get_logger().error(f"❌ Joystick not found! Turn it on and retry.")
-                if self.enable_voice:
-                    self.speak("Джойстик не найден, проверь что он включен")
-                return
-            
-            self.get_logger().info(f"✅ Found: {joystick.name}")
-            self.get_logger().info(f"🔌 Connecting to BLE device...")
+            # Connect directly without scanning (device may already be paired)
+            self.get_logger().info(f"🔌 Connecting directly to {self.ble_mac}...")
+            self.get_logger().info(f"   (Bypassing scan - using known MAC address)")
             
             async with BleakClient(self.ble_mac) as client:
                 self.ble_client = client
