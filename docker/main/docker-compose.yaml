@@ -386,6 +386,7 @@ services:
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
