@@ -68,6 +68,7 @@ class JoystickControlNode(Node):
         self.ble_client: Optional[BleakClient] = None
         self.joy_axes = [0.0] * 8  # 8 axes for ExpressLRS
         self.joy_buttons = [0] * 16  # 16 buttons
+        self.notification_count = 0  # DEBUG: count notifications
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
@@ -130,6 +131,14 @@ class JoystickControlNode(Node):
                 # ExpressLRS typically uses HID Report for input
                 hid_report_uuid = "00002a4d-0000-1000-8000-00805f9b34fb"
                 
+                # Log all services and characteristics
+                self.get_logger().info("🔍 Available services:")
+                for service in client.services:
+                    self.get_logger().info(f"   Service: {service.uuid}")
+                    for char in service.characteristics:
+                        props = ", ".join(char.properties)
+                        self.get_logger().info(f"      Char: {char.uuid} ({props})")
+                
                 # Subscribe to all notify characteristics
                 for service in client.services:
                     for char in service.characteristics:
@@ -161,7 +170,12 @@ class JoystickControlNode(Node):
         # Bytes 7-8: RZ axis (int16)
         # etc.
         
+        self.notification_count += 1
+        if self.notification_count <= 5 or self.notification_count % 20 == 0:
+            self.get_logger().info(f"📨 #{self.notification_count} from {sender}: {len(data)} bytes - {data.hex()}")
+        
         if len(data) < 2:
+            self.get_logger().debug(f"   Skipping (too short)")
             return
         
         try:
