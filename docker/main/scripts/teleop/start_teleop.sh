@@ -35,10 +35,11 @@ fi
 
 echo "🚀 Starting joy_node and joystick_control_node..."
 
-# Start joy_node (reads /dev/input/js0 and publishes to /joy topic)
-ros2 run joy joy_node --ros-args \
+# Start joy_node (reads /dev/input/event* and publishes to /joy topic)
+# Using device_name to auto-detect ExpressLRS Joystick
+ros2 run joy joy_linux_node --ros-args \
     --log-level info \
-    -p device_id:=0 \
+    -p device_name:="ExpressLRS Joystick" \
     -p deadzone:=0.05 \
     -p autorepeat_rate:=20.0 &
 
