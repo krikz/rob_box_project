@@ -61,12 +61,13 @@ fi
 echo "🚀 Starting joystick_control_node..."
 
 # Start joystick_control_node
+# Note: due to --symlink-install, the executable is named .py
 if [ -n "$PARAMS_FILE" ]; then
-    ros2 run rob_box_teleop joystick_control_node --ros-args \
+    ros2 run rob_box_teleop joystick_control_node.py --ros-args \
         --params-file "$PARAMS_FILE" \
         --log-level info &
 else
-    ros2 run rob_box_teleop joystick_control_node --ros-args \
+    ros2 run rob_box_teleop joystick_control_node.py --ros-args \
         --log-level info &
 fi
 
