@@ -20,9 +20,6 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
         --cmake-args -DCMAKE_BUILD_TYPE=Release \
         --symlink-install
 
-# Source workspace in bashrc
-RUN echo "source /workspace/install/setup.bash" >> /home/ros2/.bashrc
-
 WORKDIR /workspace
 
 # Default command will be overridden by docker-compose
