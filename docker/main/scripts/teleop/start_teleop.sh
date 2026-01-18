@@ -14,9 +14,14 @@ if [ -f "$PARAMS_FILE" ]; then
     
     # Check if BLE mode is enabled
     USE_BLE=$(grep -A 1 "use_ble:" "$PARAMS_FILE" | grep "true" || echo "")
+    BLE_MAC=$(grep "ble_mac:" "$PARAMS_FILE" | awk '{print $2}' | tr -d '"' || echo "")
     
-    if [ -n "$USE_BLE" ]; then
+    if [ -n "$USE_BLE" ] && [ -n "$BLE_MAC" ]; then
         echo "📡 BLE Direct mode enabled - joystick_control_node will connect via Bluetooth"
+        echo "   Disconnecting $BLE_MAC from bluetoothctl (if connected)..."
+        # Disconnect from bluetoothctl to allow Bleak to connect
+        bluetoothctl disconnect "$BLE_MAC" 2>/dev/null || true
+        sleep 1
         echo "   No joy_node needed (bypassing HID subsystem)"
     else
         echo "🎮 HID mode - will use joy_linux_node with /dev/input/event* devices"
