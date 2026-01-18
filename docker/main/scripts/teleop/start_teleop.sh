@@ -18,10 +18,6 @@ if [ -f "$PARAMS_FILE" ]; then
     
     if [ -n "$USE_BLE" ] && [ -n "$BLE_MAC" ]; then
         echo "📡 BLE Direct mode enabled - joystick_control_node will connect via Bluetooth"
-        echo "   Disconnecting $BLE_MAC from bluetoothctl (if connected)..."
-        # Disconnect from bluetoothctl to allow Bleak to connect
-        bluetoothctl disconnect "$BLE_MAC" 2>/dev/null || true
-        sleep 1
         echo "   No joy_node needed (bypassing HID subsystem)"
     else
         echo "🎮 HID mode - will use joy_linux_node with /dev/input/event* devices"
@@ -64,6 +60,13 @@ if [ -z "$USE_BLE" ]; then
 fi
 
 echo "🚀 Starting joystick_control_node..."
+
+# Disconnect joystick from bluetoothctl right before starting Python node
+if [ -n "$USE_BLE" ] && [ -n "$BLE_MAC" ]; then
+    echo "   Disconnecting $BLE_MAC from bluetoothctl (if connected)..."
+    bluetoothctl disconnect "$BLE_MAC" 2>/dev/null || true
+    sleep 0.5
+fi
 
 # Start joystick_control_node
 # Note: due to --symlink-install, the executable is named .py
