@@ -678,7 +678,9 @@ class TTSNode(Node):
                 if speech_id:
                     finished_msg = String()
                     finished_msg.data = json.dumps({"speech_id": speech_id, "success": True}, ensure_ascii=False)
+                    self.get_logger().info(f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., success=True")
                     self.finished_pub.publish(finished_msg)
+                    self.get_logger().info(f"✅ TTS finished event опубликован на /voice/tts/finished")
 
             # Очищаем processing_dialogue_id после завершения
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
