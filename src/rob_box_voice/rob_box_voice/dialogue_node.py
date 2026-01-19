@@ -1068,11 +1068,14 @@ class DialogueNode(Node):
             if chunk_count == 0 and len(full_response) > 0:
                 self.get_logger().warning(f"⚠️  Получен plain text без JSON ({len(full_response)} chars), отправляю как один chunk")
                 
-                # Формируем JSON с текстом
+                # Формируем JSON с SSML для TTS
+                text = full_response.strip()
                 chunk_data = {
                     "chunk": "end",
-                    "text": full_response.strip(),
-                    "emotion": "neutral"
+                    "ssml": f"<speak>{text}</speak>",
+                    "emotion": "neutral",
+                    "dialogue_id": dialogue_id,
+                    "speech_id": str(uuid.uuid4())
                 }
                 
                 # Публикуем в response (tts_node подписан на него)
@@ -1083,7 +1086,7 @@ class DialogueNode(Node):
                 chunk_count = 1  # Считаем это как 1 chunk
                 streaming_result["chunk_count"] = 1
                 
-                self.get_logger().info(f"🔊 Plain text отправлен в TTS как 1 chunk")
+                self.get_logger().info(f"🔊 Plain text отправлен в TTS как 1 chunk (SSML создан)")
 
         # Запускаем streaming в отдельном потоке с timeout
         try:
