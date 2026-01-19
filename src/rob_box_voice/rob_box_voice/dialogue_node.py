@@ -216,6 +216,7 @@ class DialogueNode(Node):
         self.last_query_time = None  # Timestamp последнего запроса
         self.accumulation_timer = None  # Таймер для проверки накопления
         self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
+        self.interrupt_agent_loop = False  # Флаг прерывания агентного цикла при новом запросе
         self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
 
         # ============ RTABMap Control (Mapping Commands) ============
@@ -717,9 +718,10 @@ class DialogueNode(Node):
 
         self.get_logger().info(f"📥 Запрос добавлен в очередь (всего: {len(self.pending_queries)})")
 
-        # Если LLM уже обрабатывает запрос - просто добавляем в очередь и ждём
+        # Если LLM уже обрабатывает запрос - прерываем агентный цикл
         if self.llm_processing:
-            self.get_logger().info("⏳ LLM занят, запрос будет обработан после завершения текущего")
+            self.get_logger().warning("⚠️ Новый запрос пользователя - прерываю текущий агентный цикл!")
+            self.interrupt_agent_loop = True
             return
 
         # Если это первый запрос или прошло достаточно времени - начинаем накопление
@@ -1247,6 +1249,12 @@ class DialogueNode(Node):
             while iteration < max_iterations:
                 iteration += 1
                 self.get_logger().info(f"🔄 Агентный цикл: итерация {iteration}/{max_iterations}")
+
+                # Проверка прерывания от нового запроса пользователя
+                if self.interrupt_agent_loop:
+                    self.get_logger().warning("🛑 Агентный цикл прерван новым запросом пользователя")
+                    self.interrupt_agent_loop = False
+                    break
 
                 # Делаем запрос к LLM
                 response = self.client.chat.completions.create(**request_params)
