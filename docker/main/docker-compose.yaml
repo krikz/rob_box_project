@@ -372,6 +372,41 @@ services:
     restart: unless-stopped
 
   # Promtail - сбор логов из Docker контейнеров и отправка на машину мониторинга
+  # Teleoperation - джойстик управление роботом через SBUS
+  teleop:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: teleop
+    network_mode: host
+    privileged: true  # Нужен для доступа к serial портам
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/teleop:/scripts:ro
+      - /dev/input:/dev/input  # Доступ к джойстику (для non-SBUS режима)
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0  # USB-UART для SBUS приёмника
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_teleop.sh"]
+    depends_on:
+      - zenoh-router
+      - twist-mux
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f joystick_control_node || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   promtail:
     image: grafana/promtail:2.9.2
     container_name: promtail

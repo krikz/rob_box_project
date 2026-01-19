@@ -152,6 +152,38 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
+  build-teleop:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build teleop
+        run: |
+          SERVICE="teleop"
+          GHCR_TAG="${IMAGE_PREFIX}:teleop-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:teleop-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/main/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
   build-micro-ros-agent:
     needs: prepare
     runs-on: self-hosted
@@ -323,6 +355,7 @@ jobs:
       - build-robot-state-publisher
       - build-rtabmap
       - build-twist-mux
+      - build-teleop
       - build-micro-ros-agent
       - build-ros2-control
       - build-nav2
@@ -343,6 +376,7 @@ jobs:
           echo "  ✅ robot-state-publisher"
           echo "  ✅ rtabmap"
           echo "  ✅ twist-mux"
+          echo "  ✅ teleop"
           echo "  ✅ micro-ros-agent"
           echo "  ✅ ros2-control"
           echo "  ✅ nav2"
