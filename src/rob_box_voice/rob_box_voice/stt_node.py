@@ -79,6 +79,7 @@ class STTNode(Node):
         # Publishers
         self.result_pub = self.create_publisher(String, '/voice/stt/result', 10)
         self.state_pub = self.create_publisher(String, '/voice/stt/state', 10)
+        self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
         
         # Vosk модель и распознаватель
         self.model: Optional[Model] = None
@@ -282,6 +283,19 @@ class STTNode(Node):
     
     def publish_result(self, text: str):
         """Публикация финального результата распознавания"""
+        # Проверяем, обращается ли пользователь к роботу
+        text_lower = text.lower()
+        wake_words = ['робот', 'робик', 'роб', 'робо']
+        
+        # Если фраза начинается с обращения - прерываем TTS
+        if any(text_lower.startswith(word) for word in wake_words):
+            self.get_logger().info(f'🎯 Обнаружено обращение к роботу: "{text[:20]}..."')
+            # Отправляем STOP на TTS
+            stop_msg = String()
+            stop_msg.data = "STOP"
+            self.tts_control_pub.publish(stop_msg)
+            self.get_logger().info('🔇 Отправлен STOP на TTS (пользователь обратился к роботу)')
+        
         msg = String()
         msg.data = text
         self.result_pub.publish(msg)
