@@ -45,9 +45,45 @@ class STTNode(Node):
         self.declare_parameter('yandex_language', 'ru-RU')
         self.declare_parameter('yandex_model', 'general')
         
+        # EOU (End of Utterance) profile: fast | balanced | patient
+        self.declare_parameter('eou_profile', 'balanced')
+        
         self.yandex_api_key = self.get_parameter('yandex_api_key').value or os.environ.get('YANDEX_API_KEY', '')
         self.yandex_language = self.get_parameter('yandex_language').value
         self.yandex_model = self.get_parameter('yandex_model').value
+        self.eou_profile = self.get_parameter('eou_profile').value
+        
+        # EOU profiles configuration
+        self.eou_profiles = {
+            'fast': {
+                'type': stt_pb2.DefaultEouClassifier.HIGH,  # Быстрое определение конца
+                'max_pause_ms': 700,  # Default Yandex value
+                'description': 'Быстрое определение конца фразы (для коротких команд)'
+            },
+            'balanced': {
+                'type': stt_pb2.DefaultEouClassifier.DEFAULT,  # Консервативное определение
+                'max_pause_ms': 1200,  # Текущее значение
+                'description': 'Сбалансированное определение (по умолчанию)'
+            },
+            'patient': {
+                'type': stt_pb2.DefaultEouClassifier.DEFAULT,
+                'max_pause_ms': 2000,  # Для длинных фраз с паузами
+                'description': 'Терпеливое ожидание (для медленной речи)'
+            }
+        }
+        
+        # Валидация профиля
+        if self.eou_profile not in self.eou_profiles:
+            self.get_logger().warning(
+                f"⚠️ Неизвестный EOU profile '{self.eou_profile}', используется 'balanced'"
+            )
+            self.eou_profile = 'balanced'
+        
+        profile = self.eou_profiles[self.eou_profile]
+        self.get_logger().info(
+            f"📊 EOU Profile: {self.eou_profile} - {profile['description']} "
+            f"(pause: {profile['max_pause_ms']}ms)"
+        )
         
         # Yandex gRPC клиент
         self.yandex_channel = None
@@ -215,12 +251,12 @@ class STTNode(Node):
                     audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME
                 ),
                 # ВАЖНО! Настройка EOU (End of Utterance) - определение конца фразы
-                # Увеличиваем max_pause_between_words_hint_ms чтобы робот не обрывал речь
-                # когда пользователь медленно говорит или делает паузы между словами
+                # Используем выбранный profile (fast/balanced/patient)
+                profile = self.eou_profiles[self.eou_profile]
                 eou_classifier=stt_pb2.EouClassifierOptions(
                     default_classifier=stt_pb2.DefaultEouClassifier(
-                        type=stt_pb2.DefaultEouClassifier.DEFAULT,  # Консервативный (DEFAULT) vs быстрый (HIGH)
-                        max_pause_between_words_hint_ms=1200  # 1.2 сек паузы между словами (default ~700ms)
+                        type=profile['type'],
+                        max_pause_between_words_hint_ms=profile['max_pause_ms']
                     )
                 )
             )
