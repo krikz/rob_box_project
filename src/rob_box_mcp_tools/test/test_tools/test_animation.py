@@ -7,6 +7,12 @@ test_animation.py - Unit тесты для инструментов анимац
 """
 
 import pytest
+from unittest.mock import Mock, patch
+
+# Mock std_msgs перед импортом tools
+import sys
+sys.modules['std_msgs'] = Mock()
+sys.modules['std_msgs.msg'] = Mock()
 
 from rob_box_mcp_tools.tools.animation import PlayAnimationTool, SetEmotionTool
 

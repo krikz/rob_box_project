@@ -7,8 +7,11 @@ animation.py - Инструменты для управления LED анима
 - SetEmotionTool: Установить эмоцию через LED
 """
 
-from typing import List
-from std_msgs.msg import String
+from typing import List, TYPE_CHECKING
+
+# Ленивый импорт ROS 2 модулей для поддержки unit тестов
+if TYPE_CHECKING:
+    from std_msgs.msg import String
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
@@ -44,6 +47,9 @@ class PlayAnimationTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_msgs.msg import String
+        
         # Publisher для запроса анимаций
         self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
 
@@ -89,6 +95,7 @@ class PlayAnimationTool(MCPTool):
             )
 
         # Публикуем запрос анимации
+        from std_msgs.msg import String
         msg = String()
         msg.data = animation
         self.animation_pub.publish(msg)
@@ -115,6 +122,9 @@ class SetEmotionTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_msgs.msg import String
+        
         self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
 
     @property
@@ -156,6 +166,7 @@ class SetEmotionTool(MCPTool):
             return MCPToolResult(success=False, error=f"Неизвестная эмоция: {emotion}")
 
         # Публикуем анимацию
+        from std_msgs.msg import String
         msg = String()
         msg.data = animation
         self.animation_pub.publish(msg)

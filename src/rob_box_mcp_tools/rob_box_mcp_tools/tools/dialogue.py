@@ -7,8 +7,12 @@ dialogue.py - Инструменты для управления диалого�
 - ListenForResponseTool: Ждать ответ пользователя (STT)
 """
 
-from typing import List
-from std_msgs.msg import String
+from __future__ import annotations
+from typing import List, TYPE_CHECKING
+
+# Ленивый импорт ROS 2 модулей для поддержки unit тестов
+if TYPE_CHECKING:
+    from std_msgs.msg import String
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 
@@ -18,6 +22,9 @@ class SpeakTextTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_msgs.msg import String
+        
         # Publisher для TTS запросов
         self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
         # Subscriber для получения завершения произношения
@@ -27,7 +34,7 @@ class SpeakTextTool(MCPTool):
         import threading
         self.pending_speeches_lock = threading.Lock()
 
-    def _on_tts_finished(self, msg: String):
+    def _on_tts_finished(self, msg: "String"):
         """Обработка завершения произношения"""
         import json
         try:
@@ -133,6 +140,7 @@ class SpeakTextTool(MCPTool):
             self.log_info(f"📝 Зарегистрирован speech_id: {speech_id[:8]}... в pending_speeches")
 
         # Публикуем запрос TTS в JSON формате
+        from std_msgs.msg import String
         tts_request = {"ssml": ssml_text, "speech_id": speech_id}
         msg = String()
         msg.data = json.dumps(tts_request, ensure_ascii=False)
@@ -179,6 +187,9 @@ class ListenForResponseTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_msgs.msg import String
+        
         # Publisher для запроса активации STT
         self.stt_request_pub = node.create_publisher(String, "/voice/stt/request", 10)
 
@@ -219,6 +230,7 @@ class ListenForResponseTool(MCPTool):
             self.log_info(f"Подсказка: {prompt_text}")
 
         # Публикуем запрос на активацию STT
+        from std_msgs.msg import String
         msg = String()
         msg.data = f"listen:{timeout_seconds}"
         self.stt_request_pub.publish(msg)

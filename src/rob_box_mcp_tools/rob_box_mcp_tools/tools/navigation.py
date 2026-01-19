@@ -9,14 +9,16 @@ navigation.py - Инструменты навигации и движения р
 - ListWaypointsTool: Получить список доступных точек
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, TYPE_CHECKING
 import math
 
-from rclpy.action import ActionClient
-from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose
-from action_msgs.srv import CancelGoal
-from action_msgs.msg import GoalInfo
+# Ленивый импорт ROS 2 модулей для поддержки unit тестов
+if TYPE_CHECKING:
+    from rclpy.action import ActionClient
+    from geometry_msgs.msg import PoseStamped
+    from nav2_msgs.action import NavigateToPose
+    from action_msgs.srv import CancelGoal
+    from action_msgs.msg import GoalInfo
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 

@@ -8,10 +8,12 @@ mapping.py - Инструменты для управления картогра
 - FinishMappingTool: Завершить картографирование и перейти в локализацию
 """
 
-from typing import List
+from typing import List, TYPE_CHECKING
 import subprocess
 
-from std_srvs.srv import Empty
+# Ленивый импорт ROS 2 модулей для поддержки unit тестов
+if TYPE_CHECKING:
+    from std_srvs.srv import Empty
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 

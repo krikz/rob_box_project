@@ -6,8 +6,11 @@ sound.py - Инструменты для управления звуковыми
 - PlaySoundTool: Воспроизвести звуковой эффект
 """
 
-from typing import List
-from std_msgs.msg import String
+from typing import List, TYPE_CHECKING
+
+# Ленивый импорт ROS 2 модулей для поддержки unit тестов
+if TYPE_CHECKING:
+    from std_msgs.msg import String
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
@@ -33,6 +36,9 @@ class PlaySoundTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_msgs.msg import String
+        
         # Publisher для триггеров звуков
         self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
 
@@ -71,6 +77,7 @@ class PlaySoundTool(MCPTool):
             )
 
         # Публикуем триггер звука
+        from std_msgs.msg import String
         msg = String()
         msg.data = sound
         self.sound_pub.publish(msg)

@@ -9,11 +9,13 @@ system.py - Инструменты управления системой роб�
 - GetRobotStatusTool: Получить статус робота
 """
 
-from typing import List
-import rclpy
+from typing import List, TYPE_CHECKING
 
-from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-from rcl_interfaces.srv import GetParameters, SetParameters
+# Ленивый импорт ROS 2 модулей для поддержки unit тестов
+if TYPE_CHECKING:
+    import rclpy
+    from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+    from rcl_interfaces.srv import GetParameters, SetParameters
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
