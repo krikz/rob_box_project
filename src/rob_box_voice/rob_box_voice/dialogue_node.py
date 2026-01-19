@@ -1352,11 +1352,13 @@ class DialogueNode(Node):
                     # Если есть текст - публикуем как финальный chunk (для legacy совместимости)
                     if final_content.strip():
                         self.get_logger().info(f"💬 Финальное сообщение от LLM: {final_content[:100]}...")
-                        # Публикуем простой текстовый ответ
+                        # Публикуем с SSML оборачиванием
+                        text = final_content.strip()
                         end_msg = String()
                         end_msg.data = json.dumps({
                             "chunk": "final",
-                            "text": final_content,
+                            "ssml": f"<speak>{text}</speak>",
+                            "emotion": "neutral",
                             "message": "LLM завершил агентный диалог"
                         })
                         self.response_pub.publish(end_msg)
@@ -2207,18 +2209,21 @@ class DialogueNode(Node):
             if full_response:
                 self.get_logger().info(f"📝 LLM финальный ответ: {full_response[:100]}...")
                 
-                # Fallback для plain text
+                # Fallback для plain text - оборачиваем в SSML
                 if chunk_count == 0 and len(full_response) > 0:
+                    text = full_response.strip()
                     chunk_data = {
                         "chunk": "end",
-                        "text": full_response.strip(),
+                        "ssml": f"<speak>{text}</speak>",
                         "emotion": "neutral",
-                        "dialogue_id": dialogue_id
+                        "dialogue_id": dialogue_id,
+                        "speech_id": str(uuid.uuid4())
                     }
                     response_msg = String()
                     response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
                     self.response_pub.publish(response_msg)
                     chunk_count = 1
+                    self.get_logger().info(f"🔊 Plain text обёрнут в SSML")
                 
                 # Сохраняем в историю
                 self.conversation_history.append({"role": "assistant", "content": full_response})
