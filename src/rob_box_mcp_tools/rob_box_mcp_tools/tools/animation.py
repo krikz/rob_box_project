@@ -25,11 +25,21 @@ class PlayAnimationTool(MCPTool):
         "surprised",
         "thinking",
         "victory",
-        "wave",
-        "rainbow",
-        "fire",
-        "matrix",
-        "sparkle",
+        "wakeup",
+        "sleep",
+        "talking",
+        "error",
+        "low_battery",
+        "charging",
+        # Дорожные
+        "police_lights",
+        "ambulance",
+        "fire_truck",
+        "road_service",
+        "turn_left",
+        "turn_right",
+        "accelerating",
+        "braking",
     ]
 
     def __init__(self, node):
