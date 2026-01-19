@@ -19,7 +19,7 @@ class SpeakTextTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         # Publisher для TTS запросов
-        self.tts_pub = node.create_publisher(String, "/voice/tts/text", 10)
+        self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
 
     @property
     def name(self) -> str:
