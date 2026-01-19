@@ -110,6 +110,11 @@ class DialogueNode(Node):
 
         # Подписка на распознанную речь
         self.stt_sub = self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
+        
+        # Подписка на hardware VAD для мгновенного прерывания при новой речи
+        from std_msgs.msg import Bool
+        self.vad_sub = self.create_subscription(Bool, "/audio/vad", self.vad_callback, 10)
+        self.vad_speech_detected = False  # Текущее состояние VAD
 
         # Подписка на feedback от command_node (Phase 5)
         self.command_feedback_sub = self.create_subscription(
@@ -542,8 +547,52 @@ class DialogueNode(Node):
             return "Извините, интернет сейчас недоступен. Я могу только отвечать на простые приветствия."
 
     # ============================================================
-    # Main Callback
+    # Main Callbacks
     # ============================================================
+    
+    def vad_callback(self, msg):
+        """
+        Callback для hardware VAD от ReSpeaker
+        
+        Отслеживает начало речи пользователя для мгновенного прерывания
+        LLM обработки при новом запросе (barge-in).
+        """
+        from std_msgs.msg import Bool
+        
+        vad_active = msg.data
+        
+        # Rising edge detection: speech start
+        if vad_active and not self.vad_speech_detected:
+            self.vad_speech_detected = True
+            self.get_logger().debug("🎤 VAD: Speech START detected")
+            
+            # Прерывание при детекции новой речи во время LLM обработки
+            if self.llm_processing:
+                self.get_logger().warning(
+                    "🛑 VAD: Новая речь обнаружена во время LLM обработки → прерывание"
+                )
+                self.interrupt_agent_loop = True
+                
+                # Прерываем MCP tool calls если есть
+                if self.mcp_tools_available and hasattr(self, 'mcp_adapter'):
+                    # Используем async wrapper для вызова из sync context
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # Если event loop уже запущен, создаём task
+                            asyncio.create_task(self.mcp_adapter.new_user_request())
+                        else:
+                            # Иначе запускаем синхронно
+                            loop.run_until_complete(self.mcp_adapter.new_user_request())
+                    except RuntimeError:
+                        # Fallback если нет event loop
+                        self.get_logger().warning("⚠️ Cannot interrupt MCP tasks: no event loop")
+        
+        # Falling edge: speech end
+        elif not vad_active and self.vad_speech_detected:
+            self.vad_speech_detected = False
+            self.get_logger().debug("🎤 VAD: Speech END detected")
 
     def stt_callback(self, msg: String):
         """Обработка распознанной речи с State Machine"""
