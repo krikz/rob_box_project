@@ -10,7 +10,38 @@ MCPTool - базовый класс для всех инструментов, к
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
+from enum import Enum
 import json
+
+
+class ToolExecutionType(Enum):
+    """
+    Тип выполнения инструмента для оптимизации async execution
+    
+    INSTANT: Мгновенные операции < 100ms (fire-and-forget)
+        - Установка анимаций, эмоций
+        - Не требует ожидания результата
+        - Выполняется параллельно с другими операциями
+    
+    FAST: Быстрые операции < 2s (await completion)
+        - Воспроизведение коротких звуков
+        - Установка системных параметров
+        - Требует ожидания завершения перед продолжением
+    
+    MEDIUM: Средние операции 2-10s (await with progress)
+        - Запросы данных о состоянии
+        - Получение контекста восприятия
+        - Показ прогресса пользователю опционален
+    
+    LONG: Длительные операции > 10s (background task)
+        - Навигация к точкам
+        - Картографирование
+        - Выполняется в фоне с возможностью прерывания
+    """
+    INSTANT = "instant"  # < 100ms, fire-and-forget
+    FAST = "fast"        # < 2s, await completion
+    MEDIUM = "medium"    # 2-10s, await with optional progress
+    LONG = "long"        # > 10s, background task with callbacks
 
 
 @dataclass
@@ -84,7 +115,8 @@ class MCPTool(ABC):
     1. Определить имя (name)
     2. Определить описание (description)
     3. Определить параметры (parameters)
-    4. Реализовать метод execute() для выполнения
+    4. Определить тип выполнения (execution_type)
+    5. Реализовать метод execute() для выполнения
     """
 
     def __init__(self, node: Optional[Any] = None):
@@ -113,6 +145,43 @@ class MCPTool(ABC):
     def parameters(self) -> List[MCPToolParameter]:
         """Список параметров инструмента"""
         pass
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """
+        Тип выполнения инструмента (по умолчанию MEDIUM)
+        
+        Переопределите для оптимизации async execution:
+        - INSTANT: анимации, эмоции (fire-and-forget)
+        - FAST: звуки, системные параметры (< 2s)
+        - MEDIUM: запросы данных (2-10s) [DEFAULT]
+        - LONG: навигация, mapping (> 10s, background)
+        """
+        return ToolExecutionType.MEDIUM
+
+    @property
+    def blocking(self) -> bool:
+        """
+        Требуется ли ждать результата перед продолжением диалога
+        
+        - True: LLM получает результат перед генерацией ответа (DEFAULT)
+        - False: fire-and-forget, результат не нужен для продолжения
+        
+        Для INSTANT обычно False, для остальных обычно True.
+        """
+        return self.execution_type != ToolExecutionType.INSTANT
+
+    @property
+    def interruptible(self) -> bool:
+        """
+        Можно ли прервать выполнение новым запросом от пользователя
+        
+        - True: операция прерывается при новом запросе (навигация, mapping)
+        - False: операция должна завершиться (звуки, системные команды)
+        
+        Актуально только для LONG execution_type.
+        """
+        return self.execution_type == ToolExecutionType.LONG
 
     @abstractmethod
     def execute(self, **kwargs) -> MCPToolResult:

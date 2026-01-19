@@ -18,7 +18,7 @@ from nav2_msgs.action import NavigateToPose
 from action_msgs.srv import CancelGoal
 from action_msgs.msg import GoalInfo
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class NavigateToWaypointTool(MCPTool):

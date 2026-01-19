@@ -10,7 +10,7 @@ animation.py - Инструменты для управления LED анима
 from typing import List
 from std_msgs.msg import String
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class PlayAnimationTool(MCPTool):
@@ -66,6 +66,16 @@ class PlayAnimationTool(MCPTool):
                 enum=self.AVAILABLE_ANIMATIONS,
             )
         ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Анимации - мгновенные (fire-and-forget)"""
+        return ToolExecutionType.INSTANT
+
+    @property
+    def blocking(self) -> bool:
+        """Анимации не блокируют диалог"""
+        return False
 
     def execute(self, animation: str) -> MCPToolResult:
         """Запустить анимацию"""
@@ -126,6 +136,16 @@ class SetEmotionTool(MCPTool):
                 enum=list(self.EMOTION_TO_ANIMATION.keys()),
             )
         ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Эмоции - мгновенные (fire-and-forget)"""
+        return ToolExecutionType.INSTANT
+
+    @property
+    def blocking(self) -> bool:
+        """Эмоции не блокируют диалог"""
+        return False
 
     def execute(self, emotion: str) -> MCPToolResult:
         """Установить эмоцию"""

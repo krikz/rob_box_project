@@ -9,7 +9,7 @@ sound.py - Инструменты для управления звуковыми
 from typing import List
 from std_msgs.msg import String
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class PlaySoundTool(MCPTool):
@@ -55,6 +55,11 @@ class PlaySoundTool(MCPTool):
                 enum=self.AVAILABLE_SOUNDS,
             )
         ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Звуки - быстрые операции (< 2s)"""
+        return ToolExecutionType.FAST
 
     def execute(self, sound: str) -> MCPToolResult:
         """Воспроизвести звук"""
