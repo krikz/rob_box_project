@@ -81,6 +81,30 @@ class SpeakTextTool(MCPTool):
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
 
+        # Нормализация эмоций (LLM может передавать на русском)
+        emotion_map = {
+            "нейтрально": "neutral",
+            "нейтральная": "neutral",
+            "нейтральный": "neutral",
+            "радость": "happy",
+            "радостный": "happy",
+            "счастливый": "happy",
+            "грустный": "sad",
+            "грусть": "sad",
+            "печаль": "sad",
+            "злой": "angry",
+            "злость": "angry",
+            "возбужденный": "excited",
+            "возбуждение": "excited",
+        }
+        emotion = emotion_map.get(emotion.lower(), emotion) if emotion else "neutral"
+        
+        # Проверка валидности
+        valid_emotions = ["happy", "sad", "angry", "neutral", "excited"]
+        if emotion not in valid_emotions:
+            self.log_warn(f"⚠️ Неизвестная эмоция '{emotion}', использую 'neutral'")
+            emotion = "neutral"
+
         # Генерируем speech_id
         speech_id = str(uuid.uuid4())
 
