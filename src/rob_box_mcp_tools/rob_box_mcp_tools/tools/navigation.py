@@ -60,6 +60,10 @@ class NavigateToWaypointTool(MCPTool):
             )
         ]
 
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.LONG  # Навигация > 10s, interruptible
+
     def execute(self, waypoint: str) -> MCPToolResult:
         """Выполнить навигацию к точке"""
         self.log_info(f"Навигация к точке: {waypoint}")
@@ -147,6 +151,10 @@ class MoveDirectionTool(MCPTool):
             ),
         ]
 
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.LONG  # Движение > 10s, interruptible
+
     def execute(self, direction: str, distance: float = 1.0) -> MCPToolResult:
         """Выполнить движение в направлении"""
         self.log_info(f"Движение: {direction}, дистанция: {distance}м")
@@ -207,6 +215,10 @@ class StopNavigationTool(MCPTool):
     def parameters(self) -> List[MCPToolParameter]:
         return []  # Нет параметров
 
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST  # Cancel action < 2s
+
     def execute(self) -> MCPToolResult:
         """Остановить навигацию"""
         self.log_info("Остановка навигации")
@@ -240,6 +252,10 @@ class ListWaypointsTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.INSTANT  # Return list < 100ms
 
     def execute(self) -> MCPToolResult:
         """Получить список точек"""

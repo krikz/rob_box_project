@@ -13,7 +13,7 @@ import subprocess
 
 from std_srvs.srv import Empty
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class StartMappingTool(MCPTool):
@@ -122,6 +122,14 @@ class ContinueMappingTool(MCPTool):
     def parameters(self) -> List[MCPToolParameter]:
         return []
 
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.MEDIUM  # Переключение режима 2-10s
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.MEDIUM  # Переключение режима 2-10s
+
     def execute(self) -> MCPToolResult:
         """Продолжить картографирование"""
         self.log_info("Продолжение картографирования")
@@ -155,6 +163,10 @@ class FinishMappingTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.MEDIUM  # Переключение в localization 2-10s
 
     def execute(self) -> MCPToolResult:
         """Завершить картографирование"""
