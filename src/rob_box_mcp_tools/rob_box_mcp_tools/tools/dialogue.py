@@ -33,11 +33,15 @@ class SpeakTextTool(MCPTool):
         try:
             result = json.loads(msg.data)
             speech_id = result.get("speech_id")
+            self.log_info(f"🔔 Получен TTS finished event: speech_id={speech_id[:8] if speech_id else 'None'}..., success={result.get('success')}")
             if speech_id and speech_id in self.pending_speeches:
                 with self.pending_speeches_lock:
                     self.pending_speeches[speech_id] = result
-        except json.JSONDecodeError:
-            pass
+                    self.log_info(f"✅ Speech {speech_id[:8]}... отмечен как завершенный")
+            else:
+                self.log_warn(f"⚠️ Speech {speech_id[:8] if speech_id else 'None'}... не найден в pending_speeches")
+        except json.JSONDecodeError as e:
+            self.log_error(f"❌ Ошибка парсинга TTS finished: {e}")
 
     @property
     def name(self) -> str:
@@ -63,9 +67,9 @@ class SpeakTextTool(MCPTool):
             MCPToolParameter(
                 name="emotion",
                 type="string",
-                description="Эмоция для выражения (happy, sad, angry, neutral). Опционально.",
+                description="Эмоция для выражения (happy, sad, angry, neutral, excited, confused). Опционально.",
                 required=False,
-                enum=["happy", "sad", "angry", "neutral", "excited"],
+                enum=["happy", "sad", "angry", "neutral", "excited", "confused"],
             ),
         ]
 
@@ -96,11 +100,14 @@ class SpeakTextTool(MCPTool):
             "злость": "angry",
             "возбужденный": "excited",
             "возбуждение": "excited",
+            "смущенный": "confused",
+            "смущение": "confused",
+            "растерянный": "confused",
         }
         emotion = emotion_map.get(emotion.lower(), emotion) if emotion else "neutral"
         
         # Проверка валидности
-        valid_emotions = ["happy", "sad", "angry", "neutral", "excited"]
+        valid_emotions = ["happy", "sad", "angry", "neutral", "excited", "confused"]
         if emotion not in valid_emotions:
             self.log_warn(f"⚠️ Неизвестная эмоция '{emotion}', использую 'neutral'")
             emotion = "neutral"
@@ -119,6 +126,7 @@ class SpeakTextTool(MCPTool):
         # Регистрируем ожидание
         with self.pending_speeches_lock:
             self.pending_speeches[speech_id] = None
+            self.log_info(f"📝 Зарегистрирован speech_id: {speech_id[:8]}... в pending_speeches")
 
         # Публикуем запрос TTS в JSON формате
         tts_request = {"ssml": ssml_text, "speech_id": speech_id}
@@ -126,7 +134,7 @@ class SpeakTextTool(MCPTool):
         msg.data = json.dumps(tts_request, ensure_ascii=False)
         self.tts_pub.publish(msg)
 
-        self.log_info(f"TTS запрос отправлен: {text[:30]}... (speech_id: {speech_id[:8]})")
+        self.log_info(f"📤 TTS запрос отправлен: {text[:30]}... (speech_id: {speech_id[:8]})")
 
         # Ждём завершения с таймаутом 20 секунд
         timeout = 20.0
