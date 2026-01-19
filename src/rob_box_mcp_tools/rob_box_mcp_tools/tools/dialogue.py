@@ -136,8 +136,8 @@ class SpeakTextTool(MCPTool):
 
         self.log_info(f"📤 TTS запрос отправлен: {text[:30]}... (speech_id: {speech_id[:8]})")
 
-        # Ждём завершения с таймаутом 20 секунд
-        timeout = 20.0
+        # Ждём завершения с таймаутом 60 секунд (длинные фразы могут занять время)
+        timeout = 60.0
         start_time = time.time()
         while time.time() - start_time < timeout:
             with self.pending_speeches_lock:
@@ -165,8 +165,8 @@ class SpeakTextTool(MCPTool):
             if speech_id in self.pending_speeches:
                 del self.pending_speeches[speech_id]
         
-        self.log_error(f"⏱️ Timeout ожидания произношения (20с): {text[:30]}...")
-        return MCPToolResult(success=False, error="Timeout ожидания произношения", message="TTS не ответил в течение 20 секунд")
+        self.log_error(f"⏱️ Timeout ожидания произношения (60с): {text[:30]}...")
+        return MCPToolResult(success=False, error="Timeout ожидания произношения", message="TTS не ответил в течение 60 секунд")
 
 
 class ListenForResponseTool(MCPTool):
