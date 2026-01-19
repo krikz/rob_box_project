@@ -127,27 +127,33 @@ class LLMToolCallAdapter:
         if timeout is None:
             timeout = self.timeout
 
-        # Флаг завершения
-        result_received = {"done": False, "result": None}
+        request_id = str(uuid.uuid4())
 
-        def on_result(result):
-            result_received["result"] = result
-            result_received["done"] = True
+        # Формируем запрос
+        request = {"tool_name": tool_name, "parameters": parameters, "request_id": request_id}
 
-        # Отправляем запрос с callback
-        request_id = self.execute_tool_call(tool_name, parameters, callback=on_result)
+        # Публикуем запрос
+        request_msg = String()
+        request_msg.data = json.dumps(request, ensure_ascii=False)
+        self.execute_pub.publish(request_msg)
 
-        # Ожидаем результат с таймаутом
+        self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")
+
+        # Ожидаем результат с таймаутом используя polling результатов в кэше
+        # ВАЖНО: не используем spin_once т.к. находимся внутри callback'а dialogue_node
+        # Результаты приходят в кэш через on_result callback который вызывается асинхронно
         start_time = time.time()
-        while not result_received["done"]:
+        while request_id not in self.results_cache:
             if time.time() - start_time > timeout:
                 self.node.get_logger().error(f"⏱️ Timeout ожидания результата для {tool_name} (request_id: {request_id[:8]})")
                 return {"success": False, "error": "Timeout ожидания результата инструмента"}
 
-            # Спиним немного для обработки сообщений
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            # Короткая пауза для снижения CPU load
+            time.sleep(0.05)
 
-        return result_received["result"]["result"]
+        # Получаем результат из кэша
+        result_data = self.results_cache.pop(request_id)
+        return result_data.get("result", {"success": False, "error": "Пустой результат"})
 
     def process_tool_calls_from_message(self, message: Any) -> List[Dict[str, Any]]:
         """
