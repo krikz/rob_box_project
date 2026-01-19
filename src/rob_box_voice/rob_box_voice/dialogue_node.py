@@ -1959,7 +1959,14 @@ class DialogueNode(Node):
         Returns:
             Список результатов выполнения или None в случае ошибки
         """
+        # Лимит на количество tool_calls за раз (защита от зацикливания)
+        MAX_TOOL_CALLS = 5
+        if len(tool_calls) > MAX_TOOL_CALLS:
+            self.get_logger().warning(f"⚠️ LLM запросил {len(tool_calls)} инструментов, обрезаю до {MAX_TOOL_CALLS}")
+            tool_calls = tool_calls[:MAX_TOOL_CALLS]
+        
         tool_results = []
+        failed_count = 0
         
         for tool_call in tool_calls:
             try:
@@ -1981,6 +1988,7 @@ class DialogueNode(Node):
                         'success': False,
                         'error': 'Неверный формат аргументов'
                     })
+                    failed_count += 1
                     continue
                 
                 # Выполняем через MCP adapter
@@ -1995,6 +2003,12 @@ class DialogueNode(Node):
                     self.get_logger().info(f"✅ {tool_name} выполнен успешно")
                 else:
                     self.get_logger().warning(f"⚠️ {tool_name} вернул ошибку: {result.get('error', 'Unknown')}")
+                    failed_count += 1
+                    
+                # Если слишком много ошибок подряд - останавливаем выполнение
+                if failed_count >= 3:
+                    self.get_logger().error(f"❌ Слишком много ошибок ({failed_count}), прерываю выполнение tool_calls")
+                    break
                     
             except Exception as e:
                 self.get_logger().error(f"❌ Ошибка выполнения tool call: {e}")
@@ -2004,6 +2018,7 @@ class DialogueNode(Node):
                     'success': False,
                     'error': str(e)
                 })
+                failed_count += 1
         
         return tool_results
 

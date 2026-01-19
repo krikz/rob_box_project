@@ -210,8 +210,14 @@ def main(args=None):
     rclpy.init(args=args)
     node = MCPServer()
 
+    # Используем MultiThreadedExecutor для параллельной обработки callbacks
+    # Это позволяет получать /voice/tts/finished пока execute() блокируется
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
