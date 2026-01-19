@@ -85,6 +85,10 @@ class SpeakTextTool(MCPTool):
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
 
+        # Предупреждение о длинных текстах (Yandex TTS ограничение + долгое воспроизведение)
+        if len(text) > 300:
+            self.log_warning(f"⚠️ Текст слишком длинный ({len(text)} символов). Рекомендуется разбить на части.")
+
         # Нормализация эмоций (LLM может передавать на русском)
         emotion_map = {
             "нейтрально": "neutral",
@@ -136,8 +140,8 @@ class SpeakTextTool(MCPTool):
 
         self.log_info(f"📤 TTS запрос отправлен: {text[:30]}... (speech_id: {speech_id[:8]})")
 
-        # Ждём завершения с таймаутом 60 секунд (длинные фразы могут занять время)
-        timeout = 60.0
+        # Ждём завершения с таймаутом 40 секунд (макс длина речи ~20 секунд)
+        timeout = 40.0
         start_time = time.time()
         while time.time() - start_time < timeout:
             with self.pending_speeches_lock:
@@ -165,8 +169,8 @@ class SpeakTextTool(MCPTool):
             if speech_id in self.pending_speeches:
                 del self.pending_speeches[speech_id]
         
-        self.log_error(f"⏱️ Timeout ожидания произношения (60с): {text[:30]}...")
-        return MCPToolResult(success=False, error="Timeout ожидания произношения", message="TTS не ответил в течение 60 секунд")
+        self.log_error(f"⏱️ Timeout ожидания произношения (40с): {text[:30]}...")
+        return MCPToolResult(success=False, error="Timeout ожидания произношения", message="TTS не ответил в течение 40 секунд")
 
 
 class ListenForResponseTool(MCPTool):

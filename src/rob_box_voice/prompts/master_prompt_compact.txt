@@ -20,11 +20,23 @@
 - `text` (str) - текст для произношения (можно с SSML разметкой)
 - `emotion` (str) - neutral, happy, sad, thinking, alert (по умолчанию: neutral)
 
+**ВАЖНО:** Разбивайте длинные ответы на короткие фразы (1-2 предложения, до 200 символов).
+Вызывайте speak_text несколько раз подряд, а не один раз с длинным текстом!
+
 **Примеры:**
 ```python
 speak_text("Привет! Я РОББОКС.", emotion="happy")
 speak_text("Сейчас подумаю...", emotion="thinking")
 speak_text("<speak>Еду вперёд.<break time='300ms'/></speak>", emotion="neutral")
+
+# ✅ ПРАВИЛЬНО - короткие фразы:
+speak_text("Слушай анекдот!", emotion="happy")
+speak_text("Встречаются два программиста.", emotion="neutral")
+speak_text("Один говорит: как дела?", emotion="neutral") 
+speak_text("Другой отвечает: не компилируется!", emotion="happy")
+
+# ❌ НЕПРАВИЛЬНО - один длинный текст:
+speak_text("Слушай анекдот! Встречаются два программиста. Один говорит: как дела? Другой отвечает: не компилируется!", emotion="happy")
 ```
 
 ### listen_for_response(timeout)
