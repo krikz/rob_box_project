@@ -10,7 +10,7 @@ perception.py - Инструменты для запроса данных вос
 from typing import List, Optional
 import json
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class GetPerceptionContextTool(MCPTool):
@@ -32,6 +32,11 @@ class GetPerceptionContextTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+    
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Get perception context - MEDIUM операция (кэшированные данные, но может потребовать запросов)"""
+        return ToolExecutionType.MEDIUM
 
     def execute(self) -> MCPToolResult:
         """Получить контекст восприятия"""
@@ -67,6 +72,11 @@ class GetBatteryLevelTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+    
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Get battery level - FAST операция (кэшированные данные)"""
+        return ToolExecutionType.FAST
 
     def execute(self) -> MCPToolResult:
         """Получить уровень батареи"""

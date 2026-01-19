@@ -15,7 +15,7 @@ import rclpy
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class SetVolumeTool(MCPTool):
@@ -45,6 +45,11 @@ class SetVolumeTool(MCPTool):
                 enum=["louder", "quieter", "max", "normal"],
             )
         ]
+    
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Set volume - FAST операция < 2s (ROS service call)"""
+        return ToolExecutionType.FAST
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить громкость"""
@@ -136,6 +141,11 @@ class SetPitchTool(MCPTool):
                 enum=["higher", "lower", "normal"],
             )
         ]
+    
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Set pitch - FAST операция < 2s (ROS service call)"""
+        return ToolExecutionType.FAST
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить высоту голоса"""
@@ -222,6 +232,11 @@ class SetSpeedTool(MCPTool):
                 enum=["faster", "slower", "normal"],
             )
         ]
+    
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Set speed - FAST операция < 2s (ROS service call)"""
+        return ToolExecutionType.FAST
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить скорость речи"""
@@ -297,6 +312,11 @@ class GetRobotStatusTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+    
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Get robot status - MEDIUM операция 2-10s (множественные ROS queries)"""
+        return ToolExecutionType.MEDIUM
 
     def execute(self) -> MCPToolResult:
         """Получить статус робота"""
