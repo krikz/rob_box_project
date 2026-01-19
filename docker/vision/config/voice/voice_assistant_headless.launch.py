@@ -144,8 +144,6 @@ def generate_launch_description():
     )
     
     # === MCP Server (Model Context Protocol Tools) ===
-    # ВАЖНО: Используем Node вместо ExecuteProcess для MultiThreadedExecutor
-    # ExecuteProcess игнорирует MultiThreadedExecutor из main() и использует SingleThreadedExecutor
     mcp_server = Node(
         package='rob_box_mcp_tools',
         executable='mcp_server',

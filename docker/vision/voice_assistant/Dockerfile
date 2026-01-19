@@ -126,6 +126,7 @@ COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
 COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
+COPY src/rob_box_mcp_tools/setup.cfg /ws/src/rob_box_mcp_tools/
 
 # Шаг 5: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
