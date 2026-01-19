@@ -254,10 +254,36 @@ class LLMToolCallAdapter:
     # Async Execution Methods (v2.0)
     # ============================================================
     
+    async def new_user_request(self) -> int:
+        """
+        Отметить начало нового пользовательского запроса
+        
+        Увеличивает sequence_id, тем самым помечая все предыдущие
+        tool_calls как устаревшие. Используется при прерывании.
+        
+        Returns:
+            Новый sequence ID
+        """
+        sequence_id = await self.async_executor.new_sequence()
+        
+        # Также прерываем все активные LONG задачи
+        cancelled = await self.async_executor.interrupt_all_long_tasks()
+        if cancelled > 0:
+            self.node.get_logger().info(
+                f"🔄 Новый запрос (sequence #{sequence_id}): прервано {cancelled} задач"
+            )
+        
+        return sequence_id
+    
+    def get_current_sequence_id(self) -> int:
+        """Получить текущий sequence ID"""
+        return self.async_executor.get_current_sequence_id()
+    
     async def execute_tools_parallel_async(
         self,
         tool_calls: List[Dict[str, Any]],
-        tool_registry: Optional[Dict[str, Any]] = None
+        tool_registry: Optional[Dict[str, Any]] = None,
+        sequence_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Асинхронное параллельное выполнение tool_calls
@@ -270,11 +296,14 @@ class LLMToolCallAdapter:
         Args:
             tool_calls: Список tool_calls
             tool_registry: Опциональный реестр для определения execution_type
+            sequence_id: Sequence ID для проверки актуальности
         
         Returns:
             Список результатов выполнения
         """
-        return await self.async_executor.execute_tools_parallel(tool_calls, tool_registry)
+        return await self.async_executor.execute_tools_parallel(
+            tool_calls, tool_registry, sequence_id
+        )
     
     async def interrupt_all_long_tasks(self) -> int:
         """

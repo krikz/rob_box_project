@@ -142,6 +142,7 @@ class AsyncToolExecutor:
     - Fire-and-forget для INSTANT операций
     - Прерывание LONG операций
     - Правильные timeouts для каждого типа
+    - Sequence ID для отмены устаревших tool_calls при прерываниях
     """
     
     def __init__(self, execute_pub, result_callback: Callable, logger):
@@ -154,6 +155,10 @@ class AsyncToolExecutor:
         self.execute_pub = execute_pub
         self.result_callback = result_callback
         self.logger = logger
+        
+        # Sequence ID для отслеживания актуальности tool_calls
+        self._current_sequence_id: int = 0
+        self._sequence_lock = asyncio.Lock()
         
         # Реестр активных LONG задач
         self.long_tasks: Dict[str, InterruptibleTask] = {}
@@ -168,6 +173,37 @@ class AsyncToolExecutor:
             ToolExecutionType.MEDIUM: 10.0,    # Запросы данных
             ToolExecutionType.LONG: 300.0,     # Навигация, mapping (5 минут)
         }
+    
+    async def new_sequence(self) -> int:
+        """
+        Создать новую sequence для нового пользовательского запроса
+        
+        При новом запросе пользователя increment sequence_id, тем самым
+        помечая все предыдущие tool_calls как устаревшие.
+        
+        Returns:
+            Новый sequence ID
+        """
+        async with self._sequence_lock:
+            self._current_sequence_id += 1
+            self.logger.info(f"🔄 Новая sequence #{self._current_sequence_id}")
+            return self._current_sequence_id
+    
+    def get_current_sequence_id(self) -> int:
+        """Получить текущий sequence ID"""
+        return self._current_sequence_id
+    
+    def is_sequence_valid(self, sequence_id: int) -> bool:
+        """
+        Проверить актуальность sequence ID
+        
+        Args:
+            sequence_id: ID для проверки
+        
+        Returns:
+            True если sequence актуальна (совпадает с текущей)
+        """
+        return sequence_id == self._current_sequence_id
     
     def on_result_received(self, request_id: str, result: Dict[str, Any]) -> None:
         """
@@ -192,7 +228,8 @@ class AsyncToolExecutor:
         tool_name: str,
         parameters: Dict[str, Any],
         execution_type: ToolExecutionType,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        sequence_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Асинхронное выполнение одного инструмента
@@ -202,12 +239,26 @@ class AsyncToolExecutor:
             parameters: Параметры
             execution_type: Тип выполнения
             request_id: ID запроса (опционально)
+            sequence_id: Sequence ID для проверки актуальности (опционально)
         
         Returns:
             Результат выполнения
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
+        
+        # Проверка актуальности sequence
+        if sequence_id is not None and not self.is_sequence_valid(sequence_id):
+            self.logger.warning(
+                f"⚠️ Tool call {tool_name} отменён: устаревший sequence_id "
+                f"({sequence_id} vs {self._current_sequence_id})"
+            )
+            return {
+                "success": False,
+                "error": "Tool call cancelled - outdated sequence",
+                "cancelled": True,
+                "sequence_id": sequence_id
+            }
         
         # Формируем запрос
         request = {
@@ -361,7 +412,8 @@ class AsyncToolExecutor:
     async def execute_tools_parallel(
         self,
         tool_calls: List[Dict[str, Any]],
-        tool_registry: Optional[Dict[str, Any]] = None
+        tool_registry: Optional[Dict[str, Any]] = None,
+        sequence_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Параллельное выполнение множества tool_calls
@@ -375,6 +427,7 @@ class AsyncToolExecutor:
         Args:
             tool_calls: Список tool_calls в формате {id, function: {name, arguments}}
             tool_registry: Опциональный реестр инструментов для определения execution_type
+            sequence_id: Sequence ID для проверки актуальности
         
         Returns:
             Список результатов выполнения
@@ -382,7 +435,22 @@ class AsyncToolExecutor:
         if not tool_calls:
             return []
         
-        self.logger.info(f"🔧 Параллельное выполнение {len(tool_calls)} инструментов")
+        # Проверка актуальности sequence перед началом выполнения
+        if sequence_id is not None and not self.is_sequence_valid(sequence_id):
+            self.logger.warning(
+                f"⚠️ Пакет tool_calls отменён: устаревший sequence_id "
+                f"({sequence_id} vs {self._current_sequence_id})"
+            )
+            return [{
+                "success": False,
+                "error": "Tool calls cancelled - outdated sequence",
+                "cancelled": True
+            } for _ in tool_calls]
+        
+        self.logger.info(
+            f"🔧 Параллельное выполнение {len(tool_calls)} инструментов "
+            f"(sequence #{sequence_id if sequence_id else 'N/A'})"
+        )
         
         # Группировка по execution_type
         instant_tasks = []
@@ -411,7 +479,8 @@ class AsyncToolExecutor:
                 "tool_name": tool_name,
                 "parameters": parameters,
                 "execution_type": execution_type,
-                "request_id": tool_call_id
+                "request_id": tool_call_id,
+                "sequence_id": sequence_id
             }
             
             if execution_type == ToolExecutionType.INSTANT:
@@ -429,7 +498,10 @@ class AsyncToolExecutor:
         # 1. INSTANT - fire-and-forget параллельно
         if instant_tasks:
             instant_coros = [
-                self.execute_tool_async(t["tool_name"], t["parameters"], t["execution_type"], t["request_id"])
+                self.execute_tool_async(
+                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["request_id"], t.get("sequence_id")
+                )
                 for t in instant_tasks
             ]
             instant_results = await asyncio.gather(*instant_coros, return_exceptions=True)
@@ -438,7 +510,10 @@ class AsyncToolExecutor:
         # 2. FAST - await параллельно
         if fast_tasks:
             fast_coros = [
-                self.execute_tool_async(t["tool_name"], t["parameters"], t["execution_type"], t["request_id"])
+                self.execute_tool_async(
+                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["request_id"], t.get("sequence_id")
+                )
                 for t in fast_tasks
             ]
             fast_results = await asyncio.gather(*fast_coros, return_exceptions=True)
@@ -447,7 +522,10 @@ class AsyncToolExecutor:
         # 3. MEDIUM - await параллельно
         if medium_tasks:
             medium_coros = [
-                self.execute_tool_async(t["tool_name"], t["parameters"], t["execution_type"], t["request_id"])
+                self.execute_tool_async(
+                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["request_id"], t.get("sequence_id")
+                )
                 for t in medium_tasks
             ]
             medium_results = await asyncio.gather(*medium_coros, return_exceptions=True)
@@ -457,7 +535,8 @@ class AsyncToolExecutor:
         if long_tasks:
             for t in long_tasks:
                 result = await self.execute_tool_async(
-                    t["tool_name"], t["parameters"], t["execution_type"], t["request_id"]
+                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["request_id"], t.get("sequence_id")
                 )
                 results.append(result)
         
