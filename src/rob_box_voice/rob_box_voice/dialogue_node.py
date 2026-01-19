@@ -831,6 +831,15 @@ class DialogueNode(Node):
         self.current_dialogue_id = dialogue_id
         self.get_logger().info(f"🆔 Новый диалог: {dialogue_id[:8]}...")
 
+        # Очищаем tool messages из истории при новом диалоге
+        # API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message
+        # При новом диалоге старые tool results недействительны
+        self.conversation_history = [
+            msg for msg in self.conversation_history
+            if msg.get("role") not in ["tool", "assistant"] or not msg.get("tool_calls")
+        ]
+        self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history)} сообщений")
+
         # Используем system prompt с контекстом времени
         system_prompt_with_context = self._build_system_prompt_with_context()
 
