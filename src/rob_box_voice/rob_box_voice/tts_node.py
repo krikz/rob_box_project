@@ -215,6 +215,7 @@ class TTSNode(Node):
         # Публикация аудио и состояния
         self.audio_pub = self.create_publisher(AudioData, "/voice/audio/speech", 10)
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
+        self.finished_pub = self.create_publisher(String, "/voice/tts/finished", 10)  # Публикация завершения произношения
 
         # Флаг для остановки воспроизведения
         self.stop_requested = False
@@ -223,6 +224,7 @@ class TTSNode(Node):
         # Dialogue session tracking (для синхронизации с dialogue_node)
         self.current_dialogue_id = None
         self.processing_dialogue_id = None  # ID диалога в процессе синтеза/воспроизведения
+        self.current_speech_id = None  # ID текущего произношения (для MCP tools)
 
         # Публикуем начальное состояние
         self.publish_state("ready")
@@ -348,6 +350,11 @@ class TTSNode(Node):
                 self.get_logger().warn("⚠ Chunk без SSML")
                 return
 
+            # Генерируем speech_id для отслеживания
+            import uuid
+            speech_id = chunk_data.get("speech_id", str(uuid.uuid4()))
+            self.current_speech_id = speech_id
+
             # Проверяем dialogue_id (если присутствует)
             dialogue_id = chunk_data.get("dialogue_id", None)
 
@@ -385,13 +392,13 @@ class TTSNode(Node):
             ssml_attributes = self._parse_ssml_attributes(ssml)
 
             self.get_logger().info(
-                f'🔊 TTS: {text[:50]}... (dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}...)'
+                f'🔊 TTS: {text[:50]}... (speech_id: {speech_id[:8]}, dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}...)'
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
 
             # Синтез и воспроизведение
-            self._synthesize_and_play(ssml, text, dialogue_id, ssml_attributes)
+            self._synthesize_and_play(ssml, text, dialogue_id, ssml_attributes, speech_id)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ JSON parse error: {e}")
@@ -474,7 +481,7 @@ class TTSNode(Node):
         
         return attributes
 
-    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None):
+    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None):
         """Синтез речи и воспроизведение"""
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
@@ -659,9 +666,19 @@ class TTSNode(Node):
             if self.stop_requested:
                 self.publish_state("stopped")
                 self.get_logger().warn("🔇 Воспроизведение прервано")
+                # Публикуем ошибку для MCP tools
+                if speech_id:
+                    finished_msg = String()
+                    finished_msg.data = json.dumps({"speech_id": speech_id, "success": False, "error": "stopped"}, ensure_ascii=False)
+                    self.finished_pub.publish(finished_msg)
             else:
                 self.publish_state("ready")
                 self.get_logger().info("✅ Воспроизведение завершено")
+                # Публикуем успех для MCP tools
+                if speech_id:
+                    finished_msg = String()
+                    finished_msg.data = json.dumps({"speech_id": speech_id, "success": True}, ensure_ascii=False)
+                    self.finished_pub.publish(finished_msg)
 
             # Очищаем processing_dialogue_id после завершения
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -670,6 +687,11 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().error(f"❌ Synthesis error: {e}")
             self.publish_state("ready")
+            # Публикуем ошибку для MCP tools
+            if speech_id:
+                finished_msg = String()
+                finished_msg.data = json.dumps({"speech_id": speech_id, "success": False, "error": str(e)}, ensure_ascii=False)
+                self.finished_pub.publish(finished_msg)
             # Очищаем processing_dialogue_id при ошибке
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None

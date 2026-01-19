@@ -20,6 +20,24 @@ class SpeakTextTool(MCPTool):
         super().__init__(node)
         # Publisher для TTS запросов
         self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
+        # Subscriber для получения завершения произношения
+        self.finished_sub = node.create_subscription(String, "/voice/tts/finished", self._on_tts_finished, 10)
+        # Кэш ожидающих произношений: speech_id -> result
+        self.pending_speeches = {}
+        import threading
+        self.pending_speeches_lock = threading.Lock()
+
+    def _on_tts_finished(self, msg: String):
+        """Обработка завершения произношения"""
+        import json
+        try:
+            result = json.loads(msg.data)
+            speech_id = result.get("speech_id")
+            if speech_id and speech_id in self.pending_speeches:
+                with self.pending_speeches_lock:
+                    self.pending_speeches[speech_id] = result
+        except json.JSONDecodeError:
+            pass
 
     @property
     def name(self) -> str:
@@ -53,32 +71,70 @@ class SpeakTextTool(MCPTool):
 
     def execute(self, text: str, emotion: str = "neutral") -> MCPToolResult:
         """Произнести текст"""
+        import json
+        import uuid
+        import time
+        import rclpy
+        
         self.log_info(f"Произношение текста: {text[:50]}... (emotion: {emotion})")
 
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
 
+        # Генерируем speech_id
+        speech_id = str(uuid.uuid4())
+
         # Формируем SSML с эмоцией
         if emotion and emotion != "neutral":
-            # Добавляем pitch для эмоций
             pitch_map = {"happy": "high", "sad": "low", "angry": "high", "excited": "x-high"}
             pitch = pitch_map.get(emotion, "medium")
             ssml_text = f"<speak><prosody pitch='{pitch}'>{text}</prosody></speak>"
         else:
             ssml_text = f"<speak>{text}</speak>"
 
-        # Публикуем запрос TTS в JSON формате (как ожидает tts_node)
-        import json
-        tts_request = {"ssml": ssml_text}
+        # Регистрируем ожидание
+        with self.pending_speeches_lock:
+            self.pending_speeches[speech_id] = None
+
+        # Публикуем запрос TTS в JSON формате
+        tts_request = {"ssml": ssml_text, "speech_id": speech_id}
         msg = String()
         msg.data = json.dumps(tts_request, ensure_ascii=False)
         self.tts_pub.publish(msg)
 
-        self.log_info(f"TTS запрос отправлен: {text[:30]}...")
+        self.log_info(f"TTS запрос отправлен: {text[:30]}... (speech_id: {speech_id[:8]})")
 
-        return MCPToolResult(
-            success=True, data={"text": text, "emotion": emotion, "ssml": ssml_text}, message=f"Произношу: {text[:50]}..."
-        )
+        # Ждём завершения с таймаутом 20 секунд
+        timeout = 20.0
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            with self.pending_speeches_lock:
+                result = self.pending_speeches.get(speech_id)
+                if result is not None:
+                    # Получили результат!
+                    del self.pending_speeches[speech_id]
+                    if result.get("success"):
+                        self.log_info(f"✅ Произношение завершено: {text[:30]}...")
+                        return MCPToolResult(
+                            success=True, 
+                            data={"text": text, "emotion": emotion, "speech_id": speech_id}, 
+                            message=f"Произнесено: {text[:50]}..."
+                        )
+                    else:
+                        error = result.get("error", "Unknown error")
+                        self.log_warn(f"⚠️ Ошибка произношения: {error}")
+                        return MCPToolResult(success=False, error=error, message=f"Ошибка TTS: {error}")
+            
+            # Спим немного и спиним ноду
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+
+        # Таймаут
+        with self.pending_speeches_lock:
+            if speech_id in self.pending_speeches:
+                del self.pending_speeches[speech_id]
+        
+        self.log_error(f"⏱️ Timeout ожидания произношения (20с): {text[:30]}...")
+        return MCPToolResult(success=False, error="Timeout ожидания произношения", message="TTS не ответил в течение 20 секунд")
 
 
 class ListenForResponseTool(MCPTool):
