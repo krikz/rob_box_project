@@ -39,7 +39,7 @@ class SpeakTextTool(MCPTool):
                     self.pending_speeches[speech_id] = result
                     self.log_info(f"✅ Speech {speech_id[:8]}... отмечен как завершенный")
             else:
-                self.log_warn(f"⚠️ Speech {speech_id[:8] if speech_id else 'None'}... не найден в pending_speeches")
+                self.log_warning(f"⚠️ Speech {speech_id[:8] if speech_id else 'None'}... не найден в pending_speeches")
         except json.JSONDecodeError as e:
             self.log_error(f"❌ Ошибка парсинга TTS finished: {e}")
 
@@ -109,7 +109,7 @@ class SpeakTextTool(MCPTool):
         # Проверка валидности
         valid_emotions = ["happy", "sad", "angry", "neutral", "excited", "confused"]
         if emotion not in valid_emotions:
-            self.log_warn(f"⚠️ Неизвестная эмоция '{emotion}', использую 'neutral'")
+            self.log_warning(f"⚠️ Неизвестная эмоция '{emotion}', использую 'neutral'")
             emotion = "neutral"
 
         # Генерируем speech_id
@@ -154,7 +154,7 @@ class SpeakTextTool(MCPTool):
                         )
                     else:
                         error = result.get("error", "Unknown error")
-                        self.log_warn(f"⚠️ Ошибка произношения: {error}")
+                        self.log_warning(f"⚠️ Ошибка произношения: {error}")
                         return MCPToolResult(success=False, error=error, message=f"Ошибка TTS: {error}")
             
             # Спим немного и спиним ноду
