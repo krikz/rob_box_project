@@ -67,9 +67,11 @@ class SpeakTextTool(MCPTool):
         else:
             ssml_text = f"<speak>{text}</speak>"
 
-        # Публикуем запрос TTS
+        # Публикуем запрос TTS в JSON формате (как ожидает tts_node)
+        import json
+        tts_request = {"ssml": ssml_text}
         msg = String()
-        msg.data = ssml_text
+        msg.data = json.dumps(tts_request, ensure_ascii=False)
         self.tts_pub.publish(msg)
 
         self.log_info(f"TTS запрос отправлен: {text[:30]}...")
