@@ -7,5 +7,13 @@ making them easy to test and understand.
 
 from .dialogue_manager import DialogueManager, DialogueState
 from .speech_formatter import SpeechFormatter
+from .command_parser import CommandParser, Command, IntentType
 
-__all__ = ['DialogueManager', 'DialogueState', 'SpeechFormatter']
+__all__ = [
+    'DialogueManager',
+    'DialogueState',
+    'SpeechFormatter',
+    'CommandParser',
+    'Command',
+    'IntentType'
+]

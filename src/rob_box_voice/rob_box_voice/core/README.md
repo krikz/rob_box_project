@@ -83,6 +83,45 @@ clean = formatter.clean_for_speech('See https://example.com here')
 
 **Dependencies**: AccentReplacer from scripts (optional, graceful fallback)
 
+### command_parser.py (307 LOC)
+
+**Purpose**: Parses voice commands, classifies intents, and extracts entities for robot control.
+
+**Public Interface**:
+- `IntentType` - Enum for command intent types (NAVIGATE, STOP, FOLLOW, etc.)
+- `Command` - Data class for parsed commands (intent, entities, confidence)
+- `CommandParser` - Main class for command parsing
+
+**Key Methods**:
+- `parse(text)` - Main entry point for command parsing
+- `classify_intent(text)` - Classify intent and extract entities
+- `remove_wake_word(text)` - Remove wake word from command
+- `add_pattern(intent, pattern, entity_type)` - Add custom pattern
+- `get_patterns(intent)` - Get patterns for specific intent
+
+**Usage Example**:
+```python
+from rob_box_voice.core.command_parser import CommandParser, IntentType
+
+# Create parser
+parser = CommandParser()
+
+# Parse command
+command = parser.parse('робот иди к кухне')
+print(command.intent)     # IntentType.NAVIGATE
+print(command.entities)   # {'waypoint': 'кухне'}
+print(command.confidence) # 0.95
+
+# Parse simple direction
+command = parser.parse('вперед')
+print(command.intent)     # IntentType.NAVIGATE
+print(command.entities)   # {'direction': 'вперед'}
+```
+
+**Tests**: `test/unit/core/test_command_parser.py` (11 test classes, 40+ tests)
+
+**Dependencies**: None (pure Python with standard library only)
+
 ## Testing
 
 Run unit tests:
@@ -90,6 +129,7 @@ Run unit tests:
 # From package root
 python3 -m pytest test/unit/core/test_dialogue_manager.py -v
 python3 -m pytest test/unit/core/test_speech_formatter.py -v
+python3 -m pytest test/unit/core/test_command_parser.py -v
 
 # Or test all core modules
 python3 -m pytest test/unit/core/ -v
@@ -99,7 +139,7 @@ python3 -m pytest test/unit/core/ -v
 
 1. **No ROS dependencies** - Can be tested without ROS runtime
 2. **Single responsibility** - Each module does one thing well
-3. **Small and focused** - All files <300 LOC
+3. **Small and focused** - All files <350 LOC
 4. **Well documented** - Clear docstrings and examples
 5. **Fully tested** - 80%+ test coverage
 
@@ -109,22 +149,24 @@ python3 -m pytest test/unit/core/ -v
 |--------|-----|-------|--------|
 | dialogue_manager.py | 321 | 25+ | ✅ Complete |
 | speech_formatter.py | 253 | 30+ | ✅ Complete |
+| command_parser.py | 307 | 40+ | ✅ Complete |
 
-**Total**: 2 of 15 planned modules (13% complete)
+**Total**: 3 of 15 planned modules (20% complete)  
+**LOC**: 881 lines, 95+ tests
 
 ## Future Modules
 
 According to the refactoring plan, the following modules will be added:
 
-- `command_parser.py` (~150 LOC) - Command parsing logic
 - LLM layer modules (streaming, tool calls, providers)
 - Audio layer modules (playback, recording)
+- Additional core utilities as needed
 
 ## Contributing
 
 When adding new core modules:
 
-1. Keep files <300 LOC
+1. Keep files <300 LOC (up to 350 LOC acceptable)
 2. No ROS dependencies (use adapters for that)
 3. Add comprehensive unit tests
 4. Update this README
