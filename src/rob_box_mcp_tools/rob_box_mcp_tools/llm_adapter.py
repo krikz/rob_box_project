@@ -175,17 +175,18 @@ class LLMToolCallAdapter:
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")
 
-        # Ожидаем результат с таймаутом используя polling результатов в кэше
-        # ВАЖНО: не используем spin_once т.к. находимся внутри callback'а dialogue_node
-        # Результаты приходят в кэш через on_result callback который вызывается асинхронно
+        # Ожидаем результат с таймаутом
+        # ВАЖНО: используем spin_once с коротким timeout чтобы ROS executor мог 
+        # обрабатывать входящие сообщения (включая /mcp/result)
         start_time = time.time()
         while request_id not in self.results_cache:
             if time.time() - start_time > timeout:
                 self.node.get_logger().error(f"⏱️ Timeout ожидания результата для {tool_name} (request_id: {request_id[:8]})")
                 return {"success": False, "error": "Timeout ожидания результата инструмента"}
 
-            # Короткая пауза для снижения CPU load
-            time.sleep(0.05)
+            # Даём ROS executor обработать входящие сообщения
+            # Короткий timeout чтобы не блокировать надолго
+            rclpy.spin_once(self.node, timeout_sec=0.01)
 
         # Получаем результат из кэша
         result_data = self.results_cache.pop(request_id)
