@@ -201,6 +201,46 @@ When multiple animations are requested:
 3. **NORMAL** - Robot states, missions, navigation
 4. **LOW** - Emotions, decorative (can be interrupted)
 
+## 🗣️ TTS Integration
+
+The animation player automatically synchronizes with the robot's Text-to-Speech (TTS) system:
+
+### Automatic Animation Switching
+
+- **When robot starts speaking:** Automatically switches to `talking` animation
+- **When robot stops speaking:** Returns to `idle` animation
+- **Speech takes priority:** Even if an emotion animation is playing, speech will interrupt it and show talking animation
+
+### Topics for TTS Integration
+
+| Topic | Type | Direction | Description |
+|-------|------|-----------|-------------|
+| `/voice/tts/state` | `std_msgs/String` | In | TTS state: `synthesizing`, `playing`, `idle`, `stopped` |
+| `/voice/animation/request` | `std_msgs/String` | In | Manual animation requests (e.g., from emotion commands) |
+
+### Example Workflow
+
+```python
+# 1. Set emotion (e.g., from dialogue system)
+emotion_msg = String()
+emotion_msg.data = "happy"
+animation_pub.publish(emotion_msg)  # Shows happy animation
+
+# 2. Start speaking
+tts_state = String()
+tts_state.data = "playing"
+tts_state_pub.publish(tts_state)    # IMMEDIATELY switches to talking animation
+
+# 3. Speech continues...
+# (talking animation plays)
+
+# 4. Speech ends
+tts_state.data = "idle"
+tts_state_pub.publish(tts_state)    # Returns to idle animation
+```
+
+**Note:** As of 2026-01-20, TTS state always takes priority over manual emotion animations, ensuring the robot speaks immediately without waiting for animation timers. See `docs/fixes/ANIMATION_SPEECH_FIX_2026-01-20.md` for details.
+
 ## 🔍 Troubleshooting
 
 ### Animation not found
