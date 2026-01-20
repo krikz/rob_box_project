@@ -2293,11 +2293,18 @@ def main(args=None):
     rclpy.init(args=args)
     node = DialogueNode()
 
+    # Используем MultiThreadedExecutor чтобы on_result callbacks могли обрабатываться
+    # параллельно с execute_tool_call_sync ожиданием (через threading.Event)
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
