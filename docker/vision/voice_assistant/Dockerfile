@@ -246,7 +246,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select audio_common_msgs rob_box_perception_msgs rob_box_mcp_tools rob_box_voice rob_box_animations \
+    --packages-select rob_box_perception_msgs rob_box_mcp_tools rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
