@@ -48,8 +48,9 @@ except ImportError:
     MCP_TOOLS_AVAILABLE = False
     print("⚠️  rob_box_mcp_tools не найден - работа без tool_calls")
 
-# Импорт DialogueManager
+# Импорт DialogueManager и ConversationHistory
 from rob_box_voice.core.dialogue_manager import DialogueManager, DialogueState
+from rob_box_voice.core.conversation_history import ConversationHistory
 
 
 class DialogueNode(Node):
@@ -110,8 +111,8 @@ class DialogueNode(Node):
         # System prompt
         self.system_prompt = self._load_system_prompt()
 
-        # История диалога
-        self.conversation_history = []
+        # История диалога (используем ConversationHistory модуль)
+        self.conversation_history = ConversationHistory(max_messages=20)
 
         # Подписка на распознанную речь
         self.stt_sub = self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
@@ -776,11 +777,7 @@ class DialogueNode(Node):
             self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов):\n{combined_message}")
 
         # Добавляем в историю диалога
-        self.conversation_history.append({"role": "user", "content": combined_message})
-
-        # Ограничиваем историю (последние 10 сообщений)
-        if len(self.conversation_history) > 10:
-            self.conversation_history = self.conversation_history[-10:]
+        self.conversation_history.add_user_message(combined_message)
 
         # Устанавливаем флаг обработки
         self.llm_processing = True
@@ -834,16 +831,13 @@ class DialogueNode(Node):
         # Очищаем tool messages из истории при новом диалоге
         # API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message
         # При новом диалоге старые tool results недействительны
-        self.conversation_history = [
-            msg for msg in self.conversation_history
-            if msg.get("role") not in ["tool", "assistant"] or not msg.get("tool_calls")
-        ]
-        self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history)} сообщений")
+        self.conversation_history.remove_tool_messages()
+        self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history.get_messages())} сообщений")
 
         # Используем system prompt с контекстом времени
         system_prompt_with_context = self._build_system_prompt_with_context()
 
-        messages = [{"role": "system", "content": system_prompt_with_context}, *self.conversation_history]
+        messages = [{"role": "system", "content": system_prompt_with_context}] + self.conversation_history.get_messages()
 
         provider_name = self.PROVIDERS[self.current_provider]["name"]
         self.get_logger().info(f"🤔 Запрос к {provider_name}...")
@@ -1129,7 +1123,7 @@ class DialogueNode(Node):
             chunk_count = streaming_result["chunk_count"]
 
             # Сохраняем ответ в историю
-            self.conversation_history.append({"role": "assistant", "content": full_response})
+            self.conversation_history.add_assistant_message(full_response)
 
             # Успешный запрос - сбрасываем счётчик ошибок
             if self.provider_error_count > 0:
@@ -1229,10 +1223,12 @@ class DialogueNode(Node):
         try:
             # Собираем все сообщения для контекста
             messages = [{"role": "system", "content": self._build_system_prompt_with_context()}]
-            messages.extend(self.conversation_history)
+            messages.extend(self.conversation_history.get_messages())
 
             provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
+            last_msg = self.conversation_history.get_last_message()
+            if last_msg:
+                self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {last_msg.get('content', '')[:80]}...")
 
             # Параметры запроса
             request_params = {
@@ -1293,7 +1289,7 @@ class DialogueNode(Node):
                             for tc in tool_calls
                         ]
                     }
-                    self.conversation_history.append(assistant_message)
+                    self.conversation_history.add_assistant_message_with_tools(None, tool_calls_dicts)
                     messages.append(assistant_message)
 
                     # Выполняем tool_calls через LLMToolCallAdapter
@@ -1318,13 +1314,17 @@ class DialogueNode(Node):
                             result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=10.0)
 
                         # Добавляем результат в историю
+                        self.conversation_history.add_tool_message(
+                            content=json.dumps(result, ensure_ascii=False),
+                            tool_call_id=tool_id,
+                            name=tool_name
+                        )
                         tool_result_message = {
                             "role": "tool",
                             "tool_call_id": tool_id,
                             "name": tool_name,
                             "content": json.dumps(result, ensure_ascii=False)
                         }
-                        self.conversation_history.append(tool_result_message)
                         messages.append(tool_result_message)
 
                         if result.get('success'):
@@ -1347,7 +1347,7 @@ class DialogueNode(Node):
                         self.provider_error_count = 0
 
                     # Сохраняем финальный ответ в историю
-                    self.conversation_history.append({"role": "assistant", "content": final_content})
+                    self.conversation_history.add_assistant_message(final_content)
 
                     # Если есть текст - публикуем как финальный chunk (для legacy совместимости)
                     if final_content.strip():
@@ -2057,7 +2057,7 @@ class DialogueNode(Node):
             'tool_calls': tool_calls
         }
         messages.append(assistant_msg)
-        self.conversation_history.append(assistant_msg)
+        self.conversation_history.add_assistant_message_with_tools(None, tool_calls)
         
         # Добавляем результаты каждого tool call как отдельное сообщение
         for result in tool_results:
@@ -2079,7 +2079,7 @@ class DialogueNode(Node):
                 'content': content
             }
             messages.append(tool_msg)
-            self.conversation_history.append(tool_msg)
+            self.conversation_history.add_tool_message(content, tool_call_id, tool_name)
             self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
         
         # Запускаем новый запрос к LLM с результатами (АГЕНТНЫЙ ЦИКЛ)
@@ -2221,7 +2221,7 @@ class DialogueNode(Node):
                     self.get_logger().info(f"🔊 Plain text обёрнут в SSML")
                 
                 # Сохраняем в историю
-                self.conversation_history.append({"role": "assistant", "content": full_response})
+                self.conversation_history.add_assistant_message(full_response)
                 
                 self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks)")
             
