@@ -23,6 +23,7 @@ import threading
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 
 from .async_executor import AsyncToolExecutor, ToolCallAccumulator
@@ -48,11 +49,18 @@ class LLMToolCallAdapter:
         """
         self.node = node
 
+        # QoS для минимизации задержек в Zenoh
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        
         # Publisher для запросов выполнения инструментов
-        self.execute_pub = node.create_publisher(String, "/mcp/execute", 10)
+        self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
 
         # Subscriber для результатов
-        self.result_sub = node.create_subscription(String, "/mcp/result", self.on_result, 10)
+        self.result_sub = node.create_subscription(String, "/mcp/result", self.on_result, qos_profile)
 
         # Кэш ожидающих результатов: request_id -> callback
         self.pending_requests: Dict[str, Callable] = {}

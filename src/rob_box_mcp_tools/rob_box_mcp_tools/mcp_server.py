@@ -16,6 +16,7 @@ ROS 2 интерфейс:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
 from typing import Dict, Any
@@ -59,14 +60,21 @@ class MCPServer(Node):
         # Регистрация инструментов
         self._register_tools()
 
+        # QoS для минимизации задержек в Zenoh
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
         # Publisher для списка инструментов
-        self.tools_pub = self.create_publisher(String, "/mcp/tools", 10)
+        self.tools_pub = self.create_publisher(String, "/mcp/tools", qos_profile)
 
         # Publisher для результатов
-        self.result_pub = self.create_publisher(String, "/mcp/result", 10)
+        self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
 
         # Subscriber для запросов на выполнение
-        self.execute_sub = self.create_subscription(String, "/mcp/execute", self.on_execute_request, 10)
+        self.execute_sub = self.create_subscription(String, "/mcp/execute", self.on_execute_request, qos_profile)
 
         # Подписка на perception context для обновления инструментов
         try:
