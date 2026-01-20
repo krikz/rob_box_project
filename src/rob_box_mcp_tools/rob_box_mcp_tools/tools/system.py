@@ -25,6 +25,9 @@ class SetVolumeTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from rcl_interfaces.srv import GetParameters, SetParameters
+        
         self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
         self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
 
@@ -55,6 +58,11 @@ class SetVolumeTool(MCPTool):
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить громкость"""
+        # Динамический импорт во время выполнения
+        import rclpy
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import GetParameters, SetParameters
+        
         self.log_info(f"Изменение громкости: {action}")
 
         if not self.get_params_client.wait_for_service(timeout_sec=1.0):
@@ -121,6 +129,9 @@ class SetPitchTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from rcl_interfaces.srv import GetParameters, SetParameters
+        
         self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
         self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
 
@@ -151,6 +162,11 @@ class SetPitchTool(MCPTool):
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить высоту голоса"""
+        # Динамический импорт во время выполнения
+        import rclpy
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import GetParameters, SetParameters
+        
         self.log_info(f"Изменение pitch: {action}")
 
         if not self.get_params_client.wait_for_service(timeout_sec=1.0):
@@ -212,6 +228,9 @@ class SetSpeedTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from rcl_interfaces.srv import GetParameters, SetParameters
+        
         self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
         self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
 
@@ -242,6 +261,11 @@ class SetSpeedTool(MCPTool):
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить скорость речи"""
+        # Динамический импорт во время выполнения
+        import rclpy
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import GetParameters, SetParameters
+        
         self.log_info(f"Изменение speed: {action}")
 
         if not self.get_params_client.wait_for_service(timeout_sec=1.0):

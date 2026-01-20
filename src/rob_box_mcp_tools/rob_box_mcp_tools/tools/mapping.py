@@ -23,6 +23,9 @@ class StartMappingTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_srvs.srv import Empty
+        
         # Service clients для RTABMap
         self.reset_memory_client = node.create_client(Empty, "/rtabmap/reset_memory")
         self.set_mode_mapping_client = node.create_client(Empty, "/rtabmap/set_mode_mapping")
@@ -110,6 +113,9 @@ class ContinueMappingTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_srvs.srv import Empty
+        
         self.set_mode_mapping_client = node.create_client(Empty, "/rtabmap/set_mode_mapping")
 
     @property
@@ -152,6 +158,9 @@ class FinishMappingTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        # Динамический импорт во время выполнения
+        from std_srvs.srv import Empty
+        
         self.set_mode_localization_client = node.create_client(Empty, "/rtabmap/set_mode_localization")
 
     @property

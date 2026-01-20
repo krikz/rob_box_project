@@ -252,11 +252,10 @@ class STTNode(Node):
                 ),
                 # ВАЖНО! Настройка EOU (End of Utterance) - определение конца фразы
                 # Используем выбранный profile (fast/balanced/patient)
-                profile = self.eou_profiles[self.eou_profile]
                 eou_classifier=stt_pb2.EouClassifierOptions(
                     default_classifier=stt_pb2.DefaultEouClassifier(
-                        type=profile['type'],
-                        max_pause_between_words_hint_ms=profile['max_pause_ms']
+                        type=self.eou_profiles[self.eou_profile]['type'],
+                        max_pause_between_words_hint_ms=self.eou_profiles[self.eou_profile]['max_pause_ms']
                     )
                 )
             )
