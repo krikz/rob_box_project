@@ -26,13 +26,21 @@ RUN apt-get update && \
     apt-get install -y \
         # Zenoh middleware для ROS 2
         ros-humble-rmw-zenoh-cpp \
+        # ROS 2 development tools (нужны для сборки пакетов)
+        ros-dev-tools \
+        # Development libraries для ROS 2 core
+        librcutils-dev \
+        librcl-dev \
+        librmw-dev \
         # Базовые утилиты
         git \
         wget \
         curl \
         python3-pip \
         # Очистка кэша для уменьшения размера образа
-        && rm -rf /var/lib/apt/lists/*
+        && rm -rf /var/lib/apt/lists/* && \
+    # Обновляем ldconfig для правильной индексации библиотек
+    ldconfig
 
 # Удаляем APT прокси конфигурацию после установки пакетов
 RUN rm -f /etc/apt/apt.conf.d/02proxy
