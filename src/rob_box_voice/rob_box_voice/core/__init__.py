@@ -6,5 +6,6 @@ making them easy to test and understand.
 """
 
 from .dialogue_manager import DialogueManager, DialogueState
+from .speech_formatter import SpeechFormatter
 
-__all__ = ['DialogueManager', 'DialogueState']
+__all__ = ['DialogueManager', 'DialogueState', 'SpeechFormatter']
