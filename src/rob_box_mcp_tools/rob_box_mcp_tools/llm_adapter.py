@@ -79,12 +79,16 @@ class LLMToolCallAdapter:
         try:
             result = json.loads(msg.data)
             request_id = result.get("request_id", "")
+            
+            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8] if request_id else 'empty'}")
 
             if not request_id:
+                self.node.get_logger().warn("⚠️ Получен результат без request_id")
                 return
 
             # Сохраняем результат в кэш
             self.results_cache[request_id] = result
+            self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
             
             # Уведомляем async executor
             self.async_executor.on_result_received(request_id, result)
