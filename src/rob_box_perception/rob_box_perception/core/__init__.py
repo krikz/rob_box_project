@@ -1,12 +1,4 @@
-"""Core modules for rob_box_perception package.
+from .event_detector import EventDetector, EventChange
+from .prompt_formatter import PromptFormatter
 
-Pure Python modules with no ROS dependencies for event detection,
-context building, health analysis, and memory management.
-"""
-
-from rob_box_perception.core.event_detector import EventDetector, EventChange
-
-__all__ = [
-    'EventDetector',
-    'EventChange',
-]
+__all__ = ["EventDetector", "EventChange", "PromptFormatter"]
