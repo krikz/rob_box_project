@@ -19,6 +19,7 @@ import uuid
 import asyncio
 from typing import Dict, Any, List, Optional, Callable
 import time
+import threading
 
 import rclpy
 from rclpy.node import Node
@@ -58,6 +59,9 @@ class LLMToolCallAdapter:
 
         # Кэш результатов: request_id -> result
         self.results_cache: Dict[str, Dict[str, Any]] = {}
+        
+        # Event'ы для синхронного ожидания: request_id -> Event
+        self.result_events: Dict[str, threading.Event] = {}
 
         # Timeout для ожидания результата (секунды)
         self.timeout = 5.0
@@ -89,6 +93,11 @@ class LLMToolCallAdapter:
             # Сохраняем результат в кэш
             self.results_cache[request_id] = result
             self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+            
+            # Уведомляем ждущий поток через Event
+            if request_id in self.result_events:
+                self.result_events[request_id].set()
+                self.node.get_logger().info(f"✅ Event установлен для {request_id[:8]}")
             
             # Уведомляем async executor
             self.async_executor.on_result_received(request_id, result)
@@ -175,20 +184,26 @@ class LLMToolCallAdapter:
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")
 
-        # Ожидаем результат с таймаутом
-        # ВАЖНО: используем spin_once с коротким timeout чтобы ROS executor мог 
-        # обрабатывать входящие сообщения (включая /mcp/result)
-        start_time = time.time()
-        while request_id not in self.results_cache:
-            if time.time() - start_time > timeout:
-                self.node.get_logger().error(f"⏱️ Timeout ожидания результата для {tool_name} (request_id: {request_id[:8]})")
-                return {"success": False, "error": "Timeout ожидания результата инструмента"}
+        # Создаём Event для ожидания результата
+        result_event = threading.Event()
+        self.result_events[request_id] = result_event
 
-            # Даём ROS executor обработать входящие сообщения
-            # Короткий timeout чтобы не блокировать надолго
-            rclpy.spin_once(self.node, timeout_sec=0.01)
+        # Ожидаем результат с таймаутом используя Event.wait()
+        # Это не блокирует ROS executor, т.к. wait() использует condition variable
+        if not result_event.wait(timeout=timeout):
+            # Timeout - очищаем Event
+            self.result_events.pop(request_id, None)
+            self.node.get_logger().error(f"⏱️ Timeout ожидания результата для {tool_name} (request_id: {request_id[:8]})")
+            return {"success": False, "error": "Timeout ожидания результата инструмента"}
+
+        # Очищаем Event
+        self.result_events.pop(request_id, None)
 
         # Получаем результат из кэша
+        if request_id not in self.results_cache:
+            self.node.get_logger().error(f"❌ Результат для {request_id[:8]} не найден в кэше после Event.set()")
+            return {"success": False, "error": "Результат не найден в кэше"}
+            
         result_data = self.results_cache.pop(request_id)
         return result_data.get("result", {"success": False, "error": "Пустой результат"})
 
