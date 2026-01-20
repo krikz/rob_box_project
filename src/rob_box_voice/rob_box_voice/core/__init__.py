@@ -8,6 +8,7 @@ making them easy to test and understand.
 from .dialogue_manager import DialogueManager, DialogueState
 from .speech_formatter import SpeechFormatter
 from .command_parser import CommandParser, Command, IntentType
+from .conversation_history import ConversationHistory, Message
 
 __all__ = [
     'DialogueManager',
@@ -15,5 +16,7 @@ __all__ = [
     'SpeechFormatter',
     'CommandParser',
     'Command',
-    'IntentType'
+    'IntentType',
+    'ConversationHistory',
+    'Message'
 ]
