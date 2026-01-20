@@ -4,6 +4,8 @@ CommandNode - распознавание голосовых команд для 
 Подписывается: /voice/stt/result (String)
 Публикует: /voice/command/intent (String), /voice/command/feedback (String)
 Action Clients: NavigateToPose, FollowPath
+
+REFACTORED: Now uses CommandParser from core module for intent classification
 """
 
 import rclpy
@@ -13,30 +15,11 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
 
-import re
-from typing import Optional, Dict, List, Tuple
-from dataclasses import dataclass
-from enum import Enum
+from typing import Optional, Dict, List
+from geometry_msgs.msg import Twist
 
-
-class IntentType(Enum):
-    """Типы намерений команд"""
-    NAVIGATE = "navigate"           # Навигация к точке
-    STOP = "stop"                   # Остановка
-    FOLLOW = "follow"               # Следование
-    STATUS = "status"               # Запрос статуса
-    MAP = "map"                     # Работа с картой
-    VISION = "vision"               # Зрение/детекция
-    UNKNOWN = "unknown"             # Неизвестная команда
-
-
-@dataclass
-class Command:
-    """Распознанная команда"""
-    intent: IntentType
-    text: str
-    entities: Dict[str, any]
-    confidence: float
+# Import from core module
+from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
 
 
 class CommandNode(Node):
@@ -79,7 +62,6 @@ class CommandNode(Node):
         # Publisher для управления движением
         # Публикуем на /cmd_vel_voice (priority: 25 в twist_mux)
         # Приоритет ниже чем у оператора (joy:100, web:50) но выше Nav2 (10)
-        from geometry_msgs.msg import Twist
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_voice', 10)
         
         # State tracking
@@ -90,8 +72,11 @@ class CommandNode(Node):
             self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.current_goal_handle = None  # Для отмены текущего goal
         
-        # Словарь команд (паттерны)
-        self._build_command_patterns()
+        # CommandParser from core module (replaces _build_command_patterns)
+        self.command_parser = CommandParser(
+            wake_words=['робот', 'робокс', 'робобокс'],
+            confidence_base=0.8
+        )
         
         # Waypoints (заранее известные точки)
         self.waypoints = {
@@ -103,52 +88,9 @@ class CommandNode(Node):
             'точка 3': {'x': 3.0, 'y': 0.0, 'theta': 0.0},
         }
         
-        self.get_logger().info('✅ CommandNode инициализирован')
+        self.get_logger().info('✅ CommandNode инициализирован (using CommandParser from core)')
         self.get_logger().info(f'  Navigation: {"✓" if self.enable_navigation else "✗"}')
         self.get_logger().info(f'  Waypoints: {len(self.waypoints)}')
-    
-    def _build_command_patterns(self):
-        """Построить паттерны распознавания команд"""
-        self.patterns = {
-            # Навигация
-            IntentType.NAVIGATE: [
-                (r'(двигайся|иди|поезжай|езжай|направляйся)\s+к\s+точке\s+(\d+)', 'waypoint_number'),
-                (r'(двигайся|иди|поезжай|езжай)\s+к\s+(дом|кухня|гостиная)', 'waypoint_name'),
-                # Движение с глаголом
-                (r'(двигайся|иди|поезжай|езжай|катись|двигай)\s+(вперед|вперёд|назад|влево|вправо)', 'direction'),
-                # Движение без глагола (просто направление)
-                (r'^(вперед|вперёд|назад)$', 'direction'),
-                # Повороты с глаголом
-                (r'(поверни|повернись|разверн|развернись)\s+(налево|направо|влево|вправо)', 'turn'),
-                # Повороты БЕЗ глагола (после удаления "робот")
-                (r'^(налево|направо|влево|вправо)$', 'turn'),
-            ],
-            # Остановка
-            IntentType.STOP: [
-                (r'(стой|стоп|остановись|останови|halt|стоять|хватит|замри)', None),
-                (r'(отмени|cancel)\s+(движение|навигацию|задание)', None),
-            ],
-            # Следование
-            IntentType.FOLLOW: [
-                (r'(следуй|иди)\s+за\s+(мной|человеком)', None),
-                (r'(включи|активируй)\s+режим\s+следования', None),
-            ],
-            # Статус
-            IntentType.STATUS: [
-                (r'(где|куда)\s+(ты|робот)', None),
-                (r'(покажи|расскажи)\s+(статус|положение|координаты)', None),
-            ],
-            # Карта
-            IntentType.MAP: [
-                (r'(покажи|открой|загрузи)\s+карту', None),
-                (r'(создай|построй|сделай)\s+карту', None),
-            ],
-            # Зрение
-            IntentType.VISION: [
-                (r'что\s+(видишь|перед\s+тобой)', None),
-                (r'(найди|покажи|обнаружь)\s+(объект|человека|предмет)', None),
-            ],
-        }
     
     def dialogue_state_callback(self, msg: String):
         """Callback для состояния dialogue_node"""
@@ -157,27 +99,20 @@ class CommandNode(Node):
     
     def stt_callback(self, msg: String):
         """Обработка распознанной речи"""
-        text = msg.data.strip().lower()
+        text = msg.data.strip()
         if not text:
             return
         
         self.get_logger().info(f'🎤 STT: {text}')
         
-        # Удалить wake word из начала команды
-        wake_words = ['робот', 'робокс', 'робобокс']
-        for wake_word in wake_words:
-            if text.startswith(wake_word):
-                text = text[len(wake_word):].strip()
-                break
-        
-        # Распознать команду
-        command = self.classify_intent(text)
+        # Use CommandParser to parse command (includes wake word removal)
+        command = self.command_parser.parse(text)
         
         # Всегда публиковать intent (даже UNKNOWN) для dialogue_node
         self.publish_intent(command)
         
         if command.intent == IntentType.UNKNOWN:
-            self.get_logger().debug(f'🤷 Неизвестная команда - пере даю dialogue_node: {text}')
+            self.get_logger().debug(f'🤷 Неизвестная команда - передаю dialogue_node: {text}')
             # Не выполняем команду, но публикуем intent=UNKNOWN для dialogue
             return
         
@@ -191,46 +126,6 @@ class CommandNode(Node):
         
         # Выполнить команду
         self.execute_command(command)
-    
-    def classify_intent(self, text: str) -> Command:
-        """Классифицировать намерение и извлечь сущности"""
-        best_match = None
-        best_confidence = 0.0
-        best_intent = IntentType.UNKNOWN
-        best_entities = {}
-        
-        # Проверить все паттерны
-        for intent, patterns in self.patterns.items():
-            for pattern, entity_type in patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    confidence = 0.8 + (len(match.group(0)) / len(text)) * 0.2
-                    
-                    if confidence > best_confidence:
-                        best_confidence = confidence
-                        best_intent = intent
-                        best_match = match
-                        
-                        # Извлечь сущности
-                        if entity_type == 'waypoint_number':
-                            best_entities = {'waypoint': f"точка {match.group(2)}"}
-                        elif entity_type == 'waypoint_name':
-                            best_entities = {'waypoint': match.group(2)}
-                        elif entity_type == 'direction':
-                            # Направление может быть в группе 1 (только направление) или 2 (с глаголом)
-                            direction = match.group(2) if match.lastindex >= 2 else match.group(1)
-                            best_entities = {'direction': direction}
-                        elif entity_type == 'turn':
-                            # Поворот может быть в группе 1 (только направление) или 2 (с глаголом)
-                            direction = match.group(2) if match.lastindex >= 2 else match.group(1)
-                            best_entities = {'direction': direction}
-        
-        return Command(
-            intent=best_intent,
-            text=text,
-            entities=best_entities,
-            confidence=best_confidence
-        )
     
     def execute_command(self, command: Command):
         """Выполнить распознанную команду"""
