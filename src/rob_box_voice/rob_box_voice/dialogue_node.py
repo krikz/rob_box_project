@@ -48,6 +48,10 @@ except ImportError:
     MCP_TOOLS_AVAILABLE = False
     print("⚠️  rob_box_mcp_tools не найден - работа без tool_calls")
 
+# Импорт DialogueManager и ConversationHistory
+from rob_box_voice.core.dialogue_manager import DialogueManager, DialogueState
+from rob_box_voice.core.conversation_history import ConversationHistory
+
 
 class DialogueNode(Node):
     """ROS2 нода для LLM диалога с поддержкой Qwen и DeepSeek"""
@@ -85,6 +89,8 @@ class DialogueNode(Node):
         self.declare_parameter("streaming", True)  # Включаем streaming
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
+        self.declare_parameter("unsilence_commands", ["говори", "включ", "работ", "отвеч", "разговар"])
+        self.declare_parameter("dialogue_timeout", 30.0)  # секунд без активности -> IDLE
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
 
         # Выбор провайдера с fallback
@@ -105,8 +111,8 @@ class DialogueNode(Node):
         # System prompt
         self.system_prompt = self._load_system_prompt()
 
-        # История диалога
-        self.conversation_history = []
+        # История диалога (используем ConversationHistory модуль)
+        self.conversation_history = ConversationHistory(max_messages=20)
 
         # Подписка на распознанную речь
         self.stt_sub = self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
@@ -185,25 +191,14 @@ class DialogueNode(Node):
         else:
             self.get_logger().info("ℹ️  MCP Tools отключены в параметрах")
 
-        # ============ State Machine ============
-        # IDLE -> LISTENING -> DIALOGUE -> SILENCED
-        self.state = "IDLE"  # IDLE | LISTENING | DIALOGUE | SILENCED
-        self.silence_until = None  # Timestamp когда закончится SILENCED
-        self.last_interaction_time = time.time()
-        self.dialogue_timeout = 30.0  # секунд без активности -> IDLE
-
-        # Wake words и silence commands из параметров
-        self.wake_words = self.get_parameter("wake_words").value
-        self.silence_commands = self.get_parameter("silence_commands").value
-
-        # Unsilence commands - команды для выхода из SILENCED режима
-        self.unsilence_commands = [
-            "говори",
-            "включ",  # включись, включайся
-            "работ",  # работай, работайте
-            "отвеч",  # отвечай, отвечайте
-            "разговар",  # разговаривай
-        ]
+        # ============ State Machine - DialogueManager ============
+        self.dialogue_manager = DialogueManager(
+            wake_words=self.get_parameter("wake_words").value,
+            silence_commands=self.get_parameter("silence_commands").value,
+            unsilence_commands=self.get_parameter("unsilence_commands").value,
+            dialogue_timeout=self.get_parameter("dialogue_timeout").value,
+            query_accumulation_timeout=self.get_parameter("query_accumulation_timeout").value
+        )
 
         # Флаг что dialogue_node обработал запрос (чтобы игнорировать command feedback)
         self.dialogue_in_progress = False
@@ -215,10 +210,6 @@ class DialogueNode(Node):
         self.current_dialogue_id = None
 
         # ============ Query Queue System ============
-        # Очередь накопленных запросов для пакетной обработки
-        self.pending_queries = []  # List of user messages
-        self.query_accumulation_timeout = self.get_parameter("query_accumulation_timeout").value
-        self.last_query_time = None  # Timestamp последнего запроса
         self.accumulation_timer = None  # Таймер для проверки накопления
         self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
         self.interrupt_agent_loop = False  # Флаг прерывания агентного цикла при новом запросе
@@ -270,12 +261,12 @@ class DialogueNode(Node):
 
         self.get_logger().info("✅ DialogueNode инициализирован")
         self.get_logger().info(f"  🤖 Provider: {self.PROVIDERS[self.current_provider]['name']} (fallback: {'ON' if self.enable_fallback else 'OFF'})")
-        self.get_logger().info(f'  Wake words: {", ".join(self.wake_words)}')
-        self.get_logger().info(f'  Silence commands: {", ".join(self.silence_commands)}')
+        self.get_logger().info(f'  Wake words: {", ".join(self.dialogue_manager.wake_words)}')
+        self.get_logger().info(f'  Silence commands: {", ".join(self.dialogue_manager.silence_commands)}')
         self.get_logger().info(f"  Temperature: {self.temperature}")
         self.get_logger().info(f"  Max tokens: {self.max_tokens}")
-        self.get_logger().info(f"  Dialogue timeout: {self.dialogue_timeout}s")
-        self.get_logger().info(f"  Query accumulation timeout: {self.query_accumulation_timeout}s")
+        self.get_logger().info(f"  Dialogue timeout: {self.dialogue_manager.dialogue_timeout}s")
+        self.get_logger().info(f"  Query accumulation timeout: {self.dialogue_manager.query_accumulation_timeout}s")
 
     def _load_system_prompt(self) -> str:
         """Загрузить упрощённый system prompt"""
@@ -400,38 +391,8 @@ class DialogueNode(Node):
             return False
 
     # ============================================================
-    # Wake Word & Silence Detection
+    # Silence Mode Handling
     # ============================================================
-
-    def _has_wake_word(self, text: str) -> bool:
-        """Проверка наличия wake word"""
-        for wake_word in self.wake_words:
-            if wake_word in text:
-                return True
-        return False
-
-    def _remove_wake_word(self, text: str) -> str:
-        """Убрать wake word из текста"""
-        for wake_word in self.wake_words:
-            text = text.replace(wake_word, "").strip()
-        return text
-
-    def _is_silence_command(self, text: str) -> bool:
-        """Проверка: команда замолчать?"""
-        # Используем silence_commands из параметров
-        for command in self.silence_commands:
-            if command in text:
-                return True
-
-        return False
-
-    def _is_unsilence_command(self, text: str) -> bool:
-        """Проверка: команда выхода из silence режима?"""
-        for command in self.unsilence_commands:
-            if command in text:
-                return True
-
-        return False
 
     def _handle_silence_command(self):
         """Обработка команды silence"""
@@ -446,9 +407,9 @@ class DialogueNode(Node):
                 self.get_logger().error(f"Ошибка прерывания stream: {e}")
 
         # 2. Очистить очередь запросов
-        if self.pending_queries:
-            cleared_count = len(self.pending_queries)
-            self.pending_queries.clear()
+        if self.dialogue_manager.pending_queries:
+            cleared_count = len(self.dialogue_manager.pending_queries)
+            self.dialogue_manager.pending_queries.clear()
             self.get_logger().info(f"  → Очищено {cleared_count} запросов из очереди")
 
         # 3. Остановить таймер накопления
@@ -467,8 +428,7 @@ class DialogueNode(Node):
         self.get_logger().info("  → STOP отправлен в TTS")
 
         # 6. Перейти в SILENCED на 5 минут
-        self.state = "SILENCED"
-        self.silence_until = time.time() + 300  # 5 минут
+        self.dialogue_manager.enable_silence(duration=300.0)
         self._publish_state()
         self.get_logger().info("  → State: SILENCED (5 минут)")
 
@@ -491,7 +451,7 @@ class DialogueNode(Node):
     def _publish_state(self):
         """Публикация текущего состояния dialogue_node"""
         msg = String()
-        msg.data = self.state
+        msg.data = self.dialogue_manager.state.value
         self.state_pub.publish(msg)
 
     def _on_perception_update(self, msg):
@@ -601,23 +561,22 @@ class DialogueNode(Node):
             return
 
         user_message_lower = user_message.lower()
-        self.get_logger().info(f"👤 User: {user_message} [State: {self.state}]")
+        self.get_logger().info(f"👤 User: {user_message} [State: {self.dialogue_manager.state.value}]")
 
         # ============ ПРИОРИТЕТ 1: Проверка SILENCE command ============
-        if self._is_silence_command(user_message_lower):
+        if self.dialogue_manager.is_silence_command(user_message_lower):
             self.get_logger().warning("🔇 SILENCE COMMAND обнаружена!")
             self._handle_silence_command()
             return
 
         # ============ ПРИОРИТЕТ 2: Проверка SILENCED state ============
-        if self.state == "SILENCED":
+        if self.dialogue_manager.is_silenced():
             # В SILENCED: проверяем unsilence команды с wake word
-            if self._has_wake_word(user_message_lower):
+            if self.dialogue_manager.has_wake_word(user_message_lower):
                 # Проверяем: команда выхода из silence?
-                if self._is_unsilence_command(user_message_lower):
+                if self.dialogue_manager.is_unsilence_command(user_message_lower):
                     self.get_logger().info("🔓 Unsilence command обнаружена → IDLE")
-                    self.state = "IDLE"
-                    self.silence_until = None
+                    self.dialogue_manager.disable_silence()
                     self._publish_state()
                     self._speak_simple("Хорошо, слушаю!")
                     return
@@ -633,16 +592,15 @@ class DialogueNode(Node):
                 return
 
         # ============ ПРИОРИТЕТ 3: Wake Word Detection ============
-        if self.state == "IDLE":
+        if self.dialogue_manager.state == DialogueState.IDLE:
             # В IDLE: требуется wake word
-            if self._has_wake_word(user_message_lower):
+            if self.dialogue_manager.has_wake_word(user_message_lower):
                 self.get_logger().info("👋 Wake word обнаружен → LISTENING")
-                self.state = "LISTENING"
+                self.dialogue_manager.transition_state(DialogueState.LISTENING)
                 self._publish_state()
-                self.last_interaction_time = time.time()
 
                 # Убираем wake word из текста
-                user_message_clean = self._remove_wake_word(user_message_lower)
+                user_message_clean = self.dialogue_manager.remove_wake_word(user_message_lower)
                 if not user_message_clean:
                     # Только wake word без команды/вопроса
                     self._speak_simple("Слушаю!")
@@ -654,9 +612,8 @@ class DialogueNode(Node):
                 return
 
         # ============ State: LISTENING или DIALOGUE ============
-        self.state = "DIALOGUE"
+        self.dialogue_manager.transition_state(DialogueState.DIALOGUE)
         self._publish_state()
-        self.last_interaction_time = time.time()
         self.dialogue_in_progress = True
 
         # ============ ПРИОРИТЕТ 4: Проверка подтверждения (start_mapping) ============
@@ -762,10 +719,9 @@ class DialogueNode(Node):
 
         # ============ ПРИОРИТЕТ 9: Обычный диалог с LLM ============
         # Добавляем запрос в очередь для накопления
-        self.pending_queries.append(user_message)
-        self.last_query_time = time.time()
+        self.dialogue_manager.add_query(user_message)
 
-        self.get_logger().info(f"📥 Запрос добавлен в очередь (всего: {len(self.pending_queries)})")
+        self.get_logger().info(f"📥 Запрос добавлен в очередь (всего: {len(self.dialogue_manager.pending_queries)})")
 
         # Если LLM уже обрабатывает запрос - прерываем агентный цикл
         if self.llm_processing:
@@ -776,11 +732,14 @@ class DialogueNode(Node):
         # Если это первый запрос или прошло достаточно времени - начинаем накопление
         if self.accumulation_timer is None:
             # Создаём таймер для проверки когда можно обработать накопленные запросы
-            self.accumulation_timer = self.create_timer(self.query_accumulation_timeout, self._check_and_process_queue)
-            self.get_logger().info(f"⏰ Запущен таймер накопления ({self.query_accumulation_timeout}s)")
+            self.accumulation_timer = self.create_timer(
+                self.dialogue_manager.query_accumulation_timeout, 
+                self._check_and_process_queue
+            )
+            self.get_logger().info(f"⏰ Запущен таймер накопления ({self.dialogue_manager.query_accumulation_timeout}s)")
 
         # Триггер звука "thinking" только при первом запросе
-        if len(self.pending_queries) == 1:
+        if len(self.dialogue_manager.pending_queries) == 1:
             self._trigger_sound("thinking")
 
     def _check_and_process_queue(self):
@@ -790,26 +749,19 @@ class DialogueNode(Node):
             self.accumulation_timer.cancel()
             self.accumulation_timer = None
 
-        # Если очередь пуста - ничего не делаем
-        if not self.pending_queries:
-            self.get_logger().debug("📭 Очередь пуста, нечего обрабатывать")
+        # Проверяем готовность через DialogueManager
+        if not self.dialogue_manager.should_process_queries():
+            # Ещё рано, перезапускаем таймер
+            if self.dialogue_manager.last_query_time:
+                elapsed = time.time() - self.dialogue_manager.last_query_time
+                remaining = self.dialogue_manager.query_accumulation_timeout - elapsed
+                if remaining > 0:
+                    self.accumulation_timer = self.create_timer(remaining, self._check_and_process_queue)
+                    self.get_logger().debug(f"⏰ Ещё рано, жду {remaining:.1f}s")
             return
 
-        # Проверяем: прошло ли достаточно времени с последнего запроса
-        if self.last_query_time:
-            current_time = time.time()
-            time_since_last = current_time - self.last_query_time
-            if time_since_last < self.query_accumulation_timeout:
-                # Ещё рано, перезапускаем таймер
-                remaining = self.query_accumulation_timeout - time_since_last
-                self.accumulation_timer = self.create_timer(remaining, self._check_and_process_queue)
-                self.get_logger().debug(f"⏰ Ещё рано, жду {remaining:.1f}s")
-                return
-
         # Забираем все накопленные запросы
-        queries_to_process = self.pending_queries.copy()
-        self.pending_queries.clear()
-
+        queries_to_process = self.dialogue_manager.get_accumulated_queries()
         query_count = len(queries_to_process)
         self.get_logger().info(f"🔄 Обрабатываю {query_count} накопленных запросов")
 
@@ -825,11 +777,7 @@ class DialogueNode(Node):
             self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов):\n{combined_message}")
 
         # Добавляем в историю диалога
-        self.conversation_history.append({"role": "user", "content": combined_message})
-
-        # Ограничиваем историю (последние 10 сообщений)
-        if len(self.conversation_history) > 10:
-            self.conversation_history = self.conversation_history[-10:]
+        self.conversation_history.add_user_message(combined_message)
 
         # Устанавливаем флаг обработки
         self.llm_processing = True
@@ -883,16 +831,13 @@ class DialogueNode(Node):
         # Очищаем tool messages из истории при новом диалоге
         # API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message
         # При новом диалоге старые tool results недействительны
-        self.conversation_history = [
-            msg for msg in self.conversation_history
-            if msg.get("role") not in ["tool", "assistant"] or not msg.get("tool_calls")
-        ]
-        self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history)} сообщений")
+        self.conversation_history.remove_tool_messages()
+        self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history.get_messages())} сообщений")
 
         # Используем system prompt с контекстом времени
         system_prompt_with_context = self._build_system_prompt_with_context()
 
-        messages = [{"role": "system", "content": system_prompt_with_context}, *self.conversation_history]
+        messages = [{"role": "system", "content": system_prompt_with_context}] + self.conversation_history.get_messages()
 
         provider_name = self.PROVIDERS[self.current_provider]["name"]
         self.get_logger().info(f"🤔 Запрос к {provider_name}...")
@@ -1178,7 +1123,7 @@ class DialogueNode(Node):
             chunk_count = streaming_result["chunk_count"]
 
             # Сохраняем ответ в историю
-            self.conversation_history.append({"role": "assistant", "content": full_response})
+            self.conversation_history.add_assistant_message(full_response)
 
             # Успешный запрос - сбрасываем счётчик ошибок
             if self.provider_error_count > 0:
@@ -1192,17 +1137,17 @@ class DialogueNode(Node):
             self.llm_processing = False
 
             # Проверяем очередь - есть ли ещё накопленные запросы
-            if self.pending_queries:
-                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
+            if self.dialogue_manager.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.dialogue_manager.pending_queries)})")
                 # Обновляем время последнего запроса для корректного накопления
-                self.last_query_time = time.time()
+                self.dialogue_manager.last_query_time = time.time()
                 # Запускаем таймер накопления чтобы дождаться возможных дополнительных запросов
                 if self.accumulation_timer is None:
                     self.accumulation_timer = self.create_timer(
-                        self.query_accumulation_timeout, self._check_and_process_queue
+                        self.dialogue_manager.query_accumulation_timeout, self._check_and_process_queue
                     )
                     self.get_logger().info(
-                        f"⏰ Запущен таймер накопления для оставшихся запросов ({self.query_accumulation_timeout}s)"
+                        f"⏰ Запущен таймер накопления для оставшихся запросов ({self.dialogue_manager.query_accumulation_timeout}s)"
                     )
                 # Не сбрасываем dialogue_in_progress - ещё есть запросы в очереди
             else:
@@ -1223,10 +1168,10 @@ class DialogueNode(Node):
                 if self._try_fallback_provider():
                     self.provider_error_count = 0  # Сбрасываем счётчик
                     # Пробуем снова с новым провайдером если есть запросы в очереди
-                    if self.pending_queries:
+                    if self.dialogue_manager.pending_queries:
                         self.get_logger().info("♻️ Повторяем запрос с новым провайдером")
                         self.llm_processing = False
-                        self.last_query_time = time.time()
+                        self.dialogue_manager.last_query_time = time.time()
                         if self.accumulation_timer is not None:
                             self.accumulation_timer.cancel()
                         self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
@@ -1256,12 +1201,12 @@ class DialogueNode(Node):
             self.llm_processing = False
 
             # Проверяем очередь даже при ошибке
-            if self.pending_queries:
+            if self.dialogue_manager.pending_queries:
                 self.get_logger().info(
-                    f"📬 В очереди есть запросы ({len(self.pending_queries)}), пробую снова после задержки..."
+                    f"📬 В очереди есть запросы ({len(self.dialogue_manager.pending_queries)}), пробую снова после задержки..."
                 )
                 # Обновляем время последнего запроса
-                self.last_query_time = time.time()
+                self.dialogue_manager.last_query_time = time.time()
                 # Небольшая задержка перед повтором при ошибке
                 # Отменяем существующий таймер если есть
                 if self.accumulation_timer is not None:
@@ -1278,10 +1223,12 @@ class DialogueNode(Node):
         try:
             # Собираем все сообщения для контекста
             messages = [{"role": "system", "content": self._build_system_prompt_with_context()}]
-            messages.extend(self.conversation_history)
+            messages.extend(self.conversation_history.get_messages())
 
             provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
+            last_msg = self.conversation_history.get_last_message()
+            if last_msg:
+                self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {last_msg.get('content', '')[:80]}...")
 
             # Параметры запроса
             request_params = {
@@ -1342,7 +1289,7 @@ class DialogueNode(Node):
                             for tc in tool_calls
                         ]
                     }
-                    self.conversation_history.append(assistant_message)
+                    self.conversation_history.add_assistant_message_with_tools(None, tool_calls_dicts)
                     messages.append(assistant_message)
 
                     # Выполняем tool_calls через LLMToolCallAdapter
@@ -1367,13 +1314,17 @@ class DialogueNode(Node):
                             result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=10.0)
 
                         # Добавляем результат в историю
+                        self.conversation_history.add_tool_message(
+                            content=json.dumps(result, ensure_ascii=False),
+                            tool_call_id=tool_id,
+                            name=tool_name
+                        )
                         tool_result_message = {
                             "role": "tool",
                             "tool_call_id": tool_id,
                             "name": tool_name,
                             "content": json.dumps(result, ensure_ascii=False)
                         }
-                        self.conversation_history.append(tool_result_message)
                         messages.append(tool_result_message)
 
                         if result.get('success'):
@@ -1396,7 +1347,7 @@ class DialogueNode(Node):
                         self.provider_error_count = 0
 
                     # Сохраняем финальный ответ в историю
-                    self.conversation_history.append({"role": "assistant", "content": final_content})
+                    self.conversation_history.add_assistant_message(final_content)
 
                     # Если есть текст - публикуем как финальный chunk (для legacy совместимости)
                     if final_content.strip():
@@ -1422,12 +1373,12 @@ class DialogueNode(Node):
             self.llm_processing = False
 
             # Проверяем очередь - есть ли ещё накопленные запросы
-            if self.pending_queries:
-                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
-                self.last_query_time = time.time()
+            if self.dialogue_manager.pending_queries:
+                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.dialogue_manager.pending_queries)})")
+                self.dialogue_manager.last_query_time = time.time()
                 if self.accumulation_timer is None:
                     self.accumulation_timer = self.create_timer(
-                        self.query_accumulation_timeout, self._check_and_process_queue
+                        self.dialogue_manager.query_accumulation_timeout, self._check_and_process_queue
                     )
             else:
                 self.dialogue_in_progress = False
@@ -1449,8 +1400,8 @@ class DialogueNode(Node):
             self.llm_processing = False
             self._speak_simple("Извините, возникла проблема с ответом")
             
-            if self.pending_queries:
-                self.last_query_time = time.time()
+            if self.dialogue_manager.pending_queries:
+                self.dialogue_manager.last_query_time = time.time()
                 if self.accumulation_timer is not None:
                     self.accumulation_timer.cancel()
                 self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
@@ -2006,13 +1957,8 @@ class DialogueNode(Node):
 
     def _check_dialogue_timeout(self):
         """Проверить тайм-аут диалога и вернуться в IDLE если нет активности"""
-        if self.state not in ["LISTENING", "DIALOGUE"]:
-            return
-
-        elapsed = time.time() - self.last_interaction_time
-        if elapsed > self.dialogue_timeout:
-            self.get_logger().info(f"⏰ Dialogue timeout ({elapsed:.1f}s) → IDLE")
-            self.state = "IDLE"
+        if self.dialogue_manager.check_timeout():
+            self.get_logger().info(f"⏰ Dialogue timeout → IDLE")
             self._publish_state()
 
     # ============================================================
@@ -2111,7 +2057,7 @@ class DialogueNode(Node):
             'tool_calls': tool_calls
         }
         messages.append(assistant_msg)
-        self.conversation_history.append(assistant_msg)
+        self.conversation_history.add_assistant_message_with_tools(None, tool_calls)
         
         # Добавляем результаты каждого tool call как отдельное сообщение
         for result in tool_results:
@@ -2133,7 +2079,7 @@ class DialogueNode(Node):
                 'content': content
             }
             messages.append(tool_msg)
-            self.conversation_history.append(tool_msg)
+            self.conversation_history.add_tool_message(content, tool_call_id, tool_name)
             self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
         
         # Запускаем новый запрос к LLM с результатами (АГЕНТНЫЙ ЦИКЛ)
@@ -2275,7 +2221,7 @@ class DialogueNode(Node):
                     self.get_logger().info(f"🔊 Plain text обёрнут в SSML")
                 
                 # Сохраняем в историю
-                self.conversation_history.append({"role": "assistant", "content": full_response})
+                self.conversation_history.add_assistant_message(full_response)
                 
                 self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks)")
             
