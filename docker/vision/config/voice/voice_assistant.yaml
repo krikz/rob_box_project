@@ -143,7 +143,7 @@
 
     # ===== Dialogue Node (LLM) =====
     dialogue_node:
-      provider: "qwen"  # qwen | deepseek | openai | ollama
+      provider: "deepseek"  # qwen | deepseek | openai | ollama
 
       # Qwen API
       qwen:
