@@ -160,10 +160,10 @@ async def test_async_feature():
     ("грусть", "sad"),
     ("злость", "angry"),
 ])
-def test_emotion_mapping(emotion, expected):
+def test_animation_display(animation, expected):
     """Test with multiple parameters"""
-    tool = SetEmotionTool(mock_node)
-    result = tool.execute(emotion=emotion)
+    tool = PlayAnimationTool(mock_node)
+    result = tool.execute(animation=animation, duration=5.0)
     
     assert result.data["animation"] == expected
 ```

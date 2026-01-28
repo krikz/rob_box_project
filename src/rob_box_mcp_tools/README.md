@@ -91,8 +91,7 @@ rob_box_mcp_tools/
 - `finish_mapping` - Завершить картографирование
 
 ### Animation (Анимация)
-- `play_animation` - Запустить LED анимацию
-- `set_emotion` - Установить эмоцию через LED
+- `play_animation` - Запустить LED анимацию с указанной длительностью (2-30 сек)
 
 ### Sound (Звуковые эффекты)
 - `play_sound` - Воспроизвести звуковой эффект

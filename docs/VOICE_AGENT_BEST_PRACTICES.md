@@ -259,7 +259,7 @@ class ToolRegistry:
     def __init__(self):
         self.tool_categories = {
             "navigation": ["navigate_to_waypoint", "move_direction", "stop_navigation"],
-            "animation": ["play_animation", "set_emotion"],
+            "animation": ["play_animation"],
             "sound": ["play_sound"],
             "system": ["set_volume", "set_pitch", "set_speed"],
             "perception": ["get_perception_context", "get_battery_level"],

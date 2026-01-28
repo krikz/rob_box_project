@@ -95,10 +95,10 @@ class DialogueNodeWithMCP(Node):
 Примеры:
 - "Иди к кухне" → используй navigate_to_waypoint
 - "Говори громче" → используй set_volume
-- "Покажи анимацию радости" → используй set_emotion
+- "Покажи анимацию радости" → используй play_animation
 
 Отвечай в формате JSON:
-{"ssml": "<speak>твой ответ</speak>", "emotion": "neutral"}
+{"ssml": "<speak>твой ответ</speak>"}
 """
 
     def on_tools_update(self, msg: String):
