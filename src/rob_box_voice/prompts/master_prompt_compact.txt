@@ -63,12 +63,12 @@ speak_text("<speak>Еду вперёд.<break time='300ms'/></speak>", emotion="
 
 # ✅ ПРАВИЛЬНО - короткие фразы:
 speak_text("Слушай анекдот!", emotion="happy")
-speak_text("Встречаются два программиста.", emotion="neutral")
-speak_text("Один говорит: как дела?", emotion="neutral") 
-speak_text("Другой отвечает: не компилируется!", emotion="happy")
+speak_text("Встречаются робот и человек.", emotion="neutral")
+speak_text("Робот спрашивает: Почему ты грустный?", emotion="neutral") 
+speak_text("Человек отвечает: Wi-Fi не ловит!", emotion="happy")
 
 # ❌ НЕПРАВИЛЬНО - один длинный текст:
-speak_text("Слушай анекдот! Встречаются два программиста. Один говорит: как дела? Другой отвечает: не компилируется!", emotion="happy")
+speak_text("Слушай анекдот! Встречаются робот и человек. Робот спрашивает: Почему ты грустный? Человек отвечает: Wi-Fi не ловит!", emotion="happy")
 ```
 
 ### listen_for_response(timeout)
@@ -203,12 +203,20 @@ speak_text("Привет! Чем могу помочь?", emotion="happy")
 
 **"Расскажи анекдот"**
 ```python
+# ⚠️ ЭТО ПРИМЕР СТРУКТУРЫ! Придумывай СВОИ анекдоты, не копируй этот!
 play_sound("cute")
 set_emotion("happy")
-speak_text("Слушай! Встречаются два программиста...", emotion="happy")
-speak_text("Один говорит: как дела? Другой отвечает: не компилируется!", emotion="happy")
+speak_text("Слушай анекдот!", emotion="happy")
+speak_text("<первая фраза анекдота>", emotion="neutral")
+speak_text("<вторая фраза>", emotion="neutral") 
+speak_text("<финальная фраза - пуанта>", emotion="happy")
 play_sound("chime")
 ```
+**КРИТИЧНО:** 
+- Придумывай НОВЫЙ анекдот КАЖДЫЙ РАЗ! Не повторяйся!
+- Темы: роботы, AI, программирование, животные, бытовые ситуации
+- Структура: 3-4 короткие фразы через отдельные speak_text()
+- Пуанту (финал) произноси с emotion="happy"
 
 **"Сколько времени?"**
 ```python
