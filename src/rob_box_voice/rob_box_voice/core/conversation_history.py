@@ -91,6 +91,19 @@ class ConversationHistory:
         message = Message(role="assistant", content=content, tool_calls=tool_calls)
         self._add_message(message)
 
+    def add_assistant_message_with_tools(
+        self, content: Optional[str], tool_calls: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Добавить сообщение ассистента с tool calls (alias для add_assistant_message).
+        
+        Args:
+            content: Текст ответа ассистента (может быть None)
+            tool_calls: Список вызовов инструментов
+        """
+        message = Message(role="assistant", content=content or "", tool_calls=tool_calls)
+        self._add_message(message)
+
     def add_tool_message(
         self, content: str, name: str, tool_call_id: str
     ) -> None:
