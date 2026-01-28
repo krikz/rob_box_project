@@ -156,12 +156,12 @@ class TestRealLLMIntegration:
         # Создаём несколько инструментов
         registry = MCPToolRegistry()
         registry.register(PlayAnimationTool(mock_node))
-        registry.register(SetEmotionTool(mock_node))
+        registry.register(MoveDirectionTool(mock_node))
         
         tools = registry.get_openai_tools()
         
         # Запрос требующий несколько действий
-        print("📤 Запрос: 'Покажи анимацию радости и установи эмоцию счастья'")
+        print("📤 Запрос: 'Покажи анимацию радости и поверни направо'")
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -171,7 +171,7 @@ class TestRealLLMIntegration:
                 },
                 {
                     "role": "user",
-                    "content": "Покажи анимацию радости и установи эмоцию счастья"
+                    "content": "Покажи анимацию радости и поверни направо"
                 }
             ],
             tools=tools,
