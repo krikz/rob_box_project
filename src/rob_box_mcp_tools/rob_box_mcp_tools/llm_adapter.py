@@ -196,9 +196,23 @@ class LLMToolCallAdapter:
         result_event = threading.Event()
         self.result_events[request_id] = result_event
 
-        # Ожидаем результат с таймаутом используя Event.wait()
-        # Это не блокирует ROS executor, т.к. wait() использует condition variable
-        if not result_event.wait(timeout=timeout):
+        # Ожидаем результат с таймаутом, но НЕ блокируем ROS executor
+        # Вместо блокирующего wait(), делаем polling с короткими интервалами
+        # чтобы ROS callbacks могли выполняться
+        elapsed = 0.0
+        poll_interval = 0.01  # 10ms между проверками
+        
+        while elapsed < timeout:
+            # Проверяем результат без блокировки
+            if result_event.is_set():
+                break
+            
+            # Спим короткий интервал, давая ROS executor время на callbacks
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+        
+        # Проверяем финальный статус
+        if not result_event.is_set():
             # Timeout - очищаем Event
             self.result_events.pop(request_id, None)
             self.node.get_logger().error(f"⏱️ Timeout ожидания результата для {tool_name} (request_id: {request_id[:8]})")
