@@ -59,6 +59,7 @@ class SpeakTextTool(MCPTool):
         return (
             "Произнести текст голосом через TTS. "
             "ИСПОЛЬЗУЙ ЭТО вместо возврата JSON с SSML. "
+            "ОБЯЗАТЕЛЬНО указывай emotion для каждого speak_text - это автоматически покажет соответствующую анимацию на лице робота. "
             "Можешь вызвать несколько раз для разных фраз, делать паузы между ними через play_sound или play_animation."
         )
 
@@ -74,7 +75,7 @@ class SpeakTextTool(MCPTool):
             MCPToolParameter(
                 name="emotion",
                 type="string",
-                description="Эмоция для выражения (happy, sad, angry, neutral, excited, confused). Опционально.",
+                description="Эмоция для выражения (happy, sad, angry, neutral, excited, confused). ОБЯЗАТЕЛЬНО указывай для выразительности - это покажет анимацию на лице робота.",
                 required=False,
                 enum=["happy", "sad", "angry", "neutral", "excited", "confused"],
             ),
