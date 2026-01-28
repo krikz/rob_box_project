@@ -1311,7 +1311,7 @@ class DialogueNode(Node):
                             }
                         else:
                             # Используем синхронное выполнение через MCP adapter
-                            result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=10.0)
+                            result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=2.0)
 
                         # Добавляем результат в историю
                         self.conversation_history.add_tool_message(
@@ -2009,7 +2009,7 @@ class DialogueNode(Node):
                     continue
                 
                 # Выполняем через MCP adapter
-                result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=10.0)
+                result = self.mcp_adapter.execute_tool_call_sync(tool_name, tool_args, timeout=2.0)
                 
                 # Добавляем метаданные
                 result['tool_call_id'] = tool_id
