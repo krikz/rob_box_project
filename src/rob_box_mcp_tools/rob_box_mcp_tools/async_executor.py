@@ -54,10 +54,10 @@ class ToolCallAccumulator:
     Накопитель tool_calls из streaming chunks
     
     LLM API возвращает tool_calls по частям в streaming режиме:
-    - chunk 1: {tool_calls: [{index: 0, id: "call_123", type: "function", function: {name: "set_emotion"}}]}
-    - chunk 2: {tool_calls: [{index: 0, function: {arguments: '{"emo'}}]}
-    - chunk 3: {tool_calls: [{index: 0, function: {arguments: 'tion": '}}]}
-    - chunk 4: {tool_calls: [{index: 0, function: {arguments: '"радость"}'}}]}
+    - chunk 1: {tool_calls: [{index: 0, id: "call_123", type: "function", function: {name: "play_animation"}}]}
+    - chunk 2: {tool_calls: [{index: 0, function: {arguments: '{"ani'}}]}
+    - chunk 3: {tool_calls: [{index: 0, function: {arguments: 'mation": '}}]}
+    - chunk 4: {tool_calls: [{index: 0, function: {arguments: '"happy"}'}}]}
     
     Accumulator собирает всё в единую структуру
     """
@@ -466,7 +466,7 @@ class AsyncToolExecutor:
             # Определяем execution_type
             # TODO: Получать из tool_registry когда будет доступен
             # Пока используем эвристику по имени
-            if tool_name in ["set_emotion", "play_animation"]:
+            if tool_name in ["play_animation"]:
                 execution_type = ToolExecutionType.INSTANT
             elif tool_name in ["play_sound"]:
                 execution_type = ToolExecutionType.FAST

@@ -47,8 +47,8 @@ class TestToolCallAccumulatorBasics:
             index=0,
             id="call_123",
             type="function",
-            function_name="set_emotion",
-            function_arguments='{"emotion": "happy"}'
+            function_name="play_animation",
+            function_arguments='{"animation": "happy"}'
         )
         accumulator.add_chunk([delta])
         
@@ -59,8 +59,8 @@ class TestToolCallAccumulatorBasics:
         assert len(calls) == 1
         assert calls[0]["id"] == "call_123"
         assert calls[0]["type"] == "function"
-        assert calls[0]["function"]["name"] == "set_emotion"
-        assert calls[0]["function"]["arguments"] == {"emotion": "happy"}
+        assert calls[0]["function"]["name"] == "play_animation"
+        assert calls[0]["function"]["arguments"] == {"animation": "happy"}
     
     def test_incremental_arguments(self):
         """Test accumulating arguments across multiple chunks."""
@@ -101,8 +101,8 @@ class TestToolCallAccumulatorBasics:
         delta1 = MockToolCallDelta(
             index=0,
             id="call_1",
-            function_name="set_emotion",
-            function_arguments='{"emotion": "happy"}'
+            function_name="play_animation",
+            function_arguments='{"animation": "happy"}'
         )
         accumulator.add_chunk([delta1])
         
@@ -118,7 +118,7 @@ class TestToolCallAccumulatorBasics:
         assert accumulator.get_count() == 2
         calls = accumulator.get_complete_tool_calls()
         assert len(calls) == 2
-        assert calls[0]["function"]["name"] == "set_emotion"
+        assert calls[0]["function"]["name"] == "play_animation"
         assert calls[1]["function"]["name"] == "navigate_to"
 
 
@@ -239,15 +239,15 @@ class TestToolCallAccumulatorRealWorld:
         accumulator.add_chunk(chunk1)
         
         # Chunk 2: Function name
-        chunk2 = [MockToolCallDelta(index=0, function_name="set_emotion")]
+        chunk2 = [MockToolCallDelta(index=0, function_name="play_animation")]
         accumulator.add_chunk(chunk2)
         
         # Chunk 3-7: Arguments streamed character by character (realistic)
         chunks = [
             [MockToolCallDelta(index=0, function_arguments='{"')],
-            [MockToolCallDelta(index=0, function_arguments='emotion')],
+            [MockToolCallDelta(index=0, function_arguments='animation')],
             [MockToolCallDelta(index=0, function_arguments='": "')],
-            [MockToolCallDelta(index=0, function_arguments='радость')],
+            [MockToolCallDelta(index=0, function_arguments='happy')],
             [MockToolCallDelta(index=0, function_arguments='"}')],
         ]
         for chunk in chunks:
@@ -257,8 +257,8 @@ class TestToolCallAccumulatorRealWorld:
         assert len(calls) == 1
         assert calls[0]["id"] == "call_abc123"
         assert calls[0]["type"] == "function"
-        assert calls[0]["function"]["name"] == "set_emotion"
-        assert calls[0]["function"]["arguments"] == {"emotion": "радость"}
+        assert calls[0]["function"]["name"] == "play_animation"
+        assert calls[0]["function"]["arguments"] == {"animation": "happy"}
     
     def test_parallel_tool_calls_streaming(self):
         """Test multiple tool_calls streaming in parallel."""
@@ -274,20 +274,20 @@ class TestToolCallAccumulatorRealWorld:
         # Names arrive
         chunk2 = [
             MockToolCallDelta(index=0, function_name="navigate_to"),
-            MockToolCallDelta(index=1, function_name="set_emotion"),
+            MockToolCallDelta(index=1, function_name="play_animation"),
         ]
         accumulator.add_chunk(chunk2)
         
         # Arguments stream in
         chunk3 = [
             MockToolCallDelta(index=0, function_arguments='{"waypoint"'),
-            MockToolCallDelta(index=1, function_arguments='{"emotion"'),
+            MockToolCallDelta(index=1, function_arguments='{"animation"'),
         ]
         accumulator.add_chunk(chunk3)
         
         chunk4 = [
             MockToolCallDelta(index=0, function_arguments=': "kitchen"}'),
-            MockToolCallDelta(index=1, function_arguments=': "happy"}'),
+            MockToolCallDelta(index=1, function_arguments=': "thinking"}'),
         ]
         accumulator.add_chunk(chunk4)
         
@@ -295,5 +295,5 @@ class TestToolCallAccumulatorRealWorld:
         assert len(calls) == 2
         assert calls[0]["function"]["name"] == "navigate_to"
         assert calls[0]["function"]["arguments"] == {"waypoint": "kitchen"}
-        assert calls[1]["function"]["name"] == "set_emotion"
-        assert calls[1]["function"]["arguments"] == {"emotion": "happy"}
+        assert calls[1]["function"]["name"] == "play_animation"
+        assert calls[1]["function"]["arguments"] == {"animation": "thinking"}

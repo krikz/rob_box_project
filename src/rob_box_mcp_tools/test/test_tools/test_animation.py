@@ -3,7 +3,6 @@ test_animation.py - Unit тесты для инструментов анимац
 
 Тестирует:
 - PlayAnimationTool
-- SetEmotionTool
 """
 
 import pytest
@@ -14,7 +13,7 @@ import sys
 sys.modules['std_msgs'] = Mock()
 sys.modules['std_msgs.msg'] = Mock()
 
-from rob_box_mcp_tools.tools.animation import PlayAnimationTool, SetEmotionTool
+from rob_box_mcp_tools.tools.animation import PlayAnimationTool
 
 
 @pytest.mark.unit
@@ -74,68 +73,45 @@ class TestPlayAnimationTool:
         assert result.success is True
         assert result.data["animation"] == animation
 
+    def test_execute_with_valid_duration(self, mock_node):
+        """Тест выполнения с валидной длительностью"""
+        tool = PlayAnimationTool(mock_node)
 
-@pytest.mark.unit
-class TestSetEmotionTool:
-    """Тесты для SetEmotionTool"""
-
-    def test_tool_creation(self, mock_node):
-        """Тест создания инструмента"""
-        tool = SetEmotionTool(mock_node)
-
-        assert tool.name == "set_emotion"
-        assert "эмоцию" in tool.description.lower()
-        assert len(tool.parameters) == 1
-
-    def test_emotion_mapping(self, mock_node):
-        """Тест маппинга эмоций на анимации"""
-        tool = SetEmotionTool(mock_node)
-
-        mapping = tool.EMOTION_TO_ANIMATION
-        assert mapping["радость"] == "happy"
-        assert mapping["грусть"] == "sad"
-        assert mapping["думаю"] == "thinking"
-
-    def test_execute_valid_emotion(self, mock_node):
-        """Тест выполнения с валидной эмоцией"""
-        tool = SetEmotionTool(mock_node)
-
-        result = tool.execute(emotion="радость")
+        result = tool.execute(animation="happy", duration=5.0)
 
         assert result.success is True
-        assert result.data["emotion"] == "радость"
         assert result.data["animation"] == "happy"
+        assert result.data["duration"] == 5.0
 
-        # Проверяем публикацию
+        # Проверяем формат сообщения с длительностью
         pub = mock_node.get_publisher("/voice/animation/request")
         assert len(pub.published_messages) == 1
-        assert pub.published_messages[0].data == "happy"
+        assert pub.published_messages[0].data == "happy:5.0"
 
-    def test_execute_invalid_emotion(self, mock_node):
-        """Тест выполнения с невалидной эмоцией"""
-        tool = SetEmotionTool(mock_node)
+    def test_execute_with_invalid_duration_too_short(self, mock_node):
+        """Тест выполнения с слишком короткой длительностью"""
+        tool = PlayAnimationTool(mock_node)
 
-        result = tool.execute(emotion="неизвестная_эмоция")
+        result = tool.execute(animation="happy", duration=1.0)
 
         assert result.success is False
-        assert "неизвестная эмоция" in result.error.lower()
+        assert "недопустимая длительность" in result.error.lower()
 
-    @pytest.mark.parametrize(
-        "emotion,expected_animation",
-        [
-            ("радость", "happy"),
-            ("грусть", "sad"),
-            ("злость", "angry"),
-            ("удивление", "surprised"),
-            ("думаю", "thinking"),
-            ("победа", "victory"),
-        ],
-    )
-    def test_emotion_to_animation_mapping(self, mock_node, emotion, expected_animation):
-        """Параметризованный тест маппинга эмоций"""
-        tool = SetEmotionTool(mock_node)
+    def test_execute_with_invalid_duration_too_long(self, mock_node):
+        """Тест выполнения с слишком длинной длительностью"""
+        tool = PlayAnimationTool(mock_node)
 
-        result = tool.execute(emotion=emotion)
+        result = tool.execute(animation="happy", duration=35.0)
+
+        assert result.success is False
+        assert "недопустимая длительность" in result.error.lower()
+
+    @pytest.mark.parametrize("duration", [2.0, 5.0, 10.0, 20.0, 30.0])
+    def test_execute_with_edge_case_durations(self, mock_node, duration):
+        """Параметризованный тест граничных значений длительности"""
+        tool = PlayAnimationTool(mock_node)
+
+        result = tool.execute(animation="happy", duration=duration)
 
         assert result.success is True
-        assert result.data["animation"] == expected_animation
+        assert result.data["duration"] == duration

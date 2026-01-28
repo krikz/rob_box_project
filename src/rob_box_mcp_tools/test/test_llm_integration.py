@@ -26,7 +26,7 @@ except ImportError:
 
 from rob_box_mcp_tools.base import MCPToolParameter
 from rob_box_mcp_tools.registry import MCPToolRegistry
-from rob_box_mcp_tools.tools.animation import PlayAnimationTool, SetEmotionTool
+from rob_box_mcp_tools.tools.animation import PlayAnimationTool
 from rob_box_mcp_tools.tools.navigation import NavigateToWaypointTool, MoveDirectionTool, ListWaypointsTool
 from rob_box_mcp_tools.tools.system import SetVolumeTool, SetPitchTool, GetRobotStatusTool
 from rob_box_mcp_tools.tools.perception import GetPerceptionContextTool, GetBatteryLevelTool
@@ -190,7 +190,7 @@ class TestRealLLMIntegration:
         print(f"✅ Вызваны инструменты: {tool_names}")
         
         # Хотя бы один из инструментов анимации должен быть вызван
-        assert any(name in ["play_animation", "set_emotion"] for name in tool_names)
+        assert any(name in ["play_animation"] for name in tool_names)
 
     @pytest.mark.llm_api
     @pytest.mark.slow
@@ -247,18 +247,18 @@ class TestRealLLMIntegration:
         print(f"\n🤖 Тестируем русские команды с {provider}")
         
         registry = MCPToolRegistry()
-        registry.register(SetEmotionTool(mock_node))
+        registry.register(PlayAnimationTool(mock_node))
         
         tools = registry.get_openai_tools()
         
         # Тестируем разные формулировки на русском
         test_cases = [
-            ("Установи эмоцию радости", "радость"),
-            ("Покажи грустное настроение", "грусть"),
-            ("Будь злым", "злость"),
+            ("Покажи анимацию радости", "happy"),
+            ("Покажи грустное настроение", "sad"),
+            ("Будь злым", "angry"),
         ]
         
-        for user_message, expected_emotion in test_cases:
+        for user_message, expected_animation in test_cases:
             print(f"\n📤 Тест: '{user_message}'")
             
             response = client.chat.completions.create(
@@ -266,7 +266,7 @@ class TestRealLLMIntegration:
                 messages=[
                     {
                         "role": "system",
-                        "content": "Ты робот. Используй инструменты для установки эмоций."
+                        "content": "Ты робот. Используй инструменты для показа анимаций."
                     },
                     {"role": "user", "content": user_message}
                 ],
@@ -282,8 +282,8 @@ class TestRealLLMIntegration:
                 print(f"   ✅ Вызван: {tool_call.function.name}({arguments})")
                 
                 # Проверяем что вызван правильный инструмент
-                assert tool_call.function.name == "set_emotion"
-                assert "emotion" in arguments
+                assert tool_call.function.name == "play_animation"
+                assert "animation" in arguments
             else:
                 print(f"   ⚠️  LLM не вызвал инструмент, ответил текстом")
                 # Это не ошибка - некоторые LLM могут выбрать текстовый ответ
@@ -690,7 +690,6 @@ def test_llm_with_all_tools(skip_if_no_llm_api, mock_node):
     
     # Animation
     registry.register(PlayAnimationTool(mock_node))
-    registry.register(SetEmotionTool(mock_node))
     
     # Sound
     registry.register(PlaySoundTool(mock_node))
