@@ -213,7 +213,13 @@ class LLMToolCallAdapter:
             return {"success": False, "error": "Результат не найден в кэше"}
             
         result_data = self.results_cache.pop(request_id)
-        return result_data.get("result", {"success": False, "error": "Пустой результат"})
+        tool_result = result_data.get("result", {"success": False, "error": "Пустой результат"})
+        
+        # Проверка: если инструмент async (возвращает сразу), то не ждем завершения
+        if tool_result.get("data", {}).get("async"):
+            self.node.get_logger().info(f"⚡ Инструмент {tool_name} асинхронный - возвращаем результат сразу")
+        
+        return tool_result
 
     def process_tool_calls_from_message(self, message: Any) -> List[Dict[str, Any]]:
         """
