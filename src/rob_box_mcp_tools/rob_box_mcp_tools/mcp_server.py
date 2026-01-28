@@ -37,7 +37,6 @@ from .tools import (
     ContinueMappingTool,
     FinishMappingTool,
     PlayAnimationTool,
-    SetEmotionTool,
     PlaySoundTool,
     SpeakTextTool,
     ListenForResponseTool,
@@ -121,7 +120,6 @@ class MCPServer(Node):
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))
-        self.registry.register(SetEmotionTool(self))
 
         # Sound tools
         self.registry.register(PlaySoundTool(self))

@@ -449,7 +449,7 @@ def test_accumulate_streaming_chunks():
             'id': 'call_123',
             'type': 'function',
             'function': type('obj', (), {
-                'name': 'set_emotion',
+                'name': 'play_animation',
                 'arguments': ''
             })()
         })()
@@ -480,7 +480,7 @@ def test_accumulate_streaming_chunks():
     
     assert len(calls) == 1
     assert calls[0]['id'] == 'call_123'
-    assert calls[0]['function']['name'] == 'set_emotion'
+    assert calls[0]['function']['name'] == 'play_animation'
     assert calls[0]['function']['arguments'] == '{"emotion": "радость"}'
 ```
 

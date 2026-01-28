@@ -81,8 +81,8 @@ LLM → вызывает: play_animation(animation_name="happy")
 
 ### 2. Множественные tool calls
 ```python
-Пользователь: "Покажи анимацию радости и установи эмоцию счастья"
-LLM → вызывает: play_animation() и set_emotion()
+Пользователь: "Покажи анимацию радости и поверни направо"
+LLM → вызывает: play_animation() и move_direction()
 ✅ Проверка: LLM может вызвать несколько инструментов
 ```
 
@@ -97,8 +97,8 @@ LLM → вызывает: play_animation() и set_emotion()
 
 ### 4. Русские команды
 ```python
-"Установи эмоцию радости" → set_emotion(emotion="радость")
-"Будь злым" → set_emotion(emotion="злость")
+"Покажи анимацию радости" → play_animation(animation="happy")
+"Покажи грустную анимацию" → play_animation(animation="sad")
 ✅ Проверка: LLM понимает русский язык
 ```
 

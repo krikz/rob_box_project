@@ -39,7 +39,6 @@ __all__ = [
     "FinishMappingTool",
     # Animation tools
     "PlayAnimationTool",
-    "SetEmotionTool",
     # Sound tools
     "PlaySoundTool",
     # Dialogue tools

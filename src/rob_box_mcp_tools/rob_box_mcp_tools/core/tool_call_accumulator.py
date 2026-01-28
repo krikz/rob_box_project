@@ -14,10 +14,10 @@ class ToolCallAccumulator:
     Accumulates tool_calls from streaming chunks.
     
     LLM API returns tool_calls in fragments during streaming:
-    - chunk 1: {tool_calls: [{index: 0, id: "call_123", type: "function", function: {name: "set_emotion"}}]}
-    - chunk 2: {tool_calls: [{index: 0, function: {arguments: '{"emo'}}]}
-    - chunk 3: {tool_calls: [{index: 0, function: {arguments: 'tion": '}}]}
-    - chunk 4: {tool_calls: [{index: 0, function: {arguments: '"радость"}'}}]}
+    - chunk 1: {tool_calls: [{index: 0, id: "call_123", type: "function", function: {name: "play_animation"}}]}
+    - chunk 2: {tool_calls: [{index: 0, function: {arguments: '{"ani'}}]}
+    - chunk 3: {tool_calls: [{index: 0, function: {arguments: 'mation": '}}]}
+    - chunk 4: {tool_calls: [{index: 0, function: {arguments: '"happy"}'}}]}
     
     This class assembles all fragments into complete tool_call structures.
     
@@ -28,7 +28,7 @@ class ToolCallAccumulator:
         >>> accumulator.add_chunk([delta_chunk2])
         >>> # Get complete tool calls
         >>> complete_calls = accumulator.get_complete_tool_calls()
-        >>> # Returns: [{"id": "call_123", "type": "function", "function": {"name": "set_emotion", "arguments": {"emotion": "радость"}}}]
+        >>> # Returns: [{"id": "call_123", "type": "function", "function": {"name": "play_animation", "arguments": {"animation": "happy"}}}]
     """
     
     def __init__(self):
