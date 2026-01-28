@@ -171,7 +171,11 @@ class MCPServer(Node):
 
             msg_out = String()
             msg_out.data = json.dumps(response, ensure_ascii=False)
+            
+            # Логируем ПЕРЕД публикацией
+            self.get_logger().info(f"📤 Публикую результат для {tool_name} (request_id: {request_id[:8]})")
             self.result_pub.publish(msg_out)
+            self.get_logger().info(f"✅ Результат опубликован на /mcp/result")
 
             if result.success:
                 self.get_logger().info(f"✅ Инструмент {tool_name} выполнен успешно")
