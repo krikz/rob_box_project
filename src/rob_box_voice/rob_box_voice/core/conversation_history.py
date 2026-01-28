@@ -243,9 +243,13 @@ class ConversationHistory:
 
     def remove_tool_messages(self) -> None:
         """
-        Удалить все сообщения с ролью 'tool' из истории.
+        Удалить все сообщения с ролью 'tool' и assistant messages с tool_calls из истории.
         
-        API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message.
-        При новом диалоге старые tool results недействительны и должны быть удалены.
+        API требует: assistant message с tool_calls должен следовать за tool messages.
+        При новом диалоге старые tool results недействительны, поэтому удаляем и tool messages,
+        и assistant messages с tool_calls, чтобы не оставлять orphaned tool_calls.
         """
-        self._messages = [msg for msg in self._messages if msg.role != "tool"]
+        self._messages = [
+            msg for msg in self._messages 
+            if msg.role != "tool" and not (msg.role == "assistant" and msg.tool_calls)
+        ]
