@@ -227,3 +227,12 @@ class ConversationHistory:
 
         # Если не найдено, добавить в начало
         self._messages.insert(0, Message(role="system", content=content))
+
+    def remove_tool_messages(self) -> None:
+        """
+        Удалить все сообщения с ролью 'tool' из истории.
+        
+        API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message.
+        При новом диалоге старые tool results недействительны и должны быть удалены.
+        """
+        self._messages = [msg for msg in self._messages if msg.role != "tool"]
