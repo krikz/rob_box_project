@@ -135,9 +135,22 @@ class AnimationPlayerNode(Node):
 
     def voice_animation_callback(self, msg):
         """Handle voice animation requests from GUI or dialogue node"""
-        animation_name = msg.data.strip()
+        animation_request = msg.data.strip()
         
-        self.get_logger().info(f'🎨 Получен запрос на анимацию: {animation_name}')
+        self.get_logger().info(f'🎨 Получен запрос на анимацию: {animation_request}')
+        
+        # Парсим формат: "animation_name" или "animation_name:duration"
+        animation_name = animation_request
+        duration = None
+        
+        if ':' in animation_request:
+            parts = animation_request.split(':', 1)
+            animation_name = parts[0].strip()
+            try:
+                duration = float(parts[1].strip())
+                self.get_logger().info(f'📏 Указана длительность: {duration}s')
+            except ValueError:
+                self.get_logger().warn(f'⚠️  Некорректный формат длительности: {parts[1]}, игнорирую')
         
         if not animation_name.endswith('.yaml'):
             animation_name += '.yaml'
@@ -155,9 +168,14 @@ class AnimationPlayerNode(Node):
             self.player.play()
             self.get_logger().info(f'✅ Анимация {animation_name} загружена и запущена (ручной режим)')
             
-            # Запускаем таймер возврата к idle (5-10 секунд)
-            timeout = random.uniform(5.0, 10.0)
-            self.get_logger().info(f'⏱️  Таймер возврата к idle: {timeout:.1f}s')
+            # Используем указанную длительность или случайную (5-10 секунд)
+            if duration is not None and duration > 0:
+                timeout = duration
+                self.get_logger().info(f'⏱️  Таймер возврата к idle (из запроса): {timeout:.1f}s')
+            else:
+                timeout = random.uniform(5.0, 10.0)
+                self.get_logger().info(f'⏱️  Таймер возврата к idle (случайный): {timeout:.1f}s')
+            
             self.emotion_timer = self.create_timer(timeout, self._return_to_idle)
         else:
             self.get_logger().error(f'❌ Не удалось загрузить анимацию: {animation_name}')
