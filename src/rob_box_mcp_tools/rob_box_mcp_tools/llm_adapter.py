@@ -196,19 +196,23 @@ class LLMToolCallAdapter:
         result_event = threading.Event()
         self.result_events[request_id] = result_event
 
-        # Ожидаем результат с таймаутом, но НЕ блокируем ROS executor
-        # Вместо блокирующего wait(), делаем polling с короткими интервалами
-        # чтобы ROS callbacks могли выполняться
+        # Ожидаем результат с таймаутом, активно обрабатывая ROS callbacks
+        # Вместо блокирующего wait() или sleep(), используем spin_once для обработки сообщений
         elapsed = 0.0
         poll_interval = 0.01  # 10ms между проверками
         
         while elapsed < timeout:
-            # Проверяем результат без блокировки
+            # Проверяем результат
             if result_event.is_set():
                 break
             
-            # Спим короткий интервал, давая ROS executor время на callbacks
-            time.sleep(poll_interval)
+            # Обрабатываем ROS callbacks ЯВНО через spin_once с малым timeout
+            # Это позволит on_result() выполниться даже если мы в этом цикле
+            try:
+                rclpy.spin_once(self.node, timeout_sec=poll_interval)
+            except Exception as e:
+                self.node.get_logger().debug(f"spin_once exception: {e}")
+            
             elapsed += poll_interval
         
         # Проверяем финальный статус
