@@ -139,9 +139,9 @@ class SpeakTextTool(MCPTool):
             if animation_name:
                 try:
                     from std_msgs.msg import String as StringMsg
-                    animation_request = {"animation": animation_name}
                     anim_msg = StringMsg()
-                    anim_msg.data = json.dumps(animation_request)
+                    # Публикуем просто имя анимации (не JSON!), animation_player_node ожидает формат "animation_name" или "animation_name:duration"
+                    anim_msg.data = animation_name
                     # Публикуем на топик анимаций
                     if not hasattr(self, 'animation_pub'):
                         self.animation_pub = self.node.create_publisher(StringMsg, "/voice/animation/request", 10)
