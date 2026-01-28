@@ -80,7 +80,7 @@ class PlayAnimationTool(MCPTool):
             MCPToolParameter(
                 name="duration",
                 type="number",
-                description="Длительность анимации в секундах (от 2 до 30)",
+                description="Длительность анимации в секундах (рекомендуется от 2 до 30, значения вне диапазона будут установлены в 2)",
                 required=False,
             )
         ]
@@ -106,14 +106,12 @@ class PlayAnimationTool(MCPTool):
                 message=f"Доступные: {', '.join(self.AVAILABLE_ANIMATIONS)}",
             )
 
-        # Валидация длительности
+        # Валидация длительности - если вне диапазона, устанавливаем минимальную
         if duration is not None:
             if duration < 2 or duration > 30:
-                return MCPToolResult(
-                    success=False,
-                    error=f"Недопустимая длительность: {duration}s",
-                    message="Длительность должна быть от 2 до 30 секунд",
-                )
+                original_duration = duration
+                duration = 2.0
+                self.log_info(f"Длительность {original_duration}s вне диапазона, установлена минимальная: {duration}s")
 
         # Публикуем запрос анимации
         from std_msgs.msg import String

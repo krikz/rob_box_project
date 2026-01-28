@@ -89,22 +89,36 @@ class TestPlayAnimationTool:
         assert pub.published_messages[0].data == "happy:5.0"
 
     def test_execute_with_invalid_duration_too_short(self, mock_node):
-        """Тест выполнения с слишком короткой длительностью"""
+        """Тест выполнения с слишком короткой длительностью - должна быть установлена минимальная"""
         tool = PlayAnimationTool(mock_node)
 
         result = tool.execute(animation="happy", duration=1.0)
 
-        assert result.success is False
-        assert "недопустимая длительность" in result.error.lower()
+        # Теперь должно быть успешно с минимальной длительностью
+        assert result.success is True
+        assert result.data["animation"] == "happy"
+        assert result.data["duration"] == 2.0
+
+        # Проверяем что отправлено с минимальной длительностью
+        pub = mock_node.get_publisher("/voice/animation/request")
+        assert len(pub.published_messages) == 1
+        assert pub.published_messages[0].data == "happy:2.0"
 
     def test_execute_with_invalid_duration_too_long(self, mock_node):
-        """Тест выполнения с слишком длинной длительностью"""
+        """Тест выполнения с слишком длинной длительностью - должна быть установлена минимальная"""
         tool = PlayAnimationTool(mock_node)
 
         result = tool.execute(animation="happy", duration=35.0)
 
-        assert result.success is False
-        assert "недопустимая длительность" in result.error.lower()
+        # Теперь должно быть успешно с минимальной длительностью
+        assert result.success is True
+        assert result.data["animation"] == "happy"
+        assert result.data["duration"] == 2.0
+
+        # Проверяем что отправлено с минимальной длительностью
+        pub = mock_node.get_publisher("/voice/animation/request")
+        assert len(pub.published_messages) == 1
+        assert pub.published_messages[0].data == "happy:2.0"
 
     @pytest.mark.parametrize("duration", [2.0, 5.0, 10.0, 20.0, 30.0])
     def test_execute_with_edge_case_durations(self, mock_node, duration):
@@ -115,3 +129,15 @@ class TestPlayAnimationTool:
 
         assert result.success is True
         assert result.data["duration"] == duration
+
+    @pytest.mark.parametrize("invalid_duration", [0.0, -5.0, 1.5, 31.0, 100.0])
+    def test_execute_with_out_of_range_durations_clamped_to_min(self, mock_node, invalid_duration):
+        """Параметризованный тест - все значения вне диапазона устанавливаются в минимум"""
+        tool = PlayAnimationTool(mock_node)
+
+        result = tool.execute(animation="happy", duration=invalid_duration)
+
+        # Должно быть успешно с минимальной длительностью
+        assert result.success is True
+        assert result.data["animation"] == "happy"
+        assert result.data["duration"] == 2.0
