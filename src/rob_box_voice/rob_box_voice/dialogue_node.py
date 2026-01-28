@@ -435,11 +435,26 @@ class DialogueNode(Node):
         # 7. Короткое подтверждение (через TTS напрямую)
         self._speak_simple("Хорошо, молчу")
 
-    def _speak_simple(self, text: str):
-        """Простая речь без LLM"""
+    def _speak_simple(self, text: str, show_error_animation: bool = False):
+        """Простая речь без LLM
+        
+        Args:
+            text: Текст для произнесения
+            show_error_animation: Если True, показывает анимацию ошибки
+        """
         # Генерируем новый dialogue_id для каждого простого ответа
         dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
+        
+        # Показываем анимацию ошибки если нужно
+        if show_error_animation:
+            try:
+                anim_msg = String()
+                anim_msg.data = "error:5"  # Показываем ошибку на 5 секунд
+                self.animation_pub.publish(anim_msg)
+                self.get_logger().info("🎨 Показываю анимацию ошибки")
+            except Exception as e:
+                self.get_logger().warning(f"⚠️ Не удалось показать анимацию ошибки: {e}")
 
         response_json = {"dialogue_id": dialogue_id, "ssml": f"<speak>{text}</speak>"}
 
@@ -1099,7 +1114,7 @@ class DialogueNode(Node):
                 # Проверяем доступность MCP
                 if not self.enable_mcp_tools or not self.mcp_adapter:
                     self.get_logger().error("❌ Tool calls запрошены но MCP не доступен - fallback на обычный ответ")
-                    self._speak_simple("Извините, функции управления сейчас недоступны")
+                    self._speak_simple("Извините, функции управления сейчас недоступны", show_error_animation=True)
                     self.llm_processing = False
                     self.dialogue_in_progress = False
                     return
@@ -1177,8 +1192,8 @@ class DialogueNode(Node):
                         self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
                         return
             
-            # Говорим fallback ответ
-            self._speak_simple("Извините, я сейчас не в настроении думать")
+            # Говорим fallback ответ с анимацией ошибки
+            self._speak_simple("Извините, я сейчас не в настроении думать", show_error_animation=True)
             # Сбрасываем флаг обработки LLM
             self.llm_processing = False
             self.dialogue_in_progress = False
@@ -1398,7 +1413,7 @@ class DialogueNode(Node):
                     self.provider_error_count = 0  # Сбрасываем счётчик
             
             self.llm_processing = False
-            self._speak_simple("Извините, возникла проблема с ответом")
+            self._speak_simple("Извините, возникла проблема с ответом", show_error_animation=True)
             
             if self.dialogue_manager.pending_queries:
                 self.dialogue_manager.last_query_time = time.time()
@@ -2227,7 +2242,7 @@ class DialogueNode(Node):
             
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка в агентном цикле: {e}")
-            self._speak_simple("Извините, произошла ошибка")
+            self._speak_simple("Извините, произошла ошибка", show_error_animation=True)
         
         finally:
             # Завершаем обработку (только если это конечная рекурсия)

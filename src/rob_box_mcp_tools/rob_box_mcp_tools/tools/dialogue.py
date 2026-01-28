@@ -59,6 +59,7 @@ class SpeakTextTool(MCPTool):
         return (
             "Произнести текст голосом через TTS. "
             "ИСПОЛЬЗУЙ ЭТО вместо возврата JSON с SSML. "
+            "ОБЯЗАТЕЛЬНО указывай animation - это покажет соответствующую анимацию на LED матрице робота (happy, sad, police_lights, и т.д.). "
             "Можешь вызвать несколько раз для разных фраз, делать паузы между ними через play_sound или play_animation."
         )
 
@@ -72,22 +73,27 @@ class SpeakTextTool(MCPTool):
                 required=True,
             ),
             MCPToolParameter(
-                name="emotion",
+                name="animation",
                 type="string",
-                description="Эмоция для выражения (happy, sad, angry, neutral, excited, confused). Опционально.",
+                description="Анимация для отображения на LED матрице во время речи. Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; специальные: police_lights, fire_truck, thinking, и т.д.)",
                 required=False,
-                enum=["happy", "sad", "angry", "neutral", "excited", "confused"],
+                enum=[
+                    "idle", "happy", "sad", "angry", "surprised", "thinking", "victory",
+                    "wakeup", "sleep", "talking", "error", "low_battery", "charging",
+                    "police_lights", "ambulance", "fire_truck", "road_service",
+                    "turn_left", "turn_right", "accelerating", "braking", "neutral", "excited", "confused"
+                ],
             ),
         ]
 
-    def execute(self, text: str, emotion: str = "neutral") -> MCPToolResult:
+    def execute(self, text: str, animation: str = "neutral") -> MCPToolResult:
         """Произнести текст"""
         import json
         import uuid
         import time
         import rclpy
         
-        self.log_info(f"Произношение текста: {text[:50]}... (emotion: {emotion})")
+        self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation})")
 
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
@@ -96,8 +102,8 @@ class SpeakTextTool(MCPTool):
         if len(text) > 300:
             self.log_warning(f"⚠️ Текст слишком длинный ({len(text)} символов). Рекомендуется разбить на части.")
 
-        # Нормализация эмоций (LLM может передавать на русском)
-        emotion_map = {
+        # Нормализация старых эмоций в анимации (для обратной совместимости)
+        animation_map = {
             "нейтрально": "neutral",
             "нейтральная": "neutral",
             "нейтральный": "neutral",
@@ -115,45 +121,38 @@ class SpeakTextTool(MCPTool):
             "смущение": "confused",
             "растерянный": "confused",
         }
-        emotion = emotion_map.get(emotion.lower(), emotion) if emotion else "neutral"
+        animation = animation_map.get(animation.lower() if animation else "neutral", animation) if animation else "neutral"
         
-        # Проверка валидности
-        valid_emotions = ["happy", "sad", "angry", "neutral", "excited", "confused"]
-        if emotion not in valid_emotions:
-            self.log_warning(f"⚠️ Неизвестная эмоция '{emotion}', использую 'neutral'")
-            emotion = "neutral"
-
         # Генерируем speech_id
         speech_id = str(uuid.uuid4())
 
-        # Устанавливаем анимацию согласно эмоции (ДО начала речи!)
-        if emotion and emotion != "neutral":
-            emotion_to_animation = {
-                "happy": "happy",
-                "sad": "sad", 
-                "angry": "angry",
-                "excited": "happy",  # используем happy для excited
-                "confused": "confused"
-            }
-            animation_name = emotion_to_animation.get(emotion)
-            if animation_name:
-                try:
-                    from std_msgs.msg import String as StringMsg
-                    animation_request = {"animation": animation_name}
-                    anim_msg = StringMsg()
-                    anim_msg.data = json.dumps(animation_request)
-                    # Публикуем на топик анимаций
-                    if not hasattr(self, 'animation_pub'):
-                        self.animation_pub = self.node.create_publisher(StringMsg, "/voice/animation/request", 10)
-                    self.animation_pub.publish(anim_msg)
-                    self.log_info(f"🎨 Установлена анимация '{animation_name}' для эмоции '{emotion}'")
-                except Exception as e:
-                    self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
+        # Устанавливаем анимацию (если не neutral и не idle)
+        if animation and animation not in ["neutral", "idle"]:
+            try:
+                from std_msgs.msg import String as StringMsg
+                anim_msg = StringMsg()
+                # Публикуем просто имя анимации (не JSON!), animation_player_node ожидает формат "animation_name" или "animation_name:duration"
+                anim_msg.data = animation
+                # Публикуем на топик анимаций
+                if not hasattr(self, 'animation_pub'):
+                    self.animation_pub = self.node.create_publisher(StringMsg, "/voice/animation/request", 10)
+                self.animation_pub.publish(anim_msg)
+                self.log_info(f"🎨 Установлена анимация '{animation}'")
+            except Exception as e:
+                self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
 
-        # Формируем SSML с эмоцией
-        if emotion and emotion != "neutral":
-            pitch_map = {"happy": "high", "sad": "low", "angry": "high", "excited": "x-high"}
-            pitch = pitch_map.get(emotion, "medium")
+        # Определяем pitch для голоса на основе анимации (только для эмоциональных)
+        pitch_map = {
+            "happy": "high", 
+            "sad": "low", 
+            "angry": "high", 
+            "excited": "x-high",
+            "surprised": "high"
+        }
+        
+        # Формируем SSML с pitch если есть соответствие
+        if animation in pitch_map:
+            pitch = pitch_map[animation]
             ssml_text = f"<speak><prosody pitch='{pitch}'>{text}</prosody></speak>"
         else:
             ssml_text = f"<speak>{text}</speak>"
@@ -176,7 +175,7 @@ class SpeakTextTool(MCPTool):
         # TTS будет выполняться в фоне, это позволяет LLM быстро вызывать другие tool calls
         self.log_info(f"✅ TTS запрос принят (асинхронный режим)")
         return MCPToolResult(
-            success=True, data={"text": text, "emotion": emotion, "speech_id": speech_id, "async": True},
+            success=True, data={"text": text, "animation": animation, "speech_id": speech_id, "async": True},
             message=f"TTS запрос отправлен: {text[:50]}..."
         )
 

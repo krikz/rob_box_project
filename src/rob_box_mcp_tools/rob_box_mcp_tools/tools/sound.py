@@ -64,8 +64,8 @@ class PlaySoundTool(MCPTool):
 
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Звуки - быстрые операции (< 2s)"""
-        return ToolExecutionType.FAST
+        """Звуки - мгновенные операции (fire-and-forget), sound_node не возвращает результат"""
+        return ToolExecutionType.INSTANT
 
     def execute(self, sound: str) -> MCPToolResult:
         """Воспроизвести звук"""
