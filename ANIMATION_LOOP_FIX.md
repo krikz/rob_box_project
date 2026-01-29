@@ -73,16 +73,19 @@ def _continue_after_tool_calls(self, messages, tool_calls, tool_results):
 
 **The Fix:**
 ```python
-# ✅ WITH LIMIT
-def _continue_after_tool_calls(self, messages, tool_calls, tool_results, iteration=1):
+# ✅ WITH LIMIT - MAX_ITERATIONS as class constant
+class DialogueNode(Node):
+    # Лимит итераций агентного цикла (защита от бесконечной рекурсии)
     MAX_ITERATIONS = 10
-    if iteration > MAX_ITERATIONS:
-        self.get_logger().error(f"❌ Достигнут лимит итераций ({MAX_ITERATIONS})")
-        self._speak_simple("Извините, я столкнулся с проблемой", show_error_animation=True)
-        return
     
-    # ... execute tools ...
-    self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results, iteration + 1)
+    def _continue_after_tool_calls(self, messages, tool_calls, tool_results, iteration=1):
+        if iteration > self.MAX_ITERATIONS:
+            self.get_logger().error(f"❌ Достигнут лимит итераций ({self.MAX_ITERATIONS})")
+            self._speak_simple("Извините, я столкнулся с проблемой", show_error_animation=True)
+            return
+        
+        # ... execute tools ...
+        self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results, iteration + 1)
 ```
 
 ## Changes Made
@@ -122,6 +125,23 @@ def _continue_after_tool_calls(self, messages, tool_calls, tool_results, iterati
 
 ### File: `src/rob_box_voice/rob_box_voice/dialogue_node.py`
 
+First, add MAX_ITERATIONS as a class constant:
+
+```diff
+  class DialogueNode(Node):
+      """ROS2 нода для LLM диалога с поддержкой Qwen и DeepSeek"""
+  
+      # Конфигурации провайдеров
+      PROVIDERS = {
+          ...
+      }
++
++     # Лимит итераций агентного цикла (защита от бесконечной рекурсии)
++     MAX_ITERATIONS = 10
+```
+
+Then, update the method to use the class constant:
+
 ```diff
 - def _continue_after_tool_calls(self, messages, tool_calls, tool_results):
 + def _continue_after_tool_calls(self, messages, tool_calls, tool_results, iteration=1):
@@ -135,9 +155,8 @@ def _continue_after_tool_calls(self, messages, tool_calls, tool_results, iterati
 +         iteration: Текущая итерация агентного цикла (для защиты от зацикливания)
       """
 +     # Защита от бесконечного цикла
-+     MAX_ITERATIONS = 10
-+     if iteration > MAX_ITERATIONS:
-+         self.get_logger().error(f"❌ Достигнут лимит итераций ({MAX_ITERATIONS}). Прерываю.")
++     if iteration > self.MAX_ITERATIONS:
++         self.get_logger().error(f"❌ Достигнут лимит итераций ({self.MAX_ITERATIONS}). Прерываю.")
 +         error_msg = "Извините, я столкнулся с проблемой и не могу продолжить."
 +         self._speak_simple(error_msg, show_error_animation=True)
 +         self.llm_processing = False
@@ -145,7 +164,7 @@ def _continue_after_tool_calls(self, messages, tool_calls, tool_results, iterati
 +         return
 +     
 -     self.get_logger().info("🔄 Продолжаю агентный диалог с результатами инструментов")
-+     self.get_logger().info(f"🔄 Продолжаю агентный диалог (итерация {iteration}/{MAX_ITERATIONS})")
++     self.get_logger().info(f"🔄 Продолжаю агентный диалог (итерация {iteration}/{self.MAX_ITERATIONS})")
 ```
 
 And in the recursive call:
