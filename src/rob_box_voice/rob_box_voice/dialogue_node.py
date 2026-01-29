@@ -1282,6 +1282,7 @@ class DialogueNode(Node):
             # Цикл обработки tool calls (агентный workflow)
             max_iterations = 10  # Защита от бесконечного цикла
             iteration = 0
+            failed_tools_count = 0  # Счетчик failed tools подряд
 
             while iteration < max_iterations:
                 iteration += 1
@@ -1358,9 +1359,21 @@ class DialogueNode(Node):
 
                         if result.get('success'):
                             self.get_logger().info(f"✅ {tool_name} выполнен: {result.get('message', 'OK')[:50]}")
+                            failed_tools_count = 0  # Сброс счетчика при успехе
                         else:
                             self.get_logger().warning(f"⚠️  {tool_name} вернул ошибку: {result.get('error', 'Unknown')}")
+                            failed_tools_count += 1
+                            
+                        # Выход при множественных ошибках
+                        if failed_tools_count >= 3:
+                            self.get_logger().error(f"❌ Слишком много ошибок tool calls ({failed_tools_count}), прерываю агентный цикл")
+                            break
 
+                    # Если достигли лимита ошибок - выходим из агентного цикла
+                    if failed_tools_count >= 3:
+                        error_msg = "Извините, у меня технические проблемы с выполнением команд. Попробуйте позже."
+                        self._speak_simple(error_msg, show_error_animation=True)
+                        break
 
                     # Обновляем request_params для следующей итерации
                     request_params["messages"] = messages
