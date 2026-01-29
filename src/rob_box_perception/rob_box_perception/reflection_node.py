@@ -677,8 +677,20 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150 if urgent else 200,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                stream_options={"include_usage": True}
             )
+            
+            # Логируем токены
+            if hasattr(response, 'usage') and response.usage:
+                input_tokens = getattr(response.usage, 'prompt_tokens', 0)
+                output_tokens = getattr(response.usage, 'completion_tokens', 0)
+                reasoning_tokens = getattr(response.usage, 'reasoning_content_tokens', 0)
+                total_tokens = getattr(response.usage, 'total_tokens', 0)
+                self.get_logger().info(
+                    f'📊 Token usage (reflection): input={input_tokens}, '
+                    f'output={output_tokens}, reasoning={reasoning_tokens}, total={total_tokens}'
+                )
             
             result = json.loads(response.choices[0].message.content)
             
@@ -707,8 +719,20 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                stream_options={"include_usage": True}
             )
+            
+            # Логируем токены
+            if hasattr(response, 'usage') and response.usage:
+                input_tokens = getattr(response.usage, 'prompt_tokens', 0)
+                output_tokens = getattr(response.usage, 'completion_tokens', 0)
+                reasoning_tokens = getattr(response.usage, 'reasoning_content_tokens', 0)
+                total_tokens = getattr(response.usage, 'total_tokens', 0)
+                self.get_logger().info(
+                    f'📊 Token usage (user_response): input={input_tokens}, '
+                    f'output={output_tokens}, reasoning={reasoning_tokens}, total={total_tokens}'
+                )
             
             result = json.loads(response.choices[0].message.content)
             

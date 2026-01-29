@@ -639,8 +639,22 @@ class ContextAggregatorNode(Node):
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=300
+                max_tokens=300,
+                stream_options={"include_usage": True}  # Включаем информацию о токенах
             )
+            
+            # Логируем токены
+            if hasattr(response, 'usage') and response.usage:
+                input_tokens = getattr(response.usage, 'prompt_tokens', 0)
+                output_tokens = getattr(response.usage, 'completion_tokens', 0)
+                reasoning_tokens = getattr(response.usage, 'reasoning_content_tokens', 0)
+                total_tokens = getattr(response.usage, 'total_tokens', 0)
+                self.get_logger().info(
+                    f'📊 Token usage ({event_category}): input={input_tokens}, '
+                    f'output={output_tokens}, reasoning={reasoning_tokens}, total={total_tokens}'
+                )
+            else:
+                self.get_logger().warn(f'⚠️ Usage info отсутствует в ответе DeepSeek')
             
             summary = response.choices[0].message.content.strip()
             

@@ -144,6 +144,7 @@
     # ===== Dialogue Node (LLM) =====
     dialogue_node:
       provider: "deepseek"  # qwen | deepseek | openai | ollama
+      enable_mcp_tools: true  # ВНИМАНИЕ! Может включать reasoning mode в DeepSeek
 
       # Qwen API
       qwen:
