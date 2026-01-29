@@ -116,7 +116,7 @@ class PlaySoundTool(MCPTool):
 Примеры использования:
 - Подтверждение команды: robot_confirm, ui_roger, robot_affirm
 - Ошибка: robot_error, robot_glitch, robot_alert
-- Обработка: robot_thinking, robot_loop, robot_work_1
+- Обработка/размышление: robot_thinking, robot_loop, robot_work_1
 - Успех: robot_happy, ui_confirm, ui_chime
 - Удивление: robot_surprise, robot_concerned"""
 
