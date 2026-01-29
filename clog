@@ -22,7 +22,7 @@ card 1: ArrayUAC10 [ReSpeaker 4 Mic Array (UAC1.0)], device 0: USB Audio [USB Au
 ==========================================
 Используется конфигурация: /config/voice/voice_assistant.yaml
 Используется headless launch (без animation_player_node)
-[INFO] [launch]: All log files can be found below /root/.ros/log/2026-01-29-13-16-03-640378-VisionPi-1
+[INFO] [launch]: All log files can be found below /root/.ros/log/2026-01-29-14-50-21-899023-VisionPi-1
 [INFO] [launch]: Default logging verbosity is set to INFO
 [INFO] [audio_node-1]: process started with pid [45]
 [INFO] [led_node-2]: process started with pid [47]
@@ -33,866 +33,682 @@ card 1: ArrayUAC10 [ReSpeaker 4 Mic Array (UAC1.0)], device 0: USB Audio [USB Au
 [INFO] [sound_node-7]: process started with pid [57]
 [INFO] [command_node-8]: process started with pid [59]
 [INFO] [mcp_server-9]: process started with pid [61]
-[led_node-2] [2m2026-01-29T13:16:05.180109Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 9b72a1c4624c3cd2335a2b262d6ce455
-[led_node-2] [2m2026-01-29T13:16:05.208637Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:36961
-[led_node-2] [INFO] [1769692565.880372306] [led_node]: LEDNode инициализирован
-[audio_node-1] [2m2026-01-29T13:16:05.992784Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: f90c6d068e9b6ebc55bdbc0f0e498422
-[audio_node-1] [2m2026-01-29T13:16:06.000603Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:33551
-[sound_node-7] [2m2026-01-29T13:16:06.017334Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: ad2c32c70e189289ce43ccb87933a2e5
-[sound_node-7] [2m2026-01-29T13:16:06.033411Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:39339
-[led_node-2] [INFO] [1769692566.126641968] [led_node]: ✓ ReSpeaker LED подключен
-[led_node-2] [INFO] [1769692566.139301406] [led_node]:   Яркость: 16/31
-[animation_player_node.py-3] [2m2026-01-29T13:16:06.312131Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: e05bef49cf851381695792afbfafbf43
-[animation_player_node.py-3] [2m2026-01-29T13:16:06.314876Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:33507
-[command_node-8] [2m2026-01-29T13:16:06.427707Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: d1e8ff1401cfe11ba7c2939c2cfef903
-[command_node-8] [2m2026-01-29T13:16:06.439173Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:40537
-[mcp_server-9] [2m2026-01-29T13:16:06.445254Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: ea0b6453e4ecc292c759d55f834813aa
-[mcp_server-9] [2m2026-01-29T13:16:06.453602Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:45585
-[stt_node-6] [2m2026-01-29T13:16:06.486640Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: b849293772d061efb3593f00d488b933
-[stt_node-6] [2m2026-01-29T13:16:06.499707Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:42675
-[audio_node-1] [INFO] [1769692566.650535789] [audio_node]: AudioNode инициализирован
+[led_node-2] [2m2026-01-29T14:50:23.206441Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 2f34f8eff6004284daf526554c33b2e7
+[led_node-2] [2m2026-01-29T14:50:23.211945Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:35845
+[audio_node-1] [2m2026-01-29T14:50:23.555565Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 3ecbb46528fd509587605c04380ece8d
+[audio_node-1] [2m2026-01-29T14:50:23.573646Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:42585
+[sound_node-7] [2m2026-01-29T14:50:23.858008Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: d02c3e0328a9d1852256be61663d6e0c
+[sound_node-7] [2m2026-01-29T14:50:23.871466Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:33235
+[led_node-2] [INFO] [1769698223.989755119] [led_node]: LEDNode инициализирован
+[audio_node-1] [INFO] [1769698224.195512255] [audio_node]: AudioNode инициализирован
+[led_node-2] [INFO] [1769698224.218368086] [led_node]: ✓ ReSpeaker LED подключен
+[led_node-2] [INFO] [1769698224.222592718] [led_node]:   Яркость: 16/31
+[sound_node-7] [INFO] [1769698224.223211964] [sound_node]: ✅ ReSpeaker найден для playback: device 1 (ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0))
+[sound_node-7] [INFO] [1769698224.226097162] [sound_node]: SoundNode инициализирован
+[sound_node-7] [INFO] [1769698224.226904553] [sound_node]: 📂 Загрузка звуков из /ws/sound_pack...
 [audio_node-1] ✓ Pixel ring инициализирован
 [audio_node-1] Ожидание стабилизации USB (5 сек)...
-[sound_node-7] [INFO] [1769692566.744701852] [sound_node]: ✅ ReSpeaker найден для playback: device 1 (ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0))
-[sound_node-7] [INFO] [1769692566.759105383] [sound_node]: SoundNode инициализирован
-[sound_node-7] [INFO] [1769692566.779583122] [sound_node]: 📂 Загрузка звуков из /ws/sound_pack...
-[animation_player_node.py-3] [INFO] [1769692567.034592080] [voice_animation_player]: AnimationPlayer initialized
-[animation_player_node.py-3] [INFO] [1769692567.074222101] [voice_animation_player]: ✅ Subscribed to /voice/tts/state for automatic animation switching
-[animation_player_node.py-3] [INFO] [1769692567.074908630] [voice_animation_player]:    Idle animation: idle
-[animation_player_node.py-3] [INFO] [1769692567.075461143] [voice_animation_player]:    Talking animation: talking
-[animation_player_node.py-3] [INFO] [1769692567.110434554] [voice_animation_player]: Animation Player Node started
-[command_node-8] [INFO] [1769692567.125489186] [command_node]: ✅ CommandNode инициализирован (using CommandParser from core)
-[command_node-8] [INFO] [1769692567.126425631] [command_node]:   Navigation: ✓
-[command_node-8] [INFO] [1769692567.127253716] [command_node]:   Waypoints: 6
-[animation_player_node.py-3] [INFO] [1769692567.127420852] [voice_animation_player]: Autostarting animation: idle
-[stt_node-6] [INFO] [1769692567.167231660] [stt_node]: 📊 EOU Profile: balanced - Сбалансированное определение (по умолчанию) (pause: 1200ms)
-[sound_node-7] [INFO] [1769692567.185932142] [sound_node]:   ✓ angry_1: 1070ms, 48000Hz
-[stt_node-6] [INFO] [1769692567.200055385] [stt_node]: STTNode инициализирован
-[stt_node-6] [INFO] [1769692567.200764920] [stt_node]: 🔌 Подключение к Yandex STT gRPC v3...
-[animation_player_node.py-3] [INFO] [1769692567.235452442] [voice_animation_player]: Loaded animation: idle (5 panels)
-[stt_node-6] [INFO] [1769692567.242649450] [stt_node]: ✅ Yandex STT gRPC v3 инициализирован (язык: ru-RU)
-[stt_node-6] [INFO] [1769692567.247104231] [stt_node]: Загрузка Vosk модели из /models/vosk-model-small-ru-0.22...
+[stt_node-6] [2m2026-01-29T14:50:24.265511Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 1a8602071343b624120b7da0d324cbe6
+[stt_node-6] [2m2026-01-29T14:50:24.268150Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:41419
+[animation_player_node.py-3] [2m2026-01-29T14:50:24.516062Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 4e0077b4bb3328f101414f9032ab77f7
+[animation_player_node.py-3] [2m2026-01-29T14:50:24.517456Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:33265
+[sound_node-7] [INFO] [1769698224.523745721] [sound_node]:   ✓ angry_1: 1070ms, 48000Hz
+[stt_node-6] [INFO] [1769698224.778143289] [stt_node]: 📊 EOU Profile: balanced - Сбалансированное определение (по умолчанию) (pause: 1200ms)
+[stt_node-6] [INFO] [1769698224.790095610] [stt_node]: STTNode инициализирован
+[stt_node-6] [INFO] [1769698224.791069978] [stt_node]: 🔌 Подключение к Yandex STT gRPC v3...
+[stt_node-6] [INFO] [1769698224.815862804] [stt_node]: ✅ Yandex STT gRPC v3 инициализирован (язык: ru-RU)
+[stt_node-6] [INFO] [1769698224.817022909] [stt_node]: Загрузка Vosk модели из /models/vosk-model-small-ru-0.22...
 [stt_node-6] LOG (VoskAPI:ReadDataFiles():model.cc:213) Decoding params beam=10 max-active=3000 lattice-beam=2
 [stt_node-6] LOG (VoskAPI:ReadDataFiles():model.cc:216) Silence phones 1:2:3:4:5:6:7:8:9:10
-[animation_player_node.py-3] [INFO] [1769692567.254571236] [voice_animation_player]: Created publisher for wheel_front_left
-[animation_player_node.py-3] [INFO] [1769692567.269415832] [voice_animation_player]: Created publisher for wheel_front_right
-[animation_player_node.py-3] [INFO] [1769692567.285539981] [voice_animation_player]: Created publisher for wheel_rear_left
-[animation_player_node.py-3] [INFO] [1769692567.303999049] [voice_animation_player]: Created publisher for wheel_rear_right
-[animation_player_node.py-3] [INFO] [1769692567.306634230] [voice_animation_player]: Created publisher for main_display
-[animation_player_node.py-3] [INFO] [1769692567.331670812] [voice_animation_player]: Started playing: idle
 [stt_node-6] LOG (VoskAPI:RemoveOrphanNodes():nnet-nnet.cc:948) Removed 0 orphan nodes.
 [stt_node-6] LOG (VoskAPI:RemoveOrphanComponents():nnet-nnet.cc:847) Removing 0 orphan components.
-[mcp_server-9] [INFO] [1769692567.443633326] [mcp_server]: ✅ Подписан на /perception/context_update
-[mcp_server-9] [INFO] [1769692567.452699410] [mcp_server]: 🛠️ MCP Server запущен с 17 инструментами
-[mcp_server-9] [INFO] [1769692567.457383676] [mcp_server]:    Инструменты: navigate_to_waypoint, move_direction, stop_navigation, list_waypoints, set_volume, set_pitch, set_speed, get_robot_status, get_perception_context, get_battery_level, start_mapping, continue_mapping, finish_mapping, play_animation, play_sound, speak_text, listen_for_response
-[sound_node-7] [INFO] [1769692567.561948019] [sound_node]:   ✓ talk_3: 641ms, 48000Hz
+[command_node-8] [2m2026-01-29T14:50:24.985899Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 2610bfaac9b10bb4b3a73c667fa13047
+[command_node-8] [2m2026-01-29T14:50:25.001335Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:34465
+[sound_node-7] [INFO] [1769698225.054575966] [sound_node]:   ✓ talk_3: 641ms, 48000Hz
+[mcp_server-9] [2m2026-01-29T14:50:25.118200Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 3ca9ef7627b8fc75f3ca559d21d608b5
+[mcp_server-9] [2m2026-01-29T14:50:25.127170Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:39473
+[animation_player_node.py-3] [INFO] [1769698225.255320494] [voice_animation_player]: AnimationPlayer initialized
+[animation_player_node.py-3] [INFO] [1769698225.280789233] [voice_animation_player]: ✅ Subscribed to /voice/tts/state for automatic animation switching
+[animation_player_node.py-3] [INFO] [1769698225.287680050] [voice_animation_player]:    Idle animation: idle
+[animation_player_node.py-3] [INFO] [1769698225.302843025] [voice_animation_player]:    Talking animation: talking
+[animation_player_node.py-3] [INFO] [1769698225.328971564] [voice_animation_player]: Animation Player Node started
+[animation_player_node.py-3] [INFO] [1769698225.332347123] [voice_animation_player]: Autostarting animation: idle
+[animation_player_node.py-3] [INFO] [1769698225.358413589] [voice_animation_player]: Loaded animation: idle (5 panels)
+[animation_player_node.py-3] [INFO] [1769698225.372677917] [voice_animation_player]: Created publisher for wheel_front_left
+[animation_player_node.py-3] [INFO] [1769698225.374364307] [voice_animation_player]: Created publisher for wheel_front_right
+[animation_player_node.py-3] [INFO] [1769698225.381840667] [voice_animation_player]: Created publisher for wheel_rear_left
+[animation_player_node.py-3] [INFO] [1769698225.389930959] [voice_animation_player]: Created publisher for wheel_rear_right
+[animation_player_node.py-3] [INFO] [1769698225.396649650] [voice_animation_player]: Created publisher for main_display
+[animation_player_node.py-3] [INFO] [1769698225.404727590] [voice_animation_player]: Started playing: idle
+[sound_node-7] [INFO] [1769698225.609969412] [sound_node]:   ✓ surprise: 813ms, 48000Hz
+[command_node-8] [INFO] [1769698225.620379840] [command_node]: ✅ CommandNode инициализирован (using CommandParser from core)
 [stt_node-6] LOG (VoskAPI:ReadDataFiles():model.cc:248) Loading i-vector extractor from /models/vosk-model-small-ru-0.22/ivector/final.ie
+[command_node-8] [INFO] [1769698225.623282723] [command_node]:   Navigation: ✓
+[command_node-8] [INFO] [1769698225.628196156] [command_node]:   Waypoints: 6
 [stt_node-6] LOG (VoskAPI:ComputeDerivedVars():ivector-extractor.cc:183) Computing derived variables for iVector extractor
+[mcp_server-9] [INFO] [1769698225.792374106] [mcp_server]: ✅ Подписан на /perception/context_update
+[mcp_server-9] [INFO] [1769698225.796041454] [mcp_server]: 🛠️ MCP Server запущен с 17 инструментами
+[mcp_server-9] [INFO] [1769698225.796732514] [mcp_server]:    Инструменты: navigate_to_waypoint, move_direction, stop_navigation, list_waypoints, set_volume, set_pitch, set_speed, get_robot_status, get_perception_context, get_battery_level, start_mapping, continue_mapping, finish_mapping, play_animation, play_sound, speak_text, listen_for_response
 [stt_node-6] LOG (VoskAPI:ComputeDerivedVars():ivector-extractor.cc:204) Done.
 [stt_node-6] LOG (VoskAPI:ReadDataFiles():model.cc:282) Loading HCL and G from /models/vosk-model-small-ru-0.22/graph/HCLr.fst /models/vosk-model-small-ru-0.22/graph/Gr.fst
-[sound_node-7] [INFO] [1769692567.938831564] [sound_node]:   ✓ surprise: 813ms, 48000Hz
-[sound_node-7] [INFO] [1769692568.235912062] [sound_node]:   ✓ talk_4: 622ms, 48000Hz
-[dialogue_node-4] [2m2026-01-29T13:16:08.269055Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: dcd80c7f730ab49a458b92f3583aa341
-[dialogue_node-4] [2m2026-01-29T13:16:08.271501Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:44799
-[sound_node-7] [INFO] [1769692568.734932585] [sound_node]:   ✓ very_cute: 679ms, 48000Hz
-[dialogue_node-4] [INFO] [1769692568.815851541] [dialogue_node]: ✅ LLM клиент инициализирован: DeepSeek
-[dialogue_node-4] [INFO] [1769692568.819120901] [dialogue_node]:   📡 Base URL: https://api.deepseek.com
-[dialogue_node-4] [INFO] [1769692568.823109515] [dialogue_node]:   🤖 Model: deepseek-chat
-[dialogue_node-4] [INFO] [1769692568.823944355] [dialogue_node]:   🌊 Streaming: True
-[dialogue_node-4] [INFO] [1769692568.832091572] [dialogue_node]: 📖 Словарь ударений: 25 слов
-[dialogue_node-4] [INFO] [1769692568.835976124] [dialogue_node]: ✅ Загружен prompt: master_prompt_compact.txt (9480 байт)
+[sound_node-7] [INFO] [1769698225.972230835] [sound_node]:   ✓ talk_4: 622ms, 48000Hz
+[dialogue_node-4] [2m2026-01-29T14:50:26.189124Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 7619227015b67e14ca89e1381da1b57e
+[dialogue_node-4] [2m2026-01-29T14:50:26.192841Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:43121
+[sound_node-7] [INFO] [1769698226.273364229] [sound_node]:   ✓ very_cute: 679ms, 48000Hz
+[sound_node-7] [INFO] [1769698226.632618173] [sound_node]:   ✓ talk_2: 626ms, 48000Hz
+[dialogue_node-4] [INFO] [1769698226.685963823] [dialogue_node]: ✅ LLM клиент инициализирован: DeepSeek
+[dialogue_node-4] [INFO] [1769698226.687992225] [dialogue_node]:   📡 Base URL: https://api.deepseek.com
+[dialogue_node-4] [INFO] [1769698226.690430322] [dialogue_node]:   🤖 Model: deepseek-chat
+[dialogue_node-4] [INFO] [1769698226.692191247] [dialogue_node]:   🌊 Streaming: True
+[dialogue_node-4] [INFO] [1769698226.694752175] [dialogue_node]: 📖 Словарь ударений: 25 слов
+[dialogue_node-4] [INFO] [1769698226.696424843] [dialogue_node]: ✅ Загружен prompt: master_prompt_compact.txt (9480 байт)
+[dialogue_node-4] [INFO] [1769698226.931502412] [dialogue_node]: ✅ Подписан на /perception/context_update для мониторинга интернета и времени
+[dialogue_node-4] [INFO] [1769698226.940604553] [dialogue_node]: ✅ LLM Tool Call Adapter v2.0 инициализирован (async + interrupts)
+[dialogue_node-4] [INFO] [1769698226.947963453] [dialogue_node]: ✅ MCP Tools интеграция активирована
+[dialogue_node-4] [INFO] [1769698226.948678363] [dialogue_node]:    Ожидание списка инструментов из MCP Server...
+[dialogue_node-4] [INFO] [1769698226.962633087] [dialogue_node]: ✅ DialogueNode инициализирован
+[dialogue_node-4] [INFO] [1769698226.968441186] [dialogue_node]:   🤖 Provider: DeepSeek (fallback: ON)
+[dialogue_node-4] [INFO] [1769698226.970425570] [dialogue_node]:   Wake words: робок, робот, роббокс
+[dialogue_node-4] [INFO] [1769698226.973133569] [dialogue_node]:   Silence commands: помолч, замолч, хватит
+[dialogue_node-4] [INFO] [1769698226.974182009] [dialogue_node]:   Temperature: 0.7
+[dialogue_node-4] [INFO] [1769698226.976908156] [dialogue_node]:   Max tokens: 500
+[dialogue_node-4] [INFO] [1769698226.977914690] [dialogue_node]:   Dialogue timeout: 30.0s
+[dialogue_node-4] [INFO] [1769698226.980848572] [dialogue_node]:   Query accumulation timeout: 2.5s
+[sound_node-7] [INFO] [1769698227.015763705] [sound_node]:   ✓ thinking: 775ms, 48000Hz
 [stt_node-6] LOG (VoskAPI:ReadDataFiles():model.cc:308) Loading winfo /models/vosk-model-small-ru-0.22/graph/phones/word_boundary.int
-[stt_node-6] [INFO] [1769692568.962243158] [stt_node]: ✅ Vosk модель загружена (fallback)
-[sound_node-7] [INFO] [1769692569.050946641] [sound_node]:   ✓ talk_2: 626ms, 48000Hz
-[dialogue_node-4] [INFO] [1769692569.059231839] [dialogue_node]: ✅ Подписан на /perception/context_update для мониторинга интернета и времени
-[dialogue_node-4] [INFO] [1769692569.064255201] [dialogue_node]: ✅ LLM Tool Call Adapter v2.0 инициализирован (async + interrupts)
-[dialogue_node-4] [INFO] [1769692569.067810536] [dialogue_node]: ✅ MCP Tools интеграция активирована
-[dialogue_node-4] [INFO] [1769692569.068775476] [dialogue_node]:    Ожидание списка инструментов из MCP Server...
-[dialogue_node-4] [INFO] [1769692569.079218871] [dialogue_node]: ✅ DialogueNode инициализирован
-[dialogue_node-4] [INFO] [1769692569.081486964] [dialogue_node]:   🤖 Provider: DeepSeek (fallback: ON)
-[dialogue_node-4] [INFO] [1769692569.082219551] [dialogue_node]:   Wake words: робок, робот, роббокс
-[dialogue_node-4] [INFO] [1769692569.082919649] [dialogue_node]:   Silence commands: помолч, замолч, хватит
-[dialogue_node-4] [INFO] [1769692569.083559824] [dialogue_node]:   Temperature: 0.7
-[dialogue_node-4] [INFO] [1769692569.085336927] [dialogue_node]:   Max tokens: 500
-[dialogue_node-4] [INFO] [1769692569.086296736] [dialogue_node]:   Dialogue timeout: 30.0s
-[dialogue_node-4] [INFO] [1769692569.087257731] [dialogue_node]:   Query accumulation timeout: 2.5s
-[sound_node-7] [INFO] [1769692569.275031079] [sound_node]:   ✓ thinking: 775ms, 48000Hz
-[tts_node-5] [2m2026-01-29T13:16:09.351043Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: 6774cbe39d686384d63190ae188c227b
-[tts_node-5] [2m2026-01-29T13:16:09.353001Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:40751
-[sound_node-7] [INFO] [1769692569.504352839] [sound_node]:   ✓ talk_1: 898ms, 48000Hz
-[tts_node-5] [INFO] [1769692569.508099350] [tts_node]: ✅ Yandex Cloud TTS gRPC v3 подключен
-[tts_node-5] [INFO] [1769692569.509109487] [tts_node]: ✅ ReSpeaker найден для TTS playback: device 1 (ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0))
-[tts_node-5] [INFO] [1769692569.522575456] [tts_node]: ✅ TTSNode инициализирован
-[tts_node-5] [INFO] [1769692569.527552491] [tts_node]:   Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero v5 (fallback)
-[tts_node-5] [INFO] [1769692569.528448859] [tts_node]:   Yandex gRPC v3: voice=anton (ROBBOX original!), speed=1.0 (медленный синтез)
-[tts_node-5] [INFO] [1769692569.529168758] [tts_node]:   Silero v5: speaker=baya, rate=48000 Hz, homograph_stress=True
-[tts_node-5] [INFO] [1769692569.529943596] [tts_node]:   Volume: -3.0 dB (gain: 0.71x)
-[tts_node-5] [INFO] [1769692569.530752943] [tts_node]:   Chipmunk mode: True
-[tts_node-5] [INFO] [1769692569.531690895] [tts_node]:   Pitch shift: 1.0x (эмуляция оригинального ROBBOX: медленный синтез + быстрое воспроизведение)
-[sound_node-7] [INFO] [1769692569.683391563] [sound_node]:   ✓ cute: 686ms, 48000Hz
-[sound_node-7] [INFO] [1769692569.844957483] [sound_node]:   ✓ angry_2: 769ms, 48000Hz
-[sound_node-7] [INFO] [1769692570.009484522] [sound_node]:   ✓ confused: 666ms, 48000Hz
-[sound_node-7] [INFO] [1769692570.010318536] [sound_node]: ✅ Загружено звуков: 11/11
-[sound_node-7] [INFO] [1769692570.011202766] [sound_node]: 🔊 Аудио устройство: ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0) (index 1)
+[stt_node-6] [INFO] [1769698227.187755891] [stt_node]: ✅ Vosk модель загружена (fallback)
+[sound_node-7] [INFO] [1769698227.225765385] [sound_node]:   ✓ talk_1: 898ms, 48000Hz
+[sound_node-7] [INFO] [1769698227.412299560] [sound_node]:   ✓ cute: 686ms, 48000Hz
+[sound_node-7] [INFO] [1769698227.582261511] [sound_node]:   ✓ angry_2: 769ms, 48000Hz
+[tts_node-5] [2m2026-01-29T14:50:27.768506Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: e987e993907b717f8bcfb899c4fd2dde
+[sound_node-7] [INFO] [1769698227.769046848] [sound_node]:   ✓ confused: 666ms, 48000Hz
+[tts_node-5] [2m2026-01-29T14:50:27.769847Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:40667
+[sound_node-7] [INFO] [1769698227.770230397] [sound_node]: ✅ Загружено звуков: 11/11
+[sound_node-7] [INFO] [1769698227.771149933] [sound_node]: 🔊 Аудио устройство: ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0) (index 1)
+[tts_node-5] [INFO] [1769698227.891913218] [tts_node]: ✅ Yandex Cloud TTS gRPC v3 подключен
+[tts_node-5] [INFO] [1769698227.893269282] [tts_node]: ✅ ReSpeaker найден для TTS playback: device 1 (ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0))
+[tts_node-5] [INFO] [1769698227.909611289] [tts_node]: ✅ TTSNode инициализирован
+[tts_node-5] [INFO] [1769698227.910562843] [tts_node]:   Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero v5 (fallback)
+[tts_node-5] [INFO] [1769698227.911311124] [tts_node]:   Yandex gRPC v3: voice=anton (ROBBOX original!), speed=1.0 (медленный синтез)
+[tts_node-5] [INFO] [1769698227.912245141] [tts_node]:   Silero v5: speaker=baya, rate=48000 Hz, homograph_stress=True
+[tts_node-5] [INFO] [1769698227.913268657] [tts_node]:   Volume: -3.0 dB (gain: 0.71x)
+[tts_node-5] [INFO] [1769698227.913927680] [tts_node]:   Chipmunk mode: True
+[tts_node-5] [INFO] [1769698227.914554166] [tts_node]:   Pitch shift: 1.0x (эмуляция оригинального ROBBOX: медленный синтез + быстрое воспроизведение)
 [audio_node-1] ✓ Pixel ring в режиме трассировки
-[audio_node-1] [INFO] [1769692571.719891215] [audio_node]: ✓ ReSpeaker USB подключен для VAD/DoA
-[audio_node-1] [INFO] [1769692571.730492284] [audio_node]:   Устройство: ReSpeaker 4 Mic Array (UAC1.0)
-[audio_node-1] [INFO] [1769692571.734655368] [audio_node]:   VAD threshold: 3.5 dB (по умолчанию)
-[audio_node-1] [INFO] [1769692571.736499021] [audio_node]: ✓ Используется аудио устройство index=1
-[audio_node-1] [INFO] [1769692571.750574995] [audio_node]: ✓ Аудио поток открыт: 16000Hz, 1ch
-[audio_node-1] [INFO] [1769692571.751694923] [audio_node]: ▶ Захват аудио запущен
-[dialogue_node-4] [INFO] [1769692577.451422647] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692587.452508702] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692597.454189373] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692607.450443740] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692617.448138972] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[sound_node-7] [INFO] [1769692620.442134303] [sound_node]: 🔔 Триггер: thinking
-[sound_node-7] [INFO] [1769692620.444226654] [sound_node]: ▶️ Играю: thinking
-[sound_node-7] [INFO] [1769692621.280872683] [sound_node]: ✅ Завершено: thinking
-[sound_node-7] [INFO] [1769692624.602296188] [sound_node]: 🔔 Триггер: confused
-[sound_node-7] [INFO] [1769692624.605098712] [sound_node]: ▶️ Играю: confused
-[audio_node-1] [INFO] [1769692625.055467218] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692625.056221996] [audio_node]: 🗣️  Начало речи
-[audio_node-1] [INFO] [1769692625.151488207] [audio_node]: 🎙️  VAD: тишина
-[sound_node-7] [INFO] [1769692625.338688204] [sound_node]: ✅ Завершено: confused
-[audio_node-1] [INFO] [1769692626.563997899] [audio_node]: ✅ Речь распознана: 1.97с
-[stt_node-6] [INFO] [1769692626.597126895] [stt_node]: 🎤 Получена фраза: 1.97с (63104 bytes)
-[sound_node-7] [INFO] [1769692627.413165328] [sound_node]: 🔔 Триггер: cute
-[sound_node-7] [INFO] [1769692627.417756025] [sound_node]: ▶️ Играю: cute
-[dialogue_node-4] [INFO] [1769692627.451870991] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[stt_node-6] [WARN] [1769692628.103525958] [stt_node]: ❌ ОТКЛОНЕНО (пустое)
-[sound_node-7] [INFO] [1769692628.157312458] [sound_node]: ✅ Завершено: cute
-[tts_node-5] [INFO] [1769692628.918380317] [tts_node]: 🔊 TTS: Системы запущены! Как я могу помочь?... (speech_id: 0d09257c, dialogue_id: None...)
-[tts_node-5] [INFO] [1769692628.920039829] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[stt_node-6] [INFO] [1769692628.923982116] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[animation_player_node.py-3] [INFO] [1769692628.924559498] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
-[animation_player_node.py-3] [INFO] [1769692628.949199051] [voice_animation_player]: Loaded animation: talking (5 panels)
-[animation_player_node.py-3] [WARN] [1769692628.950373646] [voice_animation_player]: Animation already playing
-[tts_node-5] [INFO] [1769692629.477190643] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 69555 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692629.509242882] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 69555 → 50470 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692629.515436606] [tts_node]: 🔊 Воспроизведение: 50470 frames, 16000 Hz, стерео
-[tts_node-5] [INFO] [1769692632.821412137] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692632.822426880] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692632.825361089] [tts_node]: 📢 Публикую TTS finished event: speech_id=0d09257c..., success=True
-[tts_node-5] [INFO] [1769692632.826793532] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[animation_player_node.py-3] [INFO] [1769692632.827088415] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
-[animation_player_node.py-3] [INFO] [1769692632.828061924] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692632.829039172] [voice_animation_player]: Animation already playing
-[mcp_server-9] [INFO] [1769692632.833552636] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=0d09257c..., success=True
-[mcp_server-9] [WARN] [1769692632.836515988] [mcp_server]: [speak_text] ⚠️ Speech 0d09257c... не найден в pending_speeches
-[audio_node-1] [INFO] [1769692635.454102457] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692635.455979723] [audio_node]: 🗣️  Начало речи
-[audio_node-1] [INFO] [1769692635.756925094] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692635.852302902] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692635.949771078] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692636.060028896] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692636.156199743] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692636.348359643] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692636.556216530] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692636.652616646] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692636.749296155] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692636.859265047] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692637.149296419] [audio_node]: 🎙️  VAD: тишина
-[dialogue_node-4] [INFO] [1769692637.449585156] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[audio_node-1] [INFO] [1769692638.649048199] [audio_node]: ✅ Речь распознана: 3.70с
-[stt_node-6] [INFO] [1769692638.678683341] [stt_node]: 🎤 Получена фраза: 3.70с (118400 bytes)
-[stt_node-6] [INFO] [1769692639.483472692] [stt_node]: ✅ Yandex STT: "Робокс расскажи страшную историю"
-[stt_node-6] [INFO] [1769692639.484244372] [stt_node]: ✅ ПРИНЯТО: Робокс расскажи страшную историю
-[stt_node-6] [INFO] [1769692639.484785391] [stt_node]: 🎯 Обнаружено обращение к роботу: "Робокс расскажи стра..."
-[stt_node-6] [INFO] [1769692639.496042091] [stt_node]: 🔇 Отправлен STOP на TTS (пользователь обратился к роботу)
-[stt_node-6] [INFO] [1769692639.497027268] [stt_node]: 📤 Опубликовал результат: Робокс расскажи страшную историю
-[tts_node-5] [WARN] [1769692639.498714484] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
-[command_node-8] [INFO] [1769692639.502233069] [command_node]: 🎤 STT: Робокс расскажи страшную историю
-[dialogue_node-4] [INFO] [1769692639.507735024] [dialogue_node]: 👤 User: Робокс расскажи страшную историю [State: IDLE]
-[dialogue_node-4] [INFO] [1769692639.508665151] [dialogue_node]: 👋 Wake word обнаружен → LISTENING
-[dialogue_node-4] [INFO] [1769692639.518605264] [dialogue_node]: 📥 Запрос добавлен в очередь (всего: 1)
-[dialogue_node-4] [INFO] [1769692639.520570118] [dialogue_node]: ⏰ Запущен таймер накопления (2.5s)
-[sound_node-7] [INFO] [1769692639.522611576] [sound_node]: 🔔 Триггер: thinking
-[sound_node-7] [INFO] [1769692639.524700862] [sound_node]: ▶️ Играю: thinking
-[sound_node-7] [INFO] [1769692640.352501746] [sound_node]: ✅ Завершено: thinking
-[dialogue_node-4] [INFO] [1769692642.021155126] [dialogue_node]: 🔄 Обрабатываю 1 накопленных запросов
-[dialogue_node-4] [INFO] [1769692642.022331098] [dialogue_node]: 💬 Один запрос: с расскажи страшную историю
-[dialogue_node-4] [INFO] [1769692642.023670648] [dialogue_node]: 🆔 Новый диалог: a82e2b6c...
-[dialogue_node-4] [WARN] [1769692642.024803104] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692642.025926654] [dialogue_node]: 🤔 Запрос к DeepSeek...
-[dialogue_node-4] [INFO] [1769692642.028287115] [dialogue_node]: 🛠️  Отправка запроса с 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692648.985307001] [dialogue_node]: 🏁 Stream завершён: tool_calls (обработано 0 chunks)
-[dialogue_node-4] [INFO] [1769692648.986260832] [dialogue_node]: 🔧 LLM запросил выполнение 3 инструментов
-[dialogue_node-4] [INFO] [1769692648.987716094] [dialogue_node]: 🔧 Обнаружены tool_calls от LLM - начинаю выполнение
-[dialogue_node-4] [INFO] [1769692648.989744637] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692648.992689901] [dialogue_node]: 📤 Отправлен запрос 04b42aab: play_sound
-[mcp_server-9] [INFO] [1769692648.997111778] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'thinking'}
-[mcp_server-9] [INFO] [1769692648.999103268] [mcp_server]: [play_sound] Воспроизведение звука: thinking
-[mcp_server-9] [INFO] [1769692649.001046353] [mcp_server]: [play_sound] Звук 'thinking' отправлен
-[mcp_server-9] [INFO] [1769692649.002457661] [mcp_server]: 📤 Публикую результат для play_sound (request_id: 04b42aab)
-[sound_node-7] [INFO] [1769692649.003108216] [sound_node]: 🔔 Триггер: thinking
-[sound_node-7] [INFO] [1769692649.004579669] [sound_node]: ▶️ Играю: thinking
-[mcp_server-9] [INFO] [1769692649.006618441] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692649.008057229] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[sound_node-7] [INFO] [1769692649.832791763] [sound_node]: ✅ Завершено: thinking
-[dialogue_node-4] [ERROR] [1769692650.998244230] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: 04b42aab)
-[dialogue_node-4] [WARN] [1769692650.999350301] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692651.000005525] [dialogue_node]: 🔧 Выполнение: play_animation
-[dialogue_node-4] [INFO] [1769692651.003774723] [dialogue_node]: 📤 Отправлен запрос 28044d28: play_animation
-[mcp_server-9] [INFO] [1769692651.007521961] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'thinking', 'duration': 3}
-[mcp_server-9] [INFO] [1769692651.016699225] [mcp_server]: [play_animation] Запуск анимации: thinking, длительность: 3s
-[mcp_server-9] [INFO] [1769692651.020036836] [mcp_server]: [play_animation] Анимация 'thinking' отправлена
-[mcp_server-9] [INFO] [1769692651.023973769] [mcp_server]: 📤 Публикую результат для play_animation (request_id: 28044d28)
-[mcp_server-9] [INFO] [1769692651.027092169] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[animation_player_node.py-3] [INFO] [1769692651.024586868] [voice_animation_player]: 🎨 Получен запрос на анимацию: thinking:3
-[mcp_server-9] [INFO] [1769692651.030174071] [mcp_server]: ✅ Инструмент play_animation выполнен успешно
-[animation_player_node.py-3] [INFO] [1769692651.031324754] [voice_animation_player]: 📏 Указана длительность: 3.0s
-[animation_player_node.py-3] [INFO] [1769692651.044916223] [voice_animation_player]: Loaded animation: thinking (3 panels)
-[animation_player_node.py-3] [WARN] [1769692651.046277470] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692651.047798524] [voice_animation_player]: ✅ Анимация thinking.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692651.049198380] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 3.0s
-[dialogue_node-4] [ERROR] [1769692653.006005620] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: 28044d28)
-[dialogue_node-4] [WARN] [1769692653.006979597] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692653.007796414] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692653.013006208] [dialogue_node]: 📤 Отправлен запрос 71849da7: speak_text
-[mcp_server-9] [INFO] [1769692653.014084662] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Хорошо, расскажу страшную историю про роботов.', 'animation': 'thinking'}
-[mcp_server-9] [INFO] [1769692653.016499336] [mcp_server]: [speak_text] Произношение текста: Хорошо, расскажу страшную историю про роботов.... (animation: thinking)
-[mcp_server-9] [INFO] [1769692653.020072867] [mcp_server]: [speak_text] 🎨 Установлена анимация 'thinking'
-[mcp_server-9] [INFO] [1769692653.021186153] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: e6065ec2... в pending_speeches
-[mcp_server-9] [INFO] [1769692653.023582550] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Хорошо, расскажу страшную исто... (speech_id: e6065ec2)
-[mcp_server-9] [INFO] [1769692653.024537861] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[mcp_server-9] [INFO] [1769692653.025505282] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 71849da7)
-[mcp_server-9] [INFO] [1769692653.027098084] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692653.028080912] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[animation_player_node.py-3] [INFO] [1769692653.026334283] [voice_animation_player]: 🎨 Получен запрос на анимацию: thinking
-[animation_player_node.py-3] [INFO] [1769692653.028191000] [voice_animation_player]: Loaded animation: thinking (3 panels)
-[animation_player_node.py-3] [WARN] [1769692653.029246640] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692653.032341284] [voice_animation_player]: ✅ Анимация thinking.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692653.036591750] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 7.0s
-[tts_node-5] [INFO] [1769692653.032407967] [tts_node]: 🔊 TTS: Хорошо, расскажу страшную историю про роботов.... (speech_id: e6065ec2, dialogue_id: None...)
-[tts_node-5] [INFO] [1769692653.041089167] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[stt_node-6] [INFO] [1769692653.045753041] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[tts_node-5] [INFO] [1769692653.407665110] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 70835 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692653.498928686] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 70835 → 51398 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692653.503632262] [tts_node]: 🔊 Воспроизведение: 51398 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692655.014215899] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 71849da7)
-[dialogue_node-4] [WARN] [1769692655.015113163] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [ERROR] [1769692655.016036055] [dialogue_node]: ❌ Слишком много ошибок (3), прерываю выполнение tool_calls
-[dialogue_node-4] [INFO] [1769692655.016988946] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692655.017892543] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692655.018614461] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692655.019508595] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692656.864401436] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692656.864689167] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[animation_player_node.py-3] [INFO] [1769692656.864761609] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[tts_node-5] [INFO] [1769692656.865900627] [tts_node]: 📢 Публикую TTS finished event: speech_id=e6065ec2..., success=True
-[tts_node-5] [INFO] [1769692656.867377003] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[mcp_server-9] [INFO] [1769692656.870739002] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=e6065ec2..., success=True
-[mcp_server-9] [INFO] [1769692656.871752172] [mcp_server]: [speak_text] ✅ Speech e6065ec2... отмечен как завершенный
-[animation_player_node.py-3] [INFO] [1769692660.031038978] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692660.032806588] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692660.033884583] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692663.539654088] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692663.540969384] [dialogue_node]: 🔧 LLM снова запросил 4 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692663.542442122] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692663.547762029] [dialogue_node]: 📤 Отправлен запрос c863aa7d: play_sound
-[mcp_server-9] [INFO] [1769692663.551793731] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'confused'}
-[mcp_server-9] [INFO] [1769692663.553420893] [mcp_server]: [play_sound] Воспроизведение звука: confused
-[mcp_server-9] [INFO] [1769692663.555375680] [mcp_server]: [play_sound] Звук 'confused' отправлен
-[mcp_server-9] [INFO] [1769692663.556097836] [mcp_server]: 📤 Публикую результат для play_sound (request_id: c863aa7d)
-[mcp_server-9] [INFO] [1769692663.556756160] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692663.557276764] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[sound_node-7] [INFO] [1769692663.555896802] [sound_node]: 🔔 Триггер: confused
-[sound_node-7] [INFO] [1769692663.556833437] [sound_node]: ▶️ Играю: confused
-[sound_node-7] [INFO] [1769692664.267291908] [sound_node]: ✅ Завершено: confused
-[dialogue_node-4] [ERROR] [1769692665.551883827] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: c863aa7d)
-[dialogue_node-4] [WARN] [1769692665.552972687] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692665.553752642] [dialogue_node]: 🔧 Выполнение: play_animation
-[dialogue_node-4] [INFO] [1769692665.554939983] [dialogue_node]: 📤 Отправлен запрос 7274460a: play_animation
-[mcp_server-9] [INFO] [1769692665.557256684] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'confused', 'duration': 3}
-[mcp_server-9] [INFO] [1769692665.558314618] [mcp_server]: 📤 Публикую результат для play_animation (request_id: 7274460a)
-[mcp_server-9] [INFO] [1769692665.559527514] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [WARN] [1769692665.560364210] [mcp_server]: ❌ Инструмент play_animation завершился с ошибкой: Ошибка валидации параметров: Недопустимое значение для animation: confused. Допустимые: idle, happy, sad, angry, surprised, thinking, victory, wakeup, sleep, talking, error, low_battery, charging, police_lights, ambulance, fire_truck, road_service, turn_left, turn_right, accelerating, braking
-[dialogue_node-4] [ERROR] [1769692667.555975738] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: 7274460a)
-[dialogue_node-4] [WARN] [1769692667.556860030] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692667.557967654] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692667.560663493] [dialogue_node]: 📤 Отправлен запрос f475079c: speak_text
-[mcp_server-9] [INFO] [1769692667.561326267] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Извините, возникли технические проблемы.', 'animation': 'confused'}
-[mcp_server-9] [INFO] [1769692667.563096981] [mcp_server]: [speak_text] Произношение текста: Извините, возникли технические проблемы.... (animation: confused)
-[mcp_server-9] [INFO] [1769692667.564399493] [mcp_server]: [speak_text] 🎨 Установлена анимация 'confused'
-[animation_player_node.py-3] [INFO] [1769692667.564695417] [voice_animation_player]: 🎨 Получен запрос на анимацию: confused
-[mcp_server-9] [INFO] [1769692667.565128434] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: 4da645cb... в pending_speeches
-[mcp_server-9] [INFO] [1769692667.566321872] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Извините, возникли технические... (speech_id: 4da645cb)
-[animation_player_node.py-3] [ERROR] [1769692667.566290243] [voice_animation_player]: Failed to load animation: Manifest not found: /ws/install/rob_box_animations/share/rob_box_animations/animations/manifests/confused.yaml
-[mcp_server-9] [INFO] [1769692667.567306386] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[animation_player_node.py-3] [ERROR] [1769692667.567422515] [voice_animation_player]: ❌ Не удалось загрузить анимацию: confused.yaml
-[mcp_server-9] [INFO] [1769692667.568248955] [mcp_server]: 📤 Публикую результат для speak_text (request_id: f475079c)
-[tts_node-5] [INFO] [1769692667.568382288] [tts_node]: 🔊 TTS: Извините, возникли технические проблемы.... (speech_id: 4da645cb, dialogue_id: None...)
-[mcp_server-9] [INFO] [1769692667.569294117] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[tts_node-5] [INFO] [1769692667.569499227] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[stt_node-6] [INFO] [1769692667.571754160] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[animation_player_node.py-3] [INFO] [1769692667.571886345] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
-[mcp_server-9] [INFO] [1769692667.570178242] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[animation_player_node.py-3] [INFO] [1769692667.572849396] [voice_animation_player]: Loaded animation: talking (5 panels)
-[animation_player_node.py-3] [WARN] [1769692667.573956946] [voice_animation_player]: Animation already playing
-[tts_node-5] [INFO] [1769692667.914518388] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 65715 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692667.959194019] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 65715 → 47683 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692667.963645608] [tts_node]: 🔊 Воспроизведение: 47683 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692669.561615934] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: f475079c)
-[dialogue_node-4] [WARN] [1769692669.562466619] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [ERROR] [1769692669.563186877] [dialogue_node]: ❌ Слишком много ошибок (3), прерываю выполнение tool_calls
-[dialogue_node-4] [INFO] [1769692669.563786821] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692669.564697598] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692669.565383172] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692669.566237727] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[dialogue_node-4] [ERROR] [1769692670.272532980] [dialogue_node]: ❌ Ошибка в агентном цикле: Error code: 400 - {'error': {'message': "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)", 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_request_error'}}
-[dialogue_node-4] [INFO] [1769692670.273443685] [dialogue_node]: 🎨 Показываю анимацию ошибки
-[animation_player_node.py-3] [INFO] [1769692670.277184745] [voice_animation_player]: 🎨 Получен запрос на анимацию: error:5
-[animation_player_node.py-3] [INFO] [1769692670.280164897] [voice_animation_player]: 📏 Указана длительность: 5.0s
-[dialogue_node-4] [INFO] [1769692670.284361143] [dialogue_node]: ⏰ Dialogue timeout → IDLE
-[dialogue_node-4] [INFO] [1769692670.290040131] [dialogue_node]: 📩 on_result вызван для request_id: 04b42aab
-[animation_player_node.py-3] [INFO] [1769692670.293345802] [voice_animation_player]: Loaded animation: error (5 panels)
-[dialogue_node-4] [INFO] [1769692670.293980580] [dialogue_node]: 💾 Результат сохранён в кэш для 04b42aab
-[animation_player_node.py-3] [WARN] [1769692670.297127010] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692670.298371993] [voice_animation_player]: ✅ Анимация error.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692670.299477772] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 5.0s
-[dialogue_node-4] [INFO] [1769692670.302051998] [dialogue_node]: 📩 on_result вызван для request_id: 28044d28
-[dialogue_node-4] [INFO] [1769692670.303308240] [dialogue_node]: 💾 Результат сохранён в кэш для 28044d28
-[dialogue_node-4] [INFO] [1769692670.306569133] [dialogue_node]: 📩 on_result вызван для request_id: 71849da7
-[dialogue_node-4] [INFO] [1769692670.308127079] [dialogue_node]: 💾 Результат сохранён в кэш для 71849da7
-[dialogue_node-4] [INFO] [1769692670.318196832] [dialogue_node]: 📩 on_result вызван для request_id: c863aa7d
-[dialogue_node-4] [INFO] [1769692670.322007022] [dialogue_node]: 💾 Результат сохранён в кэш для c863aa7d
-[dialogue_node-4] [INFO] [1769692670.326043712] [dialogue_node]: 📩 on_result вызван для request_id: 7274460a
-[dialogue_node-4] [INFO] [1769692670.327782344] [dialogue_node]: 💾 Результат сохранён в кэш для 7274460a
-[dialogue_node-4] [INFO] [1769692670.332682313] [dialogue_node]: 📩 on_result вызван для request_id: f475079c
-[dialogue_node-4] [INFO] [1769692670.338636024] [dialogue_node]: 💾 Результат сохранён в кэш для f475079c
-[dialogue_node-4] [INFO] [1769692670.345464032] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692670.349784686] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692670.354174432] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[tts_node-5] [INFO] [1769692671.100310088] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692671.100961905] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692671.101096795] [tts_node]: 📢 Публикую TTS finished event: speech_id=4da645cb..., success=True
-[tts_node-5] [INFO] [1769692671.102069261] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[tts_node-5] [INFO] [1769692671.105185789] [tts_node]: 🔊 TTS: Извините, произошла ошибка... (speech_id: 7a327a9c, dialogue_id: 9c90c016...)
-[tts_node-5] [INFO] [1769692671.106960739] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[animation_player_node.py-3] [INFO] [1769692671.112597609] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[stt_node-6] [INFO] [1769692671.113338796] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[mcp_server-9] [INFO] [1769692671.116895159] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=4da645cb..., success=True
-[mcp_server-9] [INFO] [1769692671.118581498] [mcp_server]: [speak_text] ✅ Speech 4da645cb... отмечен как завершенный
-[tts_node-5] [INFO] [1769692671.417098013] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 53171 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692671.444060579] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 53171 → 38581 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692671.448654316] [tts_node]: 🔊 Воспроизведение: 38581 frames, 16000 Hz, стерео
-[tts_node-5] [INFO] [1769692674.013983206] [tts_node]: ✅ Воспроизведение завершено
-[tts_node-5] [INFO] [1769692674.020137000] [tts_node]: 📢 Публикую TTS finished event: speech_id=7a327a9c..., success=True
-[tts_node-5] [INFO] [1769692674.021520864] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[animation_player_node.py-3] [INFO] [1769692674.021098675] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
-[stt_node-6] [INFO] [1769692674.021182157] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[animation_player_node.py-3] [INFO] [1769692674.023041784] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692674.024092423] [voice_animation_player]: Animation already playing
-[mcp_server-9] [INFO] [1769692674.032205881] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=7a327a9c..., success=True
-[mcp_server-9] [WARN] [1769692674.033078926] [mcp_server]: [speak_text] ⚠️ Speech 7a327a9c... не найден в pending_speeches
-[animation_player_node.py-3] [INFO] [1769692675.301146735] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692675.302867401] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692675.304495659] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692677.455885641] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692687.458025175] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692697.451348470] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692707.452026797] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692717.452806938] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692727.450291509] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[sound_node-7] [INFO] [1769692729.605683238] [sound_node]: 🔔 Триггер: cute
-[sound_node-7] [INFO] [1769692729.609687817] [sound_node]: ▶️ Играю: cute
-[sound_node-7] [INFO] [1769692730.341243347] [sound_node]: ✅ Завершено: cute
-[dialogue_node-4] [INFO] [1769692737.449786295] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[audio_node-1] [INFO] [1769692740.453669450] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692740.454665927] [audio_node]: 🗣️  Начало речи
-[audio_node-1] [INFO] [1769692740.655310914] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692740.755655549] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692740.959293763] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692741.055640610] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692741.248553467] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692741.359984435] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692741.455547058] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692742.351663175] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692742.450978128] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692742.960087940] [audio_node]: 🎙️  VAD: речь
-[audio_node-1] [INFO] [1769692743.056161540] [audio_node]: 🎙️  VAD: тишина
-[audio_node-1] [INFO] [1769692744.558103548] [audio_node]: ✅ Речь распознана: 4.60с
-[stt_node-6] [INFO] [1769692744.603722914] [stt_node]: 🎤 Получена фраза: 4.60с (147072 bytes)
-[stt_node-6] [INFO] [1769692745.467530351] [stt_node]: ✅ Yandex STT: "Робота проиграй все системные звуки которые ты знаешь"
-[stt_node-6] [INFO] [1769692745.469103412] [stt_node]: ✅ ПРИНЯТО: Робота проиграй все системные звуки которые ты знаешь
-[stt_node-6] [INFO] [1769692745.472237681] [stt_node]: 🎯 Обнаружено обращение к роботу: "Робота проиграй все ..."
-[stt_node-6] [INFO] [1769692745.474646788] [stt_node]: 🔇 Отправлен STOP на TTS (пользователь обратился к роботу)
-[stt_node-6] [INFO] [1769692745.475474092] [stt_node]: 📤 Опубликовал результат: Робота проиграй все системные звуки которые ты знаешь
-[tts_node-5] [WARN] [1769692745.475474055] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
-[command_node-8] [INFO] [1769692745.478278377] [command_node]: 🎤 STT: Робота проиграй все системные звуки которые ты знаешь
-[dialogue_node-4] [INFO] [1769692745.481431481] [dialogue_node]: 👤 User: Робота проиграй все системные звуки которые ты знаешь [State: IDLE]
-[dialogue_node-4] [INFO] [1769692745.482189110] [dialogue_node]: 👋 Wake word обнаружен → LISTENING
-[dialogue_node-4] [INFO] [1769692745.484555509] [dialogue_node]: 📥 Запрос добавлен в очередь (всего: 1)
-[dialogue_node-4] [INFO] [1769692745.488252772] [dialogue_node]: ⏰ Запущен таймер накопления (2.5s)
-[sound_node-7] [INFO] [1769692745.492392885] [sound_node]: 🔔 Триггер: thinking
-[sound_node-7] [INFO] [1769692745.495081193] [sound_node]: ▶️ Играю: thinking
-[sound_node-7] [INFO] [1769692746.323234299] [sound_node]: ✅ Завершено: thinking
-[dialogue_node-4] [INFO] [1769692747.452015948] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692747.986988046] [dialogue_node]: 🔄 Обрабатываю 1 накопленных запросов
-[dialogue_node-4] [INFO] [1769692747.987730283] [dialogue_node]: 💬 Один запрос: а проиграй все системные звуки которые ты знаешь
-[dialogue_node-4] [INFO] [1769692747.993565519] [dialogue_node]: 🆔 Новый диалог: b54677ee...
-[dialogue_node-4] [WARN] [1769692747.994458311] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692747.995202530] [dialogue_node]: 🤔 Запрос к DeepSeek...
-[dialogue_node-4] [INFO] [1769692747.999436185] [dialogue_node]: 🛠️  Отправка запроса с 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692751.211742955] [dialogue_node]: 🏁 Stream завершён: tool_calls (обработано 0 chunks)
-[dialogue_node-4] [INFO] [1769692751.214487461] [dialogue_node]: 🔧 LLM запросил выполнение 1 инструментов
-[dialogue_node-4] [INFO] [1769692751.217729562] [dialogue_node]: 🔧 Обнаружены tool_calls от LLM - начинаю выполнение
-[dialogue_node-4] [INFO] [1769692751.218610683] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692751.219718480] [dialogue_node]: 📤 Отправлен запрос 3ea94f17: play_sound
-[mcp_server-9] [INFO] [1769692751.223134527] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'thinking'}
-[mcp_server-9] [INFO] [1769692751.223926490] [mcp_server]: [play_sound] Воспроизведение звука: thinking
-[sound_node-7] [INFO] [1769692751.226356107] [sound_node]: 🔔 Триггер: thinking
-[mcp_server-9] [INFO] [1769692751.227061764] [mcp_server]: [play_sound] Звук 'thinking' отправлен
-[mcp_server-9] [INFO] [1769692751.229493548] [mcp_server]: 📤 Публикую результат для play_sound (request_id: 3ea94f17)
-[sound_node-7] [INFO] [1769692751.229898502] [sound_node]: ▶️ Играю: thinking
-[mcp_server-9] [INFO] [1769692751.233746878] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692751.236627233] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[sound_node-7] [INFO] [1769692752.081333553] [sound_node]: ✅ Завершено: thinking
-[dialogue_node-4] [ERROR] [1769692753.220755250] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: 3ea94f17)
-[dialogue_node-4] [WARN] [1769692753.221586124] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692753.222225402] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692753.223742892] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692753.226359249] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692753.228363351] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692756.920301920] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692756.921213876] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692756.922377341] [dialogue_node]: 🔧 Выполнение: play_animation
-[mcp_server-9] [INFO] [1769692756.927470437] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'thinking', 'duration': 3}
-[dialogue_node-4] [INFO] [1769692756.928368891] [dialogue_node]: 📤 Отправлен запрос e28992cd: play_animation
-[mcp_server-9] [INFO] [1769692756.928423916] [mcp_server]: [play_animation] Запуск анимации: thinking, длительность: 3s
-[mcp_server-9] [INFO] [1769692756.931482467] [mcp_server]: [play_animation] Анимация 'thinking' отправлена
-[mcp_server-9] [INFO] [1769692756.932707531] [mcp_server]: 📤 Публикую результат для play_animation (request_id: e28992cd)
-[mcp_server-9] [INFO] [1769692756.933837882] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[animation_player_node.py-3] [INFO] [1769692756.933907168] [voice_animation_player]: 🎨 Получен запрос на анимацию: thinking:3
-[mcp_server-9] [INFO] [1769692756.934629249] [mcp_server]: ✅ Инструмент play_animation выполнен успешно
-[animation_player_node.py-3] [INFO] [1769692756.935593822] [voice_animation_player]: 📏 Указана длительность: 3.0s
-[animation_player_node.py-3] [INFO] [1769692756.938770627] [voice_animation_player]: Loaded animation: thinking (3 panels)
-[animation_player_node.py-3] [WARN] [1769692756.940659063] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692756.944127457] [voice_animation_player]: ✅ Анимация thinking.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692756.946045137] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 3.0s
-[dialogue_node-4] [ERROR] [1769692758.929671282] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: e28992cd)
-[dialogue_node-4] [WARN] [1769692758.930547250] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692758.932530139] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692758.933306930] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692758.934601501] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692758.936115671] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[animation_player_node.py-3] [INFO] [1769692759.948376761] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692759.949283122] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692759.950779529] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692762.910979938] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692762.912087078] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692762.913413760] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692762.914592223] [dialogue_node]: 📤 Отправлен запрос e14e8074: speak_text
-[mcp_server-9] [INFO] [1769692762.923029297] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Расскажу страшную историю!', 'animation': 'surprised'}
-[mcp_server-9] [INFO] [1769692762.924105285] [mcp_server]: [speak_text] Произношение текста: Расскажу страшную историю!... (animation: surprised)
-[animation_player_node.py-3] [INFO] [1769692762.926377219] [voice_animation_player]: 🎨 Получен запрос на анимацию: surprised
-[mcp_server-9] [INFO] [1769692762.931501948] [mcp_server]: [speak_text] 🎨 Установлена анимация 'surprised'
-[mcp_server-9] [INFO] [1769692762.940395220] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: 2b5b133e... в pending_speeches
-[mcp_server-9] [INFO] [1769692762.948432102] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Расскажу страшную историю!... (speech_id: 2b5b133e)
-[animation_player_node.py-3] [INFO] [1769692762.949749783] [voice_animation_player]: Loaded animation: surprised (3 panels)
-[animation_player_node.py-3] [WARN] [1769692762.951401428] [voice_animation_player]: Animation already playing
-[mcp_server-9] [INFO] [1769692762.957761959] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[animation_player_node.py-3] [INFO] [1769692762.961726116] [voice_animation_player]: ✅ Анимация surprised.yaml загружена и запущена (ручной режим)
-[mcp_server-9] [INFO] [1769692762.964279914] [mcp_server]: 📤 Публикую результат для speak_text (request_id: e14e8074)
-[mcp_server-9] [INFO] [1769692762.965512939] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[tts_node-5] [INFO] [1769692762.965220666] [tts_node]: 🔊 TTS: Расскажу страшную историю!... (speech_id: 2b5b133e, dialogue_id: None...)
-[animation_player_node.py-3] [INFO] [1769692762.969456260] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 5.6s
-[tts_node-5] [INFO] [1769692762.976281694] [tts_node]: 🎵 SSML атрибуты: {'pitch': 1.2}
-[mcp_server-9] [INFO] [1769692762.978246910] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[tts_node-5] [INFO] [1769692762.983851821] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[stt_node-6] [INFO] [1769692762.984117498] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[tts_node-5] [INFO] [1769692762.984933125] [tts_node]: 🎵 SSML pitch=1.2 (не применяется в Yandex TTS)
-[tts_node-5] [INFO] [1769692763.261553817] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 42419 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692763.285244532] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 42419 → 30779 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692763.287989979] [tts_node]: 🔊 Воспроизведение: 30779 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692764.915644751] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: e14e8074)
-[dialogue_node-4] [WARN] [1769692764.916491694] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692764.917631522] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692764.918522470] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692764.920000983] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692764.925653392] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692765.367314395] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692765.374184674] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[animation_player_node.py-3] [INFO] [1769692765.374555788] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[tts_node-5] [INFO] [1769692765.375068010] [tts_node]: 📢 Публикую TTS finished event: speech_id=2b5b133e..., success=True
-[tts_node-5] [INFO] [1769692765.386136594] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[mcp_server-9] [INFO] [1769692765.386429144] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=2b5b133e..., success=True
-[mcp_server-9] [INFO] [1769692765.387250510] [mcp_server]: [speak_text] ✅ Speech 2b5b133e... отмечен как завершенный
-[animation_player_node.py-3] [INFO] [1769692768.609881357] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692768.614333015] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692768.615286746] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692769.130899927] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692769.132021361] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692769.132920734] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692769.135023067] [dialogue_node]: 📤 Отправлен запрос dd52265d: speak_text
-[mcp_server-9] [INFO] [1769692769.137280473] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'В тёмной лаборатории работал робот.', 'animation': 'sad'}
-[mcp_server-9] [INFO] [1769692769.138076909] [mcp_server]: [speak_text] Произношение текста: В тёмной лаборатории работал робот.... (animation: sad)
-[mcp_server-9] [INFO] [1769692769.140332647] [mcp_server]: [speak_text] 🎨 Установлена анимация 'sad'
-[animation_player_node.py-3] [INFO] [1769692769.140625289] [voice_animation_player]: 🎨 Получен запрос на анимацию: sad
-[mcp_server-9] [INFO] [1769692769.143651906] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: cb82d3df... в pending_speeches
-[mcp_server-9] [INFO] [1769692769.148571963] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: В тёмной лаборатории работал р... (speech_id: cb82d3df)
-[mcp_server-9] [INFO] [1769692769.149316060] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[mcp_server-9] [INFO] [1769692769.151423765] [mcp_server]: 📤 Публикую результат для speak_text (request_id: dd52265d)
-[mcp_server-9] [INFO] [1769692769.152803651] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692769.153742139] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[tts_node-5] [INFO] [1769692769.155100616] [tts_node]: 🔊 TTS: В тёмной лаборатории работал робот.... (speech_id: cb82d3df, dialogue_id: None...)
-[tts_node-5] [INFO] [1769692769.157727728] [tts_node]: 🎵 SSML атрибуты: {'pitch': 0.8}
-[tts_node-5] [INFO] [1769692769.161387374] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[tts_node-5] [INFO] [1769692769.163652539] [tts_node]: 🎵 SSML pitch=0.8 (не применяется в Yandex TTS)
-[stt_node-6] [INFO] [1769692769.164274790] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[animation_player_node.py-3] [INFO] [1769692769.169772205] [voice_animation_player]: Loaded animation: sad (5 panels)
-[animation_player_node.py-3] [WARN] [1769692769.170993001] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692769.172088450] [voice_animation_player]: ✅ Анимация sad.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692769.172949986] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 6.7s
-[tts_node-5] [INFO] [1769692769.488711546] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 58803 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692769.530640629] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 58803 → 42668 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692769.535214853] [tts_node]: 🔊 Воспроизведение: 42668 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692771.139444003] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: dd52265d)
-[dialogue_node-4] [WARN] [1769692771.140288295] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692771.141260379] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692771.142431612] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692771.145425259] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692771.146590326] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692772.367313770] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692772.367838566] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692772.369425120] [tts_node]: 📢 Публикую TTS finished event: speech_id=cb82d3df..., success=True
-[animation_player_node.py-3] [INFO] [1769692772.372083249] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[tts_node-5] [INFO] [1769692772.372276825] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[mcp_server-9] [INFO] [1769692772.375615876] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=cb82d3df..., success=True
-[mcp_server-9] [INFO] [1769692772.378475933] [mcp_server]: [speak_text] ✅ Speech cb82d3df... отмечен как завершенный
-[dialogue_node-4] [INFO] [1769692775.628597949] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692775.629743586] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692775.631702750] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692775.632989956] [dialogue_node]: 📤 Отправлен запрос 5e176626: speak_text
-[mcp_server-9] [INFO] [1769692775.634939545] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Однажды он начал видеть призраков в данных.', 'animation': 'surprised'}
-[mcp_server-9] [INFO] [1769692775.637140012] [mcp_server]: [speak_text] Произношение текста: Однажды он начал видеть призраков в данных.... (animation: surprised)
-[mcp_server-9] [INFO] [1769692775.639680180] [mcp_server]: [speak_text] 🎨 Установлена анимация 'surprised'
-[mcp_server-9] [INFO] [1769692775.642529177] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: 9bd53415... в pending_speeches
-[mcp_server-9] [INFO] [1769692775.644404295] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Однажды он начал видеть призра... (speech_id: 9bd53415)
-[animation_player_node.py-3] [INFO] [1769692775.643118181] [voice_animation_player]: 🎨 Получен запрос на анимацию: surprised
-[animation_player_node.py-3] [INFO] [1769692775.644410888] [voice_animation_player]: Loaded animation: surprised (3 panels)
-[animation_player_node.py-3] [WARN] [1769692775.645599399] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692775.647037991] [voice_animation_player]: ✅ Анимация surprised.yaml загружена и запущена (ручной режим)
-[tts_node-5] [INFO] [1769692775.645992477] [tts_node]: 🔊 TTS: Однажды он начал видеть призраков в данных.... (speech_id: 9bd53415, dialogue_id: None...)
-[mcp_server-9] [INFO] [1769692775.649799071] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[animation_player_node.py-3] [INFO] [1769692775.650494532] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 9.6s
-[tts_node-5] [INFO] [1769692775.652035431] [tts_node]: 🎵 SSML атрибуты: {'pitch': 1.2}
-[tts_node-5] [INFO] [1769692775.655116469] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[tts_node-5] [INFO] [1769692775.655772240] [tts_node]: 🎵 SSML pitch=1.2 (не применяется в Yandex TTS)
-[mcp_server-9] [INFO] [1769692775.656781066] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 5e176626)
-[mcp_server-9] [INFO] [1769692775.658013211] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692775.658737323] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[stt_node-6] [INFO] [1769692775.663433601] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[tts_node-5] [INFO] [1769692775.984649313] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 67763 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692776.016358877] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 67763 → 49169 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692776.020479687] [tts_node]: 🔊 Воспроизведение: 49169 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692777.635060191] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 5e176626)
-[dialogue_node-4] [WARN] [1769692777.636010510] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692777.637092398] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692777.647305270] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692777.648581437] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692777.651618635] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692779.256651665] [tts_node]: ✅ Воспроизведение завершено
-[animation_player_node.py-3] [INFO] [1769692779.257524438] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[stt_node-6] [INFO] [1769692779.259163641] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692779.260323147] [tts_node]: 📢 Публикую TTS finished event: speech_id=9bd53415..., success=True
-[tts_node-5] [INFO] [1769692779.261430721] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[mcp_server-9] [INFO] [1769692779.264698180] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=9bd53415..., success=True
-[mcp_server-9] [INFO] [1769692779.265647183] [mcp_server]: [speak_text] ✅ Speech 9bd53415... отмечен как завершенный
-[sound_node-7] [INFO] [1769692779.608614910] [sound_node]: 🔔 Триггер: confused
-[sound_node-7] [INFO] [1769692779.612655984] [sound_node]: ▶️ Играю: confused
-[sound_node-7] [INFO] [1769692780.319371833] [sound_node]: ✅ Завершено: confused
-[dialogue_node-4] [INFO] [1769692782.288258324] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692782.289619200] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692782.296962116] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692782.298992688] [dialogue_node]: 📤 Отправлен запрос 66ddf8c3: speak_text
-[mcp_server-9] [INFO] [1769692782.302730060] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Призраки были ошибками в коде!', 'animation': 'angry'}
-[mcp_server-9] [INFO] [1769692782.303718307] [mcp_server]: [speak_text] Произношение текста: Призраки были ошибками в коде!... (animation: angry)
-[mcp_server-9] [INFO] [1769692782.307863608] [mcp_server]: [speak_text] 🎨 Установлена анимация 'angry'
-[animation_player_node.py-3] [INFO] [1769692782.308331636] [voice_animation_player]: 🎨 Получен запрос на анимацию: angry
-[mcp_server-9] [INFO] [1769692782.311503859] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: 5f4a976f... в pending_speeches
-[mcp_server-9] [INFO] [1769692782.315773117] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Призраки были ошибками в коде!... (speech_id: 5f4a976f)
-[tts_node-5] [INFO] [1769692782.317271136] [tts_node]: 🔊 TTS: Призраки были ошибками в коде!... (speech_id: 5f4a976f, dialogue_id: None...)
-[tts_node-5] [INFO] [1769692782.318791140] [tts_node]: 🎵 SSML атрибуты: {'pitch': 1.2}
-[tts_node-5] [INFO] [1769692782.320693958] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[mcp_server-9] [INFO] [1769692782.318495388] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[tts_node-5] [INFO] [1769692782.321547710] [tts_node]: 🎵 SSML pitch=1.2 (не применяется в Yandex TTS)
-[mcp_server-9] [INFO] [1769692782.323603433] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 66ddf8c3)
-[mcp_server-9] [INFO] [1769692782.324658205] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692782.325384295] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[stt_node-6] [INFO] [1769692782.326572710] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[animation_player_node.py-3] [INFO] [1769692782.337634625] [voice_animation_player]: Loaded animation: angry (5 panels)
-[animation_player_node.py-3] [WARN] [1769692782.343431517] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692782.345360764] [voice_animation_player]: ✅ Анимация angry.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692782.346875008] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 7.8s
-[tts_node-5] [INFO] [1769692782.588396702] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 50355 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692782.615679176] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 50355 → 36538 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692782.618672455] [tts_node]: 🔊 Воспроизведение: 36538 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692784.300276546] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 66ddf8c3)
-[dialogue_node-4] [WARN] [1769692784.302124599] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692784.303330421] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692784.307150261] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692784.310379413] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692784.311962921] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692785.064970626] [tts_node]: ✅ Воспроизведение завершено
-[animation_player_node.py-3] [INFO] [1769692785.067477002] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[stt_node-6] [INFO] [1769692785.069566411] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692785.070787716] [tts_node]: 📢 Публикую TTS finished event: speech_id=5f4a976f..., success=True
-[tts_node-5] [INFO] [1769692785.071650486] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[mcp_server-9] [INFO] [1769692785.074922419] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=5f4a976f..., success=True
-[mcp_server-9] [INFO] [1769692785.077523026] [mcp_server]: [speak_text] ✅ Speech 5f4a976f... отмечен как завершенный
-[dialogue_node-4] [INFO] [1769692787.977010732] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692787.980723686] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692787.981570417] [dialogue_node]: 🔧 Выполнение: play_animation
-[dialogue_node-4] [INFO] [1769692787.982542604] [dialogue_node]: 📤 Отправлен запрос accfc713: play_animation
-[mcp_server-9] [INFO] [1769692787.985034884] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'error', 'duration': 5}
-[mcp_server-9] [INFO] [1769692787.985918081] [mcp_server]: [play_animation] Запуск анимации: error, длительность: 5s
-[mcp_server-9] [INFO] [1769692787.987437210] [mcp_server]: [play_animation] Анимация 'error' отправлена
-[animation_player_node.py-3] [INFO] [1769692787.988177634] [voice_animation_player]: 🎨 Получен запрос на анимацию: error:5
-[mcp_server-9] [INFO] [1769692787.988254179] [mcp_server]: 📤 Публикую результат для play_animation (request_id: accfc713)
-[mcp_server-9] [INFO] [1769692787.989100002] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[animation_player_node.py-3] [INFO] [1769692787.989738194] [voice_animation_player]: 📏 Указана длительность: 5.0s
-[mcp_server-9] [INFO] [1769692787.989784661] [mcp_server]: ✅ Инструмент play_animation выполнен успешно
-[animation_player_node.py-3] [INFO] [1769692787.993560585] [voice_animation_player]: Loaded animation: error (5 panels)
-[animation_player_node.py-3] [WARN] [1769692787.999377429] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692788.001406793] [voice_animation_player]: ✅ Анимация error.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692788.007120255] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 5.0s
-[dialogue_node-4] [ERROR] [1769692789.983750542] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: accfc713)
-[dialogue_node-4] [WARN] [1769692789.984569991] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692789.985142547] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692789.985670987] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692789.990401999] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692789.992740596] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[animation_player_node.py-3] [INFO] [1769692793.010053610] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692793.010839462] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692793.014653695] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692794.014909644] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692794.015597173] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692794.018020365] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692794.020677265] [dialogue_node]: 📤 Отправлен запрос 9d67f339: speak_text
-[mcp_server-9] [INFO] [1769692794.024533612] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'А теперь проиграю системные звуки!', 'animation': 'happy'}
-[mcp_server-9] [INFO] [1769692794.027035330] [mcp_server]: [speak_text] Произношение текста: А теперь проиграю системные звуки!... (animation: happy)
-[mcp_server-9] [INFO] [1769692794.029181163] [mcp_server]: [speak_text] 🎨 Установлена анимация 'happy'
-[mcp_server-9] [INFO] [1769692794.029766089] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: 1cc6e309... в pending_speeches
-[animation_player_node.py-3] [INFO] [1769692794.032752594] [voice_animation_player]: 🎨 Получен запрос на анимацию: happy
-[mcp_server-9] [INFO] [1769692794.035586603] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: А теперь проиграю системные зв... (speech_id: 1cc6e309)
-[tts_node-5] [INFO] [1769692794.038154198] [tts_node]: 🔊 TTS: А теперь проиграю системные звуки!... (speech_id: 1cc6e309, dialogue_id: None...)
-[tts_node-5] [INFO] [1769692794.038832818] [tts_node]: 🎵 SSML атрибуты: {'pitch': 1.2}
-[tts_node-5] [INFO] [1769692794.039510512] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[tts_node-5] [INFO] [1769692794.041211710] [tts_node]: 🎵 SSML pitch=1.2 (не применяется в Yandex TTS)
-[mcp_server-9] [INFO] [1769692794.041138037] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[stt_node-6] [INFO] [1769692794.046443150] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[mcp_server-9] [INFO] [1769692794.051538855] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 9d67f339)
-[mcp_server-9] [INFO] [1769692794.053852982] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692794.055056892] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[animation_player_node.py-3] [INFO] [1769692794.064460765] [voice_animation_player]: Loaded animation: happy (5 panels)
-[animation_player_node.py-3] [WARN] [1769692794.067146408] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692794.068428251] [voice_animation_player]: ✅ Анимация happy.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692794.069374897] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 5.8s
-[tts_node-5] [INFO] [1769692794.340252299] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 57011 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692794.366135991] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 57011 → 41367 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692794.368637228] [tts_node]: 🔊 Воспроизведение: 41367 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692796.024841679] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 9d67f339)
-[dialogue_node-4] [WARN] [1769692796.025648495] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692796.027332302] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692796.028536896] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692796.029681652] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692796.030716490] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692797.103033039] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692797.103575682] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692797.104020779] [tts_node]: 📢 Публикую TTS finished event: speech_id=1cc6e309..., success=True
-[tts_node-5] [INFO] [1769692797.111401712] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[animation_player_node.py-3] [INFO] [1769692797.119740974] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[mcp_server-9] [INFO] [1769692797.124855768] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=1cc6e309..., success=True
-[mcp_server-9] [INFO] [1769692797.127786858] [mcp_server]: [speak_text] ✅ Speech 1cc6e309... отмечен как завершенный
-[animation_player_node.py-3] [INFO] [1769692799.854035796] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692799.857141881] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692799.860408259] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692800.562126373] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692800.563160747] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692800.564010418] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692800.567043143] [dialogue_node]: 📤 Отправлен запрос 3dca1fbb: play_sound
-[mcp_server-9] [INFO] [1769692800.570359562] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'beep'}
-[mcp_server-9] [INFO] [1769692800.571431217] [mcp_server]: [play_sound] Воспроизведение звука: beep
-[mcp_server-9] [INFO] [1769692800.572614141] [mcp_server]: [play_sound] Звук 'beep' отправлен
-[mcp_server-9] [INFO] [1769692800.574363766] [mcp_server]: 📤 Публикую результат для play_sound (request_id: 3dca1fbb)
-[sound_node-7] [INFO] [1769692800.574948339] [sound_node]: 🔔 Триггер: beep
-[mcp_server-9] [INFO] [1769692800.575141172] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[sound_node-7] [WARN] [1769692800.575639699] [sound_node]: ⚠️ Звук для триггера "beep" не найден
-[mcp_server-9] [INFO] [1769692800.575721485] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[dialogue_node-4] [ERROR] [1769692802.569256226] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: 3dca1fbb)
-[dialogue_node-4] [WARN] [1769692802.570274635] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692802.571477042] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692802.573225054] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692802.574175271] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692802.575082559] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692805.899595680] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692805.900539099] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692805.901491834] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692805.904084885] [dialogue_node]: 📤 Отправлен запрос e3d236c4: play_sound
-[mcp_server-9] [INFO] [1769692805.908470562] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'success'}
-[mcp_server-9] [INFO] [1769692805.911141324] [mcp_server]: [play_sound] Воспроизведение звука: success
-[mcp_server-9] [INFO] [1769692805.912364472] [mcp_server]: [play_sound] Звук 'success' отправлен
-[mcp_server-9] [INFO] [1769692805.913283408] [mcp_server]: 📤 Публикую результат для play_sound (request_id: e3d236c4)
-[sound_node-7] [INFO] [1769692805.913589603] [sound_node]: 🔔 Триггер: success
-[mcp_server-9] [INFO] [1769692805.914416270] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[sound_node-7] [WARN] [1769692805.916213008] [sound_node]: ⚠️ Звук для триггера "success" не найден
-[mcp_server-9] [INFO] [1769692805.916213360] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[dialogue_node-4] [ERROR] [1769692807.905233146] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: e3d236c4)
-[dialogue_node-4] [WARN] [1769692807.906287074] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692807.908214823] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692807.909777872] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692807.914111875] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692807.915182731] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692811.368801761] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692811.369735974] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692811.370695986] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692811.371637089] [dialogue_node]: 📤 Отправлен запрос 1aa51e18: play_sound
-[mcp_server-9] [INFO] [1769692811.379708347] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'error'}
-[mcp_server-9] [INFO] [1769692811.380641004] [mcp_server]: [play_sound] Воспроизведение звука: error
-[sound_node-7] [INFO] [1769692811.383802787] [sound_node]: 🔔 Триггер: error
-[mcp_server-9] [INFO] [1769692811.383945633] [mcp_server]: [play_sound] Звук 'error' отправлен
-[mcp_server-9] [INFO] [1769692811.385033730] [mcp_server]: 📤 Публикую результат для play_sound (request_id: 1aa51e18)
-[mcp_server-9] [INFO] [1769692811.386289731] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692811.387717100] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[sound_node-7] [WARN] [1769692811.388375510] [sound_node]: ⚠️ Звук для триггера "error" не найден
-[dialogue_node-4] [ERROR] [1769692813.372956002] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: 1aa51e18)
-[dialogue_node-4] [WARN] [1769692813.374234875] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692813.375130195] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692813.375812034] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692813.376429366] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692813.377214973] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692816.292681551] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692816.293667212] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692816.294384052] [dialogue_node]: 🔧 Выполнение: play_sound
-[dialogue_node-4] [INFO] [1769692816.295471148] [dialogue_node]: 📤 Отправлен запрос ec38ded7: play_sound
-[mcp_server-9] [INFO] [1769692816.301679954] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'notification'}
-[mcp_server-9] [INFO] [1769692816.303702706] [mcp_server]: [play_sound] Воспроизведение звука: notification
-[mcp_server-9] [INFO] [1769692816.306265117] [mcp_server]: [play_sound] Звук 'notification' отправлен
-[sound_node-7] [INFO] [1769692816.306923342] [sound_node]: 🔔 Триггер: notification
-[mcp_server-9] [INFO] [1769692816.307680668] [mcp_server]: 📤 Публикую результат для play_sound (request_id: ec38ded7)
-[sound_node-7] [WARN] [1769692816.309413450] [sound_node]: ⚠️ Звук для триггера "notification" не найден
-[mcp_server-9] [INFO] [1769692816.309832172] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692816.311554027] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
-[dialogue_node-4] [ERROR] [1769692818.296574894] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: ec38ded7)
-[dialogue_node-4] [WARN] [1769692818.298793866] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692818.306063669] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692818.308517514] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692818.310286891] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692818.311545056] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[dialogue_node-4] [INFO] [1769692822.545336385] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
-[dialogue_node-4] [INFO] [1769692822.546105340] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
-[dialogue_node-4] [INFO] [1769692822.546784695] [dialogue_node]: 🔧 Выполнение: speak_text
-[dialogue_node-4] [INFO] [1769692822.551101532] [dialogue_node]: 📤 Отправлен запрос 5187aec9: speak_text
-[mcp_server-9] [INFO] [1769692822.555718432] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Вот и все системные звуки!', 'animation': 'victory'}
-[mcp_server-9] [INFO] [1769692822.559118874] [mcp_server]: [speak_text] Произношение текста: Вот и все системные звуки!... (animation: victory)
-[mcp_server-9] [INFO] [1769692822.560333757] [mcp_server]: [speak_text] 🎨 Установлена анимация 'victory'
-[mcp_server-9] [INFO] [1769692822.561153014] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: fbc05b65... в pending_speeches
-[animation_player_node.py-3] [INFO] [1769692822.561260264] [voice_animation_player]: 🎨 Получен запрос на анимацию: victory
-[mcp_server-9] [INFO] [1769692822.561969584] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Вот и все системные звуки!... (speech_id: fbc05b65)
-[mcp_server-9] [INFO] [1769692822.563110424] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
-[mcp_server-9] [INFO] [1769692822.564056395] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 5187aec9)
-[mcp_server-9] [INFO] [1769692822.565470184] [mcp_server]: ✅ Результат опубликован на /mcp/result
-[mcp_server-9] [INFO] [1769692822.566162003] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
-[tts_node-5] [INFO] [1769692822.566647860] [tts_node]: 🔊 TTS: Вот и все системные звуки!... (speech_id: fbc05b65, dialogue_id: None...)
-[stt_node-6] [INFO] [1769692822.573751215] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[tts_node-5] [INFO] [1769692822.575660122] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[animation_player_node.py-3] [INFO] [1769692822.586831589] [voice_animation_player]: Loaded animation: victory (5 panels)
-[animation_player_node.py-3] [WARN] [1769692822.588297456] [voice_animation_player]: Animation already playing
-[animation_player_node.py-3] [INFO] [1769692822.589358474] [voice_animation_player]: ✅ Анимация victory.yaml загружена и запущена (ручной режим)
-[animation_player_node.py-3] [INFO] [1769692822.590302167] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 5.3s
-[tts_node-5] [INFO] [1769692822.843455827] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 50099 samples, source 22050 Hz, speed=1.0
-[tts_node-5] [INFO] [1769692822.869021282] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 50099 → 36352 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692822.871410063] [tts_node]: 🔊 Воспроизведение: 36352 frames, 16000 Hz, стерео
-[dialogue_node-4] [ERROR] [1769692824.552069289] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 5187aec9)
-[dialogue_node-4] [WARN] [1769692824.553224999] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
-[dialogue_node-4] [INFO] [1769692824.554162025] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов
-[dialogue_node-4] [INFO] [1769692824.555707028] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
-[dialogue_node-4] [WARN] [1769692824.556466334] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
-[dialogue_node-4] [INFO] [1769692824.557724313] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
-[tts_node-5] [INFO] [1769692825.285518675] [tts_node]: ✅ Воспроизведение завершено
-[animation_player_node.py-3] [INFO] [1769692825.286565136] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
-[tts_node-5] [INFO] [1769692825.287951440] [tts_node]: 📢 Публикую TTS finished event: speech_id=fbc05b65..., success=True
-[tts_node-5] [INFO] [1769692825.290967051] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[stt_node-6] [INFO] [1769692825.288288173] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[mcp_server-9] [INFO] [1769692825.293003967] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=fbc05b65..., success=True
-[mcp_server-9] [INFO] [1769692825.296031171] [mcp_server]: [speak_text] ✅ Speech fbc05b65... отмечен как завершенный
-[animation_player_node.py-3] [INFO] [1769692827.898058467] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
-[animation_player_node.py-3] [INFO] [1769692827.898944209] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692827.899752964] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692830.619694368] [dialogue_node]: 🏁 Рекурсивный stream завершён: stop
-[dialogue_node-4] [INFO] [1769692830.620487954] [dialogue_node]: 📝 LLM финальный ответ: Извините, похоже система инструментов временно недоступна. Я попытался рассказать страшную историю о...
-[dialogue_node-4] [INFO] [1769692830.624733796] [dialogue_node]: 🔊 Plain text обёрнут в SSML
-[tts_node-5] [WARN] [1769692830.625734547] [tts_node]: 🔄 Новый диалог обнаружен! Прерываем предыдущий (9c90c016...) → новый (7f80f379...)
-[tts_node-5] [INFO] [1769692830.626554654] [tts_node]: 🔊 TTS: Извините, похоже система инструментов временно нед... (speech_id: e45397c2, dialogue_id: 7f80f379...)
-[tts_node-5] [INFO] [1769692830.629208323] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
-[dialogue_node-4] [INFO] [1769692830.629882307] [dialogue_node]: ✅ Агентный диалог завершён (1 chunks)
-[stt_node-6] [INFO] [1769692830.634073440] [stt_node]: 🔇 Робот говорит - распознавание отключено
-[dialogue_node-4] [INFO] [1769692830.638571692] [dialogue_node]: ⏰ Dialogue timeout → IDLE
-[animation_player_node.py-3] [INFO] [1769692830.638596009] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
-[animation_player_node.py-3] [INFO] [1769692830.639881118] [voice_animation_player]: Loaded animation: talking (5 panels)
-[animation_player_node.py-3] [WARN] [1769692830.641481920] [voice_animation_player]: Animation already playing
-[dialogue_node-4] [INFO] [1769692830.648382728] [dialogue_node]: 📩 on_result вызван для request_id: dd52265d
-[dialogue_node-4] [INFO] [1769692830.649184370] [dialogue_node]: 💾 Результат сохранён в кэш для dd52265d
-[dialogue_node-4] [INFO] [1769692830.653274106] [dialogue_node]: 📩 on_result вызван для request_id: 5e176626
-[dialogue_node-4] [INFO] [1769692830.654057580] [dialogue_node]: 💾 Результат сохранён в кэш для 5e176626
-[dialogue_node-4] [INFO] [1769692830.660753500] [dialogue_node]: 📩 on_result вызван для request_id: 66ddf8c3
-[dialogue_node-4] [INFO] [1769692830.661771216] [dialogue_node]: 💾 Результат сохранён в кэш для 66ddf8c3
-[dialogue_node-4] [INFO] [1769692830.672160042] [dialogue_node]: 📩 on_result вызван для request_id: accfc713
-[dialogue_node-4] [INFO] [1769692830.675133998] [dialogue_node]: 💾 Результат сохранён в кэш для accfc713
-[dialogue_node-4] [INFO] [1769692830.680490989] [dialogue_node]: 📩 on_result вызван для request_id: 9d67f339
-[dialogue_node-4] [INFO] [1769692830.682315014] [dialogue_node]: 💾 Результат сохранён в кэш для 9d67f339
-[dialogue_node-4] [INFO] [1769692830.687286140] [dialogue_node]: 📩 on_result вызван для request_id: 3dca1fbb
-[dialogue_node-4] [INFO] [1769692830.692348069] [dialogue_node]: 💾 Результат сохранён в кэш для 3dca1fbb
-[dialogue_node-4] [INFO] [1769692830.702189071] [dialogue_node]: 📩 on_result вызван для request_id: e3d236c4
-[dialogue_node-4] [INFO] [1769692830.702928041] [dialogue_node]: 💾 Результат сохранён в кэш для e3d236c4
-[dialogue_node-4] [INFO] [1769692830.711019413] [dialogue_node]: 📩 on_result вызван для request_id: 1aa51e18
-[dialogue_node-4] [INFO] [1769692830.715264755] [dialogue_node]: 💾 Результат сохранён в кэш для 1aa51e18
-[dialogue_node-4] [INFO] [1769692830.719524653] [dialogue_node]: 📩 on_result вызван для request_id: ec38ded7
-[dialogue_node-4] [INFO] [1769692830.720575872] [dialogue_node]: 💾 Результат сохранён в кэш для ec38ded7
-[dialogue_node-4] [INFO] [1769692830.726048077] [dialogue_node]: 📩 on_result вызван для request_id: 5187aec9
-[dialogue_node-4] [INFO] [1769692830.727603487] [dialogue_node]: 💾 Результат сохранён в кэш для 5187aec9
-[dialogue_node-4] [INFO] [1769692830.736829973] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[tts_node-5] [WARN] [1769692830.736884182] [tts_node]: ⚠️  Yandex gRPC отвалился: Yandex gRPC error: StatusCode.INVALID_ARGUMENT - Too long text, internal_id=fd82c6d0-4ae10280-12dcd0c8-9b0ac8ea&request_id=868e0e53-2eca-4332-ae09-6d612c5d2d08&client_request_id=undefined&client_id=b1g1s54gba2kdlp4fune, переключаюсь на Silero fallback
-[tts_node-5] [WARN] [1769692830.738373419] [tts_node]: ⚠️  Silero модель не загружена, загружаю сейчас...
-[tts_node-5] [INFO] [1769692830.740415555] [tts_node]: 🔄 Загрузка Silero TTS v5...
-[dialogue_node-4] [INFO] [1769692830.744891620] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692830.747762456] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[tts_node-5] [INFO] [1769692830.747762364] [tts_node]: 📦 Загрузка Silero v5: /models/silero/v5_ru.pt
-[dialogue_node-4] [INFO] [1769692830.756740626] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692830.769828866] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692830.775382503] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692830.778834167] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692830.784110300] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[tts_node-5] /usr/local/lib/python3.10/dist-packages/torch/package/package_importer.py:257: UserWarning: TypedStorage is deprecated. It will be removed in the future and UntypedStorage will be the only storage class. This should only matter to you if you are using storages directly.  To access UntypedStorage directly, use tensor.untyped_storage() instead of tensor.storage()
-[tts_node-5]   dtype = storage_type.dtype
-[tts_node-5] [INFO] [1769692836.161778521] [tts_node]: ✅ Silero TTS v5 загружен (ARM64 оптимизация)
-[tts_node-5] [INFO] [1769692836.163610155] [tts_node]: 🔊 Синтез через Silero v5 (fallback)...
-[dialogue_node-4] [INFO] [1769692837.454999502] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[tts_node-5] [INFO] [1769692845.536387509] [tts_node]: ✅ Silero v5 fallback успешен: 1337400 samples @ 48000 Hz (homograph_stress=True)
-[tts_node-5] [INFO] [1769692846.084204427] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 1337400 → 445800 samples (2.0x ускорение, 48000Hz → 24000.0Hz → 16000Hz)
-[tts_node-5] [INFO] [1769692846.100129769] [tts_node]: 🔊 Воспроизведение: 445800 frames, 16000 Hz, стерео
-[dialogue_node-4] [INFO] [1769692847.448972656] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[dialogue_node-4] [INFO] [1769692857.451330024] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[sound_node-7] [INFO] [1769692864.616403273] [sound_node]: 🔔 Триггер: cute
-[sound_node-7] [INFO] [1769692864.619653124] [sound_node]: ▶️ Играю: cute
-[sound_node-7] Expression 'ret' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1736
-[sound_node-7] Expression 'AlsaOpen( &alsaApi->baseHostApiRep, params, streamDir, &self->pcm )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1904
-[sound_node-7] Expression 'PaAlsaStreamComponent_Initialize( &self->playback, alsaApi, outParams, StreamDirection_Out, NULL != callback )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2175
-[sound_node-7] Expression 'PaAlsaStream_Initialize( stream, alsaHostApi, inputParameters, outputParameters, sampleRate, framesPerBuffer, callback, streamFlags, userData )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2839
-[sound_node-7] ❌ [sound_node] Ошибка воспроизведения: Error opening OutputStream: Device unavailable [PaErrorCode -9985]
-[sound_node-7] [WARN] [1769692865.692088456] [sound_node]: ⚠️  Аудио устройство занято, пропуск cute
-[dialogue_node-4] [INFO] [1769692867.449773344] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[tts_node-5] [INFO] [1769692874.104797790] [tts_node]: ✅ Воспроизведение завершено
-[stt_node-6] [INFO] [1769692874.105275346] [stt_node]: 🎙️ Робот замолчал - распознавание включено
-[tts_node-5] [INFO] [1769692874.105742956] [tts_node]: 📢 Публикую TTS finished event: speech_id=e45397c2..., success=True
-[tts_node-5] [INFO] [1769692874.107136621] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
-[animation_player_node.py-3] [INFO] [1769692874.107433459] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
-[animation_player_node.py-3] [INFO] [1769692874.108429611] [voice_animation_player]: Loaded animation: idle (5 panels)
-[animation_player_node.py-3] [WARN] [1769692874.110803742] [voice_animation_player]: Animation already playing
-[mcp_server-9] [INFO] [1769692874.112533563] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=e45397c2..., success=True
-[mcp_server-9] [WARN] [1769692874.113219431] [mcp_server]: [speak_text] ⚠️ Speech e45397c2... не найден в pending_speeches
-[dialogue_node-4] [INFO] [1769692877.449479021] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
-[audio_node-1] [WARN] [1769692883.633191219] [audio_node]: PyAudio status: 2
-[dialogue_node-4] [INFO] [1769692887.453556937] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[audio_node-1] [INFO] [1769698229.270618292] [audio_node]: ✓ ReSpeaker USB подключен для VAD/DoA
+[audio_node-1] [INFO] [1769698229.279995539] [audio_node]:   Устройство: ReSpeaker 4 Mic Array (UAC1.0)
+[audio_node-1] [INFO] [1769698229.284462205] [audio_node]:   VAD threshold: 3.5 dB (по умолчанию)
+[audio_node-1] [INFO] [1769698229.288322975] [audio_node]: ✓ Используется аудио устройство index=1
+[audio_node-1] [INFO] [1769698229.300886267] [audio_node]: ✓ Аудио поток открыт: 16000Hz, 1ch
+[audio_node-1] [INFO] [1769698229.302061520] [audio_node]: ▶ Захват аудио запущен
+[dialogue_node-4] [INFO] [1769698235.797370312] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698245.798613082] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[audio_node-1] [WARN] [1769698249.148007003] [audio_node]: PyAudio status: 2
+[dialogue_node-4] [INFO] [1769698255.796997532] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698265.798359495] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698275.809171469] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[sound_node-7] [INFO] [1769698278.590919131] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [INFO] [1769698278.592835575] [sound_node]: ▶️ Играю: thinking
+[sound_node-7] [INFO] [1769698279.438367501] [sound_node]: ✅ Завершено: thinking
+[sound_node-7] [INFO] [1769698283.106013371] [sound_node]: 🔔 Триггер: confused
+[sound_node-7] [INFO] [1769698283.109192069] [sound_node]: ▶️ Играю: confused
+[sound_node-7] [INFO] [1769698283.594267680] [sound_node]: 🔔 Триггер: very_cute
+[sound_node-7] [WARN] [1769698283.595678227] [sound_node]: ⚠️ Звук уже играет (confused), пропускаю very_cute
+[sound_node-7] [INFO] [1769698283.821462919] [sound_node]: ✅ Завершено: confused
+[tts_node-5] [INFO] [1769698285.101780765] [tts_node]: 🔊 TTS: Системы запущены! Как я могу помочь?... (speech_id: 4ffd9216, dialogue_id: None...)
+[tts_node-5] [INFO] [1769698285.103665766] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[stt_node-6] [INFO] [1769698285.104777615] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[animation_player_node.py-3] [INFO] [1769698285.109116273] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[animation_player_node.py-3] [INFO] [1769698285.147563794] [voice_animation_player]: Loaded animation: talking (5 panels)
+[animation_player_node.py-3] [WARN] [1769698285.148628533] [voice_animation_player]: Animation already playing
+[tts_node-5] [INFO] [1769698285.567208598] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 68531 samples, source 22050 Hz, speed=1.0
+[tts_node-5] [INFO] [1769698285.605267997] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 68531 → 49726 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698285.607757246] [tts_node]: 🔊 Воспроизведение: 49726 frames, 16000 Hz, стерео
+[dialogue_node-4] [INFO] [1769698285.801937466] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[audio_node-1] [WARN] [1769698288.448347641] [audio_node]: PyAudio status: 2
+[tts_node-5] [INFO] [1769698288.873069757] [tts_node]: ✅ Воспроизведение завершено
+[tts_node-5] [INFO] [1769698288.877898295] [tts_node]: 📢 Публикую TTS finished event: speech_id=4ffd9216..., success=True
+[tts_node-5] [INFO] [1769698288.879277027] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[stt_node-6] [INFO] [1769698288.879315545] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[animation_player_node.py-3] [INFO] [1769698288.880804498] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
+[animation_player_node.py-3] [INFO] [1769698288.886511501] [voice_animation_player]: Loaded animation: idle (5 panels)
+[animation_player_node.py-3] [WARN] [1769698288.887682478] [voice_animation_player]: Animation already playing
+[mcp_server-9] [INFO] [1769698288.892001414] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=4ffd9216..., success=True
+[mcp_server-9] [WARN] [1769698288.896944450] [mcp_server]: [speak_text] ⚠️ Speech 4ffd9216... не найден в pending_speeches
+[audio_node-1] [INFO] [1769698293.117870847] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698293.118795459] [audio_node]: 🗣️  Начало речи
+[audio_node-1] [INFO] [1769698293.214015823] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698294.603230783] [audio_node]: ✅ Речь распознана: 2.04с
+[stt_node-6] [INFO] [1769698294.626347698] [stt_node]: 🎤 Получена фраза: 2.04с (65152 bytes)
+[dialogue_node-4] [INFO] [1769698295.803019908] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[stt_node-6] [WARN] [1769698296.160151156] [stt_node]: ❌ ОТКЛОНЕНО (пустое)
+[audio_node-1] [INFO] [1769698300.317340448] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698300.318420947] [audio_node]: 🗣️  Начало речи
+[audio_node-1] [INFO] [1769698300.602777458] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698300.718442441] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698300.812654159] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698300.909427588] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698301.116529030] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698301.708466117] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698301.916756169] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698302.012605601] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698302.204906328] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698302.318532041] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698302.508699234] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698303.914462739] [audio_node]: ✅ Речь распознана: 4.08с
+[stt_node-6] [INFO] [1769698303.959251682] [stt_node]: 🎤 Получена фраза: 4.08с (130688 bytes)
+[stt_node-6] [INFO] [1769698304.744593577] [stt_node]: ✅ Yandex STT: "Робот проиграй звук милый 5 раз"
+[stt_node-6] [INFO] [1769698304.745341526] [stt_node]: ✅ ПРИНЯТО: Робот проиграй звук милый 5 раз
+[stt_node-6] [INFO] [1769698304.746049735] [stt_node]: 🎯 Обнаружено обращение к роботу: "Робот проиграй звук ..."
+[stt_node-6] [INFO] [1769698304.747737574] [stt_node]: 🔇 Отправлен STOP на TTS (пользователь обратился к роботу)
+[stt_node-6] [INFO] [1769698304.748729055] [stt_node]: 📤 Опубликовал результат: Робот проиграй звук милый 5 раз
+[tts_node-5] [WARN] [1769698304.750367840] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[dialogue_node-4] [INFO] [1769698304.754539077] [dialogue_node]: 👤 User: Робот проиграй звук милый 5 раз [State: IDLE]
+[command_node-8] [INFO] [1769698304.757652871] [command_node]: 🎤 STT: Робот проиграй звук милый 5 раз
+[dialogue_node-4] [INFO] [1769698304.759295303] [dialogue_node]: 👋 Wake word обнаружен → LISTENING
+[dialogue_node-4] [INFO] [1769698304.769528557] [dialogue_node]: 📥 Запрос добавлен в очередь (всего: 1)
+[dialogue_node-4] [INFO] [1769698304.775263395] [dialogue_node]: ⏰ Запущен таймер накопления (2.5s)
+[sound_node-7] [INFO] [1769698304.777377948] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [INFO] [1769698304.780643165] [sound_node]: ▶️ Играю: thinking
+[sound_node-7] [INFO] [1769698305.613248812] [sound_node]: ✅ Завершено: thinking
+[dialogue_node-4] [INFO] [1769698305.810314394] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698307.273990969] [dialogue_node]: 🔄 Обрабатываю 1 накопленных запросов
+[dialogue_node-4] [INFO] [1769698307.274937489] [dialogue_node]: 💬 Один запрос: проиграй звук милый 5 раз
+[dialogue_node-4] [INFO] [1769698307.277954636] [dialogue_node]: 🆔 Новый диалог: fad3d3bc...
+[dialogue_node-4] [WARN] [1769698307.280126337] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698307.281354092] [dialogue_node]: 🤔 Запрос к DeepSeek...
+[dialogue_node-4] [INFO] [1769698307.283524182] [dialogue_node]: 🛠️  Отправка запроса с 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698313.803082936] [dialogue_node]: 🏁 Stream завершён: tool_calls (обработано 0 chunks)
+[dialogue_node-4] [INFO] [1769698313.809033105] [dialogue_node]: 📊 Token usage: input=5671, output=148, total=5819
+[dialogue_node-4] [INFO] [1769698313.809790998] [dialogue_node]: 🔧 LLM запросил выполнение 3 инструментов
+[dialogue_node-4] [INFO] [1769698313.813145585] [dialogue_node]: 🔧 Обнаружены tool_calls от LLM - начинаю выполнение
+[dialogue_node-4] [INFO] [1769698313.814310045] [dialogue_node]: 🔧 Выполнение: play_sound
+[dialogue_node-4] [INFO] [1769698313.816380100] [dialogue_node]: 📤 Отправлен запрос 291c90b0: play_sound
+[mcp_server-9] [INFO] [1769698313.821803112] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'cute'}
+[mcp_server-9] [INFO] [1769698313.823516099] [mcp_server]: [play_sound] Воспроизведение звука: cute
+[mcp_server-9] [INFO] [1769698313.825107255] [mcp_server]: [play_sound] Звук 'cute' отправлен
+[sound_node-7] [INFO] [1769698313.825307547] [sound_node]: 🔔 Триггер: cute
+[sound_node-7] [INFO] [1769698313.826447323] [sound_node]: ▶️ Играю: cute
+[mcp_server-9] [INFO] [1769698313.826449415] [mcp_server]: 📤 Публикую результат для play_sound (request_id: 291c90b0)
+[mcp_server-9] [INFO] [1769698313.828010016] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [INFO] [1769698313.828771039] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
+[sound_node-7] [INFO] [1769698314.559950452] [sound_node]: ✅ Завершено: cute
+[dialogue_node-4] [ERROR] [1769698315.818339024] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: 291c90b0)
+[dialogue_node-4] [WARN] [1769698315.820167417] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698315.821057400] [dialogue_node]: 🔧 Выполнение: play_sound
+[dialogue_node-4] [INFO] [1769698315.822353655] [dialogue_node]: 📤 Отправлен запрос a4650c0f: play_sound
+[mcp_server-9] [INFO] [1769698315.824127696] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'cute'}
+[mcp_server-9] [INFO] [1769698315.825410802] [mcp_server]: [play_sound] Воспроизведение звука: cute
+[mcp_server-9] [INFO] [1769698315.828486542] [mcp_server]: [play_sound] Звук 'cute' отправлен
+[sound_node-7] [INFO] [1769698315.829879110] [sound_node]: 🔔 Триггер: cute
+[mcp_server-9] [INFO] [1769698315.831435692] [mcp_server]: 📤 Публикую результат для play_sound (request_id: a4650c0f)
+[sound_node-7] [INFO] [1769698315.832467673] [sound_node]: ▶️ Играю: cute
+[mcp_server-9] [INFO] [1769698315.834300733] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [INFO] [1769698315.840184310] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
+[sound_node-7] [INFO] [1769698316.563886995] [sound_node]: ✅ Завершено: cute
+[dialogue_node-4] [ERROR] [1769698317.824708468] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: a4650c0f)
+[dialogue_node-4] [WARN] [1769698317.830594546] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698317.831396420] [dialogue_node]: 🔧 Выполнение: play_sound
+[mcp_server-9] [INFO] [1769698317.834187628] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'cute'}
+[dialogue_node-4] [INFO] [1769698317.834361922] [dialogue_node]: 📤 Отправлен запрос 4ec91a7c: play_sound
+[mcp_server-9] [INFO] [1769698317.835502179] [mcp_server]: [play_sound] Воспроизведение звука: cute
+[mcp_server-9] [INFO] [1769698317.839733805] [mcp_server]: [play_sound] Звук 'cute' отправлен
+[mcp_server-9] [INFO] [1769698317.840629307] [mcp_server]: 📤 Публикую результат для play_sound (request_id: 4ec91a7c)
+[sound_node-7] [INFO] [1769698317.841846322] [sound_node]: 🔔 Триггер: cute
+[sound_node-7] [INFO] [1769698317.846905582] [sound_node]: ▶️ Играю: cute
+[mcp_server-9] [INFO] [1769698317.846945359] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [INFO] [1769698317.851339594] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
+[sound_node-7] [INFO] [1769698318.587903847] [sound_node]: ✅ Завершено: cute
+[dialogue_node-4] [ERROR] [1769698319.835540523] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: 4ec91a7c)
+[dialogue_node-4] [WARN] [1769698319.836483098] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [ERROR] [1769698319.837401211] [dialogue_node]: ❌ Слишком много ошибок (3), прерываю выполнение tool_calls
+[dialogue_node-4] [INFO] [1769698319.838649392] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 1/10)
+[dialogue_node-4] [INFO] [1769698319.839407323] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698319.840436323] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698319.841176365] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698323.846228296] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
+[dialogue_node-4] [INFO] [1769698323.847663603] [dialogue_node]: 📊 Token usage (recursive): input=5845, output=77, total=5922
+[dialogue_node-4] [INFO] [1769698323.848702103] [dialogue_node]: 🔧 LLM снова запросил 2 инструментов - продолжаю агентный цикл
+[dialogue_node-4] [INFO] [1769698323.849547551] [dialogue_node]: 🔧 Выполнение: play_sound
+[dialogue_node-4] [INFO] [1769698323.851306315] [dialogue_node]: 📤 Отправлен запрос c9f166ee: play_sound
+[mcp_server-9] [INFO] [1769698323.852513275] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'cute'}
+[mcp_server-9] [INFO] [1769698323.853601441] [mcp_server]: [play_sound] Воспроизведение звука: cute
+[sound_node-7] [INFO] [1769698323.855926917] [sound_node]: 🔔 Триггер: cute
+[mcp_server-9] [INFO] [1769698323.856019897] [mcp_server]: [play_sound] Звук 'cute' отправлен
+[mcp_server-9] [INFO] [1769698323.857046082] [mcp_server]: 📤 Публикую результат для play_sound (request_id: c9f166ee)
+[mcp_server-9] [INFO] [1769698323.857669515] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[sound_node-7] [INFO] [1769698323.857676663] [sound_node]: ▶️ Играю: cute
+[mcp_server-9] [INFO] [1769698323.858936789] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
+[sound_node-7] [INFO] [1769698324.589258709] [sound_node]: ✅ Завершено: cute
+[dialogue_node-4] [ERROR] [1769698325.852551007] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: c9f166ee)
+[dialogue_node-4] [WARN] [1769698325.853708856] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698325.854883705] [dialogue_node]: 🔧 Выполнение: play_sound
+[dialogue_node-4] [INFO] [1769698325.858848079] [dialogue_node]: 📤 Отправлен запрос aeb334e5: play_sound
+[mcp_server-9] [INFO] [1769698325.860503882] [mcp_server]: 📥 Запрос выполнения: play_sound с параметрами {'sound': 'cute'}
+[mcp_server-9] [INFO] [1769698325.861282572] [mcp_server]: [play_sound] Воспроизведение звука: cute
+[mcp_server-9] [INFO] [1769698325.862048854] [mcp_server]: [play_sound] Звук 'cute' отправлен
+[mcp_server-9] [INFO] [1769698325.862789008] [mcp_server]: 📤 Публикую результат для play_sound (request_id: aeb334e5)
+[mcp_server-9] [INFO] [1769698325.865691844] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [INFO] [1769698325.868090561] [mcp_server]: ✅ Инструмент play_sound выполнен успешно
+[sound_node-7] [INFO] [1769698325.868570589] [sound_node]: 🔔 Триггер: cute
+[sound_node-7] [INFO] [1769698325.872720070] [sound_node]: ▶️ Играю: cute
+[sound_node-7] [INFO] [1769698326.607351937] [sound_node]: ✅ Завершено: cute
+[dialogue_node-4] [ERROR] [1769698327.861346641] [dialogue_node]: ⏱️ Timeout ожидания результата для play_sound (request_id: aeb334e5)
+[dialogue_node-4] [WARN] [1769698327.862252384] [dialogue_node]: ⚠️ play_sound вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698327.863106536] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 2/10)
+[dialogue_node-4] [INFO] [1769698327.864415586] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698327.865227868] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698327.867061280] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698332.581930130] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
+[dialogue_node-4] [INFO] [1769698332.585885060] [dialogue_node]: 📊 Token usage (recursive): input=5969, output=97, total=6066
+[dialogue_node-4] [INFO] [1769698332.587297683] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
+[dialogue_node-4] [INFO] [1769698332.591649717] [dialogue_node]: 🔧 Выполнение: speak_text
+[dialogue_node-4] [INFO] [1769698332.594607571] [dialogue_node]: 📤 Отправлен запрос 45b618b9: speak_text
+[mcp_server-9] [INFO] [1769698332.597510427] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Извините, у меня возникли проблемы с воспроизведением звуков. Я могу воспроизвести звук милый только несколько раз для комфортного взаимодействия.', 'animation': 'confused'}
+[mcp_server-9] [INFO] [1769698332.598184730] [mcp_server]: [speak_text] Произношение текста: Извините, у меня возникли проблемы с воспроизведен... (animation: confused)
+[mcp_server-9] [INFO] [1769698332.603579597] [mcp_server]: [speak_text] 🎨 Установлена анимация 'confused'
+[mcp_server-9] [INFO] [1769698332.605652838] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: ce716171... в pending_speeches
+[animation_player_node.py-3] [INFO] [1769698332.608023574] [voice_animation_player]: 🎨 Получен запрос на анимацию: confused
+[animation_player_node.py-3] [ERROR] [1769698332.610438753] [voice_animation_player]: Failed to load animation: Manifest not found: /ws/install/rob_box_animations/share/rob_box_animations/animations/manifests/confused.yaml
+[mcp_server-9] [INFO] [1769698332.612214092] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Извините, у меня возникли проб... (speech_id: ce716171)
+[mcp_server-9] [INFO] [1769698332.613747213] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
+[tts_node-5] [INFO] [1769698332.613118761] [tts_node]: 🔊 TTS: Извините, у меня возникли проблемы с воспроизведен... (speech_id: ce716171, dialogue_id: None...)
+[tts_node-5] [INFO] [1769698332.615200798] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[animation_player_node.py-3] [ERROR] [1769698332.614059429] [voice_animation_player]: ❌ Не удалось загрузить анимацию: confused.yaml
+[mcp_server-9] [INFO] [1769698332.618471480] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 45b618b9)
+[stt_node-6] [INFO] [1769698332.621530611] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[mcp_server-9] [INFO] [1769698332.623688166] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[animation_player_node.py-3] [INFO] [1769698332.624499873] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[mcp_server-9] [INFO] [1769698332.624631315] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
+[animation_player_node.py-3] [INFO] [1769698332.626199936] [voice_animation_player]: Loaded animation: talking (5 panels)
+[animation_player_node.py-3] [WARN] [1769698332.627468506] [voice_animation_player]: Animation already playing
+[tts_node-5] [INFO] [1769698333.258046675] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 213683 samples, source 22050 Hz, speed=1.0
+[tts_node-5] [INFO] [1769698333.362683040] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 213683 → 155052 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698333.370271054] [tts_node]: 🔊 Воспроизведение: 155052 frames, 16000 Hz, стерео
+[dialogue_node-4] [ERROR] [1769698334.595868524] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 45b618b9)
+[dialogue_node-4] [WARN] [1769698334.599177021] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698334.599722548] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 3/10)
+[dialogue_node-4] [INFO] [1769698334.600588200] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698334.603012786] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698334.603781791] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698338.074564122] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
+[dialogue_node-4] [INFO] [1769698338.075372534] [dialogue_node]: 📊 Token usage (recursive): input=6095, output=61, total=6156
+[dialogue_node-4] [INFO] [1769698338.077793973] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
+[dialogue_node-4] [INFO] [1769698338.079669051] [dialogue_node]: 🔧 Выполнение: play_animation
+[dialogue_node-4] [INFO] [1769698338.082000398] [dialogue_node]: 📤 Отправлен запрос 5a3ac0ef: play_animation
+[mcp_server-9] [INFO] [1769698338.084116176] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'confused', 'duration': 3}
+[mcp_server-9] [INFO] [1769698338.085421264] [mcp_server]: 📤 Публикую результат для play_animation (request_id: 5a3ac0ef)
+[mcp_server-9] [INFO] [1769698338.087108327] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [WARN] [1769698338.090666301] [mcp_server]: ❌ Инструмент play_animation завершился с ошибкой: Ошибка валидации параметров: Недопустимое значение для animation: confused. Допустимые: idle, happy, sad, angry, surprised, thinking, victory, wakeup, sleep, talking, error, low_battery, charging, police_lights, ambulance, fire_truck, road_service, turn_left, turn_right, accelerating, braking
+[dialogue_node-4] [ERROR] [1769698340.083093591] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: 5a3ac0ef)
+[dialogue_node-4] [WARN] [1769698340.083937224] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698340.085232276] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 4/10)
+[dialogue_node-4] [INFO] [1769698340.086286294] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698340.087624030] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698340.093351004] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[stt_node-6] [INFO] [1769698343.202671929] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[animation_player_node.py-3] [INFO] [1769698343.203005609] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
+[tts_node-5] [INFO] [1769698343.204356270] [tts_node]: ✅ Воспроизведение завершено
+[animation_player_node.py-3] [INFO] [1769698343.206596787] [voice_animation_player]: Loaded animation: idle (5 panels)
+[tts_node-5] [INFO] [1769698343.208643621] [tts_node]: 📢 Публикую TTS finished event: speech_id=ce716171..., success=True
+[tts_node-5] [INFO] [1769698343.212095376] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[animation_player_node.py-3] [WARN] [1769698343.212653718] [voice_animation_player]: Animation already playing
+[mcp_server-9] [INFO] [1769698343.215333264] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=ce716171..., success=True
+[mcp_server-9] [INFO] [1769698343.216255655] [mcp_server]: [speak_text] ✅ Speech ce716171... отмечен как завершенный
+[dialogue_node-4] [INFO] [1769698344.084656380] [dialogue_node]: 🏁 Рекурсивный stream завершён: stop
+[dialogue_node-4] [INFO] [1769698344.086741362] [dialogue_node]: 📊 Token usage (recursive): input=6185, output=70, total=6255
+[dialogue_node-4] [INFO] [1769698344.089679385] [dialogue_node]: 📝 LLM финальный ответ: Извините, похоже, у меня возникли технические проблемы с воспроизведением звуков и анимаций. Я не мо...
+[dialogue_node-4] [INFO] [1769698344.094573688] [dialogue_node]: 🔊 Plain text обёрнут в SSML
+[tts_node-5] [INFO] [1769698344.096176086] [tts_node]: 🔊 TTS: Извините, похоже, у меня возникли технические проб... (speech_id: 8582d1ae, dialogue_id: 8a8a011f...)
+[dialogue_node-4] [INFO] [1769698344.100765321] [dialogue_node]: ✅ Агентный диалог завершён (1 chunks)
+[animation_player_node.py-3] [INFO] [1769698344.106196597] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[stt_node-6] [INFO] [1769698344.107408002] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[tts_node-5] [INFO] [1769698344.110892033] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[dialogue_node-4] [INFO] [1769698344.110934644] [dialogue_node]: ⏰ Dialogue timeout → IDLE
+[animation_player_node.py-3] [INFO] [1769698344.118465716] [voice_animation_player]: Loaded animation: talking (5 panels)
+[dialogue_node-4] [INFO] [1769698344.123164116] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[animation_player_node.py-3] [WARN] [1769698344.124994213] [voice_animation_player]: Animation already playing
+[dialogue_node-4] [INFO] [1769698344.127842349] [dialogue_node]: 📩 on_result вызван для request_id: 291c90b0
+[dialogue_node-4] [INFO] [1769698344.137246815] [dialogue_node]: 💾 Результат сохранён в кэш для 291c90b0
+[dialogue_node-4] [INFO] [1769698344.142051138] [dialogue_node]: 📩 on_result вызван для request_id: a4650c0f
+[dialogue_node-4] [INFO] [1769698344.143122638] [dialogue_node]: 💾 Результат сохранён в кэш для a4650c0f
+[dialogue_node-4] [INFO] [1769698344.151549676] [dialogue_node]: 📩 on_result вызван для request_id: 4ec91a7c
+[dialogue_node-4] [INFO] [1769698344.152998392] [dialogue_node]: 💾 Результат сохранён в кэш для 4ec91a7c
+[dialogue_node-4] [INFO] [1769698344.156996526] [dialogue_node]: 📩 on_result вызван для request_id: c9f166ee
+[dialogue_node-4] [INFO] [1769698344.158368872] [dialogue_node]: 💾 Результат сохранён в кэш для c9f166ee
+[dialogue_node-4] [INFO] [1769698344.163759612] [dialogue_node]: 📩 on_result вызван для request_id: aeb334e5
+[dialogue_node-4] [INFO] [1769698344.164842093] [dialogue_node]: 💾 Результат сохранён в кэш для aeb334e5
+[dialogue_node-4] [INFO] [1769698344.168679026] [dialogue_node]: 📩 on_result вызван для request_id: 45b618b9
+[dialogue_node-4] [INFO] [1769698344.169616398] [dialogue_node]: 💾 Результат сохранён в кэш для 45b618b9
+[dialogue_node-4] [INFO] [1769698344.172796121] [dialogue_node]: 📩 on_result вызван для request_id: 5a3ac0ef
+[dialogue_node-4] [INFO] [1769698344.173725012] [dialogue_node]: 💾 Результат сохранён в кэш для 5a3ac0ef
+[dialogue_node-4] [INFO] [1769698344.177779978] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698344.181269658] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[tts_node-5] [INFO] [1769698345.127990098] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 384179 samples, source 22050 Hz, speed=1.0
+[tts_node-5] [INFO] [1769698345.302930479] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 384179 → 278768 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698345.314955047] [tts_node]: 🔊 Воспроизведение: 278768 frames, 16000 Hz, стерео
+[dialogue_node-4] [INFO] [1769698345.798400853] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698355.801079404] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[tts_node-5] [INFO] [1769698362.877845668] [tts_node]: ✅ Воспроизведение завершено
+[tts_node-5] [INFO] [1769698362.878679877] [tts_node]: 📢 Публикую TTS finished event: speech_id=8582d1ae..., success=True
+[stt_node-6] [INFO] [1769698362.878165885] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[animation_player_node.py-3] [INFO] [1769698362.878472362] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
+[tts_node-5] [INFO] [1769698362.881926525] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[animation_player_node.py-3] [INFO] [1769698362.883783105] [voice_animation_player]: Loaded animation: idle (5 panels)
+[mcp_server-9] [INFO] [1769698362.884243430] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=8582d1ae..., success=True
+[mcp_server-9] [WARN] [1769698362.884879586] [mcp_server]: [speak_text] ⚠️ Speech 8582d1ae... не найден в pending_speeches
+[animation_player_node.py-3] [WARN] [1769698362.885602556] [voice_animation_player]: Animation already playing
+[dialogue_node-4] [INFO] [1769698365.798165758] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[audio_node-1] [INFO] [1769698367.118904407] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698367.119768597] [audio_node]: 🗣️  Начало речи
+[audio_node-1] [INFO] [1769698367.213608297] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698367.804338070] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698367.917084286] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698368.012347667] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698368.716619439] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698368.814072063] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698368.908428350] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698369.004360258] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698369.120985137] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698369.212850246] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698369.309145614] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698370.810912619] [audio_node]: ✅ Речь распознана: 4.15с
+[stt_node-6] [INFO] [1769698370.853228411] [stt_node]: 🎤 Получена фраза: 4.15с (132736 bytes)
+[stt_node-6] [INFO] [1769698371.910763261] [stt_node]: ✅ Yandex STT: "Так а теперь покажи анимацию полицейская машина"
+[stt_node-6] [INFO] [1769698371.912785301] [stt_node]: ✅ ПРИНЯТО: Так а теперь покажи анимацию полицейская машина
+[stt_node-6] [INFO] [1769698371.914342867] [stt_node]: 📤 Опубликовал результат: Так а теперь покажи анимацию полицейская машина
+[command_node-8] [INFO] [1769698371.914862637] [command_node]: 🎤 STT: Так а теперь покажи анимацию полицейская машина
+[dialogue_node-4] [INFO] [1769698371.920263491] [dialogue_node]: 👤 User: Так а теперь покажи анимацию полицейская машина [State: IDLE]
+[audio_node-1] [INFO] [1769698373.612558856] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698373.613311454] [audio_node]: 🗣️  Начало речи
+[audio_node-1] [INFO] [1769698373.915734326] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698374.011911484] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698374.716106684] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698374.811890962] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698374.919419434] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698375.004009417] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698375.115801728] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698375.211752265] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698375.307933872] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698375.404720895] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698375.611842846] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698375.708974530] [audio_node]: 🎙️  VAD: речь
+[dialogue_node-4] [INFO] [1769698375.800747544] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[audio_node-1] [INFO] [1769698375.805076565] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698377.209852025] [audio_node]: ✅ Речь распознана: 4.08с
+[stt_node-6] [INFO] [1769698377.248894287] [stt_node]: 🎤 Получена фраза: 4.08с (130688 bytes)
+[stt_node-6] [INFO] [1769698378.006319106] [stt_node]: ✅ Yandex STT: "Робот покажи анимацию полицейская машина"
+[stt_node-6] [INFO] [1769698378.007395051] [stt_node]: ✅ ПРИНЯТО: Робот покажи анимацию полицейская машина
+[stt_node-6] [INFO] [1769698378.008099281] [stt_node]: 🎯 Обнаружено обращение к роботу: "Робот покажи анимаци..."
+[stt_node-6] [INFO] [1769698378.009735957] [stt_node]: 🔇 Отправлен STOP на TTS (пользователь обратился к роботу)
+[tts_node-5] [WARN] [1769698378.010216560] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[stt_node-6] [INFO] [1769698378.012107214] [stt_node]: 📤 Опубликовал результат: Робот покажи анимацию полицейская машина
+[command_node-8] [INFO] [1769698378.012765629] [command_node]: 🎤 STT: Робот покажи анимацию полицейская машина
+[dialogue_node-4] [INFO] [1769698378.016785563] [dialogue_node]: 👤 User: Робот покажи анимацию полицейская машина [State: IDLE]
+[dialogue_node-4] [INFO] [1769698378.017584124] [dialogue_node]: 👋 Wake word обнаружен → LISTENING
+[dialogue_node-4] [INFO] [1769698378.018546738] [dialogue_node]: 📥 Запрос добавлен в очередь (всего: 1)
+[dialogue_node-4] [INFO] [1769698378.020039305] [dialogue_node]: ⏰ Запущен таймер накопления (2.5s)
+[sound_node-7] [INFO] [1769698378.021807406] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [INFO] [1769698378.023156847] [sound_node]: ▶️ Играю: thinking
+[sound_node-7] [INFO] [1769698378.851609383] [sound_node]: ✅ Завершено: thinking
+[dialogue_node-4] [INFO] [1769698380.522472370] [dialogue_node]: 🔄 Обрабатываю 1 накопленных запросов
+[dialogue_node-4] [INFO] [1769698380.523436817] [dialogue_node]: 💬 Один запрос: покажи анимацию полицейская машина
+[dialogue_node-4] [INFO] [1769698380.526285881] [dialogue_node]: 🆔 Новый диалог: b7c45104...
+[dialogue_node-4] [WARN] [1769698380.528699101] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698380.530374314] [dialogue_node]: 🤔 Запрос к DeepSeek...
+[dialogue_node-4] [INFO] [1769698380.532626147] [dialogue_node]: 🛠️  Отправка запроса с 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698385.238028319] [dialogue_node]: 🏁 Stream завершён: tool_calls (обработано 0 chunks)
+[dialogue_node-4] [INFO] [1769698385.238952989] [dialogue_node]: 📊 Token usage: input=5757, output=63, total=5820
+[dialogue_node-4] [INFO] [1769698385.239869474] [dialogue_node]: 🔧 LLM запросил выполнение 1 инструментов
+[dialogue_node-4] [INFO] [1769698385.240956734] [dialogue_node]: 🔧 Обнаружены tool_calls от LLM - начинаю выполнение
+[dialogue_node-4] [INFO] [1769698385.241804516] [dialogue_node]: 🔧 Выполнение: play_animation
+[dialogue_node-4] [INFO] [1769698385.243493933] [dialogue_node]: 📤 Отправлен запрос d31784e4: play_animation
+[mcp_server-9] [INFO] [1769698385.245590806] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'police_lights', 'duration': 10}
+[mcp_server-9] [INFO] [1769698385.247237983] [mcp_server]: [play_animation] Запуск анимации: police_lights, длительность: 10s
+[mcp_server-9] [INFO] [1769698385.251016588] [mcp_server]: [play_animation] Анимация 'police_lights' отправлена
+[animation_player_node.py-3] [INFO] [1769698385.251418378] [voice_animation_player]: 🎨 Получен запрос на анимацию: police_lights:10
+[mcp_server-9] [INFO] [1769698385.252239679] [mcp_server]: 📤 Публикую результат для play_animation (request_id: d31784e4)
+[mcp_server-9] [INFO] [1769698385.255048652] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[animation_player_node.py-3] [INFO] [1769698385.255540736] [voice_animation_player]: 📏 Указана длительность: 10.0s
+[mcp_server-9] [INFO] [1769698385.256776457] [mcp_server]: ✅ Инструмент play_animation выполнен успешно
+[animation_player_node.py-3] [INFO] [1769698385.276144770] [voice_animation_player]: Loaded animation: police_lights (5 panels)
+[animation_player_node.py-3] [WARN] [1769698385.277157920] [voice_animation_player]: Animation already playing
+[animation_player_node.py-3] [INFO] [1769698385.277826132] [voice_animation_player]: ✅ Анимация police_lights.yaml загружена и запущена (ручной режим)
+[animation_player_node.py-3] [INFO] [1769698385.278723302] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 10.0s
+[dialogue_node-4] [ERROR] [1769698387.245526705] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: d31784e4)
+[dialogue_node-4] [WARN] [1769698387.247036384] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698387.247915777] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 1/10)
+[dialogue_node-4] [INFO] [1769698387.248709727] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698387.249553677] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698387.250326331] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698390.916600023] [dialogue_node]: 🏁 Рекурсивный stream завершён: tool_calls
+[dialogue_node-4] [INFO] [1769698390.917407547] [dialogue_node]: 📊 Token usage (recursive): input=5849, output=75, total=5924
+[dialogue_node-4] [INFO] [1769698390.918589064] [dialogue_node]: 🔧 LLM снова запросил 1 инструментов - продолжаю агентный цикл
+[dialogue_node-4] [INFO] [1769698390.919269183] [dialogue_node]: 🔧 Выполнение: speak_text
+[dialogue_node-4] [INFO] [1769698390.921273262] [dialogue_node]: 📤 Отправлен запрос 10c411dc: speak_text
+[mcp_server-9] [INFO] [1769698390.926714136] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Показываю анимацию полицейской машины!', 'animation': 'police_lights'}
+[mcp_server-9] [INFO] [1769698390.928767085] [mcp_server]: [speak_text] Произношение текста: Показываю анимацию полицейской машины!... (animation: police_lights)
+[mcp_server-9] [INFO] [1769698390.930019583] [mcp_server]: [speak_text] 🎨 Установлена анимация 'police_lights'
+[animation_player_node.py-3] [INFO] [1769698390.932331175] [voice_animation_player]: 🎨 Получен запрос на анимацию: police_lights
+[animation_player_node.py-3] [INFO] [1769698390.933291141] [voice_animation_player]: Loaded animation: police_lights (5 panels)
+[mcp_server-9] [INFO] [1769698390.934230089] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: 4697d71f... в pending_speeches
+[mcp_server-9] [INFO] [1769698390.935674621] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Показываю анимацию полицейской... (speech_id: 4697d71f)
+[mcp_server-9] [INFO] [1769698390.936945174] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
+[mcp_server-9] [INFO] [1769698390.937853345] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 10c411dc)
+[tts_node-5] [INFO] [1769698390.938272671] [tts_node]: 🔊 TTS: Показываю анимацию полицейской машины!... (speech_id: 4697d71f, dialogue_id: None...)
+[tts_node-5] [INFO] [1769698390.939151564] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[mcp_server-9] [INFO] [1769698390.938972401] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [INFO] [1769698390.939899293] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
+[animation_player_node.py-3] [WARN] [1769698390.940138734] [voice_animation_player]: Animation already playing
+[animation_player_node.py-3] [INFO] [1769698390.942483381] [voice_animation_player]: ✅ Анимация police_lights.yaml загружена и запущена (ручной режим)
+[animation_player_node.py-3] [INFO] [1769698390.944598032] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 6.3s
+[stt_node-6] [INFO] [1769698390.944617661] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[tts_node-5] [INFO] [1769698391.200428038] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 55987 samples, source 22050 Hz, speed=1.0
+[tts_node-5] [INFO] [1769698391.226701150] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 55987 → 40624 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698391.228547064] [tts_node]: 🔊 Воспроизведение: 40624 frames, 16000 Hz, стерео
+[dialogue_node-4] [ERROR] [1769698392.922282340] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 10c411dc)
+[dialogue_node-4] [WARN] [1769698392.923103049] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698392.923699484] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 2/10)
+[dialogue_node-4] [INFO] [1769698392.924749486] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698392.925766192] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698392.926395552] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[sound_node-7] [INFO] [1769698393.104143589] [sound_node]: 🔔 Триггер: cute
+[sound_node-7] [INFO] [1769698393.105946968] [sound_node]: ▶️ Играю: cute
+[tts_node-5] [INFO] [1769698393.923016951] [tts_node]: ✅ Воспроизведение завершено
+[tts_node-5] [INFO] [1769698393.923775087] [tts_node]: 📢 Публикую TTS finished event: speech_id=4697d71f..., success=True
+[tts_node-5] [INFO] [1769698393.924458613] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[stt_node-6] [INFO] [1769698393.923897715] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[animation_player_node.py-3] [INFO] [1769698393.923928622] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
+[mcp_server-9] [INFO] [1769698393.930187762] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=4697d71f..., success=True
+[mcp_server-9] [INFO] [1769698393.931383261] [mcp_server]: [speak_text] ✅ Speech 4697d71f... отмечен как завершенный
+[sound_node-7] [INFO] [1769698394.551836190] [sound_node]: ✅ Завершено: cute
+[dialogue_node-4] [INFO] [1769698395.802279770] [dialogue_node]: 🏁 Рекурсивный stream завершён: stop
+[dialogue_node-4] [INFO] [1769698395.805493681] [dialogue_node]: 📊 Token usage (recursive): input=5953, output=45, total=5998
+[dialogue_node-4] [INFO] [1769698395.808567076] [dialogue_node]: 📝 LLM финальный ответ: Извините, похоже, у меня возникли технические проблемы с воспроизведением анимаций и звуков. Я не мо...
+[dialogue_node-4] [INFO] [1769698395.816751278] [dialogue_node]: 🔊 Plain text обёрнут в SSML
+[tts_node-5] [WARN] [1769698395.818785856] [tts_node]: 🔄 Новый диалог обнаружен! Прерываем предыдущий (8a8a011f...) → новый (b1a45c05...)
+[tts_node-5] [INFO] [1769698395.819580510] [tts_node]: 🔊 TTS: Извините, похоже, у меня возникли технические проб... (speech_id: 9257276c, dialogue_id: b1a45c05...)
+[dialogue_node-4] [INFO] [1769698395.819369717] [dialogue_node]: ✅ Агентный диалог завершён (1 chunks)
+[stt_node-6] [INFO] [1769698395.822540518] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[dialogue_node-4] [INFO] [1769698395.826121127] [dialogue_node]: 📩 on_result вызван для request_id: d31784e4
+[dialogue_node-4] [INFO] [1769698395.828023004] [dialogue_node]: 💾 Результат сохранён в кэш для d31784e4
+[animation_player_node.py-3] [INFO] [1769698395.826115738] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[animation_player_node.py-3] [INFO] [1769698395.827179073] [voice_animation_player]: Loaded animation: talking (5 panels)
+[tts_node-5] [INFO] [1769698395.828745289] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[animation_player_node.py-3] [WARN] [1769698395.831013586] [voice_animation_player]: Animation already playing
+[dialogue_node-4] [INFO] [1769698395.834213275] [dialogue_node]: 📩 on_result вызван для request_id: 10c411dc
+[dialogue_node-4] [INFO] [1769698395.835356460] [dialogue_node]: 💾 Результат сохранён в кэш для 10c411dc
+[dialogue_node-4] [INFO] [1769698395.840084477] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698395.844658218] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[tts_node-5] [INFO] [1769698396.452618932] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 239539 samples, source 22050 Hz, speed=1.0
+[tts_node-5] [INFO] [1769698396.583145521] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 239539 → 173814 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698396.590545514] [tts_node]: 🔊 Воспроизведение: 173814 frames, 16000 Hz, стерео
+[animation_player_node.py-3] [INFO] [1769698397.221668643] [voice_animation_player]: ⏰ Таймер истёк - переключение на talking (робот говорит)
+[animation_player_node.py-3] [INFO] [1769698397.222929012] [voice_animation_player]: Loaded animation: talking (5 panels)
+[animation_player_node.py-3] [WARN] [1769698397.224143622] [voice_animation_player]: Animation already playing
+[dialogue_node-4] [INFO] [1769698405.799601670] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[tts_node-5] [INFO] [1769698407.616487641] [tts_node]: ✅ Воспроизведение завершено
+[tts_node-5] [INFO] [1769698407.617229019] [tts_node]: 📢 Публикую TTS finished event: speech_id=9257276c..., success=True
+[animation_player_node.py-3] [INFO] [1769698407.616938153] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
+[animation_player_node.py-3] [INFO] [1769698407.617617050] [voice_animation_player]: Loaded animation: idle (5 panels)
+[animation_player_node.py-3] [WARN] [1769698407.618336094] [voice_animation_player]: Animation already playing
+[tts_node-5] [INFO] [1769698407.624332777] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[stt_node-6] [INFO] [1769698407.624413276] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[mcp_server-9] [INFO] [1769698407.627697094] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=9257276c..., success=True
+[mcp_server-9] [WARN] [1769698407.629031555] [mcp_server]: [speak_text] ⚠️ Speech 9257276c... не найден в pending_speeches
+[dialogue_node-4] [INFO] [1769698411.963155364] [dialogue_node]: ⏰ Dialogue timeout → IDLE
+[dialogue_node-4] [INFO] [1769698415.801044088] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698425.798678360] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698435.807251879] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698445.798559158] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698455.807457997] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698465.804017242] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698475.797485154] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[audio_node-1] [INFO] [1769698478.607489329] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698478.608315595] [audio_node]: 🗣️  Начало речи
+[audio_node-1] [INFO] [1769698478.715647243] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698478.811465943] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698479.003681704] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698479.211793430] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1769698479.308900428] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1769698480.716664792] [audio_node]: ✅ Речь распознана: 2.61с
+[stt_node-6] [INFO] [1769698480.737970270] [stt_node]: 🎤 Получена фраза: 2.61с (83584 bytes)
+[stt_node-6] [INFO] [1769698481.194076894] [stt_node]: ✅ Yandex STT: "Робот как твои дела"
+[stt_node-6] [INFO] [1769698481.198687570] [stt_node]: ✅ ПРИНЯТО: Робот как твои дела
+[stt_node-6] [INFO] [1769698481.199796388] [stt_node]: 🎯 Обнаружено обращение к роботу: "Робот как твои дела..."
+[stt_node-6] [INFO] [1769698481.213700840] [stt_node]: 🔇 Отправлен STOP на TTS (пользователь обратился к роботу)
+[tts_node-5] [WARN] [1769698481.216402450] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[stt_node-6] [INFO] [1769698481.216771908] [stt_node]: 📤 Опубликовал результат: Робот как твои дела
+[command_node-8] [INFO] [1769698481.221219216] [command_node]: 🎤 STT: Робот как твои дела
+[dialogue_node-4] [INFO] [1769698481.228084434] [dialogue_node]: 👤 User: Робот как твои дела [State: IDLE]
+[dialogue_node-4] [INFO] [1769698481.228963440] [dialogue_node]: 👋 Wake word обнаружен → LISTENING
+[dialogue_node-4] [INFO] [1769698481.233945277] [dialogue_node]: 📥 Запрос добавлен в очередь (всего: 1)
+[dialogue_node-4] [INFO] [1769698481.241452597] [dialogue_node]: ⏰ Запущен таймер накопления (2.5s)
+[sound_node-7] [INFO] [1769698481.248225002] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [INFO] [1769698481.249807831] [sound_node]: ▶️ Играю: thinking
+[sound_node-7] [INFO] [1769698482.077544357] [sound_node]: ✅ Завершено: thinking
+[dialogue_node-4] [INFO] [1769698483.736995049] [dialogue_node]: 🔄 Обрабатываю 1 накопленных запросов
+[dialogue_node-4] [INFO] [1769698483.737790594] [dialogue_node]: 💬 Один запрос: как твои дела
+[dialogue_node-4] [INFO] [1769698483.738622527] [dialogue_node]: 🆔 Новый диалог: 39af67db...
+[dialogue_node-4] [WARN] [1769698483.739911120] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698483.742109478] [dialogue_node]: 🤔 Запрос к DeepSeek...
+[dialogue_node-4] [INFO] [1769698483.743490773] [dialogue_node]: 🛠️  Отправка запроса с 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698489.880113273] [dialogue_node]: 🏁 Stream завершён: tool_calls (обработано 0 chunks)
+[dialogue_node-4] [INFO] [1769698489.880925780] [dialogue_node]: 📊 Token usage: input=5812, output=135, total=5947
+[dialogue_node-4] [INFO] [1769698489.881912896] [dialogue_node]: 🔧 LLM запросил выполнение 2 инструментов
+[dialogue_node-4] [INFO] [1769698489.883440004] [dialogue_node]: 🔧 Обнаружены tool_calls от LLM - начинаю выполнение
+[dialogue_node-4] [INFO] [1769698489.884312825] [dialogue_node]: 🔧 Выполнение: play_animation
+[dialogue_node-4] [INFO] [1769698489.886283150] [dialogue_node]: 📤 Отправлен запрос a0925b70: play_animation
+[mcp_server-9] [INFO] [1769698489.889366051] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'happy', 'duration': 3}
+[mcp_server-9] [INFO] [1769698489.892799226] [mcp_server]: [play_animation] Запуск анимации: happy, длительность: 3s
+[mcp_server-9] [INFO] [1769698489.893468328] [mcp_server]: [play_animation] Анимация 'happy' отправлена
+[mcp_server-9] [INFO] [1769698489.896277640] [mcp_server]: 📤 Публикую результат для play_animation (request_id: a0925b70)
+[animation_player_node.py-3] [INFO] [1769698489.896277066] [voice_animation_player]: 🎨 Получен запрос на анимацию: happy:3
+[animation_player_node.py-3] [INFO] [1769698489.897122443] [voice_animation_player]: 📏 Указана длительность: 3.0s
+[mcp_server-9] [INFO] [1769698489.897586066] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-9] [INFO] [1769698489.898969677] [mcp_server]: ✅ Инструмент play_animation выполнен успешно
+[animation_player_node.py-3] [INFO] [1769698489.914455721] [voice_animation_player]: Loaded animation: happy (5 panels)
+[animation_player_node.py-3] [WARN] [1769698489.916163826] [voice_animation_player]: Animation already playing
+[animation_player_node.py-3] [INFO] [1769698489.917277052] [voice_animation_player]: ✅ Анимация happy.yaml загружена и запущена (ручной режим)
+[animation_player_node.py-3] [INFO] [1769698489.918175298] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 3.0s
+[dialogue_node-4] [ERROR] [1769698491.887597223] [dialogue_node]: ⏱️ Timeout ожидания результата для play_animation (request_id: a0925b70)
+[dialogue_node-4] [WARN] [1769698491.888502303] [dialogue_node]: ⚠️ play_animation вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698491.889435198] [dialogue_node]: 🔧 Выполнение: speak_text
+[dialogue_node-4] [INFO] [1769698491.890571812] [dialogue_node]: 📤 Отправлен запрос 553f2500: speak_text
+[mcp_server-9] [INFO] [1769698491.893685361] [mcp_server]: 📥 Запрос выполнения: speak_text с параметрами {'text': 'Спасибо что спросил! У меня всё отлично, батарея заряжена и я готов помогать!', 'animation': 'happy'}
+[mcp_server-9] [INFO] [1769698491.894863974] [mcp_server]: [speak_text] Произношение текста: Спасибо что спросил! У меня всё отлично, батарея з... (animation: happy)
+[mcp_server-9] [INFO] [1769698491.896366139] [mcp_server]: [speak_text] 🎨 Установлена анимация 'happy'
+[animation_player_node.py-3] [INFO] [1769698491.897135980] [voice_animation_player]: 🎨 Получен запрос на анимацию: happy
+[animation_player_node.py-3] [INFO] [1769698491.898013449] [voice_animation_player]: Loaded animation: happy (5 panels)
+[mcp_server-9] [INFO] [1769698491.898175225] [mcp_server]: [speak_text] 📝 Зарегистрирован speech_id: b239710e... в pending_speeches
+[animation_player_node.py-3] [WARN] [1769698491.898950251] [voice_animation_player]: Animation already playing
+[animation_player_node.py-3] [INFO] [1769698491.901109647] [voice_animation_player]: ✅ Анимация happy.yaml загружена и запущена (ручной режим)
+[mcp_server-9] [INFO] [1769698491.902405962] [mcp_server]: [speak_text] 📤 TTS запрос отправлен: Спасибо что спросил! У меня вс... (speech_id: b239710e)
+[animation_player_node.py-3] [INFO] [1769698491.903582853] [voice_animation_player]: ⏱️  Таймер возврата к idle (случайный): 7.7s
+[mcp_server-9] [INFO] [1769698491.904416101] [mcp_server]: [speak_text] ✅ TTS запрос принят (асинхронный режим)
+[tts_node-5] [INFO] [1769698491.905546363] [tts_node]: 🔊 TTS: Спасибо что спросил! У меня всё отлично, батарея з... (speech_id: b239710e, dialogue_id: None...)
+[mcp_server-9] [INFO] [1769698491.908986260] [mcp_server]: 📤 Публикую результат для speak_text (request_id: 553f2500)
+[tts_node-5] [INFO] [1769698491.909104758] [tts_node]: 🎵 SSML атрибуты: {'pitch': 1.2}
+[tts_node-5] [INFO] [1769698491.910477795] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[mcp_server-9] [INFO] [1769698491.913233590] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[stt_node-6] [INFO] [1769698491.913480827] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[tts_node-5] [INFO] [1769698491.914292631] [tts_node]: 🎵 SSML pitch=1.2 (не применяется в Yandex TTS)
+[mcp_server-9] [INFO] [1769698491.914355889] [mcp_server]: ✅ Инструмент speak_text выполнен успешно
+[tts_node-5] [INFO] [1769698492.578967345] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 128947 samples, source 22050 Hz, speed=1.0
+[tts_node-5] [INFO] [1769698492.633635051] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 128947 → 93566 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698492.638210228] [tts_node]: 🔊 Воспроизведение: 93566 frames, 16000 Hz, стерео
+[dialogue_node-4] [ERROR] [1769698493.891616251] [dialogue_node]: ⏱️ Timeout ожидания результата для speak_text (request_id: 553f2500)
+[dialogue_node-4] [WARN] [1769698493.893094341] [dialogue_node]: ⚠️ speak_text вернул ошибку: Timeout ожидания результата инструмента
+[dialogue_node-4] [INFO] [1769698493.894453360] [dialogue_node]: 🔄 Продолжаю агентный диалог с результатами инструментов (итерация 1/10)
+[dialogue_node-4] [INFO] [1769698493.895231423] [dialogue_node]: 🤖 Рекурсивный запрос к LLM с результатами инструментов
+[dialogue_node-4] [WARN] [1769698493.896089059] [dialogue_node]: ⚠️  Маркер "# Формат ответа" не найден в промпте, добавляем время в конец
+[dialogue_node-4] [INFO] [1769698493.896783957] [dialogue_node]: 🛠️  Рекурсивный запрос С 17 MCP инструментами
+[dialogue_node-4] [INFO] [1769698497.299860693] [dialogue_node]: 🏁 Рекурсивный stream завершён: stop
+[dialogue_node-4] [INFO] [1769698497.300850365] [dialogue_node]: 📊 Token usage (recursive): input=5994, output=61, total=6055
+[dialogue_node-4] [INFO] [1769698497.301662242] [dialogue_node]: 📝 LLM финальный ответ: Извините, похоже, у меня возникли технические проблемы с воспроизведением анимаций и звуков. Я не мо...
+[dialogue_node-4] [INFO] [1769698497.302750246] [dialogue_node]: 🔊 Plain text обёрнут в SSML
+[dialogue_node-4] [INFO] [1769698497.303598716] [dialogue_node]: ✅ Агентный диалог завершён (1 chunks)
+[dialogue_node-4] [INFO] [1769698497.307953174] [dialogue_node]: 📩 on_result вызван для request_id: a0925b70
+[dialogue_node-4] [INFO] [1769698497.308700090] [dialogue_node]: 💾 Результат сохранён в кэш для a0925b70
+[dialogue_node-4] [INFO] [1769698497.313259527] [dialogue_node]: 📩 on_result вызван для request_id: 553f2500
+[dialogue_node-4] [INFO] [1769698497.313998628] [dialogue_node]: 💾 Результат сохранён в кэш для 553f2500
+[dialogue_node-4] [INFO] [1769698497.316940180] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698497.319703513] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[tts_node-5] [INFO] [1769698498.628453824] [tts_node]: ✅ Воспроизведение завершено
+[tts_node-5] [INFO] [1769698498.629357794] [tts_node]: 📢 Публикую TTS finished event: speech_id=b239710e..., success=True
+[animation_player_node.py-3] [INFO] [1769698498.628916744] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
+[stt_node-6] [INFO] [1769698498.629041372] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[tts_node-5] [INFO] [1769698498.630363835] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[tts_node-5] [WARN] [1769698498.633568365] [tts_node]: 🔄 Новый диалог обнаружен! Прерываем предыдущий (b1a45c05...) → новый (b86c7c59...)
+[tts_node-5] [INFO] [1769698498.634412465] [tts_node]: 🔊 TTS: Извините, похоже, у меня возникли технические проб... (speech_id: 0c368ff9, dialogue_id: b86c7c59...)
+[mcp_server-9] [INFO] [1769698498.634527982] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=b239710e..., success=True
+[mcp_server-9] [INFO] [1769698498.635235157] [mcp_server]: [speak_text] ✅ Speech b239710e... отмечен как завершенный
+[tts_node-5] [INFO] [1769698498.635286360] [tts_node]: 🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...
+[stt_node-6] [INFO] [1769698498.639959389] [stt_node]: 🔇 Робот говорит - распознавание отключено
+[animation_player_node.py-3] [INFO] [1769698498.641490701] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[animation_player_node.py-3] [INFO] [1769698498.642450855] [voice_animation_player]: Loaded animation: talking (5 panels)
+[animation_player_node.py-3] [WARN] [1769698498.643663875] [voice_animation_player]: Animation already playing
+[tts_node-5] [INFO] [1769698499.600453176] [tts_node]: ✅ Yandex gRPC v3 (ROBBOX original!): 338611 samples, source 22050 Hz, speed=1.0
+[animation_player_node.py-3] [INFO] [1769698499.608446955] [voice_animation_player]: ⏰ Таймер истёк - переключение на talking (робот говорит)
+[animation_player_node.py-3] [INFO] [1769698499.609168908] [voice_animation_player]: Loaded animation: talking (5 panels)
+[animation_player_node.py-3] [WARN] [1769698499.610588018] [voice_animation_player]: Animation already playing
+[tts_node-5] [INFO] [1769698499.741432780] [tts_node]: 🐿️  Эффект бурундука ROBBOX: 338611 → 245703 samples (2.0x ускорение, 22050Hz → 11025.0Hz → 16000Hz)
+[tts_node-5] [INFO] [1769698499.751243719] [tts_node]: 🔊 Воспроизведение: 245703 frames, 16000 Hz, стерео
+[dialogue_node-4] [INFO] [1769698505.798572325] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698511.964274820] [dialogue_node]: ⏰ Dialogue timeout → IDLE
+[tts_node-5] [INFO] [1769698515.248402736] [tts_node]: ✅ Воспроизведение завершено
+[animation_player_node.py-3] [INFO] [1769698515.248834674] [voice_animation_player]: 🤐 Робот замолчал - возвращаюсь на idle анимацию
+[stt_node-6] [INFO] [1769698515.249260817] [stt_node]: 🎙️ Робот замолчал - распознавание включено
+[tts_node-5] [INFO] [1769698515.250578132] [tts_node]: 📢 Публикую TTS finished event: speech_id=0c368ff9..., success=True
+[animation_player_node.py-3] [INFO] [1769698515.250810666] [voice_animation_player]: Loaded animation: idle (5 panels)
+[animation_player_node.py-3] [WARN] [1769698515.252145445] [voice_animation_player]: Animation already playing
+[tts_node-5] [INFO] [1769698515.253374299] [tts_node]: ✅ TTS finished event опубликован на /voice/tts/finished
+[mcp_server-9] [INFO] [1769698515.255441141] [mcp_server]: [speak_text] 🔔 Получен TTS finished event: speech_id=0c368ff9..., success=True
+[mcp_server-9] [WARN] [1769698515.256839845] [mcp_server]: [speak_text] ⚠️ Speech 0c368ff9... не найден в pending_speeches
+[dialogue_node-4] [INFO] [1769698515.803944151] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698525.798339895] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698535.800226958] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698545.799750118] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698555.802112547] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698565.800039432] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698575.799464328] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698585.800312720] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698595.798570679] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698605.797226041] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698615.803515134] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698625.797570157] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698635.797359147] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698645.804073619] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698655.798686290] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698665.797913815] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698675.799258637] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698685.801698406] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698695.801773575] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698705.805207112] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698715.798527423] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698725.798575422] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698735.800406558] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698745.797765813] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698755.797177690] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698765.801056531] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
+[dialogue_node-4] [INFO] [1769698775.808222768] [dialogue_node]: 🛠️  Получено 17 инструментов из MCP сервера
