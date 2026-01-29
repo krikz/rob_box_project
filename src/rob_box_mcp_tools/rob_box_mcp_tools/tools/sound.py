@@ -44,6 +44,14 @@ class PlaySoundTool(MCPTool):
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
         
+        # Валидация алиасов - все цели должны быть в AVAILABLE_SOUNDS
+        for alias, target in self.SOUND_ALIASES.items():
+            if target not in self.AVAILABLE_SOUNDS:
+                raise ValueError(
+                    f"Sound alias '{alias}' points to invalid target '{target}'. "
+                    f"Target must be in AVAILABLE_SOUNDS. Available: {', '.join(self.AVAILABLE_SOUNDS)}"
+                )
+        
         # Publisher для триггеров звуков
         self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
 
@@ -90,6 +98,6 @@ class PlaySoundTool(MCPTool):
         msg.data = actual_sound
         self.sound_pub.publish(msg)
 
-        self.log_info(f"Звук '{sound}' (физический: '{actual_sound}') отправлен")
+        self.log_info(f"Звук '{sound}' отправлен")
 
-        return MCPToolResult(success=True, data={"sound": sound, "actual_sound": actual_sound}, message=f"Воспроизвожу звук: {sound}")
+        return MCPToolResult(success=True, data={"sound": sound}, message=f"Воспроизвожу звук: {sound}")
