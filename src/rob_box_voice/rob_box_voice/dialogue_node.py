@@ -2054,7 +2054,7 @@ class DialogueNode(Node):
         
         return tool_results
 
-    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]):
+    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]], iteration: int = 1):
         """
         Продолжает агентный диалог после выполнения tool_calls (рекурсивно)
         
@@ -2062,8 +2062,19 @@ class DialogueNode(Node):
             messages: Текущая история сообщений  
             tool_calls: Список выполненных tool calls
             tool_results: Результаты выполнения
+            iteration: Текущая итерация агентного цикла (для защиты от зацикливания)
         """
-        self.get_logger().info("🔄 Продолжаю агентный диалог с результатами инструментов")
+        # Защита от бесконечного цикла
+        MAX_ITERATIONS = 10
+        if iteration > MAX_ITERATIONS:
+            self.get_logger().error(f"❌ Достигнут лимит итераций агентного цикла ({MAX_ITERATIONS}). Прерываю.")
+            error_msg = "Извините, я столкнулся с проблемой и не могу продолжить."
+            self._speak_simple(error_msg, show_error_animation=True)
+            self.llm_processing = False
+            self.dialogue_in_progress = False
+            return
+        
+        self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{MAX_ITERATIONS})")
         
         # Добавляем assistant message с tool_calls в историю
         assistant_msg = {
@@ -2209,8 +2220,8 @@ class DialogueNode(Node):
                             self.dialogue_in_progress = False
                             return
                         
-                        # РЕКУРСИВНЫЙ ВЫЗОВ самого себя
-                        self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results)
+                        # РЕКУРСИВНЫЙ ВЫЗОВ самого себя с инкрементированной итерацией
+                        self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results, iteration + 1)
                         return  # Выходим - рекурсия сама завершит обработку
                     
                     break
