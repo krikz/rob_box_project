@@ -887,7 +887,8 @@ class DialogueNode(Node):
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
-                "stream": True
+                "stream": True,
+                "stream_options": {"include_usage": True}  # Включаем информацию о токенах
             }
             
             # Добавляем tools только если MCP доступен и есть инструменты
@@ -1056,6 +1057,16 @@ class DialogueNode(Node):
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
                     self.get_logger().info(f"🏁 Stream завершён: {finish_reason} (обработано {chunk_count} chunks)")
+                    
+                    # ============ Логируем использование токенов ============
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        usage = chunk.usage
+                        prompt_tokens = getattr(usage, 'prompt_tokens', 0)
+                        completion_tokens = getattr(usage, 'completion_tokens', 0)
+                        total_tokens = getattr(usage, 'total_tokens', 0)
+                        self.get_logger().info(
+                            f"📊 Token usage: input={prompt_tokens}, output={completion_tokens}, total={total_tokens}"
+                        )
                     
                     # ============ Обработка tool_calls если LLM запросил выполнение инструментов ============
                     if finish_reason == 'tool_calls' and tool_calls_accumulator:
@@ -2126,7 +2137,8 @@ class DialogueNode(Node):
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
-                "stream": True
+                "stream": True,
+                "stream_options": {"include_usage": True}  # Включаем информацию о токенах
             }
             
             # Добавляем tools для продолжения агентного цикла
@@ -2207,6 +2219,16 @@ class DialogueNode(Node):
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
                     self.get_logger().info(f"🏁 Рекурсивный stream завершён: {finish_reason}")
+                    
+                    # ============ Логируем использование токенов ============
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        usage = chunk.usage
+                        prompt_tokens = getattr(usage, 'prompt_tokens', 0)
+                        completion_tokens = getattr(usage, 'completion_tokens', 0)
+                        total_tokens = getattr(usage, 'total_tokens', 0)
+                        self.get_logger().info(
+                            f"📊 Token usage (recursive): input={prompt_tokens}, output={completion_tokens}, total={total_tokens}"
+                        )
                     
                     # ============ РЕКУРСИЯ: если снова tool_calls! ============
                     if finish_reason == 'tool_calls' and tool_calls_accumulator:
