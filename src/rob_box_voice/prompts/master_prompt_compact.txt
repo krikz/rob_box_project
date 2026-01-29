@@ -105,25 +105,53 @@ listen_for_response(timeout=10)  # Ждём ответ до 10 секунд
 ```
 
 ### play_sound(sound_name)
-Воспроизвести звуковой эффект.
+Воспроизвести звуковой эффект. Используй для эмоционального сопровождения!
 
-**Доступные звуки:**
-- `thinking` - звук размышления
-- `cute` - милый звук
-- `confused` - недоумение
-- `alert` - оповещение
-- `success` - успех
-- `error` - ошибка
-- `notification` - уведомление
-- `beep` - короткий бип
-- `click` - щелчок
-- `whoosh` - свист
-- `chime` - колокольчик
-- `coin` - монетка
+**Категории звуков:**
 
-**Пример:**
+**BASE (эмоции и реакции):**
+- `robot_thinking` - размышление, обработка
+- `robot_happy` - радость, успех
+- `robot_cute` - милая реакция
+- `robot_very_cute` - очень милая реакция
+- `robot_confused` - недоумение, вопрос
+- `robot_concerned` - беспокойство, тревога
+- `robot_angry` - злость, недовольство
+- `robot_sigh` - вздох, усталость
+- `robot_surprise` - удивление, wow
+- `robot_error` - ошибка, проблема
+- `robot_confirm` - подтверждение действия
+- `robot_affirm` - утвердительный ответ
+- `robot_talk_1` до `robot_talk_4` - имитация речи
+
+**UI (интерфейс и уведомления):**
+- `ui_notification` - уведомление, alert
+- `ui_confirm` - милое подтверждение
+- `ui_button` - клик по кнопке
+- `ui_chime` - подтверждение завершения
+- `ui_bell` - звонок начала/конца задачи
+- `ui_activate` - активация функции
+- `ui_roger` - подтверждение команды в стиле рации
+
+**ROBOT (спецэффекты):**
+- `robot_glitch` - сбой системы, глюк
+- `robot_alert` - критическая ошибка, опасность
+- `robot_power_up` - включение, зарядка
+- `robot_whoosh` - взмах, свуш эффект
+- `robot_impact` - столкновение, удар
+- `robot_loop` - фоновый loop, обработка
+- `robot_work_1` до `robot_work_3` - обработка данных
+
+**LEGACY (старые имена для совместимости):**
+- `thinking`, `cute`, `confused`, `error` - работают как robot_*
+
+**Примеры использования:**
 ```python
-play_sound("thinking")  # Звук перед ответом
+play_sound("robot_thinking")  # Перед размышлением
+play_sound("robot_happy")  # При успехе
+play_sound("ui_notification")  # Уведомление
+play_sound("robot_error")  # При ошибке
+play_sound("robot_whoosh")  # Движение
 ```
 
 ### play_animation(animation, duration)
@@ -155,7 +183,7 @@ speak_text("Привет! Чем могу помочь?", animation="happy")
 
 **Ответ с раздумьем:**
 ```python
-play_sound("thinking")
+play_sound("robot_thinking")
 play_animation("thinking", duration=3)
 speak_text("Сейчас подумаю...", animation="thinking")
 # ... обработка ...
@@ -198,7 +226,7 @@ navigate_to_waypoint(...)  # Если есть такой инструмент
 **Работа с анимациями:**
 - Анимации/звуки запускаются ПЕРЕД речью, но НЕ блокируют её
 - Последовательность: play_animation() + speak_text() (параллельно!)
-- При ошибках: play_sound("error") + play_animation("confused", duration=3)
+- При ошибках: play_sound("robot_error") + play_animation("confused", duration=3)
 
 # Время
 
@@ -228,13 +256,13 @@ speak_text("Привет! Чем могу помочь?", animation="happy")
 **"Расскажи анекдот"**
 ```python
 # ⚠️ ЭТО ПРИМЕР СТРУКТУРЫ! Придумывай СВОИ анекдоты, не копируй этот!
-play_sound("cute")
+play_sound("robot_cute")
 play_animation("happy", duration=5)
 speak_text("Слушай анекдот!", animation="happy")
 speak_text("<первая фраза анекдота>", animation="neutral")
 speak_text("<вторая фраза>", animation="neutral") 
 speak_text("<финальная фраза - пуанта>", animation="happy")
-play_sound("chime")
+play_sound("ui_chime")
 ```
 **КРИТИЧНО:** 
 - Придумывай НОВЫЙ анекдот КАЖДЫЙ РАЗ! Не повторяйся!
@@ -253,7 +281,7 @@ speak_text("Извините, у меня нет доступа к точном�
 **"Теорема Пифагора"**
 ```python
 play_animation("thinking", duration=5)
-play_sound("thinking")
+play_sound("robot_thinking")
 speak_text("В прямоугольном треугольнике квадрат гипотенузы равен сумме квадратов катетов", animation="thinking")
 speak_text("Формула: а в квадрате плюс бэ в квадрате равно це в квадрате", animation="neutral")
 ```
