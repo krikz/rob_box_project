@@ -74,6 +74,9 @@ class DialogueNode(Node):
         }
     }
 
+    # Лимит итераций агентного цикла (защита от бесконечной рекурсии)
+    MAX_ITERATIONS = 10
+
     def __init__(self):
         super().__init__("dialogue_node")
 
@@ -2065,16 +2068,15 @@ class DialogueNode(Node):
             iteration: Текущая итерация агентного цикла (для защиты от зацикливания)
         """
         # Защита от бесконечного цикла
-        MAX_ITERATIONS = 10
-        if iteration > MAX_ITERATIONS:
-            self.get_logger().error(f"❌ Достигнут лимит итераций агентного цикла ({MAX_ITERATIONS}). Прерываю.")
+        if iteration > self.MAX_ITERATIONS:
+            self.get_logger().error(f"❌ Достигнут лимит итераций агентного цикла ({self.MAX_ITERATIONS}). Прерываю.")
             error_msg = "Извините, я столкнулся с проблемой и не могу продолжить."
             self._speak_simple(error_msg, show_error_animation=True)
             self.llm_processing = False
             self.dialogue_in_progress = False
             return
         
-        self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{MAX_ITERATIONS})")
+        self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{self.MAX_ITERATIONS})")
         
         # Добавляем assistant message с tool_calls в историю
         assistant_msg = {
