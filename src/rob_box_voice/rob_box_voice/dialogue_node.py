@@ -1958,7 +1958,7 @@ class DialogueNode(Node):
         # 1. Backup
         backup_ok = await self._backup_rtabmap_db()
         if not backup_ok:
-            self._trigger_sound("angry_2")
+            self._trigger_sound("error")
             return "Не удалось создать резервную копию карты. Операция отменена."
 
         # 2. Reset memory
@@ -1970,7 +1970,7 @@ class DialogueNode(Node):
             return "Начинаю исследование. Старая карта сохранена в резервной копии."
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка reset_memory: {e}")
-            self._trigger_sound("angry_2")
+            self._trigger_sound("error")
             return "Не удалось сбросить память RTABMap. Попробуйте позже."
 
     def command_feedback_callback(self, msg: String):

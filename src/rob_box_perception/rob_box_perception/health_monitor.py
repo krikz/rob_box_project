@@ -91,7 +91,7 @@ class HealthMonitor(Node):
         # Звуковой сигнал при изменении статуса
         if self.enable_sounds and status != self.last_status:
             if status == "🚨 CRITICAL":
-                self._play_sound('angry_2')
+                self._play_sound('error')
             elif status == "⚠️  DEGRADED":
                 self._play_sound('confused')
             elif status == "✅ HEALTHY" and self.last_status is not None:  # Восстановление

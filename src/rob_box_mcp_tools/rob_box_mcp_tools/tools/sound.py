@@ -18,39 +18,25 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class PlaySoundTool(MCPTool):
     """Инструмент для воспроизведения звуковых эффектов"""
 
-    # Доступные звуковые эффекты для LLM (включает физические файлы и алиасы)
+    # Доступные звуковые эффекты (должны соответствовать файлам в sound_pack/)
     AVAILABLE_SOUNDS = [
         "thinking",
         "cute",
         "very_cute",
         "confused",
         "angry_1",
-        "angry_2",
         "surprise",
         "talk_1",
         "talk_2",
         "talk_3",
         "talk_4",
-        "error",  # Alias для angry_2 (звучит как ошибка)
+        "error",  # error.mp3 (звучит как ошибка, бывший angry_2)
     ]
-
-    # Алиасы для звуков (сопоставление логического имени с физическим файлом)
-    SOUND_ALIASES = {
-        "error": "angry_2",  # error звучит как angry_2.mp3
-    }
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
-        
-        # Валидация алиасов - все цели должны быть в AVAILABLE_SOUNDS
-        for alias, target in self.SOUND_ALIASES.items():
-            if target not in self.AVAILABLE_SOUNDS:
-                raise ValueError(
-                    f"Sound alias '{alias}' points to invalid target '{target}'. "
-                    f"Target must be in AVAILABLE_SOUNDS. Available: {', '.join(self.AVAILABLE_SOUNDS)}"
-                )
         
         # Publisher для триггеров звуков
         self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
@@ -89,19 +75,12 @@ class PlaySoundTool(MCPTool):
                 success=False, error=f"Неизвестный звук: {sound}", message=f"Доступные: {', '.join(self.AVAILABLE_SOUNDS)}"
             )
 
-        # Преобразовать алиас в реальное имя файла (если есть)
-        actual_sound = self.SOUND_ALIASES.get(sound, sound)
-        
         # Публикуем триггер звука
         from std_msgs.msg import String
         msg = String()
-        msg.data = actual_sound
+        msg.data = sound
         self.sound_pub.publish(msg)
 
-        # Логирование с указанием алиаса (если используется)
-        if sound in self.SOUND_ALIASES:
-            self.log_info(f"Звук '{sound}' (alias для '{actual_sound}') отправлен")
-        else:
-            self.log_info(f"Звук '{sound}' отправлен")
+        self.log_info(f"Звук '{sound}' отправлен")
 
         return MCPToolResult(success=True, data={"sound": sound}, message=f"Воспроизвожу звук: {sound}")
