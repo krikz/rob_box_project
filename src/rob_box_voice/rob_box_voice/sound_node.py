@@ -304,7 +304,7 @@ class SoundNode(Node):
             "confused": "confused",
             "angry": "angry",
             "angry_1": "angry",
-            "error": "angry",  # error (бывший angry_2) → angry animation
+            "error": "error",  # error → error animation
             "cute": "happy",
             "very_cute": "very_happy",
             "talk": "talking",
