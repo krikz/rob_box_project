@@ -91,7 +91,6 @@ class SoundNode(Node):
         self.sounds: Dict[str, AudioSegment] = {}
         self.sound_groups: Dict[str, List[str]] = {
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
-            "angry": ["angry_1"],  # angry_2 переименован в error
             "cute": ["cute", "very_cute"],
         }
 

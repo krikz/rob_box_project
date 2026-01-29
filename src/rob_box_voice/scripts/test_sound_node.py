@@ -43,7 +43,6 @@ def main():
         'talk_4',
         # Группы
         'talk',   # Random из talk_1..4
-        'angry',  # Random из angry_1
         'cute',   # Random из cute/very_cute
     ]
     
