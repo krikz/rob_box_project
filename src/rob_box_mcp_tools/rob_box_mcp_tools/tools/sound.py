@@ -31,7 +31,13 @@ class PlaySoundTool(MCPTool):
         "talk_2",
         "talk_3",
         "talk_4",
+        "error",  # Alias для angry_2 (звучит как ошибка)
     ]
+
+    # Алиасы для звуков (сопоставление логического имени с физическим файлом)
+    SOUND_ALIASES = {
+        "error": "angry_2",  # error звучит как angry_2.mp3
+    }
 
     def __init__(self, node):
         super().__init__(node)
@@ -75,12 +81,15 @@ class PlaySoundTool(MCPTool):
                 success=False, error=f"Неизвестный звук: {sound}", message=f"Доступные: {', '.join(self.AVAILABLE_SOUNDS)}"
             )
 
+        # Преобразовать алиас в реальное имя файла (если есть)
+        actual_sound = self.SOUND_ALIASES.get(sound, sound)
+        
         # Публикуем триггер звука
         from std_msgs.msg import String
         msg = String()
-        msg.data = sound
+        msg.data = actual_sound
         self.sound_pub.publish(msg)
 
-        self.log_info(f"Звук '{sound}' отправлен")
+        self.log_info(f"Звук '{sound}' (физический: '{actual_sound}') отправлен")
 
-        return MCPToolResult(success=True, data={"sound": sound}, message=f"Воспроизвожу звук: {sound}")
+        return MCPToolResult(success=True, data={"sound": sound, "actual_sound": actual_sound}, message=f"Воспроизвожу звук: {sound}")
