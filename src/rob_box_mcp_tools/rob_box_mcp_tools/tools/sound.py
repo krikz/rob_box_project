@@ -18,20 +18,19 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class PlaySoundTool(MCPTool):
     """Инструмент для воспроизведения звуковых эффектов"""
 
-    # Доступные звуковые эффекты
+    # Доступные звуковые эффекты (должны соответствовать файлам в sound_pack/)
     AVAILABLE_SOUNDS = [
         "thinking",
         "cute",
+        "very_cute",
         "confused",
         "angry_1",
         "angry_2",
-        "happy",
-        "sad",
-        "surprised",
-        "beep",
-        "success",
-        "error",
-        "notification",
+        "surprise",
+        "talk_1",
+        "talk_2",
+        "talk_3",
+        "talk_4",
     ]
 
     def __init__(self, node):
