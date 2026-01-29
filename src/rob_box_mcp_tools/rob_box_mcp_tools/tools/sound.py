@@ -18,7 +18,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class PlaySoundTool(MCPTool):
     """Инструмент для воспроизведения звуковых эффектов"""
 
-    # Доступные звуковые эффекты (должны соответствовать файлам в sound_pack/)
+    # Доступные звуковые эффекты для LLM (включает физические файлы и алиасы)
     AVAILABLE_SOUNDS = [
         "thinking",
         "cute",
@@ -98,6 +98,10 @@ class PlaySoundTool(MCPTool):
         msg.data = actual_sound
         self.sound_pub.publish(msg)
 
-        self.log_info(f"Звук '{sound}' отправлен")
+        # Логирование с указанием алиаса (если используется)
+        if sound in self.SOUND_ALIASES:
+            self.log_info(f"Звук '{sound}' (alias для '{actual_sound}') отправлен")
+        else:
+            self.log_info(f"Звук '{sound}' отправлен")
 
         return MCPToolResult(success=True, data={"sound": sound}, message=f"Воспроизвожу звук: {sound}")
