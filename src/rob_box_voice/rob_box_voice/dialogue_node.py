@@ -74,6 +74,9 @@ class DialogueNode(Node):
         }
     }
 
+    # Лимит итераций агентного цикла (защита от бесконечной рекурсии)
+    MAX_ITERATIONS = 10
+
     def __init__(self):
         super().__init__("dialogue_node")
 
@@ -884,7 +887,8 @@ class DialogueNode(Node):
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
-                "stream": True
+                "stream": True,
+                "stream_options": {"include_usage": True}  # Включаем информацию о токенах
             }
             
             # Добавляем tools только если MCP доступен и есть инструменты
@@ -1053,6 +1057,16 @@ class DialogueNode(Node):
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
                     self.get_logger().info(f"🏁 Stream завершён: {finish_reason} (обработано {chunk_count} chunks)")
+                    
+                    # ============ Логируем использование токенов ============
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        usage = chunk.usage
+                        prompt_tokens = getattr(usage, 'prompt_tokens', 0)
+                        completion_tokens = getattr(usage, 'completion_tokens', 0)
+                        total_tokens = getattr(usage, 'total_tokens', 0)
+                        self.get_logger().info(
+                            f"📊 Token usage: input={prompt_tokens}, output={completion_tokens}, total={total_tokens}"
+                        )
                     
                     # ============ Обработка tool_calls если LLM запросил выполнение инструментов ============
                     if finish_reason == 'tool_calls' and tool_calls_accumulator:
@@ -2054,7 +2068,7 @@ class DialogueNode(Node):
         
         return tool_results
 
-    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]):
+    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]], iteration: int = 1):
         """
         Продолжает агентный диалог после выполнения tool_calls (рекурсивно)
         
@@ -2062,8 +2076,18 @@ class DialogueNode(Node):
             messages: Текущая история сообщений  
             tool_calls: Список выполненных tool calls
             tool_results: Результаты выполнения
+            iteration: Текущая итерация агентного цикла (для защиты от зацикливания)
         """
-        self.get_logger().info("🔄 Продолжаю агентный диалог с результатами инструментов")
+        # Защита от бесконечного цикла
+        if iteration > self.MAX_ITERATIONS:
+            self.get_logger().error(f"❌ Достигнут лимит итераций агентного цикла ({self.MAX_ITERATIONS}). Прерываю.")
+            error_msg = "Извините, я столкнулся с проблемой и не могу продолжить."
+            self._speak_simple(error_msg, show_error_animation=True)
+            self.llm_processing = False
+            self.dialogue_in_progress = False
+            return
+        
+        self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{self.MAX_ITERATIONS})")
         
         # Добавляем assistant message с tool_calls в историю
         assistant_msg = {
@@ -2113,7 +2137,8 @@ class DialogueNode(Node):
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
-                "stream": True
+                "stream": True,
+                "stream_options": {"include_usage": True}  # Включаем информацию о токенах
             }
             
             # Добавляем tools для продолжения агентного цикла
@@ -2195,6 +2220,16 @@ class DialogueNode(Node):
                     finish_reason = chunk.choices[0].finish_reason
                     self.get_logger().info(f"🏁 Рекурсивный stream завершён: {finish_reason}")
                     
+                    # ============ Логируем использование токенов ============
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        usage = chunk.usage
+                        prompt_tokens = getattr(usage, 'prompt_tokens', 0)
+                        completion_tokens = getattr(usage, 'completion_tokens', 0)
+                        total_tokens = getattr(usage, 'total_tokens', 0)
+                        self.get_logger().info(
+                            f"📊 Token usage (recursive): input={prompt_tokens}, output={completion_tokens}, total={total_tokens}"
+                        )
+                    
                     # ============ РЕКУРСИЯ: если снова tool_calls! ============
                     if finish_reason == 'tool_calls' and tool_calls_accumulator:
                         self.get_logger().info(f"🔧 LLM снова запросил {len(tool_calls_accumulator)} инструментов - продолжаю агентный цикл")
@@ -2209,8 +2244,8 @@ class DialogueNode(Node):
                             self.dialogue_in_progress = False
                             return
                         
-                        # РЕКУРСИВНЫЙ ВЫЗОВ самого себя
-                        self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results)
+                        # РЕКУРСИВНЫЙ ВЫЗОВ самого себя с инкрементированной итерацией
+                        self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results, iteration + 1)
                         return  # Выходим - рекурсия сама завершит обработку
                     
                     break

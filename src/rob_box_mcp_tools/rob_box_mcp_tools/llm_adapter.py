@@ -182,6 +182,11 @@ class LLMToolCallAdapter:
 
         request_id = str(uuid.uuid4())
 
+        # Создаём Event для ожидания результата ПЕРЕД публикацией запроса
+        # Это предотвращает race condition, когда результат приходит до регистрации Event
+        result_event = threading.Event()
+        self.result_events[request_id] = result_event
+
         # Формируем запрос
         request = {"tool_name": tool_name, "parameters": parameters, "request_id": request_id}
 
@@ -191,10 +196,6 @@ class LLMToolCallAdapter:
         self.execute_pub.publish(request_msg)
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")
-
-        # Создаём Event для ожидания результата
-        result_event = threading.Event()
-        self.result_events[request_id] = result_event
 
         # Ожидаем результат с таймаутом
         # Используем простой wait() вместо spin_once, т.к. node уже управляется MultiThreadedExecutor
