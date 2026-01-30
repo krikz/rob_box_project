@@ -107,7 +107,7 @@ class DialogueNode(Node):
         self._init_llm_client()
         
         # ThreadPoolExecutor для timeout на blocking операциях (API create())
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="llm-api")
+        self._llm_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="llm-api")
 
         # Accent replacer
         self.accent_replacer = AccentReplacer()
@@ -2167,7 +2167,7 @@ class DialogueNode(Node):
             def _create_stream():
                 return self.client.chat.completions.create(**request_params)
             
-            future = self.executor.submit(_create_stream)
+            future = self._llm_executor.submit(_create_stream)
             try:
                 stream = future.result(timeout=30.0)  # 30 секунд на установку соединения
             except FuturesTimeoutError:
