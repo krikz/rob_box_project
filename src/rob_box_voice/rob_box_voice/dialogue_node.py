@@ -2105,6 +2105,16 @@ class DialogueNode(Node):
         
         self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{self.MAX_ITERATIONS})")
         
+        # 🛑 ПРОВЕРКА: Если был вызван listen_for_response - ОСТАНАВЛИВАЕМ агентный цикл!
+        for result in tool_results:
+            tool_name = result.get('tool_name', '')
+            if tool_name == 'listen_for_response':
+                self.get_logger().info("🛑 ОСТАНОВКА: listen_for_response вызван - жду ответа пользователя")
+                # Добавляем результат в историю, но НЕ продолжаем агентный цикл
+                # Флаг dialogue_in_progress остается True, ожидаем STT
+                self.llm_processing = False
+                return
+        
         # Добавляем assistant message с tool_calls в историю
         assistant_msg = {
             'role': 'assistant',
