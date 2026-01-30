@@ -655,6 +655,23 @@ class TTSNode(Node):
                 if not success:
                     self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
                     self.current_stream = None
+                    # КРИТИЧНО: публикуем события завершения даже при ошибке!
+                    self.publish_state("ready")
+                    
+                    # Публикуем ошибку для MCP tools и animation_player
+                    if speech_id:
+                        finished_msg = String()
+                        finished_msg.data = json.dumps(
+                            {"speech_id": speech_id, "success": False, "error": "Device unavailable"}, 
+                            ensure_ascii=False
+                        )
+                        self.finished_pub.publish(finished_msg)
+                        self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
+                    
+                    # Очищаем processing_dialogue_id
+                    if dialogue_id and self.processing_dialogue_id == dialogue_id:
+                        self.processing_dialogue_id = None
+                    
                     return
                 
                 self.current_stream = None
