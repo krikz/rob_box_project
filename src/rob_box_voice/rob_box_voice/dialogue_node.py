@@ -2207,7 +2207,9 @@ class DialogueNode(Node):
                     self.get_logger().info(f"🛠️  Рекурсивный запрос С {len(self.available_tools)} MCP инструментами")
                 
                 # Создаём stream (httpx client имеет свой timeout: 60s total, 10s connect)
+                self.get_logger().info("📞 Создание рекурсивного stream...")
                 stream = self.client.chat.completions.create(**request_params)
+                self.get_logger().info("✅ Stream создан, начинаю итерацию...")
                 
                 # Накопитель для tool_calls (могут быть снова!)
                 tool_calls_accumulator = {}
@@ -2219,7 +2221,27 @@ class DialogueNode(Node):
                 brace_count = 0
                 in_json = False
                 
+                # Timeout для итерации stream
+                stream_start_time = time.time()
+                last_chunk_time = stream_start_time
+                CHUNK_TIMEOUT = 15.0  # Макс 15 секунд между chunks
+                TOTAL_TIMEOUT = 60.0  # Макс 60 секунд на весь stream
+                
                 for chunk in stream:
+                    # Проверка timeout
+                    current_time = time.time()
+                    if current_time - last_chunk_time > CHUNK_TIMEOUT:
+                        error_msg = f"Recursive stream timeout: no chunks for {CHUNK_TIMEOUT}s"
+                        self.get_logger().error(f"⏱️ {error_msg}")
+                        recursive_result["error"] = error_msg
+                        return
+                    if current_time - stream_start_time > TOTAL_TIMEOUT:
+                        error_msg = f"Recursive stream total timeout: {TOTAL_TIMEOUT}s"
+                        self.get_logger().error(f"⏱️ {error_msg}")
+                        recursive_result["error"] = error_msg
+                        return
+                    last_chunk_time = current_time
+                    
                     # ============ СНОВА проверяем tool_calls (агентный цикл!) ============
                     if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
                         for tc_chunk in chunk.choices[0].delta.tool_calls:
