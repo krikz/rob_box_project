@@ -90,9 +90,13 @@ class SoundNode(Node):
         # Хранилище звуков
         self.sounds: Dict[str, AudioSegment] = {}
         self.sound_groups: Dict[str, List[str]] = {
+            # Random groups for variety
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
-            "angry": ["angry_1", "angry_2"],
             "cute": ["cute", "very_cute"],
+            "confused": ["confused", "confused_alt"],
+            "drip": ["robot_drip_a1", "robot_drip_d4", "robot_drip_d5", "robot_drip_e4"],
+            "work": ["dot_matrix_1", "dot_matrix_2", "dot_matrix_3"],
+            "talk_beep": ["videogame_talk_beep", "videogame_talk_beep_high"],
         }
 
         # Состояние
@@ -297,20 +301,88 @@ class SoundNode(Node):
 
     def trigger_animation(self, trigger: str):
         """Триггер соответствующей анимации"""
-        # Маппинг звуков на анимации
+        # Маппинг звуков на анимации (расширенный для новых звуков)
         animation_map = {
+            # Legacy names
             "thinking": "thinking",
             "surprise": "surprise",
             "confused": "confused",
             "angry": "angry",
             "angry_1": "angry",
-            "angry_2": "angry",
+            "error": "error",
             "cute": "happy",
             "very_cute": "very_happy",
             "talk": "talking",
+            "talk_1": "talking",
+            "talk_2": "talking",
+            "talk_3": "talking",
+            "talk_4": "talking",
+            
+            # BASE robot emotional sounds
+            "robot_thinking": "thinking",
+            "robot_surprise": "surprise",
+            "robot_confused": "confused",
+            "robot_confused_alt": "confused",
+            "robot_angry": "angry",
+            "robot_error": "error",
+            "robot_cute": "happy",
+            "robot_very_cute": "very_happy",
+            "robot_happy": "happy",
+            "robot_sigh": "sad",
+            "robot_concerned": "confused",
+            "robot_affirm": None,  # No animation for affirmation
+            "robot_confirm": None,  # No animation for confirmation
+            "robot_talk_1": "talking",
+            "robot_talk_2": "talking",
+            "robot_talk_3": "talking",
+            "robot_talk_4": "talking",
+            
+            # Drip sounds - no specific animation
+            "robot_drip_a1": None,
+            "robot_drip_d4": None,
+            "robot_drip_d5": None,
+            "robot_drip_e4": None,
+            
+            # UI sounds - no animations
+            "ui_activate": None,
+            "ui_bell": None,
+            "ui_button": None,
+            "ui_chime": None,
+            "ui_confirm": None,
+            "ui_dot": None,
+            "ui_menu_click": None,
+            "ui_note_e": None,
+            "ui_notification": None,
+            "ui_radio_start": None,
+            "ui_random": None,
+            "ui_roger": None,
+            
+            # Robot special effects
+            "robot_glitch": "error",
+            "robot_alert": "error",
+            "robot_power_up": "thinking",
+            "robot_bubbles": None,
+            "robot_fantasy": None,
+            "robot_flyby": None,
+            "robot_impact": None,
+            "robot_liquid": None,
+            "robot_loop": "thinking",
+            "robot_stinger": None,
+            "robot_stun": None,
+            "robot_talk_beep_1": "talking",
+            "robot_talk_beep_2": "talking",
+            "robot_terminal": "thinking",
+            "robot_whoosh": None,
+            "robot_work_1": "thinking",
+            "robot_work_2": "thinking",
+            "robot_work_3": "thinking",
         }
 
         animation = animation_map.get(trigger, trigger)
+        
+        # Skip animation trigger if explicitly set to None
+        if animation is None:
+            return
 
         try:
             msg = String()

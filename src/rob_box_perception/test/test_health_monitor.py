@@ -278,10 +278,10 @@ class TestHealthMonitor(unittest.TestCase):
         # Проверяем что статус изменился
         self.assertEqual(self.node.last_status, '🚨 CRITICAL')
         
-        # Проверяем что был вызван звук 'angry_2'
+        # Проверяем что был вызван звук 'error'
         self.assertTrue(self.node.sound_pub.publish.called)
         published_msg = self.node.sound_pub.publish.call_args[0][0]
-        self.assertEqual(published_msg.data, 'angry_2')
+        self.assertEqual(published_msg.data, 'error')
 
     @patch('builtins.print')
     def test_sound_trigger_on_status_change_to_degraded(self, mock_print):
