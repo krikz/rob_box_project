@@ -1,8 +1,8 @@
-# DeepSeek Connection Pool Timeout Fix
+# DeepSeek ThreadPoolExecutor Deadlock Fix
 
 **Дата:** 30 января 2026  
 **Компонент:** `dialogue_node.py`  
-**Проблема:** Timeout при создании stream соединения к DeepSeek API после idle периода
+**Проблема:** 30-секундный timeout при создании stream соединения к DeepSeek API
 
 ## 🐛 Проблема
 
@@ -15,65 +15,70 @@
 [dialogue_node] ⏱️ TIMEOUT: DeepSeek streaming не ответил за 60.0s
 ```
 
-### Root Cause
-- **Connection pooling** в httpx переиспользует TCP соединения
-- После **~12 минут idle** соединение закрывается на стороне сервера (keepalive timeout)
-- При новом запросе httpx пытается переиспользовать **закрытое соединение**
-- `client.chat.completions.create()` висит **30 секунд** → timeout
+### Root Cause: ThreadPoolExecutor DEADLOCK
 
-### Timeline Analysis
+**Проблема в коде:**
 ```python
-# Успешные запросы (10 минут назад)
-[1769789238] 🏁 Stream завершён: 8139 tokens
-[1769789924] 🏁 Stream завершён: 8139 tokens
-[1769789986] 🏁 Stream завершён: 8139 tokens (последний успешный)
+# dialogue_node.__init__
+self._llm_executor = ThreadPoolExecutor(max_workers=2)  # ❌ Только 2 worker
 
-# 12 минут простоя...
-
-# Failed request
-[1769790698] 👤 User: Робот расскажи анекдот
-[1769790701] 🤔 Запрос к DeepSeek...
-[1769790731] ⏱️ Timeout (30 секунд)
+# _process_dialogue_request
+with ThreadPoolExecutor(max_workers=1) as executor:
+    future = executor.submit(_do_streaming)  # Worker #1 занят
+    
+    def _do_streaming():
+        # Мы УЖЕ ВНУТРИ потока #1
+        future = self._llm_executor.submit(_create_stream)  # ❌ Пытаемся занять worker #2
+        stream = future.result(timeout=30.0)  # ❌ ЖДЁМ... но оба worker заняты!
 ```
 
-**Интервал:** 712 секунд = **~12 минут** idle → connection expired
+**Deadlock scenario:**
+1. Outer `ThreadPoolExecutor(max_workers=1)` запускает `_do_streaming` → **Worker #1 занят**
+2. Внутри `_do_streaming` вызывается `self._llm_executor.submit(_create_stream)` → **пытается занять Worker #2**
+3. Но если `self._llm_executor` тоже имеет `max_workers=2` и оба worker заняты → **DEADLOCK**
+4. `future.result(timeout=30.0)` висит 30 секунд → **TIMEOUT**
+
+### Timeline Analysis
+- **На develop:** Работает (нет вложенного executor.submit)
+- **На feature/agent:** Timeout (добавлен вложенный executor.submit в коммите `4f5f9e8`)
 
 ## ✅ Решение
 
-### Изменение в `dialogue_node.py` (line 350-367)
+### Убрать вложенный `executor.submit`
 
 **Было:**
 ```python
-from httpx import Timeout
-self.client = OpenAI(
-    api_key=api_key,
-    base_url=base_url,
-    timeout=Timeout(60.0, connect=10.0)
-)
+def _do_streaming():  # УЖЕ ВНУТРИ ThreadPoolExecutor
+    # Выполняем create() с timeout используя executor (DEADLOCK!)
+    def _create_stream():
+        return self.client.chat.completions.create(**request_params)
+    
+    future = self._llm_executor.submit(_create_stream)
+    try:
+        stream = future.result(timeout=30.0)
+    except FuturesTimeoutError:
+        streaming_result["error"] = "Failed to establish stream connection"
+        return
 ```
 
 **Стало:**
 ```python
-from httpx import Timeout, Limits
-import httpx
-
-http_client = httpx.Client(
-    timeout=Timeout(60.0, connect=10.0),
-    limits=Limits(max_connections=10, max_keepalive_connections=0),  # Отключаем keepalive pooling
-    follow_redirects=True,
-)
-
-self.client = OpenAI(
-    api_key=api_key,
-    base_url=base_url,
-    http_client=http_client
-)
+def _do_streaming():  # УЖЕ ВНУТРИ ThreadPoolExecutor
+    # Создаём stream напрямую (мы уже в потоке, вложенный executor не нужен)
+    # httpx client имеет свой timeout (60s total, 10s connect)
+    try:
+        stream = self.client.chat.completions.create(**request_params)
+    except Exception as e:
+        self.get_logger().error(f"⏱️ Ошибка создания stream: {e}")
+        streaming_result["error"] = f"Failed to create stream: {e}"
+        return
 ```
 
-### Ключевое изменение
-- **`max_keepalive_connections=0`** — отключает connection pooling
-- Каждый запрос создаёт **новое TCP соединение**
-- Нет проблемы с reuse закрытых соединений
+### Ключевые изменения
+1. **Убран `self._llm_executor.submit()` изнутри `_do_streaming`**
+2. **Прямой вызов `self.client.chat.completions.create()`**
+3. **httpx timeout** (60s total, 10s connect) защищает от зависания
+4. **Исправлено 2 места:** основной stream и рекурсивный stream (line 924, 2209)
 
 ## 📊 Expected Impact
 

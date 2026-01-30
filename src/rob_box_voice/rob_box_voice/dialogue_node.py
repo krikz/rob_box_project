@@ -923,17 +923,13 @@ class DialogueNode(Node):
             else:
                 self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
-            # Выполняем create() с timeout используя executor
-            # Это защищает от зависания на самом вызове API (до начала streaming)
-            def _create_stream():
-                return self.client.chat.completions.create(**request_params)
-            
-            future = self._llm_executor.submit(_create_stream)
+            # Создаём stream напрямую (мы уже внутри ThreadPoolExecutor)
+            # httpx client имеет свой timeout (60s total, 10s connect)
             try:
-                stream = future.result(timeout=30.0)  # 30 секунд на установку соединения
-            except FuturesTimeoutError:
-                self.get_logger().error("⏱️ Timeout при создании stream соединения (30 секунд)")
-                streaming_result["error"] = "Failed to establish stream connection in 30 seconds"
+                stream = self.client.chat.completions.create(**request_params)
+            except Exception as e:
+                self.get_logger().error(f"⏱️ Ошибка создания stream: {e}")
+                streaming_result["error"] = f"Failed to create stream: {e}"
                 return
 
             for chunk in stream:
@@ -2205,17 +2201,13 @@ class DialogueNode(Node):
                 request_params["tools"] = self.available_tools
                 self.get_logger().info(f"🛠️  Рекурсивный запрос С {len(self.available_tools)} MCP инструментами")
             
-            # Выполняем create() с timeout используя executor
-            # Это защищает от зависания на самом вызове API (до начала streaming)
-            def _create_stream():
-                return self.client.chat.completions.create(**request_params)
-            
-            future = self._llm_executor.submit(_create_stream)
+            # Создаём stream напрямую (мы уже внутри ThreadPoolExecutor)
+            # httpx client имеет свой timeout (60s total, 10s connect)
             try:
-                stream = future.result(timeout=30.0)  # 30 секунд на установку соединения
-            except FuturesTimeoutError:
-                self.get_logger().error("⏱️ Timeout при создании stream соединения (30 секунд)")
-                raise TimeoutError("Failed to establish stream connection in 30 seconds")
+                stream = self.client.chat.completions.create(**request_params)
+            except Exception as e:
+                self.get_logger().error(f"⏱️ Ошибка создания рекурсивного stream: {e}")
+                raise TimeoutError(f"Failed to create recursive stream: {e}")
             
             # Накопитель для tool_calls (могут быть снова!)
             tool_calls_accumulator = {}
