@@ -49,9 +49,15 @@ class LLMToolCallAdapter:
         """
         self.node = node
 
-        # QoS для минимизации задержек в Zenoh
+        # Создаём ReentrantCallbackGroup для обработки результатов в отдельном потоке
+        # Это позволяет on_result() вызываться даже когда execute_tool_call_sync() блокирует основной поток
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        self.callback_group = ReentrantCallbackGroup()
+
+        # QoS RELIABLE для гарантированной доставки результатов через Zenoh
+        # BEST_EFFORT терял сообщения в сетевом окружении!
         qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
@@ -59,8 +65,11 @@ class LLMToolCallAdapter:
         # Publisher для запросов выполнения инструментов
         self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
 
-        # Subscriber для результатов
-        self.result_sub = node.create_subscription(String, "/mcp/result", self.on_result, qos_profile)
+        # Subscriber для результатов (используем отдельную callback_group!)
+        self.result_sub = node.create_subscription(
+            String, "/mcp/result", self.on_result, qos_profile,
+            callback_group=self.callback_group
+        )
 
         # Кэш ожидающих результатов: request_id -> callback
         self.pending_requests: Dict[str, Callable] = {}

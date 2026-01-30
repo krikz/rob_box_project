@@ -59,9 +59,10 @@ class MCPServer(Node):
         # Регистрация инструментов
         self._register_tools()
 
-        # QoS для минимизации задержек в Zenoh
+        # QoS RELIABLE для гарантированной доставки результатов через Zenoh
+        # BEST_EFFORT терял сообщения в сетевом окружении!
         qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
