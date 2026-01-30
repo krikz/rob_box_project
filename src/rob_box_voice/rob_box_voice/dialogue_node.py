@@ -82,7 +82,7 @@ class DialogueNode(Node):
 
         # Параметры
         self.declare_parameter("provider", "deepseek")  # qwen | deepseek
-        self.declare_parameter("enable_fallback", True)  # Автоматический fallback на другой провайдер
+        self.declare_parameter("enable_fallback", False)  # Автоматический fallback на другой провайдер
         self.declare_parameter("api_key", "")
         self.declare_parameter("base_url", "")  # Если пусто - берём из PROVIDERS
         self.declare_parameter("model", "")      # Если пусто - берём из PROVIDERS
