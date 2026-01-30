@@ -8,6 +8,8 @@ sound.py - Инструменты для управления звуковыми
 """
 
 from typing import List, TYPE_CHECKING
+import json
+from pathlib import Path
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
@@ -19,80 +21,6 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class PlaySoundTool(MCPTool):
     """Инструмент для воспроизведения звуковых эффектов"""
 
-    # Доступные звуковые эффекты (соответствуют триггерам из sound_catalog.json)
-    # Организованы по категориям для удобства LLM
-    AVAILABLE_SOUNDS = [
-        # BASE emotional/reaction sounds (21)
-        "robot_affirm",          # Утвердительный ответ
-        "robot_angry",           # Злость, недовольство
-        "robot_concerned",       # Беспокойство, тревога
-        "robot_confirm",         # Подтверждение действия
-        "robot_confused",        # Непонимание, вопрос
-        "robot_confused_alt",    # Сильное непонимание
-        "robot_cute",            # Милая реакция
-        "robot_drip_a1",         # Роботический дрип A1
-        "robot_drip_d4",         # Роботический дрип D4
-        "robot_drip_d5",         # Электронный дрип D5
-        "robot_drip_e4",         # Электронный дрип E4
-        "robot_error",           # Ошибка, проблема
-        "robot_happy",           # Радость, успех
-        "robot_sigh",            # Вздох, усталость
-        "robot_surprise",        # Удивление, wow
-        "robot_talk_1",          # Имитация речи #1
-        "robot_talk_2",          # Имитация речи #2
-        "robot_talk_3",          # Имитация речи #3
-        "robot_talk_4",          # Имитация речи #4
-        "robot_thinking",        # Думание, обработка
-        "robot_very_cute",       # Очень милая реакция
-        
-        # UI interaction sounds (12)
-        "ui_activate",           # Активация функции
-        "ui_bell",               # Звонок начала/конца задачи
-        "ui_button",             # Клик по кнопке
-        "ui_chime",              # Подтверждение завершения
-        "ui_confirm",            # Милое подтверждение
-        "ui_dot",                # Минимальный клик
-        "ui_menu_click",         # Клик меню
-        "ui_note_e",             # Музыкальное подтверждение
-        "ui_notification",       # Уведомление, alert
-        "ui_radio_start",        # Включение рации
-        "ui_random",             # Недоступное действие
-        "ui_roger",              # Подтверждение голосовой команды
-        
-        # ROBOT special effects (18)
-        "robot_alert",           # Критическая ошибка, опасность
-        "robot_bubbles",         # Бульканье, жидкость
-        "robot_fantasy",         # Фантастический UI
-        "robot_flyby",           # Движение, пролет мимо
-        "robot_glitch",          # Сбой системы, глюк
-        "robot_impact",          # Столкновение, удар
-        "robot_liquid",          # Жидкостный эффект
-        "robot_loop",            # Фоновый loop, обработка
-        "robot_power_up",        # Включение, зарядка
-        "robot_stinger",         # Драматический акцент
-        "robot_stun",            # Оглушение, импульс
-        "robot_talk_beep_1",     # Короткий beep речи
-        "robot_talk_beep_2",     # Высокий тон beep
-        "robot_terminal",        # Вывод текста, лог
-        "robot_whoosh",          # Взмах, свуш эффект
-        "robot_work_1",          # Обработка данных #1
-        "robot_work_2",          # Обработка данных #2
-        "robot_work_3",          # Обработка данных #3
-        
-        # Legacy names for backward compatibility
-        "thinking",              # → robot_thinking
-        "cute",                  # → robot_cute
-        "very_cute",             # → robot_very_cute
-        "confused",              # → robot_confused
-        "angry_1",               # → robot_angry
-        "surprise",              # → robot_surprise
-        "talk_1",                # → robot_talk_1
-        "talk_2",                # → robot_talk_2
-        "talk_3",                # → robot_talk_3
-        "talk_4",                # → robot_talk_4
-        "error",                 # → robot_error
-    ]
-
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
@@ -100,6 +28,49 @@ class PlaySoundTool(MCPTool):
         
         # Publisher для триггеров звуков
         self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
+        
+        # Загружаем доступные звуки из catalog.json
+        self._available_sounds = self._load_sounds_from_catalog()
+        self.log_info(f"Загружено {len(self._available_sounds)} звуков из catalog")
+    
+    def _load_sounds_from_catalog(self) -> List[str]:
+        """Загрузить список доступных triggers из sound_catalog.json"""
+        # Попробуем найти sound_catalog.json
+        possible_paths = [
+            Path("/ws/sound_pack/sound_catalog.json"),  # Docker путь
+            Path("/home/ros2/rob_box_project/sound_pack/sound_catalog.json"),  # Pi путь
+            Path("sound_pack/sound_catalog.json"),
+            Path("../sound_pack/sound_catalog.json"),
+            Path("../../sound_pack/sound_catalog.json"),
+        ]
+        
+        for path in possible_paths:
+            if path.exists():
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        catalog = json.load(f)
+                    
+                    # Извлечь все triggers из catalog
+                    triggers = []
+                    for filename, info in catalog.items():
+                        if filename.startswith('.') or not filename.endswith('.mp3'):
+                            continue  # Пропустить metadata
+                        if 'trigger' in info:
+                            triggers.append(info['trigger'])
+                    
+                    self.log_info(f"Загружено {len(triggers)} звуков из {path}")
+                    return sorted(triggers)  # Сортируем для удобства
+                    
+                except Exception as e:
+                    self.log_error(f"Ошибка загрузки catalog.json из {path}: {e}")
+        
+        # Fallback - минимальный список базовых звуков
+        self.log_warning("sound_catalog.json не найден, используем fallback список")
+        return [
+            "robot_affirm", "robot_angry", "robot_confused", "robot_cute",
+            "robot_error", "robot_happy", "robot_thinking", "robot_surprise",
+            "ui_button", "ui_confirm", "ui_notification",
+        ]
 
     @property
     def name(self) -> str:
@@ -127,9 +98,9 @@ class PlaySoundTool(MCPTool):
             MCPToolParameter(
                 name="sound",
                 type="string",
-                description="Название звукового эффекта",
+                description="Название звукового эффекта из sound_catalog.json",
                 required=True,
-                enum=self.AVAILABLE_SOUNDS,
+                enum=self._available_sounds,
             )
         ]
 
@@ -142,9 +113,9 @@ class PlaySoundTool(MCPTool):
         """Воспроизвести звук"""
         self.log_info(f"Воспроизведение звука: {sound}")
 
-        if sound not in self.AVAILABLE_SOUNDS:
+        if sound not in self._available_sounds:
             return MCPToolResult(
-                success=False, error=f"Неизвестный звук: {sound}", message=f"Доступные: {', '.join(self.AVAILABLE_SOUNDS)}"
+                success=False, error=f"Неизвестный звук: {sound}", message=f"Доступные: {', '.join(self._available_sounds[:10])}..."
             )
 
         # Публикуем триггер звука

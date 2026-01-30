@@ -11,6 +11,7 @@ from std_msgs.msg import String
 
 import os
 import sys
+import json
 import random
 import threading
 import time
@@ -88,7 +89,8 @@ class SoundNode(Node):
         self.playback_manager = AudioPlaybackManager.get_instance()
 
         # Хранилище звуков
-        self.sounds: Dict[str, AudioSegment] = {}
+        self.sounds: Dict[str, AudioSegment] = {}  # filename (без .mp3) → AudioSegment
+        self.trigger_map: Dict[str, str] = {}  # trigger → filename mapping из catalog.json
         self.sound_groups: Dict[str, List[str]] = {
             # Random groups for variety
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
@@ -136,6 +138,29 @@ class SoundNode(Node):
 
         self.get_logger().info(f"📂 Загрузка звуков из {self.sound_pack_dir}...")
 
+        # Загрузить catalog.json для mapping trigger → filename
+        catalog_path = os.path.join(self.sound_pack_dir, "sound_catalog.json")
+        if os.path.exists(catalog_path):
+            try:
+                with open(catalog_path, 'r', encoding='utf-8') as f:
+                    catalog = json.load(f)
+                    
+                # Построить trigger_map из catalog
+                for filename, info in catalog.items():
+                    if filename.startswith('.') or not filename.endswith('.mp3'):
+                        continue  # Пропустить metadata и non-mp3
+                    if 'trigger' in info:
+                        sound_name = filename.replace(".mp3", "")
+                        self.trigger_map[info['trigger']] = sound_name
+                        
+                self.get_logger().info(f"✅ Загружено {len(self.trigger_map)} trigger mappings из catalog.json")
+                
+            except Exception as e:
+                self.get_logger().error(f"❌ Ошибка чтения catalog.json: {e}")
+        else:
+            self.get_logger().warn(f"⚠️ Файл catalog.json не найден: {catalog_path}")
+
+        # Загрузить все mp3 файлы
         loaded_count = 0
         for filename in os.listdir(self.sound_pack_dir):
             if filename.endswith(".mp3"):
@@ -196,17 +221,23 @@ class SoundNode(Node):
 
     def select_sound(self, trigger: str) -> Optional[str]:
         """Выбрать звук по триггеру"""
-        # Прямое совпадение
+        # 1. Проверить trigger_map (из catalog.json)
+        if trigger in self.trigger_map:
+            sound_name = self.trigger_map[trigger]
+            if sound_name in self.sounds:
+                return sound_name
+        
+        # 2. Прямое совпадение с filename (для обратной совместимости)
         if trigger in self.sounds:
             return trigger
 
-        # Проверить группы (например, trigger="talk" → random из talk_1..4)
+        # 3. Проверить группы (например, trigger="talk" → random из talk_1..4)
         if trigger in self.sound_groups:
             available = [name for name in self.sound_groups[trigger] if name in self.sounds]
             if available:
                 return random.choice(available)
 
-        # Попробовать найти похожий
+        # 4. Попробовать найти похожий
         for sound_name in self.sounds.keys():
             if trigger.lower() in sound_name.lower():
                 return sound_name
