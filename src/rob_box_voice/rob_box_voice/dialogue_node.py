@@ -351,15 +351,24 @@ class DialogueNode(Node):
         self.max_tokens = self.get_parameter("max_tokens").value
         self.streaming = self.get_parameter("streaming").value
         
-        # Создаём OpenAI клиент с timeout
-        from httpx import Timeout
+        # Создаём OpenAI клиент с timeout и отключенным connection pooling
+        # Это предотвращает проблему с reuse закрытых соединений после idle периода
+        from httpx import Timeout, Limits
+        import httpx
+        
+        http_client = httpx.Client(
+            timeout=Timeout(60.0, connect=10.0),
+            limits=Limits(max_connections=10, max_keepalive_connections=0),  # Отключаем keepalive pooling
+            follow_redirects=True,
+        )
+        
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=Timeout(60.0, connect=10.0)
+            http_client=http_client
         )
         
-        self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_config['name']}")
+        self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_config['name']} (no connection pooling)")
         self.get_logger().info(f"  📡 Base URL: {base_url}")
         self.get_logger().info(f"  🤖 Model: {self.model}")
         self.get_logger().info(f"  🌊 Streaming: {self.streaming}")
@@ -620,6 +629,12 @@ class DialogueNode(Node):
                 self.dialogue_manager.transition_state(DialogueState.LISTENING)
                 self._publish_state()
 
+                # Очищаем накопленные мусорные запросы (фоновая речь, обрывки)
+                if self.dialogue_manager.pending_queries:
+                    cleared_count = len(self.dialogue_manager.pending_queries)
+                    self.dialogue_manager.pending_queries.clear()
+                    self.get_logger().info(f"🗑️  Очищено {cleared_count} мусорных запросов перед обработкой")
+
                 # Убираем wake word из текста
                 user_message_clean = self.dialogue_manager.remove_wake_word(user_message_lower)
                 if not user_message_clean:
@@ -739,6 +754,13 @@ class DialogueNode(Node):
             return
 
         # ============ ПРИОРИТЕТ 9: Обычный диалог с LLM ============
+        # Фильтруем короткие бесполезные фразы (меньше 3 слов)
+        word_count = len(user_message.split())
+        if word_count < 3:
+            self.get_logger().debug(f"⏸️  Игнорируем короткую фразу: '{user_message}' ({word_count} слов)")
+            self.dialogue_in_progress = False
+            return
+
         # Добавляем запрос в очередь для накопления
         self.dialogue_manager.add_query(user_message)
 
