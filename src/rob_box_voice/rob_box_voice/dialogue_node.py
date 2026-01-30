@@ -901,7 +901,18 @@ class DialogueNode(Node):
             else:
                 self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
-            stream = self.client.chat.completions.create(**request_params)
+            # Выполняем create() с timeout используя executor
+            # Это защищает от зависания на самом вызове API (до начала streaming)
+            def _create_stream():
+                return self.client.chat.completions.create(**request_params)
+            
+            future = self._llm_executor.submit(_create_stream)
+            try:
+                stream = future.result(timeout=30.0)  # 30 секунд на установку соединения
+            except FuturesTimeoutError:
+                self.get_logger().error("⏱️ Timeout при создании stream соединения (30 секунд)")
+                streaming_result["error"] = "Failed to establish stream connection in 30 seconds"
+                return
 
             for chunk in stream:
                 # Timeout если между chunks прошло слишком много времени
