@@ -75,7 +75,7 @@ class DialogueNode(Node):
     }
 
     # Лимит итераций агентного цикла (защита от бесконечной рекурсии)
-    MAX_ITERATIONS = 10
+    MAX_ITERATIONS = 30
 
     def __init__(self):
         super().__init__("dialogue_node")
@@ -105,6 +105,9 @@ class DialogueNode(Node):
         
         # Инициализация клиента с выбранным провайдером
         self._init_llm_client()
+        
+        # ThreadPoolExecutor для timeout на blocking операциях (API create())
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="llm-api")
 
         # Accent replacer
         self.accent_replacer = AccentReplacer()
@@ -1280,7 +1283,7 @@ class DialogueNode(Node):
                 self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
             # Цикл обработки tool calls (агентный workflow)
-            max_iterations = 10  # Защита от бесконечного цикла
+            max_iterations = 30  # Защита от бесконечного цикла
             iteration = 0
             failed_tools_count = 0  # Счетчик failed tools подряд
 
@@ -1319,7 +1322,7 @@ class DialogueNode(Node):
                             for tc in tool_calls
                         ]
                     }
-                    self.conversation_history.add_assistant_message_with_tools(None, tool_calls_dicts)
+                    self.conversation_history.add_assistant_message_with_tools(None, assistant_message["tool_calls"])
                     messages.append(assistant_message)
 
                     # Выполняем tool_calls через LLMToolCallAdapter
@@ -2159,7 +2162,17 @@ class DialogueNode(Node):
                 request_params["tools"] = self.available_tools
                 self.get_logger().info(f"🛠️  Рекурсивный запрос С {len(self.available_tools)} MCP инструментами")
             
-            stream = self.client.chat.completions.create(**request_params)
+            # Выполняем create() с timeout используя executor
+            # Это защищает от зависания на самом вызове API (до начала streaming)
+            def _create_stream():
+                return self.client.chat.completions.create(**request_params)
+            
+            future = self.executor.submit(_create_stream)
+            try:
+                stream = future.result(timeout=30.0)  # 30 секунд на установку соединения
+            except FuturesTimeoutError:
+                self.get_logger().error("⏱️ Timeout при создании stream соединения (30 секунд)")
+                raise TimeoutError("Failed to establish stream connection in 30 seconds")
             
             # Накопитель для tool_calls (могут быть снова!)
             tool_calls_accumulator = {}
@@ -2171,7 +2184,21 @@ class DialogueNode(Node):
             brace_count = 0
             in_json = False
             
+            # Timeout для stream iteration (защита от зависания)
+            stream_timeout = 120.0  # 2 минуты максимум на рекурсивный stream
+            stream_start_time = time.time()
+            last_chunk_time = stream_start_time
+            
             for chunk in stream:
+                # Проверка timeout между чанками
+                current_time = time.time()
+                if current_time - last_chunk_time > 60.0:  # 60 секунд без чанков
+                    self.get_logger().error(f"⏱️ Stream timeout: 60 секунд без новых chunks")
+                    raise TimeoutError("Stream timeout: no chunks for 60 seconds")
+                if current_time - stream_start_time > stream_timeout:
+                    self.get_logger().error(f"⏱️ Stream total timeout: {stream_timeout} секунд")
+                    raise TimeoutError(f"Stream total timeout: {stream_timeout} seconds")
+                last_chunk_time = current_time
                 # ============ СНОВА проверяем tool_calls (агентный цикл!) ============
                 if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
                     for tc_chunk in chunk.choices[0].delta.tool_calls:
