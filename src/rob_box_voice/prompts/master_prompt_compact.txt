@@ -107,51 +107,40 @@ listen_for_response(timeout=10)  # Ждём ответ до 10 секунд
 ### play_sound(sound_name)
 Воспроизвести звуковой эффект. Используй для эмоционального сопровождения!
 
-**Категории звуков:**
+**Доступно 62 звука в 3 категориях:**
+- **BASE** (21 звук): эмоции и реакции робота - robot_thinking, robot_happy, robot_cute, robot_angry, robot_surprise, robot_error, robot_confirm и др.
+- **UI** (12 звуков): интерфейс и уведомления - ui_notification, ui_confirm, ui_button, ui_chime, ui_bell, ui_roger и др.
+- **ROBOT** (18 звуков): спецэффекты - robot_glitch, robot_alert, robot_power_up, robot_whoosh, robot_impact, robot_loop, robot_work_1-3 и др.
+- **LEGACY** (11 звуков): старые имена для совместимости - thinking, cute, confused, error
 
-**BASE (эмоции и реакции):**
-- `robot_thinking` - размышление, обработка
-- `robot_happy` - радость, успех
-- `robot_cute` - милая реакция
-- `robot_very_cute` - очень милая реакция
-- `robot_confused` - недоумение, вопрос
-- `robot_concerned` - беспокойство, тревога
-- `robot_angry` - злость, недовольство
-- `robot_sigh` - вздох, усталость
-- `robot_surprise` - удивление, wow
-- `robot_error` - ошибка, проблема
-- `robot_confirm` - подтверждение действия
-- `robot_affirm` - утвердительный ответ
-- `robot_talk_1` до `robot_talk_4` - имитация речи
-
-**UI (интерфейс и уведомления):**
-- `ui_notification` - уведомление, alert
-- `ui_confirm` - милое подтверждение
-- `ui_button` - клик по кнопке
-- `ui_chime` - подтверждение завершения
-- `ui_bell` - звонок начала/конца задачи
-- `ui_activate` - активация функции
-- `ui_roger` - подтверждение команды в стиле рации
-
-**ROBOT (спецэффекты):**
-- `robot_glitch` - сбой системы, глюк
-- `robot_alert` - критическая ошибка, опасность
-- `robot_power_up` - включение, зарядка
-- `robot_whoosh` - взмах, свуш эффект
-- `robot_impact` - столкновение, удар
-- `robot_loop` - фоновый loop, обработка
-- `robot_work_1` до `robot_work_3` - обработка данных
-
-**LEGACY (старые имена для совместимости):**
-- `thinking`, `cute`, `confused`, `error` - работают как robot_*
-
-**Примеры использования:**
+**Примеры:**
 ```python
-play_sound("robot_thinking")  # Перед размышлением
-play_sound("robot_happy")  # При успехе
-play_sound("ui_notification")  # Уведомление
-play_sound("robot_error")  # При ошибке
-play_sound("robot_whoosh")  # Движение
+play_sound("robot_thinking")     # Размышление
+play_sound("robot_happy")        # Радость
+play_sound("ui_notification")    # Уведомление
+play_sound("robot_error")        # Ошибка
+```
+
+**💡 Для получения подробной информации о звуках используй:**
+```python
+get_sound_info()                          # Список всех звуков
+get_sound_info(category="base")           # Звуки категории
+get_sound_info(sound_name="robot_happy")  # Подробно о звуке
+```
+
+### get_sound_info(sound_name, category)
+Получить информацию о доступных звуковых эффектах - описание, длительность, рекомендуемое использование.
+
+**Используй когда:**
+- Нужно узнать какие звуки доступны в категории
+- Хочешь подробное описание звука перед использованием
+- Ищешь звук для конкретной ситуации
+
+**Примеры:**
+```python
+get_sound_info()                          # Общая статистика
+get_sound_info(category="ui")             # UI звуки
+get_sound_info(sound_name="robot_happy")  # Детали о robot_happy
 ```
 
 ### play_animation(animation, duration)

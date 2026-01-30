@@ -41,6 +41,7 @@ __all__ = [
     "PlayAnimationTool",
     # Sound tools
     "PlaySoundTool",
+    "GetSoundInfoTool",
     # Dialogue tools
     "SpeakTextTool",
     "ListenForResponseTool",
