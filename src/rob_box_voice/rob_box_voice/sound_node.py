@@ -145,10 +145,11 @@ class SoundNode(Node):
                 with open(catalog_path, 'r', encoding='utf-8') as f:
                     catalog = json.load(f)
                     
-                # Построить trigger_map из catalog
-                for filename, info in catalog.items():
-                    if filename.startswith('.') or not filename.endswith('.mp3'):
-                        continue  # Пропустить metadata и non-mp3
+                # Построить trigger_map из catalog['sounds']
+                sounds = catalog.get('sounds', {})
+                for filename, info in sounds.items():
+                    if not filename.endswith('.mp3'):
+                        continue
                     if 'trigger' in info:
                         sound_name = filename.replace(".mp3", "")
                         self.trigger_map[info['trigger']] = sound_name

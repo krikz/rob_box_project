@@ -50,11 +50,12 @@ class PlaySoundTool(MCPTool):
                     with open(path, 'r', encoding='utf-8') as f:
                         catalog = json.load(f)
                     
-                    # Извлечь все triggers из catalog
+                    # Извлечь все triggers из catalog['sounds']
                     triggers = []
-                    for filename, info in catalog.items():
-                        if filename.startswith('.') or not filename.endswith('.mp3'):
-                            continue  # Пропустить metadata
+                    sounds = catalog.get('sounds', {})
+                    for filename, info in sounds.items():
+                        if not filename.endswith('.mp3'):
+                            continue
                         if 'trigger' in info:
                             triggers.append(info['trigger'])
                     

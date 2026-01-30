@@ -78,10 +78,16 @@ class SpeakTextTool(MCPTool):
                 description="Анимация для отображения на LED матрице во время речи. Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; специальные: police_lights, fire_truck, thinking, и т.д.)",
                 required=False,
                 enum=[
-                    "idle", "happy", "sad", "angry", "surprised", "thinking", "victory",
-                    "wakeup", "sleep", "talking", "error", "low_battery", "charging",
+                    # Базовые состояния
+                    "idle", "talking", "wakeup", "sleep",
+                    # Эмоциональные
+                    "happy", "sad", "angry", "surprised", "thinking", "victory",
+                    # Системные
+                    "error", "low_battery", "charging",
+                    # Транспортные спецсигналы
                     "police_lights", "ambulance", "fire_truck", "road_service",
-                    "turn_left", "turn_right", "accelerating", "braking", "neutral", "excited", "confused"
+                    # Движение
+                    "turn_left", "turn_right", "accelerating", "braking",
                 ],
             ),
         ]
@@ -102,11 +108,12 @@ class SpeakTextTool(MCPTool):
         if len(text) > 300:
             self.log_warning(f"⚠️ Текст слишком длинный ({len(text)} символов). Рекомендуется разбить на части.")
 
-        # Нормализация старых эмоций в анимации (для обратной совместимости)
+        # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
         animation_map = {
-            "нейтрально": "neutral",
-            "нейтральная": "neutral",
-            "нейтральный": "neutral",
+            # Русские названия
+            "нейтрально": "idle",
+            "нейтральная": "idle",
+            "нейтральный": "idle",
             "радость": "happy",
             "радостный": "happy",
             "счастливый": "happy",
@@ -115,19 +122,23 @@ class SpeakTextTool(MCPTool):
             "печаль": "sad",
             "злой": "angry",
             "злость": "angry",
-            "возбужденный": "excited",
-            "возбуждение": "excited",
-            "смущенный": "confused",
-            "смущение": "confused",
-            "растерянный": "confused",
+            "возбужденный": "happy",
+            "возбуждение": "happy",
+            "смущенный": "thinking",
+            "смущение": "thinking",
+            "растерянный": "thinking",
+            # Несуществующие анимации → замена на похожие
+            "neutral": "idle",
+            "excited": "happy",
+            "confused": "thinking",
         }
-        animation = animation_map.get(animation.lower() if animation else "neutral", animation) if animation else "neutral"
+        animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
         
         # Генерируем speech_id
         speech_id = str(uuid.uuid4())
 
-        # Устанавливаем анимацию (если не neutral и не idle)
-        if animation and animation not in ["neutral", "idle"]:
+        # Устанавливаем анимацию (если не idle)
+        if animation and animation != "idle":
             try:
                 from std_msgs.msg import String as StringMsg
                 anim_msg = StringMsg()
