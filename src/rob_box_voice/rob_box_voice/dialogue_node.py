@@ -2351,7 +2351,9 @@ class DialogueNode(Node):
                 self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks)")
             
         except Exception as e:
+            import traceback
             self.get_logger().error(f"❌ Ошибка в агентном цикле: {e}")
+            self.get_logger().error(f"Traceback:\n{traceback.format_exc()}")
             self._speak_simple("Извините, произошла ошибка", show_error_animation=True)
         
         finally:
