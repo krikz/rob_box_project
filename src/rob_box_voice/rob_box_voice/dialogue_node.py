@@ -2195,19 +2195,19 @@ class DialogueNode(Node):
             in_json = False
             
             # Timeout для stream iteration (защита от зависания)
-            stream_timeout = 120.0  # 2 минуты максимум на рекурсивный stream
+            stream_timeout = 60.0  # 60 секунд максимум на рекурсивный stream (как в основном)
             stream_start_time = time.time()
             last_chunk_time = stream_start_time
             
             for chunk in stream:
                 # Проверка timeout между чанками
                 current_time = time.time()
-                if current_time - last_chunk_time > 60.0:  # 60 секунд без чанков
-                    self.get_logger().error(f"⏱️ Stream timeout: 60 секунд без новых chunks")
-                    raise TimeoutError("Stream timeout: no chunks for 60 seconds")
+                if current_time - last_chunk_time > 20.0:  # 20 секунд без чанков (строже чем 60!)
+                    self.get_logger().error(f"⏱️ Рекурсивный stream timeout: 20 секунд без новых chunks")
+                    raise TimeoutError("Recursive stream timeout: no chunks for 20 seconds")
                 if current_time - stream_start_time > stream_timeout:
-                    self.get_logger().error(f"⏱️ Stream total timeout: {stream_timeout} секунд")
-                    raise TimeoutError(f"Stream total timeout: {stream_timeout} seconds")
+                    self.get_logger().error(f"⏱️ Рекурсивный stream total timeout: {stream_timeout} секунд")
+                    raise TimeoutError(f"Recursive stream total timeout: {stream_timeout} seconds")
                 last_chunk_time = current_time
                 # ============ СНОВА проверяем tool_calls (агентный цикл!) ============
                 if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
