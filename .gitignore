@@ -60,6 +60,12 @@ docker-compose.override.yml
 /frames_*.pdf
 /clog
 
+# AI Agent Skills (auto-managed by skills CLI — не коммитить)
+# Переустановка: через Copilot MCP Skills UI или npx skills add <owner/repo>
+.agents/
+.continue/
+.qwen/
+
 # System files
 .Trash-*/
 Thumbs.db
