@@ -71,7 +71,7 @@ git diff --name-only HEAD~5 HEAD
 | Задача завершена | `progress.md`, `tasks.json` (status → done), `CHANGELOG.md` |
 | Изменился IP/порт/конфиг | `docs/architecture/NETWORK_TOPOLOGY.md`, `.github/copilot-instructions.md` |
 | Добавлена новая функциональность | `PRD.md` (раздел 3 — текущий статус), `README.md` |
-| Исправлен баг | `docs/fixes/FIX_SUMMARY_<date>.md`, `CHANGELOG.md` |
+| Исправлен баг | `docs/fixes/FIX_SUMMARY.md`, `CHANGELOG.md` |
 
 ### Формат записи в CHANGELOG.md:
 ```markdown

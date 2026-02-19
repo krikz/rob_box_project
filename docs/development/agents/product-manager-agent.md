@@ -223,7 +223,7 @@ grep '"status": "pending"' tasks.json | wc -l
 | Changelog | `CHANGELOG.md` | История изменений |
 | Архитектура | `docs/architecture/SYSTEM_OVERVIEW.md` | Текущая архитектура системы |
 | Железо | `docs/architecture/HARDWARE.md` | Аппаратные ограничения |
-| PRD-промпт | `PRD_PROMT.md` | Шаблон для создания нового PRD |
+| PRD-промпт | `docs/prompts/PRD_PROMT.md` | Шаблон для создания нового PRD |
 
 ---
 

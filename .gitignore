@@ -58,6 +58,7 @@ docker-compose.override.yml
 /*.log
 /frames_*.gv
 /frames_*.pdf
+/clog
 
 # System files
 .Trash-*/

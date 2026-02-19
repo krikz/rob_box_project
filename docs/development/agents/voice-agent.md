@@ -29,7 +29,7 @@
 src/rob_box_voice/
 test_qwen_dialogue.py     # тест Qwen интеграции
 test_deepseek_methods.py  # тест DeepSeek методов
-DEEPSEEK_REASONER_FIX.md  # фикс для DeepSeek Reasoner
+docs/fixes/DEEPSEEK_REASONER_FIX.md  # фикс для DeepSeek Reasoner
 ```
 
 **ROS 2 топики голосового ассистента:**

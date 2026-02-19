@@ -61,7 +61,7 @@
 - 🔧 **Бесконечные анимации** — race condition исправлен, добавлен лимит итераций MAX_ITERATIONS=10
 - 🎵 **51 звуковой эффект** — sound_catalog.json, загрузка по контексту, GetSoundInfoTool
 - ⏱️ **Stream timeouts** — таймауты и ThreadPoolExecutor fix для dialogue_node
-- 📊 **Логирование токенов** — учёт usage токенов LLM API (TOKEN_USAGE_LOGGING.md)
+- 📊 **Логирование токенов** — учёт usage токенов LLM API ([TOKEN_USAGE_LOGGING.md](docs/fixes/TOKEN_USAGE_LOGGING.md))
 - 🔗 **DeepSeek connection pool** — отключён idle timeout, QoS mismatch исправлен
 
 **20 декабря 2025** - ICP Одометрия и NAV2 тюнинг:
