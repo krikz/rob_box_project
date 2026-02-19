@@ -13,8 +13,8 @@
 - [**README.md**](architecture/README.md) - Навигация по архитектурной документации
 - [**SYSTEM_OVERVIEW.md**](architecture/SYSTEM_OVERVIEW.md) - Общая архитектура системы
 - [**HARDWARE.md**](architecture/HARDWARE.md) - Аппаратные компоненты
-- [**SOFTWARE.md**](architecture/SOFTWARE.md) - Программные компоненты
-- [**INTERNAL_DIALOGUE_VOICE_ASSISTANT.md**](architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md) - ⭐ **НОВОЕ** Internal Dialogue + Voice Assistant (полная документация)
+- [**SOFTWARE.md**](architecture/SOFTWARE.md) - Программные компоненты- [**NETWORK_TOPOLOGY.md**](architecture/NETWORK_TOPOLOGY.md) - 🌐 Сетевая топология: IP-адреса, Zenoh, SSH
+- [**ICP_ODOMETRY.md**](architecture/ICP_ODOMETRY.md) - ICP Одометрия + Wheel Fusion для RTAB-Map- [**INTERNAL_DIALOGUE_VOICE_ASSISTANT.md**](architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md) - ⭐ **НОВОЕ** Internal Dialogue + Voice Assistant (полная документация)
 - [**INTERNAL_DIALOGUE_V2.md**](architecture/INTERNAL_DIALOGUE_V2.md) - ⚠️ УСТАРЕЛО (см. выше)
 
 ### 📦 [packages/](packages/) - Документация пакетов
@@ -40,6 +40,7 @@
 
 **AI & Code Quality (NEW 🆕)**
 - [**GitHub Copilot Instructions**](../.github/copilot-instructions.md) ⭐ - Инструкции для AI-ассистентов
+- [**agents/**](development/agents/) 🆕 - Промпты специализированных AI-агентов (docs, navigation, backend, voice, frontend, devops...)
 - [**CODE_REVIEW_SUMMARY.md**](development/CODE_REVIEW_SUMMARY.md) 🆕 - Code review summary (Oct 2025)
 - [**CODE_REVIEW_2025-10.md**](development/CODE_REVIEW_2025-10.md) 🆕 - Полный code review
 - [**IMPROVEMENT_RECOMMENDATIONS.md**](development/IMPROVEMENT_RECOMMENDATIONS.md) 🆕 - Рекомендации по улучшению
