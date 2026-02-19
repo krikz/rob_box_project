@@ -49,7 +49,7 @@
 
 **Планируется:**
 - 🔄 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (PR #362, в активной разработке)
-- 🔮 **AI HAT (Hailo-8L NPU)** - hardware-accelerated inference для YOLO (10-30x speedup)
+- � **AI HAT+ 26 TOPS (Hailo-8L NPU)** - hardware-accelerated inference (YOLOv8, Whisper, face recognition), Vision Pi. Анализ: `docs/AI_HAT_UPGRADE_ANALYSIS.md`
 - 🔮 **Stereo Visual Odometry** - visual SLAM от OAK-D камеры
 - 🔮 **Sensor Fusion (EKF)** - объединение всех источников одометрии
 - 🔮 **Self-Hosted LLM Infrastructure** - собственные сервера для LLM моделей
@@ -65,10 +65,10 @@
 **Планируется:**
 - 🔮 **Semantic Mapping** - разметка карты с точками интереса (kitchen, bedroom, charging station)
 - 🔮 **Auto-Docking Station** - визуальная локализация + зарядка (±1-2 см точность)
-- 🔮 **Dynamic Obstacle Avoidance** - real-time детекция и prediction траекторий людей
+- 🔮 **Dynamic Obstacle Avoidance** - real-time детекция и prediction траекторий людей (зависит от AI HAT+ person detection)
 - 🔮 **Ceiling AprilTag Localization** - абсолютное позиционирование без дрейфа
 - 🔮 **Client App** - Web/Mobile для заказа доставки с tracking
-- 🔮 **Face Recognition & User Database** - распознавание лиц и база пользователей
+- 🔮 **Face Recognition & User Database** - распознавание лиц и база пользователей (зависит от AI HAT+)
 - 🔮 **QR Code Authorization** - авторизация по QR-коду для доступа к грузу
 
 ### 🛠️ Tier B - Solid (Надёжные, проверенные)
@@ -198,7 +198,7 @@
   - ReSpeaker Mic Array v2.0
   - LED Matrix драйвер (381 LEDs)
   - Voice Assistant
-  - 🔮 **AI HAT** (планируется) - для ускорения AI моделей (YOLO, etc.)
+  - � **AI HAT+ 26 TOPS** (в планировании) - Hailo-8L NPU, person detection, Whisper STT, face recognition
 
 **Стек:** Raspberry Pi 5 (2.4GHz ARM Cortex-A76)  
 **Документация:** `docs/architecture/HARDWARE.md`
@@ -470,8 +470,8 @@
 - **Adaptive replanning** при появлении препятствий
 - **Social navigation:** вежливое поведение рядом с людьми
 
-**Технологии:** OAK-D depth, YOLO для детекции людей, AI HAT для ускорения  
-**Зависимости:** OAK-D, Nav2, AI HAT (опционально)  
+**Технологии:** OAK-D depth, YOLOv8n на AI HAT+ (person detection)  
+**Зависимости:** OAK-D, Nav2, AI HAT+ (Vision Pi)  
 **Приоритет:** 🟡 Средний
 
 #### 🔮 Multi-floor navigation
@@ -547,29 +547,25 @@
 
 ### 🤖 AI и автономность
 
-#### 🔮 AI HAT для Vision Pi
-- **Hardware-accelerated AI inference** на Raspberry Pi
-- **Поддержка моделей:**
-  - YOLO (YOLOv5, YOLOv8, YOLOv11) для object detection
-  - Segmentation models для семантической сегментации
-  - Pose estimation для детекции людей
-  - Face recognition для идентификации пользователей
-  - Custom models для специфичных задач
-- **Преимущества:**
-  - Ускорение inference в 10-30x по сравнению с CPU
-  - Низкая задержка для real-time обработки
-  - Освобождение CPU для других задач
-- **Use cases:**
-  - Real-time object detection для навигации
-  - Person detection для social navigation
-  - Face recognition и user database
-  - QR code recognition для авторизации
-  - Gesture recognition для взаимодействия
-  - Package/cargo recognition для доставки
+#### � AI HAT+ для Vision Pi (26 TOPS — в планировании)
+- **Hardware-accelerated AI inference** на Raspberry Pi 5 (Vision Pi — HAT-слот свободен)
+- **Чип:** Hailo-8L, 26 TOPS, PCIe 2.0 x1 через GPIO HAT-коннектор
+- **Приоритизированные use cases (из анализа):**
+  - **[P1]** Person detection (YOLOv8n) — safety stop + триггер диалога робота-гида
+  - **[P1]** STT через Whisper HEF — замена Vosk, снижение CPU с ~50% до ~10%
+  - **[P2]** Face recognition (retinaface + arcface) — персонализация + авторизация
+  - **[P3]** Dynamic obstacle avoidance — публикация moving obstacles в Nav2 costmap
+  - **[P4]** Semantic segmentation, gesture recognition — экспериментально
+- **Совместимость:**
+  - ✅ NeoPixel SPI (GPIO 10) продолжает работать — HAT использует PCIe, не SPI
+  - ✅ USB устройства (OAK-D, ReSpeaker) не затронуты
+  - ❌ Main Pi — невозможно (HAT-слот занят CAN HAT для VESC)
+- **Что НЕ даст HAT+ (важно):** LLM inference — 26 TOPS недостаточно для трансформеров
 
-**Технологии:** Raspberry Pi AI HAT, Hailo-8L NPU (13 TOPS)  
-**Hardware:** AI HAT (~$70-100)  
+**Технологии:** Raspberry Pi AI HAT+, Hailo-8L NPU (26 TOPS), HailoRT + TAPPAS  
+**Hardware:** AI HAT+ (~$70-100)  
 **Зависимости:** Vision Pi, OAK-D camera  
+**Документация:** `docs/AI_HAT_UPGRADE_ANALYSIS.md`  
 **Приоритет:** 🔴 Высокий
 
 #### 🔄 LLM-powered агент (PR #362 - в активной разработке)
