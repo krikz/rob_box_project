@@ -1,0 +1,730 @@
+{
+  "project": "РОББОКС",
+  "prd_version": "1.0.0",
+  "generated": "2026-02-19",
+  "agent_instructions": {
+    "before_start": [
+      "Прочитай этот файл полностью и выполни: git log --oneline -20",
+      "Прочитай PRD.md для понимания контекста задачи",
+      "Выбери ОДНУ задачу со статусом pending и наивысшим приоритетом (critical > high > medium > low)",
+      "Проверь, что все dependencies этой задачи имеют статус done",
+      "Прочитай docs/development/AGENT_GUIDE.md и docs/development/DOCKER_STANDARDS.md перед работой с Docker",
+      "Прочитай docs/development/PYTHON_STYLE_GUIDE.md перед написанием Python кода"
+    ],
+    "during_work": [
+      "Работай только над выбранной задачей — не трогай код, не связанный с ней",
+      "Делай git commit после каждого логического изменения с форматом: feat(scope): description",
+      "НЕ копируй config/ и scripts/ в Dockerfile — используй volumes",
+      "НЕ используй print() — только self.get_logger().info()",
+      "Используй black (line-length 120), isort (profile black), flake8 для Python",
+      "Пиши type hints для всех public методов"
+    ],
+    "before_finish": [
+      "Выполни ВСЕ test_steps из выбранной задачи",
+      "Меняй status на done ТОЛЬКО после успешного прохождения всех тестов",
+      "Напиши краткое summary в progress.md (что сделал, какие файлы изменил, как тестировал)",
+      "ЗАПРЕЩЕНО удалять или редактировать другие задачи — только менять status своей задачи"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "category": "infrastructure",
+      "priority": "critical",
+      "description": "Создать FastAPI сервис task-api в docker/main/task-api с базовой структурой проекта",
+      "acceptance_criteria": [
+        "Директория docker/main/task-api/ создана с Dockerfile",
+        "FastAPI приложение запускается в контейнере на порту 8080",
+        "GET /api/health возвращает {status: ok, timestamp: ...}",
+        "Сервис добавлен в docker/main/docker-compose.yaml с network_mode: host и depends_on: zenoh-router",
+        "Volumes: ./config:/config:ro смонтированы"
+      ],
+      "test_steps": [
+        "Шаг 1: docker compose -f docker/main/docker-compose.yaml up task-api -d",
+        "Шаг 2: curl http://10.1.1.10:8080/api/health",
+        "Шаг 3: Ожидаемый результат: {\"status\": \"ok\"}"
+      ],
+      "dependencies": [],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-002",
+      "category": "infrastructure",
+      "priority": "critical",
+      "description": "Настроить базу данных SQLite в task-api с миграциями (alembic) и схемой из PRD (maps, waypoints, patrol_routes, tasks, users)",
+      "acceptance_criteria": [
+        "alembic настроен, миграции в docker/main/task-api/migrations/",
+        "Все таблицы из раздела PRD 6 созданы с правильными типами",
+        "Database файл хранится в /data/rob_box.db (volume-mount)",
+        "При перезапуске контейнера данные сохраняются"
+      ],
+      "test_steps": [
+        "Шаг 1: docker exec task-api alembic upgrade head",
+        "Шаг 2: docker exec task-api python -c \"from app.database import engine; print(engine.table_names())\"",
+        "Шаг 3: Убедиться что все таблицы присутствуют в выводе",
+        "Шаг 4: Перезапустить контейнер, проверить что данные не потерялись"
+      ],
+      "dependencies": ["TASK-001"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-003",
+      "category": "security",
+      "priority": "high",
+      "description": "Реализовать JWT аутентификацию в task-api с ролями operator и client",
+      "acceptance_criteria": [
+        "POST /api/auth/login принимает username/password, возвращает access_token + refresh_token",
+        "POST /api/auth/refresh обновляет access_token",
+        "Middleware проверяет JWT на всех /api/* эндпоинтах кроме /api/health и /api/auth/*",
+        "Endpoints cmd_vel и emergency_stop доступны только роли operator",
+        "401 возвращается при невалидном/истёкшем токене"
+      ],
+      "test_steps": [
+        "Шаг 1: curl -X POST http://10.1.1.10:8080/api/auth/login -d '{\"username\":\"admin\",\"password\":\"admin\"}' -H 'Content-Type: application/json'",
+        "Шаг 2: Получить токен из ответа, выполнить: curl http://10.1.1.10:8080/api/tasks -H 'Authorization: Bearer <token>'",
+        "Шаг 3: curl http://10.1.1.10:8080/api/tasks без токена → ожидаем 401",
+        "Шаг 4: Залогиниться как клиент, попробовать POST /api/robot/cmd_vel → ожидаем 403"
+      ],
+      "dependencies": ["TASK-002"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-004",
+      "category": "infrastructure",
+      "priority": "high",
+      "description": "Реализовать WebSocket эндпоинты /ws/telemetry и /ws/tasks для realtime обновлений",
+      "acceptance_criteria": [
+        "WS /ws/telemetry транслирует: позицию робота (x, y, yaw), статус батареи, температуры, активный сценарий — каждые 200 мс",
+        "WS /ws/tasks транслирует изменения статуса задач при их наступлении",
+        "Соединение автоматически закрывается при истечении JWT токена",
+        "Клиент может подключиться и получить данные через wscat или браузер"
+      ],
+      "test_steps": [
+        "Шаг 1: wscat -c 'ws://10.1.1.10:8080/ws/telemetry?token=<jwt>'",
+        "Шаг 2: Убедиться что каждые ~200 мс приходит JSON с полями position, battery, temperature",
+        "Шаг 3: wscat -c 'ws://10.1.1.10:8080/ws/tasks?token=<jwt>' и создать задачу через API",
+        "Шаг 4: Убедиться что статус задачи появляется в WS потоке"
+      ],
+      "dependencies": ["TASK-003"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-005",
+      "category": "functional",
+      "priority": "critical",
+      "description": "Диагностировать и исправить проблему с wheel odometry VESC → Nav2 (текущий блокер навигации)",
+      "acceptance_criteria": [
+        "ros2 topic echo /odom показывает корректные данные (изменяется при движении робота)",
+        "Линейная скорость в /odom соответствует реальной скорости (погрешность ≤ 10%)",
+        "После прохождения 1 метра вперёд /odom.pose.pose.position.x ≈ 1.0 ± 0.15",
+        "Odometry covariance настроена корректно (не нули, не inf)"
+      ],
+      "test_steps": [
+        "Шаг 1: ros2 topic hz /odom — убедиться что частота ≥ 10 Hz",
+        "Шаг 2: Вручную прокатить робота 1 метр, проверить ros2 topic echo /odom",
+        "Шаг 3: ros2 run tf2_tools view_frames — убедиться что цепочка odom -> base_link существует",
+        "Шаг 4: Запустить Nav2 и отправить цель через RViz на расстояние 1 метр, проверить что робот доезжает"
+      ],
+      "dependencies": [],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-006",
+      "category": "functional",
+      "priority": "critical",
+      "description": "Полная настройка Nav2 параметров: costmap, DWB/MPPI planner, BT Navigator для РОББОКС",
+      "acceptance_criteria": [
+        "nav2_params.yaml настроен под размеры робота и скоростные ограничения (max_vel_x: 0.5 м/с)",
+        "Global costmap строится из /map топика RTAB-Map",
+        "Local costmap обновляется от /scan (LSLIDAR) и /depth/points (OAK-D)",
+        "Behavior Tree: стандартный Navigate With Replanning успешно работает",
+        "Nav2 lifecycle manager запускает все ноды без ошибок"
+      ],
+      "test_steps": [
+        "Шаг 1: docker logs nav2 | grep -E 'ERROR|WARN' — убедиться что нет критичных ошибок",
+        "Шаг 2: ros2 lifecycle list — все Nav2 ноды в состоянии active",
+        "Шаг 3: Отправить цель через RViz2 (2D Nav Goal) на 2 метра вперёд",
+        "Шаг 4: Робот должен доехать с точностью ≤ 15 см и не врезаться в препятствия"
+      ],
+      "dependencies": ["TASK-005"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-007",
+      "category": "functional",
+      "priority": "critical",
+      "description": "Интеграционный тест: робот стабильно объезжает 5 waypoints на известной карте 3 раза подряд",
+      "acceptance_criteria": [
+        "Карта загружается из файла при старте RTAB-Map (локализация режим)",
+        "5 конкретных waypoints определены в конфиге/файле",
+        "Скрипт или action клиент последовательно отправляет цели и получает SUCCESS на каждой",
+        "Все 3 прогона без единого FAILURE статуса"
+      ],
+      "test_steps": [
+        "Шаг 1: Запустить систему с сохранённой картой, убедиться что локализация установилась",
+        "Шаг 2: Запустить тестовый скрипт local_test/send_waypoint_forward.py (или аналог) для 5 точек",
+        "Шаг 3: Наблюдать в RViz2 — робот должен доезжать до каждой точки",
+        "Шаг 4: Повторить 3 раза, записать результат в progress.md"
+      ],
+      "dependencies": ["TASK-006"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-008",
+      "category": "functional",
+      "priority": "high",
+      "description": "Протестировать full cycle сохранения карты: mapping → save → restart → localize",
+      "acceptance_criteria": [
+        "Команда сохранения карты задокументирована и работает",
+        "После полного перезапуска системы RTAB-Map загружает карту и локализуется за ≤ 30 сек",
+        "Waypoints привязаны к карте (map_id) и доступны после перезапуска",
+        "Инструкция добавлена в docs/guides/MAPPING_WORKFLOW.md"
+      ],
+      "test_steps": [
+        "Шаг 1: Запустить систему в режиме mapping, объехать помещение, сохранить карту",
+        "Шаг 2: Полный перезапуск: docker compose down && docker compose up",
+        "Шаг 3: Убедиться что /rtabmap/info показывает loaded database",
+        "Шаг 4: Проверить ros2 topic echo /initialpose — локализация установилась"
+      ],
+      "dependencies": ["TASK-006"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-009",
+      "category": "functional",
+      "priority": "high",
+      "description": "Реализовать CRUD API для waypoints: создание, редактирование, удаление, получение списка",
+      "acceptance_criteria": [
+        "POST /api/maps/{map_id}/waypoints — создаёт точку с полями name, display_name, type, x, y, yaw, description",
+        "GET /api/maps/{map_id}/waypoints — возвращает все точки карты",
+        "PUT /api/waypoints/{id} — обновляет поля точки",
+        "DELETE /api/waypoints/{id} — удаляет точку",
+        "Валидация: name уникален в пределах карты, type из разрешённых значений",
+        "Только operator может создавать/изменять/удалять точки"
+      ],
+      "test_steps": [
+        "Шаг 1: POST /api/maps/test/waypoints с данными {\"name\":\"ROOM_101\", \"type\":\"waypoint\", \"x\":1.5, \"y\":2.0, \"yaw\":0}",
+        "Шаг 2: GET /api/maps/test/waypoints — убедиться что точка появилась",
+        "Шаг 3: PUT /api/waypoints/{id} с новым display_name — проверить обновление",
+        "Шаг 4: DELETE /api/waypoints/{id} — убедиться что точка удалена из списка"
+      ],
+      "dependencies": ["TASK-003"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-010",
+      "category": "functional",
+      "priority": "high",
+      "description": "Реализовать CRUD API для patrol_routes и API создания/отмены задач",
+      "acceptance_criteria": [
+        "POST /api/patrol-routes — создаёт маршрут с waypoint_ids (ordered), repeat, dwell_time_sec",
+        "GET /api/patrol-routes — список маршрутов",
+        "POST /api/tasks — создаёт задачу {scenario, params, priority}",
+        "GET /api/tasks — список задач с пагинацией и фильтром по status",
+        "DELETE /api/tasks/{id} — отменяет задачу (status: cancelled)"
+      ],
+      "test_steps": [
+        "Шаг 1: Создать patrol route через POST /api/patrol-routes",
+        "Шаг 2: POST /api/tasks {\"scenario\":\"patrol\", \"params\":{\"route_id\":\"...\", \"repeat\":false}}",
+        "Шаг 3: GET /api/tasks — убедиться что задача в статусе queued",
+        "Шаг 4: DELETE /api/tasks/{id} — убедиться что статус стал cancelled"
+      ],
+      "dependencies": ["TASK-009"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-011",
+      "category": "functional",
+      "priority": "critical",
+      "description": "Создать ROS 2 ScenarioNode (rob_box_control или новый пакет rob_box_scenarios): state machine выполнения задач",
+      "acceptance_criteria": [
+        "Нода подписывается на /rob_box/task/command и публикует /rob_box/scenario/state",
+        "State machine: IDLE → EXECUTING → COMPLETED/FAILED/CANCELLED",
+        "При получении задачи: вызывает Nav2 NavigateToPose action",
+        "При FAILED/CANCELLED → публикует на /rob_box/led/state соответствующее состояние",
+        "Нода запускается через Docker контейнер с Zenoh namespace"
+      ],
+      "test_steps": [
+        "Шаг 1: ros2 topic pub /rob_box/task/command std_msgs/String '{\"data\": \"{\\\"scenario\\\":\\\"patrol\\\",\\\"route_id\\\":\\\"test\\\"}\"}'",
+        "Шаг 2: ros2 topic echo /rob_box/scenario/state — убедиться что state меняется",
+        "Шаг 3: Поставить препятствие на пути — убедиться что нода обрабатывает Nav2 FAILED",
+        "Шаг 4: ros2 topic echo /rob_box/led/state — убедиться что LED состояния меняются корректно"
+      ],
+      "dependencies": ["TASK-007"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-012",
+      "category": "integration",
+      "priority": "critical",
+      "description": "Интеграция task-api с ScenarioNode через rclpy: API запускает задачи → ROS2 → статусы обратно в БД",
+      "acceptance_criteria": [
+        "POST /api/tasks → публикует команду в /rob_box/task/command → ScenarioNode начинает выполнение",
+        "ScenarioNode публикует прогресс → task-api слушает и обновляет task.status в БД",
+        "WS /ws/tasks транслирует обновления в реалтайм клиентам",
+        "Emergency stop через POST /api/robot/emergency_stop публикует в /rob_box/task/command cancel и /cmd_vel 0"
+      ],
+      "test_steps": [
+        "Шаг 1: POST /api/tasks {\"scenario\":\"delivery\", \"params\":{...}}",
+        "Шаг 2: ros2 topic echo /rob_box/task/command — убедиться что команда пришла",
+        "Шаг 3: GET /api/tasks/{id} — статус должен обновиться до executing",
+        "Шаг 4: POST /api/robot/emergency_stop — робот останавливается, задача → failed"
+      ],
+      "dependencies": ["TASK-010", "TASK-011"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-013",
+      "category": "functional",
+      "priority": "high",
+      "description": "Реализовать сценарий 'Доставка' в ScenarioNode: pickup → wait → delivery → return",
+      "acceptance_criteria": [
+        "Сценарий принимает params: {pickup_point, delivery_point, optional_message}",
+        "Робот едет к pickup_point → LED DELIVERING → ждёт 60 сек (или голосовой подтверждение 'загружен')",
+        "Едет к delivery_point → воспроизводит optional_message через TTS",
+        "Ждёт 60 сек → едет к HOME waypoint",
+        "Каждый шаг логируется в task.progress JSON"
+      ],
+      "test_steps": [
+        "Шаг 1: POST /api/tasks {\"scenario\":\"delivery\", \"params\":{\"pickup\":\"ROOM_101\",\"delivery\":\"ROOM_205\",\"message\":\"Документы\"}}",
+        "Шаг 2: Наблюдать что робот едет к ROOM_101, останавливается, ждёт",
+        "Шаг 3: Наблюдать что после ожидания едет к ROOM_205 и произносит сообщение",
+        "Шаг 4: GET /api/tasks/{id} → status: completed после завершения цикла"
+      ],
+      "dependencies": ["TASK-012"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-014",
+      "category": "functional",
+      "priority": "high",
+      "description": "Реализовать сценарий 'Патрулирование' в ScenarioNode: циклический обход waypoints",
+      "acceptance_criteria": [
+        "Принимает params: {route_id, repeat}",
+        "Последовательно едет ко всем точкам маршрута с dwell_time_sec паузой на каждой",
+        "repeat=true → бесконечный цикл до cancel",
+        "repeat=false → однократный проход, после HOME",
+        "task.progress содержит current_waypoint и step"
+      ],
+      "test_steps": [
+        "Шаг 1: Создать patrol route из 3 точек, POST /api/tasks patrol сценарий",
+        "Шаг 2: Наблюдать что робот последовательно посещает все точки",
+        "Шаг 3: После завершения проверить GET /api/tasks/{id} → status: completed",
+        "Шаг 4: Запустить с repeat=true, подождать 2 цикла, отменить → status: cancelled"
+      ],
+      "dependencies": ["TASK-012"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-015",
+      "category": "functional",
+      "priority": "medium",
+      "description": "Реализовать сценарий 'Гид': сопровождение к локации с голосовым комментарием",
+      "acceptance_criteria": [
+        "Принимает params: {destination_waypoint, follow_user: bool}",
+        "Едет к destination, по прибытии воспроизводит description из waypoint через TTS",
+        "Если description пустой → LLM генерирует комментарий на основе display_name",
+        "После прибытия ждёт команду или возвращается на HOME через 2 мин"
+      ],
+      "test_steps": [
+        "Шаг 1: Добавить description к существующему waypoint через API",
+        "Шаг 2: POST /api/tasks {\"scenario\":\"guide\", \"params\":{\"destination\":\"CAFETERIA\"}}",
+        "Шаг 3: Убедиться что робот доехал и произнёс description",
+        "Шаг 4: Убедиться что через 2 мин вернулся на HOME"
+      ],
+      "dependencies": ["TASK-013"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-016",
+      "category": "functional",
+      "priority": "high",
+      "description": "Синхронизировать LED состояния со скенариями: TASK-016 LED state machine",
+      "acceptance_criteria": [
+        "/rob_box/led/state топик публикуется из ScenarioNode с правильными состояниями",
+        "rob_box_animations подписывается на /rob_box/led/state и меняет анимацию",
+        "Все состояния из PRD таблицы (IDLE, NAVIGATING, LISTENING, THINKING, SPEAKING, ERROR, DELIVERING) реализованы",
+        "Переключение анимации за ≤ 50 мс"
+      ],
+      "test_steps": [
+        "Шаг 1: ros2 topic pub /rob_box/led/state std_msgs/String '{\"data\":\"NAVIGATING\"}'",
+        "Шаг 2: Убедиться что LED матрица показывает соответствующую анимацию",
+        "Шаг 3: Запустить delivery сценарий — проверить что LED переключается IDLE → DELIVERING → IDLE",
+        "Шаг 4: ros2 topic pub /rob_box/led/state ERROR → мигание красным"
+      ],
+      "dependencies": ["TASK-011"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-017",
+      "category": "functional",
+      "priority": "high",
+      "description": "Реализовать Multi-provider LLM fallback в rob_box_voice: Qwen → DeepSeek → Ollama",
+      "acceptance_criteria": [
+        "LLMProviderManager класс с методом generate(prompt) и автоматическим fallback",
+        "Qwen — основной провайдер, timeout 10 сек",
+        "DeepSeek — fallback при недоступности Qwen, timeout 15 сек",
+        "Ollama (localhost:11434) — offline fallback при недоступности DeepSeek",
+        "Метрика: время переключения между провайдерами ≤ 5 сек",
+        "Текущий активный провайдер публикуется в /rob_box/voice/status"
+      ],
+      "test_steps": [
+        "Шаг 1: Заблокировать Qwen API (неверный ключ), проверить что DeepSeek используется",
+        "Шаг 2: Заблокировать оба API, проверить что Ollama отвечает (нужен запущенный Ollama)",
+        "Шаг 3: ros2 topic echo /rob_box/voice/status — убедиться что показывает активный провайдер",
+        "Шаг 4: Задать вопрос голосом — убедиться что ответ получен в ≤ 15 сек даже без интернета"
+      ],
+      "dependencies": [],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-018",
+      "category": "functional",
+      "priority": "high",
+      "description": "Добавить wake word детекцию в rob_box_voice (openWakeWord или Porcupine)",
+      "acceptance_criteria": [
+        "Ключевое слово 'Роббокс' (или кастомный wake word) детектируется с FAR ≤ 1 раз в 10 мин",
+        "При детекции: LED переключается в LISTENING, STT активируется",
+        "Wake word движок работает offline на Vision Pi",
+        "Параметр wake_word настраивается в config/voice_assistant/config.yaml"
+      ],
+      "test_steps": [
+        "Шаг 1: Произнести 'Роббокс' — LED должен переключиться в LISTENING режим",
+        "Шаг 2: Оставить микрофон включённым на 10 мин в офисной обстановке, считать ложные срабатывания",
+        "Шаг 3: Убедиться что фоновый шум (музыка, разговоры) не вызывает срабатывания",
+        "Шаг 4: Проверить что после wake word идёт распознавание команды"
+      ],
+      "dependencies": ["TASK-017"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-019",
+      "category": "functional",
+      "priority": "high",
+      "description": "NLU для навигационных команд: извлечение намерений и сущностей из речи",
+      "acceptance_criteria": [
+        "Намерения: navigate_to, stop, status_query, start_scenario, cancel_task",
+        "Сущности: location (из списка waypoints), scenario_type",
+        "Команда 'Поедь в столовую' → intent=navigate_to, location=CAFETERIA",
+        "При неизвестной локации → LLM отвечает 'Не знаю такого места, доступные: [список]'",
+        "NLU результат публикуется в /rob_box/voice/intent (JSON)"
+      ],
+      "test_steps": [
+        "Шаг 1: Произнести 'Поедь к кабинету 205' — проверить ros2 topic echo /rob_box/voice/intent",
+        "Шаг 2: Убедиться что intent=navigate_to, location=ROOM_205",
+        "Шаг 3: Произнести 'Отвези документы в приёмную' — убедиться intent=start_scenario, scenario=delivery",
+        "Шаг 4: Произнести название несуществующей локации — убедиться что робот вежливо отвечает"
+      ],
+      "dependencies": ["TASK-017"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-020",
+      "category": "integration",
+      "priority": "high",
+      "description": "Интеграция Voice → Task API: голосовые команды запускают задачи через task-api",
+      "acceptance_criteria": [
+        "Voice NLU intent → HTTP запрос к task-api POST /api/tasks",
+        "navigate_to → создаёт delivery/waypoint задачу",
+        "start_scenario patrol → создаёт patrol задачу с дефолтным маршрутом",
+        "stop → POST /api/robot/emergency_stop",
+        "LED переключается соответственно в процессе"
+      ],
+      "test_steps": [
+        "Шаг 1: Произнести 'Поедь к входу' — убедиться что POST /api/tasks создан (проверить GET /api/tasks)",
+        "Шаг 2: Убедиться что робот начал движение (ScenarioNode → Nav2)",
+        "Шаг 3: Произнести 'Стоп' — убедиться что робот останавливается",
+        "Шаг 4: Произнести 'Начни патрулирование' — patrol задача создана и выполняется"
+      ],
+      "dependencies": ["TASK-019", "TASK-012"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-021",
+      "category": "ui",
+      "priority": "high",
+      "description": "Создать базовую структуру React проекта для панели оператора (web/operator-panel)",
+      "acceptance_criteria": [
+        "Vite + React + TypeScript + Tailwind CSS настроены",
+        "React Router: /login, /dashboard, /map, /tasks, /settings",
+        "Auth context: JWT хранится в localStorage, автоматический refresh",
+        "Тёмная тема по умолчанию",
+        "Production build: docker/main/operator-panel/ с nginx Dockerfile",
+        "Доступен на http://10.1.1.10:3000 из браузера"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть http://10.1.1.10:3000 в браузере",
+        "Шаг 2: Авторизоваться как operator — перенаправление на /dashboard",
+        "Шаг 3: Попытаться открыть /dashboard без авторизации — редирект на /login",
+        "Шаг 4: npm run build — сборка без ошибок"
+      ],
+      "dependencies": ["TASK-003"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-022",
+      "category": "ui",
+      "priority": "high",
+      "description": "Реализовать компонент карты в операторской панели с позицией робота",
+      "acceptance_criteria": [
+        "Leaflet.js отображает occupancy grid карту (PNG из /api/maps/{id}/image)",
+        "Позиция робота обновляется из WS /ws/telemetry каждые 200 мс (маркер + ориентация)",
+        "Waypoints отображаются как цветные маркеры по типу (иконки разные)",
+        "Клик на waypoint показывает popup с именем, типом и кнопкой 'Отправить сюда'",
+        "Zoom и pan без лагов"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть /map в панели оператора",
+        "Шаг 2: Убедиться что карта загрузилась и виден маркер робота",
+        "Шаг 3: Вручную переместить робота — убедиться что маркер движется на карте",
+        "Шаг 4: Кликнуть на waypoint → появляется popup с информацией"
+      ],
+      "dependencies": ["TASK-021", "TASK-004"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-023",
+      "category": "ui",
+      "priority": "high",
+      "description": "Реализовать панель телеоп управления: WASD/геймпад + видео стриминг OAK-D",
+      "acceptance_criteria": [
+        "MJPEG поток с OAK-D отображается в панели (GET /api/robot/video-stream)",
+        "WASD кнопки: W=вперёд, S=назад, A=влево, D=вправо, Space=стоп",
+        "Скорость настраивается слайдером (0.1 - 0.5 м/с)",
+        "Большая красная кнопка EMERGENCY STOP всегда видима (shortcut Esc)",
+        "При потере WS соединения — автоматический стоп и предупреждение"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть телеоп панель, нажать W — робот едет вперёд",
+        "Шаг 2: Нажать Esc — робот останавливается немедленно",
+        "Шаг 3: Убедиться что MJPEG видео отображается с задержкой ≤ 500 мс",
+        "Шаг 4: Отключить WiFi на 5 сек — убедиться что робот остановился и появилось предупреждение"
+      ],
+      "dependencies": ["TASK-021"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-024",
+      "category": "ui",
+      "priority": "high",
+      "description": "Реализовать управление waypoints на карте в операторской панели",
+      "acceptance_criteria": [
+        "Правый клик на карте → контекстное меню 'Добавить точку'",
+        "Форма создания: name, display_name, type, description",
+        "Точка сохраняется через POST /api/maps/{id}/waypoints и появляется на карте",
+        "Клик на точку → редактирование или удаление",
+        "Drag & drop для изменения положения точки с сохранением"
+      ],
+      "test_steps": [
+        "Шаг 1: Правый клик на карте → создать точку ROOM_TEST",
+        "Шаг 2: Проверить GET /api/maps/{id}/waypoints — точка присутствует",
+        "Шаг 3: Перетащить точку на другую позицию — убедиться что координаты обновились в API",
+        "Шаг 4: Удалить точку — убедиться что исчезла с карты и из API"
+      ],
+      "dependencies": ["TASK-022", "TASK-009"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-025",
+      "category": "ui",
+      "priority": "medium",
+      "description": "Реализовать панель управления сценариями в операторской панели",
+      "acceptance_criteria": [
+        "Список активных и завершённых задач с статусами и прогрессом",
+        "Кнопки: Запустить патрулирование (выбор маршрута), Запустить доставку (форма), Отменить задачу",
+        "Realtime обновление статусов через WS /ws/tasks",
+        "История последних 50 задач с временными метками"
+      ],
+      "test_steps": [
+        "Шаг 1: Нажать 'Запустить патрулирование', выбрать маршрут → задача создана",
+        "Шаг 2: Убедиться что статус меняется queued → executing в реалтайм",
+        "Шаг 3: Нажать 'Отменить' → статус cancelled",
+        "Шаг 4: Проверить что история задач сохраняется между сессиями"
+      ],
+      "dependencies": ["TASK-021", "TASK-004", "TASK-010"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-026",
+      "category": "ui",
+      "priority": "medium",
+      "description": "Реализовать дашборд здоровья системы в операторской панели",
+      "acceptance_criteria": [
+        "Карточки для каждого критичного сервиса (rtabmap, nav2, voice, led, vesc_nexus) с статусом UP/DOWN",
+        "Текущее значение температуры CPU обоих Pi, заряда батареи",
+        "Позиция робота (x, y) и текущий сценарий",
+        "Обновление каждые 2 сек через WS /ws/telemetry"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть дашборд, убедиться что все сервисы показывают UP",
+        "Шаг 2: Остановить один контейнер, убедиться что карточка стала красной",
+        "Шаг 3: Проверить что температура обновляется каждые ~2 сек",
+        "Шаг 4: Завести задачу — убедиться что текущий сценарий отображается"
+      ],
+      "dependencies": ["TASK-021", "TASK-004"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-027",
+      "category": "ui",
+      "priority": "medium",
+      "description": "Создать базовую структуру клиентского веб-приложения (web/client-app)",
+      "acceptance_criteria": [
+        "Vite + React + TypeScript + Tailwind CSS (мобиль-first)",
+        "React Router: /login, /home, /order/new, /order/{id}/track",
+        "JWT аутентификация с ролью client",
+        "Доступен на http://10.1.1.10:3001",
+        "Адаптивная вёрстка: нормально выглядит на смартфоне 375px и десктопе"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть http://10.1.1.10:3001 на смартфоне",
+        "Шаг 2: Авторизоваться как client — переход на /home",
+        "Шаг 3: Попытаться открыть страницу оператора — получить 403/redirect",
+        "Шаг 4: npm run build — без ошибок"
+      ],
+      "dependencies": ["TASK-003"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-028",
+      "category": "ui",
+      "priority": "medium",
+      "description": "Реализовать форму создания заказа на доставку в клиентском приложении",
+      "acceptance_criteria": [
+        "Dropdown 'Откуда' и 'Куда' из GET /api/maps/{id}/waypoints (только delivery_zone)",
+        "Поле необязательного сообщения (textarea, max 200 символов)",
+        "Submit → POST /api/tasks и редирект на /order/{id}/track",
+        "Валидация: откуда ≠ куда, оба поля заполнены"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть /order/new, выбрать pickup и delivery точки",
+        "Шаг 2: Нажать 'Заказать' — убедиться что задача создана в GET /api/tasks",
+        "Шаг 3: Попробовать выбрать одинаковые pickup и delivery — должна быть ошибка валидации",
+        "Шаг 4: После создания — автоматический редирект на страницу трекинга"
+      ],
+      "dependencies": ["TASK-027", "TASK-013"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-029",
+      "category": "ui",
+      "priority": "medium",
+      "description": "Реализовать страницу трекинга заказа в реалтайм",
+      "acceptance_criteria": [
+        "Статус заказа с прогресс-индикатором: заказан → едет → ждёт загрузки → доставляет → завершён",
+        "Упрощённая карта с позицией робота (схематичная, не детальная)",
+        "Обновление статуса через WS /ws/tasks в реалтайм",
+        "Оповещение браузера (Notification API) при прибытии к delivery точке"
+      ],
+      "test_steps": [
+        "Шаг 1: Создать заказ, открыть страницу трекинга",
+        "Шаг 2: Наблюдать как прогресс-бар обновляется по мере выполнения",
+        "Шаг 3: Дать разрешение на уведомления — при прибытии должно появиться push-уведомление",
+        "Шаг 4: Убедиться что страница работает на смартфоне"
+      ],
+      "dependencies": ["TASK-028", "TASK-004"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-030",
+      "category": "integration",
+      "priority": "high",
+      "description": "Стриминг видео OAK-D: MJPEG endpoint в task-api",
+      "acceptance_criteria": [
+        "GET /api/robot/video-stream отдаёт MJPEG поток (multipart/x-mixed-replace)",
+        "Источник: подписка на /camera/color/image_raw через rclpy (или HTTP relay с компресссией)",
+        "FPS: 5-10 при ширине 640px, задержка ≤ 500 мс",
+        "При отключённой камере — поток из placeholder изображения (не ошибка 500)"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть http://10.1.1.10:8080/api/robot/video-stream в браузере",
+        "Шаг 2: Убедиться что видео отображается и обновляется",
+        "Шаг 3: vlc http://10.1.1.10:8080/api/robot/video-stream — видео в VLC",
+        "Шаг 4: Отключить oak-d контейнер — поток должен показать placeholder, не упасть"
+      ],
+      "dependencies": ["TASK-001"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-031",
+      "category": "security",
+      "priority": "high",
+      "description": "Watchdog heartbeat: автостоп при потере соединения с оператором",
+      "acceptance_criteria": [
+        "Новый ROS 2 нода или часть ScenarioNode: ожидает heartbeat каждые 5 сек",
+        "Heartbeat отправляется клиентам через WS /ws/telemetry (клиент должен ответить pong)",
+        "Если heartbeat не получен 3 раза подряд (15 сек) → публикует /cmd_vel нули и emergency_stop",
+        "Watchdog отключается при наличии активного сценария (тогда сценарий сам управляет стопом)",
+        "Только в режиме телеоп (ручного управления)"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть телеоп, начать движение, отключить WiFi на 20 сек",
+        "Шаг 2: Убедиться что робот остановился через ≤ 15 сек после потери соединения",
+        "Шаг 3: Восстановить WiFi — система должна возобновить работу без перезапуска",
+        "Шаг 4: Запустить patrol сценарий, отключить WiFi — убедиться что патрулирование ПРОДОЛЖАЕТСЯ (watchdog не активен)"
+      ],
+      "dependencies": ["TASK-012"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-032",
+      "category": "infrastructure",
+      "priority": "medium",
+      "description": "Настроить HTTPS/TLS для веб-интерфейсов (nginx reverse proxy с self-signed cert)",
+      "acceptance_criteria": [
+        "nginx контейнер как reverse proxy для operator-panel (3000) и client-app (3001) и task-api (8080)",
+        "Self-signed SSL сертификат, автоматически генерируется при первом запуске",
+        "HTTP редиректит на HTTPS",
+        "WebSocket работает через wss://"
+      ],
+      "test_steps": [
+        "Шаг 1: Открыть https://10.1.1.10 в браузере (игнорировать предупреждение self-signed)",
+        "Шаг 2: Убедиться что HTTP → HTTPS перенаправление работает",
+        "Шаг 3: WS соединение через wss:// работает в панели оператора",
+        "Шаг 4: Проверить что HTTP запросы к API не проходят без HTTPS"
+      ],
+      "dependencies": ["TASK-021", "TASK-027"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-033",
+      "category": "infrastructure",
+      "priority": "medium",
+      "description": "Создать API эндпоинт для получения occupancy grid карты как PNG изображение",
+      "acceptance_criteria": [
+        "GET /api/maps/{id}/image возвращает PNG occupancy grid",
+        "Карта масштабируется и преобразуется из nav_msgs/OccupancyGrid топика (/map)",
+        "Resolution metadata (meters_per_pixel, origin_x, origin_y) в заголовках ответа",
+        "Кэш: изображение обновляется не чаще раза в 10 сек"
+      ],
+      "test_steps": [
+        "Шаг 1: curl http://10.1.1.10:8080/api/maps/current/image --output map.png",
+        "Шаг 2: Открыть map.png — убедиться что видна планировка помещения",
+        "Шаг 3: Проверить заголовки: X-Map-Resolution, X-Map-Origin-X, X-Map-Origin-Y присутствуют",
+        "Шаг 4: Убедиться что PNG обновляется после изменений карты"
+      ],
+      "dependencies": ["TASK-001"],
+      "status": "pending"
+    },
+    {
+      "id": "TASK-034",
+      "category": "infrastructure",
+      "priority": "low",
+      "description": "Настроить input validation и rate limiting в task-api",
+      "acceptance_criteria": [
+        "Pydantic валидация всех входящих JSON (неверные типы → 422)",
+        "Rate limiting: POST /api/tasks — не более 10 в минуту на пользователя",
+        "Rate limiting: POST /api/robot/cmd_vel — не более 50 в секунду",
+        "SQL injection protection (SQLAlchemy ORM использован везде)"
+      ],
+      "test_steps": [
+        "Шаг 1: POST /api/tasks с {} (пустое тело) → 422 Unprocessable Entity",
+        "Шаг 2: Отправить 15 POST /api/tasks за минуту → 429 Too Many Requests",
+        "Шаг 3: POST /api/tasks с SQL injection в params → безопасно обработано",
+        "Шаг 4: POST /api/tasks с params: {\"pickup\": \"'; DROP TABLE tasks; --\"} → 422 или безопасный ответ"
+      ],
+      "dependencies": ["TASK-003"],
+      "status": "pending"
+    }
+  ]
+}

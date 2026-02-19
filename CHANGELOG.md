@@ -8,6 +8,14 @@
 ## [Unreleased]
 
 ### Добавлено
+- PRD.md — Product Requirements Document с 34 задачами, milestones и acceptance criteria (19 февраля 2026)
+- 10 специализированных AI-агентов в `docs/development/agents/`: navigation, backend, voice, frontend, devops, docs, git, security, scenarios, structure (19 февраля 2026)
+- tasks.json — структурированный список задач с приоритетами и test_steps (19 февраля 2026)
+- progress.md — лог выполнения задач агентами (19 февраля 2026)
+- `docs/architecture/NETWORK_TOPOLOGY.md` — отдельный документ сетевой топологии (19 февраля 2026)
+- Документация ICP Odometry: `docs/architecture/ICP_ODOMETRY.md` (декабрь 2025)
+- GUI интерфейс управления роботом `tools/robot_control_gui_simple.py` (ноябрь 2025)
+- Параметр `enable_search` для Qwen API web-поиска в dialogue_node и reflection_node (ноябрь 2025)
 - Голосовой ассистент rob_box_voice с DeepSeek, Vosk STT, Silero TTS
 - LED анимации rob_box_animations для WS2812B матриц
 - Интеграция Zenoh для распределённой связи между Vision Pi и Main Pi
@@ -31,28 +39,28 @@
 - Переход на offline-first стратегию для STT/TTS
 - Реорганизация Docker структуры по стандартам проекта
 - Оптимизация сборки для Raspberry Pi 4
-- Система накопления запросов в dialogue_node - все запросы отправляются одним пакетом в DeepSeek (4 ноября 2025)
-  - Запросы накапливаются в очереди с таймаутом 2.5 секунды
-  - Все накопленные запросы (в том числе пришедшие во время обработки LLM) отправляются одним батчем
-  - Улучшена обработка и минимизировано количество запросов к API
+- Система накопления запросов в dialogue_node — все запросы отправляются одним пакетом в DeepSeek (таймаут 2.5с) (4 ноября 2025)
+- Автоматический fallback между Qwen и DeepSeek в dialogue_node и reflection_node (ноябрь 2025)
+- Провайдер LLM по умолчанию изменён на DeepSeek (ноябрь 2025)
 - Перемещение perception и lslidar контейнеров с Vision Pi на Main Pi (24 октября 2025)
-  - Освобождение ресурсов Vision Pi для камеры и микрофона
-  - Централизация обработки данных на Main Pi
-- Рефакторинг системы мониторинга - агенты на Pi, центральный стек на отдельной машине (24 октября 2025)
-- Изменена стратегия CI/CD - создание PR вместо прямого auto-merge (23 октября 2025)
+- Рефакторинг системы мониторинга — агенты на Pi, центральный стек на отдельной машине (24 октября 2025)
+- Изменена стратегия CI/CD — создание PR вместо прямого auto-merge (23 октября 2025)
 - Реорганизация скриптов и конфигов согласно DOCKER_STANDARDS.md (24 октября 2025)
 
 ### Исправлено
 - USB питание на Vision Pi для OAK-D камеры
 - Проблемы с контейнерами Vision Pi (config volumes, network_mode)
 - Ошибки компиляции apriltag и lslidar драйверов в Docker
-- TF трансформации - robot-state-publisher теперь использует Zenoh namespace wrapper (24 октября 2025)
-- Порядок TTS чанков - предотвращение смешивания между сеансами диалога (24 октября 2025)
-- Отсутствующие директории scripts/ в Docker volumes (24 октября 2025)
+- TF трансформации — robot-state-publisher теперь использует Zenoh namespace wrapper (24 октября 2025)
+- Порядок TTS чанков — предотвращение смешивания между сеансами диалога (24 октября 2025)
 - Дублирование запусков тестов и линтинга в CI/CD (23 октября 2025)
 - Предупреждение 'PerceptionEvent не найден' в voice-assistant (24 октября 2025)
-- Orphaned workflow build-all-local.yml - добавлен placeholder с deprecation notice (28 октября 2025)
-- Инвалидация кэша Docker образа robot-state-publisher - теперь включает package.xml и CMakeLists.txt (19 ноября 2025)
+- Orphaned workflow build-all-local.yml — добавлен placeholder с deprecation notice (28 октября 2025)
+- Инвалидация кэша Docker образа robot-state-publisher (19 ноября 2025)
+- Поворот лидара на 180° — корректная ориентация LSLIDAR N10 (20 ноября 2025)
+- Ориентация колёс и осей (20 ноября 2025)
+- Парсинг JSON для ответов Qwen и DeepSeek (ноябрь 2025)
+- Chipmunk эффект TTS — восстановлен оригинальный голос ([документ](docs/CHIPMUNK_VOICE_FIX_SUMMARY.md))
 
 ## [0.1.0] - 2025-10-04
 
