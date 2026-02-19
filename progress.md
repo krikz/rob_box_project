@@ -14,6 +14,7 @@
 | 2026-02-19 | DOCS-002 | docs-agent | Актуализация документации по git log: CHANGELOG.md — добавлен раздел [Январь 2026] с 14 записями (анимации, звуки, DeepSeek fixes, tokens); README.md — добавлен блок "30 января 2026", исправлен счётчик агентов (10→11); добавлен diagnostics-agent в перечень | 2 файла | ✅ |
 | 2026-02-19 | PM-001 | product-manager-agent | Актуализация спецификации железа: исправлена ошибка Pi 4→Pi 5, уточнена RAM конфигурация (Main Pi 16GB, Vision Pi 8GB) в product-manager-agent.md и PRD.md v1.0.1 | 2 файла | ✅ |
 | 2026-02-19 | PM-002 | product-manager-agent | Создание задач агентского режима: добавлено 7 задач TASK-035..041 для стабилизации feature/agent (agent cycle тесты, Voice Memory, MCP tools, промпт-инжиниринг, Ollama, документация, CI/CD). Критические: TASK-035 (agent cycle), TASK-036 (memory), TASK-037 (MCP tools) | tasks.json | ✅ |
+| 2026-02-19 | PM-003 | product-manager-agent | PM-анализ skills.sh экосистемы (Copilot MCP v0.0.90-91). Вывод: наши agent guides уже являются Skills по паттерну. Добавлено 2 задачи: SKILLS-001 (добавить "When to Apply" секции в agent guides), SKILLS-002 (оценить/установить внешние skills). Стратегическая рекомендация: ниша ros2/robotics на skills.sh пуста — потенциал публикации | tasks.json | ✅ |
 
 ---
 

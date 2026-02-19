@@ -186,6 +186,47 @@
       "dependencies": ["TASK-035", "TASK-036"],
       "status": "pending",
       "notes": "Тесты должны быть независимы от железа (mock ROS topics), не требовать реального робота."
+    },
+    {
+      "id": "SKILLS-001",
+      "category": "infrastructure",
+      "priority": "low",
+      "description": "Добавить 'When to Apply' секции во все agent guides для повышения точности срабатывания AI агентов",
+      "acceptance_criteria": [
+        "Каждый файл в docs/development/agents/*.md содержит секцию '## When to Apply' с 3-5 конкретными триггерами",
+        "Триггеры описаны в виде 'Use this skill when: ...' с директориями/файлами/сценариями",
+        "Формат единообразен во всех 12 файлах агентов",
+        "Обновлён docs/development/agents/README.md с описанием нового стандарта"
+      ],
+      "test_steps": [
+        "Шаг 1: grep -r 'When to Apply' docs/development/agents/ — должно найти 12+ совпадений",
+        "Шаг 2: Открыть каждый agent-файл — секция присутствует и заполнена",
+        "Шаг 3: Проверить что триггеры конкретные (содержат имена файлов/директорий, а не абстрактные описания)"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "notes": "Паттерн взят из skills.sh экосистемы (vercel-react-best-practices). 'When to Apply' позволяет AI агентам автоматически активировать нужный контекст по типу задачи. PM-анализ: 2026-02-19."
+    },
+    {
+      "id": "SKILLS-002",
+      "category": "infrastructure",
+      "priority": "low",
+      "description": "Оценить и установить 1-2 внешних skills (python/docker) через Copilot MCP skills.sh в проект",
+      "acceptance_criteria": [
+        "Через Copilot MCP UI (Skills tab) найдены и протестированы минимум 2 кандидата из skills.sh",
+        "Установлен как минимум 1 skills (например python best practices или docker patterns) на scope: project",
+        "Задокументирован результат: какой skill установлен, какой эффект на качество кодогенерации",
+        "Подготовлена оценка: стоит ли публиковать rob-box skills (ros2-python-patterns) как open-source"
+      ],
+      "test_steps": [
+        "Шаг 1: Copilot MCP panel → Skills tab → Search → 'python' → просмотреть топ результаты",
+        "Шаг 2: Установить наиболее релевантный skill (project scope, github-copilot agent)",
+        "Шаг 3: Написать простой ROS2 node — проверить что агент следует паттернам из установленного skill",
+        "Шаг 4: Зафиксировать вывод в progress.md"
+      ],
+      "dependencies": ["SKILLS-001"],
+      "status": "pending",
+      "notes": "Анализ skills.sh leaderboard (2026-02-19): ниша ROS2/robotics пуста. После SKILLS-001 оценить готовность к публикации наших agent guides как первого ros2 skill. Потенциал: топ leaderboard в новой категории."
     }
   ]
 }
