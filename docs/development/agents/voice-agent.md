@@ -174,9 +174,106 @@ task_api:
 
 ---
 
+## Ревью кода (февраль 2026)
+
+> Состояние на ветке `feature/agent`. Задачи TASK-017–020 — **pending**, частично реализованы.
+
+### ✅ Уже реализовано
+
+| Компонент | Файл | Состояние |
+|-----------|------|-----------|
+| `ConversationHistory` | `core/conversation_history.py` | Полностью: in-session история, лимит, очистка, tool-messages |
+| `DialogueManager` | `core/dialogue_manager.py` | Полностью: state machine IDLE/LISTENING/DIALOGUE/SILENCED, text-based wake word, silence mode, query accumulation |
+| `ProviderManager` | `llm/provider_manager.py` | Частично: Qwen↔DeepSeek (двунаправленный), sync OpenAI client, env-key resolution |
+| `CommandParser` | `core/command_parser.py` | Частично: regex NLU, интенты NAVIGATE/STOP/FOLLOW/STATUS/MAP/VISION |
+| `CommandNode` | `command_node.py` | Частично: Nav2 NavigateToPose напрямую, без task-api |
+| `DialogueNode` | `dialogue_node.py` (2423 строки!) | Полностью перегружен — кандидат на рефакторинг |
+
+### ❌ Не реализовано / отклонения от задач
+
+**TASK-017 — LLM fallback:**
+- `get_fallback_provider()` возвращает `None` для не-qwen/deepseek провайдеров → **Ollama не подключён**
+- Цепочка сейчас двунаправленная (qwen↔deepseek), задача требует **линейную**: qwen → deepseek → ollama
+- Смена провайдера **не публикуется** в `/rob_box/voice/status`
+
+**TASK-018 — Wake word:**
+- Текущая реализация: Vosk работает **постоянно** → STT-тест `stt_callback` проверяет текст на wake-слова
+- Задача требует **акустического** wake-word движка (openWakeWord/Porcupine) — always-on до запуска Vosk
+- Нет настройки `sensitivity` в `config.yaml`
+
+**TASK-019 — NLU:**
+- `CommandParser` — **regex**, не LLM. Нет `start_scenario`, `cancel_task`, `chitchat`
+- Топик сейчас `/voice/command/intent`, задача требует **`/rob_box/voice/intent`**
+- Waypoints — hardcoded в паттернах, нужно читать из конфига/параметров
+
+**TASK-020 — Voice→Task API:**
+- `CommandNode` отправляет напрямую в Nav2 action client — HTTP к task-api **не реализован**
+- Зависит от TASK-001 (task-api) и TASK-012 (ScenarioNode) — оба pending
+
+### ⚠️ Технический долг
+
+- `dialogue_node.py` **2423 строки** — нарушение SRP. Нужно выделить:
+  - `LLMStreamingHandler` (логика стриминга, ≈ строки 867–1280)
+  - `TaskAPIClient` (HTTP клиент для task-api)
+  - `NLUService` (LLM-based intent extraction)
+- Провайдеры в `DialogueNode.PROVIDERS` дублируют `llm/provider_manager.py` — нужно переиспользовать `ProviderManager` целиком
+
+---
+
+## EchoVault — память для агентов
+
+> **Репо:** [github.com/mraza007/echovault](https://github.com/mraza007/echovault)
+
+**Что это:** Локальная персистентная память для **AI coding-агентов** (Claude Code, Cursor, Codex). Хранит решения, баги и контекст в Markdown + SQLite (FTS5 + vector search). MCP-сервер. Не требует облака.
+
+**Архитектура:**
+```
+~/.memory/
+├── vault/<project>/YYYY-MM-DD-session.md   # Markdown с YAML frontmatter
+├── index.db                                 # SQLite: FTS5 + sqlite-vec
+└── config.yaml                              # provider: ollama | openai
+```
+`MemoryService` → `MemoryDB` (SQLite) + `write_session_memory()` (Markdown) + `EmbeddingProvider` (Ollama/OpenAI)
+
+**MCP инструменты:** `memory_save`, `memory_search`, `memory_context`
+
+### Применимость к РОББОКС
+
+| Сценарий | Применимость |
+|----------|-------------|
+| Память **этого агента** (coding agent) о решениях в проекте | ✅ Прямое применение — установить EchoVault для сессий разработки |
+| In-app память **голосового ассистента** (помнить пользователя, предпочтения) | ❌ Не подходит — EchoVault для dev-сессий, не для runtime ROS 2 |
+
+**Для cross-session памяти голосового ассистента** (если понадобится) — нужна своя реализация:
+```python
+# Лёгкая альтернатива для rob_box_voice: SQLite с FTS
+import sqlite3
+from pathlib import Path
+
+class VoiceMemory:
+    """Персистентная память ассистента: предпочтения + важные факты."""
+    
+    def __init__(self, db_path: str = "/data/voice_memory.db"):
+        self.conn = sqlite3.connect(db_path)
+        self.conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories USING fts5(content, tags)")
+    
+    def save(self, content: str, tags: str = "") -> None:
+        self.conn.execute("INSERT INTO memories VALUES (?, ?)", (content, tags))
+        self.conn.commit()
+    
+    def search(self, query: str, limit: int = 5) -> list[str]:
+        cur = self.conn.execute("SELECT content FROM memories WHERE memories MATCH ? LIMIT ?", (query, limit))
+        return [row[0] for row in cur.fetchall()]
+```
+
+Добавить в `ConversationHistory` метод `save_to_disk()` / `load_from_disk()` при необходимости.
+
+---
+
 ## Протокол завершения задачи
 
 1. Выполни все test_steps из tasks.json
-2. Запиши в `progress.md`
-3. Измени status → `done`
-4. `git commit -m "feat(voice): описание"`
+2. Обнови `notes` в tasks.json с результатами
+3. Запиши в `progress.md`
+4. Измени status → `done`
+5. `git commit -m "feat(voice): описание"`

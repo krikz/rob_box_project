@@ -375,6 +375,7 @@
         "Шаг 4: Задать вопрос голосом — убедиться что ответ получен в ≤ 15 сек даже без интернета"
       ],
       "dependencies": [],
+      "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: ProviderManager (llm/provider_manager.py) покрывает Qwen↔DeepSeek двунаправленный fallback через sync OpenAI client. DialogueNode использует его через _init_llm_client/_try_fallback_provider. НЕ РЕАЛИЗОВАНО: Ollama как третий offline fallback (get_fallback_provider возвращает None для non-qwen/deepseek); линейная цепь qwen→deepseek→ollama; публикация смены провайдера в /rob_box/voice/status.",
       "status": "pending"
     },
     {
@@ -395,6 +396,7 @@
         "Шаг 4: Проверить что после wake word идёт распознавание команды"
       ],
       "dependencies": ["TASK-017"],
+      "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: DialogueManager (core/dialogue_manager.py) реализует is_wake_word() через проверку STT-транскрипта на подстроки ['робок','робот','роббокс']. dialogue_node.py использует has_wake_word() в stt_callback — STT работает всегда, wake-word фильтрует текст. НЕ РЕАЛИЗОВАНО: акустический wake-word движок (openWakeWord/Porcupine); always-on детекция до запуска Vosk; настройка sensitivity в config.yaml.",
       "status": "pending"
     },
     {
@@ -416,6 +418,7 @@
         "Шаг 4: Произнести название несуществующей локации — убедиться что робот вежливо отвечает"
       ],
       "dependencies": ["TASK-017"],
+      "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: CommandParser (core/command_parser.py) — regex-NLU с интентами NAVIGATE/STOP/FOLLOW/STATUS/MAP/VISION. CommandNode публикует в /voice/command/intent (не /rob_box/voice/intent). НЕ РЕАЛИЗОВАНО: интенты start_scenario и cancel_task; LLM-based NLU с извлечением waypoints из конфига; топик должен быть /rob_box/voice/intent согласно архитектуре; confidence через LLM.",
       "status": "pending"
     },
     {
@@ -437,6 +440,7 @@
         "Шаг 4: Произнести 'Начни патрулирование' — patrol задача создана и выполняется"
       ],
       "dependencies": ["TASK-019", "TASK-012"],
+      "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: CommandNode.handle_navigate() → NavigateToPose action client (Nav2 напрямую, без task-api). НЕ РЕАЛИЗОВАНО: HTTP POST к task-api /api/tasks; интеграция start_scenario/patrol через task-api; emergency_stop endpoint; TASK-001 (task-api) не реализован — прямая зависимость.",
       "status": "pending"
     },
     {
