@@ -142,6 +142,9 @@ services:
       - TTS_CACHE_DIR=/cache/tts
       # Python для audio
       - PYTHONUNBUFFERED=1
+      # VoiceMemory + Ollama
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
     env_file:
       - .env.secrets  # API keys: QWEN_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
@@ -153,6 +156,8 @@ services:
       - ./cache/tts:/cache/tts
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
+      # VoiceMemory persistent storage
+      - ./data/voice:/data
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
@@ -211,3 +216,22 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     restart: unless-stopped
+
+  # ============ AI Memory (Optional) ============
+  # Ollama - локальный сервер для генерации эмбеддингов (VoiceMemory семантический поиск)
+  # Активация: docker compose --profile ai up -d ollama
+  # Первый запуск модели: docker exec ollama ollama pull nomic-embed-text
+  # Модель: nomic-embed-text (768d, мультиязычная, < 300 MB RAM, работает на CPU)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["ai"]
+    network_mode: host
+    volumes:
+      - ./data/ollama:/root/.ollama  # Модели хранятся между перезапусками
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h  # Держать модель загруженной
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+    labels:
+      logging: "promtail"

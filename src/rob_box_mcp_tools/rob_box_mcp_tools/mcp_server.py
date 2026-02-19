@@ -40,7 +40,15 @@ from .tools import (
     PlaySoundTool,
     SpeakTextTool,
     ListenForResponseTool,
+    MemorySaveTool,
+    MemorySearchTool,
+    MemoryContextTool,
 )
+
+try:
+    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
+except ImportError:
+    _VoiceMemory = None  # type: ignore[assignment,misc]
 
 
 class MCPServer(Node):
@@ -55,6 +63,10 @@ class MCPServer(Node):
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
+
+        # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
+        self.voice_memory = None
+        self._init_voice_memory()
 
         # Регистрация инструментов
         self._register_tools()
@@ -128,6 +140,37 @@ class MCPServer(Node):
         # Dialogue tools (критично для агентного диалога!)
         self.registry.register(SpeakTextTool(self))
         self.registry.register(ListenForResponseTool(self))
+
+        # Memory tools (долгосрочная память + семантический поиск)
+        self.registry.register(MemorySaveTool(self))
+        self.registry.register(MemorySearchTool(self))
+        self.registry.register(MemoryContextTool(self))
+
+    def _init_voice_memory(self) -> None:
+        """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
+        if _VoiceMemory is None:
+            self.get_logger().warning(
+                "⚠️ rob_box_voice не найден — VoiceMemory отключена. "
+                "Memory MCP tools не будут работать."
+            )
+            return
+
+        import os
+
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        try:
+            self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            stats = self.voice_memory.get_stats()
+            self.get_logger().info(
+                f"🧠 VoiceMemory инициализирована: {db_path} "
+                f"(turns={stats['turn_count']}, sessions={stats['session_count']}, "
+                f"facts={stats['fact_count']}, vec={stats['vec_enabled']})"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"❌ Ошибка инициализации VoiceMemory: {exc}")
+            self.voice_memory = None
 
     def publish_tools(self):
         """Публикация списка доступных инструментов в OpenAI Tool Calls формате"""

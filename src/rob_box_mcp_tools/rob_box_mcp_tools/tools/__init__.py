@@ -9,6 +9,7 @@ tools - Коллекция MCP инструментов для Rob Box
 - animation: Управление LED анимациями
 - sound: Управление звуковыми эффектами
 - dialogue: Управление диалогом (TTS, STT)
+- memory: Долгосрочная память (VoiceMemory + Ollama embeddings)
 """
 
 from .navigation import *
@@ -18,6 +19,7 @@ from .mapping import *
 from .animation import *
 from .sound import *
 from .dialogue import *
+from .memory import *
 
 __all__ = [
     # Navigation tools
@@ -45,4 +47,8 @@ __all__ = [
     # Dialogue tools
     "SpeakTextTool",
     "ListenForResponseTool",
+    # Memory tools
+    "MemorySaveTool",
+    "MemorySearchTool",
+    "MemoryContextTool",
 ]

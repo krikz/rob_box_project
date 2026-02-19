@@ -52,6 +52,14 @@ except ImportError:
 from rob_box_voice.core.dialogue_manager import DialogueManager, DialogueState
 from rob_box_voice.core.conversation_history import ConversationHistory
 
+# Долгосрочная память (VoiceMemory) — опциональная
+try:
+    from rob_box_voice.core.voice_memory import VoiceMemory
+    VOICE_MEMORY_AVAILABLE = True
+except ImportError:
+    VOICE_MEMORY_AVAILABLE = False
+    print("⚠️  VoiceMemory не найдена — долгосрочная память отключена")
+
 
 class DialogueNode(Node):
     """ROS2 нода для LLM диалога с поддержкой Qwen и DeepSeek"""
@@ -119,6 +127,11 @@ class DialogueNode(Node):
 
         # История диалога (используем ConversationHistory модуль)
         self.conversation_history = ConversationHistory(max_messages=20)
+
+        # Долгосрочная память (сохраняется между рестартами)
+        self.voice_memory = None
+        if VOICE_MEMORY_AVAILABLE:
+            self._init_voice_memory()
 
         # Подписка на распознанную речь
         self.stt_sub = self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
@@ -293,6 +306,42 @@ class DialogueNode(Node):
         except Exception as e:
             self.get_logger().warning(f"⚠ Не удалось загрузить prompt: {e}")
             return 'Ты ROBBOX - мобильный робот-ассистент. Отвечай в JSON: {"ssml": "<speak>...</speak>"}'
+
+    def _init_voice_memory(self) -> None:
+        """
+        Инициализация VoiceMemory и восстановление контекста из предыдущих сессий.
+
+        Не падает при ошибках — долгосрочная память является опциональной функцией.
+        """
+        import os
+
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        try:
+            self.voice_memory = VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            stats = self.voice_memory.get_stats()
+            self.get_logger().info(
+                f"🧠 VoiceMemory инициализирована: {db_path} "
+                f"(turns={stats['turn_count']}, sessions={stats['session_count']}, "
+                f"facts={stats['fact_count']}, vec={stats['vec_enabled']})"
+            )
+
+            # Восстанавливаем контекст из предыдущих сессий
+            past_turns = self.voice_memory.load_recent_turns(
+                limit=15, exclude_current_session=True
+            )
+            if past_turns:
+                self.get_logger().info(f"📖 Восстановлено {len(past_turns)} реплик из прошлых сессий")
+                for turn in past_turns:
+                    if turn["role"] == "user":
+                        self.conversation_history.add_user_message(turn["content"])
+                    elif turn["role"] == "assistant":
+                        self.conversation_history.add_assistant_message(turn["content"])
+
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Ошибка инициализации VoiceMemory: {exc}")
+            self.voice_memory = None
 
     def _map_emotion_to_animation(self, emotion: str) -> str:
         """Маппинг эмоций от DeepSeek в имена анимаций"""
@@ -822,6 +871,10 @@ class DialogueNode(Node):
         # Добавляем в историю диалога
         self.conversation_history.add_user_message(combined_message)
 
+        # Сохраняем реплику в долгосрочную память
+        if self.voice_memory is not None:
+            self.voice_memory.save_turn("user", combined_message)
+
         # Устанавливаем флаг обработки
         self.llm_processing = True
 
@@ -1185,6 +1238,8 @@ class DialogueNode(Node):
 
             # Сохраняем ответ в историю
             self.conversation_history.add_assistant_message(full_response)
+            if self.voice_memory is not None:
+                self.voice_memory.save_turn("assistant", full_response)
 
             # Успешный запрос - сбрасываем счётчик ошибок
             if self.provider_error_count > 0:
@@ -1422,6 +1477,8 @@ class DialogueNode(Node):
 
                     # Сохраняем финальный ответ в историю
                     self.conversation_history.add_assistant_message(final_content)
+                    if self.voice_memory is not None and final_content.strip():
+                        self.voice_memory.save_turn("assistant", final_content)
 
                     # Если есть текст - публикуем как финальный chunk (для legacy совместимости)
                     if final_content.strip():
@@ -2381,6 +2438,8 @@ class DialogueNode(Node):
                 self.get_logger().info(f"📝 LLM финальный ответ: {full_response[:100]}...")
                 # Сохраняем в историю
                 self.conversation_history.add_assistant_message(full_response)
+                if self.voice_memory is not None:
+                    self.voice_memory.save_turn("assistant", full_response)
                 self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks)")
             
         except (FuturesTimeoutError, TimeoutError) as e:
