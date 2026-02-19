@@ -60,9 +60,9 @@ docker-compose.override.yml
 /frames_*.pdf
 /clog
 
-# AI Agent Skills (auto-managed by skills CLI — не коммитить)
-# Переустановка: через Copilot MCP Skills UI или npx skills add <owner/repo>
-.agents/
+# AI Agent Skills
+# .agents/github-copilot/ — Rob Box кастомные скилы, КОММИТИМ
+# .continue/ .qwen/ — авто-установка сторонних тулов, игнорируем
 .continue/
 .qwen/
 
