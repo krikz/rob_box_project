@@ -26,6 +26,7 @@
 | [docs-agent.md](docs-agent.md) | 📚 Documentation Engineer | Обновление docs/, CHANGELOG.md, PRD.md после изменений |
 | [structure-agent.md](structure-agent.md) | 🏗️ Project Structure Guardian | Аудит структуры, рефакторинг, новые пакеты/сервисы |
 | [git-agent.md](git-agent.md) | 📝 Git Commit Engineer | Коммиты, PR, ветки, обновление tasks.json и progress.md |
+| [diagnostics-agent.md](diagnostics-agent.md) | 🔍 Robot Diagnostics Engineer | Проверка логов на роботе, диагностика после деплоя, тесты в контейнерах |
 
 ---
 
@@ -36,9 +37,13 @@
        ↓
 2. Git agent коммитит изменения + обновляет tasks.json и progress.md
        ↓
-3. Docs agent обновляет документацию если изменилась архитектура
+3. DevOps agent деплоит изменения на роботов (через GitHub Actions)
        ↓
-4. Structure agent проверяет соответствие структуре проекта
+4. Diagnostics agent проверяет логи и здоровье сервисов после деплоя
+       ↓
+5. Docs agent обновляет документацию если изменилась архитектура
+       ↓
+6. Structure agent проверяет соответствие структуре проекта
 ```
 
 ## Как использовать
