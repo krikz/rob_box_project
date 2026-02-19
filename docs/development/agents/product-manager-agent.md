@@ -249,8 +249,8 @@ grep '"status": "pending"' tasks.json | wc -l
 
 | Компонент | Фактически | Ограничения |
 |-----------|-----------|-------------|
-| Main Pi | Raspberry Pi 4 (4-8GB) | Не Pi 5; нет NPU |
-| Vision Pi | Raspberry Pi 4 (4-8GB) | Не Pi 5 |
+| Main Pi | Raspberry Pi 5 (4-8GB) | Нет NPU |
+| Vision Pi | Raspberry Pi 5 (4-8GB) | — |
 | Камера | OAK-D Lite | Нет OAK-D Pro; ограниченный FOV |
 | LiDAR | LSLIDAR N10 (2D) | Только горизонтальная плоскость |
 | Моторы | 2×VESC + 4×колеса | Дифференциальный привод |
@@ -258,5 +258,3 @@ grep '"status": "pending"' tasks.json | wc -l
 | Микрофон | ReSpeaker 6-mic array | USB; только Vision Pi |
 | STT | Vosk offline | Только русский (`vosk-model-ru-0.42`) |
 | TTS | Silero offline | Только русский |
-
-> ⚠️ **Важно**: в PRD.md строки `Аппаратная платформа: 2×RPi5` — это ошибка документации. Реальное железо: **Raspberry Pi 4**. При обновлении PRD исправлять на Pi 4.
