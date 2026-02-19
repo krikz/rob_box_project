@@ -160,6 +160,36 @@ class MCPTool(ABC):
         return ToolExecutionType.MEDIUM
 
     @property
+    def read_only(self) -> bool:
+        """
+        Инструмент не меняет состояние системы (readOnlyHint)
+        
+        - True: только чтение данных (напр., get_battery_level)
+        - False: модифицирует состояние [DEFAULT]
+        """
+        return False
+
+    @property
+    def destructive(self) -> bool:
+        """
+        Инструмент выполняет разрушительные операции (destructiveHint)
+        
+        - True: может изменить/удалить данные [DEFAULT]
+        - False: не деструктивен (напр., чтение, проигрывание звуков)
+        """
+        return True
+
+    @property
+    def idempotent(self) -> bool:
+        """
+        Повторный вызов с теми же аргументами не даёт побочного эффекта (idempotentHint)
+        
+        - True: каждый вызов даёт одинаковый результат
+        - False: повторные вызовы могут добавлять эффекты [DEFAULT]
+        """
+        return False
+
+    @property
     def blocking(self) -> bool:
         """
         Требуется ли ждать результата перед продолжением диалога
@@ -237,6 +267,11 @@ class MCPTool(ABC):
                     "required": required,
                     "additionalProperties": False,
                 },
+            },
+            "annotations": {
+                "readOnlyHint": self.read_only,
+                "destructiveHint": self.destructive,
+                "idempotentHint": self.idempotent,
             },
         }
     

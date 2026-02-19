@@ -27,26 +27,29 @@ class SpeakTextTool(MCPTool):
         
         # Publisher для TTS запросов
         self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
+        # Publisher для анимаций (инициализируем сразу, чтобы не создавать дубли в execute())
+        self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
         # Subscriber для получения завершения произношения
         self.finished_sub = node.create_subscription(String, "/voice/tts/finished", self._on_tts_finished, 10)
-        # Кэш ожидающих произношений: speech_id -> result
-        self.pending_speeches = {}
+        # Трекер активных произношений: speech_id -> None; очищается в _on_tts_finished
+        self.pending_speeches: dict = {}
         import threading
         self.pending_speeches_lock = threading.Lock()
 
     def _on_tts_finished(self, msg: "String"):
-        """Обработка завершения произношения"""
+        """Обработка завершения произношения — очищает запись из pending_speeches."""
         import json
         try:
             result = json.loads(msg.data)
             speech_id = result.get("speech_id")
-            self.log_info(f"🔔 Получен TTS finished event: speech_id={speech_id[:8] if speech_id else 'None'}..., success={result.get('success')}")
-            if speech_id and speech_id in self.pending_speeches:
+            self.log_info(f"🔔 TTS finished: speech_id={speech_id[:8] if speech_id else 'None'}..., success={result.get('success')}")
+            if speech_id:
                 with self.pending_speeches_lock:
-                    self.pending_speeches[speech_id] = result
-                    self.log_info(f"✅ Speech {speech_id[:8]}... отмечен как завершенный")
-            else:
-                self.log_warning(f"⚠️ Speech {speech_id[:8] if speech_id else 'None'}... не найден в pending_speeches")
+                    if speech_id in self.pending_speeches:
+                        del self.pending_speeches[speech_id]  # Очищаем, чтобы не росло в памяти
+                        self.log_info(f"✅ Speech {speech_id[:8]}... удалён из pending_speeches")
+                    else:
+                        self.log_warning(f"⚠️ Speech {speech_id[:8]}... не найден в pending_speeches (возможно уже удалён)")
         except json.JSONDecodeError as e:
             self.log_error(f"❌ Ошибка парсинга TTS finished: {e}")
 
@@ -96,8 +99,6 @@ class SpeakTextTool(MCPTool):
         """Произнести текст"""
         import json
         import uuid
-        import time
-        import rclpy
         
         self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation})")
 
@@ -142,11 +143,7 @@ class SpeakTextTool(MCPTool):
             try:
                 from std_msgs.msg import String as StringMsg
                 anim_msg = StringMsg()
-                # Публикуем просто имя анимации (не JSON!), animation_player_node ожидает формат "animation_name" или "animation_name:duration"
                 anim_msg.data = animation
-                # Публикуем на топик анимаций
-                if not hasattr(self, 'animation_pub'):
-                    self.animation_pub = self.node.create_publisher(StringMsg, "/voice/animation/request", 10)
                 self.animation_pub.publish(anim_msg)
                 self.log_info(f"🎨 Установлена анимация '{animation}'")
             except Exception as e:

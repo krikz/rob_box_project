@@ -163,7 +163,14 @@ class MemorySearchTool(MCPTool):
 
             return MCPToolResult(
                 success=True,
-                data={"results": formatted, "total": len(formatted), "query": query},
+                data={
+                    "results": formatted,
+                    "total": len(formatted),
+                    "query": query,
+                    "limit": limit,
+                    "has_more": len(formatted) == limit,
+                    "next_offset": limit if len(formatted) == limit else None,
+                },
                 message=f"Найдено {len(formatted)} результатов.",
             )
         except Exception as e:

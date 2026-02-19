@@ -43,6 +43,17 @@ class NavigateToWaypointTool(MCPTool):
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.current_goal_handle = None
 
+    def _on_goal_response(self, future):
+        """Callback после отправки цели — логирует reject/accept."""
+        goal_handle = future.result()
+        if goal_handle is None:
+            self.log_error("❌ Nav2 не ответил на отправку цели")
+        elif not goal_handle.accepted:
+            self.log_warning("⚠️ Nav2 отклонил цель (goal rejected)")
+        else:
+            self.log_info("✅ Nav2 цель принята (goal accepted)")
+            self.current_goal_handle = goal_handle
+
     @property
     def name(self) -> str:
         return "navigate_to_waypoint"
@@ -99,10 +110,9 @@ class NavigateToWaypointTool(MCPTool):
         goal.pose.pose.orientation.z = math.sin(coords["theta"] / 2.0)
         goal.pose.pose.orientation.w = math.cos(coords["theta"] / 2.0)
 
-        # Отправка цели (асинхронно)
+        # Отправка цели с callback для мониторинга accept/reject
         future = self.nav_client.send_goal_async(goal)
-        # NOTE: В реальном использовании нужно обработать future через callback
-        # Для MCP инструмента возвращаем немедленный результат
+        future.add_done_callback(self._on_goal_response)
 
         self.log_info(f"Цель отправлена: {waypoint} ({coords['x']}, {coords['y']})")
 
@@ -126,6 +136,16 @@ class MoveDirectionTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
+
+    def _on_goal_response(self, future):
+        """Callback после отправки цели — логирует reject/accept."""
+        goal_handle = future.result()
+        if goal_handle is None:
+            self.log_error("❌ Nav2 не ответил на отправку цели")
+        elif not goal_handle.accepted:
+            self.log_warning("⚠️ Nav2 отклонил цель (goal rejected)")
+        else:
+            self.log_info("✅ Nav2 цель принята (goal accepted)")
 
     @property
     def name(self) -> str:
@@ -187,8 +207,9 @@ class MoveDirectionTool(MCPTool):
         goal.pose.pose.orientation.z = math.sin(coords["theta"] / 2.0)
         goal.pose.pose.orientation.w = math.cos(coords["theta"] / 2.0)
 
-        # Отправка цели
+        # Отправка цели с callback
         future = self.nav_client.send_goal_async(goal)
+        future.add_done_callback(self._on_goal_response)
 
         self.log_info(f"Относительная цель отправлена: {coords}")
 

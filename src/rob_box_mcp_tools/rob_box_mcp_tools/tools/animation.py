@@ -6,7 +6,7 @@ animation.py - Инструменты для управления LED анима
 - PlayAnimationTool: Запустить анимацию по имени с указанной длительностью
 """
 
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
@@ -96,7 +96,7 @@ class PlayAnimationTool(MCPTool):
         """Анимации не блокируют диалог"""
         return False
 
-    def execute(self, animation: str, duration: float = None) -> MCPToolResult:
+    def execute(self, animation: str, duration: Optional[float] = None) -> MCPToolResult:
         """Запустить анимацию"""
         self.log_info(f"Запуск анимации: {animation}, длительность: {duration}s")
 

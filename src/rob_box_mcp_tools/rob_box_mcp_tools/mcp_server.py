@@ -38,6 +38,7 @@ from .tools import (
     FinishMappingTool,
     PlayAnimationTool,
     PlaySoundTool,
+    GetSoundInfoTool,
     SpeakTextTool,
     ListenForResponseTool,
     MemorySaveTool,
@@ -136,6 +137,7 @@ class MCPServer(Node):
 
         # Sound tools
         self.registry.register(PlaySoundTool(self))
+        self.registry.register(GetSoundInfoTool(self))
 
         # Dialogue tools (критично для агентного диалога!)
         self.registry.register(SpeakTextTool(self))
