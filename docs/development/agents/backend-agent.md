@@ -17,6 +17,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Working in `docker/main/task-api/` — FastAPI endpoints, middleware, routing
+- Creating or modifying SQLAlchemy models in `src/` or database migrations in `migrations/`
+- Implementing ROS 2 Python nodes/services (`src/rob_box_*/`) using `rclpy`
+- Adding WebSocket handlers (`/ws/telemetry`, `/ws/tasks`) or REST API endpoints
+- Working on TASK-001, TASK-002, TASK-003, TASK-004, TASK-009, TASK-010, TASK-012, TASK-030, TASK-033
+
+---
+
 ## Контекст системы
 
 **Где живёт сервис:** `docker/main/task-api/`  

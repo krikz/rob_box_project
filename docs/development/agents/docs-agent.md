@@ -14,6 +14,18 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Updating `CHANGELOG.md` after completing features or fixes
+- Writing to `progress.md` — logging completed agent sessions
+- Adding or reorganizing files in `docs/` — architecture, guides, fixes
+- Updating `PRD.md` (requirements changes) or `ROADMAP.md` (milestone progress)
+- Checking for broken links or outdated references across documentation
+- After any code change that affects documented APIs, configs, or instructions
+
+---
+
 ## Структура документации проекта
 
 ```

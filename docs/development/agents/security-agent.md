@@ -11,6 +11,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Configuring nginx as reverse proxy (`docker/main/nginx/` or similar)
+- Setting up TLS/HTTPS certificates for operator-panel or client-app
+- Adding rate limiting, input validation or auth middleware to `docker/main/task-api/`
+- Implementing watchdog/heartbeat for auto-stop on connection loss
+- Working on TASK-031, TASK-032, TASK-034
+
+---
+
 ## Контекст системы
 
 **Сетевая топология:**

@@ -8,6 +8,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Completing any task and needing to commit changes with a proper message
+- Creating a new branch for a feature (`feature/`, `fix/`, `docs/`)
+- Preparing a PR or release tag (`v1.x.x`)
+- Organizing multiple uncommitted changes into atomic semantic commits
+- Updating `CHANGELOG.md` version entries or `progress.md` session log
+
+---
+
 ## Правила работы
 
 ### Перед стартом:

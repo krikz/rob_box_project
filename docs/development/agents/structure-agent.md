@@ -14,6 +14,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Auditing Dockerfiles for violations (`COPY config/` or `COPY scripts/` — forbidden by DOCKER_STANDARDS.md)
+- Creating a new ROS 2 package in `src/rob_box_*/` — scaffolding `package.xml`, `setup.py`, `CMakeLists.txt`
+- Reorganizing `docs/` — moving files, creating README indexes, fixing broken links
+- Detecting duplicated code or configs across `docker/main/` and `docker/vision/`
+- Refactoring project structure per `docs/development/DOCKER_STANDARDS.md`
+
+---
+
 ## Эталонная структура проекта
 
 ```

@@ -204,8 +204,8 @@
         "Шаг 3: Проверить что триггеры конкретные (содержат имена файлов/директорий, а не абстрактные описания)"
       ],
       "dependencies": [],
-      "status": "pending",
-      "notes": "Паттерн взят из skills.sh экосистемы (vercel-react-best-practices). 'When to Apply' позволяет AI агентам автоматически активировать нужный контекст по типу задачи. PM-анализ: 2026-02-19."
+      "status": "done",
+      "notes": "Паттерн взят из skills.sh экосистемы (vercel-react-best-practices). 'When to Apply' позволяет AI агентам автоматически активировать нужный контекст по типу задачи. PM-анализ: 2026-02-19. ВЫПОЛНЕНО 2026-02-19: добавлено в 12 файлов агентов + обновлён README."
     },
     {
       "id": "SKILLS-002",
@@ -225,8 +225,8 @@
         "Шаг 4: Зафиксировать вывод в progress.md"
       ],
       "dependencies": ["SKILLS-001"],
-      "status": "pending",
-      "notes": "Анализ skills.sh leaderboard (2026-02-19): ниша ROS2/robotics пуста. После SKILLS-001 оценить готовность к публикации наших agent guides как первого ros2 skill. Потенциал: топ leaderboard в новой категории."
+      "status": "done",
+      "notes": "Анализ skills.sh leaderboard (2026-02-19): ниша ROS2/robotics пуста. ВЫПОЛНЕНО 2026-02-19: оценено 4 пакета — omer-metin/skills-for-antigravity (ros2-robotics: пустой, 30 installs), smithery/ai (zeeshan080-ros2-patterns: базовый boilerplate, 1 install). Все ROS2 skills — автогенерированные шаблоны без ценности. Вывод: внешние skills не устанавливать. Рекомендация: опубликовать наши agent guides как первый ros2 skill на skills.sh."
     }
   ]
 }

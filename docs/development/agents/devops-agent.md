@@ -14,6 +14,18 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Modifying `.github/workflows/` — CI/CD пайплайны, GitHub Actions
+- Working with `docker/` — Dockerfile, docker-compose.yaml, buildkitd.toml
+- Configuring GitHub Container Registry, Docker image tags, build cache
+- Deploying to robots: `docker/main/scripts/update_and_restart.sh` or `docker/vision/scripts/`
+- Setting up or troubleshooting Grafana/Prometheus/Loki monitoring stack
+- Working on build optimization: `docs/development/BUILD_OPTIMIZATION.md`
+
+---
+
 ## Контекст системы
 
 **Целевые машины:**

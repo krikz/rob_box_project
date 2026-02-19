@@ -12,6 +12,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Configuring Nav2 parameters in `docker/main/config/` (nav2_params.yaml, costmap)
+- Working with RTAB-Map SLAM: `docker/main/rtabmap/`, map saving/loading
+- Debugging odometry issues: `src/vesc_nexus/`, `/odom` topic, wheel encoder calibration
+- Setting up or tuning LSLIDAR N10 (`docker/main/lslidar/`)
+- Working on TASK-005, TASK-006, TASK-007, TASK-008
+
+---
+
 ## Контекст системы
 
 **Аппаратура:**

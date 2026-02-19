@@ -12,6 +12,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Working in `src/rob_box_voice/` — dialogue_node, STT, TTS, LLM adapter, voice_memory
+- Working in `docker/vision/voice_assistant/` — Dockerfile, docker-compose config
+- Implementing or debugging MCP tools in `src/rob_box_mcp_tools/`
+- Configuring LLM providers (DeepSeek, Qwen, Ollama), prompts in `master_prompt_compact.txt`
+- Working on TASK-017 through TASK-020 or TASK-035 through TASK-041 (agent cycle, voice memory)
+
+---
+
 ## Контекст системы
 
 **Пакет:** `src/rob_box_voice/`  

@@ -14,6 +14,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Updating `tasks.json` — adding tasks, changing priorities, updating acceptance criteria
+- Reviewing `PRD.md` for version updates or requirement changes
+- Assessing milestone readiness in `ROADMAP.md` or planning next sprint
+- Identifying gaps between implementation and `PRD.md` requirements
+- Generating `progress.md` summary after completing a session
+
+---
+
 ## Структура ключевых PM-файлов
 
 ```

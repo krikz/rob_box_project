@@ -51,6 +51,25 @@
 7. Structure agent проверяет соответствие структуре проекта
 ```
 
+## Стандарт `## When to Apply`
+
+Каждый файл агента содержит секцию `## When to Apply` с 5 конкретными триггерами.  
+Формат секции:
+
+```markdown
+## When to Apply
+
+Use this skill when:
+- Working in `<директория>` — <что делается>
+- Implementing/Configuring <компонент>
+- Working on <TASK-XXX, TASK-YYY>
+```
+
+**Зачем:** AI-агенты (GitHub Copilot, Claude Code) автоматически активируют нужный контекст  
+по типу задачи, без явного указания пользователя. Паттерн взят из [skills.sh](https://skills.sh) экосистемы.
+
+---
+
 ## Как использовать
 
 1. Прочитай `tasks.json` — выбери задачу (статус `pending`, высокий приоритет)

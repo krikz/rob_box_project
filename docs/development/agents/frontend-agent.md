@@ -17,6 +17,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Working in `web/operator-panel/` — React operator dashboard (map, teleop, scenarios)
+- Working in `web/client-app/` — mobile-first client React app (orders, tracking)
+- Implementing Leaflet.js map with robot position or waypoints
+- Adding WebSocket consumer for `/ws/telemetry` or `/ws/tasks` real-time updates
+- Working on TASK-021 through TASK-029
+
+---
+
 ## Контекст системы
 
 **Расположение:**

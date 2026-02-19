@@ -13,6 +13,17 @@
 
 ---
 
+## When to Apply
+
+Use this skill when:
+- Working in `src/rob_box_control/` or creating `src/rob_box_scenarios/`
+- Implementing Nav2 Action client (NavigateToPose, FollowWaypoints)
+- Building state machine for delivery/patrol/guide scenarios
+- Integrating scenarios with LED matrix (`src/rob_box_animations/`)
+- Working on TASK-011, TASK-013, TASK-014, TASK-015, TASK-016
+
+---
+
 ## Контекст системы
 
 **Расположение нового пакета:**  
