@@ -217,13 +217,15 @@ services:
     command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     restart: unless-stopped
 
-  # ============ AI Memory ============
+  # ============ AI Memory (Optional) ============
   # Ollama - локальный сервер для генерации эмбеддингов (VoiceMemory семантический поиск)
-  # Первый запуск: docker exec ollama ollama pull nomic-embed-text
+  # Активация: docker compose --profile ai up -d ollama
+  # Первый запуск модели: docker exec ollama ollama pull nomic-embed-text
   # Модель: nomic-embed-text (768d, мультиязычная, < 300 MB RAM, работает на CPU)
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    profiles: ["ai"]
     network_mode: host
     volumes:
       - ./data/ollama:/root/.ollama  # Модели хранятся между перезапусками
