@@ -12,6 +12,7 @@
 | — | — | — | Инициализация проекта, PRD и tasks.json созданы | PRD.md, tasks.json | ✅ |
 | 2026-02-19 | DOCS-001 | docs-agent | Полный аудит документации: создан NETWORK_TOPOLOGY.md, обновлены README.md, CHANGELOG.md, docs/README.md, architecture/README.md, development/README.md, packages/README.md | 7 файлов | ✅ |
 | 2026-02-19 | DOCS-002 | docs-agent | Актуализация документации по git log: CHANGELOG.md — добавлен раздел [Январь 2026] с 14 записями (анимации, звуки, DeepSeek fixes, tokens); README.md — добавлен блок "30 января 2026", исправлен счётчик агентов (10→11); добавлен diagnostics-agent в перечень | 2 файла | ✅ |
+| 2026-02-19 | PM-001 | product-manager-agent | Актуализация спецификации железа: исправлена ошибка Pi 4→Pi 5, уточнена RAM конфигурация (Main Pi 16GB, Vision Pi 8GB) в product-manager-agent.md и PRD.md v1.0.1 | 2 файла | ✅ |
 
 ---
 
