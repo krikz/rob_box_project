@@ -22,6 +22,7 @@
 
 | Файл | Роль | Когда использовать |
 |------|------|--------------------|
+| [product-manager-agent.md](product-manager-agent.md) | 📋 Product Manager | Актуализация PRD.md, приоритизация tasks.json, контроль прогресса Milestones |
 | [devops-agent.md](devops-agent.md) | 🚀 DevOps Engineer | Docker, CI/CD, GitHub Actions, деплой, мониторинг |
 | [docs-agent.md](docs-agent.md) | 📚 Documentation Engineer | Обновление docs/, CHANGELOG.md, PRD.md после изменений |
 | [structure-agent.md](structure-agent.md) | 🏗️ Project Structure Guardian | Аудит структуры, рефакторинг, новые пакеты/сервисы |
@@ -33,6 +34,8 @@
 ## Рекомендованный порядок работы над задачей
 
 ```
+0. Product Manager agent выбирает приоритетную задачу + проверяет PRD
+       ↓
 1. Инженерный агент выполняет задачу
        ↓
 2. Git agent коммитит изменения + обновляет tasks.json и progress.md
@@ -43,7 +46,9 @@
        ↓
 5. Docs agent обновляет документацию если изменилась архитектура
        ↓
-6. Structure agent проверяет соответствие структуре проекта
+6. Product Manager agent актуализирует PRD.md (раздел 3 — статусы)
+       ↓
+7. Structure agent проверяет соответствие структуре проекта
 ```
 
 ## Как использовать
