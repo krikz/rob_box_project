@@ -11,6 +11,7 @@
 |------|---------|-------|-------------|-----------------|--------------|
 | — | — | — | Инициализация проекта, PRD и tasks.json созданы | PRD.md, tasks.json | ✅ |
 | 2026-02-19 | DOCS-001 | docs-agent | Полный аудит документации: создан NETWORK_TOPOLOGY.md, обновлены README.md, CHANGELOG.md, docs/README.md, architecture/README.md, development/README.md, packages/README.md | 7 файлов | ✅ |
+| 2026-02-19 | DOCS-002 | docs-agent | Актуализация документации по git log: CHANGELOG.md — добавлен раздел [Январь 2026] с 14 записями (анимации, звуки, DeepSeek fixes, tokens); README.md — добавлен блок "30 января 2026", исправлен счётчик агентов (10→11); добавлен diagnostics-agent в перечень | 2 файла | ✅ |
 
 ---
 

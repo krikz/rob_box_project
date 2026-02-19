@@ -52,9 +52,17 @@
 
 **19 февраля 2026** - PRD и система AI-агентов:
 - 📋 **PRD.md** — Product Requirements Document: 34 задачи, milestones, acceptance criteria
-- 🤖 **10 AI-агентов** — специализированные агенты: navigation, backend, voice, frontend, devops, docs и др.
+- 🤖 **11 AI-агентов** — специализированные агенты: navigation, backend, voice, frontend, devops, docs, diagnostics и др.
+- 🔍 **diagnostics-agent** — удалённая SSH-диагностика контейнеров, ROS 2 топиков и здоровья сервисов
 - 📊 **tasks.json** — структурированный список задач с приоритетами и test_steps
 - 📝 **progress.md** — лог выполнения задач агентами
+
+**30 января 2026** - Стабилизация голосового ассистента:
+- 🔧 **Бесконечные анимации** — race condition исправлен, добавлен лимит итераций MAX_ITERATIONS=10
+- 🎵 **51 звуковой эффект** — sound_catalog.json, загрузка по контексту, GetSoundInfoTool
+- ⏱️ **Stream timeouts** — таймауты и ThreadPoolExecutor fix для dialogue_node
+- 📊 **Логирование токенов** — учёт usage токенов LLM API (TOKEN_USAGE_LOGGING.md)
+- 🔗 **DeepSeek connection pool** — отключён idle timeout, QoS mismatch исправлен
 
 **20 декабря 2025** - ICP Одометрия и NAV2 тюнинг:
 - 📐 **ICP Odometry** — fusion wheel odometry + ICP (Iterative Closest Point) для RTAB-Map

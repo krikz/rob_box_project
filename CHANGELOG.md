@@ -9,10 +9,35 @@
 
 ### Добавлено
 - PRD.md — Product Requirements Document с 34 задачами, milestones и acceptance criteria (19 февраля 2026)
-- 10 специализированных AI-агентов в `docs/development/agents/`: navigation, backend, voice, frontend, devops, docs, git, security, scenarios, structure (19 февраля 2026)
+- 11 специализированных AI-агентов в `docs/development/agents/`: navigation, backend, voice, frontend, devops, docs, git, security, scenarios, structure, **diagnostics** (19 февраля 2026)
+- `docs/development/agents/diagnostics-agent.md` — агент удалённой диагностики: SSH-диагностика контейнеров, ROS 2 топиков, здоровья сервисов (19 февраля 2026)
 - tasks.json — структурированный список задач с приоритетами и test_steps (19 февраля 2026)
 - progress.md — лог выполнения задач агентами (19 февраля 2026)
 - `docs/architecture/NETWORK_TOPOLOGY.md` — отдельный документ сетевой топологии (19 февраля 2026)
+
+## [Январь 2026]
+
+### Добавлено
+- `sound_catalog.json` — каталог из 51+ звуковых эффектов с метаданными (тип, теги, длительность)
+- Загрузка звуков из `sound_catalog.json` в dialogue_node с логикой выбора по контексту (30 января 2026)
+- `GetSoundInfoTool` — MCP инструмент для получения информации о доступных звуках (30 января 2026)
+- Логирование использования токенов LLM API (документ: [TOKEN_USAGE_LOGGING.md](TOKEN_USAGE_LOGGING.md), [TOKEN_USAGE_RU.md](TOKEN_USAGE_RU.md)) (29 января 2026)
+- MCP инструменты для провайдера DeepSeek (29 января 2026)
+
+### Исправлено
+- **Бесконечный цикл анимаций** — race condition в `llm_adapter.py`: Event теперь регистрируется ДО publish + добавлен лимит MAX_ITERATIONS=10 ([документ](ANIMATION_LOOP_FIX.md)) (29 января 2026)
+- **Синхронизация TTS и анимаций** — предотвращение смешивания анимаций между сеансами диалога ([документ](ANIMATION_TTS_FIX.md)) (28 января 2026)
+- **Scary story + системные звуки** — robot не молчит после "расскажу историю", устранено смешивание контекстов ([документ](SCARY_STORY_FIX.md)) (29 января 2026)
+- **QoS mismatch в deepseek_adapter** — несоответствие QoS настроек вызывало timeout ошибки ([документ](QOS_MISMATCH_FIX.md)) (29 января 2026)
+- **DeepSeek connection pool** — отключён httpx connection pooling для предотвращения idle timeout ([документ](DEEPSEEK_CONNECTION_POOL_FIX.md)) (30 января 2026)
+- **DeepSeek reasoner** — исправлен режим reasoner для корректной работы стриминга ([документ](DEEPSEEK_REASONER_FIX.md)) (29 января 2026)
+- **Stream timeout в dialogue_node** — добавлен таймаут для API stream соединения, устранено зависание (30 января 2026)
+- **ThreadPoolExecutor deadlock** — устранён вложенный deadlock при создании stream (30 января 2026)
+- **Повторение ответов LLM** — добавлены ограничения на повторения в промте ([документ](PROMPT_REPETITION_FIX.md)) (29 января 2026)
+- **Остановка agent cycle** — улучшены stopping conditions после tool calls, увеличен max_iterations с таймаутом (30 января 2026)
+- **TTS ошибка устройства** — publish error state и сообщение при недоступности аудио устройства (30 января 2026)
+- Удалён `set_emotion`, заменён на `play_animation` в системных промтах (30 января 2026)
+- Fallback для Qwen отключён в конфигурации dialogue_node (30 января 2026)
 - Документация ICP Odometry: `docs/architecture/ICP_ODOMETRY.md` (декабрь 2025)
 - GUI интерфейс управления роботом `tools/robot_control_gui_simple.py` (ноябрь 2025)
 - Параметр `enable_search` для Qwen API web-поиска в dialogue_node и reflection_node (ноябрь 2025)
