@@ -2,7 +2,7 @@
 
 ## 🎯 Проект
 **Rob Box** — автономный ровер на ROS 2 Humble + Zenoh DDS  
-Dual Raspberry Pi 4: Main (10.1.1.10) + Vision (10.1.1.11)
+Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 
 ## 📚 Где искать информацию
 
