@@ -1,0 +1,162 @@
+name: "L: Integration Tests"
+
+# Интеграционные тесты на self-hosted Pi runner (native arm64, без QEMU).
+#
+# Требования к машине:
+#   - GitHub Actions runner зарегистрирован с label: self-hosted
+#   - Docker + docker compose установлены
+#   - Локальный registry доступен на localhost:5000
+#     (образы уже собраны через L-Build Vision Pi Services)
+#
+# Запуск:
+#   - Автоматически после L-Build Vision Pi Services
+#   - Вручную через workflow_dispatch
+
+on:
+  workflow_run:
+    workflows: ["L: Build Vision Pi Services"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag (latest / dev / test / local)"
+        required: false
+        default: ""
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  GHCR_PREFIX: ghcr.io/krikz/rob_box
+  ROS_DISTRO: humble
+  TEST_DIR: docker/vision/test
+
+jobs:
+  integration-tests:
+    name: Integration Tests (native arm64)
+    runs-on: self-hosted
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Определить тег ─────────────────────────────────────────────────────
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+            case "$BRANCH" in
+              main)                 TAG="latest" ;;
+              develop)              TAG="dev" ;;
+              feature/*|copilot/*) TAG="test" ;;
+              *)                    TAG="local" ;;
+            esac
+          fi
+          FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
+          echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: voice-assistant-${FULL_TAG}"
+
+      # ── Подготовка ─────────────────────────────────────────────────────────
+      - name: Prepare results directory
+        run: mkdir -p ${{ env.TEST_DIR }}/results
+
+      # ── Запуск тестов ──────────────────────────────────────────────────────
+      # Образ берётся из локального registry (уже собран L-Build)
+      - name: Run integration tests
+        id: run_tests
+        working-directory: ${{ env.TEST_DIR }}
+        env:
+          SERVICE_IMAGE_PREFIX: ${{ env.LOCAL_PREFIX }}
+          IMAGE_TAG: ${{ steps.tag.outputs.full_tag }}
+          ROS_DISTRO: ${{ env.ROS_DISTRO }}
+          PLATFORM: linux/arm64
+        run: |
+          docker compose -f docker-compose.test.yml up \
+            --build \
+            --abort-on-container-exit \
+            --exit-code-from scenario-runner \
+            --timeout 300
+        continue-on-error: true
+
+      # ── Логи при падении ───────────────────────────────────────────────────
+      - name: Show logs on failure
+        if: steps.run_tests.outcome != 'success'
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          echo "=== scenario-runner logs ==="
+          docker compose -f docker-compose.test.yml logs scenario-runner || true
+          echo "=== voice-test logs (tail 50) ==="
+          docker compose -f docker-compose.test.yml logs voice-test --tail 50 || true
+          echo "=== ollama logs (tail 20) ==="
+          docker compose -f docker-compose.test.yml logs ollama --tail 20 || true
+
+      # ── Остановка ─────────────────────────────────────────────────────────
+      - name: Stop containers
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: docker compose -f docker-compose.test.yml down --remove-orphans || true
+
+      # ── Вывод результатов ─────────────────────────────────────────────────
+      - name: Display results
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          if [ -f results/test_results.json ]; then
+            python3 -c "
+          import json
+          d = json.load(open('results/test_results.json'))
+          print(f\"Results: {d['passed']}/{d['total']} passed ({d['failed']} failed)\")
+          for s in d['scenarios']:
+              icon = '✓' if s['passed'] else '✗'
+              print(f\"  {icon} {s['name']}\")
+          "
+          else
+            echo "No results file found"
+          fi
+
+      # ── GitHub Step Summary ────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          echo "## 🤖 Integration Test Results (local runner)" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** \`voice-assistant-${{ steps.tag.outputs.full_tag }}\` from \`${{ env.LOCAL_REGISTRY }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f results/test_results.json ]; then
+            python3 -c "
+          import json, os
+          d = json.load(open('results/test_results.json'))
+          summary = os.environ['GITHUB_STEP_SUMMARY']
+          with open(summary, 'a') as f:
+              f.write(f\"**{d['passed']}/{d['total']} passed**\n\n\")
+              f.write('| Scenario | Status |\n|----------|--------|\n')
+              for s in d['scenarios']:
+                  icon = '✅' if s['passed'] else '❌'
+                  f.write(f\"| {s['name']} | {icon} |\n\")
+          "
+          else
+            echo "⚠️ No results file — tests may have crashed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── Артефакты ─────────────────────────────────────────────────────────
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results-local-${{ steps.tag.outputs.full_tag }}
+          path: ${{ env.TEST_DIR }}/results/test_results.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Финал ─────────────────────────────────────────────────────────────
+      - name: Fail if tests failed
+        if: steps.run_tests.outcome != 'success'
+        run: |
+          echo "❌ Integration tests FAILED"
+          exit 1
