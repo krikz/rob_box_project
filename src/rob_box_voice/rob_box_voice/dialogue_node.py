@@ -327,17 +327,10 @@ class DialogueNode(Node):
                 f"facts={stats['fact_count']}, vec={stats['vec_enabled']})"
             )
 
-            # Восстанавливаем контекст из предыдущих сессий
-            past_turns = self.voice_memory.load_recent_turns(
-                limit=15, exclude_current_session=True
-            )
-            if past_turns:
-                self.get_logger().info(f"📖 Восстановлено {len(past_turns)} реплик из прошлых сессий")
-                for turn in past_turns:
-                    if turn["role"] == "user":
-                        self.conversation_history.add_user_message(turn["content"])
-                    elif turn["role"] == "assistant":
-                        self.conversation_history.add_assistant_message(turn["content"])
+            # NOTE: Прошлые сессии НЕ загружаем в conversation_history.
+            # Это приводит к "каше" — LLM видит старые диалоги как текущий контекст
+            # и продолжает их вместо ответа на новый запрос.
+            # Для доступа к прошлым сессиям LLM использует инструмент memory_context.
 
         except Exception as exc:
             self.get_logger().warning(f"⚠️ Ошибка инициализации VoiceMemory: {exc}")
@@ -683,6 +676,13 @@ class DialogueNode(Node):
                     cleared_count = len(self.dialogue_manager.pending_queries)
                     self.dialogue_manager.pending_queries.clear()
                     self.get_logger().info(f"🗑️  Очищено {cleared_count} мусорных запросов перед обработкой")
+
+                # Новая тема — сбрасываем историю диалога.
+                # Прошлые сессии доступны через memory_context, не должны грузиться сюда.
+                old_len = len(self.conversation_history.get_messages())
+                self.conversation_history.clear()
+                if old_len > 0:
+                    self.get_logger().info(f"🧹 conversation_history очищена при новом wake word ({old_len} сообщений удалено)")
 
                 # Убираем wake word из текста
                 user_message_clean = self.dialogue_manager.remove_wake_word(user_message_lower)
