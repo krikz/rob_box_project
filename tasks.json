@@ -165,6 +165,33 @@
       "status": "pending"
     },
     {
+      "id": "TASK-042",
+      "category": "bugfix",
+      "priority": "critical",
+      "description": "Стабилизация LLM в агентском режиме: устранение зависаний, каши контекста и деградации после нескольких диалогов",
+      "acceptance_criteria": [
+        "10 последовательных диалогов (разные темы) без 'не в настроении думать'",
+        "conversation_history очищается при каждом wake word (нет кросс-загрязнения тем)",
+        "provider_error_count сбрасывается при новом диалоге (нет cascade ошибок)",
+        "Авторетрай при timeout в _continue_after_tool_calls работает (1 retry, не infinite loop)",
+        "memory_context НЕ вызывается без явного вопроса о прошлом",
+        "get_current_time() вызывается вместо чтения времени из промпта",
+        "input токены на первой итерации нового диалога не превышают 10k"
+      ],
+      "test_steps": [
+        "Шаг 1: Задеплоить feature/agent на Vision Pi через GitHub Actions",
+        "Шаг 2: Попросить спеть 5 разных песен подряд — каждая новая тема, без перетекания (не 'про енотов')",
+        "Шаг 3: Попросить 'о чём мы говорили?' — memory_context вызывается; попросить 'спой' — НЕ вызывается",
+        "Шаг 4: Проверить token usage: grep 'Token usage' logs — input первой итерации нового диалога < 10k",
+        "Шаг 5: grep 'provider_error_count' logs — при wake word сообщение 'сброшен при wake word 0'",
+        "Шаг 6: Проверить retry: при 1 timeout в середине диалога робот продолжает, не говорит 'не в настроении'"
+      ],
+      "dependencies": ["TASK-035"],
+      "status": "in-progress",
+      "skill": ".agents/skills/agent-llm-stability/SKILL.md",
+      "notes": "Частично исправлено в feature/agent: commits 21de3db 28aa193 154b484 092291d 43e9e9c. Подробности всех находок в skill файле."
+    },
+    {
       "id": "TASK-041",
       "category": "infrastructure",
       "priority": "low",
