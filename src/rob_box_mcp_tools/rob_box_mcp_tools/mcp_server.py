@@ -31,6 +31,7 @@ from .tools import (
     SetPitchTool,
     SetSpeedTool,
     GetRobotStatusTool,
+    GetCurrentTimeTool,
     GetPerceptionContextTool,
     GetBatteryLevelTool,
     StartMappingTool,
@@ -120,6 +121,7 @@ class MCPServer(Node):
         self.registry.register(SetPitchTool(self))
         self.registry.register(SetSpeedTool(self))
         self.registry.register(GetRobotStatusTool(self))
+        self.registry.register(GetCurrentTimeTool(self))
 
         # Perception tools
         self.perception_context_tool = GetPerceptionContextTool(self)
