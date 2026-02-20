@@ -232,6 +232,7 @@ class DialogueNode(Node):
         self.accumulation_timer = None  # Таймер для проверки накопления
         self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
         self.interrupt_agent_loop = False  # Флаг прерывания агентного цикла при новом запросе
+        self._listen_response_waiting = False  # Флаг ожидания listen_for_response — не сбрасывать dialogue_in_progress
         self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
 
         # ============ RTABMap Control (Mapping Commands) ============
@@ -1351,6 +1352,8 @@ class DialogueNode(Node):
             while iteration < max_iterations:
                 iteration += 1
                 self.get_logger().info(f"🔄 Агентный цикл: итерация {iteration}/{max_iterations}")
+                # Сбрасываем тайм-аут диалога — LLM активно работает, диалог живой
+                self.dialogue_manager.last_interaction_time = time.time()
 
                 # Проверка прерывания от нового запроса пользователя
                 if self.interrupt_agent_loop:
@@ -2176,14 +2179,19 @@ class DialogueNode(Node):
             return
 
         self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{self.MAX_ITERATIONS})")
-        
+        # Сбрасываем тайм-аут — рекурсивная итерация активна
+        self.dialogue_manager.last_interaction_time = time.time()
+
         # 🛑 ПРОВЕРКА: Если был вызван listen_for_response - ОСТАНАВЛИВАЕМ агентный цикл!
         for result in tool_results:
             tool_name = result.get('tool_name', '')
             if tool_name == 'listen_for_response':
                 self.get_logger().info("🛑 ОСТАНОВКА: listen_for_response вызван - жду ответа пользователя")
+                # Обновляем время — с этого момента отсчитывается тайм-аут ожидания ответа
+                self.dialogue_manager.last_interaction_time = time.time()
                 # Добавляем результат в историю, но НЕ продолжаем агентный цикл
                 # Флаг dialogue_in_progress остается True, ожидаем STT
+                self._listen_response_waiting = True  # защита finally блока
                 self.llm_processing = False
                 return
         
@@ -2453,7 +2461,10 @@ class DialogueNode(Node):
         finally:
             # Завершаем обработку (только если это конечная рекурсия)
             self.llm_processing = False
-            self.dialogue_in_progress = False
+            # Не сбрасываем dialogue_in_progress если ждём ответа на listen_for_response
+            if not self._listen_response_waiting:
+                self.dialogue_in_progress = False
+            self._listen_response_waiting = False  # сброс флага в любом случае
 
 
 def main(args=None):
