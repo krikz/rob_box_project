@@ -273,8 +273,8 @@
         "Шаг 4: 10 диалогов подряд с разными провайдерами — нет зависаний"
       ],
       "dependencies": [],
-      "status": "pending",
-      "notes": "BUG-10 описан в SKILL.md. BUG-15 (новое): interrupt_agent_loop проверяется только между итерациями, не во время future.result(timeout=60s). Решения: (A) уменьшить retry timeout 60→30с; (B) cancellation token/threading.Event для прерывания LLM I/O; (C) уменьшить main timeout с 60с до 20с и увеличить число retry."
+      "status": "done",
+      "notes": "ВЫПОЛНЕНО 2026-02-20: _continue_after_tool_calls переписан с рекурсии на итеративный while-цикл. Одна ThreadPoolExecutor + единственный finally. Retry реализован через for attempt in range(2) без рекурсии. BUG _listen_response_waiting (неверный сброс на каждом уровне рекурсии) устранён автоматически."
     },
     {
       "id": "TASK-043",

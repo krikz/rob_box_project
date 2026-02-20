@@ -2150,321 +2150,296 @@ class DialogueNode(Node):
         
         return tool_results
 
-    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]], iteration: int = 1, is_retry: bool = False):
+    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]):
         """
-        Продолжает агентный диалог после выполнения tool_calls (рекурсивно)
-        
-        Args:
-            messages: Текущая история сообщений  
-            tool_calls: Список выполненных tool calls
-            tool_results: Результаты выполнения
-            iteration: Текущая итерация агентного цикла (для защиты от зацикливания)
+        Итеративный агентный цикл после выполнения tool_calls.
+
+        Заменяет рекурсивную реализацию: стек остаётся плоским (1 фрейм),
+        один ThreadPoolExecutor на весь цикл, единственный finally-блок.
+
+        BUG-10/BUG-15 fix:
+        - Не создаём новый ThreadPoolExecutor на каждой итерации (устраняет утечку потоков).
+        - interrupt_agent_loop проверяется в начале каждой итерации (не только после выхода
+          из future.result), что достаточно для текущей архитектуры.
+        - Retry реализован как локальная переменная, не рекурсия.
         """
-        # Защита от бесконечного цикла
-        if iteration > self.MAX_ITERATIONS:
-            self.get_logger().error(f"❌ Достигнут лимит итераций агентного цикла ({self.MAX_ITERATIONS}). Прерываю.")
-            error_msg = "Извините, я столкнулся с проблемой и не могу продолжить."
-            self._speak_simple(error_msg, show_error_animation=True)
-            self.llm_processing = False
-            self.dialogue_in_progress = False
-            return
+        iteration = 0
+        current_tool_calls = tool_calls
+        current_tool_results = tool_results
 
-        # 🛑 Прерывание агентного цикла если пользователь заговорил
-        if self.interrupt_agent_loop:
-            self.get_logger().warning(f"🛑 Агентный цикл прерван на итерации {iteration} — новый запрос пользователя")
-            self.interrupt_agent_loop = False
-            # finally block в _ask_llm_streaming установит llm_processing = False
-            self.llm_processing = False
-            self.dialogue_in_progress = False
-            return
-
-        self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{self.MAX_ITERATIONS})")
-        # Сбрасываем тайм-аут — рекурсивная итерация активна
-        self.dialogue_manager.last_interaction_time = time.time()
-
-        # 🛑 ПРОВЕРКА: Если был вызван listen_for_response - ОСТАНАВЛИВАЕМ агентный цикл!
-        for result in tool_results:
-            tool_name = result.get('tool_name', '')
-            if tool_name == 'listen_for_response':
-                self.get_logger().info("🛑 ОСТАНОВКА: listen_for_response вызван - жду ответа пользователя")
-                # Обновляем время — с этого момента отсчитывается тайм-аут ожидания ответа
-                self.dialogue_manager.last_interaction_time = time.time()
-                # Добавляем результат в историю, но НЕ продолжаем агентный цикл
-                # Флаг dialogue_in_progress остается True, ожидаем STT
-                self._listen_response_waiting = True  # защита finally блока
-                self.llm_processing = False
-                return
-        
-        # Добавляем assistant message с tool_calls в историю
-        assistant_msg = {
-            'role': 'assistant',
-            'content': None,
-            'tool_calls': tool_calls
-        }
-        messages.append(assistant_msg)
-        self.conversation_history.add_assistant_message_with_tools(None, tool_calls)
-        
-        # Добавляем результаты каждого tool call как отдельное сообщение
-        for result in tool_results:
-            tool_call_id = result.get('tool_call_id', '')
-            tool_name = result.get('tool_name', 'unknown')
-            
-            # Формируем content для LLM
-            if result.get('success'):
-                content = result.get('message', 'Выполнено успешно')
-                if result.get('data'):
-                    content += f"\nДанные: {json.dumps(result['data'], ensure_ascii=False)}"
-            else:
-                content = f"Ошибка: {result.get('error', 'Неизвестная ошибка')}"
-            
-            tool_msg = {
-                'role': 'tool',
-                'tool_call_id': tool_call_id,
-                'name': tool_name,
-                'content': content
-            }
-            messages.append(tool_msg)
-            self.conversation_history.add_tool_message(content, tool_call_id, tool_name)
-            self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
-        
-        # Запускаем новый запрос к LLM с результатами (АГЕНТНЫЙ ЦИКЛ)
-        self.get_logger().info("🤖 Рекурсивный запрос к LLM с результатами инструментов")
-        
-        # Результаты рекурсивного streaming (для передачи между потоками)
-        recursive_result = {"full_response": "", "chunk_count": 0, "error": None, "tool_calls": None}
-        
-        def _do_recursive_streaming():
-            """Внутренняя функция для рекурсивного streaming (запускается в отдельном потоке)"""
-            try:
-                # System prompt статичен — обновляем первое сообщение без изменений
-                messages[0] = {"role": "system", "content": self.system_prompt}
-                
-                # ВАЖНО: Добавляем tools снова для агентного цикла!
-                request_params = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
-                    "stream": True,
-                    "stream_options": {"include_usage": True}  # Включаем информацию о токенах
-                }
-                
-                # Добавляем tools для продолжения агентного цикла
-                if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
-                    request_params["tools"] = self.available_tools
-                    self.get_logger().info(f"🛠️  Рекурсивный запрос С {len(self.available_tools)} MCP инструментами")
-                
-                # Создаём stream (httpx client имеет свой timeout: 60s total, 10s connect)
-                self.get_logger().info("📞 Создание рекурсивного stream...")
-                try:
-                    stream = self.client.chat.completions.create(**request_params)
-                except Exception as e:
-                    self.get_logger().error(f"❌ Ошибка создания рекурсивного stream: {e}")
-                    recursive_result["error"] = f"Failed to create stream: {e}"
-                    return
-                self.get_logger().info("✅ Stream создан, начинаю итерацию...")
-                
-                # Накопитель для tool_calls (могут быть снова!)
-                tool_calls_accumulator = {}
-                dialogue_id = str(uuid.uuid4())
-                self.current_dialogue_id = dialogue_id
-                chunk_count = 0
-                full_response = ""
-                current_chunk = ""
-                brace_count = 0
-                in_json = False
-                
-                # Timeout для итерации stream
-                stream_start_time = time.time()
-                last_chunk_time = stream_start_time
-                CHUNK_TIMEOUT = 15.0  # Макс 15 секунд между chunks
-                TOTAL_TIMEOUT = 60.0  # Макс 60 секунд на весь stream
-                
-                for chunk in stream:
-                    # Проверка timeout
-                    current_time = time.time()
-                    if current_time - last_chunk_time > CHUNK_TIMEOUT:
-                        error_msg = f"Recursive stream timeout: no chunks for {CHUNK_TIMEOUT}s"
-                        self.get_logger().error(f"⏱️ {error_msg}")
-                        recursive_result["error"] = error_msg
-                        return
-                    if current_time - stream_start_time > TOTAL_TIMEOUT:
-                        error_msg = f"Recursive stream total timeout: {TOTAL_TIMEOUT}s"
-                        self.get_logger().error(f"⏱️ {error_msg}")
-                        recursive_result["error"] = error_msg
-                        return
-                    last_chunk_time = current_time
-                    
-                    # ============ СНОВА проверяем tool_calls (агентный цикл!) ============
-                    if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
-                        for tc_chunk in chunk.choices[0].delta.tool_calls:
-                            idx = tc_chunk.index
-                            
-                            if idx not in tool_calls_accumulator:
-                                tool_calls_accumulator[idx] = {
-                                    'id': '',
-                                    'type': 'function',
-                                    'function': {
-                                        'name': '',
-                                        'arguments': ''
-                                    }
-                                }
-                            
-                            if tc_chunk.id:
-                                tool_calls_accumulator[idx]['id'] = tc_chunk.id
-                            if hasattr(tc_chunk, 'function'):
-                                if tc_chunk.function.name:
-                                    tool_calls_accumulator[idx]['function']['name'] = tc_chunk.function.name
-                                if tc_chunk.function.arguments:
-                                    tool_calls_accumulator[idx]['function']['arguments'] += tc_chunk.function.arguments
-                    
-                    # Обработка content (как обычно)
-                    if chunk.choices[0].delta.content:
-                        token = chunk.choices[0].delta.content
-                        full_response += token
-                        current_chunk += token
-                        
-                        # Парсинг JSON chunks (упрощенно)
-                        for char in token:
-                            if char == "{":
-                                brace_count += 1
-                                in_json = True
-                            elif char == "}":
-                                brace_count -= 1
-                        
-                        if in_json and brace_count == 0:
-                            try:
-                                chunk_data = json.loads(current_chunk.strip())
-                                if "ssml" in chunk_data:
-                                    ssml_with_accents = self.accent_replacer.add_accents(chunk_data["ssml"])
-                                    chunk_data["ssml"] = ssml_with_accents
-                                    chunk_data["dialogue_id"] = dialogue_id
-                                    
-                                    chunk_count += 1
-                                    response_msg = String()
-                                    response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                                    self.response_pub.publish(response_msg)
-                            except json.JSONDecodeError:
-                                pass
-                            
-                            current_chunk = ""
-                            in_json = False
-                            brace_count = 0
-                    
-                    # Проверка finish_reason
-                    if chunk.choices[0].finish_reason:
-                        finish_reason = chunk.choices[0].finish_reason
-                        self.get_logger().info(f"🏁 Рекурсивный stream завершён: {finish_reason}")
-                        
-                        # ============ Логируем использование токенов ============
-                        if hasattr(chunk, 'usage') and chunk.usage:
-                            usage = chunk.usage
-                            prompt_tokens = getattr(usage, 'prompt_tokens', 0)
-                            completion_tokens = getattr(usage, 'completion_tokens', 0)
-                            total_tokens = getattr(usage, 'total_tokens', 0)
-                            self.get_logger().info(
-                                f"📊 Token usage (recursive): input={prompt_tokens}, output={completion_tokens}, total={total_tokens}"
-                            )
-                        
-                        # Сохраняем tool_calls если есть
-                        if finish_reason == 'tool_calls' and tool_calls_accumulator:
-                            recursive_result["tool_calls"] = list(tool_calls_accumulator.values())
-                        
-                        break
-                
-                # Сохраняем результаты
-                recursive_result["full_response"] = full_response
-                recursive_result["chunk_count"] = chunk_count
-                
-                # Fallback для plain text
-                if chunk_count == 0 and len(full_response) > 0:
-                    text = full_response.strip()
-                    chunk_data = {
-                        "chunk": "end",
-                        "ssml": f"<speak>{text}</speak>",
-                        "emotion": "neutral",
-                        "dialogue_id": dialogue_id,
-                        "speech_id": str(uuid.uuid4())
-                    }
-                    response_msg = String()
-                    response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                    self.response_pub.publish(response_msg)
-                    recursive_result["chunk_count"] = 1
-                    self.get_logger().info(f"🔊 Рекурсивный plain text обёрнут в SSML")
-                    
-            except Exception as e:
-                import traceback
-                self.get_logger().error(f"❌ Exception в _do_recursive_streaming: {e}")
-                self.get_logger().error(f"Traceback:\n{traceback.format_exc()}")
-                recursive_result["error"] = str(e)
-        
-        # Запускаем рекурсивный streaming в отдельном потоке с timeout
-        # ВАЖНО: НЕ используем `with ThreadPoolExecutor` — см. комментарий в _ask_llm_streaming
         try:
-            _recursive_executor = ThreadPoolExecutor(max_workers=1)
-            future = _recursive_executor.submit(_do_recursive_streaming)
-            try:
-                future.result(timeout=60.0)  # 60 секунд на весь рекурсивный запрос
-            finally:
-                _recursive_executor.shutdown(wait=False)  # Не блокировать!
+            while True:
+                iteration += 1
 
-            # Проверяем ошибки
-            if recursive_result["error"]:
-                raise TimeoutError(recursive_result["error"])
-            
-            # ============ РЕКУРСИЯ: если снова tool_calls! ============
-            if recursive_result.get("tool_calls"):
-                new_tool_calls = recursive_result["tool_calls"]
-                self.get_logger().info(f"🔧 LLM снова запросил {len(new_tool_calls)} инструментов - продолжаю агентный цикл")
-                
-                # Выполняем tool_calls
-                new_tool_results = self._execute_tool_calls(new_tool_calls, messages)
-                
-                if new_tool_results is None:
-                    self.get_logger().error("❌ Ошибка выполнения инструментов в рекурсии")
-                    self.llm_processing = False
-                    self.dialogue_in_progress = False
+                # ── Защита от бесконечного цикла ──────────────────────────────────
+                if iteration > self.MAX_ITERATIONS:
+                    self.get_logger().error(
+                        f"❌ Достигнут лимит итераций агентного цикла ({self.MAX_ITERATIONS}). Прерываю."
+                    )
+                    self._speak_simple("Извините, я столкнулся с проблемой и не могу продолжить.", show_error_animation=True)
                     return
-                
-                # РЕКУРСИВНЫЙ ВЫЗОВ самого себя с инкрементированной итерацией
-                self._continue_after_tool_calls(messages, new_tool_calls, new_tool_results, iteration + 1)
-                return  # Выходим - рекурсия сама завершит обработку
-            
-            # Если дошли сюда - финальный ответ БЕЗ tool_calls
-            full_response = recursive_result["full_response"]
-            chunk_count = recursive_result["chunk_count"]
-            
-            if full_response:
-                self.get_logger().info(f"📝 LLM финальный ответ: {full_response[:100]}...")
-                # Сохраняем в историю
-                self.conversation_history.add_assistant_message(full_response)
-                if self.voice_memory is not None:
-                    self.voice_memory.save_turn("assistant", full_response)
-                self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks)")
-            
-        except (FuturesTimeoutError, TimeoutError) as e:
-            self.get_logger().error(f"⏱️ TIMEOUT рекурсивного запроса: {e}")
-            # Один retry — иногда DeepSeek принимает соединение но долго отвечает на первом токене.
-            # Второй запрос обычно проходит нормально (новое TCP соединение, нет keepalive).
-            if not is_retry:
-                self.get_logger().warning(f"♻️ Retry рекурсивного запроса (итерация {iteration})...")
-                self._continue_after_tool_calls(messages, tool_calls, tool_results, iteration, is_retry=True)
-                return
-            self._speak_simple("Извините, я слишком долго думал", show_error_animation=True)
-        
+
+                # ── 🛑 Прерывание если пользователь заговорил ─────────────────────
+                if self.interrupt_agent_loop:
+                    self.get_logger().warning(
+                        f"🛑 Агентный цикл прерван на итерации {iteration} — новый запрос пользователя"
+                    )
+                    self.interrupt_agent_loop = False
+                    return
+
+                self.get_logger().info(
+                    f"🔄 Агентный цикл: итерация {iteration}/{self.MAX_ITERATIONS} (стек: плоский)"
+                )
+                self.dialogue_manager.last_interaction_time = time.time()
+
+                # ── 🛑 listen_for_response — останавливаем цикл, ждём STT ─────────
+                for result in current_tool_results:
+                    if result.get('tool_name') == 'listen_for_response':
+                        self.get_logger().info("🛑 ОСТАНОВКА: listen_for_response — жду ответа пользователя")
+                        self.dialogue_manager.last_interaction_time = time.time()
+                        self._listen_response_waiting = True  # защита finally-блока
+                        self.llm_processing = False
+                        return
+
+                # ── Добавляем assistant + tool messages в историю ─────────────────
+                assistant_msg = {
+                    'role': 'assistant',
+                    'content': None,
+                    'tool_calls': current_tool_calls,
+                }
+                messages.append(assistant_msg)
+                self.conversation_history.add_assistant_message_with_tools(None, current_tool_calls)
+
+                for result in current_tool_results:
+                    tool_call_id = result.get('tool_call_id', '')
+                    tool_name = result.get('tool_name', 'unknown')
+                    if result.get('success'):
+                        content = result.get('message', 'Выполнено успешно')
+                        if result.get('data'):
+                            content += f"\nДанные: {json.dumps(result['data'], ensure_ascii=False)}"
+                    else:
+                        content = f"Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+                    tool_msg = {
+                        'role': 'tool',
+                        'tool_call_id': tool_call_id,
+                        'name': tool_name,
+                        'content': content,
+                    }
+                    messages.append(tool_msg)
+                    self.conversation_history.add_tool_message(content, tool_call_id, tool_name)
+                    self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
+
+                # ── LLM запрос + 1 retry при timeout ─────────────────────────────
+                self.get_logger().info("🤖 Запрос к LLM с результатами инструментов")
+                recursive_result: Dict[str, Any] = {"full_response": "", "chunk_count": 0, "error": None, "tool_calls": None}
+                succeeded = False
+
+                for attempt in range(2):  # attempt 0 = первый запрос, attempt 1 = retry
+                    if attempt > 0:
+                        self.get_logger().warning(f"♻️ Retry запроса (итерация {iteration})...")
+                        # Сбрасываем результат перед повторной попыткой
+                        recursive_result = {"full_response": "", "chunk_count": 0, "error": None, "tool_calls": None}
+
+                    def _do_recursive_streaming(_result=recursive_result):
+                        """Streaming в отдельном потоке; захватывает _result по значению (текущий dict)."""
+                        try:
+                            messages[0] = {"role": "system", "content": self.system_prompt}
+                            request_params = {
+                                "model": self.model,
+                                "messages": messages,
+                                "temperature": self.temperature,
+                                "max_tokens": self.max_tokens,
+                                "stream": True,
+                                "stream_options": {"include_usage": True},
+                            }
+                            if self.enable_mcp_tools and self.mcp_tools_available and self.available_tools:
+                                request_params["tools"] = self.available_tools
+                                self.get_logger().info(f"🛠️  Запрос С {len(self.available_tools)} MCP инструментами")
+
+                            self.get_logger().info("📞 Создание stream...")
+                            try:
+                                stream = self.client.chat.completions.create(**request_params)
+                            except Exception as e:
+                                self.get_logger().error(f"❌ Ошибка создания stream: {e}")
+                                _result["error"] = f"Failed to create stream: {e}"
+                                return
+                            self.get_logger().info("✅ Stream создан, начинаю итерацию...")
+
+                            tool_calls_accumulator: Dict[int, Any] = {}
+                            dialogue_id = str(uuid.uuid4())
+                            self.current_dialogue_id = dialogue_id
+                            chunk_count = 0
+                            full_response = ""
+                            current_chunk = ""
+                            brace_count = 0
+                            in_json = False
+
+                            stream_start_time = time.time()
+                            last_chunk_time = stream_start_time
+                            CHUNK_TIMEOUT = 15.0
+                            TOTAL_TIMEOUT = 60.0
+
+                            for chunk in stream:
+                                current_time = time.time()
+                                if current_time - last_chunk_time > CHUNK_TIMEOUT:
+                                    msg = f"stream timeout: no chunks for {CHUNK_TIMEOUT}s"
+                                    self.get_logger().error(f"⏱️ {msg}")
+                                    _result["error"] = msg
+                                    return
+                                if current_time - stream_start_time > TOTAL_TIMEOUT:
+                                    msg = f"stream total timeout: {TOTAL_TIMEOUT}s"
+                                    self.get_logger().error(f"⏱️ {msg}")
+                                    _result["error"] = msg
+                                    return
+                                last_chunk_time = current_time
+
+                                if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
+                                    for tc_chunk in chunk.choices[0].delta.tool_calls:
+                                        idx = tc_chunk.index
+                                        if idx not in tool_calls_accumulator:
+                                            tool_calls_accumulator[idx] = {
+                                                'id': '', 'type': 'function',
+                                                'function': {'name': '', 'arguments': ''},
+                                            }
+                                        if tc_chunk.id:
+                                            tool_calls_accumulator[idx]['id'] = tc_chunk.id
+                                        if hasattr(tc_chunk, 'function'):
+                                            if tc_chunk.function.name:
+                                                tool_calls_accumulator[idx]['function']['name'] = tc_chunk.function.name
+                                            if tc_chunk.function.arguments:
+                                                tool_calls_accumulator[idx]['function']['arguments'] += tc_chunk.function.arguments
+
+                                if chunk.choices[0].delta.content:
+                                    token = chunk.choices[0].delta.content
+                                    full_response += token
+                                    current_chunk += token
+                                    for char in token:
+                                        if char == "{":
+                                            brace_count += 1
+                                            in_json = True
+                                        elif char == "}":
+                                            brace_count -= 1
+                                    if in_json and brace_count == 0:
+                                        try:
+                                            chunk_data = json.loads(current_chunk.strip())
+                                            if "ssml" in chunk_data:
+                                                ssml_with_accents = self.accent_replacer.add_accents(chunk_data["ssml"])
+                                                chunk_data["ssml"] = ssml_with_accents
+                                                chunk_data["dialogue_id"] = dialogue_id
+                                                chunk_count += 1
+                                                response_msg = String()
+                                                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                                self.response_pub.publish(response_msg)
+                                        except json.JSONDecodeError:
+                                            pass
+                                        current_chunk = ""
+                                        in_json = False
+                                        brace_count = 0
+
+                                if chunk.choices[0].finish_reason:
+                                    finish_reason = chunk.choices[0].finish_reason
+                                    self.get_logger().info(f"🏁 Stream завершён: {finish_reason}")
+                                    if hasattr(chunk, 'usage') and chunk.usage:
+                                        usage = chunk.usage
+                                        self.get_logger().info(
+                                            f"📊 Token usage (iter {iteration}): "
+                                            f"input={getattr(usage,'prompt_tokens',0)}, "
+                                            f"output={getattr(usage,'completion_tokens',0)}, "
+                                            f"total={getattr(usage,'total_tokens',0)}"
+                                        )
+                                    if finish_reason == 'tool_calls' and tool_calls_accumulator:
+                                        _result["tool_calls"] = list(tool_calls_accumulator.values())
+                                    break
+
+                            _result["full_response"] = full_response
+                            _result["chunk_count"] = chunk_count
+
+                            if chunk_count == 0 and len(full_response) > 0:
+                                text = full_response.strip()
+                                chunk_data = {
+                                    "chunk": "end",
+                                    "ssml": f"<speak>{text}</speak>",
+                                    "emotion": "neutral",
+                                    "dialogue_id": dialogue_id,
+                                    "speech_id": str(uuid.uuid4()),
+                                }
+                                response_msg = String()
+                                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                self.response_pub.publish(response_msg)
+                                _result["chunk_count"] = 1
+                                self.get_logger().info("🔊 Plain text обёрнут в SSML")
+
+                        except Exception as e:
+                            import traceback
+                            self.get_logger().error(f"❌ Exception в _do_recursive_streaming: {e}")
+                            self.get_logger().error(f"Traceback:\n{traceback.format_exc()}")
+                            _result["error"] = str(e)
+
+                    # ── Запускаем в отдельном потоке с timeout ────────────────────
+                    # ВАЖНО: НЕ используем `with ThreadPoolExecutor` — см. _ask_llm_streaming
+                    _recursive_executor = ThreadPoolExecutor(max_workers=1)
+                    future = _recursive_executor.submit(_do_recursive_streaming)
+                    future_timeout = False
+                    try:
+                        future.result(timeout=60.0)
+                    except FuturesTimeoutError as e:
+                        self.get_logger().error(f"⏱️ future.result timeout (итерация {iteration}, попытка {attempt}): {e}")
+                        future_timeout = True
+                    finally:
+                        _recursive_executor.shutdown(wait=False)  # поток умрёт по httpx timeout (~60s)
+
+                    # Проверяем ошибку (внутренняя или внешняя)
+                    if future_timeout or recursive_result["error"]:
+                        if attempt == 0:
+                            continue  # retry
+                        # retry тоже не помог
+                        self.get_logger().error(f"⏱️ TIMEOUT после retry (итерация {iteration})")
+                        self._speak_simple("Извините, я слишком долго думал", show_error_animation=True)
+                        return
+
+                    succeeded = True
+                    break  # успех, выходим из retry-loop
+
+                if not succeeded:
+                    return  # уже обработано выше (speak_simple + return)
+
+                # ── Следующая итерация если LLM снова запросил инструменты ────────
+                if recursive_result.get("tool_calls"):
+                    new_tool_calls = recursive_result["tool_calls"]
+                    self.get_logger().info(
+                        f"🔧 LLM запросил {len(new_tool_calls)} инструментов — продолжаю цикл"
+                    )
+                    new_tool_results = self._execute_tool_calls(new_tool_calls, messages)
+                    if new_tool_results is None:
+                        self.get_logger().error("❌ Ошибка выполнения инструментов")
+                        return
+                    current_tool_calls = new_tool_calls
+                    current_tool_results = new_tool_results
+                    continue  # следующая итерация while, без рекурсии
+
+                # ── Финальный ответ (нет tool_calls) ─────────────────────────────
+                full_response = recursive_result["full_response"]
+                chunk_count = recursive_result["chunk_count"]
+                if full_response:
+                    self.get_logger().info(f"📝 LLM финальный ответ: {full_response[:100]}...")
+                    self.conversation_history.add_assistant_message(full_response)
+                    if self.voice_memory is not None:
+                        self.voice_memory.save_turn("assistant", full_response)
+                    self.get_logger().info(f"✅ Агентный диалог завершён ({chunk_count} chunks, итераций: {iteration})")
+                return  # Done
+
         except Exception as e:
             import traceback
             self.get_logger().error(f"❌ Ошибка в агентном цикле: {e}")
             self.get_logger().error(f"Traceback:\n{traceback.format_exc()}")
             self._speak_simple("Извините, произошла ошибка", show_error_animation=True)
-        
+
         finally:
-            # Завершаем обработку (только если это конечная рекурсия)
+            # Единственный finally — сбрасываем флаги ровно один раз
             self.llm_processing = False
-            # Не сбрасываем dialogue_in_progress если ждём ответа на listen_for_response
             if not self._listen_response_waiting:
                 self.dialogue_in_progress = False
-            self._listen_response_waiting = False  # сброс флага в любом случае
+            self._listen_response_waiting = False
 
 
 def main(args=None):
