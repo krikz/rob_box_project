@@ -21,6 +21,10 @@ on:
         description: "Docker image tag (latest / dev / test)"
         required: false
         default: ""
+      test_branch:
+        description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
+        required: false
+        default: "feature/agent"
 
 env:
   REGISTRY: ghcr.io
@@ -44,6 +48,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Тестовые файлы живут на feature/agent (или другой ветке из input)
+          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
 
       # ── QEMU для запуска arm64 образов на amd64 runner ────────────────────
       - name: Set up QEMU (arm64 emulation)
