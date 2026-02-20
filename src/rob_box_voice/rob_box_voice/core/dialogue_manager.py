@@ -95,7 +95,7 @@ class DialogueManager:
             query_accumulation_timeout: Seconds to accumulate queries (default: 2.5)
         """
         # Wake words
-        self.wake_words = wake_words or ['робок', 'робот', 'роббокс']
+        self.wake_words = wake_words if wake_words is not None else ['робок', 'робот', 'роббокс']
         self.silence_commands = silence_commands or ['помолч', 'замолч', 'хватит']
         self.unsilence_commands = unsilence_commands or ['говори', 'включ', 'работ', 'отвеч', 'разговар']
         

@@ -75,8 +75,9 @@ class SpeechFormatter:
             from accent_replacer import AccentReplacer
             self.accent_replacer = AccentReplacer(config_path=config_path)
         except ImportError:
-            # Fallback: create minimal accent replacer
-            self.enable_accents = False
+            # Fallback: accent_replacer module unavailable on this platform.
+            # Keep enable_accents=True so callers see the intent; add_accents
+            # is a no-op when accent_replacer is None (checked in format_for_tts).
             self.accent_replacer = None
     
     def format_for_tts(self, text: str, add_ssml: bool = False) -> str:
