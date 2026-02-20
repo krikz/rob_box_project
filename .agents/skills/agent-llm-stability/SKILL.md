@@ -265,6 +265,50 @@ docker logs voice-assistant 2>&1 | grep -n "TIMEOUT\|Retry\|итерация\|St
 
 ---
 
+### BUG-11: Roleplay контекст теряется между запросами (commit d36616b)
+
+**Симптом:** Робот входит в роль (Шариков, пират, учитель) → хорошо отыгрывает первый ответ → на вторый запрос ("Робот расскажи анекдот") говорит уже без роли.
+
+**Последовательность из логов:**
+```
+t=0s:  "Робот теперь ты Шариков" → wake word IDLE → 🧹 clear history → Новый диалог e1c40b1f
+t=22s: LLM 4 итерации обработки → token=10032
+t=22s: listen_for_response → ОСТАНОВКА → finally сетает dialogue_in_progress=False
+t=30s: _check_dialogue_timeout: elapsed = 30s - 8s_from_start_of_DIALOGUE > 30s → state=IDLE
+t=38s: "Робот расскажи анекдот" → wake word IDLE → 🧹 13 сообщений удалено ← Шариков забыт
+```
+
+**Root cause (цепочка 3 причин):**
+1. `last_interaction_time` обновлялся только через `transition_state()` — один раз при входе в DIALOGUE
+2. 22секунды LLM итераций истрачивали большую часть 30с timeout
+3. `finally` блок `_continue_after_tool_calls` всегда ставил `dialogue_in_progress = False` (даже при ОСТАНОВКА) → через 8с `check_timeout` → state=IDLE
+
+**Фикс (3 изменения):**
+```python
+# 1. Обновлять last_interaction_time при каждой итерации (dialogue_node.py ~line 1353):
+while iteration < max_iterations:
+    iteration += 1
+    self.dialogue_manager.last_interaction_time = time.time()  # ← добавить
+
+# 2. Обновлять при ОСТАНОВКА listen_for_response (_continue_after_tool_calls):
+if tool_name == 'listen_for_response':
+    self.dialogue_manager.last_interaction_time = time.time()  # ← добавить
+    self._listen_response_waiting = True  # ← добавить
+    self.llm_processing = False
+    return
+
+# 3. Защитить finally блок:
+finally:
+    self.llm_processing = False
+    if not self._listen_response_waiting:  # ← добавить
+        self.dialogue_in_progress = False
+    self._listen_response_waiting = False
+```
+
+**Результат:** state=DIALOGUE сохраняется → следующий wake word идёт через DIALOGUE ветку `stt_callback` (не IDLE) → `conversation_history.clear()` **не вызывается** → Шариков помнится.
+
+---
+
 ## Диагностика: как читать логи
 
 ```bash
@@ -294,6 +338,8 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 
 **Признак BUG-10 (double timeout hang):** После `⏱️ TIMEOUT + ♻️ Retry` — тишина от `dialogue_node` на 60+ секунд. STT логирует wake words но робот молчит.
 
+**Признак BUG-11 (roleplay context lost):** Робот вошёл в роль (Шариков, пират и т.п.) → ответил на первый запрос → на втором уже не в роли. Лог покажет `🧹 conversation_history очищена при новом wake word` после того как был вызван `listen_for_response`.
+
 ---
 
 ## Статус и история коммитов
@@ -307,8 +353,10 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 | `43e9e9c` | BUG-4+5+6: reset error counter на wake word, try/except в create(), retry с is_retry флагом |
 | `a46175a` | TASK-042 + этот SKILL.md создан |
 | `79456db` | BUG-9: GetCurrentTimeTool добавлен в _register_tools() в mcp_server.py |
+| `d36616b` | BUG-11: обновление last_interaction_time по итерациям, _listen_response_waiting флаг |
 
 **Оставшиеся задачи (TASK-042):**
+- [x] BUG-11 исправлен: roleplay контекст сохраняется между запросами
 - [ ] Исправить BUG-10: double timeout hang — уменьшить retry timeout или добавить wake word прерывание
 - [ ] Проверить Device unavailable [PaErrorCode -9985] — dmix проблема после деплоя
 - [ ] Проверить что 10 диалогов подряд работают без деградации
