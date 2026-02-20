@@ -186,6 +186,85 @@ class GetCurrentTimeTool(MCPTool):
 
 ---
 
+### BUG-9: GetCurrentTimeTool не зарегистрирован в _register_tools() (commit 79456db)
+
+**Симптом:** Пользователь спрашивает "сколько времени?" → робот отвечает "у меня нет доступа к часам" / "нет инструмента для определения времени". Причём на второй попытке говорит "сейчас проверю" но снова отказывает.
+
+**Root cause:** `GetCurrentTimeTool` был создан в `tools/system.py` и экспортирован из `tools/__init__.py`, но **забыли добавить `registry.register()` в `mcp_server.py::_register_tools()`**. MCP сервер не публиковал инструмент на `/mcp/tools` топик → LLM его не видел среди 21 инструмента.
+
+Как проверить что инструмент не зарегистрирован:
+```bash
+# В контейнере: смотрим что реально опубликовано на /mcp/tools
+docker exec voice-assistant bash -c "source /ws/install/setup.bash && ros2 topic echo /mcp/tools --once 2>/dev/null" | grep -o '"name": "[^"]*"'
+# Если get_current_time отсутствует → баг
+```
+
+**Фикс** в [mcp_server.py](src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py):
+```python
+# 1. Добавить в импорт:
+from .tools import (
+    ...
+    GetCurrentTimeTool,  # ← добавить
+)
+
+# 2. Добавить в _register_tools():
+# System tools
+self.registry.register(SetVolumeTool(self))
+self.registry.register(SetPitchTool(self))
+self.registry.register(SetSpeedTool(self))
+self.registry.register(GetRobotStatusTool(self))
+self.registry.register(GetCurrentTimeTool(self))  # ← добавить
+```
+
+**Урок:** Когда добавляешь новый `MCPTool` — нужно обновить **три** места:
+1. `tools/<category>.py` — класс инструмента
+2. `tools/__init__.py` — экспорт
+3. `mcp_server.py::_register_tools()` — **регистрация!** Без этого LLM его не видит.
+
+---
+
+### BUG-10: Робот зависает на 60+ секунд после double LLM timeout (не исправлен)
+
+**Симптом:** Во время агентного диалога (итерация 2/30) срабатывает `⏱️ TIMEOUT → ♻️ Retry`. Retry тоже виснет на 60с. Всё это время робот **молчит и не реагирует** на "Робот покукарекай" — STT логирует запросы, но dialogue_node не отвечает.
+
+**Последовательность из логов:**
+```
+[6183] ⏱️ TIMEOUT рекурсивного запроса (итерация 2)
+[6184] ♻️ Retry рекурсивного запроса (итерация 2)...
+[6185] итерация 2/30  [← retry стартовал, ждёт до 60с]
+... 38 секунд тишины от dialogue_node ...
+[6191-6211] STT видит "Робот покукарекай" (3 раза) — игнорируется!
+```
+
+**Root cause:**
+1. При State=DIALOGUE (**даже с явным wake word**) `stt_callback` добавляет запрос в `pending_queries` вместо прерывания — обрабатывается только после завершения текущего агентного цикла
+2. Retry внутри `_continue_after_tool_calls` занимает ещё до 60с (ThreadPoolExecutor с `future.result(timeout=60.0)`)  
+3. Итого: первый timeout(60с) + retry timeout(60с) = **до 120с** пока робот не вернётся в IDLE
+
+**Возможные фиксы (не реализованы):**
+```python
+# Вариант A: Уменьшить TOTAL_REQUEST_TIMEOUT в recursive запросе с 60с до 30с
+RETRY_REQUEST_TIMEOUT = 30.0  # вместо 60.0 для retry
+
+# Вариант B: Приоритетное прерывание диалога по wake word из DIALOGUE
+# В stt_callback — если State=DIALOGUE и есть wake word:
+if self.llm_processing and is_wake_word:
+    self.interrupt_agent_loop = True  # прерываем текущий LLM запрос
+    self.conversation_history.clear()
+    # перейти в LISTENING немедленно
+
+# Вариант C: Ограничить retry timeout на половину от основного
+```
+
+**Как диагностировать:**
+```bash
+# Признак BUG-10: после TIMEOUT и Retry — тишина в dialogue_node на 60+с
+docker logs voice-assistant 2>&1 | grep -n "TIMEOUT\|Retry\|итерация\|State: DIALOGUE" | tail -20
+# Если между "Retry" и следующим "Новый диалог" > 60с — это BUG-10
+```
+
+---
+
 ## Диагностика: как читать логи
 
 ```bash
@@ -211,6 +290,10 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 
 **Признак BUG-8 (memory pollution):** `Выполнение: memory_context` в логах когда пользователь не спрашивал о прошлом
 
+**Признак BUG-9 (инструмент не зарегистрирован):** LLM отвечает "нет инструмента" / "нет доступа" хотя класс есть в `tools/`. Проверка: `ros2 topic echo /mcp/tools --once` — нет `get_current_time` в списке.
+
+**Признак BUG-10 (double timeout hang):** После `⏱️ TIMEOUT + ♻️ Retry` — тишина от `dialogue_node` на 60+ секунд. STT логирует wake words но робот молчит.
+
 ---
 
 ## Статус и история коммитов
@@ -219,14 +302,17 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 |--------|----------------|
 | `21de3db` | dmix asound.conf, PlaySoundTool INSTANT, no time.sleep() в sound |
 | `28aa193` | BUG-1: ThreadPoolExecutor `shutdown(wait=False)` в 2 местах, interrupt_agent_loop |
-| `154b484` | BUG-7: GetCurrentTimeTool, статичный system_prompt, KV cache |
+| `154b484` | BUG-7: GetCurrentTimeTool класс создан, статичный system_prompt, KV cache |
 | `092291d` | BUG-2+3+8: убран preload past_turns, clear() на wake word, memory_context guidance в промпте |
 | `43e9e9c` | BUG-4+5+6: reset error counter на wake word, try/except в create(), retry с is_retry флагом |
+| `a46175a` | TASK-042 + этот SKILL.md создан |
+| `79456db` | BUG-9: GetCurrentTimeTool добавлен в _register_tools() в mcp_server.py |
 
 **Оставшиеся задачи (TASK-042):**
-- [ ] Задеплоить и протестировать все фиксы на реальном роботе
+- [ ] Исправить BUG-10: double timeout hang — уменьшить retry timeout или добавить wake word прерывание
+- [ ] Проверить Device unavailable [PaErrorCode -9985] — dmix проблема после деплоя
 - [ ] Проверить что 10 диалогов подряд работают без деградации
-- [ ] Измерить реальный token count после фиксов (ожидаемо ~8.7k на старт каждого диалога)
+- [ ] Измерить реальный token count (ожидаемо ~8.7k на старт каждого диалога)
 
 ---
 
