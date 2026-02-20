@@ -9,12 +9,7 @@ on:
         description: 'Branch to build from'
         required: true
         default: 'main'
-        type: choice
-        options:
-          - main
-          - develop
-          - feature/agent
-          - release/v1.0.0
+        type: string
 
       pi_type:
         description: 'Pi type (main/vision/base)'
