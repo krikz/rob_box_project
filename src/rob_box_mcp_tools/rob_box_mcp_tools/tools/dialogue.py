@@ -78,7 +78,7 @@ class SpeakTextTool(MCPTool):
             MCPToolParameter(
                 name="animation",
                 type="string",
-                description="Анимация для отображения на LED матрице во время речи. Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; специальные: police_lights, fire_truck, thinking, и т.д.)",
+                description="Анимация для отображения на LED матрице во время речи. Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; специальные: police_lights, fire_truck, thinking, и т.д.). Псевдонимы нормализуются: neutral→idle, excited→happy, confused→thinking",
                 required=False,
                 enum=[
                     # Базовые состояния
@@ -91,6 +91,8 @@ class SpeakTextTool(MCPTool):
                     "police_lights", "ambulance", "fire_truck", "road_service",
                     # Движение
                     "turn_left", "turn_right", "accelerating", "braking",
+                    # Псевдонимы (нормализуются в execute через animation_map)
+                    "neutral", "excited", "confused",
                 ],
             ),
         ]
