@@ -154,6 +154,8 @@ services:
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
       - ./cache/tts:/cache/tts
+      # ALSA dmix config (allows TTS + sound effects to play simultaneously)
+      - ./config/asound.conf:/etc/asound.conf:ro
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
       # VoiceMemory persistent storage

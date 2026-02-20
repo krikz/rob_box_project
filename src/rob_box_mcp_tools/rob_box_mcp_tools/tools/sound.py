@@ -29,12 +29,16 @@ class PlaySoundTool(MCPTool):
         # Publisher для триггеров звуков
         self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
         
-        # Загружаем доступные звуки из catalog.json
-        self._available_sounds = self._load_sounds_from_catalog()
+        # Загружаем доступные звуки и их длительности из catalog.json
+        self._available_sounds, self._duration_map = self._load_sounds_from_catalog()
         self.log_info(f"Загружено {len(self._available_sounds)} звуков из catalog")
     
-    def _load_sounds_from_catalog(self) -> List[str]:
-        """Загрузить список доступных triggers из sound_catalog.json"""
+    def _load_sounds_from_catalog(self):
+        """Загрузить список triggers и map длительностей из sound_catalog.json.
+        
+        Returns:
+            (triggers: List[str], duration_map: dict[str, float])
+        """
         # Попробуем найти sound_catalog.json
         possible_paths = [
             Path("/ws/sound_pack/sound_catalog.json"),  # Docker путь
@@ -50,17 +54,21 @@ class PlaySoundTool(MCPTool):
                     with open(path, 'r', encoding='utf-8') as f:
                         catalog = json.load(f)
                     
-                    # Извлечь все triggers из catalog['sounds']
+                    # Извлечь все triggers и duration из catalog['sounds']
                     triggers = []
+                    duration_map = {}
                     sounds = catalog.get('sounds', {})
                     for filename, info in sounds.items():
                         if not filename.endswith('.mp3'):
                             continue
                         if 'trigger' in info:
-                            triggers.append(info['trigger'])
+                            trigger = info['trigger']
+                            triggers.append(trigger)
+                            if 'duration' in info:
+                                duration_map[trigger] = float(info['duration'])
                     
                     self.log_info(f"Загружено {len(triggers)} звуков из {path}")
-                    return sorted(triggers)  # Сортируем для удобства
+                    return sorted(triggers), duration_map
                     
                 except Exception as e:
                     self.log_error(f"Ошибка загрузки catalog.json из {path}: {e}")
@@ -71,7 +79,7 @@ class PlaySoundTool(MCPTool):
             "robot_affirm", "robot_angry", "robot_confused", "robot_cute",
             "robot_error", "robot_happy", "robot_thinking", "robot_surprise",
             "ui_button", "ui_confirm", "ui_notification",
-        ]
+        ], {}
 
     @property
     def name(self) -> str:
@@ -107,11 +115,17 @@ class PlaySoundTool(MCPTool):
 
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Звуки - мгновенные операции (fire-and-forget), sound_node не возвращает результат"""
+        """Звуки — fire-and-forget: публикуем триггер и возвращаемся немедленно.
+
+        ALSA-конфликт между sound_node и tts_node устранён через dmix
+        (/etc/asound.conf монтируется volume → pcm.!default = dmix_respeaker).
+        Оба узла пишут в 'default' device, dmix микширует потоки без конкуренции.
+        Звук и речь воспроизводятся параллельно — это ожидаемое поведение.
+        """
         return ToolExecutionType.INSTANT
 
     def execute(self, sound: str) -> MCPToolResult:
-        """Воспроизвести звук"""
+        """Воспроизвести звук (fire-and-forget через dmix)."""
         self.log_info(f"Воспроизведение звука: {sound}")
 
         if sound not in self._available_sounds:
@@ -119,15 +133,17 @@ class PlaySoundTool(MCPTool):
                 success=False, error=f"Неизвестный звук: {sound}", message=f"Доступные: {', '.join(self._available_sounds[:10])}..."
             )
 
-        # Публикуем триггер звука
+        # Публикуем триггер звука — sound_node воспроизведёт асинхронно.
+        # dmix в /etc/asound.conf позволяет sound_node и tts_node одновременно
+        # писать в hw:1,0 (ReSpeaker) без ALSA device busy ошибок.
         from std_msgs.msg import String
         msg = String()
         msg.data = sound
         self.sound_pub.publish(msg)
 
-        self.log_info(f"Звук '{sound}' отправлен")
-
-        return MCPToolResult(success=True, data={"sound": sound}, message=f"Воспроизвожу звук: {sound}")
+        duration = self._duration_map.get(sound, 1.5)
+        self.log_info(f"Звук '{sound}' запущен ({duration:.2f}s), воспроизведение идёт параллельно с TTS")
+        return MCPToolResult(success=True, data={"sound": sound, "duration": duration}, message=f"Звук запущен: {sound} ({duration:.1f}s)")
 
 
 class GetSoundInfoTool(MCPTool):
