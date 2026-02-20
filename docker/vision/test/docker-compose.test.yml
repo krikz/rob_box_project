@@ -101,6 +101,9 @@ services:
     build:
       context: ./scenario_runner
       dockerfile: Dockerfile
+      args:
+        # Используем тот же образ что и voice-test (тег совпадает)
+        BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: scenario-runner-test
     network_mode: host
     environment:
