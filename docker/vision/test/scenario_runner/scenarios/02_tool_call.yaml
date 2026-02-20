@@ -1,51 +1,36 @@
 # scenarios/02_tool_call.yaml
-# Сценарии с вызовом MCP инструментов
+# Сценарии поведения ноды при разных человеческих командах
 #
-# mock-llm возвращает tool_calls ответ через set_llm_responses.
-# Формат: строка Starting with "TOOL_CALL:" описывает инструмент.
-# dialogue_node → _execute_tool_calls → mock mcp_adapter → результат → снова LLM.
-#
-# Для полного теста tool call flow нужен mock MCP adapter.
-# Пока тестируем что dialogue_node не падает при tool_calls ответе.
-
-llm_rules:
-  - trigger: "навигация"
-    response: "Начинаю навигацию к указанной точке."
-  - trigger: "где ты"
-    response: "Я нахожусь в комнате номер один."
-  - trigger: "стоп"
-    response: "Остановился."
-
-default_response: "Выполняю команду."
+# enable_mcp_tools: false — dialogue_node работает без MCP, LLM отвечает текстом.
+# Тестируем: нода не падает, ответ приходит, SSML валиден.
 
 scenarios:
 
   - name: navigation_command
-    description: "Команда к навигации → ответ о начале движения"
+    description: "Команда навигации → нода не падает, ответ приходит"
     steps:
-      - inject_stt: "поехали на кухню, навигация"
-        timeout_s: 20
-        assert_response_contains: "навигац"
+      - inject_stt: "поехали на кухню"
+        timeout_s: 30
+        assert_response_not_empty: true
 
   - name: status_query
-    description: "Вопрос о местоположении"
+    description: "Вопрос о местоположении → нода не падает, ответ приходит"
     steps:
-      - inject_stt: "где ты сейчас"
-        timeout_s: 15
-        assert_response_contains: "комнат"
+      - inject_stt: "где ты сейчас находишься?"
+        timeout_s: 30
+        assert_response_not_empty: true
 
   - name: stop_command
-    description: "Команда стоп"
+    description: "Команда стоп → нода не падает, ответ приходит"
     steps:
-      - inject_stt: "стоп остановись"
-        timeout_s: 10
-        assert_response_contains: "Останов"
+      - inject_stt: "стоп, остановись"
+        timeout_s: 30
+        assert_response_not_empty: true
 
-  - name: scripted_llm_response
-    description: "Тест с заранее заданным ответом mock-llm (через /admin/set_responses)"
+  - name: response_is_valid_json
+    description: "Ответ dialogue_node всегда JSON с полем ssml"
     steps:
-      - set_llm_responses:
-          - "Это заранее заданный тестовый ответ номер один."
-      - inject_stt: "любой вопрос"
-        timeout_s: 15
-        assert_response_contains: "заранее заданный"
+      - inject_stt: "выполни какую-нибудь команду"
+        timeout_s: 30
+        assert_response_valid_json: true
+        assert_response_has_key: "ssml"

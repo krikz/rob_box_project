@@ -26,9 +26,9 @@ test-arm:
 	docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 	@$(MAKE) test PLATFORM=linux/arm64
 
-## Только собрать mock-llm и scenario-runner образы
+## Только собрать scenario-runner образ (ollama — официальный, не требует сборки)
 build:
-	$(ENV) $(COMPOSE) build mock-llm scenario-runner
+	$(ENV) $(COMPOSE) build scenario-runner
 
 ## Следить за логами во время прогона
 logs:

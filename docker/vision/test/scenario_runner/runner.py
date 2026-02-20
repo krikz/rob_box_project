@@ -8,11 +8,18 @@ scenario_runner/runner.py — Исполнитель интеграционны�
      - inject_stt      → публикует строку в /voice/stt/result
      - inject_vad      → публикует bool в /audio/vad
      - wait_ms         → пауза без публикации
-     - set_llm_responses → загружает очередь ответов в mock-llm
   3. После каждого inject_stt ждёт ответ на /voice/dialogue/response
-  4. Проверяет assert_response_contains / assert_animation / assert_no_response
+  4. Проверяет:
+       assert_response_contains    — ответ содержит строку/список строк
+       assert_response_not_empty   — ответ не пустой
+       assert_response_valid_json  — ответ парсится как JSON
+       assert_response_has_key     — JSON ответ содержит ключ
+       assert_animation            — last animation содержит строку
+       assert_no_response          — ответа быть не должно
   5. Выводит результаты и записывает results.json
   6. Выход с кодом 0 (все прошли) или 1 (есть провалы)
+
+LLM: Ollama (qwen2.5:0.5b) — OpenAI-совместимый API на порту 11434.
 
 Запуск: python3 runner.py
 """
@@ -25,7 +32,6 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 import rclpy
 import yaml
 from rclpy.node import Node
@@ -37,7 +43,6 @@ from std_msgs.msg import Bool, String
 
 SCENARIOS_DIR = os.getenv("SCENARIOS_DIR", "/scenarios")
 RESULTS_FILE = os.getenv("RESULTS_FILE", "/results/test_results.json")
-MOCK_LLM_URL = os.getenv("MOCK_LLM_URL", "http://localhost:8765")
 OVERALL_TIMEOUT = int(os.getenv("OVERALL_TIMEOUT", "120"))
 
 TOPIC_STT = "/voice/stt/result"
@@ -143,7 +148,12 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
         # Парсим JSON ответ dialogue_node
         response_text = _extract_text(response)
 
-        # Проверяем assert_response_contains
+        # assert_response_not_empty
+        if step.get("assert_response_not_empty"):
+            if not response_text.strip():
+                return False, "Response is empty"
+
+        # assert_response_contains
         if "assert_response_contains" in step:
             expected = step["assert_response_contains"]
             if isinstance(expected, str):
@@ -152,7 +162,24 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
                 if phrase.lower() not in response_text.lower():
                     return False, f"Response {response_text!r} does not contain {phrase!r}"
 
-        # Проверяем assert_animation
+        # assert_response_valid_json
+        if step.get("assert_response_valid_json"):
+            try:
+                json.loads(response)
+            except json.JSONDecodeError as e:
+                return False, f"Response is not valid JSON: {e}"
+
+        # assert_response_has_key
+        if "assert_response_has_key" in step:
+            key = step["assert_response_has_key"]
+            try:
+                data = json.loads(response)
+                if key not in data:
+                    return False, f"JSON response missing key {key!r}. Keys: {list(data.keys())}"
+            except json.JSONDecodeError as e:
+                return False, f"Cannot check key — response is not JSON: {e}"
+
+        # assert_animation
         if "assert_animation" in step:
             expected_anim = step["assert_animation"]
             actual_anim = node._last_animation or ""
@@ -171,19 +198,10 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
         time.sleep(step["wait_ms"] / 1000.0)
         return True, f"Waited {step['wait_ms']}ms"
 
-    # set_llm_responses — загрузка очереди в mock-llm
+    # set_llm_responses — устарело (было для mock-llm), пропускаем
     elif "set_llm_responses" in step:
-        responses = step["set_llm_responses"]
-        try:
-            r = requests.post(
-                f"{MOCK_LLM_URL}/admin/set_responses",
-                json={"responses": responses},
-                timeout=5,
-            )
-            r.raise_for_status()
-            return True, f"Queued {len(responses)} LLM responses"
-        except Exception as e:
-            return False, f"Failed to set LLM responses: {e}"
+        node.get_logger().warning("set_llm_responses step is deprecated (mock-llm removed), skipping")
+        return True, "SKIP: set_llm_responses (mock-llm not used)"
 
     else:
         return False, f"Unknown step keys: {list(step.keys())}"

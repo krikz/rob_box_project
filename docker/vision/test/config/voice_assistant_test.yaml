@@ -1,37 +1,40 @@
 # voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
 #
-# Переопределяет prod-конфиг:
-#   - LLM base_url → mock-llm (localhost:8765)
-#   - wake_words → пуст (всё идёт в LLM без wake word)
-#   - enable_mcp_tools → false (упрощаем тест)
-#   - enable_fallback → false (только один провайдер)
+# LLM: Ollama (localhost:11434) — реальный локальный инференс
+# Модель: qwen2.5:0.5b (~350MB, CPU, понимает русский)
+# Альтернативы: smollm2:360m (200MB, быстрее), gemma3:1b (815MB, лучше)
+#
+# Ollama API полностью совместим с OpenAI SDK — никаких изменений в ноде
 
 /dialogue_node:
   ros__parameters:
-    # Mock LLM вместо реального API
+    # Ollama — OpenAI-compatible, аутентификация не нужна
     provider: "qwen"
-    api_key: "test-key-not-real"
-    base_url: "http://localhost:8765/v1"
-    model: "mock-model"
-    temperature: 0.0      # Детерминированность (мок и так возвращает фиксированное)
-    max_tokens: 200
+    api_key: "ollama"   # Ollama игнорирует api_key, но Python SDK требует непустую строку
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:0.5b"   # переопределить через LLM_MODEL env: model: "${LLM_MODEL:-qwen2.5:0.5b}"
+    temperature: 0.5
+    max_tokens: 150       # короткие ответы = быстрые тесты
     streaming: true
 
     enable_fallback: false
     enable_mcp_tools: false
-    internet_available: true  # Не переходить в fallback режим
+    internet_available: true
 
-    # Пустой список wake_words → любая фраза идёт в LLM
+    # Пустой список wake_words — любая фраза идёт в LLM
     wake_words: ""
     silence_words: "стоп,тихо,замолчи"
 
-    # Системный промпт для тестов
-    system_prompt: "Ты тестовый робот ROBBOX. Отвечай кратко и по делу."
+    # Системный промпт для тестов — краткие ответы быстрее
+    system_prompt: |
+      Ты — робот ROBBOX. Отвечай очень кратко, 1-2 предложения.
+      Всегда отвечай на русском языке.
+      На приветствие отвечай: "Привет! Я ROBBOX."
+      На вопрос об имени: "Меня зовут ROBBOX."
 
-    # История разговора
-    max_history_messages: 10
-    history_window_tokens: 2000
+    max_history_messages: 6
+    history_window_tokens: 1000
 
-    # Таймауты
-    llm_timeout_sec: 10.0
-    max_iterations: 5
+    # Таймауты — Ollama на CPU может быть медленнее продакшнего
+    llm_timeout_sec: 60.0
+    max_iterations: 3

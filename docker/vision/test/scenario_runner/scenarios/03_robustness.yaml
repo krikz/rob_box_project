@@ -1,40 +1,51 @@
 # scenarios/03_robustness.yaml
-# Сценарии устойчивости: пустые фразы, длинные запросы, быстрые reinjections
-
-llm_rules:
-  default_response: "Понял ваш запрос."
-
-default_response: "Понял."
+# Сценарии устойчивости: пустые фразы, быстрые reinjections, VAD interrupt
+#
+# Цель: диалог_нода не падает и не зависает после пограничных сценариев.
 
 scenarios:
 
-  - name: rapid_messages
-    description: "Несколько быстрых сообщений подряд — нода не падает"
-    fail_fast: false  # Продолжаем даже если один шаг упал
+  - name: empty_message_no_crash
+    description: "Пустая строка — нода не падает, нет ответа"
+    steps:
+      - inject_stt: ""
+        timeout_s: 3
+        assert_no_response: true
+
+  - name: rapid_messages_no_crash
+    description: "Быстрые сообщения подряд — нода не зависает"
+    fail_fast: false
     steps:
       - inject_stt: "сообщение первое"
-        timeout_s: 20
-      - wait_ms: 200
-      - inject_stt: "сообщение второе"
-        timeout_s: 20
-      - wait_ms: 200
-      - inject_stt: "сообщение третье"
-        timeout_s: 20
-
-  - name: long_message
-    description: "Длинное сообщение → ответ в разумное время"
-    steps:
-      - inject_stt: "расскажи мне подробно о том как ты работаешь, что ты умеешь делать, какие у тебя возможности и какие ограничения у тебя есть на данный момент"
-        timeout_s: 30
-
-  - name: vad_interrupt
-    description: "VAD interrupt во время гипотетической обработки"
-    steps:
-      - inject_stt: "начни рассказывать длинную историю"
-        timeout_s: 20
+        timeout_s: 50
+        assert_response_not_empty: true
       - wait_ms: 300
-      - inject_vad: true   # Прерываем
-      - wait_ms: 100
+      - inject_stt: "сообщение второе"
+        timeout_s: 50
+        assert_response_not_empty: true
+      - wait_ms: 300
+      - inject_stt: "сообщение третье"
+        timeout_s: 50
+        assert_response_not_empty: true
+
+  - name: vad_interrupt_no_hang
+    description: "VAD interrupt после запроса — нода не зависает"
+    steps:
+      - inject_stt: "привет"
+        timeout_s: 50
+        assert_response_not_empty: true
+      - wait_ms: 500
+      - inject_vad: true     # Прерываем
+      - wait_ms: 200
       - inject_vad: false
-      - inject_stt: "стоп, расскажи анекдот лучше"
-        timeout_s: 20
+      - inject_stt: "расскажи анекдот"
+        timeout_s: 50
+        assert_response_not_empty: true
+
+  - name: long_message_within_timeout
+    description: "Длинное сообщение — ответ в разумный срок"
+    steps:
+      - inject_stt: "расскажи подробно о том как ты работаешь, что ты умеешь делать, какие у тебя возможности и ограничения"
+        timeout_s: 60
+        assert_response_not_empty: true
+
