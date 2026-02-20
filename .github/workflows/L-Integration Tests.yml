@@ -66,6 +66,7 @@ jobs:
             esac
           fi
           FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
           echo "Image tag: voice-assistant-${FULL_TAG}"
 
@@ -80,7 +81,8 @@ jobs:
         working-directory: ${{ env.TEST_DIR }}
         env:
           SERVICE_IMAGE_PREFIX: ${{ env.LOCAL_PREFIX }}
-          IMAGE_TAG: ${{ steps.tag.outputs.full_tag }}
+          # Compose уже добавляет ${ROS_DISTRO}- префикс — передаём только branch tag
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
           ROS_DISTRO: ${{ env.ROS_DISTRO }}
           PLATFORM: linux/arm64
         run: |
