@@ -1201,10 +1201,17 @@ class DialogueNode(Node):
                 self.get_logger().info(f"🔊 Plain text отправлен в TTS как 1 chunk (SSML создан)")
 
         # Запускаем streaming в отдельном потоке с timeout
+        # ВАЖНО: НЕ используем `with ThreadPoolExecutor` как context manager!
+        # При timeout future.result() бросает FuturesTimeoutError, но __exit__ вызывает shutdown(wait=True)
+        # что ЖДЁТ завершения _do_streaming пока тот висит на сетевом I/O → вечное зависание
+        # и блокировка ROS2 callback thread → stt_callback не может выполниться.
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_do_streaming)
+            _stream_executor = ThreadPoolExecutor(max_workers=1)
+            future = _stream_executor.submit(_do_streaming)
+            try:
                 future.result(timeout=TOTAL_REQUEST_TIMEOUT)
+            finally:
+                _stream_executor.shutdown(wait=False)  # Не блокировать! Фоновый поток умрёт сам
 
             # Проверяем внутренний timeout
             if streaming_result["error"]:
@@ -2192,7 +2199,16 @@ class DialogueNode(Node):
             self.llm_processing = False
             self.dialogue_in_progress = False
             return
-        
+
+        # 🛑 Прерывание агентного цикла если пользователь заговорил
+        if self.interrupt_agent_loop:
+            self.get_logger().warning(f"🛑 Агентный цикл прерван на итерации {iteration} — новый запрос пользователя")
+            self.interrupt_agent_loop = False
+            # finally block в _ask_llm_streaming установит llm_processing = False
+            self.llm_processing = False
+            self.dialogue_in_progress = False
+            return
+
         self.get_logger().info(f"🔄 Продолжаю агентный диалог с результатами инструментов (итерация {iteration}/{self.MAX_ITERATIONS})")
         
         # 🛑 ПРОВЕРКА: Если был вызван listen_for_response - ОСТАНАВЛИВАЕМ агентный цикл!
@@ -2407,11 +2423,15 @@ class DialogueNode(Node):
                 recursive_result["error"] = str(e)
         
         # Запускаем рекурсивный streaming в отдельном потоке с timeout
+        # ВАЖНО: НЕ используем `with ThreadPoolExecutor` — см. комментарий в _ask_llm_streaming
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_do_recursive_streaming)
+            _recursive_executor = ThreadPoolExecutor(max_workers=1)
+            future = _recursive_executor.submit(_do_recursive_streaming)
+            try:
                 future.result(timeout=60.0)  # 60 секунд на весь рекурсивный запрос
-            
+            finally:
+                _recursive_executor.shutdown(wait=False)  # Не блокировать!
+
             # Проверяем ошибки
             if recursive_result["error"]:
                 raise TimeoutError(recursive_result["error"])
