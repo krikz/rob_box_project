@@ -324,6 +324,72 @@ class SetSpeedTool(MCPTool):
         )
 
 
+class GetCurrentTimeTool(MCPTool):
+    """Инструмент для получения текущего времени и даты.
+    
+    Не требует ROS-зависимостей — время берётся из системных часов Python.
+    Вызывать когда пользователь спрашивает время, дату, день недели и т.д.
+    """
+
+    @property
+    def name(self) -> str:
+        return "get_current_time"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Получить текущее время и дату. Используй когда пользователь спрашивает "
+            "который час, какая дата, какой день недели, какое время суток, сколько сейчас времени."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return []
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        """Мгновенная операция — только Python datetime, никаких I/O."""
+        return ToolExecutionType.INSTANT
+
+    def execute(self) -> MCPToolResult:
+        """Вернуть текущее время из системных часов."""
+        import datetime
+        import locale
+
+        now = datetime.datetime.now()
+
+        # Русские названия дней и месяцев без зависимости от locale
+        WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        MONTHS_RU = [
+            "января", "февраля", "марта", "апреля", "мая", "июня",
+            "июля", "августа", "сентября", "октября", "ноября", "декабря"
+        ]
+
+        hour = now.hour
+        if 5 <= hour < 12:
+            period = "утро"
+        elif 12 <= hour < 17:
+            period = "день"
+        elif 17 <= hour < 22:
+            period = "вечер"
+        else:
+            period = "ночь"
+
+        data = {
+            "time": now.strftime("%H:%M"),
+            "date": f"{now.day} {MONTHS_RU[now.month - 1]} {now.year}",
+            "weekday": WEEKDAYS_RU[now.weekday()],
+            "period": period,
+            "iso": now.isoformat(timespec="seconds"),
+        }
+
+        message = (
+            f"Сейчас {data['time']}, {data['weekday']}, {data['date']}, {data['period']}."
+        )
+        self.log_info(f"Текущее время: {message}")
+        return MCPToolResult(success=True, data=data, message=message)
+
+
 class GetRobotStatusTool(MCPTool):
     """Инструмент для получения статуса робота"""
 

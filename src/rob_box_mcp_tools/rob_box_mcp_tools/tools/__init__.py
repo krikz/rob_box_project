@@ -13,7 +13,7 @@ tools - Коллекция MCP инструментов для Rob Box
 """
 
 from .navigation import *
-from .system import *
+from .system import *  # includes GetCurrentTimeTool, SetVolumeTool, etc.
 from .perception import *
 from .mapping import *
 from .animation import *
@@ -32,6 +32,7 @@ __all__ = [
     "SetPitchTool",
     "SetSpeedTool",
     "GetRobotStatusTool",
+    "GetCurrentTimeTool",
     # Perception tools
     "GetPerceptionContextTool",
     "GetBatteryLevelTool",

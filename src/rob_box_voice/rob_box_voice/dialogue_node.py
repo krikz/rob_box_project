@@ -884,43 +884,6 @@ class DialogueNode(Node):
         else:
             self._ask_llm_non_streaming()
 
-    # Marker for inserting time context in system prompt
-    # Совпадает во всех вариантах: "# Формат ответа - JSON", "# ВАЖНО: Формат ответа", "# ВАЖНО - Формат ответа"
-    TIME_CONTEXT_MARKER = "Формат ответа"  # Без "#" — общая подстрока для всех вариантов промптов
-    TIME_CONTEXT_SECTION_TITLE = "# Текущее время"
-
-    def _build_system_prompt_with_context(self) -> str:
-        """Построить system prompt с добавлением текущего времени"""
-        base_prompt = self.system_prompt
-
-        # Добавляем информацию о текущем времени, если доступна
-        if self.current_time_info:
-            time_context = []
-            time_context.append(f"\n{self.TIME_CONTEXT_SECTION_TITLE}\n")
-            time_context.append(f"**Сейчас:** {self.current_time_info.get('time_only', 'N/A')}")
-            time_context.append(f"**Дата:** {self.current_time_info.get('date_only', 'N/A')}")
-            time_context.append(f"**Период суток:** {self.current_time_info.get('period_ru', 'N/A')}")
-            time_context.append(f"**День недели:** {self.current_time_info.get('weekday_ru', 'N/A')}")
-
-            time_info = "\n".join(time_context)
-
-            # Вставляем время после характеристик робота, перед форматом ответа
-            # Ищем маркер (поддерживаем разные варианты: "# Формат ответа", "# ВАЖНО: Формат ответа", etc)
-            marker_index = base_prompt.find(self.TIME_CONTEXT_MARKER)
-            if marker_index != -1:
-                # Находим начало строки с маркером (чтобы не разбить "# ВАЖНО - Формат ответа")
-                line_start = base_prompt.rfind("\n", 0, marker_index)
-                line_start = line_start + 1 if line_start != -1 else 0
-                return f"{base_prompt[:line_start]}{time_info}\n\n{base_prompt[line_start:]}"
-            else:
-                # Если маркер не найден, добавляем в конец
-                self.get_logger().warning(
-                    f'⚠️  Маркер "{self.TIME_CONTEXT_MARKER}" не найден в промпте, ' "добавляем время в конец"
-                )
-                return f"{base_prompt}\n{time_info}"
-
-        return base_prompt
-
     def _ask_llm_streaming(self):
         """Streaming запрос к LLM провайдеру с парсингом JSON chunks и timeout"""
         # Генерируем новый dialogue_id для этого диалога
@@ -934,10 +897,8 @@ class DialogueNode(Node):
         self.conversation_history.remove_tool_messages()
         self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history.get_messages())} сообщений")
 
-        # Используем system prompt с контекстом времени
-        system_prompt_with_context = self._build_system_prompt_with_context()
-
-        messages = [{"role": "system", "content": system_prompt_with_context}] + self.conversation_history.get_messages()
+        # System prompt статичен — время LLM получает через get_current_time тул
+        messages = [{"role": "system", "content": self.system_prompt}] + self.conversation_history.get_messages()
 
         provider_name = self.PROVIDERS[self.current_provider]["name"]
         self.get_logger().info(f"🤔 Запрос к {provider_name}...")
@@ -1349,7 +1310,7 @@ class DialogueNode(Node):
         """Non-streaming запрос к LLM провайдеру с поддержкой tool calls"""
         try:
             # Собираем все сообщения для контекста
-            messages = [{"role": "system", "content": self._build_system_prompt_with_context()}]
+            messages = [{"role": "system", "content": self.system_prompt}]
             messages.extend(self.conversation_history.get_messages())
 
             provider_name = self.PROVIDERS[self.current_provider]["name"]
@@ -2262,11 +2223,8 @@ class DialogueNode(Node):
         def _do_recursive_streaming():
             """Внутренняя функция для рекурсивного streaming (запускается в отдельном потоке)"""
             try:
-                # Используем system prompt с контекстом времени
-                system_prompt_with_context = self._build_system_prompt_with_context()
-                
-                # Обновляем первое сообщение (system)
-                messages[0] = {"role": "system", "content": system_prompt_with_context}
+                # System prompt статичен — обновляем первое сообщение без изменений
+                messages[0] = {"role": "system", "content": self.system_prompt}
                 
                 # ВАЖНО: Добавляем tools снова для агентного цикла!
                 request_params = {
