@@ -684,6 +684,11 @@ class DialogueNode(Node):
                 if old_len > 0:
                     self.get_logger().info(f"🧹 conversation_history очищена при новом wake word ({old_len} сообщений удалено)")
 
+                # Сбрасываем счётчик ошибок — новый диалог не должен платить за прошлые таймауты.
+                if self.provider_error_count > 0:
+                    self.get_logger().info(f"♻️ provider_error_count сброшен при wake word ({self.provider_error_count} → 0)")
+                    self.provider_error_count = 0
+
                 # Убираем wake word из текста
                 user_message_clean = self.dialogue_manager.remove_wake_word(user_message_lower)
                 if not user_message_clean:
@@ -2142,7 +2147,7 @@ class DialogueNode(Node):
         
         return tool_results
 
-    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]], iteration: int = 1):
+    def _continue_after_tool_calls(self, messages: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], tool_results: List[Dict[str, Any]], iteration: int = 1, is_retry: bool = False):
         """
         Продолжает агентный диалог после выполнения tool_calls (рекурсивно)
         
@@ -2243,7 +2248,12 @@ class DialogueNode(Node):
                 
                 # Создаём stream (httpx client имеет свой timeout: 60s total, 10s connect)
                 self.get_logger().info("📞 Создание рекурсивного stream...")
-                stream = self.client.chat.completions.create(**request_params)
+                try:
+                    stream = self.client.chat.completions.create(**request_params)
+                except Exception as e:
+                    self.get_logger().error(f"❌ Ошибка создания рекурсивного stream: {e}")
+                    recursive_result["error"] = f"Failed to create stream: {e}"
+                    return
                 self.get_logger().info("✅ Stream создан, начинаю итерацию...")
                 
                 # Накопитель для tool_calls (могут быть снова!)
@@ -2426,6 +2436,12 @@ class DialogueNode(Node):
             
         except (FuturesTimeoutError, TimeoutError) as e:
             self.get_logger().error(f"⏱️ TIMEOUT рекурсивного запроса: {e}")
+            # Один retry — иногда DeepSeek принимает соединение но долго отвечает на первом токене.
+            # Второй запрос обычно проходит нормально (новое TCP соединение, нет keepalive).
+            if not is_retry:
+                self.get_logger().warning(f"♻️ Retry рекурсивного запроса (итерация {iteration})...")
+                self._continue_after_tool_calls(messages, tool_calls, tool_results, iteration, is_retry=True)
+                return
             self._speak_simple("Извините, я слишком долго думал", show_error_animation=True)
         
         except Exception as e:
