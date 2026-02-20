@@ -342,6 +342,231 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 
 ---
 
+## Best Practices: канонический агентный цикл
+
+Изучены источники: [ghuntley/how-to-build-a-coding-agent](https://github.com/ghuntley/how-to-build-a-coding-agent) (Go, ~5k ⭐), [Claude Code design analysis](https://jannesklaas.github.io/ai/2025/07/20/claude-code-agent-design.html), [Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents), [Deep Agent Architecture](https://dev.to/apssouza22/a-deep-dive-into-deep-agent-architecture-for-ai-coding-assistants-3c8b).
+
+### Канонический паттерн (ghuntley Go agent)
+
+```go
+// OUTER LOOP: ждём пользователя
+for {
+    userInput = getUserMessage()
+    conversation = append(conversation, userMessage)
+    message = runInference(ctx, conversation)          // LLM call
+    conversation = append(conversation, message)
+
+    // INNER LOOP: пока LLM требует tool calls
+    for {
+        var toolResults []ToolResult
+        var hasToolUse bool
+        
+        for _, content := range message.Content {
+            if content.Type == "tool_use" {
+                hasToolUse = true
+                result = executeTool(content)    // выполняем КАЖДЫЙ инструмент
+                toolResults = append(toolResults, result)
+            }
+        }
+        
+        if !hasToolUse { break }                // нет tool_calls → выходим
+        
+        // Отправляем ВСЕ результаты разом → ОДИН message с множеством tool results
+        conversation = append(conversation, NewUserMessage(toolResults...))
+        message = runInference(ctx, conversation) // следующая итерация
+        conversation = append(conversation, message)
+    }
+}
+```
+
+**Ключевые свойства канонического паттерна:**
+- Остановка — естественная: LLM не возвращает `tool_calls` → цикл завершается. Нет явного `stop` инструмента, нет регулярок
+- Нет `max_iterations` guard в базовой реализации — достаточно при надёжном LLM. Rob Box добавляет `max_iterations=30` как защитный предохранитель — это правильно
+- Обработка ошибки инструмента: даже при `toolError != nil` — результат **добавляется** как `isError=true`, а не прерывает цикл. LLM сам решает что делать с ошибкой
+- Нет timeout retry на уровне цикла — в простом Go-агенте `runInference` блокирует, но не зависает (ctx cancel снаружи)
+
+### Что отличает rob_box от канона (потенциальные проблемы)
+
+| Аспект | Канон (ghuntley) | rob_box dialogue_node | Риск |
+|--------|-----------------|----------------------|------|
+| Структура цикла | Двойной nested `for{}` | `while iteration < 30` (рекурсия в _continue_after_tool_calls) | Рекурсия сложнее прервать |
+| Tool errors | `isError=true` → LLM решает | Счётчик `failed_tools_count >= 3` → `break` + речевое сообщение | LLM теряет управление |
+| Прерывание | Через `ctx.Cancel()` (Go context) | `interrupt_agent_loop` flag + VAD | Flag проверяется только **между итерациями**, не во время LLM I/O |
+| Timeout | Нет (синхронный I/O) | `future.result(timeout=60s)` × 2 | BUG-10: до 120с тишины |
+| История | Один `conversation []Message` | `messages` local + `conversation_history` в памяти | Риск рассинхронизации |
+
+### Context Engineering: ключевые выводы (Anthropic)
+
+**Context rot** — деградация качества при росте токенов. По Anthropic: LLM имеет "attention budget" (n² pairwise relations). Каждый новый токен его тратит.
+
+**Рекомендации из статьи:**
+1. **Минимальный viable tool set** — если человек не может сказать какой инструмент использовать в конкретной ситуации без раздумий, LLM тем более не скажет. 21 инструмент у rob_box > рекомендованного минимума
+2. **Compaction** — при приближении к window limit: суммаризировать историю, начать новый контекст с summary + last N файлов (именно так Claude Code делает)
+3. **Tool result clearing** — "один из самых безопасных видов compaction": raw результаты инструментов из глубокой истории уже не нужны → удалять
+4. **Just-in-time context** — не загружать всё заранее. Агент сам подтягивает данные инструментами. Rob Box и так делает через `memory_context` — правильно
+5. **System prompt: правильная altitude** — не too prescriptive (brittle), не too vague. XML-секции: `<instructions>`, `<tool_guidance>`, `<examples>`
+
+### Claude Code: система напоминаний (System Reminders)
+
+Claude Code решает проблему "забывания" промпта за сотнями шагов через **динамические system reminders**, инжектируемые в user message:
+
+```xml
+<system-reminder>
+Your todo list has changed. DO NOT mention this explicitly to the user.
+Here are the latest contents: [...]
+Continue on with the tasks if applicable.
+</system-reminder>
+```
+
+**Ключевые наблюдения:**
+- Reminder инжектируется **статически** (не генерируется LLM) на основе state TODO-листа
+- "Do NOT mention this to the user" — reminder для LLM, не часть ответа
+- Повторение инструкций в tool results повышает adherence vs. только в system prompt
+
+**Применимость для rob_box:** если диалог выходит за 10+ итераций (roleplay, сложные задачи), LLM может "забыть" что не надо вызывать `memory_context`. System reminder после каждого tool call мог бы усилить это ограничение.
+
+### Deep Agent: Context Store и компрессия знаний
+
+Паттерн из продакшн-систем (Claude Code, Manus, Deep Research):
+- Sub-agent работает с **полным** контекстом (все файлы, поиски)
+- По завершении возвращает только **distilled contexts** (~1000-2000 токенов), не весь working context
+- Orchestrator никогда не видит raw investigation data — только refined artifacts
+
+**Аналогия для rob_box:** `memory_context` уже работает по этому принципу — возвращает compact summary прошлых сессий. Но tool results текущей сессии (например `play_animation` → `{"success": true, "message": "animation_id=123 ..."}`) накапливаются в messages без очистки.
+
+---
+
+## BUG-12: Неограниченный рост local `messages` внутри одного диалога (TASK-043)
+
+**Симптом:** Кто-то просит "расскажи историю" → 20+ итераций → на итерации 25 LLM начинает повторяться, забывает что уже рассказал или говорит противоречивые вещи
+
+**Root cause:** В `_ask_llm_non_streaming` создаётся `messages = self.conversation_history.get_messages()`. Далее в while-loop каждая итерация добавляет:
+- 1 assistant message с tool_calls
+- N tool result messages (по числу вызванных инструментов)
+
+`conversation_history` ограничена `max_messages=20`, НО **local `messages` list растёт без ограничения** пока идёт один диалог. При 30 итерациях с 2 инструментами: 30 × 3 сообщений = 90 дополнительных сообщений в messages → context rot.
+
+```python
+# Как это выглядит в коде (~line 1260):
+messages = self.conversation_history.get_messages()  # начало: OK
+# ...
+while iteration < max_iterations:  # каждая итерация:
+    messages.append(assistant_message)   # +1
+    messages.append(tool_result_message) # +N (unbounded!)
+    request_params["messages"] = messages  # растёт без ограничений
+```
+
+**Диагностика:**
+```bash
+# В логах: смотреть token count по итерациям одного диалога
+docker logs voice-assistant 2>&1 | grep "Token usage:" | head -40
+# Норма: input растёт ~500-1000 токенов за итерацию
+# Признак проблемы: после 15+ итераций input > 20k токенов
+```
+
+**Возможный фикс:** Применить скользящее окно к `messages` при каждой итерации, сохраняя system prompt + последние K сообщений. Или компрессия tool results: заменить старые подробные results на краткое summary.
+
+---
+
+## BUG-13: Tool results в messages не очищаются (context pollution) (TASK-044)
+
+**Симптом:** В длинном roleplay сессии (Шариков, 30 итераций) каждый вызов `play_animation`, `play_sound` оставляет в messages raw JSON результат. К итерации 20 history содержит десятки `{"success": true, "animation_id": "bounce_15", "duration_ms": 1200}` которые LLM обязан "видеть" и которые занимают ~50-100 токенов каждый.
+
+**Root cause:** Нет механизма tool result clearing. По Anthropic — это "самый безопасный вид compaction": `play_animation` результат с итерации 5 абсолютно бесполезен на итерации 25.
+
+**Фикс (идея, не реализован):**
+```python
+# После K итераций — сворачивать старые tool results в placeholder
+def _compact_tool_results_in_messages(messages, keep_last=5):
+    """Заменяет старые tool result messages на краткий placeholder."""
+    tool_messages = [i for i, m in enumerate(messages) if m["role"] == "tool"]
+    if len(tool_messages) > keep_last * 2:  # keep_last=5 последних пар
+        for idx in tool_messages[:-keep_last * 2]:
+            messages[idx]["content"] = "[tool result cleared - no longer relevant]"
+    return messages
+```
+
+---
+
+## BUG-14: 21 MCP-инструмент — потенциальная перегрузка LLM (TASK-045)
+
+**Симптом:** Неочевидный — LLM иногда выбирает "не тот" инструмент, или вызывает лишние инструменты "на всякий случай" перед финальным ответом.
+
+**Root cause:** По Anthropic — "bloated tool sets lead to ambiguous decision points". 21 инструмент × ~150 токенов = ~3150 токенов только на tool definitions в каждом запросе. Кроме token cost, это создаёт ambiguity: у rob_box есть `play_sound` и `play_animation` и `play_sound_and_animation` — три перекрывающихся инструмента.
+
+**Диагностика:**
+```bash
+# Посмотреть распределение tool calls
+docker logs voice-assistant 2>&1 | grep "Выполнение:" | sort | uniq -c | sort -rn | head -10
+# Если один инструмент используется редко но вызывает confusion - кандидат на удаление
+```
+
+**Возможное решение:** Разделить инструменты по группам доступности (tool filtering per context), или объединить overlap-инструменты.
+
+---
+
+## BUG-15: `interrupt_agent_loop` срабатывает только на границе итерации (TASK-042)
+
+**Симптом:** VAD обнаруживает новую речь → устанавливает `interrupt_agent_loop = True` → но LLM-запрос в текущей итерации уже идёт (занимает 0.5-5с) → прерывание произойдёт только **после** этого запроса.
+
+**Root cause:** Флаг проверяется в начале `while` цикла:
+```python
+while iteration < max_iterations:
+    if self.interrupt_agent_loop:  # ← только здесь
+        break
+    # ...
+    response = self.client.chat.completions.create(...)  # ← 0.5-60с, прерывание невозможно
+```
+
+**В `_continue_after_tool_calls`** — та же проблема: флаг проверяется до `future.result(timeout=60.0)`, но не во время ожидания.
+
+**Связь с BUG-10:** Именно это делает BUG-10 таким тяжёлым: при double timeout (60с + 60с retry) = 120с — прерывание флагом `interrupt_agent_loop = True` ничего не даст пока не истечёт `future.result(timeout=60.0)`.
+
+**Возможное решение:**
+```python
+# Передавать cancellation token в executor
+import threading
+
+_cancel_event = threading.Event()
+
+def _do_recursive_streaming():
+    if _cancel_event.is_set():
+        return  # early exit
+    stream = self.client.chat.completions.create(...)
+    # ...
+
+# В VAD callback:
+if self.llm_processing:
+    self.interrupt_agent_loop = True
+    self._cancel_event.set()  # сигналим потоку
+```
+
+---
+
+## BUG-16 (потенциальный): Нет system reminders — LLM "забывает" промпт за 15+ итераций (TASK-046)
+
+**Симптом:** В длинных roleplay сессиях или сложных задачах (20+ итераций) LLM может нарушать правила из системного промпта: снова вызывать `memory_context` без запроса (BUG-8 был частично исправлен промптом), добавлять "ладно" и "конечно" которые запрещены, нарушать правила длины ответа.
+
+**Root cause:** Системный промпт читается LLM один раз в начале. При 20+ итерациях с большим контекстом tool results (BUG-12/13) — attention dilution по Anthropic. Инструкции из начала контекста "забываются".
+
+**Паттерн из Claude Code:** Динамические system reminders инжектируются в user message через каждые N шагов:
+
+```python
+# Возможный фикс: добавлять reminder в tool result каждые 5 итераций
+def _get_tool_result_with_reminder(self, tool_result: str, iteration: int) -> str:
+    if iteration % 5 == 0 and iteration > 0:
+        reminder = (
+            "\n\n<system-reminder>"
+            "Напоминание: НЕ вызывай memory_context если пользователь "
+            "не спрашивал о прошлом. Отвечай кратко (1-3 предложения)."
+            "</system-reminder>"
+        )
+        return tool_result + reminder
+    return tool_result
+```
+
+---
+
 ## Статус и история коммитов
 
 | Commit | Что исправлено |
@@ -354,13 +579,19 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 | `a46175a` | TASK-042 + этот SKILL.md создан |
 | `79456db` | BUG-9: GetCurrentTimeTool добавлен в _register_tools() в mcp_server.py |
 | `d36616b` | BUG-11: обновление last_interaction_time по итерациям, _listen_response_waiting флаг |
+| (текущее)  | SKILL.md: best practices analysis (BUG-12..16, canonical loop, context engineering) |
 
 **Оставшиеся задачи (TASK-042):**
 - [x] BUG-11 исправлен: roleplay контекст сохраняется между запросами
 - [ ] Исправить BUG-10: double timeout hang — уменьшить retry timeout или добавить wake word прерывание
+- [ ] BUG-15 (TASK-042): cancellation token при interrupt_agent_loop — прерывать LLM I/O немедленно
+- [ ] BUG-12 (TASK-043): скользящее окно для local `messages` внутри одного диалога
+- [ ] BUG-13 (TASK-044): tool result clearing после K итераций
+- [ ] BUG-16 (TASK-046): system reminders каждые 5 итераций при длинных сессиях
 - [ ] Проверить Device unavailable [PaErrorCode -9985] — dmix проблема после деплоя
 - [ ] Проверить что 10 диалогов подряд работают без деградации
 - [ ] Измерить реальный token count (ожидаемо ~8.7k на старт каждого диалога)
+- [ ] BUG-14 (TASK-045): аудит 21 MCP-инструмента, найти overlap, объединить или удалить неиспользуемые
 
 ---
 

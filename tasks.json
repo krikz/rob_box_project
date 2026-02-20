@@ -254,6 +254,111 @@
       "dependencies": ["SKILLS-001"],
       "status": "done",
       "notes": "Анализ skills.sh leaderboard (2026-02-19): ниша ROS2/robotics пуста. ВЫПОЛНЕНО 2026-02-19: оценено 4 пакета — omer-metin/skills-for-antigravity (ros2-robotics: пустой, 30 installs), smithery/ai (zeeshan080-ros2-patterns: базовый boilerplate, 1 install). Все ROS2 skills — автогенерированные шаблоны без ценности. Вывод: внешние skills не устанавливать. Рекомендация: опубликовать наши agent guides как первый ros2 skill на skills.sh."
+    },
+    {
+      "id": "TASK-042",
+      "category": "bug",
+      "priority": "high",
+      "description": "BUG-10 + BUG-15: Double timeout hang (120с тишины) — прерывание agent loop не работает во время LLM I/O",
+      "acceptance_criteria": [
+        "После double timeout (первый + retry) робот возвращается в IDLE максимум через 30с (не 120с)",
+        "VAD-прерывание во время LLM I/O (future.result) немедленно отменяет ожидание",
+        "Wake word из DIALOGUE state прерывает текущий агентный цикл и начинает новый диалог",
+        "В логах нет тишины > 30с после TIMEOUT + Retry"
+      ],
+      "test_steps": [
+        "Шаг 1: docker logs voice-assistant 2>&1 | grep -E 'TIMEOUT|Retry|итерация' — симулировать double timeout",
+        "Шаг 2: Во время зависшего диалога сказать wake word — убедиться что прерывание < 5с",
+        "Шаг 3: Проверить что retry timeout = 30с (не 60с): grep 'RETRY_REQUEST_TIMEOUT' dialogue_node.py",
+        "Шаг 4: 10 диалогов подряд с разными провайдерами — нет зависаний"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "notes": "BUG-10 описан в SKILL.md. BUG-15 (новое): interrupt_agent_loop проверяется только между итерациями, не во время future.result(timeout=60s). Решения: (A) уменьшить retry timeout 60→30с; (B) cancellation token/threading.Event для прерывания LLM I/O; (C) уменьшить main timeout с 60с до 20с и увеличить число retry."
+    },
+    {
+      "id": "TASK-043",
+      "category": "bug",
+      "priority": "medium",
+      "description": "BUG-12: Unbounded local messages list внутри одного диалога → context rot после 15+ итераций",
+      "acceptance_criteria": [
+        "Token count на итерации 20+ не превышает token count итерации 10 более чем на 3000 токенов",
+        "Введено скользящее окно для local messages list внутри _ask_llm_non_streaming while-loop",
+        "System prompt + последние K tool exchanges сохраняются, старые tool results отбрасываются",
+        "В логах: 'Token usage: input=X' — X не превышает 20k даже при 30 итерациях"
+      ],
+      "test_steps": [
+        "Шаг 1: Попросить робота 'расскажи подробную историю про космос' (провоцирует 20+ итераций)",
+        "Шаг 2: docker logs voice-assistant 2>&1 | grep 'Token usage:' — проверить динамику роста",
+        "Шаг 3: Убедиться что итерация 25 имеет input tokens < 20k",
+        "Шаг 4: Проверить что финальный ответ связный и не противоречит началу истории"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "notes": "Описан в SKILL.md как BUG-12. Root cause: messages = conversation_history.get_messages() + накопление в while-loop без ограничений. conversation_history ограничена max_messages=20, но local messages list нет. Решение: compaction после K итераций — суммаризировать старые tool exchanges."
+    },
+    {
+      "id": "TASK-044",
+      "category": "bug",
+      "priority": "medium",
+      "description": "BUG-13: Tool results не очищаются в messages → старые JSON результаты засоряют контекст",
+      "acceptance_criteria": [
+        "Tool results старше K итераций заменяются на '[tool result cleared]' плейсхолдер",
+        "Инструменты play_animation, play_sound, set_volume не оставляют мусора после 5+ вызовов",
+        "Token savings: >500 токенов при диалоге 20+ итераций с частым использованием инструментов",
+        "Функциональность не нарушена: LLM по-прежнему знает что инструменты выполнялись"
+      ],
+      "test_steps": [
+        "Шаг 1: Диалог с частым вызовом play_animation (10+ раз): 'покажи разные анимации'",
+        "Шаг 2: Сравнить token count с/без tool result clearing",
+        "Шаг 3: Проверить что LLM не путается ('я уже показал 5 анимаций' — должен помнить)",
+        "Шаг 4: Убедиться что tool results последних 3-5 итераций НЕ очищаются (нужны для контекста)"
+      ],
+      "dependencies": ["TASK-043"],
+      "status": "pending",
+      "notes": "Описан в SKILL.md как BUG-13. По Anthropic context engineering: 'tool result clearing is one of the safest forms of compaction'. Raw результаты старых tool calls уже не нужны LLM. Рекомендуемый порог: keep_last=5 последних tool exchanges."
+    },
+    {
+      "id": "TASK-045",
+      "category": "improvement",
+      "priority": "low",
+      "description": "BUG-14: Аудит 21 MCP-инструмента — устранить overlap и снизить tool overhead (~3150 токенов)",
+      "acceptance_criteria": [
+        "Overlap-инструменты (play_sound / play_animation / play_sound_and_animation) объединены или задокументированы",
+        "Инструменты с < 5 вызовами за неделю — кандидаты на удаление задокументированы",
+        "Tool definitions overhead снижен с ~3150 до < 2500 токенов",
+        "Нет ситуаций 'LLM выбрал неправильный инструмент из-за ambiguity'"
+      ],
+      "test_steps": [
+        "Шаг 1: docker logs voice-assistant 2>&1 | grep 'Выполнение:' | sort | uniq -c | sort -rn",
+        "Шаг 2: Подсчитать токены tool definitions: python3 -c \"import tiktoken; ...\"",
+        "Шаг 3: Для каждого overlap-инструмента: тест на корректный выбор LLM",
+        "Шаг 4: После изменений: 20 тестовых диалогов без ошибок выбора инструмента"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "notes": "Описан в SKILL.md как BUG-14. По Anthropic: 'bloated tool sets that cover too much functionality lead to ambiguous decision points'. 21 инструмент × ~150 токенов = ~3150 токенов overhead на каждый запрос. Overlap: play_sound vs play_sound_and_animation — когда использовать какой?"
+    },
+    {
+      "id": "TASK-046",
+      "category": "improvement",
+      "priority": "low",
+      "description": "BUG-16: System reminders для длинных сессий — LLM 'забывает' промпт после 15+ итераций",
+      "acceptance_criteria": [
+        "Динамические system reminders инжектируются в tool results каждые 5 итераций",
+        "Reminder содержит: запрет вызова memory_context без запроса, правило краткости ответа",
+        "В логах: нет 'Выполнение: memory_context' когда пользователь не спрашивал о прошлом",
+        "BUG-8 (memory pollution) не воспроизводится при 20+ итерациях"
+      ],
+      "test_steps": [
+        "Шаг 1: Roleplay 25+ итераций (например 'ты Шариков, давай поговорим долго')",
+        "Шаг 2: docker logs voice-assistant 2>&1 | grep 'Выполнение: memory_context' — не должно быть",
+        "Шаг 3: Проверить что ответы не превышают разумную длину (< 5 предложений на запрос)",
+        "Шаг 4: Сравнить adherence до/после: 50 диалогов — считать нарушения правил промпта"
+      ],
+      "dependencies": ["TASK-043"],
+      "status": "pending",
+      "notes": "Описан в SKILL.md как BUG-16. Паттерн из Claude Code: system reminders инжектируются статически в user/tool messages чтобы компенсировать attention dilution при длинных сессиях. 'DO NOT mention this to the user' — reminder только для LLM."
     }
   ]
 }
