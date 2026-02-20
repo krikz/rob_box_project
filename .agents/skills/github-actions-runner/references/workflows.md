@@ -188,7 +188,7 @@ gh workflow run "L-Build Vision Pi Services.yml" \
 
 | Параметр | Тип | Обязателен | Варианты |
 |----------|-----|-----------|---------|
-| `branch` | choice | ✅ | `main`, `develop`, `release/v1.0.0` |
+| `branch` | string | ✅ | любая ветка (напр. `main`, `develop`, `feature/agent`) |
 | `pi_type` | choice | ✅ | `main`, `vision`, `base` |
 | `service` | choice | ✅ | см. ниже |
 | `push_to_registry` | boolean | — | default: `true` |
