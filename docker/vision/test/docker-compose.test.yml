@@ -1,0 +1,111 @@
+# docker-compose.test.yml — интеграционное тестирование голосового ассистента
+#
+# Запуск локально (amd64, без QEMU):
+#   docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
+#
+# Запуск с QEMU (тестирует реальный ARM образ):
+#   docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#   PLATFORM=linux/arm64 docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
+#
+# В GitHub Actions:
+#   - uses: docker/setup-qemu-action@v3
+#     with: { platforms: arm64 }
+#   затем docker compose с PLATFORM=linux/arm64
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: "0"
+  RMW_IMPLEMENTATION: rmw_zenoh_cpp
+  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+  ROBOT_ID: "test-bot"
+  ZENOH_SESSION_CONFIG_URI: /test-config/zenoh_test_session.json5
+  RUST_LOG: zenoh=warn
+
+services:
+  # ─── Zenoh router ───────────────────────────────────────────────────────────
+  zenoh-router-test:
+    image: eclipse/zenoh:1.6.2
+    container_name: zenoh-router-test
+    network_mode: host
+    environment:
+      RUST_LOG: zenoh=warn
+    volumes:
+      - ./config/zenoh_router_test.json5:/zenoh_config.json5
+    command: -c /zenoh_config.json5
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ─── Mock LLM (OpenAI-compatible streaming API) ─────────────────────────────
+  mock-llm:
+    build:
+      context: ./mock_llm
+      dockerfile: Dockerfile
+    container_name: mock-llm-test
+    network_mode: host
+    environment:
+      MOCK_LLM_PORT: "8765"
+      MOCK_LLM_SCENARIOS: /scenarios/scenarios.yaml
+    volumes:
+      - ./scenario_runner/scenarios:/scenarios:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8765/health || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
+  voice-test:
+    # QEMU: установить PLATFORM=linux/arm64 для тестирования реального ARM образа
+    # По умолчанию linux/amd64 для быстрого CI без QEMU
+    platform: ${PLATFORM:-linux/amd64}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: voice-test
+    network_mode: host
+    environment:
+      <<: *ros-env
+      ROS_DISTRO: humble
+      PYTHONUNBUFFERED: "1"
+      # Указываем mock LLM вместо реального API
+      QWEN_API_KEY: test-key-not-real
+      DEEPSEEK_API_KEY: test-key-not-real
+      # Путь к тестовой конфигурации
+      VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
+    volumes:
+      - ./config:/test-config:ro
+    command: ["/test-config/start_voice_test.sh"]
+    depends_on:
+      zenoh-router-test:
+        condition: service_healthy
+      mock-llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ros2 node list 2>/dev/null | grep -q dialogue_node || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ─── Scenario Runner ─────────────────────────────────────────────────────────
+  scenario-runner:
+    build:
+      context: ./scenario_runner
+      dockerfile: Dockerfile
+    container_name: scenario-runner-test
+    network_mode: host
+    environment:
+      <<: *ros-env
+      PYTHONUNBUFFERED: "1"
+      SCENARIOS_DIR: /scenarios
+      RESULTS_FILE: /results/test_results.json
+      OVERALL_TIMEOUT: "120"
+    volumes:
+      - ./scenario_runner/scenarios:/scenarios:ro
+      - ./results:/results
+    command: ["python3", "/runner/runner.py"]
+    depends_on:
+      voice-test:
+        condition: service_healthy

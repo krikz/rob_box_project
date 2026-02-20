@@ -1,0 +1,56 @@
+# scenarios/01_basic_dialogue.yaml
+# Базовые сценарии: приветствие, fallback, простые вопросы
+
+# llm_rules — правила мока LLM по ключевым словам в запросе (используются всеми сценариями)
+llm_rules:
+  - trigger: "привет"
+    response: "Привет! Я ROBBOX, ваш помощник. Чем могу помочь?"
+  - trigger: "как тебя зовут"
+    response: "Меня зовут ROBBOX. Я автономный робот-ассистент."
+  - trigger: "который час"
+    response: "Сейчас двенадцать часов дня."
+  - trigger: "анекдот"
+    response: "Почему программисты путают Halloween и Christmas? Потому что OCT 31 equals DEC 25!"
+  - trigger: "пока"
+    response: "До свидания! Если понадоблюсь — зовите."
+
+default_response: "Понял. Обрабатываю ваш запрос."
+
+scenarios:
+
+  - name: basic_greeting
+    description: "Приветствие → ответ содержит имя робота"
+    steps:
+      - inject_stt: "привет"
+        timeout_s: 15
+        assert_response_contains: "ROBBOX"
+
+  - name: ask_name
+    description: "Вопрос об имени → содержит ROBBOX"
+    steps:
+      - inject_stt: "как тебя зовут"
+        timeout_s: 15
+        assert_response_contains: "ROBBOX"
+
+  - name: farewell
+    description: "Прощание → ответ содержит 'свидания' или 'пока'"
+    steps:
+      - inject_stt: "пока"
+        timeout_s: 15
+        assert_response_contains:
+          - "свидания"
+
+  - name: multi_turn
+    description: "Несколько реплик подряд"
+    steps:
+      - inject_stt: "привет"
+        timeout_s: 15
+        assert_response_contains: "ROBBOX"
+      - wait_ms: 500
+      - inject_stt: "как тебя зовут"
+        timeout_s: 15
+        assert_response_contains: "ROBBOX"
+      - wait_ms: 500
+      - inject_stt: "пока"
+        timeout_s: 15
+        assert_response_contains: "свидания"

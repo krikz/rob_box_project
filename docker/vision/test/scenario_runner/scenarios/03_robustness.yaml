@@ -1,0 +1,40 @@
+# scenarios/03_robustness.yaml
+# Сценарии устойчивости: пустые фразы, длинные запросы, быстрые reinjections
+
+llm_rules:
+  default_response: "Понял ваш запрос."
+
+default_response: "Понял."
+
+scenarios:
+
+  - name: rapid_messages
+    description: "Несколько быстрых сообщений подряд — нода не падает"
+    fail_fast: false  # Продолжаем даже если один шаг упал
+    steps:
+      - inject_stt: "сообщение первое"
+        timeout_s: 20
+      - wait_ms: 200
+      - inject_stt: "сообщение второе"
+        timeout_s: 20
+      - wait_ms: 200
+      - inject_stt: "сообщение третье"
+        timeout_s: 20
+
+  - name: long_message
+    description: "Длинное сообщение → ответ в разумное время"
+    steps:
+      - inject_stt: "расскажи мне подробно о том как ты работаешь, что ты умеешь делать, какие у тебя возможности и какие ограничения у тебя есть на данный момент"
+        timeout_s: 30
+
+  - name: vad_interrupt
+    description: "VAD interrupt во время гипотетической обработки"
+    steps:
+      - inject_stt: "начни рассказывать длинную историю"
+        timeout_s: 20
+      - wait_ms: 300
+      - inject_vad: true   # Прерываем
+      - wait_ms: 100
+      - inject_vad: false
+      - inject_stt: "стоп, расскажи анекдот лучше"
+        timeout_s: 20
