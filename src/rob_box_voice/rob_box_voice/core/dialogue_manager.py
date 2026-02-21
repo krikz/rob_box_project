@@ -113,13 +113,17 @@ class DialogueManager:
     def is_wake_word(self, text: str) -> bool:
         """
         Check if text contains any wake word.
-        
+
+        If wake_words list is empty, returns True (bypass mode — accept all input).
+
         Args:
             text: Text to check (should be lowercased)
-        
+
         Returns:
-            True if wake word found, False otherwise
+            True if wake word found or wake_words is empty, False otherwise
         """
+        if not self.wake_words:
+            return True
         return any(wake_word in text for wake_word in self.wake_words)
     
     def has_wake_word(self, text: str) -> bool:
