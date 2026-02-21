@@ -212,6 +212,12 @@ class TTSNode(Node):
         # Подписка на control commands (STOP)
         self.control_sub = self.create_subscription(String, "/voice/tts/control", self.control_callback, 10)
 
+        # Подписка на новый dialogue_id от dialogue_node.
+        # Позволяет отбрасывать устаревшие TTS-запросы от старого диалога после barge-in.
+        self._new_dialogue_id_sub = self.create_subscription(
+            String, "/voice/current_dialogue_id", self._on_new_dialogue_id, 1
+        )
+
         # Публикация аудио и состояния
         self.audio_pub = self.create_publisher(AudioData, "/voice/audio/speech", 10)
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
@@ -331,6 +337,10 @@ class TTSNode(Node):
     def _interrupt_playback(self):
         """Прервать текущее воспроизведение (helper метод)"""
         self.stop_requested = True
+        # Сбрасываем current_dialogue_id: последующие TTS-запросы без dialogue_id
+        # или с устаревшим dialogue_id будут отброшены.
+        self.current_dialogue_id = None
+        self.processing_dialogue_id = None
 
         # Остановить текущий sounddevice stream если есть
         if self.current_stream:
@@ -339,6 +349,19 @@ class TTSNode(Node):
                 self.current_stream = None
             except Exception as e:
                 self.get_logger().error(f"❌ Ошибка остановки stream: {e}")
+
+    def _on_new_dialogue_id(self, msg: String):
+        """Обновляем current_dialogue_id как только dialogue_node начинает новый диалог.
+        Если в очереди tts_node ещё остались запросы от старого диалога — они будут отброшены.
+        """
+        new_id = msg.data
+        if new_id and new_id != self.current_dialogue_id:
+            self.get_logger().info(
+                f"🔄 Новый диалог: {new_id[:8]} "
+                f"(старый: {self.current_dialogue_id[:8] if self.current_dialogue_id else 'None'}) "
+                f"— устаревшие TTS-запросы будут отброшены"
+            )
+            self.current_dialogue_id = new_id
 
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от dialogue_node"""
@@ -356,6 +379,24 @@ class TTSNode(Node):
 
             # Проверяем dialogue_id (если присутствует)
             dialogue_id = chunk_data.get("dialogue_id", None)
+
+            # Старый запрос от устаревшего диалога — отбрасываем ДО синтеза
+            if dialogue_id and self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
+                self.get_logger().warning(
+                    f"❌ Отбрасываем устаревший TTS диалога {dialogue_id[:8]} "
+                    f"(текущий: {self.current_dialogue_id[:8]})"
+                )
+                # Опубликуем finished с error=True чтобы MCP speak_text не вис в ожидании
+                speech_id_to_drop = chunk_data.get("speech_id")
+                if speech_id_to_drop:
+                    import json as _json
+                    _drop_msg = String()
+                    _drop_msg.data = _json.dumps(
+                        {"speech_id": speech_id_to_drop, "success": False, "error": "stale_dialogue"},
+                        ensure_ascii=False
+                    )
+                    self.finished_pub.publish(_drop_msg)
+                return
 
             if dialogue_id:
                 # Если это новый диалог - прерываем предыдущий

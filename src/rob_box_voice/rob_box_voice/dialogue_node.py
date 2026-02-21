@@ -161,6 +161,9 @@ class DialogueNode(Node):
         # Публикация control commands в TTS
         self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
 
+        # Публикация текущего dialogue_id для MCP инструментов (speak_text передаёт его в TTS)
+        self.current_dialogue_id_pub = self.create_publisher(String, "/voice/current_dialogue_id", 1)
+
         # Публикация state для других нод (command_node)
         self.state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
 
@@ -903,6 +906,12 @@ class DialogueNode(Node):
                     self.get_logger().debug(f"⏰ Ещё рано, жду {remaining:.1f}s")
             return
 
+        # Немедленно останавливаем TTS — новый запрос всегда прерывает старый
+        _stop = String()
+        _stop.data = "STOP"
+        self.tts_control_pub.publish(_stop)
+        self.get_logger().info("🔇 STOP → TTS (новый запрос в очереди)")
+
         # Забираем все накопленные запросы
         queries_to_process = self.dialogue_manager.get_accumulated_queries()
         query_count = len(queries_to_process)
@@ -961,6 +970,12 @@ class DialogueNode(Node):
         dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
         self.get_logger().info(f"🆔 Новый диалог: {dialogue_id[:8]}...")
+
+        # Публикуем dialogue_id чтобы MCP speak_text включил его в TTS запросы.
+        # tts_node использует это для немедленного отброса запросов от старого диалога.
+        _did_msg = String()
+        _did_msg.data = dialogue_id
+        self.current_dialogue_id_pub.publish(_did_msg)
 
         # Очищаем tool messages из истории при новом диалоге
         # API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message

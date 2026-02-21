@@ -31,10 +31,20 @@ class SpeakTextTool(MCPTool):
         self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
         # Subscriber для получения завершения произношения
         self.finished_sub = node.create_subscription(String, "/voice/tts/finished", self._on_tts_finished, 10)
+        # Subscriber для получения текущего dialogue_id от dialogue_node
+        # (чтобы включать его в TTS запросы и tts_node мог отбрасывать старые)
+        self._current_dialogue_id: str | None = None
+        self._dialogue_id_sub = node.create_subscription(
+            String, "/voice/current_dialogue_id", self._on_current_dialogue_id, 1
+        )
         # Трекер активных произношений: speech_id -> None; очищается в _on_tts_finished
         self.pending_speeches: dict = {}
         import threading
         self.pending_speeches_lock = threading.Lock()
+
+    def _on_current_dialogue_id(self, msg: "String"):
+        """Обновление текущего dialogue_id от dialogue_node."""
+        self._current_dialogue_id = msg.data
 
     def _on_tts_finished(self, msg: "String"):
         """Обработка завершения произношения — очищает запись из pending_speeches."""
@@ -172,14 +182,19 @@ class SpeakTextTool(MCPTool):
             self.pending_speeches[speech_id] = None
             self.log_info(f"📝 Зарегистрирован speech_id: {speech_id[:8]}... в pending_speeches")
 
-        # Публикуем запрос TTS в JSON формате
+        # Публикуем запрос TTS в JSON формате (включаем dialogue_id для отброса устаревших)
         from std_msgs.msg import String
         tts_request = {"ssml": ssml_text, "speech_id": speech_id}
+        if self._current_dialogue_id:
+            tts_request["dialogue_id"] = self._current_dialogue_id
         msg = String()
         msg.data = json.dumps(tts_request, ensure_ascii=False)
         self.tts_pub.publish(msg)
 
-        self.log_info(f"📤 TTS запрос отправлен: {text[:30]}... (speech_id: {speech_id[:8]})")
+        self.log_info(
+            f"📤 TTS запрос отправлен: {text[:30]}... "
+            f"(speech_id: {speech_id[:8]}, dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
+        )
 
         # ✅ Возвращаем результат СРАЗУ (асинхронный режим)
         # TTS будет выполняться в фоне, это позволяет LLM быстро вызывать другие tool calls
