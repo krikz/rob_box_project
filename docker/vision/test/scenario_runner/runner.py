@@ -428,7 +428,7 @@ class ScenarioRunner(Node):
         )
         return False
 
-    def wait_for_idle(self, first_non_idle_timeout_s: float = 5.0, idle_timeout_s: float = 30.0) -> bool:
+    def wait_for_idle(self, first_non_idle_timeout_s: float = 5.0, idle_timeout_s: float = 55.0) -> bool:
         """Ждать пока dialogue_node вернётся в состояние 'idle'.
 
         Надёжнее wait_for_quiet(): проверяет реальное состояние state machine
@@ -467,17 +467,16 @@ class ScenarioRunner(Node):
                 if self._dialogue_state == "idle":
                     return True
 
-            # Rescue: если нода застряла в 'listening' или 'dialogue'.
-            # ВАЖНО: стреляем только если нода действительно молчит (нет активности
-            # в течение silence_s секунд). Иначе прерываем активный LLM tool chain.
-            # - 'listening': listen_for_response ждёт нового STT
-            # - 'dialogue': LLM завис без output
-            if not rescue_sent and self._dialogue_state in ("listening", "dialogue"):
+            # Rescue: только для 'listening' — нода застряла ожидая STT после listen_for_response.
+            # Для 'dialogue' rescue НЕ делаем: пусть dialogue_timeout (15s в тест-конфиге)
+            # сам переведёт ноду в IDLE. Rescue в DIALOGUE = новый LLM вызов = накопление
+            # истории = следующий сценарий получает перегруженный контекст.
+            if not rescue_sent and self._dialogue_state == "listening":
                 elapsed = idle_timeout_s - (deadline2 - time.time())
                 silence = time.time() - self._last_any_response_ts
-                if elapsed > 8.0 and silence > 8.0:
+                if elapsed > 20.0 and silence > 15.0:
                     self.get_logger().info(
-                        f"[wait_for_idle] RESCUE: node stuck in '{self._dialogue_state}' "
+                        f"[wait_for_idle] RESCUE: node stuck in 'listening' "
                         f"(elapsed={elapsed:.1f}s, silence={silence:.1f}s) — injecting rescue STT"
                     )
                     self.inject_stt("привет окей продолжай")
@@ -707,7 +706,7 @@ def main():
             # Ждём пока dialogue_node вернётся в IDLE (LLM завершил все iterations).
             # Используем state topic вместо тайм-аuta тишины: между LLM-итерациями
             # может быть 3-5s тишины что обманывало wait_for_quiet.
-            node.wait_for_idle(first_non_idle_timeout_s=5.0, idle_timeout_s=30.0)
+            node.wait_for_idle(first_non_idle_timeout_s=5.0, idle_timeout_s=55.0)
             # Минимальная пауза для стабилизации
             time.sleep(0.5)
 
