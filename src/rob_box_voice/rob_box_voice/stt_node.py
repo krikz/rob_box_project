@@ -53,6 +53,9 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter('aec_mode', 'hardware')
         
+        # Wake words для немедленного STOP TTS (должны совпадать с dialogue_node!)
+        self.declare_parameter('wake_words', ['робок', 'робот', 'роббокс'])
+        
         self.yandex_api_key = self.get_parameter('yandex_api_key').value or os.environ.get('YANDEX_API_KEY', '')
         self.yandex_language = self.get_parameter('yandex_language').value
         self.yandex_model = self.get_parameter('yandex_model').value
@@ -61,6 +64,7 @@ class STTNode(Node):
         if self.aec_mode not in ('software', 'hardware'):
             self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
             self.aec_mode = 'software'
+        self.wake_words: list = list(self.get_parameter('wake_words').value)
         
         # EOU profiles configuration
         self.eou_profiles = {
@@ -138,6 +142,7 @@ class STTNode(Node):
         self.get_logger().info(
             f'STTNode инициализирован | aec_mode={self.aec_mode} '
             f'({"software echo suppression" if self.aec_mode == "software" else "hardware AEC (XVF-3000), simultaneous RX/TX enabled"})'
+            f' | wake_words={self.wake_words}'
         )
         self.initialize_yandex()
         self.initialize_vosk()
@@ -362,18 +367,14 @@ class STTNode(Node):
     
     def publish_result(self, text: str):
         """Публикация финального результата распознавания"""
-        # Проверяем, обращается ли пользователь к роботу
         text_lower = text.lower()
-        wake_words = ['робот', 'робик', 'роб', 'робо']
         
-        # Если фраза начинается с обращения - прерываем TTS
-        if any(text_lower.startswith(word) for word in wake_words):
-            self.get_logger().info(f'🎯 Обнаружено обращение к роботу: "{text[:20]}..."')
-            # Отправляем STOP на TTS
+        # Если фраза начинается с wake word — немедленно прерываем TTS (barge-in)
+        if any(text_lower.startswith(word) for word in self.wake_words):
+            self.get_logger().info(f'🎯 Wake word detected: "{text[:30]}" → STOP TTS')
             stop_msg = String()
-            stop_msg.data = "STOP"
+            stop_msg.data = 'STOP'
             self.tts_control_pub.publish(stop_msg)
-            self.get_logger().info('🔇 Отправлен STOP на TTS (пользователь обратился к роботу)')
         
         msg = String()
         msg.data = text

@@ -76,6 +76,8 @@
       # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
       #           'software' = выкидываем фразы пока TTS играет (безопасно но нельзя перебить)
       aec_mode: "hardware"
+      # Wake words для мгновенного STOP TTS (barge-in). Должны совпадать с dialogue_node!
+      wake_words: ["робок", "робот", "роббокс"]
 
       provider: "vosk"  # vosk | whisper | yandex | google
 
