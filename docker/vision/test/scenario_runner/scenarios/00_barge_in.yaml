@@ -33,8 +33,9 @@ scenarios:
       - inject_stt_no_wait: "расскажи анекдот"
 
       # Ждём пока LLM начнёт обрабатывать (нода в DIALOGUE, llm_processing=True)
-      # DeepSeek обычно 2-5s → 2000ms гарантирует что мы внутри LLM-вызова
-      - wait_ms: 2000
+      # query_accumulation_timeout=2.5s: ждём > 2.5s чтобы первый запрос успел
+      # уйти в LLM ДО прихода barge-in. Иначе оба запроса объединятся.
+      - wait_ms: 3500
 
       # VAD-прерывание: пользователь начал говорить → interrupt_agent_loop=True
       - inject_vad: true
@@ -61,7 +62,9 @@ scenarios:
       - inject_stt_no_wait: "расскажи подробную историю про приключения робота в лесу"
 
       # LLM в процессе — достаточно долгий запрос
-      - wait_ms: 1800
+      # Ждём > 2.5s (query_accumulation_timeout) чтобы первый запрос ушёл в LLM
+      # отдельно, без слияния со вторым запросом.
+      - wait_ms: 4000
 
       # Barge-in — пользователь передумал
       - inject_vad: true
