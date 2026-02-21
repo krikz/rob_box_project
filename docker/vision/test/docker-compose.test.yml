@@ -60,10 +60,32 @@ services:
         echo "Ожидание Zenoh router (localhost:7447)..." &&
         until (echo > /dev/tcp/localhost/7447) 2>/dev/null; do sleep 2; done &&
         echo "✓ Zenoh router доступен" &&
+        echo "Запись конфига в /tmp/voice_params.yaml..." &&
+        cat > /tmp/voice_params.yaml << 'ENDOFYAML'
+        /dialogue_node:
+          ros__parameters:
+            provider: "deepseek"
+            api_key: ""
+            base_url: "https://api.deepseek.com"
+            model: "deepseek-chat"
+            temperature: 0.5
+            max_tokens: 150
+            streaming: true
+            enable_fallback: false
+            enable_mcp_tools: false
+            internet_available: true
+            wake_words: ""
+            silence_words: "стоп,тихо,замолчи"
+            system_prompt: "Ты — робот ROBBOX. Отвечай очень кратко, 1-2 предложения. Всегда отвечай на русском языке. На приветствие отвечай: Привет! Я ROBBOX. На вопрос об имени: Меня зовут ROBBOX."
+            max_history_messages: 6
+            history_window_tokens: 1000
+            llm_timeout_sec: 30.0
+            max_iterations: 3
+        ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         exec ros2 run rob_box_voice dialogue_node \
           --ros-args \
-          --params-file "${VOICE_TEST_CONFIG:-/test-config/voice_assistant_test.yaml}"
+          --params-file /tmp/voice_params.yaml
     depends_on:
       zenoh-router-test:
         condition: service_healthy
