@@ -163,6 +163,35 @@ MOCK_MCP_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_context",
+            "description": (
+                "Получить контекст памяти из предыдущих сессий: "
+                "последние реплики + известные факты о пользователе. "
+                "Используй в начале разговора для восстановления контекста, "
+                "или чтобы напомнить себе что знаешь о пользователе."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Количество последних реплик для загрузки (по умолчанию 10).",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Опциональный поисковый запрос — если задан, возвращает релевантные "
+                            "реплики вместо хронологических последних."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -308,6 +337,32 @@ class ScenarioRunner(Node):
             "play_animation": {
                 "accepted": True,
                 "animation": parameters.get("animation_name", "default")
+            },
+        "memory_context": {
+                "success": True,
+                "data": {
+                    "recent_turns": [
+                        {"role": "user", "content": "расскажи анекдот", "session": "session_001"},
+                        {"role": "assistant", "content": "Конечно! Приходит программист в магазин...", "session": "session_001"},
+                        {"role": "user", "content": "хочу ещё анекдот", "session": "session_001"},
+                        {"role": "assistant", "content": "Пожалуйста! Встречаются два робота...", "session": "session_001"},
+                        {"role": "user", "content": "спой мне песенку про енота", "session": "session_002"},
+                        {"role": "assistant", "content": "Жил да был весёлый енот, по лесу гулял и всё жевал!", "session": "session_002"},
+                        {"role": "user", "content": "мне понравилась твоя песенка", "session": "session_002"},
+                        {"role": "assistant", "content": "Рад стараться! Могу спеть ещё.", "session": "session_002"},
+                        {"role": "user", "content": "расскажи другой анекдот", "session": "session_003"},
+                        {"role": "assistant", "content": "Идёт медведь по лесу — видит дерево горит...", "session": "session_003"},
+                    ],
+                    "facts_block": "Пользователь любит анекдоты и песенки.",
+                    "facts": ["Пользователь любит анекдоты и песенки."],
+                    "stats": {
+                        "total_turns": 85,
+                        "total_sessions": 9,
+                        "vec_enabled": False,
+                        "db_size_kb": 72,
+                    },
+                },
+                "message": "Контекст: 10 реплик из прошлых сессий, 1 факт о пользователе.",
             },
         }
         result_data = mock_results.get(tool_name, {"success": True})
