@@ -860,6 +860,12 @@ class DialogueNode(Node):
         if self.llm_processing:
             self.get_logger().warning("⚠️ Новый запрос пользователя - прерываю текущий агентный цикл!")
             self.interrupt_agent_loop = True
+            # Запускаем таймер накопления чтобы очередь обработалась ПОСЛЕ завершения прерванного потока
+            if self.accumulation_timer is None:
+                self.accumulation_timer = self.create_timer(
+                    self.dialogue_manager.query_accumulation_timeout,
+                    self._check_and_process_queue,
+                )
             return
 
         # Если это первый запрос или прошло достаточно времени - начинаем накопление
@@ -881,6 +887,12 @@ class DialogueNode(Node):
         if self.accumulation_timer is not None:
             self.accumulation_timer.cancel()
             self.accumulation_timer = None
+
+        # Если LLM ещё не освободился (interrupt не завершился) — перепланируем
+        if self.llm_processing:
+            self.get_logger().debug("⏳ _check_and_process_queue: llm_processing=True, жду завершения потока...")
+            self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
+            return
 
         # Проверяем готовность через DialogueManager
         if not self.dialogue_manager.should_process_queries():
