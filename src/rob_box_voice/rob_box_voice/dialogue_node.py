@@ -960,6 +960,14 @@ class DialogueNode(Node):
             self._timeout_retry_timer = None
             self.get_logger().debug("♻️ _timeout_retry_timer отменён при новом запросе пользователя")
 
+        # Сбрасываем флаг прерывания — начинается НОВЫЙ агентный цикл для нового запроса.
+        # interrupt_agent_loop мог остаться True от предыдущего barge-in (stt_callback
+        # ставит его True пока первый LLM ещё работает, потом первый LLM сбрасывает его False,
+        # но между сбросом и стартом нового LLM может успеть прийти ещё один сигнал).
+        if self.interrupt_agent_loop:
+            self.get_logger().debug("🔄 Сброс interrupt_agent_loop перед новым агентным циклом")
+            self.interrupt_agent_loop = False
+
         # Устанавливаем флаг обработки
         self.llm_processing = True
 
