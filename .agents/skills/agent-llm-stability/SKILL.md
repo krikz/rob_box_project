@@ -340,6 +340,58 @@ docker logs voice-assistant 2>&1 | grep "Выполнение: memory_context"
 
 **Признак BUG-11 (roleplay context lost):** Робот вошёл в роль (Шариков, пират и т.п.) → ответил на первый запрос → на втором уже не в роли. Лог покажет `🧹 conversation_history очищена при новом wake word` после того как был вызван `listen_for_response`.
 
+**Признак BUG-17 (premature "не в настроении"):** `⚠️ Ошибка 1/3` сразу за `TIMEOUT`, затем немедленно `🔊 TTS: Извините, я сейчас не в настроении думать`. `provider_error_count` ещё не достиг threshold (3), но ошибка всё равно произносится.
+
+---
+
+### BUG-17: "не в настроении думать" при первом же таймауте (commit текущий)
+
+**Симптом:** Один timeout на DeepSeek → лог показывает `⚠️ Ошибка 1/3` → сразу произносит "Извините, я сейчас не в настроении думать". При threshold=3 это некорректно.
+
+**Root cause:** В `_ask_llm_streaming` блок `except (FuturesTimeoutError, TimeoutError)` всегда вызывал `_speak_simple("не в настроении думать")` после проверки `if count >= threshold`. Если threshold не достигнут — код падал дальше на `_speak_simple` в любом случае:
+
+```python
+# БЫЛО (неправильно):
+if self.provider_error_count >= self.provider_error_threshold:
+    if self._try_fallback_provider():
+        ...
+        return  # выходим только если fallback успешен
+# Если threshold не достигнут ИЛИ fallback не помог — падаем сюда:
+self._speak_simple("не в настроении думать")  # ← ВСЕГДА!
+```
+
+**Фикс:** Переделать на `if/else` — тихий retry при count < threshold:
+
+```python
+# ПРАВИЛЬНО:
+if self.provider_error_count >= self.provider_error_threshold:
+    # ... fallback попытки ...
+    self._speak_simple("не в настроении думать")  # только при >= threshold
+    self.llm_processing = False
+    self.dialogue_in_progress = False
+else:
+    # count < threshold — тихий retry через 2s
+    self.get_logger().warning(f"♻️ Тихий retry через 2s ({count}/{threshold})")
+    self.llm_processing = False
+    self._timeout_retry_timer = self.create_timer(2.0, self._do_timeout_retry)
+```
+
+Новый метод `_do_timeout_retry` (one-shot таймер):
+```python
+def _do_timeout_retry(self):
+    if self._timeout_retry_timer is not None:
+        self._timeout_retry_timer.cancel()
+        self._timeout_retry_timer = None
+    if not self.llm_processing and self.dialogue_in_progress:
+        self.get_logger().info("♻️ Выполняю тихий retry запроса к LLM...")
+        self.llm_processing = True
+        self._ask_llm_streaming()  # conversation_history уже содержит user message
+```
+
+Также добавлено отмена `_timeout_retry_timer` при wake word (не запускать retry в середине нового диалога).
+
+**Результат:** 1-2 случайных таймаута DeepSeek → тихий retry через 2s → пользователь получает ответ. "не в настроении" произносится только после 3 провалов подряд.
+
 ---
 
 ## Best Practices: канонический агентный цикл
@@ -579,7 +631,7 @@ def _get_tool_result_with_reminder(self, tool_result: str, iteration: int) -> st
 | `a46175a` | TASK-042 + этот SKILL.md создан |
 | `79456db` | BUG-9: GetCurrentTimeTool добавлен в _register_tools() в mcp_server.py |
 | `d36616b` | BUG-11: обновление last_interaction_time по итерациям, _listen_response_waiting флаг |
-| (текущее)  | SKILL.md: best practices analysis (BUG-12..16, canonical loop, context engineering) |
+| (текущее)  | BUG-17: тихий retry при первых таймаутах вместо немедленного "не в настроении" |
 
 **Оставшиеся задачи (TASK-042):**
 - [x] BUG-11 исправлен: roleplay контекст сохраняется между запросами

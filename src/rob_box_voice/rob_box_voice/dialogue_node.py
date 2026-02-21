@@ -230,6 +230,7 @@ class DialogueNode(Node):
 
         # ============ Query Queue System ============
         self.accumulation_timer = None  # Таймер для проверки накопления
+        self._timeout_retry_timer = None  # Таймер для тихого retry после timeout LLM
         self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
         self.interrupt_agent_loop = False  # Флаг прерывания агентного цикла при новом запросе
         self._listen_response_waiting = False  # Флаг ожидания listen_for_response — не сбрасывать dialogue_in_progress
@@ -690,6 +691,11 @@ class DialogueNode(Node):
                     self.get_logger().info(f"♻️ provider_error_count сброшен при wake word ({self.provider_error_count} → 0)")
                     self.provider_error_count = 0
 
+                # Отменяем pending retry таймер — не нужен при новом wake word
+                if self._timeout_retry_timer is not None:
+                    self._timeout_retry_timer.cancel()
+                    self._timeout_retry_timer = None
+
                 # Убираем wake word из текста
                 user_message_clean = self.dialogue_manager.remove_wake_word(user_message_lower)
                 if not user_message_clean:
@@ -889,6 +895,20 @@ class DialogueNode(Node):
             self._ask_llm_streaming()
         else:
             self._ask_llm_non_streaming()
+
+    def _do_timeout_retry(self):
+        """One-shot таймер: тихий retry после timeout LLM (count < threshold)"""
+        if self._timeout_retry_timer is not None:
+            self._timeout_retry_timer.cancel()
+            self._timeout_retry_timer = None
+        if not self.llm_processing and self.dialogue_in_progress:
+            self.get_logger().info("♻️ Выполняю тихий retry запроса к LLM...")
+            self.llm_processing = True
+            self._ask_llm_streaming()
+        else:
+            self.get_logger().debug(
+                f"⏭️ Retry пропущен (llm_processing={self.llm_processing}, dialogue_in_progress={self.dialogue_in_progress})"
+            )
 
     def _ask_llm_streaming(self):
         """Streaming запрос к LLM провайдеру с парсингом JSON chunks и timeout"""
@@ -1270,12 +1290,19 @@ class DialogueNode(Node):
                             self.accumulation_timer.cancel()
                         self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
                         return
-            
-            # Говорим fallback ответ с анимацией ошибки
-            self._speak_simple("Извините, я сейчас не в настроении думать", show_error_animation=True)
-            # Сбрасываем флаг обработки LLM
-            self.llm_processing = False
-            self.dialogue_in_progress = False
+                # Fallback тоже не помог — говорим ошибку
+                self._speak_simple("Извините, я сейчас не в настроении думать", show_error_animation=True)
+                self.llm_processing = False
+                self.dialogue_in_progress = False
+            else:
+                # count < threshold — тихий retry через 2s (conversation_history уже содержит user message)
+                self.get_logger().warning(
+                    f"♻️ Тихий retry через 2s (ошибка {self.provider_error_count}/{self.provider_error_threshold})"
+                )
+                self.llm_processing = False
+                if self._timeout_retry_timer is not None:
+                    self._timeout_retry_timer.cancel()
+                self._timeout_retry_timer = self.create_timer(2.0, self._do_timeout_retry)
 
         except Exception as e:
             provider_name = self.PROVIDERS[self.current_provider]["name"]
