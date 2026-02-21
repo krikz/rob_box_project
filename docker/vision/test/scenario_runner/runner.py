@@ -311,12 +311,18 @@ class ScenarioRunner(Node):
         self.vad_pub.publish(msg)
 
     def clear_received(self):
+        # Первичная очистка
         self._last_response = None
         self._last_animation = None
         self._last_sound = None
         self._response_ts = 0.0
-        self._response_event.clear()  # Сбрасываем event для следующего ожидания
+        self._response_event.clear()
         self._mcp_calls.clear()
+        # Drain: ждём 200ms, затем очищаем снова чтобы отброшить in-flight stale
+        # responses от предыдущего сценария (защита от race condition).
+        time.sleep(0.2)
+        self._last_response = None
+        self._response_event.clear()
 
     def wait_for_response(self, timeout_s: float) -> Optional[str]:
         """Ждать ответ на /voice/dialogue/response.
@@ -533,8 +539,9 @@ def main():
             all_results.append(result)
 
             # Пауза между сценариями — dialogue_node должен вернуться в IDLE
-            # (после speak_text нода делает ещё один LLM запрос ~2-3s)
-            time.sleep(5.0)
+            # после speak_text нода делает ещё один LLM запрос. DeepSeek с
+            # tool calls занимает до 8s (3 итерации × ~2.5s). Берём 10s запас.
+            time.sleep(10.0)
 
     # Итоги
     total = len(all_results)
