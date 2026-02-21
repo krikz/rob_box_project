@@ -184,8 +184,12 @@ class ScenarioRunner(Node):
         self.create_subscription(
             String, TOPIC_MCP_EXECUTE, self._on_mcp_execute, QOS_RELIABLE
         )
-        # Периодически рассылаем список тулов чтобы dialogue_node его получил
-        self.create_timer(2.0, self._publish_mock_tools)
+        # Рассылаем список тулов чтобы dialogue_node его получил.
+        # Публикуем несколько раз (каждые 2s) чтобы гарантировать доставку при старте.
+        # После MAX_TOOLS_PUBLISHES останавливаем таймер — дальнейший спам не нужен.
+        self._tools_publish_count = 0
+        self._MAX_TOOLS_PUBLISHES = 8  # 8 × 2s = 16s — достаточно для любого старта
+        self._tools_timer = self.create_timer(2.0, self._publish_mock_tools)
         # Лог вызовов для assert_tool_called
         self._mcp_calls: list[dict] = []
 
@@ -232,6 +236,12 @@ class ScenarioRunner(Node):
         msg = String()
         msg.data = json.dumps(MOCK_MCP_TOOLS, ensure_ascii=False)
         self.mcp_tools_pub.publish(msg)
+        self._tools_publish_count += 1
+        if self._tools_publish_count >= self._MAX_TOOLS_PUBLISHES:
+            self._tools_timer.cancel()
+            self.get_logger().info(
+                f"[mock-mcp] Tools published {self._tools_publish_count}x — timer stopped"
+            )
 
     def _on_mcp_execute(self, msg: String):
         """Перехватываем tool call от dialogue_node и отвечаем mock-результатом."""
@@ -393,12 +403,28 @@ class ScenarioRunner(Node):
 
         # Фаза 2: ждём возврата в idle
         deadline2 = time.time() + idle_timeout_s
+        rescue_sent = False
         while time.time() < deadline2:
             if self._dialogue_state == "idle":
-                # Додаткова пауза чтобы убедиться что idle стабильный (не транзитный)
+                # Дополнительная пауза чтобы убедиться что idle стабильный (не транзитный)
                 time.sleep(0.5)
                 if self._dialogue_state == "idle":
                     return True
+
+            # Rescue: если нода застряла в 'listening' > 6s — это listen_for_response.
+            # dialogue_node ждёт нового STT чтобы завершить агентный цикл и уйти в IDLE.
+            # Без rescue STT через dialogue_timeout (~30s) нода пойдёт в IDLE сама,
+            # но следующий сценарий без wake word будет молча отфильтрован.
+            if not rescue_sent and self._dialogue_state == "listening":
+                elapsed = idle_timeout_s - (deadline2 - time.time())
+                if elapsed > 6.0:
+                    self.get_logger().info(
+                        "[wait_for_idle] RESCUE: node stuck in 'listening' "
+                        "(listen_for_response?) — injecting rescue STT"
+                    )
+                    self.inject_stt("привет окей продолжай")
+                    rescue_sent = True
+
             time.sleep(0.2)
 
         self.get_logger().warning(

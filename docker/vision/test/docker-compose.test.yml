@@ -87,9 +87,19 @@ services:
             llm_timeout_sec: 30.0
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
+        mkdir -p /data &&
+        if [ -f /fixtures/voice_memory.db ]; then
+          cp /fixtures/voice_memory.db /data/voice_memory.db
+          echo "✓ voice_memory.db скопирована из fixtures ($(du -h /data/voice_memory.db | cut -f1))"
+        fi &&
         exec ros2 run rob_box_voice dialogue_node \
           --ros-args \
           --params-file /tmp/voice_params.yaml
+    volumes:
+      # Реальная БД с памятью с робота — 85 реплик, анекдоты/песни/истории.
+      # Монтируем read-only в /fixtures, команда копирует в /data перед стартом ноды.
+      # Это позволяет dialogue_node писать в /data/voice_memory.db без изменения fixture.
+      - ./fixtures/voice_memory.db:/fixtures/voice_memory.db:ro
     depends_on:
       zenoh-router-test:
         condition: service_healthy
@@ -116,7 +126,7 @@ services:
       PYTHONUNBUFFERED: "1"
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
-      OVERALL_TIMEOUT: "360"
+      OVERALL_TIMEOUT: "480"
       ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
     volumes:
       - ./results:/results

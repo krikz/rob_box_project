@@ -580,12 +580,15 @@ class DialogueNode(Node):
         """Обработка обновления списка инструментов из MCP сервера"""
         try:
             tools = json.loads(msg.data)
+            tool_names = [tool.get("function", {}).get("name", "unknown") for tool in tools]
+            prev_names = [t.get("function", {}).get("name", "unknown") for t in self.available_tools]
+            changed = tool_names != prev_names
             self.available_tools = tools
             self.mcp_tools_available = True
-            
-            tool_names = [tool.get("function", {}).get("name", "unknown") for tool in tools]
-            self.get_logger().info(f"🛠️  Получено {len(tools)} инструментов из MCP сервера")
-            self.get_logger().debug(f"   Инструменты: {', '.join(tool_names)}")
+            if changed:
+                self.get_logger().info(f"🛠️  Получено {len(tools)} инструментов из MCP сервера: {', '.join(tool_names)}")
+            else:
+                self.get_logger().debug(f"🛠️  MCP tools обновлены ({len(tools)} шт.) — список не изменился")
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ Ошибка парсинга списка инструментов: {e}")
             self.mcp_tools_available = False
