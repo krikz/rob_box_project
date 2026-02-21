@@ -58,7 +58,7 @@ services:
         until (echo > /dev/tcp/localhost/7447) 2>/dev/null; do sleep 2; done &&
         echo "✓ Zenoh router доступен" &&
         echo "Запись Zenoh session config в /tmp/zenoh_session.json5..." &&
-        cat > /tmp/zenoh_session.json5 << 'ENDOFZENOH'
+        cat << 'ENDOFZENOH' | sed 's/^        //' > /tmp/zenoh_session.json5 &&
         {
           mode: "peer",
           connect: { endpoints: ["tcp/localhost:7447"] },
@@ -67,7 +67,7 @@ services:
         }
         ENDOFZENOH
         echo "Запись конфига в /tmp/voice_params.yaml..." &&
-        cat > /tmp/voice_params.yaml << 'ENDOFYAML'
+        cat << 'ENDOFYAML' | sed 's/^        //' > /tmp/voice_params.yaml &&
         /dialogue_node:
           ros__parameters:
             provider: "deepseek"
@@ -80,9 +80,9 @@ services:
             enable_fallback: false
             enable_mcp_tools: false
             internet_available: true
-            wake_words: []
+            wake_words: ["привет"]
             silence_words: ["стоп", "тихо", "замолчи"]
-            system_prompt: "Ты — робот ROBBOX. Отвечай очень кратко, 1-2 предложения. Всегда отвечай на русском языке. На приветствие отвечай: Привет! Я ROBBOX. На вопрос об имени: Меня зовут ROBBOX."
+            system_prompt: "Ты робот ROBBOX. Отвечай кратко, 1-2 предложения. Отвечай на русском."
             max_history_messages: 6
             history_window_tokens: 1000
             llm_timeout_sec: 30.0
@@ -127,7 +127,7 @@ services:
       - /bin/bash
       - -c
       - |
-        cat > /tmp/zenoh_session.json5 << 'ENDOFZENOH'
+        cat << 'ENDOFZENOH' | sed 's/^        //' > /tmp/zenoh_session.json5 &&
         {
           mode: "peer",
           connect: { endpoints: ["tcp/localhost:7447"] },
