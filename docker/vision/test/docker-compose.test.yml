@@ -80,8 +80,8 @@ services:
             enable_fallback: false
             enable_mcp_tools: false
             internet_available: true
-            wake_words: ""
-            silence_words: "стоп,тихо,замолчи"
+            wake_words: []
+            silence_words: ["стоп", "тихо", "замолчи"]
             system_prompt: "Ты — робот ROBBOX. Отвечай очень кратко, 1-2 предложения. Всегда отвечай на русском языке. На приветствие отвечай: Привет! Я ROBBOX. На вопрос об имени: Меня зовут ROBBOX."
             max_history_messages: 6
             history_window_tokens: 1000
