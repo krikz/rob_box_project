@@ -44,7 +44,9 @@ services:
   # ─── Ollama — реальный локальный LLM (OpenAI-compatible API) ──────────────
   # Первый запуск вытягивает модель. Последующие используют volume.
   ollama:
-    image: ollama/ollama:latest
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
     container_name: ollama-test
     network_mode: host
     environment:
@@ -53,8 +55,6 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
     volumes:
       - ollama-models:/root/.ollama          # персистентный кэш моделей
-      - ./ollama/entrypoint.sh:/entrypoint.sh:ro
-    entrypoint: ["/bin/bash", "/entrypoint.sh"]
     healthcheck:
       # Healthcheck проходит только после того как модель загружена и готова отвечать
       test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
