@@ -14,7 +14,6 @@ x-ros-env: &ros-env
   RMW_IMPLEMENTATION: rmw_zenoh_cpp
   ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
   ROBOT_ID: "test-bot"
-  ZENOH_SESSION_CONFIG_URI: /test-config/zenoh_test_session.json5
   RUST_LOG: zenoh=warn
 
 services:
@@ -47,10 +46,6 @@ services:
       PYTHONUNBUFFERED: "1"
       # DeepSeek API key — передаётся при запуске, не коммитится
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      # Путь к тестовой конфигурации
-      VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
-    volumes:
-      - ./config:/test-config:ro
     command:
       - /bin/bash
       - -c
@@ -116,7 +111,6 @@ services:
     volumes:
       - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
-      - ./config:/test-config:ro   # нужен для ZENOH_SESSION_CONFIG_URI
     command: ["python3", "/runner/runner.py"]
     depends_on:
       voice-test:
