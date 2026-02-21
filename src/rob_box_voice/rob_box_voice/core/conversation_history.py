@@ -253,3 +253,23 @@ class ConversationHistory:
             msg for msg in self._messages 
             if msg.role != "tool" and not (msg.role == "assistant" and msg.tool_calls)
         ]
+
+    def remove_orphaned_user_messages(self) -> int:
+        """
+        Удалить подряд идущие user-сообщения без assistant-ответа между ними (артефакт barge-in).
+
+        Проблема: при barge-in первый user message добавляется в историю, но LLM не отвечает.
+        Потом добавляется второй user message — в истории два подряд user без assistant.
+        DeepSeek видит оба вопроса и пытается ответить на оба.
+
+        Оставляет только последнее user-сообщение в хвосте.
+        Возвращает количество удалённых сообщений.
+        """
+        removed = 0
+        while len(self._messages) >= 2:
+            if self._messages[-1].role == 'user' and self._messages[-2].role == 'user':
+                self._messages.pop(-2)
+                removed += 1
+            else:
+                break
+        return removed

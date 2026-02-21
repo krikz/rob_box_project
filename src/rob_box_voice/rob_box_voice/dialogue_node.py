@@ -986,6 +986,17 @@ class DialogueNode(Node):
         # API требует: tool messages должны быть ответом на tool_calls из предыдущего assistant message
         # При новом диалоге старые tool results недействительны
         self.conversation_history.remove_tool_messages()
+
+        # ⚡ BARGE-IN FIX: убираем orphaned user-сообщения (два user подряд без assistant).
+        # При barge-in первый user message добавился в историю, LLM не ответил,
+        # потом пришёл второй — DeepSeek видит оба и отвечает на оба.
+        _removed = self.conversation_history.remove_orphaned_user_messages()
+        if _removed > 0:
+            self.get_logger().warning(
+                f"🧹 Удалено {_removed} orphaned user message(s) — артефакт barge-in "
+                f"(два user подряд без assistant между ними)"
+            )
+
         self.get_logger().debug(f"🧹 История очищена от tool messages, осталось: {len(self.conversation_history.get_messages())} сообщений")
 
         # System prompt статичен — время LLM получает через get_current_time тул
