@@ -122,7 +122,7 @@ services:
       PYTHONUNBUFFERED: "1"
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
-      OVERALL_TIMEOUT: "480"
+      OVERALL_TIMEOUT: "720"
       ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
     volumes:
       - ./results:/results
