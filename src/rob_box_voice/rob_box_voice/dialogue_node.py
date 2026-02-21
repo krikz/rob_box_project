@@ -1320,6 +1320,22 @@ class DialogueNode(Node):
                 
                 # Выполняем tool_calls через MCP adapter
                 tool_calls = streaming_result["tool_calls"]
+
+                # ⚡ BARGE-IN FIX: проверяем прерывание ДО выполнения tool_calls.
+                # Стрим мог завершиться (finish_reason=tool_calls) ПОСЛЕ того как
+                # пользователь уже прервал (VAD → interrupt_agent_loop=True).
+                # В этом случае tool_calls из СТАРОГО диалога выполнять нельзя
+                # — speak_text выдал бы ответ на уже отменённый запрос.
+                if self.interrupt_agent_loop:
+                    self.get_logger().warning(
+                        f"🛑 interrupt_agent_loop после стрима — {len(tool_calls)} tool_calls "
+                        f"из старого диалога ОТБРОШЕНЫ (barge-in)"
+                    )
+                    self.interrupt_agent_loop = False
+                    self.llm_processing = False
+                    self.dialogue_in_progress = False
+                    return
+
                 tool_results = self._execute_tool_calls(tool_calls, messages)
                 
                 if tool_results is None:
@@ -2235,7 +2251,16 @@ class DialogueNode(Node):
                 tool_name = tool_call['function']['name']
                 tool_args_json = tool_call['function']['arguments']
                 tool_id = tool_call.get('id', 'unknown')
-                
+
+                # ⚡ BARGE-IN FIX: перед каждым tool проверяем прерывание.
+                # Важно для speak_text — не публиковать ответ отменённого диалога.
+                if self.interrupt_agent_loop:
+                    self.get_logger().warning(
+                        f"🛑 _execute_tool_calls: interrupt при выполнении '{tool_name}' — "
+                        f"остаток tool_calls отброшен"
+                    )
+                    return tool_results  # возвращаем уже выполненные (могут быть пустыми)
+
                 self.get_logger().info(f"🔧 Выполнение: {tool_name}")
                 self.get_logger().debug(f"   Аргументы: {tool_args_json[:200]}...")
                 
@@ -2572,6 +2597,13 @@ class DialogueNode(Node):
                     self.get_logger().info(
                         f"🔧 LLM запросил {len(new_tool_calls)} инструментов — продолжаю цикл"
                     )
+                    # ⚡ BARGE-IN FIX: проверяем прерывание перед tool_calls следующей итерации
+                    if self.interrupt_agent_loop:
+                        self.get_logger().warning(
+                            f"🛑 interrupt перед tool_calls итерации {iteration} — отброшены"
+                        )
+                        self.interrupt_agent_loop = False
+                        return
                     new_tool_results = self._execute_tool_calls(new_tool_calls, messages)
                     if new_tool_results is None:
                         self.get_logger().error("❌ Ошибка выполнения инструментов")
