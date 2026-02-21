@@ -88,13 +88,18 @@ services:
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         mkdir -p /data &&
-        cp /fixtures/voice_memory.db /data/voice_memory.db &&
-        echo "✓ voice_memory.db скопирована ($(stat -c%s /data/voice_memory.db) bytes)" &&
+        python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect('/data/voice_memory.db')
+conn.executescript(open('/fixtures/voice_memory_seed.sql').read())
+conn.close()
+print('✓ voice_memory.db создана из SQL')
+" &&
         exec ros2 run rob_box_voice dialogue_node \
           --ros-args \
           --params-file /tmp/voice_params.yaml
     volumes:
-      - ./fixtures/voice_memory.db:/fixtures/voice_memory.db:ro
+      - ./fixtures/voice_memory_seed.sql:/fixtures/voice_memory_seed.sql:ro
     depends_on:
       zenoh-router-test:
         condition: service_healthy
