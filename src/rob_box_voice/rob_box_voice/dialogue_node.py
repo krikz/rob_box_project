@@ -2273,6 +2273,12 @@ class DialogueNode(Node):
 
     def _check_dialogue_timeout(self):
         """Проверить тайм-аут диалога и вернуться в IDLE если нет активности"""
+        # Не трогаем state пока LLM обрабатывает запрос — иначе timeout убивает
+        # агентный цикл в середине (например, после получения tool result и до
+        # следующего LLM вызова). Аналог: в простом sync-агенте (см. ghuntley)
+        # timer попросту не существует — цикл блокируется до завершения.
+        if self.llm_processing:
+            return
         if self.dialogue_manager.check_timeout():
             self.get_logger().info(f"⏰ Dialogue timeout → IDLE")
             self._publish_state()
