@@ -49,6 +49,25 @@ jobs:
         with:
           # Тестовые файлы живут на feature/agent (или другой ветке из input)
           ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
+          clean: true
+
+      # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
+      - name: Cleanup previous test containers
+        working-directory: ${{ env.TEST_DIR }}
+        # НЕ --volumes: сохраняем voice-test_ollama-models (кэш модели ~350MB)
+        run: docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
+
+      # ── Проверка что нужные файлы есть после checkout ─────────────────────
+      - name: Verify test files exist
+        run: |
+          echo "=== Checking test files ==="
+          ls -la ${{ env.TEST_DIR }}/
+          ls -la ${{ env.TEST_DIR }}/ollama/
+          ls -la ${{ env.TEST_DIR }}/config/
+          echo "entrypoint.sh:"
+          file ${{ env.TEST_DIR }}/ollama/entrypoint.sh
+          echo "zenoh config:"
+          file ${{ env.TEST_DIR }}/config/zenoh_router_test.json5
 
       # ── Определить тег ─────────────────────────────────────────────────────
       - name: Determine image tag
