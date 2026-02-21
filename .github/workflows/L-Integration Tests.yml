@@ -65,6 +65,7 @@ jobs:
           # Тестовые файлы живут на feature/agent (или другой ветке из input)
           ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
           clean: true
+          fetch-depth: 0
 
       # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
       - name: Cleanup previous test containers
