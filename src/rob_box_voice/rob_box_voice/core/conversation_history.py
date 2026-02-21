@@ -8,6 +8,7 @@
 - Добавлением различных типов сообщений
 """
 
+import json
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -243,16 +244,53 @@ class ConversationHistory:
 
     def remove_tool_messages(self) -> None:
         """
-        Удалить все сообщения с ролью 'tool' и assistant messages с tool_calls из истории.
-        
-        API требует: assistant message с tool_calls должен следовать за tool messages.
-        При новом диалоге старые tool results недействительны, поэтому удаляем и tool messages,
-        и assistant messages с tool_calls, чтобы не оставлять orphaned tool_calls.
+        Конвертировать цепочки tool_calls в текстовые ответы ассистента.
+
+        Логика:
+        - assistant(tool_calls) + следующие tool-messages → заменяем на
+          assistant(content="<текст из всех speak_text вызовов>")
+        - Если среди tool_calls нет ни одного speak_text — пропускаем цепочку
+          (play_sound, play_animation без текста не дают истории)
+        - standalone tool-messages (без предшествующего assistant) — удаляем
+
+        Это сохраняет семантику диалога: пользователь спросил → ассистент
+        сказал что-то вслух → правильная история для следующего LLM запроса.
         """
-        self._messages = [
-            msg for msg in self._messages 
-            if msg.role != "tool" and not (msg.role == "assistant" and msg.tool_calls)
-        ]
+        new_messages: List[Message] = []
+        i = 0
+        while i < len(self._messages):
+            msg = self._messages[i]
+            if msg.role == "assistant" and msg.tool_calls:
+                # Собираем текст из всех speak_text в этом ответе
+                spoken_texts: List[str] = []
+                for tc in (msg.tool_calls or []):
+                    fn = tc.get("function", {})
+                    if fn.get("name") == "speak_text":
+                        try:
+                            args = json.loads(fn.get("arguments", "{}"))
+                            text = args.get("text", "").strip()
+                            if text:
+                                spoken_texts.append(text)
+                        except (json.JSONDecodeError, AttributeError, TypeError):
+                            pass
+                # Пропускаем следующие tool-messages этой цепочки
+                j = i + 1
+                while j < len(self._messages) and self._messages[j].role == "tool":
+                    # Если в tool result тоже есть speak_text — смотрим на tool_name
+                    j += 1
+                i = j
+                # Если были speak_text — заменяем цепочку на текстовый ответ
+                if spoken_texts:
+                    combined = " ".join(spoken_texts)
+                    new_messages.append(Message(role="assistant", content=combined))
+                # Иначе — молча пропускаем (play_sound/navigate без текста)
+            elif msg.role == "tool":
+                # Orphaned tool message без предшествующего assistant — удаляем
+                i += 1
+            else:
+                new_messages.append(msg)
+                i += 1
+        self._messages = new_messages
 
     def remove_orphaned_user_messages(self) -> int:
         """
