@@ -24,6 +24,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
 from agents import Agent, Runner, function_tool
+from agents.exceptions import MaxTurnsExceeded
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from openai import AsyncOpenAI
@@ -62,6 +63,7 @@ class DialogueNode(Node):
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
         self.declare_parameter("history_max_turns", 10)
+        self.declare_parameter("agent_max_turns", 25)
         self.declare_parameter("dialogue_timeout", 30.0)
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("enable_mcp_tools", True)
@@ -72,6 +74,7 @@ class DialogueNode(Node):
         self._temperature: float = self.get_parameter("temperature").value
         self._max_tokens: int = self.get_parameter("max_tokens").value
         self._max_turns: int = self.get_parameter("history_max_turns").value
+        self._agent_max_turns: int = self.get_parameter("agent_max_turns").value
         self._llm_timeout: float = self.get_parameter("llm_timeout_sec").value
 
         # ── System prompt ────────────────────────────────────────────
@@ -380,7 +383,7 @@ class DialogueNode(Node):
 
             # SDK handles the entire tool loop internally
             result = await asyncio.wait_for(
-                Runner.run(self._agent, input_list, max_turns=10),
+                Runner.run(self._agent, input_list, max_turns=self._agent_max_turns),
                 timeout=self._llm_timeout * 3,  # generous outer guard
             )
 
@@ -395,6 +398,13 @@ class DialogueNode(Node):
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
             # Do NOT update history — partial turn discarded
+
+        except MaxTurnsExceeded:
+            self.get_logger().error(
+                f"❌ Agent exceeded max tool-call turns ({self._agent_max_turns}). "
+                "Consider increasing agent_max_turns param."
+            )
+            self._speak_direct("Запрос оказался слишком сложным, попробуй переформулировать.")
 
         except asyncio.TimeoutError:
             self.get_logger().error(f"❌ Agent timed out ({self._llm_timeout * 3:.0f}s)")
