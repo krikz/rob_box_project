@@ -37,6 +37,12 @@ env:
   ROS_DISTRO: humble
   TEST_DIR: docker/vision/test
 
+# Предотвращаем параллельные запуски на одном self-hosted runner
+# (конфликт имён контейнеров/томов при одновременном использовании)
+concurrency:
+  group: integration-tests-local
+  cancel-in-progress: true
+
 jobs:
   integration-tests:
     name: Integration Tests (native arm64)
