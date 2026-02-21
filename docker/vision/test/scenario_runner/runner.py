@@ -593,6 +593,24 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
         time.sleep(step["wait_ms"] / 1000.0)
         return True, f"Waited {step['wait_ms']}ms"
 
+    # wait_for_speaking — блокируемся пока dialogue_node не начнёт произносить ответ
+    # (т.е. speak_text вызван → response_event сработал).
+    # Используется для barge-in тестов: inject_stt_no_wait → wait_for_speaking → inject_vad.
+    # Симулирует реальный сценарий: пользователь прерывает когда робот УЖЕ говорит.
+    elif "wait_for_speaking" in step:
+        timeout_s = step.get("timeout_s", 20.0)
+        # Сбрасываем event чтобы ждать следующего response, а не stale
+        node._response_event.clear()
+        fired = node._response_event.wait(timeout=timeout_s)
+        if fired:
+            node.get_logger().info("[wait_for_speaking] Robot started speaking — ready for interrupt")
+            return True, f"Robot speaking (response arrived within {timeout_s}s)"
+        else:
+            node.get_logger().warning(f"[wait_for_speaking] timeout {timeout_s}s — no speak_text received")
+            # Мягкий фейл: возвращаем True чтобы не обрывать сценарий,
+            # VAD interrupt всё равно пробуем (нода может быть в LLM call).
+            return True, f"Speaking timeout {timeout_s}s (injecting VAD anyway)"
+
     # set_llm_responses — устарело (было для mock-llm), пропускаем
     elif "set_llm_responses" in step:
         node.get_logger().warning("set_llm_responses step is deprecated (mock-llm removed), skipping")
