@@ -1010,6 +1010,18 @@ class DialogueNode(Node):
             else:
                 self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
+            # 📨 RAW LLM INPUT — логируем что шлём в LLM
+            self.get_logger().debug(f"📨 LLM INPUT: итого {len(messages)} сообщений")
+            for _i, _m in enumerate(messages):
+                _role = _m.get('role', '?')
+                _content = _m.get('content', '')
+                if isinstance(_content, list):
+                    _content = str(_content)
+                if _role == 'system':
+                    self.get_logger().debug(f"  [{_i}] system: (длина {len(_content)} символов)")
+                else:
+                    self.get_logger().info(f"  [{_i}] {_role}: {_content[:600]}{'…' if len(_content) > 600 else ''}")
+
             # Создаём stream напрямую (мы уже внутри ThreadPoolExecutor)
             # httpx client имеет свой timeout (60s total, 10s connect)
             try:
@@ -1193,6 +1205,11 @@ class DialogueNode(Node):
                     # ============ Обработка tool_calls если LLM запросил выполнение инструментов ============
                     if finish_reason == 'tool_calls' and tool_calls_accumulator:
                         self.get_logger().info(f"🔧 LLM запросил выполнение {len(tool_calls_accumulator)} инструментов")
+                        # 🎯 RAW LLM OUTPUT — логируем что LLM ответил (tool_calls)
+                        for _idx, _tc in tool_calls_accumulator.items():
+                            _name = _tc['function']['name']
+                            _args = _tc['function']['arguments']
+                            self.get_logger().info(f"🎯 LLM→tool[{_idx}]: {_name}({_args[:800]}{'…' if len(_args) > 800 else ''})")
                         
                         # Сохраняем результат - нужно будет обработать tool_calls снаружи
                         streaming_result["tool_calls"] = list(tool_calls_accumulator.values())
@@ -1208,6 +1225,9 @@ class DialogueNode(Node):
             
             # DEBUG: Итоговая статистика
             self.get_logger().info(f"📊 Stream завершён: {len(full_response)} chars, {chunk_count} chunks")
+            # 📤 RAW LLM OUTPUT — текстовый ответ (stop/length)
+            if full_response:
+                self.get_logger().info(f"📤 LLM raw text: {full_response[:1000]}{'…' if len(full_response) > 1000 else ''}")
             
             # FALLBACK: Если получен ответ без JSON разметки - отправляем как plain text
             if chunk_count == 0 and len(full_response) > 0:
