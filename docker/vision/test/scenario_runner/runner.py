@@ -53,6 +53,8 @@ TOPIC_RESPONSE = "/voice/dialogue/response"
 TOPIC_ANIMATION = "/voice/animation/request"
 TOPIC_SOUND = "/voice/sound/trigger"
 
+TOPIC_DIALOGUE_STATE = "/voice/dialogue/state"
+
 TOPIC_MCP_TOOLS = "/mcp/tools"
 TOPIC_MCP_EXECUTE = "/mcp/execute"
 TOPIC_MCP_RESULT = "/mcp/result"
@@ -196,12 +198,20 @@ class ScenarioRunner(Node):
         # Персистентный таймстамп последнего response — НЕ сбрасывается при clear_received().
         # Используется в wait_for_quiet() чтобы дождаться тишины (LLM закончил отвечать).
         self._last_any_response_ts: float = time.time() - 10.0
+        # Текущее состояние dialogue_node ("idle" / "listening" / "dialogue").
+        # Обновляется из /voice/dialogue/state. Используется в wait_for_idle().
+        self._dialogue_state: str = "idle"
 
         self.create_subscription(String, TOPIC_RESPONSE, self._on_response, 10)
         self.create_subscription(String, TOPIC_ANIMATION, self._on_animation, 10)
         self.create_subscription(String, TOPIC_SOUND, self._on_sound, 10)
+        self.create_subscription(String, TOPIC_DIALOGUE_STATE, self._on_dialogue_state, 10)
 
         self.get_logger().info("ScenarioRunner ready (mock MCP enabled)")
+
+    def _on_dialogue_state(self, msg: String):
+        self._dialogue_state = msg.data.lower().strip()
+        self.get_logger().debug(f"[state] {self._dialogue_state}")
 
     def _on_response(self, msg: String):
         self._last_any_response_ts = time.time()  # Персистентный — не сбрасывается clear_received()
@@ -349,6 +359,50 @@ class ScenarioRunner(Node):
             time.sleep(0.2)
         self.get_logger().warning(
             f"[wait_for_quiet] timeout {timeout_s}s — dialogue_node still active, proceeding anyway"
+        )
+        return False
+
+    def wait_for_idle(self, first_non_idle_timeout_s: float = 5.0, idle_timeout_s: float = 30.0) -> bool:
+        """Ждать пока dialogue_node вернётся в состояние 'idle'.
+
+        Надёжнее wait_for_quiet(): проверяет реальное состояние state machine
+        вместо тайм-аutа тишины. Диалог завершён ⟺ state == 'idle'.
+
+        Алгоритм:
+          1. Ждём до first_non_idle_timeout_s пока нода уйдёт из idle
+             (т.е. начнёт обрабатывать STT). Если за это время не ушла —
+             скорее всего STT был отфильтрован и обработки не будет.
+          2. Ждём до idle_timeout_s пока нода вернётся в idle.
+
+        Args:
+            first_non_idle_timeout_s: Сколько ждать ухода из idle (старт обработки).
+            idle_timeout_s: Сколько ждать возврата в idle (конец обработки).
+        Returns:
+            True если нода вернулась в idle, False — timeout.
+        """
+        # Фаза 1: ждём пока нода выйдет из idle (начнёт обрабатывать запрос)
+        deadline1 = time.time() + first_non_idle_timeout_s
+        while time.time() < deadline1:
+            if self._dialogue_state != "idle":
+                break
+            time.sleep(0.1)
+        else:
+            # Нода осталась в idle — STT filtered или уже обработала мгновенно
+            self.get_logger().info("[wait_for_idle] node stayed idle (STT filtered or instant) — OK")
+            return True
+
+        # Фаза 2: ждём возврата в idle
+        deadline2 = time.time() + idle_timeout_s
+        while time.time() < deadline2:
+            if self._dialogue_state == "idle":
+                # Додаткова пауза чтобы убедиться что idle стабильный (не транзитный)
+                time.sleep(0.5)
+                if self._dialogue_state == "idle":
+                    return True
+            time.sleep(0.2)
+
+        self.get_logger().warning(
+            f"[wait_for_idle] timeout {idle_timeout_s}s — state='{self._dialogue_state}', proceeding anyway"
         )
         return False
 
@@ -566,12 +620,12 @@ def main():
             result = run_scenario(node, scenario)
             all_results.append(result)
 
-            # Ждём пока dialogue_node замолчит (LLM завершил все tool-call iterations).
-            # Фиксированной паузы недостаточно: DeepSeek с tool calls может отвечать
-            # 5-15 секунд после получения inject_stt. Ждём 3s тишины в response топике.
-            node.wait_for_quiet(quiet_s=3.0, timeout_s=25.0)
-            # Минимальная пауза для сброса state machine
-            time.sleep(1.0)
+            # Ждём пока dialogue_node вернётся в IDLE (LLM завершил все iterations).
+            # Используем state topic вместо тайм-аuta тишины: между LLM-итерациями
+            # может быть 3-5s тишины что обманывало wait_for_quiet.
+            node.wait_for_idle(first_non_idle_timeout_s=5.0, idle_timeout_s=30.0)
+            # Минимальная пауза для стабилизации
+            time.sleep(0.5)
 
     # Итоги
     total = len(all_results)
