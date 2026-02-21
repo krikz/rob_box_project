@@ -58,7 +58,7 @@ services:
         source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
         source /ws/install/setup.bash &&
         echo "Ожидание Zenoh router (localhost:7447)..." &&
-        until nc -z localhost 7447; do sleep 2; done &&
+        until (echo > /dev/tcp/localhost/7447) 2>/dev/null; do sleep 2; done &&
         echo "✓ Zenoh router доступен" &&
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         exec ros2 run rob_box_voice dialogue_node \
