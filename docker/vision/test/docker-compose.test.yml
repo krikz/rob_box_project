@@ -98,8 +98,6 @@ services:
     depends_on:
       zenoh-router-test:
         condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null || exit 1"]
       interval: 5s

@@ -126,11 +126,15 @@ jobs:
           PLATFORM: linux/arm64
           DEEPSEEK_API_KEY: ${{ github.event.inputs.deepseek_api_key }}
         run: |
+          # Заполняем named volume с DB (db-init завершается до основного up)
+          docker compose -f docker-compose.test.yml run --rm --build db-init
+          # Основные тесты — db-init не участвует чтобы не триггерить abort-on-exit
           docker compose -f docker-compose.test.yml up \
             --build \
             --force-recreate \
             --abort-on-container-exit \
             --exit-code-from scenario-runner \
+            --scale db-init=0 \
             --timeout 600
         continue-on-error: true
 
