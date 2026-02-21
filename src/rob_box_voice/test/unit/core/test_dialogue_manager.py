@@ -275,11 +275,13 @@ class TestDialogueManagerEdgeCases:
     """Test edge cases and error handling"""
     
     def test_empty_wake_words_list(self):
-        """Test with empty wake words list"""
+        """Test with empty wake words list — bypass mode: all input accepted"""
         manager = DialogueManager(wake_words=[])
-        
-        assert manager.is_wake_word('робок') is False
-        assert manager.is_wake_word('привет') is False
+
+        # Empty list = bypass mode: every message is treated as having a wake word
+        assert manager.is_wake_word('робок') is True
+        assert manager.is_wake_word('привет') is True
+        assert manager.is_wake_word('') is True
     
     def test_wake_word_case_sensitivity(self):
         """Test wake words are case-sensitive (lowercasing is caller's responsibility)"""
