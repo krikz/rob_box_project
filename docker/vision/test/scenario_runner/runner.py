@@ -67,8 +67,78 @@ QOS_RELIABLE = QoSProfile(
     depth=10,
 )
 
-# ── Mock tools list (OpenAI tool_calls format) ──────────────────────────────
+# ── Mock tools list — полный набор тулов как на реальном роботе ──────────────
 MOCK_MCP_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "speak_text",
+            "description": (
+                "Произнести текст голосом через TTS. "
+                "ИСПОЛЬЗУЙ ЭТО вместо возврата JSON с SSML. "
+                "ОБЯЗАТЕЛЬНО указывай animation — покажет анимацию на LED матрице робота."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Текст для произнесения"},
+                    "animation": {
+                        "type": "string",
+                        "description": "Анимация: happy, sad, angry, surprised, thinking, idle, victory, police_lights и др.",
+                        "default": "neutral",
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "listen_for_response",
+            "description": (
+                "Прослушать ответ пользователя (активирует STT). "
+                "ПОСЛЕ вызова этого инструмента НЕЛЬЗЯ вызывать НИКАКИЕ другие инструменты!"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timeout_seconds": {"type": "integer", "description": "Время ожидания (сек)", "default": 5},
+                    "prompt_text": {"type": "string", "description": "Подсказка о том, чего ожидаем"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_sound",
+            "description": "Воспроизвести звуковой эффект",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sound_name": {"type": "string", "description": "Название звука (robot_happy, ui_chime и др.)"}
+                },
+                "required": ["sound_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_animation",
+            "description": "Воспроизвести анимацию на LED матрице робота",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "animation_name": {"type": "string", "description": "Название анимации"},
+                    "duration": {"type": "number", "description": "Длительность (сек)"},
+                },
+                "required": ["animation_name"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -91,20 +161,6 @@ MOCK_MCP_TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "play_animation",
-            "description": "Воспроизвести анимацию на LED матрице робота",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "animation_name": {"type": "string", "description": "Название анимации"}
-                },
-                "required": ["animation_name"],
-            },
-        },
-    },
 ]
 
 
@@ -121,6 +177,8 @@ class ScenarioRunner(Node):
         # ── Mock MCP Server ──────────────────────────────────────────────────
         self.mcp_tools_pub = self.create_publisher(String, TOPIC_MCP_TOOLS, QOS_RELIABLE)
         self.mcp_result_pub = self.create_publisher(String, TOPIC_MCP_RESULT, QOS_RELIABLE)
+        # Publisher для имитации speech response (speak_text → dialogue/response)
+        self.dialogue_resp_pub = self.create_publisher(String, TOPIC_RESPONSE, 10)
         self.create_subscription(
             String, TOPIC_MCP_EXECUTE, self._on_mcp_execute, QOS_RELIABLE
         )
@@ -177,7 +235,31 @@ class ScenarioRunner(Node):
         self.get_logger().info(f"[mock-mcp] CALL: {tool_name}({parameters})")
 
         # Mock ответ — всегда success
+        # ── Если speak_text — публикуем текст как dialogue response ──────────
+        if tool_name == "speak_text":
+            text = parameters.get("text", "")
+            animation = parameters.get("animation", "neutral")
+            if text.strip():
+                resp_msg = String()
+                resp_msg.data = json.dumps({
+                    "chunk": "final",
+                    "ssml": f"<speak>{text}</speak>",
+                    "emotion": animation,
+                    "message": "mock speak_text",
+                }, ensure_ascii=False)
+                self.dialogue_resp_pub.publish(resp_msg)
+                self.get_logger().info(f"[mock-mcp] speak_text → /voice/dialogue/response: {text[:60]}")
+
         mock_results = {
+            "speak_text": {
+                "success": True, "message": f"Произношение: {parameters.get('text', '')[:40]}"
+            },
+            "listen_for_response": {
+                "success": True, "heard": "", "message": "Ожидание завершено (mock)"
+            },
+            "play_sound": {
+                "success": True, "sound": parameters.get("sound_name", "")
+            },
             "get_robot_status": {
                 "battery": 87, "location": "гостиная", "state": "idle"
             },
@@ -437,7 +519,8 @@ def main():
             all_results.append(result)
 
             # Пауза между сценариями — dialogue_node должен вернуться в IDLE
-            time.sleep(2.0)
+            # (после speak_text нода делает ещё один LLM запрос ~2-3s)
+            time.sleep(5.0)
 
     # Итоги
     total = len(all_results)

@@ -75,18 +75,16 @@ services:
             base_url: "https://api.deepseek.com"
             model: "deepseek-chat"
             temperature: 0.5
-            max_tokens: 150
-            streaming: true
+            max_tokens: 500
+            streaming: false
             enable_fallback: false
             enable_mcp_tools: true
             internet_available: true
             wake_words: ["привет"]
             silence_words: ["стоп", "тихо", "замолчи"]
-            system_prompt: "Ты робот ROBBOX. Отвечай кратко, 1-2 предложения. Отвечай на русском."
             max_history_messages: 6
             history_window_tokens: 1000
             llm_timeout_sec: 30.0
-            max_iterations: 3
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         exec ros2 run rob_box_voice dialogue_node \
