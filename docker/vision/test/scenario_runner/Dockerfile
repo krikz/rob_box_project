@@ -6,6 +6,7 @@ FROM ${BASE_IMAGE}
 RUN pip install --no-cache-dir requests pyyaml
 
 COPY runner.py /runner/runner.py
+COPY scenarios/ /scenarios/
 
 # Source ROS2 при запуске
 ENV PYTHONPATH=/opt/ros/humble/lib/python3.10/site-packages

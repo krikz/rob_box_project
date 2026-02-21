@@ -278,6 +278,10 @@ def main():
     scenario_files = sorted(scenarios_path.glob("*.yaml"))
     print(f"\n[runner] Found {len(scenario_files)} scenario file(s)")
 
+    if not scenario_files:
+        print(f"[runner] ERROR: No scenario files in {SCENARIOS_DIR} — aborting")
+        sys.exit(1)
+
     all_results = []
     for path in scenario_files:
         print(f"\n[runner] Loading {path.name}")

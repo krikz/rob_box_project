@@ -121,7 +121,6 @@ services:
       OVERALL_TIMEOUT: "120"
       ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
     volumes:
-      - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
     command:
       - /bin/bash
