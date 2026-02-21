@@ -477,9 +477,12 @@ class ScenarioRunner(Node):
                 if elapsed > 20.0 and silence > 15.0:
                     self.get_logger().info(
                         f"[wait_for_idle] RESCUE: node stuck in 'listening' "
-                        f"(elapsed={elapsed:.1f}s, silence={silence:.1f}s) — injecting rescue STT"
+                        f"(elapsed={elapsed:.1f}s, silence={silence:.1f}s) — injecting silence word"
                     )
-                    self.inject_stt("привет окей продолжай")
+                    # 'тихо' — silence_word: terminates listen_for_response cleanly → IDLE.
+                    # НЕ используем 'привет' — это запускает новый LLM цикл с listen_for_response
+                    # и создаёт бесконечный цикл загрязнения между сценариями.
+                    self.inject_stt("тихо")
                     rescue_sent = True
 
             time.sleep(0.2)
