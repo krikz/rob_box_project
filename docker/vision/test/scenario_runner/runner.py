@@ -466,16 +466,16 @@ class ScenarioRunner(Node):
                 if self._dialogue_state == "idle":
                     return True
 
-            # Rescue: если нода застряла в 'listening' > 6s — это listen_for_response.
-            # dialogue_node ждёт нового STT чтобы завершить агентный цикл и уйти в IDLE.
-            # Без rescue STT через dialogue_timeout (~30s) нода пойдёт в IDLE сама,
-            # но следующий сценарий без wake word будет молча отфильтрован.
-            if not rescue_sent and self._dialogue_state == "listening":
+            # Rescue: если нода застряла в 'listening' или 'dialogue' > 6s.
+            # - 'listening': после listen_for_response нода ждёт нового STT
+            # - 'dialogue': LLM продолжает агентный цикл вместо завершения
+            # Без rescue нода уйдёт в IDLE только через dialogue_timeout (~30s).
+            if not rescue_sent and self._dialogue_state in ("listening", "dialogue"):
                 elapsed = idle_timeout_s - (deadline2 - time.time())
                 if elapsed > 6.0:
                     self.get_logger().info(
-                        "[wait_for_idle] RESCUE: node stuck in 'listening' "
-                        "(listen_for_response?) — injecting rescue STT"
+                        f"[wait_for_idle] RESCUE: node stuck in '{self._dialogue_state}' "
+                        f"({elapsed:.1f}s) — injecting rescue STT"
                     )
                     self.inject_stt("привет окей продолжай")
                     rescue_sent = True
