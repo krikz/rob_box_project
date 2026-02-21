@@ -250,6 +250,20 @@ class ScenarioRunner(Node):
                 self.dialogue_resp_pub.publish(resp_msg)
                 self.get_logger().info(f"[mock-mcp] speak_text → /voice/dialogue/response: {text[:60]}")
 
+        # ── Если listen_for_response — публикуем "Слушаю..." чтобы разблокировать runner ──
+        # dialogue_node останавливает агентный цикл и ждёт следующего STT — без этого
+        # runner навсегда застывает в ожидании speak_text.
+        elif tool_name == "listen_for_response":
+            resp_msg = String()
+            resp_msg.data = json.dumps({
+                "chunk": "final",
+                "ssml": "<speak>Слушаю...</speak>",
+                "emotion": "neutral",
+                "message": "mock listen_for_response",
+            }, ensure_ascii=False)
+            self.dialogue_resp_pub.publish(resp_msg)
+            self.get_logger().info("[mock-mcp] listen_for_response → /voice/dialogue/response: 'Слушаю...'")
+
         mock_results = {
             "speak_text": {
                 "success": True, "message": f"Произношение: {parameters.get('text', '')[:40]}"

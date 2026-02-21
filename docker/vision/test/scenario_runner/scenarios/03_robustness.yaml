@@ -30,15 +30,16 @@ scenarios:
 
   - name: vad_interrupt_no_hang
     description: "VAD interrupt после запроса — нода не зависает"
+    # ВАЖНО: фразы >= 3 слов — dialogue_node в состоянии DIALOGUE фильтрует < 3 слов
     steps:
-      - inject_stt: "привет"
+      - inject_stt: "привет как дела"
         timeout_s: 25
         assert_response_not_empty: true
       - wait_ms: 500
       - inject_vad: true     # Прерываем
       - wait_ms: 200
       - inject_vad: false
-      - inject_stt: "расскажи анекдот"
+      - inject_stt: "расскажи смешной анекдот"
         timeout_s: 25
         assert_response_not_empty: true
 

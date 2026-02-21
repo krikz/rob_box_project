@@ -23,8 +23,9 @@ scenarios:
 
   - name: multi_turn_no_crash
     description: "Несколько реплик подряд — нода не падает"
+    # ВАЖНО: фразы >= 3 слов — dialogue_node фильтрует короткие фразы в состоянии DIALOGUE
     steps:
-      - inject_stt: "привет"
+      - inject_stt: "привет как дела"
         timeout_s: 25
         assert_response_not_empty: true
       - wait_ms: 1000
@@ -32,7 +33,7 @@ scenarios:
         timeout_s: 25
         assert_response_not_empty: true
       - wait_ms: 1000
-      - inject_stt: "пока"
+      - inject_stt: "пока до свидания"
         timeout_s: 25
         assert_response_not_empty: true
 
