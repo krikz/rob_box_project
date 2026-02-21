@@ -56,6 +56,7 @@ jobs:
           # Удаляем директории с именами файлов конфига (Docker создаёт dir вместо файла)
           find docker/vision/test -name "*.json5" -type d -exec sudo rm -rf {} + 2>/dev/null || true
           find docker/vision/test -name "*.sh" -type d -exec sudo rm -rf {} + 2>/dev/null || true
+          find docker/vision/test -name "*.db" -type d -exec sudo rm -rf {} + 2>/dev/null || true
           echo "Stale Docker-created dirs removed"
 
       - name: Checkout repository
