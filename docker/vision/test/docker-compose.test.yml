@@ -51,7 +51,7 @@ services:
       VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
     volumes:
       - ./config:/test-config:ro
-    command: ["/test-config/start_voice_test.sh"]
+    command: ["/bin/bash", "/test-config/start_voice_test.sh"]
     depends_on:
       zenoh-router-test:
         condition: service_healthy
