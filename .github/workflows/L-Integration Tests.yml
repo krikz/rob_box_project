@@ -70,7 +70,9 @@ jobs:
       # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
       - name: Cleanup previous test containers
         working-directory: ${{ env.TEST_DIR }}
-        run: docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
+        run: |
+          docker compose -f docker-compose.test.yml down --remove-orphans --volumes 2>/dev/null || true
+          docker volume rm test_db_seed 2>/dev/null || true
 
       # ── Проверка что нужные файлы есть после checkout ─────────────────────
       - name: Verify test files exist

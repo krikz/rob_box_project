@@ -88,15 +88,18 @@ services:
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         mkdir -p /data &&
-        python3 -c 'import sqlite3; c=sqlite3.connect("/data/voice_memory.db"); c.executescript(open("/voice_seed.sql").read()); c.close(); print("✓ voice_memory.db создана из SQL")' &&
+        cp /db_seed/voice_memory.db /data/voice_memory.db &&
+        echo "✓ voice_memory.db скопирована из db_seed ($(stat -c%s /data/voice_memory.db) bytes)" &&
         exec ros2 run rob_box_voice dialogue_node \
           --ros-args \
           --params-file /tmp/voice_params.yaml
     volumes:
-      - ./fixtures/voice_memory_seed.sql:/voice_seed.sql:ro
+      - db_seed:/db_seed:ro
     depends_on:
       zenoh-router-test:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null || exit 1"]
       interval: 5s
@@ -143,3 +146,19 @@ services:
       voice-test:
         condition: service_healthy
 
+  # ─── DB init: копирует voice_memory.db из образа в named volume ────────────
+  db-init:
+    platform: ${PLATFORM:-linux/arm64}
+    build:
+      context: ./scenario_runner
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: db-init-test
+    network_mode: host
+    volumes:
+      - db_seed:/seed_vol
+    entrypoint: ["/bin/sh", "-c", "cp /baked_db/voice_memory.db /seed_vol/voice_memory.db && echo '✓ DB запекана в volume' && exit 0"]
+
+volumes:
+  db_seed: {}

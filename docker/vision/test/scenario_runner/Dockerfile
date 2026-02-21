@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir requests pyyaml
 
 COPY runner.py /runner/runner.py
 COPY scenarios/ /scenarios/
+COPY voice_memory.db /baked_db/voice_memory.db
 
 # Source ROS2 при запуске
 ENV PYTHONPATH=/opt/ros/humble/lib/python3.10/site-packages
