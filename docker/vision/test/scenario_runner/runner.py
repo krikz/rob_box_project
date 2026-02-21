@@ -285,6 +285,7 @@ class ScenarioRunner(Node):
         request_id = req.get("request_id", "")
 
         self._mcp_calls.append({"tool_name": tool_name, "parameters": parameters})
+        self._last_any_response_ts = time.time()  # любой MCP call = нода активна
         self.get_logger().info(f"[mock-mcp] CALL: {tool_name}({parameters})")
 
         # Mock ответ — всегда success
@@ -466,16 +467,18 @@ class ScenarioRunner(Node):
                 if self._dialogue_state == "idle":
                     return True
 
-            # Rescue: если нода застряла в 'listening' или 'dialogue' > 6s.
-            # - 'listening': после listen_for_response нода ждёт нового STT
-            # - 'dialogue': LLM продолжает агентный цикл вместо завершения
-            # Без rescue нода уйдёт в IDLE только через dialogue_timeout (~30s).
+            # Rescue: если нода застряла в 'listening' или 'dialogue'.
+            # ВАЖНО: стреляем только если нода действительно молчит (нет активности
+            # в течение silence_s секунд). Иначе прерываем активный LLM tool chain.
+            # - 'listening': listen_for_response ждёт нового STT
+            # - 'dialogue': LLM завис без output
             if not rescue_sent and self._dialogue_state in ("listening", "dialogue"):
                 elapsed = idle_timeout_s - (deadline2 - time.time())
-                if elapsed > 6.0:
+                silence = time.time() - self._last_any_response_ts
+                if elapsed > 8.0 and silence > 8.0:
                     self.get_logger().info(
                         f"[wait_for_idle] RESCUE: node stuck in '{self._dialogue_state}' "
-                        f"({elapsed:.1f}s) — injecting rescue STT"
+                        f"(elapsed={elapsed:.1f}s, silence={silence:.1f}s) — injecting rescue STT"
                     )
                     self.inject_stt("привет окей продолжай")
                     rescue_sent = True
