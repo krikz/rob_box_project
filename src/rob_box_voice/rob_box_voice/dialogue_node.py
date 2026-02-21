@@ -103,6 +103,7 @@ class DialogueNode(Node):
         self.declare_parameter("unsilence_commands", ["говори", "включ", "работ", "отвеч", "разговар"])
         self.declare_parameter("dialogue_timeout", 30.0)  # секунд без активности -> IDLE
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
+        self.declare_parameter("llm_timeout_sec", 60.0)  # Timeout для LLM запроса (один attempt)
 
         # Выбор провайдера с fallback
         self.primary_provider = self.get_parameter("provider").value
@@ -110,6 +111,10 @@ class DialogueNode(Node):
         self.current_provider = self.primary_provider
         self.provider_error_count = 0  # Счётчик ошибок текущего провайдера
         self.provider_error_threshold = 3  # Порог для переключения на fallback
+        # LLM timeout: читается из ROS параметра llm_timeout_sec (default 60s).
+        # Применяется к каждому attempt (2 попытки итого → max 2×timeout).
+        self.llm_timeout_sec = self.get_parameter("llm_timeout_sec").value
+        self.get_logger().info(f"  LLM timeout per attempt: {self.llm_timeout_sec}s")
         
         # Инициализация клиента с выбранным провайдером
         self._init_llm_client()
@@ -429,7 +434,7 @@ class DialogueNode(Node):
         # Старый клиент подберёт GC когда стейл-потоки завершатся.
 
         http_client = httpx.Client(
-            timeout=Timeout(60.0, connect=10.0),
+            timeout=Timeout(self.llm_timeout_sec, connect=10.0),
             limits=Limits(max_connections=5, max_keepalive_connections=0),
             follow_redirects=True,
         )
@@ -991,8 +996,8 @@ class DialogueNode(Node):
 
         # Timeout между chunks - если нет данных 15 секунд, прерываем
         CHUNK_TIMEOUT = 15.0
-        # Общий timeout для всего запроса - 60 секунд
-        TOTAL_REQUEST_TIMEOUT = 60.0
+        # Общий timeout для всего запроса — берём из параметра llm_timeout_sec
+        TOTAL_REQUEST_TIMEOUT = self.llm_timeout_sec
 
         # Результаты streaming (для передачи между потоками)
         streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
@@ -2426,7 +2431,7 @@ class DialogueNode(Node):
                             stream_start_time = time.time()
                             last_chunk_time = stream_start_time
                             CHUNK_TIMEOUT = 15.0
-                            TOTAL_TIMEOUT = 60.0
+                            TOTAL_TIMEOUT = self.llm_timeout_sec
 
                             for chunk in stream:
                                 current_time = time.time()
@@ -2536,7 +2541,7 @@ class DialogueNode(Node):
                     future = _recursive_executor.submit(_do_recursive_streaming)
                     future_timeout = False
                     try:
-                        future.result(timeout=60.0)
+                        future.result(timeout=self.llm_timeout_sec)
                     except FuturesTimeoutError as e:
                         self.get_logger().error(f"⏱️ future.result timeout (итерация {iteration}, попытка {attempt}): {e}")
                         future_timeout = True

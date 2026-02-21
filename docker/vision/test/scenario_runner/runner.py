@@ -566,9 +566,18 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
             if expected_anim not in actual_anim:
                 return False, f"Animation {actual_anim!r} does not contain {expected_anim!r}"
 
-        # assert_tool_called — проверяем что MCP тул был вызван
+        # assert_tool_called — проверяем что MCP тул был вызван.
+        # ВАЖНО: тул может прийти ПОСЛЕ первого speak_text (в следующей LLM-итерации).
+        # Ждём до assert_tool_called_wait_s секунд (по умолчанию 15) после первого ответа.
         if "assert_tool_called" in step:
             expected_tool = step["assert_tool_called"]
+            tool_wait_s = step.get("assert_tool_called_wait_s", 15.0)
+            deadline = time.time() + tool_wait_s
+            while time.time() < deadline:
+                called = [c["tool_name"] for c in node._mcp_calls]
+                if expected_tool in called:
+                    break
+                time.sleep(0.3)
             called = [c["tool_name"] for c in node._mcp_calls]
             if expected_tool not in called:
                 return False, f"Tool {expected_tool!r} was not called. Called: {called}"

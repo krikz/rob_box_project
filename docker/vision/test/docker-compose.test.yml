@@ -84,7 +84,7 @@ services:
             silence_words: ["стоп", "тихо", "замолчи"]
             max_history_messages: 0
             history_window_tokens: 0
-            llm_timeout_sec: 30.0
+            llm_timeout_sec: 35.0
             dialogue_timeout: 15.0
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&

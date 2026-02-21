@@ -19,17 +19,20 @@ scenarios:
   - name: recall_song_memory
     description: "Упоминание енота из прошлых разговоров — нода не падает"
     steps:
+      # timeout_s: 50 — memory_context вызывается до speak_text: LLM call 1 (~5s)
+      # + memory_context tool (~0s mock) + LLM call 2 (~20-25s) = ~30s суммарно.
+      # Плюс возможный retry DeepSeek. 50s достаточно с запасом.
       - inject_stt: "помнишь как ты пел мне песенку про енота"
-        timeout_s: 30
+        timeout_s: 50
         assert_response_not_empty: true
 
   - name: memory_with_context_no_crash
     description: "Многоходовой диалог с апеллированием к памяти — нода не падает"
     steps:
       - inject_stt: "мы с тобой обсуждали анекдоты и песни"
-        timeout_s: 30
+        timeout_s: 50
         assert_response_not_empty: true
       - wait_ms: 1500
       - inject_stt: "расскажи ещё один анекдот как тогда"
-        timeout_s: 30
+        timeout_s: 50
         assert_response_not_empty: true
