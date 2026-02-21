@@ -48,7 +48,12 @@ jobs:
       # (bind mount несуществующего файла → docker создаёт dir с правами root)
       # git clean не может их удалить → checkout не перезаписывает → файл = dir
       - name: Fix root-owned stale paths from Docker
-        run: sudo chown -R "$USER:$USER" . 2>/dev/null || true
+        run: |
+          sudo chown -R "$USER:$USER" . 2>/dev/null || true
+          # Удаляем директории с именами файлов конфига (Docker создаёт dir вместо файла)
+          find docker/vision/test -name "*.json5" -type d -exec sudo rm -rf {} + 2>/dev/null || true
+          find docker/vision/test -name "*.sh" -type d -exec sudo rm -rf {} + 2>/dev/null || true
+          echo "Stale Docker-created dirs removed"
 
       - name: Checkout repository
         uses: actions/checkout@v4
