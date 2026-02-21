@@ -88,22 +88,12 @@ services:
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         mkdir -p /data &&
-        if [ -f /fixtures/voice_memory_seed.sql ]; then
-          python3 -c "import sqlite3; db=sqlite3.connect('/data/voice_memory.db'); db.executescript(open('/fixtures/voice_memory_seed.sql').read()); cnt=db.execute('SELECT COUNT(*) FROM voice_turns').fetchone()[0]; print(f'voice_memory.db: {cnt} turns loaded'); db.close()" &&
-          echo "✓ voice_memory.db создана из SQL seed"
-        elif [ -f /fixtures/voice_memory.db ]; then
-          cp /fixtures/voice_memory.db /data/voice_memory.db
-          echo "✓ voice_memory.db скопирована из fixtures"
-        else
-          echo "⚠️ voice_memory fixture не найден, старт с пустой БД"
-        fi &&
+        cp /fixtures/voice_memory.db /data/voice_memory.db &&
+        echo "✓ voice_memory.db скопирована ($(stat -c%s /data/voice_memory.db) bytes)" &&
         exec ros2 run rob_box_voice dialogue_node \
           --ros-args \
           --params-file /tmp/voice_params.yaml
     volumes:
-      # fixtures/ монтируется read-only в /fixtures.
-      # При старте нода создаёт /data/voice_memory.db через voice_memory_seed.sql.
-      # SQL-файл надёжнее бинарного .db в git (text vs binary blob).
       - ./fixtures:/fixtures:ro
     depends_on:
       zenoh-router-test:
