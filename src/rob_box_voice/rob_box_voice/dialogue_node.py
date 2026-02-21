@@ -2250,6 +2250,16 @@ class DialogueNode(Node):
                         self.get_logger().info("🛑 ОСТАНОВКА: listen_for_response — жду ответа пользователя")
                         self.dialogue_manager.last_interaction_time = time.time()
                         self._listen_response_waiting = True  # защита finally-блока
+
+                        # Сбрасываем очередь — сообщения накопились ПОКА LLM обрабатывал,
+                        # они не являются ответом пользователя на listen_for_response.
+                        stale = len(self.dialogue_manager.pending_queries)
+                        if stale > 0:
+                            self.dialogue_manager.pending_queries.clear()
+                            self.get_logger().info(
+                                f"🧹 pending_queries очищена перед listen_for_response ({stale} устаревших сообщений)"
+                            )
+
                         self.llm_processing = False
                         return
 
