@@ -88,18 +88,31 @@ services:
         ENDOFYAML
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         mkdir -p /data &&
-        if [ -f /fixtures/voice_memory.db ]; then
+        if [ -f /fixtures/voice_memory_seed.sql ]; then
+          python3 -c "
+import sqlite3
+db = sqlite3.connect('/data/voice_memory.db')
+with open('/fixtures/voice_memory_seed.sql', encoding='utf-8') as f:
+    sql = f.read()
+db.executescript(sql)
+cnt = db.execute('SELECT COUNT(*) FROM voice_turns').fetchone()[0]
+print(f'voice_memory.db created: {cnt} turns')
+db.close()
+" && echo "✓ voice_memory.db создана из SQL seed"
+        elif [ -f /fixtures/voice_memory.db ]; then
           cp /fixtures/voice_memory.db /data/voice_memory.db
-          echo "✓ voice_memory.db скопирована из fixtures ($(du -h /data/voice_memory.db | cut -f1))"
+          echo "✓ voice_memory.db скопирована из fixtures"
+        else
+          echo "⚠️ voice_memory fixture не найден, старт с пустой БД"
         fi &&
         exec ros2 run rob_box_voice dialogue_node \
           --ros-args \
           --params-file /tmp/voice_params.yaml
     volumes:
-      # Реальная БД с памятью с робота — 85 реплик, анекдоты/песни/истории.
-      # Монтируем read-only в /fixtures, команда копирует в /data перед стартом ноды.
-      # Это позволяет dialogue_node писать в /data/voice_memory.db без изменения fixture.
-      - ./fixtures/voice_memory.db:/fixtures/voice_memory.db:ro
+      # fixtures/ монтируется read-only в /fixtures.
+      # При старте нода создаёт /data/voice_memory.db через voice_memory_seed.sql.
+      # SQL-файл надёжнее бинарного .db в git (text vs binary blob).
+      - ./fixtures:/fixtures:ro
     depends_on:
       zenoh-router-test:
         condition: service_healthy

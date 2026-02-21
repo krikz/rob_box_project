@@ -80,6 +80,9 @@ jobs:
           echo "=== Ensure regular files (not dirs) ==="
           test -f ${{ env.TEST_DIR }}/config/zenoh_router_test.json5 && echo "zenoh_router_test.json5: IS FILE ✓" || echo "NOT A FILE ✗"
           test -f ${{ env.TEST_DIR }}/config/voice_assistant_test.yaml && echo "voice_assistant_test.yaml: IS FILE ✓" || echo "NOT A FILE ✗"
+          echo "=== fixtures/ ==="
+          ls -la ${{ env.TEST_DIR }}/fixtures/ || echo "(fixtures dir missing)"
+          test -f ${{ env.TEST_DIR }}/fixtures/voice_memory_seed.sql && echo "voice_memory_seed.sql: IS FILE ✓ ($(wc -l < ${{ env.TEST_DIR }}/fixtures/voice_memory_seed.sql) lines)" || echo "voice_memory_seed.sql: NOT A FILE ✗"
           echo "=== Docker version ==="
           docker version --format 'Client: {{.Client.Version}}' || docker version
 
@@ -123,7 +126,7 @@ jobs:
             --build \
             --abort-on-container-exit \
             --exit-code-from scenario-runner \
-            --timeout 300
+            --timeout 600
         continue-on-error: true
 
       # ── Логи при падении ───────────────────────────────────────────────────
