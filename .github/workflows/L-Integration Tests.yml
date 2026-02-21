@@ -25,7 +25,7 @@ on:
       test_branch:
         description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
         required: false
-        default: "feature/agent"
+        default: ""
       deepseek_api_key:
         description: "DeepSeek API key для тестов (не сохраняется)"
         required: true
@@ -62,8 +62,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Тестовые файлы живут на feature/agent (или другой ветке из input)
-          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
+          # Тестовые файлы берутся из той же ветки что запустила workflow
+          # (можно переопределить через test_branch input)
+          ref: ${{ github.event.inputs.test_branch || github.ref_name || 'feature/agent' }}
           clean: true
           fetch-depth: 0
 
