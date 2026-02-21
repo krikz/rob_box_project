@@ -31,11 +31,9 @@ services:
     network_mode: host
     environment:
       RUST_LOG: zenoh=warn
-    volumes:
-      - ./config/zenoh_router_test.json5:/config/zenoh_router_test.json5:ro
-    command: -c /config/zenoh_router_test.json5
+    # Запускаем без config — по умолчанию: router mode, listen tcp:[::]:7447
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 7447 || exit 1"]
       interval: 3s
       timeout: 5s
       retries: 20
