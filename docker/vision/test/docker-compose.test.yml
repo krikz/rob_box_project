@@ -58,7 +58,7 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
       interval: 5s
       timeout: 10s
-      retries: 60       # до 5 минут на первый pull (на быстром интернете ~30s)
+      retries: 180      # до 15 минут на первый pull (qwen2.5:0.5b ~400MB, Pi WiFi может быть медленно)
       start_period: 10s
 
   # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
@@ -96,6 +96,7 @@ services:
 
   # ─── Scenario Runner ─────────────────────────────────────────────────────────
   scenario-runner:
+    platform: ${PLATFORM:-linux/arm64}
     build:
       context: ./scenario_runner
       dockerfile: Dockerfile
