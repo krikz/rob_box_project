@@ -1322,7 +1322,7 @@ class DialogueNode(Node):
             provider_name = self.PROVIDERS[self.current_provider]["name"]
             last_msg = self.conversation_history.get_last_message()
             if last_msg:
-                self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {last_msg.get('content', '')[:80]}...")
+                self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {getattr(last_msg, 'content', '')[:80]}...")
 
             # Параметры запроса
             request_params = {
