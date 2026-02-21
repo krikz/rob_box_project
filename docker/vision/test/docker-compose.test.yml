@@ -51,7 +51,19 @@ services:
       VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
     volumes:
       - ./config:/test-config:ro
-    command: ["/bin/bash", "/test-config/start_voice_test.sh"]
+    command:
+      - /bin/bash
+      - -c
+      - |
+        source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
+        source /ws/install/setup.bash &&
+        echo "Ожидание Zenoh router (localhost:7447)..." &&
+        until nc -z localhost 7447; do sleep 2; done &&
+        echo "✓ Zenoh router доступен" &&
+        echo "Запуск dialogue_node (DeepSeek API)..." &&
+        exec ros2 run rob_box_voice dialogue_node \
+          --ros-args \
+          --params-file "${VOICE_TEST_CONFIG:-/test-config/voice_assistant_test.yaml}"
     depends_on:
       zenoh-router-test:
         condition: service_healthy
