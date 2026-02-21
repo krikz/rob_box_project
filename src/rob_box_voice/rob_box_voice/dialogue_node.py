@@ -236,6 +236,12 @@ class DialogueNode(Node):
         self._listen_response_waiting = False  # Флаг ожидания listen_for_response — не сбрасывать dialogue_in_progress
         self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
 
+        # Счётчик поколений стримов — инкрементируется при каждом новом LLM-запросе/retry.
+        # Стейл-потоки (ThreadPoolExecutor shutdown(wait=False)) захватывают поколение
+        # при старте и проверяют его перед response_pub.publish(). Если не совпадает —
+        # поток знает что он "прошлого поколения" и молча отбрасывает данные.
+        self._stream_generation = 0
+
         # ============ RTABMap Control (Mapping Commands) ============
         # Service clients для управления картографией
         self.reset_memory_client = self.create_client(Empty, "/rtabmap/reset_memory")
@@ -957,6 +963,10 @@ class DialogueNode(Node):
         # Результаты streaming (для передачи между потоками)
         streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
 
+        # Инкрементируем поколение — все предыдущие стейл-потоки перестанут публиковать
+        self._stream_generation += 1
+        _my_gen = self._stream_generation
+
         def _do_streaming():
             """Внутренняя функция для streaming в отдельном потоке"""
             full_response = ""
@@ -1134,6 +1144,9 @@ class DialogueNode(Node):
 
                                     response_msg = String()
                                     response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                    if _my_gen != self._stream_generation:
+                                        self.get_logger().warning(f"🚫 Стейл-поток (gen {_my_gen} != {self._stream_generation}) — chunk отброшен")
+                                        return
                                     self.response_pub.publish(response_msg)
                                     # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
 
@@ -1200,6 +1213,9 @@ class DialogueNode(Node):
                 # Публикуем в response (tts_node подписан на него)
                 response_msg = String()
                 response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                if _my_gen != self._stream_generation:
+                    self.get_logger().warning(f"🚫 Стейл-поток plain-text (gen {_my_gen} != {self._stream_generation}) — отброшен")
+                    return
                 self.response_pub.publish(response_msg)
                 
                 chunk_count = 1  # Считаем это как 1 chunk
@@ -2302,7 +2318,11 @@ class DialogueNode(Node):
                         # Сбрасываем результат перед повторной попыткой
                         recursive_result = {"full_response": "", "chunk_count": 0, "error": None, "tool_calls": None}
 
-                    def _do_recursive_streaming(_result=recursive_result):
+                    # Инкрементируем поколение — стейл-поток attempt N-1 перестанет публиковать
+                    self._stream_generation += 1
+                    _rec_gen = self._stream_generation
+
+                    def _do_recursive_streaming(_result=recursive_result, _my_gen=_rec_gen):
                         """Streaming в отдельном потоке; захватывает _result по значению (текущий dict)."""
                         try:
                             messages[0] = {"role": "system", "content": self.system_prompt}
@@ -2391,6 +2411,9 @@ class DialogueNode(Node):
                                                 chunk_count += 1
                                                 response_msg = String()
                                                 response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                                if _my_gen != self._stream_generation:
+                                                    self.get_logger().warning(f"🚫 Стейл rec-поток (gen {_my_gen}) — chunk отброшен")
+                                                    return
                                                 self.response_pub.publish(response_msg)
                                         except json.JSONDecodeError:
                                             pass
@@ -2427,6 +2450,9 @@ class DialogueNode(Node):
                                 }
                                 response_msg = String()
                                 response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
+                                if _my_gen != self._stream_generation:
+                                    self.get_logger().warning(f"🚫 Стейл rec-поток plain-text (gen {_my_gen}) — отброшен")
+                                    return
                                 self.response_pub.publish(response_msg)
                                 _result["chunk_count"] = 1
                                 self.get_logger().info("🔊 Plain text обёрнут в SSML")
