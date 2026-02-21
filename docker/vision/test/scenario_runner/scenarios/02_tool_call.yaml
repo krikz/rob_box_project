@@ -1,8 +1,10 @@
 # scenarios/02_tool_call.yaml
 # Сценарии поведения ноды при разных человеческих командах
 #
-# enable_mcp_tools: false — dialogue_node работает без MCP, LLM отвечает текстом.
-# Тестируем: нода не падает, ответ приходит, SSML валиден.
+# enable_mcp_tools: true — dialogue_node получает список инструментов от mock-MCP сервера
+# (runner.py публикует MOCK_MCP_TOOLS в /mcp/tools и отвечает на /mcp/execute).
+# Если LLM вызовет tool — mock ответит успехом и вызов будет залогирован.
+# Ассерции проверяют что нода не падает и ответ приходит.
 
 scenarios:
 

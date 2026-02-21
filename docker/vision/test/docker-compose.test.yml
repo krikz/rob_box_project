@@ -78,7 +78,7 @@ services:
             max_tokens: 150
             streaming: true
             enable_fallback: false
-            enable_mcp_tools: false
+            enable_mcp_tools: true
             internet_available: true
             wake_words: ["привет"]
             silence_words: ["стоп", "тихо", "замолчи"]

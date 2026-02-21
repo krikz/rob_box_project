@@ -35,7 +35,7 @@ from typing import Any, Optional
 import rclpy
 import yaml
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Bool, String
 
 
@@ -51,10 +51,59 @@ TOPIC_RESPONSE = "/voice/dialogue/response"
 TOPIC_ANIMATION = "/voice/animation/request"
 TOPIC_SOUND = "/voice/sound/trigger"
 
+TOPIC_MCP_TOOLS = "/mcp/tools"
+TOPIC_MCP_EXECUTE = "/mcp/execute"
+TOPIC_MCP_RESULT = "/mcp/result"
+
 QOS_BEST_EFFORT = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
     depth=10,
 )
+QOS_RELIABLE = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
+
+# ── Mock tools list (OpenAI tool_calls format) ──────────────────────────────
+MOCK_MCP_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_robot_status",
+            "description": "Получить текущий статус робота: заряд батареи, местоположение, состояние",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "navigate_to_waypoint",
+            "description": "Отправить робота к указанной точке или комнате",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "waypoint": {"type": "string", "description": "Название точки или комнаты"}
+                },
+                "required": ["waypoint"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_animation",
+            "description": "Воспроизвести анимацию на LED матрице робота",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "animation_name": {"type": "string", "description": "Название анимации"}
+                },
+                "required": ["animation_name"],
+            },
+        },
+    },
+]
 
 
 # ── ROS2 нода ────────────────────────────────────────────────────────────────
@@ -67,6 +116,17 @@ class ScenarioRunner(Node):
         self.stt_pub = self.create_publisher(String, TOPIC_STT, 10)
         self.vad_pub = self.create_publisher(Bool, TOPIC_VAD, 10)
 
+        # ── Mock MCP Server ──────────────────────────────────────────────────
+        self.mcp_tools_pub = self.create_publisher(String, TOPIC_MCP_TOOLS, QOS_RELIABLE)
+        self.mcp_result_pub = self.create_publisher(String, TOPIC_MCP_RESULT, QOS_RELIABLE)
+        self.create_subscription(
+            String, TOPIC_MCP_EXECUTE, self._on_mcp_execute, QOS_RELIABLE
+        )
+        # Периодически рассылаем список тулов чтобы dialogue_node его получил
+        self.create_timer(2.0, self._publish_mock_tools)
+        # Лог вызовов для assert_tool_called
+        self._mcp_calls: list[dict] = []
+
         # Subscribers (накапливаем последние сообщения)
         self._last_response: Optional[str] = None
         self._last_animation: Optional[str] = None
@@ -77,7 +137,7 @@ class ScenarioRunner(Node):
         self.create_subscription(String, TOPIC_ANIMATION, self._on_animation, 10)
         self.create_subscription(String, TOPIC_SOUND, self._on_sound, 10)
 
-        self.get_logger().info("ScenarioRunner ready")
+        self.get_logger().info("ScenarioRunner ready (mock MCP enabled)")
 
     def _on_response(self, msg: String):
         self._last_response = msg.data
@@ -89,6 +149,53 @@ class ScenarioRunner(Node):
 
     def _on_sound(self, msg: String):
         self._last_sound = msg.data
+
+    # ── Mock MCP ─────────────────────────────────────────────────────────────
+
+    def _publish_mock_tools(self):
+        msg = String()
+        msg.data = json.dumps(MOCK_MCP_TOOLS, ensure_ascii=False)
+        self.mcp_tools_pub.publish(msg)
+
+    def _on_mcp_execute(self, msg: String):
+        """Перехватываем tool call от dialogue_node и отвечаем mock-результатом."""
+        try:
+            req = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().error(f"[mock-mcp] Bad execute request: {msg.data[:80]}")
+            return
+
+        tool_name = req.get("tool_name", "unknown")
+        parameters = req.get("parameters", {})
+        request_id = req.get("request_id", "")
+
+        self._mcp_calls.append({"tool_name": tool_name, "parameters": parameters})
+        self.get_logger().info(f"[mock-mcp] CALL: {tool_name}({parameters})")
+
+        # Mock ответ — всегда success
+        mock_results = {
+            "get_robot_status": {
+                "battery": 87, "location": "гостиная", "state": "idle"
+            },
+            "navigate_to_waypoint": {
+                "accepted": True,
+                "destination": parameters.get("waypoint", "неизвестно")
+            },
+            "play_animation": {
+                "accepted": True,
+                "animation": parameters.get("animation_name", "default")
+            },
+        }
+        result_data = mock_results.get(tool_name, {"success": True})
+
+        result_msg = String()
+        result_msg.data = json.dumps({
+            "tool_name": tool_name,
+            "request_id": request_id,
+            "result": {"success": True, "data": result_data},
+        }, ensure_ascii=False)
+        self.mcp_result_pub.publish(result_msg)
+        self.get_logger().info(f"[mock-mcp] RESULT sent for {tool_name}")
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
@@ -108,6 +215,7 @@ class ScenarioRunner(Node):
         self._last_animation = None
         self._last_sound = None
         self._response_ts = 0.0
+        self._mcp_calls.clear()
 
     def wait_for_response(self, timeout_s: float) -> Optional[str]:
         """Ждать первый ответ на /voice/dialogue/response до timeout_s секунд."""
@@ -185,6 +293,13 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
             actual_anim = node._last_animation or ""
             if expected_anim not in actual_anim:
                 return False, f"Animation {actual_anim!r} does not contain {expected_anim!r}"
+
+        # assert_tool_called — проверяем что MCP тул был вызван
+        if "assert_tool_called" in step:
+            expected_tool = step["assert_tool_called"]
+            called = [c["tool_name"] for c in node._mcp_calls]
+            if expected_tool not in called:
+                return False, f"Tool {expected_tool!r} was not called. Called: {called}"
 
         return True, f"OK: {response_text[:60]}"
 
