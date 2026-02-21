@@ -1306,6 +1306,25 @@ class DialogueNode(Node):
             if streaming_result["error"]:
                 raise TimeoutError(streaming_result["error"])
 
+            # ============ ПОЛНЫЙ ВЫВОД ОТ LLM (для отладки) ============
+            _dbg_text = streaming_result.get("full_response", "") or ""
+            _dbg_tools = streaming_result.get("tool_calls", [])
+            if _dbg_tools:
+                _tools_repr = ", ".join(
+                    f"{tc.get('function', {}).get('name', '?')}({tc.get('function', {}).get('arguments', '')[:120]})"
+                    for tc in _dbg_tools
+                )
+                self.get_logger().info(
+                    f"🤖 LLM FULL OUTPUT [tool_calls × {len(_dbg_tools)}]:\n"
+                    f"  text   : {repr(_dbg_text[:300]) if _dbg_text else '<empty>'}\n"
+                    f"  tools  : {_tools_repr}"
+                )
+            else:
+                self.get_logger().info(
+                    f"🤖 LLM FULL OUTPUT [{streaming_result.get('chunk_count', 0)} chunks]:\n"
+                    f"  {repr(_dbg_text[:600])}"
+                )
+
             # ============ Обработка tool_calls если LLM запросил выполнение ============
             if "tool_calls" in streaming_result and streaming_result["tool_calls"]:
                 self.get_logger().info("🔧 Обнаружены tool_calls от LLM - начинаю выполнение")
