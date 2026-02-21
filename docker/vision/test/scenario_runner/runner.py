@@ -572,6 +572,14 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
 
         return True, f"OK: {response_text[:60]}"
 
+    # inject_stt_no_wait — fire-and-forget STT (barge-in use case).
+    # Не ждёт ответа, не очищает трекинг. Используется для симуляции первого
+    # запроса в barge-in сценарии — чтобы нода вошла в DIALOGUE state, а потом
+    # inject_stt (с ожиданием) симулировал прерывающий запрос.
+    elif "inject_stt_no_wait" in step:
+        node.inject_stt(step["inject_stt_no_wait"])
+        return True, f"STT injected (no wait): {step['inject_stt_no_wait']!r}"
+
     # inject_vad
     elif "inject_vad" in step:
         node.inject_vad(bool(step["inject_vad"]))
