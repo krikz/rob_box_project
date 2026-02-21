@@ -2456,7 +2456,7 @@ class DialogueNode(Node):
                         'content': content,
                     }
                     messages.append(tool_msg)
-                    self.conversation_history.add_tool_message(content, tool_call_id, tool_name)
+                    self.conversation_history.add_tool_message(content, tool_name, tool_call_id)
                     self.get_logger().debug(f"   Tool result для {tool_name}: {content[:100]}...")
 
                 # ── LLM запрос + 1 retry при timeout ─────────────────────────────
