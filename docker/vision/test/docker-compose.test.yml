@@ -115,6 +115,7 @@ services:
     volumes:
       - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
+      - ./config:/test-config:ro   # нужен для ZENOH_SESSION_CONFIG_URI
     command: ["python3", "/runner/runner.py"]
     depends_on:
       voice-test:

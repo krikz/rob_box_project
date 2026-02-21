@@ -129,6 +129,8 @@ jobs:
           docker compose -f docker-compose.test.yml logs scenario-runner || true
           echo "=== voice-test logs (tail 50) ==="
           docker compose -f docker-compose.test.yml logs voice-test --tail 50 || true
+          echo "=== zenoh-router logs ==="
+          docker compose -f docker-compose.test.yml logs zenoh-router-test --tail 20 || true
           echo "=== ollama logs (tail 20) ==="
           docker compose -f docker-compose.test.yml logs ollama --tail 20 || true
 
