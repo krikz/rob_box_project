@@ -1,19 +1,13 @@
 # docker-compose.test.yml — интеграционное тестирование голосового ассистента
 #
-# LLM: Ollama + qwen2.5:0.5b (~350MB, CPU, понимает русский)
-# Первый запуск: модель скачивается автоматически (~30s)
-# Последующие: из volume ollama-models (мгновенно)
+# LLM: DeepSeek API (api.deepseek.com) — передать DEEPSEEK_API_KEY при запуске
 #
 # Запуск локально:
-#   docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
+#   DEEPSEEK_API_KEY=sk-xxx docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
 #
 # QEMU (реальный ARM образ):
 #   docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-#   PLATFORM=linux/arm64 docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
-#
-# Сменить модель:
-#   LLM_MODEL=smollm2:360m docker compose -f docker-compose.test.yml up ...
-#   LLM_MODEL=gemma3:1b    (лучше качество, 815MB)
+#   PLATFORM=linux/arm64 DEEPSEEK_API_KEY=sk-xxx docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
 
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: "0"
@@ -39,29 +33,6 @@ services:
       retries: 20
       start_period: 5s
 
-  # ─── Ollama — реальный локальный LLM (OpenAI-compatible API) ──────────────
-  # Первый запуск вытягивает модель. Последующие используют volume.
-  ollama:
-    build:
-      context: ./ollama
-      dockerfile: Dockerfile
-    container_name: ollama-test
-    network_mode: host
-    environment:
-      OLLAMA_HOST: 0.0.0.0:11434
-      OLLAMA_KEEP_ALIVE: 1h
-      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
-    volumes:
-      - ollama-models:/root/.ollama          # персистентный кэш моделей
-    healthcheck:
-      # Проверяем флаг-файл который entrypoint создаёт после pull+warmup
-      # Это надёжнее чем grep по api/tags пока идёт download
-      test: ["CMD-SHELL", "test -f /tmp/ollama_ready || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 180      # до 15 минут на первый pull (400MB на медленном Pi WiFi)
-      start_period: 10s
-
   # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
   voice-test:
     # QEMU: установить PLATFORM=linux/arm64 для тестирования реального ARM образа
@@ -74,10 +45,8 @@ services:
       <<: *ros-env
       ROS_DISTRO: humble
       PYTHONUNBUFFERED: "1"
-      # Ollama — не нужен реальный API key
-      QWEN_API_KEY: ollama-no-key
-      DEEPSEEK_API_KEY: ollama-no-key
-      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+      # DeepSeek API key — передаётся при запуске, не коммитится
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       # Путь к тестовой конфигурации
       VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
     volumes:
@@ -85,8 +54,6 @@ services:
     command: ["/test-config/start_voice_test.sh"]
     depends_on:
       zenoh-router-test:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "ros2 node list 2>/dev/null | grep -q dialogue_node || exit 1"]
@@ -121,8 +88,3 @@ services:
       voice-test:
         condition: service_healthy
 
-volumes:
-  # Кэш моделей Ollama — сохраняется между запусками тестов
-  # Удалить: docker volume rm voice-test_ollama-models
-  ollama-models:
-    name: voice-test_ollama-models

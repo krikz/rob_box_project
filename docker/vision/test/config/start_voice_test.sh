@@ -8,7 +8,7 @@
 #   - TTS  → /voice/dialogue/response читает scenario-runner (не tts_node)
 #   - LED  → /voice/animation/request читает scenario-runner (проверка publish)
 #
-# LLM → mock-llm:8765 (FastAPI OpenAI-compatible)
+# LLM → DeepSeek API (api.deepseek.com) — ключ через env DEEPSEEK_API_KEY
 
 set -e
 
@@ -20,10 +20,10 @@ source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
 source /ws/install/setup.bash
 
 # Ждём Zenoh router
-echo "Ожидание Zenoh router (localhost:8000)..."
+echo "Ожидание Zenoh router (localhost:7447)..."
 RETRY=0
 while [ $RETRY -lt 30 ]; do
-    if wget -qO- http://localhost:8000/@/local/router > /dev/null 2>&1; then
+    if nc -z localhost 7447 2>/dev/null; then
         echo "✓ Zenoh router доступен"
         break
     fi
@@ -31,23 +31,11 @@ while [ $RETRY -lt 30 ]; do
     RETRY=$((RETRY + 1))
 done
 
-# Ждём mock-llm
-echo "Ожидание mock-llm (localhost:8765)..."
-RETRY=0
-while [ $RETRY -lt 30 ]; do
-    if wget -qO- http://localhost:8765/health > /dev/null 2>&1; then
-        echo "✓ mock-llm доступен"
-        break
-    fi
-    sleep 1
-    RETRY=$((RETRY + 1))
-done
-
 echo ""
 echo "Запуск dialogue_node (test config)..."
-echo "  LLM base_url: http://localhost:8765/v1"
-echo "  MCP tools:    disabled"
-echo "  Wake words:   empty (прямой диалог)"
+echo "  LLM:       DeepSeek API (deepseek-chat)"
+echo "  MCP tools: disabled"
+echo "  Wake words: empty (прямой диалог)"
 echo ""
 
 exec ros2 run rob_box_voice dialogue_node \

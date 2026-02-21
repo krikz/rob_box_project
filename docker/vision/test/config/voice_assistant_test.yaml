@@ -1,18 +1,14 @@
 # voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
 #
-# LLM: Ollama (localhost:11434) — реальный локальный инференс
-# Модель: qwen2.5:0.5b (~350MB, CPU, понимает русский)
-# Альтернативы: smollm2:360m (200MB, быстрее), gemma3:1b (815MB, лучше)
-#
-# Ollama API полностью совместим с OpenAI SDK — никаких изменений в ноде
+# LLM: DeepSeek API (api.deepseek.com, deepseek-chat)
+# API key передаётся через env DEEPSEEK_API_KEY — не коммитить
 
 /dialogue_node:
   ros__parameters:
-    # Ollama — OpenAI-compatible, аутентификация не нужна
-    provider: "qwen"
-    api_key: "ollama"   # Ollama игнорирует api_key, но Python SDK требует непустую строку
-    base_url: "http://localhost:11434/v1"
-    model: "qwen2.5:0.5b"   # переопределить через LLM_MODEL env: model: "${LLM_MODEL:-qwen2.5:0.5b}"
+    provider: "deepseek"
+    api_key: ""   # берётся из env DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
     temperature: 0.5
     max_tokens: 150       # короткие ответы = быстрые тесты
     streaming: true
@@ -35,6 +31,5 @@
     max_history_messages: 6
     history_window_tokens: 1000
 
-    # Таймауты — Ollama на CPU может быть медленнее продакшнего
-    llm_timeout_sec: 60.0
+    llm_timeout_sec: 30.0
     max_iterations: 3
