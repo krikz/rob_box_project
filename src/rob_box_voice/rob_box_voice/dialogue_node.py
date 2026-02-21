@@ -394,29 +394,49 @@ class DialogueNode(Node):
         self.temperature = self.get_parameter("temperature").value
         self.max_tokens = self.get_parameter("max_tokens").value
         self.streaming = self.get_parameter("streaming").value
-        
-        # Создаём OpenAI клиент с timeout и отключенным connection pooling
-        # Это предотвращает проблему с reuse закрытых соединений после idle периода
-        from httpx import Timeout, Limits
-        import httpx
-        
-        http_client = httpx.Client(
-            timeout=Timeout(60.0, connect=10.0),
-            limits=Limits(max_connections=10, max_keepalive_connections=0),  # Отключаем keepalive pooling
-            follow_redirects=True,
-        )
-        
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            http_client=http_client
-        )
-        
-        self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_config['name']} (no connection pooling)")
+
+        # Сохраняем для последующего пересоздания клиента
+        self._llm_api_key = api_key
+        self._llm_base_url = base_url
+
+        self._recreate_llm_client(log_init=True)
+
         self.get_logger().info(f"  📡 Base URL: {base_url}")
         self.get_logger().info(f"  🤖 Model: {self.model}")
         self.get_logger().info(f"  🌊 Streaming: {self.streaming}")
     
+    def _recreate_llm_client(self, log_init: bool = False):
+        """Пересоздаёт httpx.Client + OpenAI wrapper на свежих сокетах.
+
+        Вызывать после каждого сетевого таймаута — старый httpx.Client может
+        содержать сокеты в CLOSE_WAIT / broken-pipe состоянии.
+        """
+        from httpx import Timeout, Limits
+        import httpx
+
+        # Закрываем старый клиент если есть (освобождает сокеты)
+        try:
+            if hasattr(self, "client") and self.client is not None:
+                self.client.close()
+        except Exception:
+            pass
+
+        http_client = httpx.Client(
+            timeout=Timeout(60.0, connect=10.0),
+            limits=Limits(max_connections=5, max_keepalive_connections=0),
+            follow_redirects=True,
+        )
+        self.client = OpenAI(
+            api_key=self._llm_api_key,
+            base_url=self._llm_base_url,
+            http_client=http_client,
+        )
+        if log_init:
+            provider_name = self.PROVIDERS[self.current_provider]["name"]
+            self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_name} (no connection pooling)")
+        else:
+            self.get_logger().info("🔄 httpx.Client пересоздан на свежих сокетах")
+
     def _try_fallback_provider(self):
         """Попытка переключиться на резервный провайдер"""
         if not self.enable_fallback:
@@ -1275,6 +1295,9 @@ class DialogueNode(Node):
             # Увеличиваем счётчик ошибок
             self.provider_error_count += 1
             self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
+
+            # Пересоздаём клиент — старый httpx.Client может содержать сломанные сокеты
+            self._recreate_llm_client()
             
             # Пробуем fallback если превысили порог
             if self.provider_error_count >= self.provider_error_threshold:
