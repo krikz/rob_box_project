@@ -17,9 +17,9 @@ echo "=================================================="
 ollama serve &
 OLLAMA_PID=$!
 
-# Ждём пока сервер стартует
+# Ждём пока сервер стартует (ollama list обращается к серверу через unix socket)
 echo "Ожидание Ollama API..."
-until curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; do
+until ollama list > /dev/null 2>&1; do
     sleep 1
 done
 echo "✓ Ollama API доступен"
@@ -33,11 +33,9 @@ else
     echo "✓ Модель загружена"
 fi
 
-# Прогрев: первый запрос иногда медленный — делаем cold start здесь
+# Прогрев: загружаем модель в память заранее (первый inference медленный)
 echo "Прогрев модели (first inference)..."
-curl -s http://localhost:11434/api/generate \
-    -d "{\"model\": \"$MODEL\", \"prompt\": \"hi\", \"stream\": false}" \
-    > /dev/null
+ollama run "$MODEL" "hi" > /dev/null 2>&1 || true
 echo "✓ Модель готова к работе"
 
 echo ""
