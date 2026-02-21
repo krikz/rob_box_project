@@ -132,7 +132,8 @@ class DialogueNode(Node):
         self.system_prompt = self._load_system_prompt()
 
         # История диалога (используем ConversationHistory модуль)
-        self.conversation_history = ConversationHistory(max_messages=20)
+        # max_turns=10: окно из 10 инференсов (user+assistant пар), системный промпт не считается
+        self.conversation_history = ConversationHistory(max_turns=10)
 
         # Долгосрочная память (сохраняется между рестартами)
         self.voice_memory = None

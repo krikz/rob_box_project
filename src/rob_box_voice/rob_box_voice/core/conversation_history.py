@@ -49,14 +49,16 @@ class ConversationHistory:
         history.clear()
     """
 
-    def __init__(self, max_messages: int = 50):
+    def __init__(self, max_turns: int = 10):
         """
         Инициализация истории диалога.
 
         Args:
-            max_messages: Максимальное количество сообщений в истории (по умолчанию 50)
+            max_turns: Максимальное количество инференсов (user+assistant пар) в истории.
+                       Системный промпт не считается. При переполнении дропается самый
+                       старый тёрн целиком (user + все до следующего user).
         """
-        self.max_messages = max_messages
+        self.max_turns = max_turns
         self._messages: List[Message] = []
 
     def add_system_message(self, content: str) -> None:
@@ -129,20 +131,28 @@ class ConversationHistory:
             message: Сообщение для добавления
         """
         self._messages.append(message)
+        self._trim_to_max_turns()
 
-        # Удалить старые сообщения если превышен лимит
-        # Но всегда оставляем системное сообщение если оно есть
-        if len(self._messages) > self.max_messages:
-            # Найти индекс первого не-системного сообщения
-            first_non_system_idx = 0
-            for i, msg in enumerate(self._messages):
-                if msg.role != "system":
-                    first_non_system_idx = i
-                    break
+    def _trim_to_max_turns(self) -> None:
+        """
+        Обрезаем историю до max_turns полных инференсов.
 
-            # Удалить старые не-системные сообщения
-            if first_non_system_idx < len(self._messages):
-                self._messages.pop(first_non_system_idx)
+        Один тёрн = user message + всё что за ним до следующего user (assistant,
+        tool results, tool_calls). Системный промпт всегда сохраняется на позиции 0.
+        При переполнении дропаем самый старый тёрн целиком.
+        """
+        system_msgs = [m for m in self._messages if m.role == "system"]
+        other_msgs = [m for m in self._messages if m.role != "system"]
+
+        while True:
+            user_indices = [i for i, m in enumerate(other_msgs) if m.role == "user"]
+            if len(user_indices) <= self.max_turns:
+                break
+            # Дропаем с первого user до (не включая) второго user
+            end = user_indices[1] if len(user_indices) > 1 else len(other_msgs)
+            del other_msgs[user_indices[0]:end]
+
+        self._messages = system_msgs + other_msgs
 
     def get_messages(self) -> List[Dict[str, Any]]:
         """
