@@ -60,14 +60,22 @@ jobs:
       # ── Проверка что нужные файлы есть после checkout ─────────────────────
       - name: Verify test files exist
         run: |
-          echo "=== Checking test files ==="
+          echo "=== Test directory ==="
           ls -la ${{ env.TEST_DIR }}/
+          echo "=== ollama/ ==="
           ls -la ${{ env.TEST_DIR }}/ollama/
+          echo "=== config/ ==="
           ls -la ${{ env.TEST_DIR }}/config/
-          echo "entrypoint.sh:"
-          file ${{ env.TEST_DIR }}/ollama/entrypoint.sh
-          echo "zenoh config:"
-          file ${{ env.TEST_DIR }}/config/zenoh_router_test.json5
+          echo "=== File type checks (stat) ==="
+          stat ${{ env.TEST_DIR }}/ollama/entrypoint.sh
+          stat ${{ env.TEST_DIR }}/config/zenoh_router_test.json5
+          echo "=== Ensure regular files (not dirs) ==="
+          test -f ${{ env.TEST_DIR }}/ollama/entrypoint.sh && echo "entrypoint.sh: IS FILE ✓" || echo "entrypoint.sh: NOT A FILE ✗"
+          test -f ${{ env.TEST_DIR }}/config/zenoh_router_test.json5 && echo "zenoh_router_test.json5: IS FILE ✓" || echo "NOT A FILE ✗"
+          echo "=== First 3 lines of entrypoint.sh ==="
+          head -3 ${{ env.TEST_DIR }}/ollama/entrypoint.sh || true
+          echo "=== Docker version ==="
+          docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Engine.Version}}'
 
       # ── Определить тег ─────────────────────────────────────────────────────
       - name: Determine image tag

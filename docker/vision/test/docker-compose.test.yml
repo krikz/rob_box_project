@@ -1,0 +1,127 @@
+# docker-compose.test.yml — интеграционное тестирование голосового ассистента
+#
+# LLM: Ollama + qwen2.5:0.5b (~350MB, CPU, понимает русский)
+# Первый запуск: модель скачивается автоматически (~30s)
+# Последующие: из volume ollama-models (мгновенно)
+#
+# Запуск локально:
+#   docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
+#
+# QEMU (реальный ARM образ):
+#   docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#   PLATFORM=linux/arm64 docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
+#
+# Сменить модель:
+#   LLM_MODEL=smollm2:360m docker compose -f docker-compose.test.yml up ...
+#   LLM_MODEL=gemma3:1b    (лучше качество, 815MB)
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: "0"
+  RMW_IMPLEMENTATION: rmw_zenoh_cpp
+  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+  ROBOT_ID: "test-bot"
+  ZENOH_SESSION_CONFIG_URI: /test-config/zenoh_test_session.json5
+  RUST_LOG: zenoh=warn
+
+services:
+  # ─── Zenoh router ───────────────────────────────────────────────────────────
+  zenoh-router-test:
+    image: eclipse/zenoh:1.6.2
+    container_name: zenoh-router-test
+    network_mode: host
+    environment:
+      RUST_LOG: zenoh=warn
+    volumes:
+      - ./config/zenoh_router_test.json5:/zenoh_config.json5
+    command: -c /zenoh_config.json5
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ─── Ollama — реальный локальный LLM (OpenAI-compatible API) ──────────────
+  # Первый запуск вытягивает модель. Последующие используют volume.
+  ollama:
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
+    container_name: ollama-test
+    network_mode: host
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 1h
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+    volumes:
+      - ollama-models:/root/.ollama          # персистентный кэш моделей
+    healthcheck:
+      # Healthcheck проходит только после того как модель загружена и готова отвечать
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 60       # до 5 минут на первый pull (на быстром интернете ~30s)
+      start_period: 10s
+
+  # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
+  voice-test:
+    # QEMU: установить PLATFORM=linux/arm64 для тестирования реального ARM образа
+    # По умолчанию linux/amd64 для быстрого CI без QEMU
+    platform: ${PLATFORM:-linux/amd64}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: voice-test
+    network_mode: host
+    environment:
+      <<: *ros-env
+      ROS_DISTRO: humble
+      PYTHONUNBUFFERED: "1"
+      # Ollama — не нужен реальный API key
+      QWEN_API_KEY: ollama-no-key
+      DEEPSEEK_API_KEY: ollama-no-key
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+      # Путь к тестовой конфигурации
+      VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
+    volumes:
+      - ./config:/test-config:ro
+    command: ["/test-config/start_voice_test.sh"]
+    depends_on:
+      zenoh-router-test:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ros2 node list 2>/dev/null | grep -q dialogue_node || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ─── Scenario Runner ─────────────────────────────────────────────────────────
+  scenario-runner:
+    build:
+      context: ./scenario_runner
+      dockerfile: Dockerfile
+      args:
+        # Используем тот же образ что и voice-test (тег совпадает)
+        BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: scenario-runner-test
+    network_mode: host
+    environment:
+      <<: *ros-env
+      PYTHONUNBUFFERED: "1"
+      SCENARIOS_DIR: /scenarios
+      RESULTS_FILE: /results/test_results.json
+      OVERALL_TIMEOUT: "120"
+    volumes:
+      - ./scenario_runner/scenarios:/scenarios:ro
+      - ./results:/results
+    command: ["python3", "/runner/runner.py"]
+    depends_on:
+      voice-test:
+        condition: service_healthy
+
+volumes:
+  # Кэш моделей Ollama — сохраняется между запусками тестов
+  # Удалить: docker volume rm voice-test_ollama-models
+  ollama-models:
+    name: voice-test_ollama-models
