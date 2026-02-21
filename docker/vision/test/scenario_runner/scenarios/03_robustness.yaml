@@ -17,35 +17,35 @@ scenarios:
     fail_fast: false
     steps:
       - inject_stt: "сообщение первое"
-        timeout_s: 50
+        timeout_s: 25
         assert_response_not_empty: true
       - wait_ms: 300
       - inject_stt: "сообщение второе"
-        timeout_s: 50
+        timeout_s: 25
         assert_response_not_empty: true
       - wait_ms: 300
       - inject_stt: "сообщение третье"
-        timeout_s: 50
+        timeout_s: 25
         assert_response_not_empty: true
 
   - name: vad_interrupt_no_hang
     description: "VAD interrupt после запроса — нода не зависает"
     steps:
       - inject_stt: "привет"
-        timeout_s: 50
+        timeout_s: 25
         assert_response_not_empty: true
       - wait_ms: 500
       - inject_vad: true     # Прерываем
       - wait_ms: 200
       - inject_vad: false
       - inject_stt: "расскажи анекдот"
-        timeout_s: 50
+        timeout_s: 25
         assert_response_not_empty: true
 
   - name: long_message_within_timeout
     description: "Длинное сообщение — ответ в разумный срок"
     steps:
       - inject_stt: "расскажи подробно о том как ты работаешь, что ты умеешь делать, какие у тебя возможности и ограничения"
-        timeout_s: 60
+        timeout_s: 35
         assert_response_not_empty: true
 

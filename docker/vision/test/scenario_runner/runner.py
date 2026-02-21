@@ -27,6 +27,7 @@ LLM: Ollama (qwen2.5:0.5b) — OpenAI-совместимый API на порту
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -34,6 +35,7 @@ from typing import Any, Optional
 
 import rclpy
 import yaml
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Bool, String
@@ -132,6 +134,7 @@ class ScenarioRunner(Node):
         self._last_animation: Optional[str] = None
         self._last_sound: Optional[str] = None
         self._response_ts: float = 0.0
+        self._response_event = threading.Event()  # Сигнализируем main-потоку без spin_once
 
         self.create_subscription(String, TOPIC_RESPONSE, self._on_response, 10)
         self.create_subscription(String, TOPIC_ANIMATION, self._on_animation, 10)
@@ -142,6 +145,7 @@ class ScenarioRunner(Node):
     def _on_response(self, msg: String):
         self._last_response = msg.data
         self._response_ts = time.time()
+        self._response_event.set()  # Будим wait_for_response
         self.get_logger().info(f"[response] {msg.data[:80]}")
 
     def _on_animation(self, msg: String):
@@ -215,16 +219,15 @@ class ScenarioRunner(Node):
         self._last_animation = None
         self._last_sound = None
         self._response_ts = 0.0
+        self._response_event.clear()  # Сбрасываем event для следующего ожидания
         self._mcp_calls.clear()
 
     def wait_for_response(self, timeout_s: float) -> Optional[str]:
-        """Ждать первый ответ на /voice/dialogue/response до timeout_s секунд."""
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.1)
-            if self._last_response is not None:
-                return self._last_response
-        return None
+        """Ждать ответ на /voice/dialogue/response.
+        Использует threading.Event — основной поток НЕ блокирует ROS executor.
+        """
+        self._response_event.wait(timeout=timeout_s)
+        return self._last_response
 
 
 # ── Шаг сценария ─────────────────────────────────────────────────────────────
@@ -241,9 +244,8 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
         no_response_expected = step.get("assert_no_response", False)
 
         if no_response_expected:
-            # Ждём немного и убеждаемся что ответа НЕТ
+            # Ждём немного и убеждаемся что ответа НЕТ — executor спинит фоново
             time.sleep(timeout_s)
-            rclpy.spin_once(node, timeout_sec=0.1)
             if node._last_response is not None:
                 return False, f"Unexpected response received: {node._last_response[:80]}"
             return True, "No response (as expected)"
@@ -373,20 +375,29 @@ def main():
     rclpy.init()
     node = ScenarioRunner()
 
+    # ── Фоновый executor — спиним в отдельном потоке, никогда не блокируем main ──
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+
+    # ── Глобальный дедлайн ────────────────────────────────────────────────────
+    global_deadline = time.time() + OVERALL_TIMEOUT
+
     # Ждём Zenoh/ROS2 готовности (dialogue_node должен быть виден)
     print(f"\n[runner] Waiting for dialogue_node to appear...")
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        rclpy.spin_once(node, timeout_sec=1.0)
+    wait_dl = time.time() + 60
+    while time.time() < wait_dl:
         names = node.get_node_names()
         if "dialogue_node" in names:
             print(f"[runner] dialogue_node found!")
             break
+        time.sleep(1.0)
     else:
         print("[runner] WARNING: dialogue_node not found, continuing anyway")
 
-    # Небольшой прогрев
-    time.sleep(2.0)
+    # Небольшой прогрев — даём dialogue_node получить MCP tools list
+    time.sleep(3.0)
 
     # Загружаем сценарии
     scenarios_path = Path(SCENARIOS_DIR)
@@ -395,18 +406,38 @@ def main():
 
     if not scenario_files:
         print(f"[runner] ERROR: No scenario files in {SCENARIOS_DIR} — aborting")
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
         sys.exit(1)
 
     all_results = []
     for path in scenario_files:
+        if time.time() > global_deadline:
+            print(f"[runner] OVERALL_TIMEOUT={OVERALL_TIMEOUT}s exceeded, stopping")
+            break
+
         print(f"\n[runner] Loading {path.name}")
         with open(path) as f:
             data = yaml.safe_load(f)
 
         scenarios = data.get("scenarios", [])
         for scenario in scenarios:
+            if time.time() > global_deadline:
+                print(f"[runner] OVERALL_TIMEOUT exceeded, skipping remaining scenarios")
+                all_results.append({
+                    "name": scenario.get("name", "unknown"),
+                    "passed": False,
+                    "steps": [],
+                    "skipped": True,
+                })
+                continue
+
             result = run_scenario(node, scenario)
             all_results.append(result)
+
+            # Пауза между сценариями — dialogue_node должен вернуться в IDLE
+            time.sleep(2.0)
 
     # Итоги
     total = len(all_results)
@@ -431,6 +462,7 @@ def main():
         }, f, indent=2, ensure_ascii=False)
     print(f"[runner] Results saved to {RESULTS_FILE}")
 
+    executor.shutdown()
     node.destroy_node()
     rclpy.shutdown()
 
