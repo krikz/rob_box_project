@@ -250,23 +250,22 @@ class TTSNode(Node):
             self.get_logger().warn("⚠️  Yandex gRPC не подключен - будет использован только Silero fallback")
 
     def initialize_audio_device(self):
-        """Инициализация аудио устройства для воспроизведения"""
+        """Инициализация аудио устройства для воспроизведения.
+
+        ВАЖНО: всегда используем device=None (ALSA default).
+        asound.conf маршрутизирует default → dmix_respeaker → hw:1,0.
+        dmix позволяет TTS и sound_node воспроизводить одновременно.
+        Если использовать прямой hardware-индекс (hw:1,0), dmix обходится
+        и второй sd.play() получает PaErrorCode -9985 (Device unavailable).
+        """
+        self.device_index = None  # ALSA default → dmix_respeaker (через asound.conf)
         try:
-            # Поиск ReSpeaker устройства
-            self.device_index = find_respeaker_device_sounddevice()
-            
-            if self.device_index is not None:
-                devices = sd.query_devices()
-                device_name = devices[self.device_index]['name']
-                self.get_logger().info(f"✅ ReSpeaker найден для TTS playback: device {self.device_index} ({device_name})")
-            else:
-                # Fallback на default device
-                self.get_logger().warn("⚠️ ReSpeaker не найден для TTS, используем default device")
-                self.device_index = None  # None означает default device в sounddevice
-                
+            # Логируем что именно sounddevice считает default-устройством
+            default_out = sd.query_devices(kind='output')
+            device_name = default_out.get('name', '?') if isinstance(default_out, dict) else str(default_out)
+            self.get_logger().info(f"✅ TTS playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка инициализации аудио устройства для TTS: {e}")
-            self.device_index = None
+            self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def _load_silero_model(self):
         """Загрузить Silero TTS модель (lazy loading)"""

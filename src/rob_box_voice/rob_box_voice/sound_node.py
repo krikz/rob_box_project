@@ -111,23 +111,21 @@ class SoundNode(Node):
         self.load_sounds()
 
     def initialize_audio_device(self):
-        """Инициализация аудио устройства для воспроизведения"""
+        """Инициализация аудио устройства для воспроизведения.
+
+        ВАЖНО: всегда используем device=None (ALSA default).
+        asound.conf маршрутизирует default → dmix_respeaker → hw:1,0.
+        dmix позволяет TTS и sound_node воспроизводить одновременно.
+        Если использовать прямой hardware-индекс (hw:1,0), dmix обходится
+        и второй sd.play() получает PaErrorCode -9985 (Device unavailable).
+        """
+        self.device_index = None  # ALSA default → dmix_respeaker (через asound.conf)
         try:
-            # Поиск ReSpeaker устройства
-            self.device_index = find_respeaker_device_sounddevice()
-            
-            if self.device_index is not None:
-                devices = sd.query_devices()
-                device_name = devices[self.device_index]['name']
-                self.get_logger().info(f"✅ ReSpeaker найден для playback: device {self.device_index} ({device_name})")
-            else:
-                # Fallback на default device
-                self.get_logger().warn("⚠️ ReSpeaker не найден, используем default device")
-                self.device_index = None  # None означает default device в sounddevice
-                
+            default_out = sd.query_devices(kind='output')
+            device_name = default_out.get('name', '?') if isinstance(default_out, dict) else str(default_out)
+            self.get_logger().info(f"✅ Sound playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка инициализации аудио устройства: {e}")
-            self.device_index = None
+            self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def load_sounds(self):
         """Загрузка всех звуковых файлов из sound_pack/"""
