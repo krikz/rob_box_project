@@ -54,11 +54,12 @@ services:
     volumes:
       - ollama-models:/root/.ollama          # персистентный кэш моделей
     healthcheck:
-      # Healthcheck проходит только после того как модель загружена и готова отвечать
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
+      # Проверяем флаг-файл который entrypoint создаёт после pull+warmup
+      # Это надёжнее чем grep по api/tags пока идёт download
+      test: ["CMD-SHELL", "test -f /tmp/ollama_ready || exit 1"]
       interval: 5s
-      timeout: 10s
-      retries: 180      # до 15 минут на первый pull (qwen2.5:0.5b ~400MB, Pi WiFi может быть медленно)
+      timeout: 5s
+      retries: 180      # до 15 минут на первый pull (400MB на медленном Pi WiFi)
       start_period: 10s
 
   # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────

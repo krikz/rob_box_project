@@ -45,5 +45,10 @@ echo "Ollama готов: http://localhost:11434/v1 (OpenAI-compatible)"
 echo "Доступные модели:"
 ollama list
 
+# Флаг-файл: healthcheck проверяет его, а не дёргает API tags
+# (curl -sf api/tags | grep model может не работать пока идёт pull)
+touch /tmp/ollama_ready
+echo "✓ Ollama полностью готов: http://localhost:11434"
+
 # Ждём пока основной процесс завершится
 wait $OLLAMA_PID
