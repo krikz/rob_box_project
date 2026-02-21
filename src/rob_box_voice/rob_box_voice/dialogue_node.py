@@ -1031,17 +1031,24 @@ class DialogueNode(Node):
             else:
                 self.get_logger().info(f"🚫 MCP инструменты НЕ отправлены (enable={self.enable_mcp_tools}, available={self.mcp_tools_available}, tools={len(self.available_tools) if self.available_tools else 0})")
 
-            # 📨 RAW LLM INPUT — логируем что шлём в LLM
-            self.get_logger().debug(f"📨 LLM INPUT: итого {len(messages)} сообщений")
-            for _i, _m in enumerate(messages):
-                _role = _m.get('role', '?')
-                _content = _m.get('content', '')
-                if isinstance(_content, list):
-                    _content = str(_content)
-                if _role == 'system':
-                    self.get_logger().debug(f"  [{_i}] system: (длина {len(_content)} символов)")
-                else:
-                    self.get_logger().info(f"  [{_i}] {_role}: {_content[:600]}{'…' if len(_content) > 600 else ''}")
+            # 📨 RAW LLM INPUT — полный объект отправляемый в LLM
+            import json as _json
+            def _truncate_msg(m):
+                """Копия сообщения с обрезанным content (для читаемости в логах)."""
+                m2 = dict(m)
+                c = m2.get('content', '')
+                if isinstance(c, list):
+                    # tool result — может быть список блоков
+                    m2['content'] = [
+                        {**blk, 'text': blk['text'][:400] + '…' if isinstance(blk.get('text'), str) and len(blk['text']) > 400 else blk}
+                        if isinstance(blk, dict) else blk
+                        for blk in c
+                    ]
+                elif isinstance(c, str) and len(c) > 800:
+                    m2['content'] = c[:800] + f'… [+{len(c)-800} chars]'
+                return m2
+            _msgs_dump = _json.dumps([_truncate_msg(m) for m in messages], ensure_ascii=False, indent=2)
+            self.get_logger().info(f"📨 LLM INPUT ({len(messages)} msgs):\n{_msgs_dump}")
 
             # Создаём stream напрямую (мы уже внутри ThreadPoolExecutor)
             # httpx client имеет свой timeout (60s total, 10s connect)
