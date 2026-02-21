@@ -94,7 +94,7 @@ services:
           --ros-args \
           --params-file /tmp/voice_params.yaml
     volumes:
-      - ./fixtures:/fixtures:ro
+      - ./fixtures/voice_memory.db:/fixtures/voice_memory.db:ro
     depends_on:
       zenoh-router-test:
         condition: service_healthy
