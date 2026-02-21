@@ -420,12 +420,10 @@ class DialogueNode(Node):
         from httpx import Timeout, Limits
         import httpx
 
-        # Закрываем старый клиент если есть (освобождает сокеты)
-        try:
-            if hasattr(self, "client") and self.client is not None:
-                self.client.close()
-        except Exception:
-            pass
+        # НЕ вызываем client.close() — это вызывает дедлок:
+        # стейл-потоки от shutdown(wait=False) держат httpcore connection_pool lock
+        # пока ждут ответа сети; close() пытается взять тот же lock → вечная блокировка.
+        # Старый клиент подберёт GC когда стейл-потоки завершатся.
 
         http_client = httpx.Client(
             timeout=Timeout(60.0, connect=10.0),
