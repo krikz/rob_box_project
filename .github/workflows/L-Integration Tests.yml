@@ -44,6 +44,12 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
 
     steps:
+      # ── Docker от предыдущих запусков мог создать root-owned директории ──────
+      # (bind mount несуществующего файла → docker создаёт dir с правами root)
+      # git clean не может их удалить → checkout не перезаписывает → файл = dir
+      - name: Fix root-owned stale paths from Docker
+        run: sudo chown -R "$USER:$USER" . 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
