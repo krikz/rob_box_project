@@ -35,7 +35,7 @@ fi
 
 # Прогрев: загружаем модель в память заранее (первый inference медленный)
 echo "Прогрев модели (first inference)..."
-ollama run "$MODEL" "hi" > /dev/null 2>&1 || true
+echo "hi" | ollama run "$MODEL" > /dev/null 2>&1 || true
 echo "✓ Модель готова к работе"
 
 echo ""
