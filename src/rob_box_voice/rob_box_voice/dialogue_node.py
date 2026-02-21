@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import String
 from std_srvs.srv import Empty
@@ -138,12 +139,24 @@ class DialogueNode(Node):
         if VOICE_MEMORY_AVAILABLE:
             self._init_voice_memory()
 
+        # ReentrantCallbackGroup для interrupt-callbacks — чтобы stt_callback и vad_callback
+        # срабатывали НЕМЕДЛЕННО даже когда timer callback заблокирован в future.result()
+        # (LLM запрос может занимать 5-35с, всё это время дефолтная MutuallyExclusiveGroup
+        # блокирует все остальные callbacks ноды)
+        self._interrupt_cbg = ReentrantCallbackGroup()
+
         # Подписка на распознанную речь
-        self.stt_sub = self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
-        
+        self.stt_sub = self.create_subscription(
+            String, "/voice/stt/result", self.stt_callback, 10,
+            callback_group=self._interrupt_cbg
+        )
+
         # Подписка на hardware VAD для мгновенного прерывания при новой речи
         from std_msgs.msg import Bool
-        self.vad_sub = self.create_subscription(Bool, "/audio/vad", self.vad_callback, 10)
+        self.vad_sub = self.create_subscription(
+            Bool, "/audio/vad", self.vad_callback, 10,
+            callback_group=self._interrupt_cbg
+        )
         self.vad_speech_detected = False  # Текущее состояние VAD
 
         # Подписка на feedback от command_node (Phase 5)
