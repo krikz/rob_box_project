@@ -62,7 +62,8 @@ services:
         {
           mode: "peer",
           connect: { endpoints: ["tcp/localhost:7447"] },
-          scouting: { multicast: { enabled: false } }
+          scouting: { multicast: { enabled: false } },
+          transport: { shared_memory: { enabled: false } }
         }
         ENDOFZENOH
         echo "Запись конфига в /tmp/voice_params.yaml..." &&
@@ -130,7 +131,8 @@ services:
         {
           mode: "peer",
           connect: { endpoints: ["tcp/localhost:7447"] },
-          scouting: { multicast: { enabled: false } }
+          scouting: { multicast: { enabled: false } },
+          transport: { shared_memory: { enabled: false } }
         }
         ENDOFZENOH
         source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
