@@ -105,6 +105,7 @@ class DialogueNode(Node):
         self.declare_parameter("dialogue_timeout", 30.0)  # секунд без активности -> IDLE
         self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
         self.declare_parameter("llm_timeout_sec", 60.0)  # Timeout для LLM запроса (один attempt)
+        self.declare_parameter("history_max_turns", 10)  # Размер окна истории (user+assistant пар)
 
         # Выбор провайдера с fallback
         self.primary_provider = self.get_parameter("provider").value
@@ -132,8 +133,10 @@ class DialogueNode(Node):
         self.system_prompt = self._load_system_prompt()
 
         # История диалога (используем ConversationHistory модуль)
-        # max_turns=10: окно из 10 инференсов (user+assistant пар), системный промпт не считается
-        self.conversation_history = ConversationHistory(max_turns=10)
+        # history_max_turns: окно из N инференсов (user+assistant пар), системный промпт не считается
+        _history_max_turns = self.get_parameter("history_max_turns").value
+        self.get_logger().info(f"  История диалога: max_turns={_history_max_turns}")
+        self.conversation_history = ConversationHistory(max_turns=_history_max_turns)
 
         # Долгосрочная память (сохраняется между рестартами)
         self.voice_memory = None
