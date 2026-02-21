@@ -394,6 +394,61 @@ def _do_timeout_retry(self):
 
 ---
 
+### BUG-18: `pending_queries` зависают навсегда после `interrupt_agent_loop` (commit `afc83d2`)
+
+**Симптом:** Робот перестаёт отвечать после серии сообщений. В логах видно: несколько `👤 User: ... [State: IDLE]` подряд без единого `🤔 Запрос к DeepSeek` или `🔄 Обрабатываю N накопленных запросов`. Остаётся только `🛠️ Получено 22 инструментов из MCP сервера` каждые 10s.
+
+**Признак в логах:**
+```
+[dialogue_node] 👤 User: "первое сообщение" [State: IDLE]    ← LLM начал
+[dialogue_node] 🛑 ОСТАНОВКА: listen_for_response — жду ответа
+[dialogue_node] 👤 User: "ответ пользователя" [State: DIALOGUE]  ← продолжение
+[dialogue_node] ⏰ Dialogue timeout → IDLE                      ← таймаут, поток всё ещё жив
+[dialogue_node] 👤 User: "новое сообщение 1" [State: IDLE]   ← нет LLM!
+[dialogue_node] 👤 User: "новое сообщение 2" [State: IDLE]   ← нет LLM!
+[dialogue_node] 👤 User: "новое сообщение 3" [State: IDLE]   ← нет LLM!
+```
+
+**Root cause:** В `_on_stt_result`, когда `llm_processing=True`:
+```python
+# БЫЛО (неправильно):
+if self.llm_processing:
+    self.interrupt_agent_loop = True
+    return  # ← accumulation_timer НЕ создаётся!
+```
+Фоновый поток получает `interrupt_agent_loop=True`, выходит через `break`, `finally` устанавливает `llm_processing=False` — но `accumulation_timer` никогда не был создан, поэтому `_check_and_process_queue` никогда не вызывается. Сообщения из `pending_queries` зависают навсегда.
+
+**Фикс:**
+1. В `_on_stt_result` при interrupt: создать `accumulation_timer` чтобы очередь обработалась ПОСЛЕ завершения потока:
+```python
+if self.llm_processing:
+    self.interrupt_agent_loop = True
+    if self.accumulation_timer is None:
+        self.accumulation_timer = self.create_timer(
+            self.dialogue_manager.query_accumulation_timeout,
+            self._check_and_process_queue,
+        )
+    return
+```
+
+2. В `_check_and_process_queue` — защита от гонки (таймер сработал раньше чем `finally` в потоке):
+```python
+def _check_and_process_queue(self):
+    if self.accumulation_timer is not None:
+        self.accumulation_timer.cancel()
+        self.accumulation_timer = None
+
+    # Если поток ещё не завершился — перепланируем
+    if self.llm_processing:
+        self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
+        return
+    # ... остальной код
+```
+
+**Результат:** После interrupt потока и `llm_processing=False` все накопленные в `pending_queries` сообщения обрабатываются штатно.
+
+---
+
 ## Best Practices: канонический агентный цикл
 
 Изучены источники: [ghuntley/how-to-build-a-coding-agent](https://github.com/ghuntley/how-to-build-a-coding-agent) (Go, ~5k ⭐), [Claude Code design analysis](https://jannesklaas.github.io/ai/2025/07/20/claude-code-agent-design.html), [Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents), [Deep Agent Architecture](https://dev.to/apssouza22/a-deep-dive-into-deep-agent-architecture-for-ai-coding-assistants-3c8b).
@@ -632,9 +687,11 @@ def _get_tool_result_with_reminder(self, tool_result: str, iteration: int) -> st
 | `79456db` | BUG-9: GetCurrentTimeTool добавлен в _register_tools() в mcp_server.py |
 | `d36616b` | BUG-11: обновление last_interaction_time по итерациям, _listen_response_waiting флаг |
 | (текущее)  | BUG-17: тихий retry при первых таймаутах вместо немедленного "не в настроении" |
+| `afc83d2`  | BUG-18: pending_queries зависают навсегда после interrupt_agent_loop |
 
 **Оставшиеся задачи (TASK-042):**
 - [x] BUG-11 исправлен: roleplay контекст сохраняется между запросами
+- [x] BUG-18 исправлен: pending_queries зависают после interrupt_agent_loop
 - [ ] Исправить BUG-10: double timeout hang — уменьшить retry timeout или добавить wake word прерывание
 - [ ] BUG-15 (TASK-042): cancellation token при interrupt_agent_loop — прерывать LLM I/O немедленно
 - [ ] BUG-12 (TASK-043): скользящее окно для local `messages` внутри одного диалога
