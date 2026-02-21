@@ -193,6 +193,9 @@ class ScenarioRunner(Node):
         self._last_sound: Optional[str] = None
         self._response_ts: float = 0.0
         self._response_event = threading.Event()  # Сигнализируем main-потоку без spin_once
+        # Персистентный таймстамп последнего response — НЕ сбрасывается при clear_received().
+        # Используется в wait_for_quiet() чтобы дождаться тишины (LLM закончил отвечать).
+        self._last_any_response_ts: float = time.time() - 10.0
 
         self.create_subscription(String, TOPIC_RESPONSE, self._on_response, 10)
         self.create_subscription(String, TOPIC_ANIMATION, self._on_animation, 10)
@@ -201,6 +204,7 @@ class ScenarioRunner(Node):
         self.get_logger().info("ScenarioRunner ready (mock MCP enabled)")
 
     def _on_response(self, msg: String):
+        self._last_any_response_ts = time.time()  # Персистентный — не сбрасывается clear_received()
         self._last_response = msg.data
         self._response_ts = time.time()
         self._response_event.set()  # Будим wait_for_response
@@ -323,6 +327,30 @@ class ScenarioRunner(Node):
         time.sleep(0.2)
         self._last_response = None
         self._response_event.clear()
+
+    def wait_for_quiet(self, quiet_s: float = 2.5, timeout_s: float = 25.0):
+        """Ждать пока LLM закончит отвечать: нет response в TOPIC_RESPONSE в течение quiet_s.
+
+        Защита от stale responses: dialogue_node может продолжать выдавать tool-call
+        responses от предыдущего сценария ещё 10-15 секунд после его окончания.
+        Вместо фиксированной паузы ждём реальной тишины.
+
+        Args:
+            quiet_s: Сколько секунд должно быть тихо (нет response).
+            timeout_s: Максимум сколько ждать.
+        Returns:
+            True если дождались тишины, False если timeout.
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            since_last = time.time() - self._last_any_response_ts
+            if since_last >= quiet_s:
+                return True
+            time.sleep(0.2)
+        self.get_logger().warning(
+            f"[wait_for_quiet] timeout {timeout_s}s — dialogue_node still active, proceeding anyway"
+        )
+        return False
 
     def wait_for_response(self, timeout_s: float) -> Optional[str]:
         """Ждать ответ на /voice/dialogue/response.
@@ -538,10 +566,12 @@ def main():
             result = run_scenario(node, scenario)
             all_results.append(result)
 
-            # Пауза между сценариями — dialogue_node должен вернуться в IDLE
-            # после speak_text нода делает ещё один LLM запрос. DeepSeek с
-            # tool calls занимает до 8s (3 итерации × ~2.5s). Берём 10s запас.
-            time.sleep(10.0)
+            # Ждём пока dialogue_node замолчит (LLM завершил все tool-call iterations).
+            # Фиксированной паузы недостаточно: DeepSeek с tool calls может отвечать
+            # 5-15 секунд после получения inject_stt. Ждём 3s тишины в response топике.
+            node.wait_for_quiet(quiet_s=3.0, timeout_s=25.0)
+            # Минимальная пауза для сброса state machine
+            time.sleep(1.0)
 
     # Итоги
     total = len(all_results)
