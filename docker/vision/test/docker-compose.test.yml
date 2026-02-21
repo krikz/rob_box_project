@@ -75,15 +75,15 @@ services:
             base_url: "https://api.deepseek.com"
             model: "deepseek-chat"
             temperature: 0.5
-            max_tokens: 500
+            max_tokens: 200
             streaming: true
             enable_fallback: false
             enable_mcp_tools: true
             internet_available: true
             wake_words: [""]
             silence_words: ["стоп", "тихо", "замолчи"]
-            max_history_messages: 6
-            history_window_tokens: 1000
+            max_history_messages: 0
+            history_window_tokens: 0
             llm_timeout_sec: 30.0
             dialogue_timeout: 15.0
         ENDOFYAML

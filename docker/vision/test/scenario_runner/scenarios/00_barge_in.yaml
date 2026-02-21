@@ -32,10 +32,11 @@ scenarios:
       # Запускаем первый диалог — НЕ ждём ответа, нода уходит в DIALOGUE
       - inject_stt_no_wait: "расскажи анекдот"
 
-      # Ждём пока LLM начнёт обрабатывать (нода в DIALOGUE, llm_processing=True)
-      # query_accumulation_timeout=2.5s: ждём > 2.5s чтобы первый запрос успел
-      # уйти в LLM ДО прихода barge-in. Иначе оба запроса объединятся.
-      - wait_ms: 3500
+      # Ждём пока робот действительно начнёт говорить (speak_text вызван).
+      # Симулирует реальный сценарий: пользователь прерывает ПОСЛЕ начала ответа.
+      # wait_for_speaking блокируется на _response_event (speak_text → response pub).
+      - wait_for_speaking: true
+        timeout_s: 30
 
       # VAD-прерывание: пользователь начал говорить → interrupt_agent_loop=True
       - inject_vad: true
