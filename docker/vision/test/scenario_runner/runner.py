@@ -304,6 +304,17 @@ class ScenarioRunner(Node):
                 self.dialogue_resp_pub.publish(resp_msg)
                 self.get_logger().info(f"[mock-mcp] speak_text → /voice/dialogue/response: {text[:60]}")
 
+            # ── Симуляция TTS-времени ──────────────────────────────────────────
+            # Задержка ПЕРЕД отправкой MCP result имитирует реальное время произношения.
+            # Dialogue_node ждёт result → за это время runner может инжектировать VAD
+            # → interrupt_agent_loop=True сработает ДО следующего speak_text.
+            # Без этого все speak_text выполняются за ~0мс — barge-in не успевает.
+            if text.strip():
+                words = len(text.split())
+                tts_sim_s = max(0.6, min(words * 0.13, 3.0))  # 0.6 — 3.0 сек
+                self.get_logger().info(f"[mock-mcp] TTS sim: {tts_sim_s:.1f}s ({words} words)")
+                time.sleep(tts_sim_s)
+
         # ── Если listen_for_response — публикуем "Слушаю..." чтобы разблокировать runner ──
         # dialogue_node останавливает агентный цикл и ждёт следующего STT — без этого
         # runner навсегда застывает в ожидании speak_text.
