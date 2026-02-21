@@ -80,7 +80,7 @@ services:
             enable_fallback: false
             enable_mcp_tools: true
             internet_available: true
-            wake_words: ["привет"]
+            wake_words: []
             silence_words: ["стоп", "тихо", "замолчи"]
             max_history_messages: 6
             history_window_tokens: 1000
