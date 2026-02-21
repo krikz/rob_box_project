@@ -96,11 +96,11 @@ services:
       zenoh-router-test:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list 2>/dev/null | grep -q dialogue_node || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null || exit 1"]
       interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 30s
+      retries: 15
+      start_period: 20s
 
   # ─── Scenario Runner ─────────────────────────────────────────────────────────
   scenario-runner:
