@@ -46,6 +46,8 @@ services:
       PYTHONUNBUFFERED: "1"
       # DeepSeek API key — передаётся при запуске, не коммитится
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      # Переопределяем переменные из образа, которые ссылаются на несуществующие файлы
+      ZENOH_SESSION_CONFIG_URI: ""
     command:
       - /bin/bash
       - -c
@@ -108,6 +110,7 @@ services:
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
       OVERALL_TIMEOUT: "120"
+      ZENOH_SESSION_CONFIG_URI: ""
     volumes:
       - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
