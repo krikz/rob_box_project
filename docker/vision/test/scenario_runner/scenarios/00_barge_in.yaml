@@ -49,3 +49,65 @@ scenarios:
         timeout_s: 45
         assert_response_not_empty: true
         assert_tool_called: "memory_context"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Сценарий B: barge-in сразу после ответа — второй запрос обрабатывается чисто.
+  # Надёжнее inject_stt_no_wait: первый диалог ЗАВЕРШИЛСЯ (assert_response),
+  # потом VAD + второй STT. Нода обрабатывает только второй без загрязнения.
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: barge_in_replace_request
+    description: >
+      Сценарий B: fire-and-forget анекдот → barge-in пока говорит → замена запросом.
+      Паттерн inject_stt_no_wait + wait_for_speaking (как сценарий A) — надёжнее:
+      VAD-прерывание происходит ПОКА робот говорит, а не после.
+      Второй запрос (статус батареи) обрабатывается как новый диалог.
+    steps:
+      # Запускаем анекдот без ожидания ответа
+      - inject_stt_no_wait: "расскажи смешной анекдот"
+
+      # Ждём пока робот начнёт говорить (speak_text вызван)
+      - wait_for_speaking: true
+        timeout_s: 25
+
+      # Barge-in: пользователь перебивает пока робот говорит
+      - inject_vad: true
+      - wait_ms: 150
+      - inject_vad: false
+
+      # Второй запрос — другая тема, должна открыть новый диалог
+      - inject_stt: "какой у тебя заряд батареи"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Сценарий C: прерывание во время ожидания listen_for_response.
+  # Робот задал вопрос (listen_for_response), пользователь вместо ответа
+  # делает barge-in с коротким завершающим запросом.
+  # ОЖИДАЕМО: старый listen отменяется, новый диалог стартует и завершается чисто.
+  # Выбран короткий barge-in "назови своё имя" — гарантирует 1 speak_text,
+  # без listen_for_response → чистый IDLE после.
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: barge_in_during_listen_for_response
+    description: >
+      Сценарий C: робот ждёт listen_for_response → barge-in короткого запроса.
+      Нода должна обработать новый диалог без зависания. Возврат в idle.
+    steps:
+      # Запрос который спровоцирует speak_text + listen_for_response
+      - inject_stt: "загадай мне загадку и подожди мой ответ"
+        timeout_s: 50
+        assert_response_not_empty: true
+
+      # Нода в LISTENING state (listen_for_response active)
+      - wait_ms: 500
+
+      # Barge-in: пользователь передумал отвечать на загадку
+      - inject_vad: true
+      - wait_ms: 150
+      - inject_vad: false
+
+      # Короткий завершающий запрос — гарантирует 1 speak_text + IDLE (без listen).
+      # Минимум 3 слова (word_count filter). timeout_s увеличен: нода могла
+      # застрять в dialogue после listen_for_response barge-in.
+      - inject_stt: "как тебя зовут"
+        timeout_s: 45
+        assert_response_not_empty: true
