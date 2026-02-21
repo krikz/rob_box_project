@@ -89,16 +89,8 @@ services:
         echo "Запуск dialogue_node (DeepSeek API)..." &&
         mkdir -p /data &&
         if [ -f /fixtures/voice_memory_seed.sql ]; then
-          python3 -c "
-import sqlite3
-db = sqlite3.connect('/data/voice_memory.db')
-with open('/fixtures/voice_memory_seed.sql', encoding='utf-8') as f:
-    sql = f.read()
-db.executescript(sql)
-cnt = db.execute('SELECT COUNT(*) FROM voice_turns').fetchone()[0]
-print(f'voice_memory.db created: {cnt} turns')
-db.close()
-" && echo "✓ voice_memory.db создана из SQL seed"
+          python3 -c "import sqlite3; db=sqlite3.connect('/data/voice_memory.db'); db.executescript(open('/fixtures/voice_memory_seed.sql').read()); cnt=db.execute('SELECT COUNT(*) FROM voice_turns').fetchone()[0]; print(f'voice_memory.db: {cnt} turns loaded'); db.close()" &&
+          echo "✓ voice_memory.db создана из SQL seed"
         elif [ -f /fixtures/voice_memory.db ]; then
           cp /fixtures/voice_memory.db /data/voice_memory.db
           echo "✓ voice_memory.db скопирована из fixtures"
