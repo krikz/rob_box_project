@@ -688,10 +688,12 @@ def _get_tool_result_with_reminder(self, tool_result: str, iteration: int) -> st
 | `d36616b` | BUG-11: обновление last_interaction_time по итерациям, _listen_response_waiting флаг |
 | (текущее)  | BUG-17: тихий retry при первых таймаутах вместо немедленного "не в настроении" |
 | `afc83d2`  | BUG-18: pending_queries зависают навсегда после interrupt_agent_loop |
+| `2739ba9`  | BUG-19: дедлок в _recreate_llm_client — client.close() vs стейл-потоки |
 
 **Оставшиеся задачи (TASK-042):**
 - [x] BUG-11 исправлен: roleplay контекст сохраняется между запросами
 - [x] BUG-18 исправлен: pending_queries зависают после interrupt_agent_loop
+- [x] BUG-19 исправлен: дедлок client.close() vs стейл-потоки httpcore connection pool
 - [ ] Исправить BUG-10: double timeout hang — уменьшить retry timeout или добавить wake word прерывание
 - [ ] BUG-15 (TASK-042): cancellation token при interrupt_agent_loop — прерывать LLM I/O немедленно
 - [ ] BUG-12 (TASK-043): скользящее окно для local `messages` внутри одного диалога
@@ -701,6 +703,50 @@ def _get_tool_result_with_reminder(self, tool_result: str, iteration: int) -> st
 - [ ] Проверить что 10 диалогов подряд работают без деградации
 - [ ] Измерить реальный token count (ожидаемо ~8.7k на старт каждого диалога)
 - [ ] BUG-14 (TASK-045): аудит 21 MCP-инструмента, найти overlap, объединить или удалить неиспользуемые
+
+---
+
+### BUG-19: Дедлок `_recreate_llm_client` calling `client.close()` (commit `2739ba9`)
+
+**Симптом:** Робот полностью замолкает (~10+ минут), dialogue_node не публикует ни одного лога. `py-spy dump --pid <pid>` показывает все потоки заблокированы на `httpcore/_synchronization.py:268 __enter__` (Semaphore.acquire).
+
+**Диагностика:** `py-spy dump --pid <pid>` без `--native` (на ARM `--native` не поддерживается).
+
+**Root cause:** Три независимые причины из прошлых фиксов создают цепочку:
+
+1. `ThreadPoolExecutor.shutdown(wait=False)` — стейл-потоки `_do_streaming` / `_do_recursive_streaming` продолжают работу
+2. Стейл-потоки держат `httpcore connection_pool._pool_lock` пока делают HTTP-запрос к DeepSeek
+3. Новый запрос получает TIMEOUT → `_recreate_llm_client()` вызывает `self.client.close()` → внутри `close()` тоже пытается взять `_pool_lock` → **взаимная блокировка навсегда**
+
+**Стеки из py-spy:**
+```
+Thread ThreadPoolExecutor-0_0:   ← НОВЫЙ поток, хочет пересоздать клиент
+    __enter__ (httpcore/_synchronization.py:268)   ← ждёт lock
+    close (httpcore/_sync/connection_pool.py:350)
+    _recreate_llm_client (dialogue_node.py:426)
+
+Thread ThreadPoolExecutor-3_0:   ← СТЕЙЛ-ПОТОК, держит lock, ждёт сети
+    __enter__ (httpcore/_synchronization.py:268)
+    close (httpcore/_sync/connection_pool.py:416)   ← внутри with _pool_lock, ждёт connection close
+    __stream__ (openai/_streaming.py:102)
+    _do_recursive_streaming (dialogue_node.py:2343)
+
+Thread ThreadPoolExecutor-4/5_0:  ← ещё стейл-потоки в handle_request
+    __enter__ (httpcore/_synchronization.py:268)
+    handle_request (httpcore/_sync/connection_pool.py:218)
+    _do_streaming / _do_recursive_streaming
+```
+
+**Фикс:** убрать `client.close()` — просто создаём новый клиент, старый подберёт GC:
+```python
+def _recreate_llm_client(self, log_init: bool = False):
+    # НЕ вызываем client.close() — дедлок со стейл-потоками httpcore
+    # Старый клиент подберёт GC когда стейл-потоки завершатся.
+    http_client = httpx.Client(...)
+    self.client = OpenAI(api_key=..., http_client=http_client)
+```
+
+**Итог:** Дедлок устранён. Старые сокеты CLOSE_WAIT исчезнут сами через TCP timeout (~4 минуты).
 
 ---
 
