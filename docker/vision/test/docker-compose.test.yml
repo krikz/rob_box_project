@@ -46,8 +46,8 @@ services:
       PYTHONUNBUFFERED: "1"
       # DeepSeek API key — передаётся при запуске, не коммитится
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      # Переопределяем переменные из образа, которые ссылаются на несуществующие файлы
-      ZENOH_SESSION_CONFIG_URI: ""
+      # Указываем на конфиг который создадим инлайн в command
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
     command:
       - /bin/bash
       - -c
@@ -57,6 +57,14 @@ services:
         echo "Ожидание Zenoh router (localhost:7447)..." &&
         until (echo > /dev/tcp/localhost/7447) 2>/dev/null; do sleep 2; done &&
         echo "✓ Zenoh router доступен" &&
+        echo "Запись Zenoh session config в /tmp/zenoh_session.json5..." &&
+        cat > /tmp/zenoh_session.json5 << 'ENDOFZENOH'
+        {
+          mode: "peer",
+          connect: { endpoints: ["tcp/localhost:7447"] },
+          scouting: { multicast: { enabled: false } }
+        }
+        ENDOFZENOH
         echo "Запись конфига в /tmp/voice_params.yaml..." &&
         cat > /tmp/voice_params.yaml << 'ENDOFYAML'
         /dialogue_node:
@@ -110,11 +118,24 @@ services:
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
       OVERALL_TIMEOUT: "120"
-      ZENOH_SESSION_CONFIG_URI: ""
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
     volumes:
       - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
-    command: ["python3", "/runner/runner.py"]
+    command:
+      - /bin/bash
+      - -c
+      - |
+        cat > /tmp/zenoh_session.json5 << 'ENDOFZENOH'
+        {
+          mode: "peer",
+          connect: { endpoints: ["tcp/localhost:7447"] },
+          scouting: { multicast: { enabled: false } }
+        }
+        ENDOFZENOH
+        source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
+        source /ws/install/setup.bash &&
+        exec python3 /runner/runner.py
     depends_on:
       voice-test:
         condition: service_healthy
