@@ -926,6 +926,12 @@ class DialogueNode(Node):
         if self.voice_memory is not None:
             self.voice_memory.save_turn("user", combined_message)
 
+        # Отменяем pending retry-таймер — новый запрос пользователя делает retry бессмысленным
+        if self._timeout_retry_timer is not None:
+            self._timeout_retry_timer.cancel()
+            self._timeout_retry_timer = None
+            self.get_logger().debug("♻️ _timeout_retry_timer отменён при новом запросе пользователя")
+
         # Устанавливаем флаг обработки
         self.llm_processing = True
 
@@ -2267,6 +2273,9 @@ class DialogueNode(Node):
         iteration = 0
         current_tool_calls = tool_calls
         current_tool_results = tool_results
+        # BUG-20: захватываем поколение стрима — если оно изменится, этот поток стейл
+        # и не должен делать _speak_simple в основной диалог
+        _my_gen = self._stream_generation
 
         try:
             while True:
@@ -2277,6 +2286,9 @@ class DialogueNode(Node):
                     self.get_logger().error(
                         f"❌ Достигнут лимит итераций агентного цикла ({self.MAX_ITERATIONS}). Прерываю."
                     )
+                    if _my_gen != self._stream_generation:
+                        self.get_logger().warning(f"🚫 Стейл-поток (gen {_my_gen}≠{self._stream_generation}) — _speak_simple MAX_ITERATIONS отброшен")
+                        return
                     self._speak_simple("Извините, я столкнулся с проблемой и не могу продолжить.", show_error_animation=True)
                     return
 
@@ -2515,6 +2527,9 @@ class DialogueNode(Node):
                             continue  # retry
                         # retry тоже не помог
                         self.get_logger().error(f"⏱️ TIMEOUT после retry (итерация {iteration})")
+                        if _my_gen != self._stream_generation:
+                            self.get_logger().warning(f"🚫 Стейл-поток (gen {_my_gen}≠{self._stream_generation}) — _speak_simple timeout отброшен")
+                            return
                         self._speak_simple("Извините, я слишком долго думал", show_error_animation=True)
                         return
 
