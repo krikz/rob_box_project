@@ -48,10 +48,19 @@ class STTNode(Node):
         # EOU (End of Utterance) profile: fast | balanced | patient
         self.declare_parameter('eou_profile', 'balanced')
         
+        # AEC mode: 'software' (drop while TTS plays) | 'hardware' (trust XVF-3000 AEC chip)
+        # 'hardware' requires audio playback through ReSpeaker (hw:1,0) for AEC reference signal.
+        # With 'hardware' mode the robot can be interrupted mid-speech.
+        self.declare_parameter('aec_mode', 'hardware')
+        
         self.yandex_api_key = self.get_parameter('yandex_api_key').value or os.environ.get('YANDEX_API_KEY', '')
         self.yandex_language = self.get_parameter('yandex_language').value
         self.yandex_model = self.get_parameter('yandex_model').value
         self.eou_profile = self.get_parameter('eou_profile').value
+        self.aec_mode = self.get_parameter('aec_mode').value
+        if self.aec_mode not in ('software', 'hardware'):
+            self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
+            self.aec_mode = 'software'
         
         # EOU profiles configuration
         self.eou_profiles = {
@@ -122,10 +131,14 @@ class STTNode(Node):
         self.recognizer: Optional[KaldiRecognizer] = None
         
         # Состояние
-        self.is_robot_speaking = False  # Флаг: робот говорит (не слушать!)
+        self.is_robot_speaking = False  # Флаг: робот говорит (только для aec_mode=software)
+        self._tts_ended_at: float = 0.0  # Время окончания TTS (для grace period)
         
         # Инициализация
-        self.get_logger().info('STTNode инициализирован')
+        self.get_logger().info(
+            f'STTNode инициализирован | aec_mode={self.aec_mode} '
+            f'({"software echo suppression" if self.aec_mode == "software" else "hardware AEC (XVF-3000), simultaneous RX/TX enabled"})'
+        )
         self.initialize_yandex()
         self.initialize_vosk()
     
@@ -165,14 +178,26 @@ class STTNode(Node):
             self.publish_state('error')
     
     def tts_state_callback(self, msg: String):
-        """Отслеживание состояния TTS - не слушать когда робот говорит!"""
+        """Отслеживание состояния TTS.
+        
+        software mode: выключаем STT пока робот говорит.
+        hardware mode: только логируем; AEC на чипе XVF-3000 фильтрует эхо.
+        """
+        import time
         if msg.data in ['synthesizing', 'playing']:
             if not self.is_robot_speaking:
-                self.get_logger().info('🔇 Робот говорит - распознавание отключено')
+                if self.aec_mode == 'software':
+                    self.get_logger().info('🔇 [software AEC] Робот говорит - распознавание отключено')
+                else:
+                    self.get_logger().debug('🎤 [hardware AEC] Робот говорит - XVF-3000 фильтрует эхо')
                 self.is_robot_speaking = True
         elif msg.data in ['ready', 'idle']:
             if self.is_robot_speaking:
-                self.get_logger().info('🎙️ Робот замолчал - распознавание включено')
+                self._tts_ended_at = time.monotonic()
+                if self.aec_mode == 'software':
+                    self.get_logger().info('🎙️ [software AEC] Робот замолчал - распознавание включено')
+                else:
+                    self.get_logger().debug('🎙️ [hardware AEC] Робот замолчал')
                 self.is_robot_speaking = False
     
     def speech_audio_callback(self, msg: AudioData):
@@ -180,14 +205,33 @@ class STTNode(Node):
         Обработка готовых фраз от audio_node
         Пробуем Yandex STT → если не работает, используем Vosk
         """
-        # НЕ СЛУШАТЬ когда робот говорит (самовозбуждение!)
-        if self.is_robot_speaking:
-            self.get_logger().info('🔇 Игнор: робот говорит')
-            return
-        
+        import time
         # Конвертируем список в bytes
         audio_bytes = bytes(msg.data)
         duration = len(audio_bytes) / (self.sample_rate * 2)  # 16-bit = 2 bytes
+        
+        if self.aec_mode == 'software':
+            # Программная подавление эха: дропаем всё пока робот говорит
+            if self.is_robot_speaking:
+                self.get_logger().info(f'🔇 [software AEC] Игнор фразы {duration:.2f}с: робот говорит')
+                return
+        else:
+            # Аппаратное AEC: XVF-3000 фильтрует эхо в чипе.
+            # Добавляем grace period 300мс после окончания TTS — фильтруем остаточные эхо-артефакты.
+            # Короткие фразы (<0.5с) сразу после TTS, вероятно, эхо-артефакты — игнорируем.
+            grace = 0.3  # секунды grace period после окончания TTS
+            time_since_tts = time.monotonic() - self._tts_ended_at
+            if self.is_robot_speaking or time_since_tts < grace:
+                if duration < 0.8:
+                    self.get_logger().info(
+                        f'🔇 [hardware AEC] Игнор короткой фразы {duration:.2f}с '
+                        f'(grace {time_since_tts:.2f}с/{grace}с или TTS активен)'
+                    )
+                    return
+                else:
+                    self.get_logger().info(
+                        f'🎤 [hardware AEC] Фраза {duration:.2f}с во время/после TTS — обрабатываем (возможно прерывание)'
+                    )
         
         self.get_logger().info(f'🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)')
         self.publish_state('recognizing')

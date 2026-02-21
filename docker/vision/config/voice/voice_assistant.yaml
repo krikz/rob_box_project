@@ -73,6 +73,10 @@
 
     # ===== STT Node (Speech-to-Text) =====
     stt_node:
+      # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
+      #           'software' = выкидываем фразы пока TTS играет (безопасно но нельзя перебить)
+      aec_mode: "hardware"
+
       provider: "vosk"  # vosk | whisper | yandex | google
 
       # Vosk (RECOMMENDED: Fast, offline, real-time)
