@@ -545,6 +545,10 @@ class DialogueNode(Node):
             self._loop.call_soon_threadsafe(event.set)
 
     def _cancel_run(self, reason: str) -> None:
+        # Reset _speak_done on external cancel so that a speak_text which
+        # completed just before barge-in doesn't trigger history saving.
+        # History for interrupted turns should always be discarded.
+        self._speak_done = False
         with self._task_lock:
             task = self._run_task
         if task and not task.done():
