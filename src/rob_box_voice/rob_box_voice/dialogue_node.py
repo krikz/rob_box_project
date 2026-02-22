@@ -106,12 +106,8 @@ class DialogueNode(Node):
         self._tts_events: dict = {}  # speech_id -> asyncio.Event
         self._tts_events_lock = threading.Lock()
 
-        # ── speak_text stop-loop tracking ────────────────────────────
-        # When speak_text raises CancelledError to stop the SDK loop,
-        # this flag lets _agent_run distinguish it from external barge-in.
-        # _spoken_texts accumulates ALL parallel speak_text calls so the full
-        # assistant response (not just the first phrase) is saved to history.
-        self._speak_done: bool = False
+        # ── spoken texts accumulator ──────────────────────────────────
+        # Collects all speak_text calls for building clean history.
         self._spoken_texts: List[str] = []
 
         # ── ROS2 pub/sub ─────────────────────────────────────────────
@@ -268,13 +264,7 @@ class DialogueNode(Node):
                 finally:
                     with self._tts_events_lock:
                         self._tts_events.pop(speech_id, None)
-            # ── Stop the SDK agent loop ──────────────────────────────
-            # Response is delivered. Raise CancelledError so Runner exits
-            # immediately — prevents extra LLM turns (memory_save, animations,
-            # extra speak_text calls) that exhaust max_turns and leak into
-            # next request, causing OOM from accumulated async tool calls.
-            self._speak_done = True
-            raise asyncio.CancelledError("speak_text done — stopping agent loop")
+            return "TASK_COMPLETE"
 
         @function_tool
         async def play_sound(sound: str) -> str:
@@ -424,11 +414,8 @@ class DialogueNode(Node):
         """Run the OpenAI Agents SDK loop for a single user turn."""
         with self._task_lock:
             self._run_task = asyncio.current_task()
-
-        self._speak_done = False
         self._spoken_texts = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
-
 
         try:
             with self._conv_lock:
@@ -446,96 +433,37 @@ class DialogueNode(Node):
                     + json.dumps(input_list, ensure_ascii=False, indent=2)
                 )
 
-            # Use run_streamed so we can monitor events and bail early
-            # if agent loops on non-speak_text tool calls (play_sound/animation spam)
-            streamed = Runner.run_streamed(
-                self._agent, input_list, max_turns=self._agent_max_turns
+            result = await asyncio.wait_for(
+                Runner.run(self._agent, input_list, max_turns=self._agent_max_turns),
+                timeout=self._llm_timeout * 3,
             )
 
-            loop_aborted = False  # set True when _consume() exits early
-
-            async def _consume() -> None:
-                nonlocal loop_aborted
-                post_speak_non_speech = 0
-                spoke_once = False  # True after first speak_text call
-                async for event in streamed.stream_events():
-                    if event.type != "run_item_stream_event":
-                        continue
-                    item = event.item
-                    if item.type == "tool_call_item":
-                        tool_name = getattr(item.raw_item, "name", "") or ""
-                        if self._verbose_llm:
-                            raw_args = getattr(item.raw_item, "arguments", "") or ""
-                            self.get_logger().info(f"🔧 tool_call: {tool_name}({raw_args[:200]})")
-                        else:
-                            self.get_logger().debug(f"🔧 tool_call: {tool_name}")
-                        if tool_name == "speak_text":
-                            post_speak_non_speech = 0  # reset counter on every speak
-                            spoke_once = True
-                        else:
-                            # Only count non-speech tool calls that happen AFTER
-                            # the first speak_text.  Before speaking the agent may
-                            # legitimately call play_sound / play_animation many
-                            # times (e.g. "play your 5 favourite sounds") — we must
-                            # not abort that.  Post-speak we still cap at 3 to
-                            # prevent runaway decoration loops.
-                            if spoke_once:
-                                post_speak_non_speech += 1
-                                if post_speak_non_speech >= 3:
-                                    self.get_logger().warning(
-                                        f"⚠️ Agent stuck: {post_speak_non_speech} non-speech "
-                                        f"tool calls after speak_text — aborting loop"
-                                    )
-                                    loop_aborted = True
-                                    return  # stop consuming — stream will be GC'd
-
-            await asyncio.wait_for(_consume(), timeout=self._llm_timeout * 3)
-
-            if loop_aborted:
-                # Partial history from an aborted stream is corrupt: it contains
-                # tool_result messages without their preceding tool_call messages,
-                # which causes a 400 error on the next API call.  Keep existing
-                # clean history instead.
-                self.get_logger().info("🔁 Loop aborted early — keeping previous conversation history")
-            else:
-                # Persist trimmed history for the next turn
-                with self._conv_lock:
-                    self._conversation = self._trim_history(streamed.to_input_list())
-
-            final_out = streamed.final_output or ""
+            # Build clean history: user text + what was spoken, without tool_call
+            # patterns. Using to_input_list() would include assistant tool_call
+            # messages which cause the LLM to repeat action sequences (e.g. counting)
+            # when asked an unrelated follow-up request.
+            spoken = " ".join(self._spoken_texts) if self._spoken_texts else (result.final_output or "")
             if self._verbose_llm:
-                self.get_logger().info(f"📤 LLM OUTPUT (normal path):\n{final_out}")
+                self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
             else:
-                self.get_logger().info(f"✅ Agent done. Output: {final_out[:80]}")
+                self.get_logger().info(f"✅ Agent done. Response: {spoken[:80]}")
+
+            with self._conv_lock:
+                self._conversation = self._trim_history(
+                    list(self._conversation)
+                    + [{"role": "user", "content": user_input},
+                       {"role": "assistant", "content": spoken}]
+                )
 
         except asyncio.CancelledError:
-            if self._speak_done:
-                # Graceful stop: speak_text completed and raised CancelledError
-                # to prevent extra tool calls. Save history so next turn has context.
-                # Join ALL spoken texts (LLM may fire multiple speak_text in parallel
-                # in one batch — _spoken_texts collects them all, not just the first).
-                full_response = " ".join(self._spoken_texts)
-                if self._verbose_llm:
-                    self.get_logger().info(f"📤 LLM OUTPUT (speak path):\n{full_response}")
-                else:
-                    self.get_logger().info(f"✅ Agent done (speak_text completed, loop stopped). Response: {full_response[:80]}")
-                with self._conv_lock:
-                    partial = list(self._conversation) + [
-                        {"role": "user", "content": user_input},
-                        {"role": "assistant", "content": full_response},
-                    ]
-                    self._conversation = self._trim_history(partial)
-            else:
-                self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
-                # Do NOT update history — partial turn discarded
+            self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
+            # Do NOT update history — partial turn discarded
 
         except MaxTurnsExceeded:
             self.get_logger().error(
                 f"❌ Agent exceeded max tool-call turns ({self._agent_max_turns}). "
                 "Consider increasing agent_max_turns param."
             )
-            # Do NOT call _speak_direct — agent likely already spoke several phrases
-            # and injecting another TTS would corrupt the playback queue
 
         except asyncio.TimeoutError:
             self.get_logger().error(f"❌ Agent timed out ({self._llm_timeout * 3:.0f}s)")
@@ -543,15 +471,10 @@ class DialogueNode(Node):
 
         except Exception as exc:
             self.get_logger().error(f"❌ Agent error: {exc}")
-            # If the API rejected our history as malformed (e.g. tool message
-            # without a preceding tool_call), wipe it so the next turn starts fresh.
             if "invalid_request_error" in str(exc) or "tool" in str(exc).lower():
                 self.get_logger().warning("🧹 Clearing conversation history due to malformed state")
                 with self._conv_lock:
                     self._conversation = []
-            # Do NOT call _speak_direct here — agent may have already
-            # started speaking (e.g. mid-joke) and injecting an error
-            # message would corrupt the TTS queue
 
         finally:
             with self._task_lock:
@@ -575,10 +498,6 @@ class DialogueNode(Node):
             self._loop.call_soon_threadsafe(event.set)
 
     def _cancel_run(self, reason: str) -> None:
-        # Reset _speak_done on external cancel so that a speak_text which
-        # completed just before barge-in doesn't trigger history saving.
-        # History for interrupted turns should always be discarded.
-        self._speak_done = False
         self._spoken_texts = []
         with self._task_lock:
             task = self._run_task
