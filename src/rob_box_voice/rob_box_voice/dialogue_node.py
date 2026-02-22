@@ -637,6 +637,15 @@ class DialogueNode(Node):
             return  # Never timeout while agent is working (fixes the bug we had!)
         if self.dialogue_manager.check_timeout():
             self.get_logger().info("⏰ Dialogue timeout → IDLE")
+            # Clear conversation history so next session starts fresh.
+            # Without this, old context (e.g. joke about "таракашку") persists
+            # into the next session and LLM uses it to answer unrelated requests.
+            with self._conv_lock:
+                if self._conversation:
+                    self.get_logger().info(
+                        f"🧹 Clearing {len(self._conversation)} history items on IDLE timeout"
+                    )
+                    self._conversation = []
             self._publish_state()
 
     def _publish_state(self) -> None:
