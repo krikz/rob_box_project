@@ -423,6 +423,7 @@ class DialogueNode(Node):
 
             async def _consume() -> None:
                 non_speech_calls = 0
+                spoke_once = False  # True after first speak_text call
                 async for event in streamed.stream_events():
                     if event.type != "run_item_stream_event":
                         continue
@@ -432,12 +433,17 @@ class DialogueNode(Node):
                         self.get_logger().debug(f"🔧 tool_call: {tool_name}")
                         if tool_name == "speak_text":
                             non_speech_calls = 0  # reset counter on every speak
+                            spoke_once = True
                         else:
                             non_speech_calls += 1
-                            if non_speech_calls >= 6:
+                            # After speak_text fired at least once, allow only 1
+                            # decorative sound/animation alongside it, then stop.
+                            # Before first speak_text (e.g. thinking sounds) allow up to 3.
+                            limit = 2 if spoke_once else 3
+                            if non_speech_calls >= limit:
                                 self.get_logger().warning(
                                     f"⚠️ Agent stuck: {non_speech_calls} non-speech "
-                                    "tool calls without speak_text — aborting loop"
+                                    f"tool calls (spoke_once={spoke_once}) — aborting loop"
                                 )
                                 return  # stop consuming → stream will be GC'd
 
