@@ -99,12 +99,6 @@ class DialogueNode(Node):
         self._run_task: Optional[asyncio.Task] = None
         self._task_lock = threading.Lock()
 
-        # ── speak_text stop-loop tracking ────────────────────────────
-        # When speak_text raises CancelledError to stop the SDK loop,
-        # this flag lets _agent_run distinguish it from external barge-in.
-        self._speak_done: bool = False
-        self._last_spoken_text: str = ""
-
         # ── ROS2 pub/sub ─────────────────────────────────────────────
         cbg = ReentrantCallbackGroup()
         qos_r = QoSProfile(
@@ -115,6 +109,7 @@ class DialogueNode(Node):
 
         self._response_pub = self.create_publisher(String, "/voice/dialogue/response", 10)
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
+        self._sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
 
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg
@@ -230,15 +225,7 @@ class DialogueNode(Node):
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю."""
-            result = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
-            # ── Stop the SDK agent loop ───────────────────────────────────
-            # The response is delivered. Raise CancelledError so Runner.run()
-            # exits immediately — prevents the LLM from making additional
-            # tool calls (memory_save, animations, extra speak_text) that
-            # exhaust max_turns and bleed into the next request.
-            self._speak_done = True
-            self._last_spoken_text = text
-            raise asyncio.CancelledError("speak_text done — stopping agent loop")
+            return await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
 
         @function_tool
         async def play_sound(sound: str) -> str:
@@ -366,6 +353,12 @@ class DialogueNode(Node):
         # Cancel any in-progress run before starting a new one
         self._cancel_run("new STT input")
 
+        # ── Immediate thinking sound ─────────────────────────────────
+        # Play confirmation immediately — before LLM even starts
+        _snd = String()
+        _snd.data = "thinking"
+        self._sound_trigger_pub.publish(_snd)
+
         self.dialogue_manager.transition_state(DialogueState.DIALOGUE)
         self._publish_state()
 
@@ -380,8 +373,6 @@ class DialogueNode(Node):
         with self._task_lock:
             self._run_task = asyncio.current_task()
 
-        self._speak_done = False
-        self._last_spoken_text = ""
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
 
         try:
@@ -409,19 +400,8 @@ class DialogueNode(Node):
             )
 
         except asyncio.CancelledError:
-            if self._speak_done:
-                # Graceful stop: speak_text completed and raised CancelledError
-                # to prevent extra tool calls. Save minimal history.
-                self.get_logger().info("✅ Agent done (speak_text completed, loop stopped)")
-                with self._conv_lock:
-                    partial = list(self._conversation) + [
-                        {"role": "user", "content": user_input},
-                        {"role": "assistant", "content": self._last_spoken_text},
-                    ]
-                    self._conversation = self._trim_history(partial)
-            else:
-                self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
-                # Do NOT update history — partial turn discarded
+            self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
+            # Do NOT update history — partial turn discarded
 
         except MaxTurnsExceeded:
             self.get_logger().error(
