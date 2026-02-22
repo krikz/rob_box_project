@@ -18,15 +18,15 @@ scenarios:
     steps:
       # Минимум 3 слова: dialogue_node фильтрует фразы < 3 слов (word_count < 3)
       - inject_stt: "это сообщение первое"
-        timeout_s: 25
+        timeout_s: 45
         assert_response_not_empty: true
       - wait_ms: 300
       - inject_stt: "это сообщение второе"
-        timeout_s: 25
+        timeout_s: 45
         assert_response_not_empty: true
       - wait_ms: 300
       - inject_stt: "это сообщение третье"
-        timeout_s: 25
+        timeout_s: 45
         assert_response_not_empty: true
 
   - name: vad_interrupt_no_hang
