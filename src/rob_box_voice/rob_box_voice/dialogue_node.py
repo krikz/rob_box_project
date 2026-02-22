@@ -456,7 +456,7 @@ class DialogueNode(Node):
 
             async def _consume() -> None:
                 nonlocal loop_aborted
-                non_speech_calls = 0
+                post_speak_non_speech = 0
                 spoke_once = False  # True after first speak_text call
                 async for event in streamed.stream_events():
                     if event.type != "run_item_stream_event":
@@ -470,21 +470,24 @@ class DialogueNode(Node):
                         else:
                             self.get_logger().debug(f"🔧 tool_call: {tool_name}")
                         if tool_name == "speak_text":
-                            non_speech_calls = 0  # reset counter on every speak
+                            post_speak_non_speech = 0  # reset counter on every speak
                             spoke_once = True
                         else:
-                            non_speech_calls += 1
-                            # After speak_text fired at least once, allow only 2
-                            # decorative calls alongside it, then abort.
-                            # Before first speak_text (e.g. thinking sounds) allow up to 3.
-                            limit = 2 if spoke_once else 3
-                            if non_speech_calls >= limit:
-                                self.get_logger().warning(
-                                    f"⚠️ Agent stuck: {non_speech_calls} non-speech "
-                                    f"tool calls (spoke_once={spoke_once}) — aborting loop"
-                                )
-                                loop_aborted = True
-                                return  # stop consuming — stream will be GC'd
+                            # Only count non-speech tool calls that happen AFTER
+                            # the first speak_text.  Before speaking the agent may
+                            # legitimately call play_sound / play_animation many
+                            # times (e.g. "play your 5 favourite sounds") — we must
+                            # not abort that.  Post-speak we still cap at 3 to
+                            # prevent runaway decoration loops.
+                            if spoke_once:
+                                post_speak_non_speech += 1
+                                if post_speak_non_speech >= 3:
+                                    self.get_logger().warning(
+                                        f"⚠️ Agent stuck: {post_speak_non_speech} non-speech "
+                                        f"tool calls after speak_text — aborting loop"
+                                    )
+                                    loop_aborted = True
+                                    return  # stop consuming — stream will be GC'd
 
             await asyncio.wait_for(_consume(), timeout=self._llm_timeout * 3)
 
