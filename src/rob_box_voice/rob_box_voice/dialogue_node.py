@@ -422,7 +422,10 @@ class DialogueNode(Node):
                 self._agent, input_list, max_turns=self._agent_max_turns
             )
 
+            loop_aborted = False  # set True when _consume() exits early
+
             async def _consume() -> None:
+                nonlocal loop_aborted
                 non_speech_calls = 0
                 spoke_once = False  # True after first speak_text call
                 async for event in streamed.stream_events():
@@ -437,8 +440,8 @@ class DialogueNode(Node):
                             spoke_once = True
                         else:
                             non_speech_calls += 1
-                            # After speak_text fired at least once, allow only 1
-                            # decorative sound/animation alongside it, then stop.
+                            # After speak_text fired at least once, allow only 2
+                            # decorative calls alongside it, then abort.
                             # Before first speak_text (e.g. thinking sounds) allow up to 3.
                             limit = 2 if spoke_once else 3
                             if non_speech_calls >= limit:
@@ -446,13 +449,21 @@ class DialogueNode(Node):
                                     f"⚠️ Agent stuck: {non_speech_calls} non-speech "
                                     f"tool calls (spoke_once={spoke_once}) — aborting loop"
                                 )
-                                return  # stop consuming → stream will be GC'd
+                                loop_aborted = True
+                                return  # stop consuming — stream will be GC'd
 
             await asyncio.wait_for(_consume(), timeout=self._llm_timeout * 3)
 
-            # Persist trimmed history for the next turn
-            with self._conv_lock:
-                self._conversation = self._trim_history(streamed.to_input_list())
+            if loop_aborted:
+                # Partial history from an aborted stream is corrupt: it contains
+                # tool_result messages without their preceding tool_call messages,
+                # which causes a 400 error on the next API call.  Keep existing
+                # clean history instead.
+                self.get_logger().info("🔁 Loop aborted early — keeping previous conversation history")
+            else:
+                # Persist trimmed history for the next turn
+                with self._conv_lock:
+                    self._conversation = self._trim_history(streamed.to_input_list())
 
             self.get_logger().info(
                 f"✅ Agent done. Output: {(streamed.final_output or '')[:80]}"
@@ -476,6 +487,12 @@ class DialogueNode(Node):
 
         except Exception as exc:
             self.get_logger().error(f"❌ Agent error: {exc}")
+            # If the API rejected our history as malformed (e.g. tool message
+            # without a preceding tool_call), wipe it so the next turn starts fresh.
+            if "invalid_request_error" in str(exc) or "tool" in str(exc).lower():
+                self.get_logger().warning("🧹 Clearing conversation history due to malformed state")
+                with self._conv_lock:
+                    self._conversation = []
             # Do NOT call _speak_direct here — agent may have already
             # started speaking (e.g. mid-joke) and injecting an error
             # message would corrupt the TTS queue
