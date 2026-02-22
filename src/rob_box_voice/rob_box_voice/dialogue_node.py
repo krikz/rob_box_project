@@ -69,6 +69,7 @@ class DialogueNode(Node):
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("enable_fallback", False)
         self.declare_parameter("llm_timeout_sec", 35.0)
+        self.declare_parameter("verbose_llm", True)
 
         self._provider: str = self.get_parameter("provider").value
         self._temperature: float = self.get_parameter("temperature").value
@@ -76,6 +77,7 @@ class DialogueNode(Node):
         self._max_turns: int = self.get_parameter("history_max_turns").value
         self._agent_max_turns: int = self.get_parameter("agent_max_turns").value
         self._llm_timeout: float = self.get_parameter("llm_timeout_sec").value
+        self._verbose_llm: bool = self.get_parameter("verbose_llm").value
 
         # ── System prompt ────────────────────────────────────────────
         self._system_prompt: str = self._load_system_prompt()
@@ -354,6 +356,7 @@ class DialogueNode(Node):
         self.get_logger().info(f"  Wake     : {self.dialogue_manager.wake_words}")
         self.get_logger().info(f"  History  : {self._max_turns} turns")
         self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s")
+        self.get_logger().info(f"  VerboseLLM: {self._verbose_llm}")
 
     # ────────────────────────────────────────────────────────────────
     # ROS2 callbacks
@@ -467,6 +470,12 @@ class DialogueNode(Node):
                 self.get_logger().error("❌ Agent not initialised")
                 return
 
+            if self._verbose_llm:
+                self.get_logger().info(
+                    f"📥 LLM INPUT ({len(input_list)} messages):\n"
+                    + json.dumps(input_list, ensure_ascii=False, indent=2)
+                )
+
             # Use run_streamed so we can monitor events and bail early
             # if agent loops on non-speak_text tool calls (play_sound/animation spam)
             streamed = Runner.run_streamed(
@@ -485,7 +494,11 @@ class DialogueNode(Node):
                     item = event.item
                     if item.type == "tool_call_item":
                         tool_name = getattr(item.raw_item, "name", "") or ""
-                        self.get_logger().debug(f"🔧 tool_call: {tool_name}")
+                        if self._verbose_llm:
+                            raw_args = getattr(item.raw_item, "arguments", "") or ""
+                            self.get_logger().info(f"🔧 tool_call: {tool_name}({raw_args[:200]})")
+                        else:
+                            self.get_logger().debug(f"🔧 tool_call: {tool_name}")
                         if tool_name == "speak_text":
                             non_speech_calls = 0  # reset counter on every speak
                             spoke_once = True
@@ -516,9 +529,11 @@ class DialogueNode(Node):
                 with self._conv_lock:
                     self._conversation = self._trim_history(streamed.to_input_list())
 
-            self.get_logger().info(
-                f"✅ Agent done. Output: {(streamed.final_output or '')[:80]}"
-            )
+            final_out = streamed.final_output or ""
+            if self._verbose_llm:
+                self.get_logger().info(f"📤 LLM OUTPUT (normal path):\n{final_out}")
+            else:
+                self.get_logger().info(f"✅ Agent done. Output: {final_out[:80]}")
 
         except asyncio.CancelledError:
             if self._speak_done:
@@ -527,7 +542,10 @@ class DialogueNode(Node):
                 # Join ALL spoken texts (LLM may fire multiple speak_text in parallel
                 # in one batch — _spoken_texts collects them all, not just the first).
                 full_response = " ".join(self._spoken_texts)
-                self.get_logger().info(f"✅ Agent done (speak_text completed, loop stopped). Response: {full_response[:80]}")
+                if self._verbose_llm:
+                    self.get_logger().info(f"📤 LLM OUTPUT (speak path):\n{full_response}")
+                else:
+                    self.get_logger().info(f"✅ Agent done (speak_text completed, loop stopped). Response: {full_response[:80]}")
                 with self._conv_lock:
                     partial = list(self._conversation) + [
                         {"role": "user", "content": user_input},
