@@ -104,6 +104,12 @@ class DialogueNode(Node):
         self._tts_events: dict = {}  # speech_id -> asyncio.Event
         self._tts_events_lock = threading.Lock()
 
+        # ── speak_text stop-loop tracking ────────────────────────────
+        # When speak_text raises CancelledError to stop the SDK loop,
+        # this flag lets _agent_run distinguish it from external barge-in.
+        self._speak_done: bool = False
+        self._last_spoken_text: str = ""
+
         # ── ROS2 pub/sub ─────────────────────────────────────────────
         cbg = ReentrantCallbackGroup()
         qos_r = QoSProfile(
@@ -254,8 +260,14 @@ class DialogueNode(Node):
                 finally:
                     with self._tts_events_lock:
                         self._tts_events.pop(speech_id, None)
-            # Return TASK_COMPLETE signal so LLM knows to stop tool calls and return text
-            return "TASK_COMPLETE"
+            # ── Stop the SDK agent loop ──────────────────────────────
+            # Response is delivered. Raise CancelledError so Runner exits
+            # immediately — prevents extra LLM turns (memory_save, animations,
+            # extra speak_text calls) that exhaust max_turns and leak into
+            # next request, causing OOM from accumulated async tool calls.
+            self._speak_done = True
+            self._last_spoken_text = text
+            raise asyncio.CancelledError("speak_text done — stopping agent loop")
 
         @function_tool
         async def play_sound(sound: str) -> str:
@@ -404,6 +416,8 @@ class DialogueNode(Node):
         with self._task_lock:
             self._run_task = asyncio.current_task()
 
+        self._speak_done = False
+        self._last_spoken_text = ""
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
 
         try:
@@ -470,8 +484,19 @@ class DialogueNode(Node):
             )
 
         except asyncio.CancelledError:
-            self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
-            # Do NOT update history — partial turn discarded
+            if self._speak_done:
+                # Graceful stop: speak_text completed and raised CancelledError
+                # to prevent extra tool calls. Save history so next turn has context.
+                self.get_logger().info("✅ Agent done (speak_text completed, loop stopped)")
+                with self._conv_lock:
+                    partial = list(self._conversation) + [
+                        {"role": "user", "content": user_input},
+                        {"role": "assistant", "content": self._last_spoken_text},
+                    ]
+                    self._conversation = self._trim_history(partial)
+            else:
+                self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
+                # Do NOT update history — partial turn discarded
 
         except MaxTurnsExceeded:
             self.get_logger().error(
