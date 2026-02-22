@@ -33,6 +33,14 @@ from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
 from .core.dialogue_manager import DialogueManager, DialogueState
 
+try:
+    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
+
+    _VOICE_MEMORY_AVAILABLE = True
+except ImportError:
+    _VoiceMemory = None  # type: ignore[assignment,misc]
+    _VOICE_MEMORY_AVAILABLE = False
+
 
 class DialogueNode(Node):
     """Voice dialogue agent built on OpenAI Agents SDK."""
@@ -142,6 +150,10 @@ class DialogueNode(Node):
             except Exception as exc:
                 self.get_logger().error(f"❌ MCP adapter failed: {exc}")
 
+        # ── Long-term memory (voice_turns DB) ─────────────────────────
+        self._voice_memory = None
+        self._init_voice_memory()
+
         # ── Build agent ──────────────────────────────────────────────
         self._agent: Optional[Agent] = None
         self._build_agent()
@@ -191,6 +203,24 @@ class DialogueNode(Node):
     def _resolve_model(self) -> str:
         val = self.get_parameter("model").value
         return val or self.PROVIDERS.get(self._provider, {}).get("model", "deepseek-chat")
+
+    def _init_voice_memory(self) -> None:
+        """Init VoiceMemory for persistent turn logging. Fails silently."""
+        if not _VOICE_MEMORY_AVAILABLE:
+            self.get_logger().warning("⚠️ VoiceMemory unavailable — turn logging disabled")
+            return
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        try:
+            self._voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            stats = self._voice_memory.get_stats()
+            self.get_logger().info(
+                f"🧠 DialogueNode VoiceMemory: {db_path} "
+                f"(turns={stats['turn_count']}, sessions={stats['session_count']})"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"❌ VoiceMemory init failed: {exc}")
+            self._voice_memory = None
 
     def _build_agent(self) -> None:
         """(Re)build the Agent — also called after fallback provider switch."""
@@ -417,6 +447,11 @@ class DialogueNode(Node):
             self._run_task = asyncio.current_task()
         self._spoken_texts = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
+        if self._voice_memory is not None:
+            try:
+                self._voice_memory.save_turn("user", user_input)
+            except Exception as exc:
+                self.get_logger().warning(f"⚠️ memory save_turn(user) failed: {exc}")
 
         try:
             with self._conv_lock:
@@ -448,6 +483,12 @@ class DialogueNode(Node):
                 self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
             else:
                 self.get_logger().info(f"✅ Agent done. Response: {spoken[:80]}")
+
+            if self._voice_memory is not None and spoken:
+                try:
+                    self._voice_memory.save_turn("assistant", spoken)
+                except Exception as exc:
+                    self.get_logger().warning(f"⚠️ memory save_turn(assistant) failed: {exc}")
 
             with self._conv_lock:
                 self._conversation = self._trim_history(
