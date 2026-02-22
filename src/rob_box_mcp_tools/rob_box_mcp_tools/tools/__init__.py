@@ -10,6 +10,7 @@ tools - Коллекция MCP инструментов для Rob Box
 - sound: Управление звуковыми эффектами
 - dialogue: Управление диалогом (TTS, STT)
 - memory: Долгосрочная память (VoiceMemory + Ollama embeddings)
+- music: Управление музыкой в реальном времени через Renardo
 """
 
 from .navigation import *
@@ -20,6 +21,7 @@ from .animation import *
 from .sound import *
 from .dialogue import *
 from .memory import *
+from .music import *
 
 __all__ = [
     # Navigation tools
@@ -52,4 +54,10 @@ __all__ = [
     "MemorySaveTool",
     "MemorySearchTool",
     "MemoryContextTool",
+    # Music tools
+    "MusicManager",
+    "ExecuteMusicCodeTool",
+    "StopMusicTool",
+    "SetVibePresetTool",
+    "GetMusicStateTool",
 ]

@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""
+music.py - Инструменты для управления музыкой в реальном времени через Renardo
+
+Модуль предоставляет:
+- MusicManager: Базовый класс управления Renardo (история паттернов, SC-проверка, пресеты, фильтрация кода)
+- ExecuteMusicCodeTool: Выполнить Renardo-код в безопасном контексте
+- StopMusicTool: Остановить паттерны или всю музыку
+- SetVibePresetTool: Применить вайб-пресет (скейл, темп, тоника)
+- GetMusicStateTool: Получить текущее состояние музыки и историю паттернов
+"""
+
+import re
+import socket
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+# ---------------------------------------------------------------------------
+# Safety filter — compiled once at import time
+# ---------------------------------------------------------------------------
+
+_BLOCKED_TOKENS = re.compile(
+    r"\b("
+    r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
+    r"importlib|builtins|__import__|__builtins__|__class__|__subclasses__|"
+    r"open|exec|eval|compile|globals|locals|vars|getattr|setattr|delattr"
+    r")\b"
+)
+
+
+# ---------------------------------------------------------------------------
+# MusicManager
+# ---------------------------------------------------------------------------
+
+
+class MusicManager:
+    """Управляет интеграцией с Renardo для LLM-контроля музыки в реальном времени.
+
+    Возможности:
+    - Безопасное выполнение Renardo-кода (execute_code)
+    - История паттернов с возможностью мутации и остановки по имени
+    - Проверка доступности SuperCollider перед воспроизведением
+    - Вайб-пресеты для быстрой настройки скейла / BPM / тоники
+    - Фильтрация опасных системных команд в пользовательском коде
+    """
+
+    #: Доступные вайб-пресеты: имя -> {scale, bpm, root}
+    VIBE_PRESETS: Dict[str, Dict[str, Any]] = {
+        "chill": {"scale": "major", "bpm": 85, "root": "C"},
+        "energetic": {"scale": "minor", "bpm": 140, "root": "A"},
+        "ambient": {"scale": "dorian", "bpm": 70, "root": "D"},
+        "jazz": {"scale": "lydian", "bpm": 120, "root": "F"},
+        "dark": {"scale": "phrygian", "bpm": 100, "root": "E"},
+    }
+
+    SC_HOST: str = "127.0.0.1"
+    SC_PORT: int = 57110
+
+    def __init__(self) -> None:
+        #: pattern_name -> последний выполненный код
+        self._pattern_history: Dict[str, str] = {}
+        #: множество имён активных паттернов
+        self._active_patterns: set = set()
+        #: имя текущего пресета
+        self._current_preset: Optional[str] = None
+        #: контекст выполнения для renardo
+        self._renardo_context: Dict[str, Any] = {}
+        #: True если renardo доступен, False/None иначе
+        self._renardo_available: Optional[bool] = None
+        self._initialize_renardo()
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+
+    def _initialize_renardo(self) -> None:
+        """Попытка инициализировать Renardo-контекст."""
+        try:
+            import renardo_lib  # noqa: F401
+
+            self._renardo_context = vars(renardo_lib).copy()
+            self._renardo_available = True
+        except ImportError:
+            self._renardo_available = False
+            self._renardo_context = {}
+
+    # ------------------------------------------------------------------
+    # SuperCollider check
+    # ------------------------------------------------------------------
+
+    def _check_supercollider(self) -> bool:
+        """Проверить, запущен ли SuperCollider, попытавшись подключиться к OSC-порту.
+
+        Returns:
+            True если SC отвечает на порту SC_PORT.
+        """
+        try:
+            with socket.create_connection((self.SC_HOST, self.SC_PORT), timeout=1.0):
+                return True
+        except OSError:
+            return False
+
+    # ------------------------------------------------------------------
+    # Code safety filter
+    # ------------------------------------------------------------------
+
+    def _filter_code(self, code: str) -> Tuple[bool, str]:
+        """Проверить код на наличие опасных конструкций.
+
+        Args:
+            code: Строка кода для проверки.
+
+        Returns:
+            (is_safe, error_message) — (True, "") если код безопасен.
+        """
+        match = _BLOCKED_TOKENS.search(code)
+        if match:
+            return False, f"Запрещённый токен в коде: '{match.group()}'"
+        return True, ""
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def execute_code(self, code: str, pattern_name: Optional[str] = None) -> Dict[str, Any]:
+        """Безопасно выполнить Renardo-код.
+
+        Перед выполнением проверяется:
+        1. Фильтр опасных конструкций.
+        2. Доступность SuperCollider.
+        3. Доступность библиотеки Renardo.
+
+        Args:
+            code: Строка Python/Renardo-кода.
+            pattern_name: Имя паттерна для хранения в истории (опционально).
+
+        Returns:
+            dict с ключами ``success``, ``message`` (или ``error``), ``code``.
+        """
+        is_safe, filter_error = self._filter_code(code)
+        if not is_safe:
+            return {"success": False, "error": filter_error}
+
+        if not self._check_supercollider():
+            return {
+                "success": False,
+                "error": "SuperCollider не запущен. Запустите SuperCollider перед воспроизведением музыки.",
+            }
+
+        if not self._renardo_available:
+            return {
+                "success": False,
+                "error": "Renardo недоступен. Установите пакет renardo_lib.",
+            }
+
+        try:
+            exec(code, self._renardo_context)  # noqa: S102
+        except Exception as exc:
+            return {"success": False, "error": f"Ошибка выполнения: {exc}"}
+
+        if pattern_name:
+            self._pattern_history[pattern_name] = code
+            self._active_patterns.add(pattern_name)
+
+        return {"success": True, "message": "Код выполнен успешно", "code": code}
+
+    def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
+        """Остановить именованный паттерн.
+
+        Args:
+            pattern_name: Имя паттерна (должно существовать в истории).
+
+        Returns:
+            dict с ключами ``success`` и ``message`` (или ``error``).
+        """
+        if pattern_name not in self._pattern_history:
+            return {
+                "success": False,
+                "error": f"Паттерн '{pattern_name}' не найден в истории",
+            }
+
+        stop_code = f"{pattern_name}.stop()"
+
+        if self._renardo_available and self._check_supercollider():
+            try:
+                exec(stop_code, self._renardo_context)  # noqa: S102
+            except Exception as exc:
+                return {"success": False, "error": f"Ошибка остановки паттерна: {exc}"}
+
+        self._active_patterns.discard(pattern_name)
+        return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
+
+    def stop_all(self) -> Dict[str, Any]:
+        """Остановить всю музыку через Clock.clear().
+
+        Returns:
+            dict с ключами ``success`` и ``message`` (или ``error``).
+        """
+        if self._renardo_available and self._check_supercollider():
+            try:
+                exec("Clock.clear()", self._renardo_context)  # noqa: S102
+            except Exception as exc:
+                return {"success": False, "error": f"Ошибка остановки: {exc}"}
+
+        self._active_patterns.clear()
+        return {"success": True, "message": "Вся музыка остановлена"}
+
+    def set_vibe_preset(self, preset_name: str) -> Dict[str, Any]:
+        """Применить вайб-пресет (скейл, BPM, тоника).
+
+        Если Renardo/SC недоступны, пресет запоминается для отложенного применения.
+
+        Args:
+            preset_name: Ключ из VIBE_PRESETS.
+
+        Returns:
+            dict с ключами ``success``, ``message``, ``preset`` (или ``error``).
+        """
+        if preset_name not in self.VIBE_PRESETS:
+            available = ", ".join(self.VIBE_PRESETS)
+            return {
+                "success": False,
+                "error": f"Пресет '{preset_name}' не найден. Доступные: {available}",
+            }
+
+        preset = self.VIBE_PRESETS[preset_name]
+        self._current_preset = preset_name
+
+        if self._renardo_available and self._check_supercollider():
+            preset_code = (
+                f"Scale.default = Scale.{preset['scale']}\n"
+                f"Root.default = Root.{preset['root']}\n"
+                f"Clock.bpm = {preset['bpm']}"
+            )
+            try:
+                exec(preset_code, self._renardo_context)  # noqa: S102
+            except Exception as exc:
+                return {"success": False, "error": f"Ошибка применения пресета: {exc}"}
+        else:
+            # Запомнить для применения при следующем вызове execute_code
+            self._renardo_context.update(
+                {
+                    "__preset_scale__": preset["scale"],
+                    "__preset_root__": preset["root"],
+                    "__preset_bpm__": preset["bpm"],
+                }
+            )
+
+        return {
+            "success": True,
+            "message": f"Пресет '{preset_name}' применён: scale={preset['scale']}, bpm={preset['bpm']}, root={preset['root']}",
+            "preset": preset,
+        }
+
+    def get_state(self) -> Dict[str, Any]:
+        """Вернуть текущее состояние музыкального менеджера.
+
+        Returns:
+            dict с полями renardo_available, supercollider_running,
+            current_preset, pattern_history, active_patterns.
+        """
+        return {
+            "renardo_available": self._renardo_available,
+            "supercollider_running": self._check_supercollider(),
+            "current_preset": self._current_preset,
+            "pattern_history": dict(self._pattern_history),
+            "active_patterns": list(self._active_patterns),
+        }
+
+
+# ---------------------------------------------------------------------------
+# MCPTool wrappers
+# ---------------------------------------------------------------------------
+
+
+class ExecuteMusicCodeTool(MCPTool):
+    """Выполнить Renardo/FoxDot-код для создания или изменения музыкального паттерна."""
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "execute_music_code"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Выполнить Renardo-код для создания или изменения музыкального паттерна в реальном времени. "
+            "Код выполняется в контексте Renardo (FoxDot-совместимый синтаксис). "
+            "Пример: 'p1 >> pluck([0, 2, 4], dur=0.5, amp=0.8)'. "
+            "Перед выполнением проверяется доступность SuperCollider. "
+            "Опасные системные команды автоматически блокируются. "
+            "Укажи pattern_name чтобы паттерн можно было остановить или изменить позже."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="code",
+                type="string",
+                description="Строка Python/Renardo-кода для выполнения. Например: 'p1 >> pluck([0, 2, 4])'",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="pattern_name",
+                type="string",
+                description=(
+                    "Имя паттерна для хранения в истории (например: 'p1', 'bass', 'drums'). "
+                    "Используется для последующей мутации или остановки паттерна."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, code: str, pattern_name: Optional[str] = None) -> MCPToolResult:
+        """Выполнить Renardo-код."""
+        self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
+        result = self._manager.execute_code(code, pattern_name)
+        if result["success"]:
+            return MCPToolResult(success=True, data=result, message=result["message"])
+        return MCPToolResult(success=False, error=result["error"])
+
+
+class StopMusicTool(MCPTool):
+    """Остановить музыкальный паттерн по имени или всю музыку сразу."""
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "stop_music"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Остановить музыкальный паттерн по имени или всю музыку. "
+            "Если указан pattern_name — остановится только этот паттерн. "
+            "Если pattern_name не указан или равен 'all' — остановится вся музыка (Clock.clear())."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="pattern_name",
+                type="string",
+                description=(
+                    "Имя паттерна для остановки (например: 'p1', 'bass'). "
+                    "Передай 'all' или оставь пустым для остановки всей музыки."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, pattern_name: Optional[str] = None) -> MCPToolResult:
+        """Остановить паттерн или всю музыку."""
+        if not pattern_name or pattern_name.strip().lower() == "all":
+            self.log_info("Остановка всей музыки")
+            result = self._manager.stop_all()
+        else:
+            self.log_info(f"Остановка паттерна: {pattern_name}")
+            result = self._manager.stop_pattern(pattern_name)
+
+        if result["success"]:
+            return MCPToolResult(success=True, data=result, message=result["message"])
+        return MCPToolResult(success=False, error=result["error"])
+
+
+class SetVibePresetTool(MCPTool):
+    """Применить вайб-пресет для быстрой настройки скейла, BPM и тоники."""
+
+    PRESET_NAMES: List[str] = list(MusicManager.VIBE_PRESETS.keys())
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "set_vibe_preset"
+
+    @property
+    def description(self) -> str:
+        presets_desc = ", ".join(
+            f"{name} (scale={p['scale']}, bpm={p['bpm']})" for name, p in MusicManager.VIBE_PRESETS.items()
+        )
+        return (
+            "Применить вайб-пресет для быстрой настройки музыкального контекста. "
+            "Устанавливает скейл, BPM и тонику в Renardo одной командой. "
+            f"Доступные пресеты: {presets_desc}."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="preset_name",
+                type="string",
+                description="Имя пресета для применения",
+                required=True,
+                enum=self.PRESET_NAMES,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, preset_name: str) -> MCPToolResult:
+        """Применить вайб-пресет."""
+        self.log_info(f"Применение пресета: {preset_name}")
+        result = self._manager.set_vibe_preset(preset_name)
+        if result["success"]:
+            return MCPToolResult(success=True, data=result, message=result["message"])
+        return MCPToolResult(success=False, error=result["error"])
+
+
+class GetMusicStateTool(MCPTool):
+    """Получить текущее состояние музыки: доступность Renardo/SC, активные паттерны, история."""
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "get_music_state"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Получить текущее состояние музыкального менеджера: "
+            "доступность Renardo и SuperCollider, список активных паттернов, "
+            "историю кода паттернов и применённый пресет."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return []
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self) -> MCPToolResult:
+        """Вернуть текущее состояние музыки."""
+        state = self._manager.get_state()
+        parts = [
+            f"Renardo: {'доступен' if state['renardo_available'] else 'недоступен'}",
+            f"SuperCollider: {'запущен' if state['supercollider_running'] else 'не запущен'}",
+            f"Пресет: {state['current_preset'] or 'не задан'}",
+            f"Активные паттерны: {', '.join(state['active_patterns']) or 'нет'}",
+            f"История паттернов: {', '.join(state['pattern_history'].keys()) or 'нет'}",
+        ]
+        return MCPToolResult(
+            success=True,
+            data=state,
+            message="\n".join(parts),
+        )
