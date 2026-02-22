@@ -115,6 +115,7 @@ class DialogueNode(Node):
         self._response_pub = self.create_publisher(String, "/voice/dialogue/response", 10)
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
         self._sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+        self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
 
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg
@@ -435,7 +436,8 @@ class DialogueNode(Node):
                 f"❌ Agent exceeded max tool-call turns ({self._agent_max_turns}). "
                 "Consider increasing agent_max_turns param."
             )
-            self._speak_direct("Запрос оказался слишком сложным, попробуй переформулировать.")
+            # Do NOT call _speak_direct — agent likely already spoke several phrases
+            # and injecting another TTS would corrupt the playback queue
 
         except asyncio.TimeoutError:
             self.get_logger().error(f"❌ Agent timed out ({self._llm_timeout * 3:.0f}s)")
@@ -474,6 +476,16 @@ class DialogueNode(Node):
         if task and not task.done():
             self.get_logger().info(f"🛑 Cancel: {reason}")
             self._loop.call_soon_threadsafe(task.cancel)
+        # Always flush TTS queue on cancel — even if no task was running,
+        # the TTS node may still have queued phrases from a previous run.
+        stop_msg = String()
+        stop_msg.data = "STOP"
+        self._tts_control_pub.publish(stop_msg)
+        # Release any pending TTS events so speak_text doesn't hang
+        with self._tts_events_lock:
+            for event in self._tts_events.values():
+                self._loop.call_soon_threadsafe(event.set)
+            self._tts_events.clear()
 
     def _trim_history(self, items: list) -> list:
         """Keep the last `max_turns` complete user+assistant pairs."""
