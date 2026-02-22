@@ -205,8 +205,11 @@ class DialogueNode(Node):
                     max_tokens=self._max_tokens,
                 ),
             )
+            prompt_preview = self._system_prompt[:200].replace("\n", "↵")
             self.get_logger().info(
-                f"🤖 Agent built: {model_name} @ {base_url} ({len(tools)} tools)"
+                f"🤖 Agent built: {model_name} @ {base_url} ({len(tools)} tools) | "
+                f"instructions={len(self._system_prompt)} bytes | "
+                f'preview="{prompt_preview}..."'
             )
         except Exception as exc:
             self.get_logger().error(f"❌ Agent build failed: {exc}")
