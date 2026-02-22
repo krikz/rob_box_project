@@ -63,7 +63,7 @@ class DialogueNode(Node):
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
         self.declare_parameter("history_max_turns", 10)
-        self.declare_parameter("agent_max_turns", 25)
+        self.declare_parameter("agent_max_turns", 10)
         self.declare_parameter("dialogue_timeout", 30.0)
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("enable_mcp_tools", True)
