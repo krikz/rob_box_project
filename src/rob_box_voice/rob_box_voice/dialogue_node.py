@@ -118,6 +118,13 @@ class DialogueNode(Node):
         # Collects all speak_text calls for building clean history.
         self._spoken_texts: List[str] = []
 
+        # ── Output serialisation lock ────────────────────────────────
+        # speak_text / play_sound / play_animation must not run in parallel.
+        # DeepSeek ignores parallel_tool_calls=False, so we enforce ordering
+        # here: each output tool acquires the lock before executing and holds
+        # it until the action is fully complete (TTS finished / sound done).
+        self._output_lock = asyncio.Lock()
+
         # ── ROS2 pub/sub ─────────────────────────────────────────────
         cbg = ReentrantCallbackGroup()
         qos_r = QoSProfile(
@@ -258,6 +265,8 @@ class DialogueNode(Node):
     def _make_tools(self) -> list:
         """Create @function_tool wrappers around MCP ROS2 calls."""
         mcp = self._mcp
+        # Captured once per tool-set build; bound to self._loop on first await.
+        lock = self._output_lock
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
             result = await asyncio.get_running_loop().run_in_executor(
@@ -272,42 +281,55 @@ class DialogueNode(Node):
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
             Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
-            # Collect ALL spoken texts immediately (before TTS wait) so that when
-            # multiple speak_text calls fire in parallel in one LLM batch, the full
-            # response is accumulated in _spoken_texts for proper history saving.
+            # Collect ALL spoken texts immediately (before lock) so that when
+            # multiple speak_text calls queue on the lock, _spoken_texts already
+            # has all texts for proper history saving.
             self._spoken_texts.append(text)
-            result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
-            # ── Wait for TTS to actually finish playing ───────────────────
-            # MCP speak_text is async (returns immediately), but we must block
-            # here so the agent calls speak_text sequentially, not in parallel
-            try:
-                speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
-            except Exception:
-                speech_id = ""
-            if speech_id:
-                event = asyncio.Event()
-                with self._tts_events_lock:
-                    self._tts_events[speech_id] = event
+            async with lock:
+                result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+                # ── Wait for TTS to actually finish playing ───────────────────
+                # MCP speak_text is async (returns immediately), but we hold
+                # the output lock until TTS finishes, so the next tool call
+                # (play_sound, play_animation, etc.) only starts afterwards.
                 try:
-                    await asyncio.wait_for(event.wait(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
-                finally:
+                    speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+                except Exception:
+                    speech_id = ""
+                if speech_id:
+                    event = asyncio.Event()
                     with self._tts_events_lock:
-                        self._tts_events.pop(speech_id, None)
+                        self._tts_events[speech_id] = event
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                    finally:
+                        with self._tts_events_lock:
+                            self._tts_events.pop(speech_id, None)
             return "TASK_COMPLETE"
 
         @function_tool
         async def play_sound(sound: str) -> str:
             """Воспроизвести звуковой эффект."""
-            return await _call("play_sound", {"sound": sound})
+            async with lock:
+                result_str = await _call("play_sound", {"sound": sound})
+                # MCP play_sound is fire-and-forget (returns when sound starts).
+                # We hold the lock and sleep for the sound duration so that
+                # consecutive play_sound calls don't overlap.
+                try:
+                    duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
+                except Exception:
+                    duration = 1.5
+                await asyncio.sleep(float(duration))
+            return result_str
 
         @function_tool
         async def play_animation(animation: str, duration: float = 3.0) -> str:
             """Запустить LED анимацию на указанное время."""
-            return await _call(
-                "play_animation", {"animation": animation, "duration": duration}
-            )
+            async with lock:
+                return await _call(
+                    "play_animation", {"animation": animation, "duration": duration}
+                )
 
         @function_tool
         async def memory_context(limit: int = 10) -> str:
