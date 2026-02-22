@@ -312,9 +312,10 @@ class DialogueNode(Node):
             )
 
         @function_tool
-        async def set_volume(volume: int) -> str:
-            """Установить громкость 0-100."""
-            return await _call("set_volume", {"volume": volume})
+        async def set_volume(action: str) -> str:
+            """Изменить громкость голоса.
+            action: 'louder' — громче, 'quieter' — тише, 'max' — максимум, 'normal' — норма."""
+            return await _call("set_volume", {"action": action})
 
         @function_tool
         async def set_pitch(pitch: float) -> str:
