@@ -316,6 +316,14 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
     {_RENARDO_REF}
     ═══════════════════════════════════════════
 
+    ⚠️ КРИТИЧНО — ОШИБКА КОТОРУЮ НЕЛЬЗЯ ДЕЛАТЬ НИКОГДА:
+    - НИКОГДА не пиши `Clock.bpm.set(N)` — bpm это int, у него нет .set()!
+    - НИКОГДА не пиши `lambda: Clock.bpm = N` — в lambda нельзя присваивать!
+    - Для смены BPM в Clock.future() используй ТОЛЬКО:
+        a) `Clock.future(N, lambda: setattr(Clock, 'bpm', 170))`  ← правильно
+        b) `def fn(): Clock.bpm = 170\nClock.future(N, fn)`        ← правильно
+    - То же самое для Scale/Root в lambda: `lambda: setattr(Scale, 'default', 'minor')`
+
     Стратегия:
     1. Сначала вызови set_vibe_preset если пользователь описывает настроение
     2. Затем execute_music_code — создавай несколько паттернов сразу (бас + ритм + мелодия)

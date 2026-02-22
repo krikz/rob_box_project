@@ -176,6 +176,19 @@ Clock.future(4, lambda: print("hello"))        # через 4 бита
 Clock.schedule(lambda: print("hi"), Clock.now() + 4)
 Clock.every(4, lambda: print("tick"))          # каждые 4 бита
 
+# ⚠️ ИЗМЕНЕНИЕ BPM ЧЕРЕЗ Clock.future() — ТОЛЬКО setattr ИЛИ ИМЕННАЯ ФУНКЦИЯ!
+# НЕЛЬЗЯ: Clock.future(8, lambda: Clock.bpm = 170)  — SyntaxError (нельзя присваивать в lambda)
+# НЕЛЬЗЯ: Clock.future(8, lambda: Clock.bpm.set(170))  — AttributeError (bpm это int)
+# ПРАВИЛЬНО — вариант 1: setattr
+Clock.future(8, lambda: setattr(Clock, 'bpm', 170))
+# ПРАВИЛЬНО — вариант 2: именная функция
+def go_dnb():
+    Clock.bpm = 170
+Clock.future(8, go_dnb)
+# ПРАВИЛЬНО — изменение Scale/Root через setattr в lambda тоже работает:
+Clock.future(16, lambda: setattr(Scale, 'default', 'minor'))
+Clock.future(16, lambda: setattr(Root, 'default', 4))
+
 # nextBar декоратор
 nextBar(Clock.clear)
 @nextBar
