@@ -392,7 +392,7 @@ services:
       - ./scripts/teleop:/scripts:ro
       - /dev/input:/dev/input  # Доступ к джойстику (для non-SBUS режима)
     devices:
-      - /dev/ttyACM0:/dev/ttyACM0  # USB-UART для SBUS приёмника
+      - /dev/ttyACM1:/dev/ttyACM1  # ELRS SBUS receiver (CH341)
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_teleop.sh"]
     depends_on:
       - zenoh-router

@@ -1,11 +1,11 @@
 # Joystick Control Configuration for Rob Box - SBUS Mode
-# ExpressLRS SBUS receiver via USB-UART adapter (/dev/ttyACM0)
+# ExpressLRS SBUS receiver via USB-UART adapter (/dev/ttyACM1)
 
 joystick_control_node:
   ros__parameters:
     # Connection mode
     use_sbus: true  # true = SBUS serial, false = traditional /dev/input/js0
-    serial_port: "/dev/ttyACM0"  # USB-UART adapter (CH340G)
+    serial_port: "/dev/ttyACM1"  # USB-UART adapter (CH340G)
     serial_baudrate: 100000  # SBUS standard: 100000 baud, 8E2
     
     # Device settings (for HID mode, if use_sbus=false)
