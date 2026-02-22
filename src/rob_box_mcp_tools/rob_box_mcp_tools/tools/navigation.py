@@ -110,16 +110,32 @@ class NavigateToWaypointTool(MCPTool):
         goal.pose.pose.orientation.z = math.sin(coords["theta"] / 2.0)
         goal.pose.pose.orientation.w = math.cos(coords["theta"] / 2.0)
 
-        # Отправка цели с callback для мониторинга accept/reject
-        future = self.nav_client.send_goal_async(goal)
-        future.add_done_callback(self._on_goal_response)
+        # Отправка цели — ждём accept
+        import rclpy
+        send_future = self.nav_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self.node, send_future, timeout_sec=5.0)
 
-        self.log_info(f"Цель отправлена: {waypoint} ({coords['x']}, {coords['y']})")
+        if send_future.result() is None:
+            return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
 
+        goal_handle = send_future.result()
+        if not goal_handle.accepted:
+            return MCPToolResult(success=False, error="Nav2 отклонил цель", message="Цель недостижима")
+
+        self.log_info(f"✅ Nav2 цель принята, жду завершения: {waypoint} ({coords['x']}, {coords['y']})")
+
+        # Ждём реального завершения навигации (до 120s)
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=120.0)
+
+        if result_future.result() is None:
+            return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
+
+        self.log_info(f"✅ Навигация к {waypoint} завершена")
         return MCPToolResult(
             success=True,
             data={"waypoint": waypoint, "coordinates": coords},
-            message=f"Иду к точке {waypoint}",
+            message=f"Приехал к точке {waypoint}",
         )
 
 
@@ -207,16 +223,32 @@ class MoveDirectionTool(MCPTool):
         goal.pose.pose.orientation.z = math.sin(coords["theta"] / 2.0)
         goal.pose.pose.orientation.w = math.cos(coords["theta"] / 2.0)
 
-        # Отправка цели с callback
-        future = self.nav_client.send_goal_async(goal)
-        future.add_done_callback(self._on_goal_response)
+        # Отправка цели — ждём accept
+        import rclpy
+        send_future = self.nav_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self.node, send_future, timeout_sec=5.0)
 
-        self.log_info(f"Относительная цель отправлена: {coords}")
+        if send_future.result() is None:
+            return MCPToolResult(success=False, error="Nav2 не ответил на цель")
 
+        goal_handle = send_future.result()
+        if not goal_handle.accepted:
+            return MCPToolResult(success=False, error="Nav2 отклонил цель")
+
+        self.log_info(f"✅ Nav2 цель принята, жду завершения движения {direction} {distance}м")
+
+        # Ждём реального завершения (до 60s для движения на 1м)
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=60.0)
+
+        if result_future.result() is None:
+            return MCPToolResult(success=False, error="Движение превысило таймаут", message="Не доехал")
+
+        self.log_info(f"✅ Движение {direction} завершено")
         return MCPToolResult(
             success=True,
             data={"direction": direction, "distance": distance, "relative_coords": coords},
-            message=f"Движение {direction}",
+            message=f"Приехал: {direction} {distance}м",
         )
 
 

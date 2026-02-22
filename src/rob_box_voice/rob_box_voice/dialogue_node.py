@@ -312,15 +312,16 @@ class DialogueNode(Node):
             return await _call("get_battery_level", {})
 
         @function_tool
-        async def navigate_to_waypoint(waypoint_name: str) -> str:
-            """Направить робота к именованной точке маршрута."""
-            return await _call("navigate_to_waypoint", {"waypoint_name": waypoint_name})
+        async def navigate_to_waypoint(waypoint: str) -> str:
+            """Направить робота к именованной точке. БЛОКИРУЕТСЯ до прибытия — speak_text после вызывать ТОЛЬКО после завершения."""
+            return await _call("navigate_to_waypoint", {"waypoint": waypoint}, timeout=130.0)
 
         @function_tool
         async def move_direction(direction: str, distance: float = 0.5) -> str:
-            """Передвинуть робота (forward / backward / left / right)."""
+            """Передвинуть робота. direction: 'вперёд', 'назад', 'налево', 'направо'.
+            БЛОКИРУЕТСЯ до завершения движения — speak_text вызывать ТОЛЬКО после этого."""
             return await _call(
-                "move_direction", {"direction": direction, "distance": distance}
+                "move_direction", {"direction": direction, "distance": distance}, timeout=70.0
             )
 
         @function_tool
