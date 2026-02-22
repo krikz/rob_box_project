@@ -230,12 +230,6 @@ class DialogueNode(Node):
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю."""
-            msg = String()
-            msg.data = json.dumps(
-                {"chunk": "final", "ssml": f"<speak>{text}</speak>", "emotion": animation},
-                ensure_ascii=False,
-            )
-            self._response_pub.publish(msg)
             result = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
             # ── Stop the SDK agent loop ───────────────────────────────────
             # The response is delivered. Raise CancelledError so Runner.run()
@@ -247,15 +241,15 @@ class DialogueNode(Node):
             raise asyncio.CancelledError("speak_text done — stopping agent loop")
 
         @function_tool
-        async def play_sound(sound_name: str) -> str:
+        async def play_sound(sound: str) -> str:
             """Воспроизвести звуковой эффект."""
-            return await _call("play_sound", {"sound_name": sound_name})
+            return await _call("play_sound", {"sound": sound})
 
         @function_tool
-        async def play_animation(animation_name: str, duration: float = 3.0) -> str:
+        async def play_animation(animation: str, duration: float = 3.0) -> str:
             """Запустить LED анимацию на указанное время."""
             return await _call(
-                "play_animation", {"animation_name": animation_name, "duration": duration}
+                "play_animation", {"animation": animation, "duration": duration}
             )
 
         @function_tool
