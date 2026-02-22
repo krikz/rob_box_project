@@ -12,6 +12,7 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback
 import io
 import json
 import os
+import re
 import sys
 import time
 import wave
@@ -460,8 +461,6 @@ class TTSNode(Node):
         Returns:
             dict: {'pitch': float, 'rate': float} или пустой dict
         """
-        import re
-        
         attributes = {}
         
         # Ищем <prosody> теги с атрибутами
@@ -572,12 +571,19 @@ class TTSNode(Node):
                 if ssml_attributes:
                     self.get_logger().info(f"🎵 SSML атрибуты для Silero: {ssml_attributes}")
 
-                # Оборачиваем в SSML для Silero
-                # Silero поддерживает SSML напрямую через apply_tts
-                if not ssml.startswith("<speak>"):
-                    ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
+                # Оборачиваем нормализованный text в SSML для Silero.
+                # ВАЖНО: всегда используем нормализованный `text`, а не оригинальный `ssml`.
+                # `ssml` приходит от dialogue.py уже обёрнутым в <speak>...</speak>,
+                # но содержит цифры/латиницу/emoji, которые Silero не умеет читать.
+                # Восстанавливаем SSML-атрибуты из оригинала (pitch если был).
+                _prosody_attrs = ""
+                _pitch_m = re.search(r"<prosody[^>]*pitch=['\"]([^'\"]+)['\"]", ssml)
+                if _pitch_m:
+                    _prosody_attrs = f' pitch="{_pitch_m.group(1)}"'
+                if _prosody_attrs:
+                    ssml_text = f'<speak><prosody{_prosody_attrs}>{text}</prosody></speak>'
                 else:
-                    ssml_text = ssml
+                    ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
 
                 # Используем новые флаги v5 для расстановки ударений
                 audio = self.silero_model.apply_tts(

@@ -421,6 +421,37 @@ class DialogueNode(Node):
         self._last_spoken_text = ""
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
 
+        # --- Role-reset / Role-assign detection ---
+        # Clear conversation history when:
+        # 1. User explicitly exits a role ("будь собой", etc.)
+        # 2. User ENTERS a new role ("разговаривай как X", "ты теперь X")
+        #
+        # Why: to_input_list() stores all tool_call/result history but NOT the agent
+        # instructions (system prompt). If the history accumulates 5+ turns of "Lenin"
+        # responses, that pattern overrides the system prompt and the LLM stays in-role
+        # regardless of what the user asks next. Clearing on role-assign prevents this.
+        _ROLE_RESET_PHRASES = (
+            "будь собой", "ты обычный", "вернись обратно", "прекрати роль",
+            "сбрось роль", "забудь роль", "будь нормальным", "обычный режим",
+            "ты снова ты", "стоп роль", "хватит роли", "выйди из роли",
+            "прекрати быть", "хватит быть",
+        )
+        _ROLE_ASSIGN_PHRASES = (
+            "разговаривай как", "говори как", "ты теперь", "побудь", "сыграй роль",
+            "притворись", "изображай", "представь себя", "веди себя как",
+            "отвечай как", "будь как", "ты пастырь", "ты ленин", "ты робот",
+            "ты полицейский", "войди в роль",
+        )
+        _lower = user_input.lower()
+        if any(ph in _lower for ph in _ROLE_RESET_PHRASES):
+            with self._conv_lock:
+                self._conversation = []
+            self.get_logger().info("🧹 Role-reset detected — conversation history cleared")
+        elif any(ph in _lower for ph in _ROLE_ASSIGN_PHRASES):
+            with self._conv_lock:
+                self._conversation = []
+            self.get_logger().info("🎭 Role-assign detected — conversation history cleared for clean slate")
+
         try:
             with self._conv_lock:
                 input_list = list(self._conversation) + [
