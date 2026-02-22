@@ -99,6 +99,11 @@ class DialogueNode(Node):
         self._run_task: Optional[asyncio.Task] = None
         self._task_lock = threading.Lock()
 
+        # ── TTS completion tracking ──────────────────────────────────
+        # speak_text tool awaits these events so agent calls are sequential
+        self._tts_events: dict = {}  # speech_id -> asyncio.Event
+        self._tts_events_lock = threading.Lock()
+
         # ── ROS2 pub/sub ─────────────────────────────────────────────
         cbg = ReentrantCallbackGroup()
         qos_r = QoSProfile(
@@ -116,6 +121,9 @@ class DialogueNode(Node):
         )
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg
+        )
+        self.create_subscription(
+            String, "/voice/tts/finished", self._on_tts_finished_dlg, 10, callback_group=cbg
         )
 
         # ── MCP Adapter ──────────────────────────────────────────────
@@ -224,8 +232,27 @@ class DialogueNode(Node):
 
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
-            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю."""
-            return await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю. Экспрессивный текст можно разбивать на несколько вызовов — каждый блокируется до завершения."""
+            result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+            # ── Wait for TTS to actually finish playing ───────────────────
+            # MCP speak_text is async (returns immediately), but we must block
+            # here so the agent calls speak_text sequentially, not in parallel
+            try:
+                speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+            except Exception:
+                speech_id = ""
+            if speech_id:
+                event = asyncio.Event()
+                with self._tts_events_lock:
+                    self._tts_events[speech_id] = event
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                finally:
+                    with self._tts_events_lock:
+                        self._tts_events.pop(speech_id, None)
+            return result_str
 
         @function_tool
         async def play_sound(sound: str) -> str:
@@ -416,7 +443,9 @@ class DialogueNode(Node):
 
         except Exception as exc:
             self.get_logger().error(f"❌ Agent error: {exc}")
-            self._speak_direct("Произошла ошибка при обработке запроса.")
+            # Do NOT call _speak_direct here — agent may have already
+            # started speaking (e.g. mid-joke) and injecting an error
+            # message would corrupt the TTS queue
 
         finally:
             with self._task_lock:
@@ -424,6 +453,20 @@ class DialogueNode(Node):
             if self.dialogue_manager.state == DialogueState.DIALOGUE:
                 self.dialogue_manager.transition_state(DialogueState.LISTENING)
                 self._publish_state()
+
+    def _on_tts_finished_dlg(self, msg: String) -> None:
+        """Release speak_text awaiter when TTS finishes playing."""
+        try:
+            data = json.loads(msg.data)
+            speech_id = data.get("speech_id", "")
+        except Exception:
+            speech_id = msg.data.strip()
+        if not speech_id:
+            return
+        with self._tts_events_lock:
+            event = self._tts_events.get(speech_id)
+        if event:
+            self._loop.call_soon_threadsafe(event.set)
 
     def _cancel_run(self, reason: str) -> None:
         with self._task_lock:
