@@ -233,7 +233,8 @@ class DialogueNode(Node):
 
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
-            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю. Экспрессивный текст можно разбивать на несколько вызовов — каждый блокируется до завершения."""
+            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
+            Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
             result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
             # ── Wait for TTS to actually finish playing ───────────────────
             # MCP speak_text is async (returns immediately), but we must block
@@ -253,7 +254,8 @@ class DialogueNode(Node):
                 finally:
                     with self._tts_events_lock:
                         self._tts_events.pop(speech_id, None)
-            return result_str
+            # Return TASK_COMPLETE signal so LLM knows to stop tool calls and return text
+            return "TASK_COMPLETE"
 
         @function_tool
         async def play_sound(sound: str) -> str:
