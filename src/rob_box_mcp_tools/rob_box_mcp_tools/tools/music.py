@@ -90,14 +90,23 @@ class MusicManager:
     # ------------------------------------------------------------------
 
     def _check_supercollider(self) -> bool:
-        """Проверить, запущен ли SuperCollider, попытавшись подключиться к OSC-порту.
+        """Проверить, запущен ли SuperCollider, отправив OSC /status по UDP.
+
+        scsynth слушает на UDP-порту SC_PORT. Отправляем минимальный OSC
+        /status запрос и ждём ответа. TCP-проверка не подходит — scsynth
+        по умолчанию принимает только UDP.
 
         Returns:
-            True если SC отвечает на порту SC_PORT.
+            True если scsynth отвечает на SC_PORT.
         """
+        # Минимальный OSC /status: "/status\0" (8 байт) + ",\0\0\0" (4 байта)
+        osc_status = b"/status\x00,\x00\x00\x00"
         try:
-            with socket.create_connection((self.SC_HOST, self.SC_PORT), timeout=1.0):
-                return True
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(1.0)
+                sock.sendto(osc_status, (self.SC_HOST, self.SC_PORT))
+                data, _ = sock.recvfrom(512)
+                return len(data) > 0
         except OSError:
             return False
 

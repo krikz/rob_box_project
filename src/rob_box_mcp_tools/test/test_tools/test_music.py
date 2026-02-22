@@ -134,31 +134,63 @@ class TestMusicManagerFilter:
 class TestMusicManagerSCCheck:
     """Тесты проверки SuperCollider."""
 
-    def test_sc_running_returns_true(self):
+    def _make_raw_manager(self):
         mgr = MusicManager.__new__(MusicManager)
         mgr._pattern_history = {}
         mgr._active_patterns = set()
         mgr._current_preset = None
         mgr._renardo_available = False
         mgr._renardo_context = {}
+        return mgr
 
-        with patch("rob_box_mcp_tools.tools.music.socket.create_connection") as mock_conn:
-            mock_conn.return_value.__enter__ = Mock(return_value=Mock())
-            mock_conn.return_value.__exit__ = Mock(return_value=False)
+    def test_sc_running_returns_true(self):
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mock_sock.recvfrom.return_value = (b"\x00" * 16, ("127.0.0.1", 57110))
             result = mgr._check_supercollider()
         assert result is True
 
     def test_sc_not_running_returns_false(self):
-        mgr = MusicManager.__new__(MusicManager)
-        mgr._pattern_history = {}
-        mgr._active_patterns = set()
-        mgr._current_preset = None
-        mgr._renardo_available = False
-        mgr._renardo_context = {}
-
-        with patch("rob_box_mcp_tools.tools.music.socket.create_connection", side_effect=OSError):
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mock_sock.recvfrom.side_effect = OSError("timeout")
             result = mgr._check_supercollider()
         assert result is False
+
+    def test_sc_check_sends_osc_status_message(self):
+        """Verify the correct OSC /status message is sent to scsynth."""
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mock_sock.recvfrom.return_value = (b"\x00" * 16, ("127.0.0.1", 57110))
+            mgr._check_supercollider()
+        # Проверяем что отправлен правильный OSC /status
+        call_args = mock_sock.sendto.call_args
+        assert call_args is not None
+        sent_data, (host, port) = call_args[0]
+        assert sent_data == b"/status\x00,\x00\x00\x00"
+        assert port == 57110
+
+    def test_sc_check_uses_udp_socket(self):
+        """Verify UDP socket (SOCK_DGRAM) is used, not TCP."""
+        import socket as socket_module
+
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mock_sock.recvfrom.side_effect = OSError
+            mgr._check_supercollider()
+        mock_sock_class.assert_called_once_with(socket_module.AF_INET, socket_module.SOCK_DGRAM)
 
 
 # ---------------------------------------------------------------------------

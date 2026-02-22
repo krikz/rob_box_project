@@ -115,6 +115,27 @@ services:
     labels:
       logging: "promtail"
 
+  supercollider:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-latest}
+    container_name: supercollider
+    network_mode: host
+    privileged: true  # Для доступа к ALSA audio
+    devices:
+      - /dev/snd:/dev/snd  # ALSA audio devices (shared via dmix)
+    volumes:
+      - ./scripts/supercollider:/scripts:ro
+      - ./config/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
+    command: ["/scripts/start_supercollider.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep scsynth || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   voice-assistant:
     # Image tags automatically determined by IMAGE_TAG environment variable:
     # - IMAGE_TAG=latest  → voice-assistant-humble-latest (main branch)
@@ -165,6 +186,7 @@ services:
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
     depends_on:
       - zenoh-router
+      - supercollider
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
