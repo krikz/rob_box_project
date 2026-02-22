@@ -107,8 +107,10 @@ class DialogueNode(Node):
         # ── speak_text stop-loop tracking ────────────────────────────
         # When speak_text raises CancelledError to stop the SDK loop,
         # this flag lets _agent_run distinguish it from external barge-in.
+        # _spoken_texts accumulates ALL parallel speak_text calls so the full
+        # assistant response (not just the first phrase) is saved to history.
         self._speak_done: bool = False
-        self._last_spoken_text: str = ""
+        self._spoken_texts: List[str] = []
 
         # ── ROS2 pub/sub ─────────────────────────────────────────────
         cbg = ReentrantCallbackGroup()
@@ -241,6 +243,10 @@ class DialogueNode(Node):
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
             Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            # Collect ALL spoken texts immediately (before TTS wait) so that when
+            # multiple speak_text calls fire in parallel in one LLM batch, the full
+            # response is accumulated in _spoken_texts for proper history saving.
+            self._spoken_texts.append(text)
             result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
             # ── Wait for TTS to actually finish playing ───────────────────
             # MCP speak_text is async (returns immediately), but we must block
@@ -266,7 +272,6 @@ class DialogueNode(Node):
             # extra speak_text calls) that exhaust max_turns and leak into
             # next request, causing OOM from accumulated async tool calls.
             self._speak_done = True
-            self._last_spoken_text = text
             raise asyncio.CancelledError("speak_text done — stopping agent loop")
 
         @function_tool
@@ -418,7 +423,7 @@ class DialogueNode(Node):
             self._run_task = asyncio.current_task()
 
         self._speak_done = False
-        self._last_spoken_text = ""
+        self._spoken_texts = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
 
         # --- Role-reset / Role-assign detection ---
@@ -519,11 +524,14 @@ class DialogueNode(Node):
             if self._speak_done:
                 # Graceful stop: speak_text completed and raised CancelledError
                 # to prevent extra tool calls. Save history so next turn has context.
-                self.get_logger().info("✅ Agent done (speak_text completed, loop stopped)")
+                # Join ALL spoken texts (LLM may fire multiple speak_text in parallel
+                # in one batch — _spoken_texts collects them all, not just the first).
+                full_response = " ".join(self._spoken_texts)
+                self.get_logger().info(f"✅ Agent done (speak_text completed, loop stopped). Response: {full_response[:80]}")
                 with self._conv_lock:
                     partial = list(self._conversation) + [
                         {"role": "user", "content": user_input},
-                        {"role": "assistant", "content": self._last_spoken_text},
+                        {"role": "assistant", "content": full_response},
                     ]
                     self._conversation = self._trim_history(partial)
             else:
@@ -580,6 +588,7 @@ class DialogueNode(Node):
         # completed just before barge-in doesn't trigger history saving.
         # History for interrupted turns should always be discarded.
         self._speak_done = False
+        self._spoken_texts = []
         with self._task_lock:
             task = self._run_task
         if task and not task.done():
