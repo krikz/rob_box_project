@@ -114,6 +114,13 @@ class DialogueNode(Node):
         self._tts_events: dict = {}  # speech_id -> asyncio.Event
         self._tts_events_lock = threading.Lock()
 
+        # ── Sound completion tracking ─────────────────────────────────
+        # play_sound tool awaits this event until sound_node publishes "ready".
+        # Avoids relying on catalog duration (which is shorter than real playback
+        # due to audio startup latency + cleanup_playback_noise 0.1s delay).
+        self._sound_done_event: Optional[asyncio.Event] = None
+        self._sound_event_lock = threading.Lock()
+
         # ── spoken texts accumulator ──────────────────────────────────
         # Collects all speak_text calls for building clean history.
         self._spoken_texts: List[str] = []
@@ -146,6 +153,9 @@ class DialogueNode(Node):
         )
         self.create_subscription(
             String, "/voice/tts/finished", self._on_tts_finished_dlg, 10, callback_group=cbg
+        )
+        self.create_subscription(
+            String, "/voice/sound/state", self._on_sound_state, 10, callback_group=cbg
         )
 
         # ── MCP Adapter ──────────────────────────────────────────────
@@ -312,15 +322,25 @@ class DialogueNode(Node):
         async def play_sound(sound: str) -> str:
             """Воспроизвести звуковой эффект."""
             async with lock:
+                # Register done-event BEFORE sending trigger to avoid race.
+                done_event = asyncio.Event()
+                with self._sound_event_lock:
+                    self._sound_done_event = done_event
                 result_str = await _call("play_sound", {"sound": sound})
-                # MCP play_sound is fire-and-forget (returns when sound starts).
-                # We hold the lock and sleep for the sound duration so that
-                # consecutive play_sound calls don't overlap.
+                # Wait for sound_node to publish "ready" (actual playback finished,
+                # including cleanup_playback_noise 0.1s delay).
+                # Fallback timeout = catalog duration + 2s safety margin.
                 try:
                     duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
                 except Exception:
                     duration = 1.5
-                await asyncio.sleep(float(duration))
+                try:
+                    await asyncio.wait_for(done_event.wait(), timeout=float(duration) + 2.0)
+                except asyncio.TimeoutError:
+                    self.get_logger().warning(f"⚠️ play_sound timeout waiting for 'ready': {sound}")
+                finally:
+                    with self._sound_event_lock:
+                        self._sound_done_event = None
             return result_str
 
         @function_tool
@@ -561,6 +581,15 @@ class DialogueNode(Node):
         if event:
             self._loop.call_soon_threadsafe(event.set)
 
+    def _on_sound_state(self, msg: String) -> None:
+        """Release play_sound awaiter when sound_node publishes 'ready'."""
+        if msg.data != "ready":
+            return
+        with self._sound_event_lock:
+            event = self._sound_done_event
+        if event is not None:
+            self._loop.call_soon_threadsafe(event.set)
+
     def _cancel_run(self, reason: str) -> None:
         self._spoken_texts = []
         with self._task_lock:
@@ -578,6 +607,11 @@ class DialogueNode(Node):
             for event in self._tts_events.values():
                 self._loop.call_soon_threadsafe(event.set)
             self._tts_events.clear()
+        # Release pending sound-done event so play_sound doesn't hang
+        with self._sound_event_lock:
+            if self._sound_done_event is not None:
+                self._loop.call_soon_threadsafe(self._sound_done_event.set)
+                self._sound_done_event = None
 
     def _trim_history(self, items: list) -> list:
         """Keep the last `max_turns` complete user+assistant pairs."""
