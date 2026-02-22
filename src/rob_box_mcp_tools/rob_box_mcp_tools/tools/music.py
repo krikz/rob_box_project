@@ -77,11 +77,12 @@ class MusicManager:
     def _initialize_renardo(self) -> None:
         """Попытка инициализировать Renardo-контекст."""
         try:
-            import renardo_lib  # noqa: F401
+            # renardo_lib само по себе пустое; нужен renardo_lib.runtime
+            import renardo_lib.runtime as _rt  # noqa: F401
 
-            self._renardo_context = vars(renardo_lib).copy()
+            self._renardo_context = vars(_rt).copy()
             self._renardo_available = True
-        except ImportError:
+        except (ImportError, Exception):
             self._renardo_available = False
             self._renardo_context = {}
 
