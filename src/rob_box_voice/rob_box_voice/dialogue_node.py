@@ -213,6 +213,7 @@ class DialogueNode(Node):
                 model_settings=ModelSettings(
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
+                    parallel_tool_calls=False,
                 ),
             )
             prompt_preview = self._system_prompt[:200].replace("\n", "↵")
