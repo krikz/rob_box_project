@@ -415,18 +415,40 @@ class DialogueNode(Node):
                 self.get_logger().error("❌ Agent not initialised")
                 return
 
-            # SDK handles the entire tool loop internally
-            result = await asyncio.wait_for(
-                Runner.run(self._agent, input_list, max_turns=self._agent_max_turns),
-                timeout=self._llm_timeout * 3,  # generous outer guard
+            # Use run_streamed so we can monitor events and bail early
+            # if agent loops on non-speak_text tool calls (play_sound/animation spam)
+            streamed = Runner.run_streamed(
+                self._agent, input_list, max_turns=self._agent_max_turns
             )
+
+            async def _consume() -> None:
+                non_speech_calls = 0
+                async for event in streamed.stream_events():
+                    if event.type != "run_item_stream_event":
+                        continue
+                    item = event.item
+                    if item.type == "tool_call_item":
+                        tool_name = getattr(item.raw_item, "name", "") or ""
+                        self.get_logger().debug(f"🔧 tool_call: {tool_name}")
+                        if tool_name == "speak_text":
+                            non_speech_calls = 0  # reset counter on every speak
+                        else:
+                            non_speech_calls += 1
+                            if non_speech_calls >= 6:
+                                self.get_logger().warning(
+                                    f"⚠️ Agent stuck: {non_speech_calls} non-speech "
+                                    "tool calls without speak_text — aborting loop"
+                                )
+                                return  # stop consuming → stream will be GC'd
+
+            await asyncio.wait_for(_consume(), timeout=self._llm_timeout * 3)
 
             # Persist trimmed history for the next turn
             with self._conv_lock:
-                self._conversation = self._trim_history(result.to_input_list())
+                self._conversation = self._trim_history(streamed.to_input_list())
 
             self.get_logger().info(
-                f"✅ Agent done. Output: {(result.final_output or '')[:80]}"
+                f"✅ Agent done. Output: {(streamed.final_output or '')[:80]}"
             )
 
         except asyncio.CancelledError:
