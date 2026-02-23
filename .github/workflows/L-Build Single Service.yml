@@ -39,6 +39,7 @@ on:
           - led-matrix
           - ceiling-camera
           - voice-assistant
+          - supercollider
           - apriltag
           # Common to both
           - zenoh-router
@@ -219,6 +220,13 @@ jobs:
                   DOCKERFILE="docker/vision/apriltag/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "supercollider")
+                  SERVICE_NAME="supercollider"
+                  IMAGE_NAME="supercollider"
+                  DOCKERFILE="docker/vision/supercollider/Dockerfile"
+                  BUILD_CONTEXT="docker/vision/supercollider"
+                  BASE_IMAGE=""
                   ;;
                 "zenoh-router")
                   SERVICE_NAME="zenoh-router"
@@ -422,6 +430,7 @@ jobs:
           echo "  - led-matrix (led_matrix)"
           echo "  - ceiling-camera"
           echo "  - voice-assistant (voice_assistant)"
+          echo "  - supercollider"
           echo "  - apriltag"
           echo "  - zenoh-router"
           echo ""

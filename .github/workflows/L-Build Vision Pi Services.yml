@@ -185,9 +185,40 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
+  build-supercollider:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build supercollider
+        run: |
+          SERVICE="supercollider"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/vision/${SERVICE}
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
   # Итоговая сводка
   summary:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant, build-supercollider]
     runs-on: self-hosted
     if: always()
     steps:
@@ -204,3 +235,4 @@ jobs:
           echo "  ✅ led-matrix"
           echo "  ✅ ceiling-camera"
           echo "  ✅ voice-assistant"
+          echo "  ✅ supercollider"
