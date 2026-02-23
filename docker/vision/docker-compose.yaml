@@ -122,6 +122,9 @@ services:
     privileged: true  # Для доступа к ALSA audio
     devices:
       - /dev/snd:/dev/snd  # ALSA audio devices (shared via dmix)
+    ulimits:
+      memlock: -1  # Разрешаем JACK блокировать память (требуется для RT audio)
+      rtprio: 99   # RT-приоритет для JACK
     volumes:
       - ./scripts/supercollider:/scripts:ro
       - ./config/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
