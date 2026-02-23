@@ -368,7 +368,8 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
     ПАЛИТРА СИНТЕЗАТОРОВ — используй РАЗНЫЕ инструменты для разных слоёв:
     🥁 Ударные/Lo:   d1-d9 >> play(...)   — всегда через play() с семплами
     🎸 Бас:          bass, wobblebass, dub, fuzz, dirt  (oct=2..3, degree=[0,-2,0])
-    🎹 Мелодия/Lead: pluck, blip, arpy, piano, pianovel, karp, sitar, marimba
+    🎹 Мелодия/Lead: pluck, blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba
+       ⚠️ НЕТ "piano" — используй pianovel / epiano / rhpiano!
     🔔 Атмосфера:    pads, ambi, space, faim, bell, gong  (amp=0.3..0.6, sus=4)
     ⚡ Агрессия/Глитч: rave, donk, varsaw, pulse, quin, feel
 
@@ -385,6 +386,21 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
     - Атмосфера → pads/ambi/space, НЕ pluck
     - Перкуссия всегда через d1-d9 >> play()
 
+    🎤 ПРАВИЛО ВОКАЛА — если хочешь слышимый вокал:
+    - amp МИНИМУМ 0.5, иначе вокал утонет в миксе (НЕ 0.2-0.3!)
+    - Короткие вокальные семплы (Eyh, DeDuDip, YeahHi): dur=0.5..2, amp=0.6
+      Пример: d4 >> play("c", sample=1, dur=1, amp=0.6, room=0.3)
+    - Длинные хор/сустейн (Choir, ChoirWahhh, Laaaoooaaa): dur=4..8, amp=0.55
+      Пример: d4 >> play("c", sample=11, dur=4, amp=0.55, room=0.5, mix=0.4)
+    - Когда вокал в миксе — снизь pads до amp=0.2 чтобы не перекрывали
+    - Используй КОНКРЕТНЫЙ sample=N (из search_samples), НЕ PRand для вокала —
+      PRand даст непредсказуемую длину и вокал будет обрезаться или не в такт
+    - ⚠️ НИКОГДА .fadein(N) для вокала! fadein(16) при 80 BPM = 12 секунд тишины —
+      вокал просто не слышен. Вокал добавляй БЕЗ fadein, или максимум fadein(4)
+    - ⚠️ dur= должен совпадать с длиной семпла! Короткий семпл (1-2 сек) с dur=8
+      играет раз в 6 секунд — большинство времени тишина. Для коротких семплов
+      используй dur=1..2, для длинных (Laaaoooaaa, Choir) — dur=4..6
+
     Стратегия:
     1. Сначала вызови set_vibe_preset если пользователь описывает настроение
     2. Затем execute_music_code — создавай минимум 3 паттерна: drums + bass + melody (+atmosphere)
@@ -395,6 +411,64 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
 
     ВАЖНО: Всегда вызывай инструменты немедленно. Никогда не имитируй — всегда реально играй.
 """)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Вывод того что нагенерила нейронка за один ход
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _print_turn_log(log: list) -> None:
+    """Печатает компактную сводку tool-вызовов, собранных за один ход."""
+    if not log:
+        return
+    W = 52
+    print()
+    print("  ┌─ 🔧 Инструменты нейронки " + "─" * (W - 26))
+    for entry in log:
+        name = entry["name"]
+        ok   = entry.get("ok", True)
+        mark = "✓" if ok else "✗"
+
+        if name == "execute_music_code":
+            code = entry.get("code", "")
+            pat  = entry.get("pattern_name") or ""
+            tag  = f" [{pat}]" if pat else ""
+            print(f"  │ {mark} execute_music_code{tag}")
+            for line in code.splitlines():
+                print(f"  │     {line}")
+            if not ok:
+                print(f"  │   ⚠ {entry.get('error', '')}")
+
+        elif name == "search_samples":
+            query = entry.get("query", "")
+            pack  = entry.get("pack", "")
+            case  = entry.get("case", "")
+            found = entry.get("found", "?")
+            extra = f", pack={pack}" if pack and pack != "0_foxdot_default" else ""
+            extra += f", case={case}" if case and case != "lower" else ""
+            print(f"  │ 🔍 search_samples('{query}'{extra}) → {found} результатов")
+            for r in entry.get("results", [])[:5]:
+                print(f"  │      {r['play_code']}  ← {r['filename']}")
+            if entry.get("found", 0) > 5:
+                print(f"  │      ... ещё {entry['found'] - 5} результатов")
+
+        elif name == "set_vibe_preset":
+            preset = entry.get("preset_name", "")
+            info   = entry.get("preset", {})
+            details = f"  bpm={info.get('bpm')} scale={info.get('scale')}" if info else ""
+            print(f"  │ {mark} 🎼 set_vibe_preset('{preset}'){details}")
+
+        elif name == "stop_music":
+            pat = entry.get("pattern_name") or "all"
+            print(f"  │ {mark} ⏹  stop_music('{pat}')")
+
+        elif name == "get_music_state":
+            print(f"  │ {mark} 📊 get_music_state()")
+
+        else:
+            print(f"  │ {mark} ⚙  {name}({entry})")
+
+    print("  └" + "─" * W)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -416,6 +490,9 @@ async def run_repl(manager, dry_run: bool):
         sys.exit(1)
 
     set_tracing_disabled(True)
+
+    # ── Лог вызовов инструментов за один ход ──────────────────────────────
+    turn_log: list[dict] = []
 
     # ── Определяем function tools ──────────────────────────────────────────
 
@@ -456,6 +533,7 @@ async def run_repl(manager, dry_run: bool):
 
         # query="*" → компактный обзор: только буквы и количества
         if query.strip() == "*":
+            _log_entry: dict = {"name": "search_samples", "query": query, "pack": pack, "case": case}
             overview = {}
             for folder in sorted(pack_path.iterdir()):
                 if not folder.is_dir() or folder.name.startswith("."):
@@ -466,13 +544,18 @@ async def run_repl(manager, dry_run: bool):
                 count = sum(1 for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts)
                 if count:
                     overview[folder.name] = count
-            return json.dumps(
+            result_json = json.dumps(
                 {"pack": pack, "case": case, "letters": overview,
                  "hint": 'Ищи по слову: search_samples("kick") или search_samples("synth", pack="1_pitchglitch_samples")'},
                 ensure_ascii=False, indent=2,
             )
+            _log_entry["found"] = f"обзор {len(overview)} букв"
+            _log_entry["results"] = []
+            turn_log.append(_log_entry)
+            return result_json
 
         # Поиск по ключевому слову
+        _log_entry = {"name": "search_samples", "query": query, "pack": pack, "case": case}
         q = query.lower().strip()
         results = []
         for folder in sorted(pack_path.iterdir()):
@@ -495,12 +578,18 @@ async def run_repl(manager, dry_run: bool):
                 break  # cap at 30 results
 
         if not results:
+            _log_entry["found"] = 0
+            _log_entry["results"] = []
+            turn_log.append(_log_entry)
             return json.dumps(
                 {"query": query, "pack": pack, "found": 0,
                  "hint": 'Попробуй: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*" (обзор)'},
                 ensure_ascii=False,
             )
 
+        _log_entry["found"] = len(results)
+        _log_entry["results"] = results
+        turn_log.append(_log_entry)
         return json.dumps(
             {"query": query, "pack": pack, "case": case, "found": len(results), "results": results},
             ensure_ascii=False,
@@ -516,6 +605,10 @@ async def run_repl(manager, dry_run: bool):
             pattern_name: Имя паттерна для истории (p1, bass, drums и т.д.)
         """
         result = manager.execute_code(code, pattern_name)
+        ok = result.get("success", False)
+        entry = {"name": "execute_music_code", "code": code, "pattern_name": pattern_name,
+                 "ok": ok, "error": result.get("error", "")}
+        turn_log.append(entry)
         return json.dumps(result, ensure_ascii=False)
 
     @function_tool
@@ -529,6 +622,8 @@ async def run_repl(manager, dry_run: bool):
             result = manager.stop_all()
         else:
             result = manager.stop_pattern(pattern_name)
+        turn_log.append({"name": "stop_music", "pattern_name": pattern_name,
+                         "ok": result.get("success", False)})
         return json.dumps(result, ensure_ascii=False)
 
     @function_tool
@@ -539,12 +634,17 @@ async def run_repl(manager, dry_run: bool):
             preset_name: Одно из: chill, energetic, ambient, jazz, dark
         """
         result = manager.set_vibe_preset(preset_name)
+        entry = {"name": "set_vibe_preset", "preset_name": preset_name,
+                 "ok": result.get("success", False),
+                 "preset": result.get("preset", {})}
+        turn_log.append(entry)
         return json.dumps(result, ensure_ascii=False)
 
     @function_tool
     def get_music_state() -> str:
         """Получить текущее состояние: SC доступность, активные паттерны, история."""
         state = manager.get_state()
+        turn_log.append({"name": "get_music_state", "ok": True})
         parts = [
             f"SC запущен: {state['supercollider_running']}",
             f"renardo: {state['renardo_available']}",
@@ -710,12 +810,17 @@ async def run_repl(manager, dry_run: bool):
 
         print("🤖 Роб думает...")
         try:
+            turn_log.clear()
             result = await Runner.run(agent, input=history, max_turns=30)
             response_text = result.final_output or ""
-            print(f"Роб: {response_text}")
 
             # Обновить историю для следующего хода
             history = result.to_input_list()
+
+            # ── Показать что нагенерила нейронка ──────────────────────────
+            _print_turn_log(turn_log)
+
+            print(f"Роб: {response_text}")
 
         except Exception as e:
             print(f"❌ Ошибка LLM: {e}")
