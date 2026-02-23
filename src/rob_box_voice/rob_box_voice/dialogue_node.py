@@ -405,12 +405,37 @@ class DialogueNode(Node):
             """Установить высоту голоса 0.5-2.0."""
             return await _call("set_pitch", {"pitch": pitch})
 
+        @function_tool
+        async def execute_music_code(code: str, pattern_name: str = "p1") -> str:
+            """Запустить музыкальный код на синтезаторе Renardo/SuperCollider.
+            Использовать ВСЕГДА когда пользователь просит сыграть мелодию, музыку, ноты.
+            Пример: execute_music_code("p1 >> pluck([0,2,4,7], dur=0.5, amp=0.8)", pattern_name="p1")"""
+            return await _call("execute_music_code", {"code": code, "pattern_name": pattern_name}, timeout=15.0)
+
+        @function_tool
+        async def stop_music(pattern_name: str = "") -> str:
+            """Остановить музыку. pattern_name="" — остановить всё, иначе конкретный паттерн."""
+            params = {"pattern_name": pattern_name} if pattern_name else {}
+            return await _call("stop_music", params)
+
+        @function_tool
+        async def set_vibe_preset(preset: str) -> str:
+            """Установить музыкальный вайб-пресет перед игрой мелодии.
+            Доступные пресеты: chill, energetic, ambient, jazz, dark."""
+            return await _call("set_vibe_preset", {"preset": preset})
+
+        @function_tool
+        async def get_music_state() -> str:
+            """Получить текущее состояние музыкального синтезатора: что играет, темп, вайб."""
+            return await _call("get_music_state", {})
+
         return [
             speak_text, play_sound, play_animation,
             memory_context, memory_save, memory_search,
             get_current_time, get_robot_status, get_battery_level,
             navigate_to_waypoint, move_direction,
             set_volume, set_pitch,
+            execute_music_code, stop_music, set_vibe_preset, get_music_state,
         ]
 
     def _log_config(self) -> None:
