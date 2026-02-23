@@ -1,9 +1,11 @@
 #!/bin/bash
 # start_supercollider.sh — запуск SuperCollider synthesis server в headless-режиме
 #
-# Стратегия: scsynth напрямую через ALSA dmix (без JACK).
-# asound.conf монтируется в /etc/asound.conf и задаёт pcm.!default = dmix_respeaker,
-# что позволяет SC воспроизводить звук одновременно с TTS и sound_node через dmix.
+# Стратегия: запускаем JACK (no-realtime, ALSA → plug:dmix_respeaker), затем scsynth.
+#
+# plug:dmix_respeaker — виртуальное устройство из asound.conf:
+#   plug:    = libasound plugin (rate/format conversion)
+#   dmix:    = software mixer (позволяет шерить ReSpeaker с voice-assistant TTS)
 #
 # Опции scsynth:
 #   -u 57110   UDP OSC-порт (Renardo/FoxDot подключается сюда)
@@ -11,16 +13,37 @@
 #   -m 8192    Размер realtime-памяти в KB
 #   -z 512     Размер буфера (block size, samples)
 #   -S 16000   Частота дискретизации (ReSpeaker UAC1.0 поддерживает только 16000 Hz)
-#   -H alsa    ALSA backend (использует pcm.!default из asound.conf → dmix_respeaker)
+#   -H jack    JACK backend (подключается к нашему jackd)
 #   -a 1024    Число аудио-шин
 
 set -euo pipefail
 
-# Убираем JACK reservation через D-Bus (не нужен, используем dmix напрямую)
+# Пропустить D-Bus device reservation (нет X11/dbus в контейнере)
 export JACK_NO_AUDIO_RESERVATION=1
 
-echo "[SuperCollider] Starting scsynth with ALSA backend (dmix_respeaker)..."
-echo "[SuperCollider] Audio config: rate=16000, blocksize=512, port=57110"
+echo "[SuperCollider] Starting JACK via plug:dmix_respeaker (shared ALSA mixer)..."
+
+# plug:dmix_respeaker → libasound → dmix → hw:ArrayUAC10
+# -P = playback only (dmix is write-only mixer)
+jackd --no-realtime \
+    -d alsa \
+    -d plug:dmix_respeaker \
+    -r 16000 \
+    -p 512 \
+    -n 2 \
+    -P \
+    2>&1 | sed 's/^/[jackd] /' &
+
+JACK_PID=$!
+echo "[SuperCollider] Waiting for JACK to start (pid=$JACK_PID)..."
+sleep 3
+
+if ! kill -0 $JACK_PID 2>/dev/null; then
+    echo "[SuperCollider] ERROR: JACK failed to start!"
+    exit 1
+fi
+
+echo "[SuperCollider] JACK running. Starting scsynth on UDP port 57110..."
 
 exec scsynth \
     -u 57110 \
@@ -28,5 +51,5 @@ exec scsynth \
     -m 8192 \
     -z 512 \
     -S 16000 \
-    -H alsa \
+    -H jack \
     -a 1024
