@@ -46,12 +46,13 @@ class MusicManager:
     """
 
     #: Доступные вайб-пресеты: имя -> {scale, bpm, root}
+    #: root — целое число полутонов от C (C=0, D=2, E=4, F=5, G=7, A=9, B=11)
     VIBE_PRESETS: Dict[str, Dict[str, Any]] = {
-        "chill": {"scale": "major", "bpm": 85, "root": "C"},
-        "energetic": {"scale": "minor", "bpm": 140, "root": "A"},
-        "ambient": {"scale": "dorian", "bpm": 70, "root": "D"},
-        "jazz": {"scale": "lydian", "bpm": 120, "root": "F"},
-        "dark": {"scale": "phrygian", "bpm": 100, "root": "E"},
+        "chill":     {"scale": "major",    "bpm": 85,  "root": 0},   # C
+        "energetic": {"scale": "minor",    "bpm": 140, "root": 9},   # A
+        "ambient":   {"scale": "dorian",   "bpm": 70,  "root": 2},   # D
+        "jazz":      {"scale": "lydian",   "bpm": 120, "root": 5},   # F
+        "dark":      {"scale": "phrygian", "bpm": 100, "root": 4},   # E
     }
 
     SC_HOST: str = "127.0.0.1"
@@ -178,18 +179,15 @@ class MusicManager:
     def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
         """Остановить именованный паттерн.
 
+        Не требует наличия паттерна в истории — LLM может вызвать stop для
+        любого player (d1, p1, ...) даже если execute_code не сохранял по имени.
+
         Args:
-            pattern_name: Имя паттерна (должно существовать в истории).
+            pattern_name: Имя паттерна/плеера (d1, p1, bass и т.д.).
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
-        if pattern_name not in self._pattern_history:
-            return {
-                "success": False,
-                "error": f"Паттерн '{pattern_name}' не найден в истории",
-            }
-
         stop_code = f"{pattern_name}.stop()"
 
         if self._renardo_available and self._check_supercollider():
@@ -238,24 +236,17 @@ class MusicManager:
         self._current_preset = preset_name
 
         if self._renardo_available and self._check_supercollider():
+            # Root.default принимает целое число (полутонов от C) или строку "C"
+            # Root.C и подобные атрибуты НЕ существуют в Renardo!
             preset_code = (
+                f"Clock.bpm = {preset['bpm']}\n"
                 f"Scale.default = Scale.{preset['scale']}\n"
-                f"Root.default = Root.{preset['root']}\n"
-                f"Clock.bpm = {preset['bpm']}"
+                f"Root.default = {preset['root']}"
             )
             try:
                 exec(preset_code, self._renardo_context)  # noqa: S102
             except Exception as exc:
                 return {"success": False, "error": f"Ошибка применения пресета: {exc}"}
-        else:
-            # Запомнить для применения при следующем вызове execute_code
-            self._renardo_context.update(
-                {
-                    "__preset_scale__": preset["scale"],
-                    "__preset_root__": preset["root"],
-                    "__preset_bpm__": preset["bpm"],
-                }
-            )
 
         return {
             "success": True,
@@ -419,7 +410,8 @@ class SetVibePresetTool(MCPTool):
         return (
             "Применить вайб-пресет для быстрой настройки музыкального контекста. "
             "Устанавливает скейл, BPM и тонику в Renardo одной командой. "
-            f"Доступные пресеты: {presets_desc}."
+            f"Доступные пресеты: {presets_desc}. "
+            "Устанавливает: Clock.bpm, Scale.default, Root.default (целое число полутонов от C)."
         )
 
     @property
