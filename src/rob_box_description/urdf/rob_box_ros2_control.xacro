@@ -19,8 +19,8 @@
       <param name="can_interface">can0</param>
       <param name="publish_rate">50.0</param>
       
-      <!-- Default wheel radius (может быть переопределен для каждого колеса) -->
-      <param name="wheel_radius">0.138</param>
+      <!-- Default wheel radius: 9" колёса с редукторами, замер 2026-02-23 -->
+      <param name="wheel_radius">0.1143</param>
       
       <!-- Минимальный duty cycle для преодоления мёртвой зоны VESC -->
       <!-- Калибровка 2025-12-14: duty=0.05 еле крутится, duty=0.10 нормально -->
@@ -51,8 +51,8 @@
       <param name="can_id">49</param>              <!-- CAN ID в VESC Tool -->
       <param name="poles">30</param>               <!-- Количество полюсов мотора -->
       <param name="min_erpm">24</param>           <!-- Минимальный ERPM для движения -->
-      <param name="wheel_radius">0.138</param>     <!-- Калиброван: 0.115 × 1.2 = 0.138 -->
-      <param name="max_rps">11.83</param>          <!-- Калибровка: об/сек при duty=100% -->
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">6.5</param>             <!-- Замер 2026-02-23: FL=7.22, используем 6.5 -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -69,8 +69,8 @@
       <param name="can_id">94</param>
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.138</param>
-      <param name="max_rps">11.53</param>          <!-- Калибровка: об/сек при duty=100% -->
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">6.5</param>             <!-- Замер 2026-02-23: RR=7.16, используем 6.5 -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -87,8 +87,8 @@
       <param name="can_id">81</param>
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.138</param>
-      <param name="max_rps">11.70</param>          <!-- Калибровка: об/сек при duty=100% -->
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">6.5</param>             <!-- Замер 2026-02-23: RL=7.10, используем 6.5 -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -105,8 +105,8 @@
       <param name="can_id">124</param>
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.138</param>
-      <param name="max_rps">11.93</param>          <!-- Калибровка: об/сек при duty=100% -->
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">6.5</param>             <!-- Замер 2026-02-23: FR=6.64, используем 6.5 -->
     </joint>
   </ros2_control>
 
