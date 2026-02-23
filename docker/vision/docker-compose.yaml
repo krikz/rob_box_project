@@ -120,6 +120,7 @@ services:
     container_name: supercollider
     network_mode: host
     privileged: true  # Для доступа к ALSA audio
+    ipc: host      # Share host IPC namespace so dmix SHM is shared with voice-assistant
     shm_size: '256m'  # JACK использует /dev/shm для mmap (~107MB), default 64MB недостаточно
     devices:
       - /dev/snd:/dev/snd  # ALSA audio devices (shared via dmix)
@@ -150,6 +151,7 @@ services:
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
+    ipc: host      # Share host IPC namespace so dmix SHM is shared with supercollider
     devices:
       - /dev/snd:/dev/snd  # ALSA audio devices
       - /dev/bus/usb:/dev/bus/usb  # USB для ReSpeaker
