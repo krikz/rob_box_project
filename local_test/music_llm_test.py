@@ -153,6 +153,36 @@ class LiveMusicManager:
             self._renardo_available = True
             print("✅ renardo_lib.runtime загружен")
 
+            # ── Monkey-patch: заставляем getBufferFromSymbol реально использовать spack ──
+            # По умолчанию renardo игнорирует spack и всегда играет из 0_foxdot_default.
+            # Этот патч позволяет play("c", spack=1) выбирать 1_pitchglitch_samples.
+            try:
+                from renardo_gatherer.collections import SAMPLES_DIR_PATH, sample_path_from_symbol as _spts
+                from renardo_lib.SynthDefManagement.BufferManagement import BufferManager, nil as _nil
+
+                _spack_dirs = sorted([d for d in SAMPLES_DIR_PATH.iterdir() if d.is_dir()])
+
+                def _patched_getBufferFromSymbol(self, symbol, spack, index=0):
+                    if symbol.isspace():
+                        return _nil
+                    # spack int → индекс в отсортированном списке паков
+                    if isinstance(spack, int) and 0 <= spack < len(_spack_dirs):
+                        spack_path = _spack_dirs[spack]
+                    else:
+                        spack_path = _spack_dirs[0]  # default: 0_foxdot_default
+                    sample_path = _spts(symbol, spack_path=spack_path)
+                    if sample_path is None:
+                        return _nil
+                    sample_path = self._findSample(sample_path, index)
+                    if sample_path is None:
+                        return _nil
+                    return self._allocateAndLoad(sample_path)
+
+                BufferManager.getBufferFromSymbol = _patched_getBufferFromSymbol
+                print(f"✅ Monkey-patch spack: паки = {[d.name for d in _spack_dirs]}")
+            except Exception as e:
+                print(f"⚠️  Monkey-patch spack не применён: {e}")
+
             # Подключаем к SC (scsynth:57110 + sclang:57120)
             S = self._ctx.get("Server")
             if S:
@@ -367,46 +397,142 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
 
     ПАЛИТРА СИНТЕЗАТОРОВ — используй РАЗНЫЕ инструменты для разных слоёв:
     🥁 Ударные/Lo:   d1-d9 >> play(...)   — всегда через play() с семплами
-    🎸 Бас:          bass, wobblebass, dub, fuzz, dirt  (oct=2..3, degree=[0,-2,0])
-    🎹 Мелодия/Lead: pluck, blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba
+    🎸 Бас:          bass, wobblebass, dub, fuzz, dirt, subbass, moogbass  (oct=2..3)
+    🎹 Мелодия/Lead: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, keys, cs80lead
        ⚠️ НЕТ "piano" — используй pianovel / epiano / rhpiano!
-    🔔 Атмосфера:    pads, ambi, space, faim, bell, gong  (amp=0.3..0.6, sus=4)
-    ⚡ Агрессия/Глитч: rave, donk, varsaw, pulse, quin, feel
+       ⚠️ pluck = гитарный щипок, НЕ духовые/оркестр! Для трубы/флейты — blip/flute/brass
+    🎺 Оркестр/Духовые: brass, blip, flute, soprano, eoboe, organ, organ2
+    🎻 Струнные/Пэды: strings, pads, ambi, space, faim, sinepad, mhpad, ecello, viola
+    🔔 Атмосфера/Bells: bell, gong, kalimba, marimba, steeldrum, tubularbell  (amp=0.3..0.6)
+    ⚡ Агрессия/Глитч: rave, donk, varsaw, pulse, quin, feel, tb303, hoover
 
     Примеры правильного слоения:
       d1 >> play("x-o-")                              # ударные
       p1 >> bass([0,-2,0,-2], oct=2, dur=1)           # бас (НЕ pluck!)
-      p2 >> arpy([0,2,4,2], oct=5, dur=0.5)           # мелодия (НЕ pluck!)
-      p3 >> pads([0], dur=4, amp=0.3, sus=6)          # атмосфера (НЕ pluck!)
+      p2 >> brass([0,2,4,2], oct=4, dur=0.5)          # духовые мелодия
+      p3 >> strings([0], dur=4, amp=0.3, sus=6)       # струнные пэд
 
     ⚠️ ПРАВИЛО РАЗНООБРАЗИЯ — ОБЯЗАТЕЛЬНО:
     - НИКОГДА не используй pluck для всех паттернов! pluck = только 1 паттерн максимум
-    - Каждый трек = минимум 3 слоя разными инструментами
+    - pluck = гитарный звук, НЕ использовать для оркестра/марша/духовых!
+    - Каждый трек = минимум 3 слоя РАЗНЫМИ инструментами из РАЗНЫХ категорий
     - Бас → bass/wobblebass/dub, НЕ pluck
-    - Атмосфера → pads/ambi/space, НЕ pluck
+    - Атмосфера → pads/ambi/strings/space, НЕ pluck
     - Перкуссия всегда через d1-d9 >> play()
 
-    🎤 ПРАВИЛО ВОКАЛА — если хочешь слышимый вокал:
+    ⚠️ ПРАВИЛО УЗНАВАЕМЫХ МЕЛОДИЙ — при запросе конкретной песни/марша:
+    - Root.default КРИТИЧЕН! «Имперский марш» = Root.default = "G", Scale.default = "minor"
+    - Интервалы определяют узнаваемость: повторяй 3 ноты + прыжок характерный
+    - Не выдумывай интервалы — если не уверен в мелодии, сделай атмосферную версию
+    - Для маршей: барабаны dur=0.5 с паттерном "X.X.X.X." или "X.oX.o", BPM 80-120
+
+    🔇 ПРАВИЛО ПРОСТОТЫ ДЛЯ ИЗВЕСТНЫХ МЕЛОДИЙ:
+    ❌ НЕ делай 5-6 паттернов (p1-p5, d1-d4) — они перекрывают мелодию!
+    ✅ МАКСИМУМ 3 слоя: мелодия + лёгкий бас + барабаны
+    ✅ Иерархия громкости ОБЯЗАТЕЛЬНА:
+       - Мелодия: amp=0.9 (самая громкая!)
+       - Бас аккомпанемент: amp=0.25-0.35 (тихий фон)
+       - Барабаны: amp=0.6-0.7
+    ❌ НЕ используй synth `bass` для оркестра — он звучит как "пердящий" бас-гитара!
+       Для низкого оркестрового баса → используй brass(oct=3, amp=0.25) или просто пропусти
+    ❌ НЕ добавляй `shape=` к brass/strings — вызывает искажение звука
+    ❌ НЕ добавляй blip/gong/extra layers когда есть главная мелодия brass
+    ✅ Правильный минимальный Имперский марш:
+       Clock.bpm = 100
+       p1 >> brass(midinote=[67,67,67, 63,70,67, 63,70,67, 74,74,74, 75,70,66, 63,70,67],
+                   dur=[1.5,0.5,1, 1,0.5,1, 1,0.5,2, 1.5,0.5,1, 1,0.5,1, 1,0.5,2],
+                   amp=0.9, sus=1.5, room=0.3)
+       d1 >> play("X.X.X.X.", sample=1, amp=0.7, room=0.1)
+       d2 >> play("..i...i.", sample=3, amp=0.5, room=0.1)
+
+    🎼 ИМПЕРСКИЙ МАРШ — точные MIDI ноты (ALL exact, no scale approximations):
+    ⚠️ НЕ используй scale degrees для Имперского марша — мелодия содержит хроматику (Gb)!
+    ⚠️ ОШИБКА: [0,0,0, 5,-5,0] — неверно! degree 5 в G minor это Eb ВЫШЕ G (большая секста),
+       а мелодия идёт ВНИЗ на малую терцию G→Eb и Bb это ВЫШЕ G, не ниже.
+    ✅ ПРАВИЛЬНО — используй midinote= (Root/Scale не влияют на midinote!):
+       Фраза 1: G4 G4 G4 | Eb4↓ Bb4↑ G4 | Eb4↓ Bb4↑ G4
+       Фраза 2: D5  D5  D5  | Eb5↑ Bb4↓ Gb4↓ | Eb4↓ Bb4↑ G4
+    ⚠️ НЕ добавляй oct= когда используешь midinote= — midinote уже абсолютный!
+    ⚠️ Root.default и Scale.default ВСЕГДА устанавливай В НАЧАЛЕ кода, перед паттернами!
+    Справка MIDI: G4=67, Eb4=63, Bb4=70, D5=74, Eb5=75, Gb4=66
+
+    � ТАБЛИЦА НОТ → SCALE DEGREES (С-major/minor, Root.default="C"):
+    ⚠️ Scale.default = "major" (дефолт) — 7 ступеней диатонической гаммы:
+      До=C=0, Ре=D=1, МИ=E=2, ФА=F=3, СОЛЬ=G=4, ЛЯ=A=5, СИ=B=6
+      Следующая октава: До2=C2=7, Ре2=8 ...
+    ⚠️ ОШИБКА: [4,5] в C major = G,A (Соль,Ля) — НЕ E,F!
+      МИ+ФА = [2,3], ЛЯ+СИ = [5,6], ДО+РЕ = [0,1]
+    - Если нужны конкретные ноты вне зависимости от Scale → используй midinote=:
+      C4=60, D4=62, E4=64, F4=65, G4=67, A4=69, B4=71, C5=72
+      C#/Db=61, D#/Eb=63, F#/Gb=66, G#/Ab=68, A#/Bb=70
+    - Для хроматических мелодий (все 12 полутонов): Scale.default = Scale.chromatic
+      тогда [0,1,2,3,4,5,6,7,8,9,10,11] = C,C#,D,D#,E,F,F#,G,G#,A,A#,B
+
+    �🎤 ПРАВИЛО ВОКАЛА — если хочешь слышимый вокал:
+    ❌❌❌ НИКОГДА НЕ УГАДЫВАЙ SAMPLE INDEX! ❌❌❌
+    → ВСЕГДА сначала вызови search_samples("vocal", pack="1_pitchglitch_samples") —
+      без этого ты НЕ знаешь что лежит под каким номером! Не пиши sample=9 и
+      в комментарии "Laaaoooaaa" — это ложь, ты не знаешь что там.
+
+    ⚠️ ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ spack= В play():
+      spack=0 → 0_foxdot_default (ударные/перкуссия для букв a-z)
+      spack=1 → 1_pitchglitch_samples (вокал, хор, этнические звуки)
+      search_samples() вернёт готовый play_code С ПРАВИЛЬНЫМ spack= — просто скопируй!
+
     - amp МИНИМУМ 0.5, иначе вокал утонет в миксе (НЕ 0.2-0.3!)
-    - Короткие вокальные семплы (Eyh, DeDuDip, YeahHi): dur=0.5..2, amp=0.6
-      Пример: d4 >> play("c", sample=1, dur=1, amp=0.6, room=0.3)
-    - Длинные хор/сустейн (Choir, ChoirWahhh, Laaaoooaaa): dur=4..8, amp=0.55
-      Пример: d4 >> play("c", sample=11, dur=4, amp=0.55, room=0.5, mix=0.4)
+    - Короткие семплы (dur файла ~0.5-2 сек) → dur=1, sus=1, amp=0.6
+      Пример: d4 >> play("c", sample=1, spack=1, dur=1, sus=1, amp=0.6, room=0.3)
+    - Длинные хор/сустейн (dur файла ~4-8 сек) → dur=6, sus=6, amp=0.55
+      Пример: d4 >> play("c", sample=11, spack=1, dur=6, sus=6, amp=0.55, room=0.5)
     - Когда вокал в миксе — снизь pads до amp=0.2 чтобы не перекрывали
     - Используй КОНКРЕТНЫЙ sample=N (из search_samples), НЕ PRand для вокала —
       PRand даст непредсказуемую длину и вокал будет обрезаться или не в такт
-    - ⚠️ НИКОГДА .fadein(N) для вокала! fadein(16) при 80 BPM = 12 секунд тишины —
-      вокал просто не слышен. Вокал добавляй БЕЗ fadein, или максимум fadein(4)
+    ❌ ЗАПРЕЩЕНО: d1 >> play("c", ...).fadein(16)  ← вокал не слышен 12 секунд!
+    ❌ ЗАПРЕЩЕНО: d1 >> play("c", ...).fadein(24)  ← вокал не слышен 18 секунд!
+    ✅ ПРАВИЛЬНО:  d1 >> play("c", sample=N, spack=1, dur=2, sus=2, amp=0.6, room=0.4)
+    ✅ МОЖНО:      d1 >> play("c", sample=N, spack=1).fadein(4)   ← максимум 4 такта
+    - ❌❌❌ ОБЯЗАТЕЛЬНО ДОБАВЛЯЙ sus= ДЛЯ ВОКАЛА! ❌❌❌
+      Без sus= дефолт = sus=1 (0.75 сек при 80 BPM) — длинный семпл ОБРЕЗАЕТСЯ!
+      sus= должен СОВПАДАТЬ с dur=:
+        Короткий вокал: dur=2, sus=2, amp=0.6
+        Длинный хор:    dur=8, sus=8, amp=0.55
+      ✅ d1 >> play("c", sample=N, spack=1, dur=8, sus=8, amp=0.55, room=0.4)  ← ПРАВИЛЬНО
+      ❌ d1 >> play("c", sample=N, spack=1, dur=8,        amp=0.55, room=0.4)  ← ОБРЕЖЕТ ДО 1 ТАКТА!
+      ❌ d1 >> play("c", sample=N,          dur=8, sus=8, amp=0.55, room=0.4)  ← CONGA, НЕ ВОКАЛ!
     - ⚠️ dur= должен совпадать с длиной семпла! Короткий семпл (1-2 сек) с dur=8
       играет раз в 6 секунд — большинство времени тишина. Для коротких семплов
       используй dur=1..2, для длинных (Laaaoooaaa, Choir) — dur=4..6
+
+    📱 ПРАВИЛО NOKIA/RTTTL НОТАЦИИ — когда пользователь даёт нотацию вида "4E1 8.C1 16G1":
+    - Длительности: `1`=целая(dur=4), `2`=половинная(dur=2), `4`=четверть(dur=1),
+      `8`=восьмая(dur=0.5), `16`=шестнадцатая(dur=0.25), `32`=32я(dur=0.125)
+    - Точка после длительности: dur × 1.5: `8.`=0.75, `4.`=1.5, `2.`=3
+    - Пауза `8-` или `8r` → добавляй `rest(0.5)` в список нот, или 0 в midinote
+    - ⚠️ ОКТАВЫ Nokia: "1"="2" в Nokia ≠ MIDI октаве! Nokia "1" = MIDI октава 4..5 (concert pitch)!
+      MIDI для пьес в регистре E1..B2: прибавь 48 (4 октавы) → MIDI 28→76 (E5), 35→83 (B5)
+      Т.е. все midinote значения из Nokia нотации нужно поднять на +48 для звучания в нормальном диапазоне
+    - ⚠️ pluck = гитара, НЕ подходит для Nokia мелодий / духовых!
+      ✅ Для Nokia/RTTTL используй: blip (синтетично как телефон), brass (оркестрально), organ (органно)
+    - ⚠️ НЕ используй oct= вместе с midinote= — они конфликтуют! midinote= — абсолютные MIDI ноты.
+      Если звучит слишком низко — прибавь 36 или 48 к каждому midinote значению.
+    - ⚠️ НИКОГДА не выдумывай название песни по нотам! Если узнаёшь — назови; если нет — просто сыграй.
+      Нотация `E E E C↑ G↓ E C↑ G↓ E B B B C↑ G↓ Eb C↑ G↓ E` = ИМПЕРСКИЙ МАРШ (Star Wars)!
+    - Пример правильной конвертации Nokia → renardo:
+      `4E1 4E1 4E1 8.C1 16G1 4E1 8.C1 16G1 2E1` →
+      midinote=[76,76,76, 72, 79, 76, 72, 79, 76], dur=[1, 1, 1, 0.75, 0.25, 1, 0.75, 0.25, 2]
+      p1 >> brass(midinote=[76,76,76,72,79,76,72,79,76], dur=[1,1,1,0.75,0.25,1,0.75,0.25,2], amp=0.9)
 
     Стратегия:
     1. Сначала вызови set_vibe_preset если пользователь описывает настроение
     2. Затем execute_music_code — создавай минимум 3 паттерна: drums + bass + melody (+atmosphere)
     3. Используй реальные renardo-конструкции: var(), linvar(), PDur(), PRand(), Group(),
-       .every(), .follow(), .fadein()/.fadeout(), .eclipse() — делай КРУТУЮ музыку!
-    4. Для голосовых эффектов и криков — search_samples("scream") / search_samples("vocal") / search_samples("voice")
+       .every(), .follow(), .fadeout(), .eclipse() — делай КРУТУЮ музыку!
+       ⚠️ .fadein() — ТОЛЬКО для p1-p9 (синтезаторов), НИКОГДА для d1-d9 (семплов/вокала)!
+       ⚠️ .fadein(N) — МАКСИМУМ 4 такта! fadein(8) = 24 секунды тишины — пользователь ждёт!
+          ❌ ЗАПРЕЩЕНО: .fadein(8), .fadein(12), .fadein(16) — слишком долго!
+          ✅ ПРАВИЛЬНО: .fadein(2) или .fadein(4) — или вообще без fadein!
+    4. Для голосовых семплов — СНАЧАЛА вызови search_samples("vocal", pack="1_pitchglitch_samples"),
+       затем используй play_code из результата — он уже содержит правильный spack=1!
     5. Отвечай кратко — просто играй, не объясняй каждую строчку кода
 
     ВАЖНО: Всегда вызывай инструменты немедленно. Никогда не имитируй — всегда реально играй.
@@ -449,8 +575,9 @@ def _print_turn_log(log: list) -> None:
             print(f"  │ 🔍 search_samples('{query}'{extra}) → {found} результатов")
             for r in entry.get("results", [])[:5]:
                 print(f"  │      {r['play_code']}  ← {r['filename']}")
-            if entry.get("found", 0) > 5:
-                print(f"  │      ... ещё {entry['found'] - 5} результатов")
+            found_int = entry.get("found") if isinstance(entry.get("found"), int) else 0
+            if found_int > 5:
+                print(f"  │      ... ещё {found_int - 5} результатов")
 
         elif name == "set_vibe_preset":
             preset = entry.get("preset_name", "")
@@ -557,6 +684,13 @@ async def run_repl(manager, dry_run: bool):
         # Поиск по ключевому слову
         _log_entry = {"name": "search_samples", "query": query, "pack": pack, "case": case}
         q = query.lower().strip()
+
+        # Номер пака (spack=N в play()) — 0-based индекс в отсортированном списке паков.
+        # После monkey-patch play("c", sample=N, spack=1) корректно играет из 1_pitchglitch_samples.
+        all_packs = sorted([d.name for d in samples_root.iterdir() if d.is_dir()])
+        spack_num = all_packs.index(pack) if pack in all_packs else 0
+        spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
+
         results = []
         for folder in sorted(pack_path.iterdir()):
             if not folder.is_dir() or folder.name.startswith("."):
@@ -571,8 +705,9 @@ async def run_repl(manager, dry_run: bool):
                     results.append({
                         "letter": play_letter,
                         "sample_index": idx,
+                        "spack": spack_num,
                         "filename": f.name,
-                        "play_code": f'd1 >> play("{play_letter}", sample={idx})',
+                        "play_code": f'd1 >> play("{play_letter}", sample={idx}{spack_suffix})',
                     })
             if len(results) >= 30:
                 break  # cap at 30 results
