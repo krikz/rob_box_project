@@ -1,35 +1,31 @@
 #!/bin/bash
 # start_supercollider.sh — запуск SuperCollider synthesis server в headless-режиме
 #
-# Стратегия: запускаем JACK (no-realtime, ALSA → plug:dmix_respeaker), затем scsynth.
+# Стратегия: JACK (no-realtime) → dmix_respeaker → ReSpeaker.
+# dmix_respeaker определён в asound.conf, тот же шейринг что у voice-assistant TTS.
 #
-# plug:dmix_respeaker — виртуальное устройство из asound.conf:
-#   plug:    = libasound plugin (rate/format conversion)
-#   dmix:    = software mixer (позволяет шерить ReSpeaker с voice-assistant TTS)
+# ВАЖНО: period_size в jackd и scsynth ДОЛЖЕН совпадать с period_size в asound.conf (1024).
 #
 # Опции scsynth:
 #   -u 57110   UDP OSC-порт (Renardo/FoxDot подключается сюда)
 #   -D 0       Отключить realtime scheduling (необходимо в Docker)
 #   -m 8192    Размер realtime-памяти в KB
-#   -z 512     Размер буфера (block size, samples)
+#   -z 1024    Размер буфера = period_size dmix (JACK требует совпадения)
 #   -S 16000   Частота дискретизации (ReSpeaker UAC1.0 поддерживает только 16000 Hz)
-#   -H jack    JACK backend (подключается к нашему jackd)
+#   -H jack    JACK backend
 #   -a 1024    Число аудио-шин
 
 set -euo pipefail
 
-# Пропустить D-Bus device reservation (нет X11/dbus в контейнере)
 export JACK_NO_AUDIO_RESERVATION=1
 
-echo "[SuperCollider] Starting JACK via plug:dmix_respeaker (shared ALSA mixer)..."
+echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000)..."
 
-# plug:dmix_respeaker → libasound → dmix → hw:ArrayUAC10
-# -P = playback only (dmix is write-only mixer)
 jackd --no-realtime \
     -d alsa \
-    -d plug:dmix_respeaker \
+    -d dmix_respeaker \
     -r 16000 \
-    -p 512 \
+    -p 1024 \
     -n 2 \
     -P \
     2>&1 | sed 's/^/[jackd] /' &
@@ -49,7 +45,7 @@ exec scsynth \
     -u 57110 \
     -D 0 \
     -m 8192 \
-    -z 512 \
+    -z 1024 \
     -S 16000 \
     -H jack \
     -a 1024
