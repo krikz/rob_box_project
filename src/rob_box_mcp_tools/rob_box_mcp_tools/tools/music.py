@@ -78,6 +78,16 @@ class MusicManager:
     def _initialize_renardo(self) -> None:
         """Попытка инициализировать Renardo-контекст."""
         try:
+            # renardo_lib.runtime при импорте пытается листить директории сэмплов.
+            # Если 0_foxdot_default не установлен — падает FileNotFoundError.
+            # Создаём пустую структуру директорий заранее, чтобы импорт проходил.
+            import pathlib
+
+            samples_base = pathlib.Path.home() / ".config" / "renardo" / "samples" / "0_foxdot_default"
+            _SAMPLE_SUBDIRS = ["_", "_loop_"] + list("abcdefghijklmnopqrstuvwxyz")
+            for subdir in _SAMPLE_SUBDIRS:
+                (samples_base / subdir).mkdir(parents=True, exist_ok=True)
+
             # renardo_lib само по себе пустое; нужен renardo_lib.runtime
             import renardo_lib.runtime as _rt  # noqa: F401
 
