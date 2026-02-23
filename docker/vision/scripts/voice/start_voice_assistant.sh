@@ -54,6 +54,27 @@ fi
 
 echo ""
 echo "=========================================="
+echo "  Запуск sclang (FoxDot SynthDef compiler)"
+echo "=========================================="
+
+# Запуск sclang для компиляции SynthDef-ов (Renardo/FoxDot pipeline)
+# sclang слушает OSC /foxdot на порту 57120
+# Renardo посылает пути к .scd файлам → sclang компилирует → /d_recv → scsynth
+if command -v sclang > /dev/null 2>&1; then
+    echo "Запуск sclang с FoxDot OSCdef..."
+    QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox \
+        sclang -i none /ws/foxdot_init.sc > /tmp/sclang.log 2>&1 &
+    SCLANG_PID=$!
+    echo "sclang запущен (PID: ${SCLANG_PID})"
+    # Ждём 5с чтобы sclang подключился к scsynth и зарегистрировал OSCdef
+    sleep 5
+    echo "sclang готов"
+else
+    echo "⚠ sclang не найден — музыкальный синтез недоступен"
+fi
+
+echo ""
+echo "=========================================="
 echo "  Запуск Voice Assistant Nodes (Headless)"
 echo "=========================================="
 

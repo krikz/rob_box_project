@@ -76,7 +76,42 @@ class MusicManager:
     # ------------------------------------------------------------------
 
     def _initialize_renardo(self) -> None:
-        """Попытка инициализировать Renardo-контекст и загрузить SynthDef-ы в SC."""
+        """Попытка инициализировать Renardo-контекст и загрузить SynthDef-ы в SC.
+
+        Pipeline:
+        1. Создаём директории семплов (иначе renardo_lib.runtime падает при импорте).
+        2. Импортируем renardo_lib.runtime.
+        3. Подключаемся к scsynth через Server.init_connection().
+        4. Создаём Group 1 в scsynth через raw OSC (иначе /s_new падает).
+        5. Загружаем все SynthDef-ы: sdef.add() → write(.scd) + load() →
+           OSC /foxdot → sclang компилирует .scd → /d_recv → scsynth.
+        6. Ждём 5 секунд пока sclang скомпилирует все 188 SynthDef-ов.
+
+        NOTE: SynthDefs — это plain dict, НЕ объект с методом .reload()!
+        Правильный способ: for sdef in SynthDefs.values(): sdef.add()
+        """
+        import struct as _struct
+        import time as _time
+
+        def _send_osc_raw(address: str, *args) -> None:
+            """Отправить raw OSC сообщение на scsynth (UDP 57110)."""
+            msg = bytearray()
+            addr_bytes = address.encode() + b"\x00"
+            while len(addr_bytes) % 4:
+                addr_bytes += b"\x00"
+            types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
+            while len(types) % 4:
+                types += b"\x00"
+            msg.extend(addr_bytes)
+            msg.extend(types)
+            for a in args:
+                if isinstance(a, int):
+                    msg.extend(_struct.pack(">i", a))
+                elif isinstance(a, float):
+                    msg.extend(_struct.pack(">f", a))
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                _s.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+
         try:
             # renardo_lib.runtime при импорте пытается листить директории сэмплов.
             # Если 0_foxdot_default не установлен — падает FileNotFoundError.
@@ -89,15 +124,26 @@ class MusicManager:
                 (samples_base / subdir).mkdir(parents=True, exist_ok=True)
 
             # renardo_lib само по себе пустое; нужен renardo_lib.runtime
-            import renardo_lib.runtime as _rt  # noqa: F401
+            import renardo_lib.runtime as _rt
 
-            # При импорте runtime Server.init_connection() НЕ вызывается автоматически —
-            # только update_foxdot_server/clock + Clock.start(). Нужно явно подключиться
-            # к scsynth и загрузить в него все 188 SynthDef-ов (pluck, bass, bell и т.д.)
-            # иначе SC отвечает "SynthDef not found" на каждый /s_new запрос.
+            # Подключаемся к scsynth (Server.booted = True после этого)
             if not _rt.Server.booted:
                 _rt.Server.init_connection()
-                _rt.SynthDefs.reload()  # отправляет все /d_recv в scsynth
+
+            # Создаём Group 1 в scsynth — renardo отправляет все ноты в эту группу.
+            # Без неё scsynth возвращает "Group 1 not found" на каждый /s_new.
+            _send_osc_raw("/g_new", 1, 0, 0)
+
+            # Загружаем все SynthDef-ы через sclang.
+            # SynthDefs — это plain Python dict, НЕ объект с .reload()!
+            # sdef.add() = write(.scd файл на диск) + load() (отправляет путь
+            # через OSC /foxdot → sclang → компилирует → /d_recv → scsynth)
+            for sdef in _rt.SynthDefs.values():
+                sdef.add()
+
+            # Ждём компиляции всех 188 SynthDef-ов через sclang.
+            # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
+            _time.sleep(5)
 
             self._renardo_context = vars(_rt).copy()
             self._renardo_available = True

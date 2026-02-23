@@ -44,6 +44,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     usbutils \
+    # sclang для компиляции SynthDef-ов (FoxDot/Renardo pipeline)
+    # sdef.add() → write(.scd) → OSC /foxdot → sclang → /d_recv → scsynth
+    supercollider-language \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
@@ -174,6 +177,11 @@ COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_m
 # Шаг 10: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
 COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
+
+# Шаг 11: Копируем FoxDot SC init скрипт для sclang
+# sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
+# на порту 57120 для получения запросов на компиляцию SynthDef-ов от renardo.
+COPY docker/vision/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
 
 # ============================================================
 # ВНЕШНИЕ ЗАВИСИМОСТИ (ReSpeaker drivers, models)
