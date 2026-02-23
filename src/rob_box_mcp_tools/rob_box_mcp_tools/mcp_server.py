@@ -45,6 +45,11 @@ from .tools import (
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
+    MusicManager,
+    ExecuteMusicCodeTool,
+    StopMusicTool,
+    SetVibePresetTool,
+    GetMusicStateTool,
 )
 
 try:
@@ -149,6 +154,13 @@ class MCPServer(Node):
         self.registry.register(MemorySaveTool(self))
         self.registry.register(MemorySearchTool(self))
         self.registry.register(MemoryContextTool(self))
+
+        # Music tools (управление музыкой через Renardo)
+        music_manager = MusicManager()
+        self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+        self.registry.register(StopMusicTool(self, music_manager))
+        self.registry.register(SetVibePresetTool(self, music_manager))
+        self.registry.register(GetMusicStateTool(self, music_manager))
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
