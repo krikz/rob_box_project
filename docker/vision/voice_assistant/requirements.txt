@@ -61,3 +61,9 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # =============================================================================
 openai
 openai-agents
+# =============================================================================
+# Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
+# Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)
+# SuperCollider runs in separate container; renardo connects via OSC localhost:57110
+# =============================================================================
+renardo-lib
