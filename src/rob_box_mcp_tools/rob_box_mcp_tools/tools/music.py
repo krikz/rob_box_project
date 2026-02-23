@@ -76,7 +76,7 @@ class MusicManager:
     # ------------------------------------------------------------------
 
     def _initialize_renardo(self) -> None:
-        """Попытка инициализировать Renardo-контекст."""
+        """Попытка инициализировать Renardo-контекст и загрузить SynthDef-ы в SC."""
         try:
             # renardo_lib.runtime при импорте пытается листить директории сэмплов.
             # Если 0_foxdot_default не установлен — падает FileNotFoundError.
@@ -90,6 +90,14 @@ class MusicManager:
 
             # renardo_lib само по себе пустое; нужен renardo_lib.runtime
             import renardo_lib.runtime as _rt  # noqa: F401
+
+            # При импорте runtime Server.init_connection() НЕ вызывается автоматически —
+            # только update_foxdot_server/clock + Clock.start(). Нужно явно подключиться
+            # к scsynth и загрузить в него все 188 SynthDef-ов (pluck, bass, bell и т.д.)
+            # иначе SC отвечает "SynthDef not found" на каждый /s_new запрос.
+            if not _rt.Server.booted:
+                _rt.Server.init_connection()
+                _rt.SynthDefs.reload()  # отправляет все /d_recv в scsynth
 
             self._renardo_context = vars(_rt).copy()
             self._renardo_available = True
