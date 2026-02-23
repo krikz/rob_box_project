@@ -17,9 +17,11 @@ Clock.clear()   # CTRL+. — остановить всё
 ### Синтезаторы (SynthDef)
 ```python
 print(SynthDefs)  # все доступные синтезаторы
-# Примеры: pluck, bass, pads, piano, blip, dirt, space, arpy, sitar, karp,
+# Примеры: pluck, bass, pads, blip, dirt, space, arpy, sitar, karp,
 #          pulse, donk, marimba, gong, fuzz, varsaw, dub, rave, feel,
-#          ambi, faim, quin, bell, pianovel, wobblebass, зайди в print(SynthDefs)
+#          ambi, faim, quin, bell, pianovel, epiano, wobblebass, brass, strings
+# ⚠️ НЕТ СИНТЕЗАТОРА 'piano' — используй pianovel / epiano / rhpiano!
+# ⚠️ НЕТ СИНТЕЗАТОРА 'bells' — только 'bell' (без s)!
 ```
 
 ---
@@ -35,15 +37,18 @@ p1 >> pluck(degree=['E','C','G'])  # НЕЛЬЗЯ!
 # MIDI формула: midi = 12 * (octave + 1) + semitone
 # semitone: C=0, D=2, E=4, F=5, G=7, A=9, B=11
 # #C=1, #D=3, #F=6, #G=8, #A=10
-# Примеры: C4=48, D4=50, E4=52, F4=53, G4=55, A4=57, B4=59
-#           C5=60, D5=62, E5=64, G5=67, A5=69, B5=71
-#           C3=36, E3=40, G3=43
+# ⚠️ C4 = MIDI 60 (средняя до!), НЕ 48! C3=48, C4=60, C5=72
+# Примеры: C4=60, D4=62, E4=64, F4=65, G4=67, A4=69, B4=71
+#           C5=72, D5=74, E5=76, G5=79, B4=71, C6=84
+#           C3=48, E3=52, G3=55 (октава 3)
 p1 >> pluck(midinote=[64, 64, 64, 60, 67, 64, 60, 67], dur=[0.25, 0.25, 0.25, 0.375, 0.125, 0.25, 0.375, 0.125])
 
-# Nokia 3310 RTTTL пример (E5=Doom E-melody):
+# Nokia 3310 RTTTL пример (Doom E-melody):
 # 4E1 = четверть, E октава 1 = MIDI 28 (в Nokia нотации)
-# Стандарт: Nokia октава N → MIDI = 12*(N+1) + semitone
-p1 >> pluck(midinote=[28,28,28,24,31, 28,24,31, 28], dur=[1,1,1,1.5,0.5, 1,1.5,0.5, 2])
+# ⚠️ ВАЖНО: Nokia октава 1 = MIDI 28 = E1 (ОЧЕНЬ НИЗКО, почти не слышно!)
+# Для нормального диапазона: прибавь 48 (4 октавы) → 28+48=76 = E5
+# Стандарт: Nokia октава N → renardo MIDI = 12*(N+1) + semitone + 48
+p1 >> pluck(midinote=[76,76,76,72,79, 76,72,79, 76], dur=[1,1,1,1.5,0.5, 1,1.5,0.5, 2])
 
 # BPM надо задать явно для RTTTL:
 # RTTTL b=120 → Clock.bpm = 120, четверть = 1 бит
@@ -136,7 +141,8 @@ p2 >> star(p1.pitch) + 2
 print(Samples)  # таблица символов → звуки
 
 # Базовые паттерны
-d1 >> play("x-o-")       # x=kick, o=snare, -=hihat
+d1 >> play("x-o-")       # x=kick, o=open hihat (НЕ снейр!), -=closed hihat
+                          # ⚠️ ВСЕГДА используй search_samples() для поиска нужного звука!
 d1 >> play("x  x  ")     # пробелы = тишина
 d1 >> play("x..x..")     # точки = тишина
 
@@ -673,7 +679,7 @@ Root.default = "A"
 b1 >> play("X..X....",rate=var([0.8,1],8), sample=5, amplify=1.3)
 b4 >> play("..i.", rate=0.75, sample=2, amplify=PRand([0.4,PWhite(0.6,0.4)]))
 b7 >> play("--.-", rate=0.75, sample=3, amplify=0.4)
-s1 >> piano([0,4,3,2], oct=4, dur=2, room=0.5, mix=0.4, amp=0.7)
+s1 >> pianovel([0,4,3,2], oct=4, dur=2, room=0.5, mix=0.4, amp=0.7)  # НЕ piano — его нет!
 s2 >> bass([0,-3,0,-2], dur=4, oct=3, amp=0.8)
 ```
 
