@@ -120,6 +120,7 @@ services:
     container_name: supercollider
     network_mode: host
     privileged: true  # Для доступа к ALSA audio
+    shm_size: '256m'  # JACK использует /dev/shm для mmap (~107MB), default 64MB недостаточно
     devices:
       - /dev/snd:/dev/snd  # ALSA audio devices (shared via dmix)
     ulimits:
