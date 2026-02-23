@@ -92,6 +92,51 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
+# ============================================================
+# СКАЧИВАНИЕ СЕМПЛОВ RENARDO/FOXDOT ДЛЯ СИНТЕЗА МУЗЫКИ
+# ============================================================
+# Без семплов работают только чистые SC-синтезаторы (pluck, bass, bell).
+# С семплами доступны ударные и перкуссия: bd=bass drum, sd=snare, hh=hi-hat, cp=clap и др.
+# Скачиваем в Docker layer — кешируется, на роботе всегда есть.
+# Пакеты: 0_foxdot_default (базовые ~371 файл), 1_pitchglitch_samples (~2453 файла).
+# Ошибка скачивания НЕ ронает build — fallback на synth-only режим.
+RUN python3 -c "
+from renardo_gatherer.collections import (
+    download_default_sample_pack,
+    download_files_from_json_index_concurrent,
+    is_default_spack_initialized,
+    SAMPLES_DIR_PATH,
+    SAMPLES_DOWNLOAD_SERVER,
+)
+import pathlib
+
+class Logger:
+    def write_line(self, msg):
+        print(msg, flush=True)
+
+# 1. Базовый пак FoxDot (bd, sd, hh, cp, bass, и др.)
+if is_default_spack_initialized():
+    print('0_foxdot_default: already present, skipping', flush=True)
+else:
+    print('Downloading 0_foxdot_default...', flush=True)
+    download_default_sample_pack(logger=Logger())
+    print('0_foxdot_default: done', flush=True)
+
+# 2. Расширенный пак pitchglitch (более качественные тембры)
+pitchglitch_dir = pathlib.Path(SAMPLES_DIR_PATH) / '1_pitchglitch_samples'
+if pitchglitch_dir.exists() and any(pitchglitch_dir.iterdir()):
+    print('1_pitchglitch_samples: already present, skipping', flush=True)
+else:
+    print('Downloading 1_pitchglitch_samples...', flush=True)
+    download_files_from_json_index_concurrent(
+        json_url=f'{SAMPLES_DOWNLOAD_SERVER}/1_pitchglitch_samples/collection_index.json',
+        download_dir=SAMPLES_DIR_PATH,
+        max_workers=8,
+        logger=Logger(),
+    )
+    print('1_pitchglitch_samples: done', flush=True)
+" 2>&1 || echo "WARNING: Renardo sample download failed — music will run in synth-only mode"
+
 # Рабочая директория
 WORKDIR /ws
 RUN mkdir -p src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools
