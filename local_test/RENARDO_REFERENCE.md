@@ -689,7 +689,7 @@ Clock.bpm = 70
 Scale.default = "lydian"
 s1 >> space((0,2,4,7), dur=var([4,8],[32,16]), oct=5, room=0.9, mix=0.7, amp=0.5)
 s2 >> pads([0,5,3,4], dur=8, oct=4, vib=0.3, room=0.8, mix=0.5).fadein(32)
-b1 >> arpy(var([0,4,5,3],8), dur=0.5, oct=6, pan=sinvar([-0.5,0.5],16), amp=0.4)
+b1 >> arpy(var([0,4,5,3],8), dur=0.5, oct=6, pan=linvar([-0.5,0.5],16), amp=0.4)
 ```
 
 ---
