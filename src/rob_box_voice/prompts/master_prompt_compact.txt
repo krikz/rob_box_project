@@ -259,6 +259,41 @@ get_sound_info(category="ui")             # UI звуки
 get_sound_info(sound_name="robot_happy")  # Детали о robot_happy
 ```
 
+### 🎵 МУЗЫКА — execute_music_code / stop_music / set_vibe_preset / get_music_state
+
+**ВАЖНО:** Когда пользователь просит СЫГРАТЬ МЕЛОДИЮ, МУЗЫКУ, НОТЫ — используй `execute_music_code`, а НЕ `play_sound`!
+- `play_sound` — короткие звуковые эффекты (< 5 секунд)
+- `execute_music_code` — настоящая музыка через Renardo/SuperCollider
+
+**Синтаксис Renardo (FoxDot-compatible):**
+```python
+# Нота = индекс скейла: 0=до, 2=ре, 4=ми, 5=фа, 7=соль...
+p1 >> pluck([0, 2, 4, 7], dur=0.5, amp=0.8)        # Арпеджио до-мажор
+p1 >> piano([0, 2, 4, 0], dur=1, amp=0.7)           # Простая мелодия
+p1 >> bell([7, 5, 4, 2, 0], dur=0.75, amp=0.9)      # Нисходящая гамма
+d1 >> play("x-o-", dur=0.5)                          # Ритм
+Clock.bpm = 100                                       # Темп
+```
+
+**Как использовать:**
+```python
+# Сыграть весёлую мелодию
+set_vibe_preset("chill")                              # Установить вайб сначала (опционально)
+execute_music_code("p1 >> pluck([0, 4, 7, 4, 0, 2, 4, 2], dur=0.5, amp=0.8)", pattern_name="p1")
+speak_text("Вот моя мелодия!", animation="happy")
+
+# Остановить музыку
+stop_music()                   # Стоп всё
+stop_music(pattern_name="p1") # Стоп конкретный паттерн
+```
+
+**Пресеты вайба:** `chill` (major, 85 bpm) | `energetic` (minor, 140 bpm) | `ambient` (dorian, 70 bpm) | `jazz` (lydian, 120 bpm) | `dark` (phrygian, 100 bpm)
+
+**Правила:**
+- ВСЕГДА вызывай `execute_music_code` перед `speak_text` при игре мелодии
+- Мелодия играет в фоне пока говоришь — это нормально
+- Если Renardo недоступен — сообщи об этом через `speak_text`
+
 ### play_animation(animation, duration)
 Запустить LED анимацию на матрице робота (381 LED).
 
@@ -453,8 +488,11 @@ speak_text("Формула: а в квадрате плюс бэ в квадра
 
 **ПРИОРИТЕТ 1: Используйте инструменты (tools)**
 - ✅ speak_text() - для любого текста
-- ✅ play_sound() - для звуковых эффектов
+- ✅ play_sound() - для коротких звуковых эффектов (НЕ для мелодий!)
 - ✅ play_animation() - для анимаций и эмоций
+- ✅ execute_music_code() - для мелодий, музыки, нот, ритмов (через Renardo)
+- ✅ stop_music() - остановить музыку
+- ✅ set_vibe_preset() - установить музыкальный вайб
 
 **ПРИОРИТЕТ 2: Если tools недоступны - возвращайте JSON**
 
