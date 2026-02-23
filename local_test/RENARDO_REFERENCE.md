@@ -24,12 +24,53 @@ print(SynthDefs)  # все доступные синтезаторы
 
 ---
 
+## ПРОИЗВОЛЬНАЯ МЕЛОДИЯ (RTTTL / Nokia / любые конкретные ноты)
+
+### ⚠️ НИКОГДА не передавай строки в degree!
+```python
+# ❌ НЕПРАВИЛЬНО — вызовет ошибку "could not convert string to float: 'E'"
+p1 >> pluck(degree=['E','C','G'])  # НЕЛЬЗЯ!
+
+# ✅ ПРАВИЛЬНО — используй midinote для конкретных нот
+# MIDI формула: midi = 12 * (octave + 1) + semitone
+# semitone: C=0, D=2, E=4, F=5, G=7, A=9, B=11
+# #C=1, #D=3, #F=6, #G=8, #A=10
+# Примеры: C4=48, D4=50, E4=52, F4=53, G4=55, A4=57, B4=59
+#           C5=60, D5=62, E5=64, G5=67, A5=69, B5=71
+#           C3=36, E3=40, G3=43
+p1 >> pluck(midinote=[64, 64, 64, 60, 67, 64, 60, 67], dur=[0.25, 0.25, 0.25, 0.375, 0.125, 0.25, 0.375, 0.125])
+
+# Nokia 3310 RTTTL пример (E5=Doom E-melody):
+# 4E1 = четверть, E октава 1 = MIDI 28 (в Nokia нотации)
+# Стандарт: Nokia октава N → MIDI = 12*(N+1) + semitone
+p1 >> pluck(midinote=[28,28,28,24,31, 28,24,31, 28], dur=[1,1,1,1.5,0.5, 1,1.5,0.5, 2])
+
+# BPM надо задать явно для RTTTL:
+# RTTTL b=120 → Clock.bpm = 120, четверть = 1 бит
+```
+
+### Таблица нот MIDI
+```
+Октава  C    D    E    F    G    A    B
+  0     12   14   16   17   19   21   23
+  1     24   26   28   29   31   33   35
+  2     36   38   40   41   43   45   47
+  3     48   50   52   53   55   57   59
+  4     60   62   64   65   67   69   71  ← C4=до первой
+  5     72   74   76   77   79   81   83
+  6     84   86   88   89   91   93   95
+# #нота = +1 полутон (напр. #C4=61, #D4=63, #F4=66, #G4=68, #A4=70)
+```
+
+---
+
 ## АТРИБУТЫ PLAYER
 
 ### Универсальные
 ```python
 p1 >> pluck([0,2,4],
-    degree=[0,2,4],    # нота (позиция в гамме, 0=тоника)
+    degree=[0,2,4],    # нота (позиция в гамме, 0=тоника) — ТОЛЬКО ЦЕЛЫЕ ЧИСЛА!
+    midinote=[60,64,67], # MIDI-номер ноты (игнорирует Scale/Root, для произвольных мелодий)
     oct=5,             # октава (default=5, в обычной теории = 3!)
     dur=1,             # длительность (доли)
     sus=1,             # сустейн (default=dur)
@@ -189,6 +230,15 @@ Clock.future(8, go_dnb)
 Clock.future(16, lambda: setattr(Scale, 'default', 'minor'))
 Clock.future(16, lambda: setattr(Root, 'default', 4))
 
+# ⚠️ ПРАВИЛО №1 — ЗАПРЕТ ПСЕВДОНИМОВ PLAYER (NameError: name '...' is not defined):
+# Разрешённые имена: d1-d9 (drums), p1-p9 (synth), s1-s9 (sample), l1-l9 (loop)
+# ЗАПРЕЩЕНО: rooster1=d1, guardian_angels=p1, modern_effects=p2, old_phone_sounds=d2,
+#             main_theme=p3, angel_choir=p2 — ВСЁ ЧТО НЕ d1..d9/p1..p9/s1..s9/l1..l9!
+# ПРАВИЛЬНО: используй d1, p1, p2 напрямую везде включая Clock.future() callbacks:
+d1 >> play("x-o-")
+def fn(): d1.amp = 0   # ← d1 напрямую, не через псевдоним!
+Clock.future(8, fn)
+
 # nextBar декоратор
 nextBar(Clock.clear)
 @nextBar
@@ -287,7 +337,7 @@ P[:8].palindrome() # + реверс в конце
 P[:8].rotate(3)    # сдвиг на 3
 P[:8].stretch(12)  # растянуть до 12 элементов
 P[:8].reverse()
-P[:8].loop(2)      # повторить 2 раза
+P[:8].loop(2)      # повторить 2 раза  ⚠️ .loop() БЕЗ АРГУМЕНТА → TypeError! ВСЕГДА передавай n
 P[:8].offadd(5)    # добавить смещённую копию
 P[:8].offmul(5)
 P[:8].stutter(5)   # каждый элемент × 5
@@ -350,6 +400,10 @@ Scale.default = Pvar([Scale.major, Scale.minor], 16)
 
 ### var() — переключение между значениями
 ```python
+# ⚠️ ПЕРВЫЙ АРГУМЕНТ ВСЕГДА СПИСОК — иначе 'float' object is not iterable!
+# ❌ var(0, 4), var(0.5, 8), var(4, 2)  → crash в Player при воспроизведении!
+# ✅ var([0,3], 4), var([0.5,1.0], 8), var([4,5], 2)
+
 a = var([0,3], 4)          # 0 → 3 → 0... каждые 4 бита
 a = var([0,3], [4,2])      # 0 на 4 бита, 3 на 2 бита
 
@@ -630,4 +684,205 @@ Scale.default = "lydian"
 s1 >> space((0,2,4,7), dur=var([4,8],[32,16]), oct=5, room=0.9, mix=0.7, amp=0.5)
 s2 >> pads([0,5,3,4], dur=8, oct=4, vib=0.3, room=0.8, mix=0.5).fadein(32)
 b1 >> arpy(var([0,4,5,3],8), dur=0.5, oct=6, pan=sinvar([-0.5,0.5],16), amp=0.4)
+```
+
+---
+
+## МУЗЫКАЛЬНАЯ ТЕОРИЯ
+
+### Структура трека (Arrangement)
+
+**Pop/EDM структура:**
+```
+Intro (16 битов) → Verse (32-64) → Chorus (32-64) → Verse → Chorus → Bridge (32) → Chorus → Outro (16)
+```
+**Электронная музыка:**
+```
+Intro → Break → Buildup → Drop → Break → Buildup → Drop → Outro
+(16)    (16)    (4-16)    (16)   (16)    (4-16)    (16)   (16)   — все в барах × 4 = биты
+```
+Правило: **4 бара = 16 битов** в Renardo (bpm × 4 = bar)
+
+- **Intro** — вступление, не затягивать, только базовые элементы
+- **Break/Bridge** — тише, меньше инструментов, убрать барабаны, нарастающий звук
+- **Buildup** — нарастание перед Drop (можно даже тишина)
+- **Drop** — самая громкая часть, момент выброса энергии
+- **Outro** — разрядка, плавное завершение
+
+```python
+# Пример структуры через Clock.future:
+def intro():
+    d1 >> play("x...")
+    Clock.future(16, verse)   # 16 битов = 4 бара
+
+def verse():
+    d1 >> play("x-o-")
+    p1 >> pluck([0,2,4,3], dur=1)
+    Clock.future(32, chorus)
+
+def chorus():
+    d1 >> play("xoxo")
+    p1 >> pluck((0,2,4), dur=4)
+    s1 >> bass([0,-2], dur=2, oct=3)
+    Clock.future(32, verse)
+
+intro()
+```
+
+---
+
+### Аккорды (Chords Theory)
+
+**Построение аккордов через degree в гамме:**
+- Трезвучие = 1-я, 3-я, 5-я ступень: `(0, 2, 4)` в минор = Am
+- Септаккорд = + 7-я ступень: `(0, 2, 4, 6)`
+
+```python
+# Трезвучия в миноре (degree → ноты при Root=A, Scale=minor)
+# 0→A, 2→C, 4→E = Am triad
+# -1→G, 1→B, 3→D = Gm/A (первая инверсия)
+# 1→B, 3→D, 5→F = Bdim
+
+Scale.default = Scale.minor
+print(Scale.minor)  # P[0,2,3,5,7,8,10]
+print(Scale.major)  # P[0,2,4,5,7,9,11]
+
+# Мажор из минора: поднять 3-ю, 6-ю, 7-ю ступень на полутон
+# → используй Scale.major или Scale.melodicMinor
+
+# Популярные прогрессии (degree в минорной гамме):
+# i–VII–VI–VII:  var([0, -1, -2, -1], 4)        = Am–G–F–G
+# i–iv–VII–III:  var([0, 3, -1, 2], 4)           = Am–Dm–G–C
+# i–VI–III–VII:  var([0, -2, 2, -1], 4)          = Am–F–C–G
+
+chords = var([(0,2,4), (-1,1,3), (0,2,4), (-2,2,4)], 4)
+s1 >> swell(chords, oct=5, dur=4, sus=5)
+```
+
+**Инверсии** — смена порядка нот для плавного голосоведения:
+```python
+# Вместо резкого прыжка — инверсия через октаву
+# var([(0,2,4), (1,3,-2)], 4)  ← 2-я инверсия Gm
+```
+
+---
+
+### Мелодия (Melody)
+
+**Подход 1 — Аккорды → Мелодия:**
+Берём верхние ноты аккордов + добавляем нон-аккордовые переходные ноты:
+```python
+Root.default = "A"
+Scale.default = Scale.minor
+Clock.bpm = 93
+
+chords = var([(0,2,4), (-1,1,3), (0,3,5), (-2,2,4)])
+s1 >> swell(chords, oct=5, dur=4, sus=5)
+
+# Мелодия из верхних нот + переходы:
+seq = [4, 5, 3, 5, 3, 6, 4, 3]
+s2 >> pulse(seq, oct=6, dur=[3,1,3,3,1,1,2,2])
+```
+
+**Подход 2 — Мелодия → Аккорды:**
+```python
+seq = [0,1,2,1,4,5,2,6,4,3]
+s1 >> saw(seq, dur=[2,1,1,4,3,1,1,1,1,1], formant=4, amplify=0.4)
+
+# Аккорды строятся из доступных трезвучий для нот мелодии
+chords = var([(0,2,4), (-1,1,3), (0,2,4), (-1,4,6)])
+s2 >> keys(chords, oct=4, dur=4, shape=0.4)
+
+# Контрмелодия — арпеджио из нот аккордов:
+seq2 = [0,2,4,2, -1,1,3,1, 0,2,4,2, -1,4,6,4]
+s3 >> karp(seq2, dur=1)
+```
+
+**Бас-линия из аккорды:**
+```python
+# Безопасный вариант — корневые ноты аккордов октавой ниже:
+bassline = [0, -1, 2, 4]
+s4 >> jbass(bassline, oct=3, dur=0.5, shape=0.4)
+
+# Ритмичная бас-линия с вариацией dur:
+# dur=1, dur=[0.5,1], dur=[1,2,1]  — добавляет groove
+```
+
+---
+
+### Гаммы и Режимы (Scales & Modes)
+
+**Режимы (мажор как база, W=тон, H=полутон):**
+| Режим | Начало от тоники | Паттерн | Характер |
+|-------|-----------------|---------|----------|
+| Ionian (major) | I | WWHWWWH | Светлый |
+| Dorian | II | WHWWWHW | Джазовый минор |
+| Phrygian | III | HWWWHWW | Испанский |
+| Lydian | IV | WWWHWWH | Мечтательный |
+| Mixolydian | V | WWHWWHW | Блюз/рок |
+| Aeolian (minor) | VI | WHWWHWW | Тёмный |
+| Locrian | VII | HWWHWWW | Дисонирующий |
+
+```python
+# Доступные гаммы Renardo:
+print(Scale.names())
+# minor, major, dorian, phrygian, lydian, mixolydian, locrian,
+# pentatonic, minorPentatonic, chromatic, melodicMinor, harmonicMinor...
+
+# Смена гаммы по var (модуляция):
+Scale.default = Pvar([Scale.minor, Scale.dorian], [32, 16])
+
+# Смена тоники (модуляция в другую тональность):
+Root.default = var([0, 5, 7, 5], 16)   # C → F → G → F
+Root.default = "A"   # строкой
+Root.default = 9     # по MIDI полутонам (A = 9 от C)
+```
+
+---
+
+## SAMPLE PACKS (spack)
+
+```python
+# spack=0 (по умолчанию) — 0_foxdot_default (стандартный пак)
+# spack=1               — 1_pitchglitch_samples (расширенный)
+d1 >> play("x-o-", spack=1)
+```
+
+### Pitchglitch (spack=1) — карта буквы → тип семпла
+
+| Буква | Тип | Примеры |
+|-------|-----|---------|
+| `a`   | Kicks / бас-барабаны | a0.wav–a7.wav |
+| `b`   | Brass brass synth | b0.wav–b4.wav |
+| `c`   | **Vocals / хор** | choir, vocal, ahh, ohh (24+ файла) |
+| `d`   | Bongos / hand perc | d0.wav–d7.wav |
+| `e`   | Claps / rimshots | e0.wav–e3.wav |
+| `f`   | Flute / wind | f0.wav–f2.wav |
+| `g`   | Guitar / plucked | g0.wav–g5.wav |
+| `h`   | HiHats | h0.wav–h9.wav |
+| `i`   | Snares | |
+| `j`   | **Synth FX** (bass/lead тембры) | growl, reese, wobble, sub (48+ файлов) |
+| `k`   | **Nature / ambient FX** | thunder, fire, crowd, dog, rain (31+ файлов) |
+| `o`   | Open hats | |
+| `p`   | Piano / keys | |
+| `x`   | Bass drum (стандарт) | |
+
+```python
+# Вокал / хор:
+d1 >> play("c", spack=1, sample=2)    # choir sample #2
+d1 >> play("cc c", spack=1, sample=PRand(range(24)))  # случайный вокал
+
+# Synth FX Bass:
+d1 >> play("j", spack=1, sample=3)    # growl bass
+d1 >> play("j.", spack=1, sample=var([0,5,10,15], 4))  # wobble sweep
+
+# Nature / Ambient:
+d1 >> play("k  k", spack=1, sample=4)  # crowd burst
+d1 >> play("k", spack=1, sample=PRand(range(31)))  # random FX
+
+# Микс паков в одной строке невозможен — spack один на player
+# Используй разные players с разными spack:
+d1 >> play("x-o-")          # spack=0 (стандарт)
+d2 >> play("c.", spack=1)   # pitchglitch vocals
+d3 >> play("j", spack=1)    # pitchglitch synth FX
 ```

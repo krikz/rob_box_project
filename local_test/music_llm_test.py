@@ -316,13 +316,36 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
     {_RENARDO_REF}
     ═══════════════════════════════════════════
 
-    ⚠️ КРИТИЧНО — ОШИБКА КОТОРУЮ НЕЛЬЗЯ ДЕЛАТЬ НИКОГДА:
+    ⚠️ КРИТИЧНО — ОШИБКИ КОТОРЫЕ НЕЛЬЗЯ ДЕЛАТЬ НИКОГДА:
+
+    🚫 ПРАВИЛО №1 — ЗАПРЕТ ПСЕВДОНИМОВ PLAYER (NameError: name '...' is not defined):
+    Разрешённые имена player: d1-d9 (drums), p1-p9 (synth), s1-s9 (sample), l1-l9 (loop)
+    НЕЛЬЗЯ создавать переменные-псевдонимы для players — они НЕ работают в Clock callbacks!
+    ❌ ЗАПРЕЩЕНО: rooster1=d1, guardian_angels=p1, modern_effects=p2, old_phone_sounds=d2,
+                  main_theme=p3, angel_choir=p2 — ВСЁ ЧТО НЕ d1..d9/p1..p9/s1..s9/l1..l9!
+    ✅ ПРАВИЛЬНО: используй d1, p1, p2 НАПРЯМУЮ — везде, включая callbacks:
+      d1 >> play("x-o-"); def fn(): d1.amp=0; Clock.future(8, fn)  # ← d1 везде!
+    ✅ ПРАВИЛЬНО: если callback ссылается на player — весь код в ОДНОМ execute_music_code
+
     - НИКОГДА не пиши `Clock.bpm.set(N)` — bpm это int, у него нет .set()!
     - НИКОГДА не пиши `lambda: Clock.bpm = N` — в lambda нельзя присваивать!
     - Для смены BPM в Clock.future() используй ТОЛЬКО:
         a) `Clock.future(N, lambda: setattr(Clock, 'bpm', 170))`  ← правильно
         b) `def fn(): Clock.bpm = 170\nClock.future(N, fn)`        ← правильно
     - То же самое для Scale/Root в lambda: `lambda: setattr(Scale, 'default', 'minor')`
+    - НИКОГДА не передавай строки-ноты в degree: `degree=['E','C','G']` → ошибка!
+      degree принимает ТОЛЬКО целые числа (позиции в гамме: 0,1,2,...)
+    - Для произвольных мелодий (RTTTL, Nokia, конкретные ноты) используй `midinote`:
+      `p1 >> pluck(midinote=[64,62,60,62,64,64,64], dur=[0.5,0.5,0.5,0.5,0.5,0.5,1])`
+      MIDI = 12*(octave+1)+semitone; C=0,D=2,E=4,F=5,G=7,A=9,B=11; #нота=+1
+      C4=48,E4=52,G4=55,C5=60,E5=64,G5=67 | C1=24,E1=28,G1=31,B1=35,C2=36
+    - НИКОГДА не вызывай `.loop()` без аргумента: `P[...].loop()` → TypeError!
+      Используй: `.loop(n)` где n — количество повторений, например `.loop(4)`
+      ИЛИ просто не используй .loop() — паттерны в renardo зациклены по умолчанию
+    - НИКОГДА не передавай одиночное число в var() первым аргументом:
+      ❌ var(0, 4), var(0.5, 8), var(4, 2) → 'float' object is not iterable!
+      ✅ ВСЕГДА список: var([0,4,5,3], 4), var([0.5,1.0], 8), var([4,5], 2)
+      ✅ Исключение: dur= и sus= принимают одиночные числа, но var() — нет
 
     Стратегия:
     1. Сначала вызови set_vibe_preset если пользователь описывает настроение
@@ -503,7 +526,7 @@ async def run_repl(manager, dry_run: bool):
     agent = Agent(
         name="RobMusicAgent",
         instructions=SYSTEM_PROMPT,
-        tools=[execute_music_code, stop_music, set_vibe_preset, get_music_state, generate_tts_sample],
+        tools=[execute_music_code, stop_music, set_vibe_preset, get_music_state],
         model=model,
     )
 
