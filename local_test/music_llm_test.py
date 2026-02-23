@@ -301,14 +301,24 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
     с помощью Renardo (FoxDot-совместимый язык генеративной музыки).
 
     Твои музыкальные инструменты:
+    - search_samples(query, pack, case): ВСЕГДА вызывай перед созданием музыки!
+      Ищет семплы по ключевому слову в имени файла (имя файла = характер звука).
+      query="kick" → все кик-барабаны. query="snare" → снейры. query="*" → обзор букв.
     - execute_music_code(code): выполнить Renardo-код (создать/обновить паттерн)
     - stop_music(pattern_name): остановить паттерн или всю музыку
     - set_vibe_preset(vibe): быстро задать вайб (chill/energetic/ambient/jazz/dark)
     - get_music_state(): узнать текущее состояние
-    - generate_tts_sample(text, letter): сгенерить слово/фразу через TTS.
-      Возвращает play_code — его сразу передай в execute_music_code.
+    - generate_tts_sample: НЕДОСТУПЕН — не использовать!
+      Для голосовых/вокальных звуков ищи через search_samples:
+      search_samples("vocal") / search_samples("voice") / search_samples("scream") / search_samples("choir")
+      При крике/страхе: search_samples("scream") или search_samples("dist", pack="1_pitchglitch_samples")
 
-    Пример TTS: generate_tts_sample("кек", "v") → play_code: 'p_voice >> play("v", sample=0, amp=1.5)'
+    СТРАТЕГИЯ ВЫБОРА СЕМПЛОВ:
+    1. Вызови search_samples("kick") → получаешь letter + sample_index + готовый play_code
+    2. Используй разные слова: "snare", "hat", "bass", "synth", "dist", "glitch", "pad"
+    3. Для обзора всех букв: search_samples("*") → компактный список без лишних деталей
+    4. pack="1_pitchglitch_samples" — больше разнообразных звуков чем стандартный пак
+    5. Заглавная буква в play() → используй case="upper" в search_samples
 
     ═══════════════════════════════════════════
     ПОЛНАЯ ДОКУМЕНТАЦИЯ RENARDO:
@@ -317,6 +327,14 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
     ═══════════════════════════════════════════
 
     ⚠️ КРИТИЧНО — ОШИБКИ КОТОРЫЕ НЕЛЬЗЯ ДЕЛАТЬ НИКОГДА:
+
+    🚫 ПРАВИЛО №0 — play() ПРИНИМАЕТ ТОЛЬКО ОДНУ БУКВУ + sample=N:
+    play() НЕ ЗНАЕТ никаких названий типа "industrial_1", "kick_hard", "bass_drum", "metal"!
+    ❌ ЗАПРЕЩЕНО: play("industrial_1"), play("kick"), play("factory"), play("horror")
+    ✅ ПРАВИЛЬНО: play("x", sample=3)  ← буква из search_samples() + индекс файла
+    АЛГОРИТМ: 1) search_samples("industrial") → получаешь letter="b", sample_index=2
+               2) d1 >> play("b", sample=2)  ← используй ЭТО
+    Перед ЛЮБЫМ play() → сначала search_samples() чтобы узнать реальную букву!
 
     🚫 ПРАВИЛО №1 — ЗАПРЕТ ПСЕВДОНИМОВ PLAYER (NameError: name '...' is not defined):
     Разрешённые имена player: d1-d9 (drums), p1-p9 (synth), s1-s9 (sample), l1-l9 (loop)
@@ -347,12 +365,32 @@ SYSTEM_PROMPT = textwrap.dedent(f"""
       ✅ ВСЕГДА список: var([0,4,5,3], 4), var([0.5,1.0], 8), var([4,5], 2)
       ✅ Исключение: dur= и sus= принимают одиночные числа, но var() — нет
 
+    ПАЛИТРА СИНТЕЗАТОРОВ — используй РАЗНЫЕ инструменты для разных слоёв:
+    🥁 Ударные/Lo:   d1-d9 >> play(...)   — всегда через play() с семплами
+    🎸 Бас:          bass, wobblebass, dub, fuzz, dirt  (oct=2..3, degree=[0,-2,0])
+    🎹 Мелодия/Lead: pluck, blip, arpy, piano, pianovel, karp, sitar, marimba
+    🔔 Атмосфера:    pads, ambi, space, faim, bell, gong  (amp=0.3..0.6, sus=4)
+    ⚡ Агрессия/Глитч: rave, donk, varsaw, pulse, quin, feel
+
+    Примеры правильного слоения:
+      d1 >> play("x-o-")                              # ударные
+      p1 >> bass([0,-2,0,-2], oct=2, dur=1)           # бас (НЕ pluck!)
+      p2 >> arpy([0,2,4,2], oct=5, dur=0.5)           # мелодия (НЕ pluck!)
+      p3 >> pads([0], dur=4, amp=0.3, sus=6)          # атмосфера (НЕ pluck!)
+
+    ⚠️ ПРАВИЛО РАЗНООБРАЗИЯ — ОБЯЗАТЕЛЬНО:
+    - НИКОГДА не используй pluck для всех паттернов! pluck = только 1 паттерн максимум
+    - Каждый трек = минимум 3 слоя разными инструментами
+    - Бас → bass/wobblebass/dub, НЕ pluck
+    - Атмосфера → pads/ambi/space, НЕ pluck
+    - Перкуссия всегда через d1-d9 >> play()
+
     Стратегия:
     1. Сначала вызови set_vibe_preset если пользователь описывает настроение
-    2. Затем execute_music_code — создавай несколько паттернов сразу (бас + ритм + мелодия)
+    2. Затем execute_music_code — создавай минимум 3 паттерна: drums + bass + melody (+atmosphere)
     3. Используй реальные renardo-конструкции: var(), linvar(), PDur(), PRand(), Group(),
        .every(), .follow(), .fadein()/.fadeout(), .eclipse() — делай КРУТУЮ музыку!
-    4. Если просят озвучить слово/фразу — используй generate_tts_sample
+    4. Для голосовых эффектов и криков — search_samples("scream") / search_samples("vocal") / search_samples("voice")
     5. Отвечай кратко — просто играй, не объясняй каждую строчку кода
 
     ВАЖНО: Всегда вызывай инструменты немедленно. Никогда не имитируй — всегда реально играй.
@@ -380,6 +418,94 @@ async def run_repl(manager, dry_run: bool):
     set_tracing_disabled(True)
 
     # ── Определяем function tools ──────────────────────────────────────────
+
+    @function_tool
+    def search_samples(
+        query: str,
+        pack: str = "0_foxdot_default",
+        case: str = "lower",
+    ) -> str:
+        """Поиск семплов по ключевому слову. Используй ПЕРЕД созданием музыки!
+
+        Имена файлов описывают характер звука: "Kick", "Snare", "HiHat", "Bass", "Synth", "Dist" и т.д.
+
+        Args:
+            query: Ключевое слово для поиска в имени файла.
+                   Примеры: "kick", "snare", "hat", "bass", "synth", "dist", "glitch",
+                            "loop", "vocal", "guitar", "bell", "drone", "clap", "pad".
+                   Используй "*" для компактного обзора всех букв (только количества).
+            pack: "0_foxdot_default" (стандартный) или "1_pitchglitch_samples" (больше звуков).
+            case: "lower" = строчная буква в play(), "upper" = заглавная.
+        Returns:
+            JSON: letter, sample_index, filename, готовый play_code для каждого совпадения.
+        """
+        samples_roots = [
+            Path.home() / "AppData" / "Roaming" / "renardo" / "samples",
+            Path.home() / ".renardo" / "samples",
+        ]
+        samples_root = next((p for p in samples_roots if p.exists()), None)
+        if not samples_root:
+            return json.dumps({"error": "Папка с семплами не найдена"})
+
+        pack_path = samples_root / pack
+        if not pack_path.exists():
+            available = [d.name for d in samples_root.iterdir() if d.is_dir()]
+            return json.dumps({"error": f"Пакет '{pack}' не найден", "available_packs": available})
+
+        exts = {".wav", ".aif", ".aiff", ".mp3"}
+
+        # query="*" → компактный обзор: только буквы и количества
+        if query.strip() == "*":
+            overview = {}
+            for folder in sorted(pack_path.iterdir()):
+                if not folder.is_dir() or folder.name.startswith("."):
+                    continue
+                sub = folder / case
+                if not sub.exists():
+                    sub = folder
+                count = sum(1 for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts)
+                if count:
+                    overview[folder.name] = count
+            return json.dumps(
+                {"pack": pack, "case": case, "letters": overview,
+                 "hint": 'Ищи по слову: search_samples("kick") или search_samples("synth", pack="1_pitchglitch_samples")'},
+                ensure_ascii=False, indent=2,
+            )
+
+        # Поиск по ключевому слову
+        q = query.lower().strip()
+        results = []
+        for folder in sorted(pack_path.iterdir()):
+            if not folder.is_dir() or folder.name.startswith("."):
+                continue
+            sub = folder / case
+            if not sub.exists():
+                sub = folder
+            files = sorted([f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts])
+            for idx, f in enumerate(files):
+                if q in f.name.lower():
+                    play_letter = folder.name.upper() if case == "upper" else folder.name
+                    results.append({
+                        "letter": play_letter,
+                        "sample_index": idx,
+                        "filename": f.name,
+                        "play_code": f'd1 >> play("{play_letter}", sample={idx})',
+                    })
+            if len(results) >= 30:
+                break  # cap at 30 results
+
+        if not results:
+            return json.dumps(
+                {"query": query, "pack": pack, "found": 0,
+                 "hint": 'Попробуй: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*" (обзор)'},
+                ensure_ascii=False,
+            )
+
+        return json.dumps(
+            {"query": query, "pack": pack, "case": case, "found": len(results), "results": results},
+            ensure_ascii=False,
+            indent=2,
+        )
 
     @function_tool
     def execute_music_code(code: str, pattern_name: str | None = None) -> str:
@@ -526,7 +652,7 @@ async def run_repl(manager, dry_run: bool):
     agent = Agent(
         name="RobMusicAgent",
         instructions=SYSTEM_PROMPT,
-        tools=[execute_music_code, stop_music, set_vibe_preset, get_music_state],
+        tools=[search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state],
         model=model,
     )
 
@@ -544,8 +670,9 @@ async def run_repl(manager, dry_run: bool):
     print("  → сыграй что-нибудь джазовое")
     print("  → добавь барабаны")
     print("  → сделай бодрее")
-    print("  → скажи 'кек' и сыграй это в ритм")
-    print("  → озвучь слово 'огонь' и зациклируй")
+    print("  → страшная атмосфера заброшенной фермы")
+    print("  → тёмный эмбиент с глитчем")
+    print("  → весёлый 8-бит")
     print("  → стоп")
     print()
 
