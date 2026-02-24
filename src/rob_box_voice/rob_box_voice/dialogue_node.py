@@ -114,7 +114,7 @@ class DialogueNode(Node):
         # ── Barge-in grace period ────────────────────────────────────
         # After STT recognition, suppress VAD barge-in for N seconds so that
         # room echo / noise immediately after user speech doesn't cancel the run.
-        self._barge_in_grace_seconds: float = 3.0
+        self._barge_in_grace_seconds: float = 5.0
         self._agent_run_start_time: float = 0.0
 
         # ── TTS completion tracking ──────────────────────────────────
@@ -291,6 +291,8 @@ class DialogueNode(Node):
                 None,
                 lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
             )
+            # Each tool result resets barge-in grace — LLM is actively working
+            self._agent_run_start_time = time.monotonic()
             if isinstance(result, dict):
                 return result.get("result", json.dumps(result, ensure_ascii=False))
             return str(result)
