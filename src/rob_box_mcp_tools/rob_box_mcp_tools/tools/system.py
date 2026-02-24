@@ -9,6 +9,7 @@ system.py - Инструменты управления системой роб�
 - GetRobotStatusTool: Получить статус робота
 """
 
+import threading
 from typing import List, TYPE_CHECKING
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
@@ -18,6 +19,25 @@ if TYPE_CHECKING:
     from rcl_interfaces.srv import GetParameters, SetParameters
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+
+def _wait_future(future, timeout_sec: float) -> bool:
+    """Wait for an rclpy Future without touching the executor.
+
+    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
+    callback that is already executing under ``MultiThreadedExecutor`` — it
+    internally tries to add the node to a *new* executor, which corrupts the
+    existing one and silently breaks all subsequent subscription callbacks.
+
+    This helper attaches a ``done_callback`` to the future so that a plain
+    ``threading.Event`` is set when the future completes.  The calling thread
+    blocks on the event, leaving the ROS 2 executor completely undisturbed.
+
+    Returns True if the future completed within *timeout_sec*, False otherwise.
+    """
+    event = threading.Event()
+    future.add_done_callback(lambda _: event.set())
+    return event.wait(timeout=timeout_sec)
 
 
 class SetVolumeTool(MCPTool):
@@ -59,7 +79,6 @@ class SetVolumeTool(MCPTool):
     def execute(self, action: str) -> MCPToolResult:
         """Установить громкость"""
         # Динамический импорт во время выполнения
-        import rclpy
         from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
         from rcl_interfaces.srv import GetParameters, SetParameters
         
@@ -72,7 +91,8 @@ class SetVolumeTool(MCPTool):
         get_request = GetParameters.Request()
         get_request.names = ["volume_db"]
         future = self.get_params_client.call_async(get_request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        if not _wait_future(future, timeout_sec=2.0):
+            return MCPToolResult(success=False, error="Не удалось получить текущую громкость")
 
         if future.result() is None:
             return MCPToolResult(success=False, error="Не удалось получить текущую громкость")
@@ -112,7 +132,8 @@ class SetVolumeTool(MCPTool):
         set_request.parameters = [param]
 
         future = self.set_params_client.call_async(set_request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        if not _wait_future(future, timeout_sec=2.0):
+            return MCPToolResult(success=False, error="Не удалось установить громкость (timeout)")
 
         if future.result() is None or not future.result().results[0].successful:
             return MCPToolResult(success=False, error="Не удалось установить громкость")
@@ -163,7 +184,6 @@ class SetPitchTool(MCPTool):
     def execute(self, action: str) -> MCPToolResult:
         """Установить высоту голоса"""
         # Динамический импорт во время выполнения
-        import rclpy
         from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
         from rcl_interfaces.srv import GetParameters, SetParameters
         
@@ -176,7 +196,8 @@ class SetPitchTool(MCPTool):
         get_request = GetParameters.Request()
         get_request.names = ["pitch_shift"]
         future = self.get_params_client.call_async(get_request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        if not _wait_future(future, timeout_sec=2.0):
+            return MCPToolResult(success=False, error="Не удалось получить текущий pitch")
 
         if future.result() is None:
             return MCPToolResult(success=False, error="Не удалось получить текущий pitch")
@@ -213,7 +234,8 @@ class SetPitchTool(MCPTool):
         set_request.parameters = [param]
 
         future = self.set_params_client.call_async(set_request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        if not _wait_future(future, timeout_sec=2.0):
+            return MCPToolResult(success=False, error="Не удалось установить pitch (timeout)")
 
         if future.result() is None or not future.result().results[0].successful:
             return MCPToolResult(success=False, error="Не удалось установить pitch")
@@ -262,7 +284,6 @@ class SetSpeedTool(MCPTool):
     def execute(self, action: str) -> MCPToolResult:
         """Установить скорость речи"""
         # Динамический импорт во время выполнения
-        import rclpy
         from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
         from rcl_interfaces.srv import GetParameters, SetParameters
         
@@ -275,7 +296,8 @@ class SetSpeedTool(MCPTool):
         get_request = GetParameters.Request()
         get_request.names = ["yandex_speed"]
         future = self.get_params_client.call_async(get_request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        if not _wait_future(future, timeout_sec=2.0):
+            return MCPToolResult(success=False, error="Не удалось получить текущую скорость")
 
         if future.result() is None:
             return MCPToolResult(success=False, error="Не удалось получить текущую скорость")
@@ -312,7 +334,8 @@ class SetSpeedTool(MCPTool):
         set_request.parameters = [param]
 
         future = self.set_params_client.call_async(set_request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        if not _wait_future(future, timeout_sec=2.0):
+            return MCPToolResult(success=False, error="Не удалось установить скорость (timeout)")
 
         if future.result() is None or not future.result().results[0].successful:
             return MCPToolResult(success=False, error="Не удалось установить скорость")
