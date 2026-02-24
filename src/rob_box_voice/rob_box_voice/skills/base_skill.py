@@ -14,7 +14,7 @@ import asyncio
 import json
 from abc import ABC, abstractmethod
 
-from agents import Agent
+from agents import Agent, Runner, function_tool
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 
@@ -87,16 +87,21 @@ class BaseSkill(ABC):
     def as_tool(self, tool_name: str, tool_description: str):
         """Return a FunctionTool wrapping this skill's Agent.
 
-        The returned tool can be passed directly to the Compositor Agent's
-        ``tools`` list.  When called, it runs the skill's full LLM loop with a
-        *fresh* text input (not the Compositor's conversation history).
+        Unlike Agent.as_tool(), this version enforces max_turns so the sub-agent
+        cannot loop indefinitely if the LLM over-calls tools.
 
         Args:
             tool_name:        Identifier used by the Compositor to call this skill.
             tool_description: One-line description shown to the Compositor LLM.
         """
         agent = self.build_agent()
-        return agent.as_tool(
-            tool_name=tool_name,
-            tool_description=tool_description,
-        )
+        max_turns = self._agent_max_turns
+
+        async def _run_skill(task: str) -> str:
+            result = await Runner.run(agent, input=task, max_turns=max_turns)
+            return result.final_output or ""
+
+        _run_skill.__name__ = tool_name
+        _run_skill.__doc__ = tool_description
+
+        return function_tool(_run_skill, name_override=tool_name, description_override=tool_description)

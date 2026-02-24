@@ -581,7 +581,7 @@ class DialogueNode(Node):
             music_prompt = self._load_prompt_file("skills/music_skill_prompt.txt")
             if not music_prompt:
                 music_prompt = "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
-            skill = MusicSkill(adapter=self._mcp, model=model, prompt_template=music_prompt)
+            skill = MusicSkill(adapter=self._mcp, model=model, prompt_template=music_prompt, agent_max_turns=6)
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_music",
