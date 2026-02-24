@@ -233,7 +233,7 @@ class MusicSkill(BaseSkill):
             Args:
                 preset: One of 'chill', 'energetic', 'ambient', 'jazz', 'dark'.
             """
-            return await _call("set_vibe_preset", {"preset": preset})
+            return await _call("set_vibe_preset", {"preset_name": preset})
 
         @function_tool
         async def get_music_state() -> str:
