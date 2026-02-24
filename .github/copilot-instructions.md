@@ -10,7 +10,8 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 
 | Тема | Файл | Что внутри |
 |------|------|-----------|
-| **AI Agents Guide** | `docs/development/AGENT_GUIDE.md` | Архитектура Docker, Zenoh, примеры workflow, deployment |
+| **Процесс разработки (ГЛАВНОЕ)** | `.agents/skills/context-engineering/SKILL.md` | Research→Design→Plan→Implement, команды, правила |
+| **Бэклог задач** | `tasks.json` | Задачи, acceptance criteria, зависимости, agent_instructions |
 | **Docker Rules** | `docs/development/DOCKER_STANDARDS.md` | ❌ COPY config/scripts, ✅ volumes, network_mode: host |
 | **Python Style** | `docs/development/PYTHON_STYLE_GUIDE.md` | black, isort, flake8, ROS 2 patterns, naming |
 
@@ -27,11 +28,24 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 
 | Задача | Документация |
 |--------|--------------|
+| **Процесс (методология)** | `.agents/skills/context-engineering/SKILL.md` |
 | Docker сборка | `docs/development/BUILD_OPTIMIZATION.md` |
 | CI/CD Pipeline | `docs/CI_CD_PIPELINE.md` |
 | Тестирование | `docs/development/TESTING_GUIDE.md` |
 | Линтинг | `docs/development/LINTING_GUIDE.md` |
 | Деплой | `docs/DEPLOYMENT_WORKFLOW.md` |
+
+### ⚙️ Команды Claude (`.claude/commands/`)
+
+| Фаза | Команда | Когда использовать |
+|------|---------|--------------------|
+| **Research** | `/research-codebase TASK-ID` | Начало любой задачи |
+| **Design (фича)** | `/design-feature <name> <research.md>` | После research |
+| **Design (баг)** | `/design-bugfix <id> <research.md>` | После research |
+| **Plan (фича)** | `/plan-feature <design-dir>` | После ревью дизайна |
+| **Plan (баг)** | `/plan-bugfix <design-dir>` | После ревью дизайна |
+| **Implement (фича)** | `/implement-feature <plan-dir>` | После ревью плана |
+| **Implement (баг)** | `/implement-bugfix <plan-dir>` | После ревью плана |
 
 ### 🐛 Отладка
 
@@ -145,6 +159,5 @@ docs(readme): update hardware specs
 - `@docs/CI_CD_PIPELINE.md` - GitHub Actions workflows
 
 ---
-**Обновлено:** 19 ноября 2025  
-**Размер:** ~150 строк (было 823)  
-**Подход:** Навигация → детали в отдельных файлах
+**Обновлено:** 24 февраля 2026  
+**Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`

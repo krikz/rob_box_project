@@ -3,27 +3,42 @@
   "prd_version": "1.0.0",
   "generated": "2026-02-19",
   "agent_instructions": {
+    "process": "Context Engineering — .agents/skills/context-engineering/SKILL.md",
+    "phases": ["Research", "Design", "Plan", "Implement"],
+    "commands": {
+      "research":   "/research-codebase TASK-ID",
+      "design_feat": "/design-feature <name> <research-file>",
+      "design_bug":  "/design-bugfix <bug-id> <research-file>",
+      "plan_feat":   "/plan-feature <design-dir>",
+      "plan_bug":    "/plan-bugfix <design-dir>",
+      "impl_feat":   "/implement-feature <plan-dir>",
+      "impl_bug":    "/implement-bugfix <plan-dir>"
+    },
     "before_start": [
-      "Прочитай этот файл полностью и выполни: git log --oneline -20",
-      "Прочитай PRD.md для понимания контекста задачи",
-      "Выбери ОДНУ задачу со статусом pending и наивысшим приоритетом (critical > high > medium > low)",
+      "Прочитай .agents/skills/context-engineering/SKILL.md — это главный процесс",
+      "Выбери ОДНУ задачу: статус pending, наивысший приоритет (critical > high > medium > low)",
       "Проверь, что все dependencies этой задачи имеют статус done",
-      "Прочитай docs/development/AGENT_GUIDE.md и docs/development/DOCKER_STANDARDS.md перед работой с Docker",
-      "Прочитай docs/development/PYTHON_STYLE_GUIDE.md перед написанием Python кода"
+      "Запусти /research-codebase с ID задачи — НЕ начинай писать код без research"
     ],
     "during_work": [
-      "Работай только над выбранной задачей — не трогай код, не связанный с ней",
-      "Делай git commit после каждого логического изменения с форматом: feat(scope): description",
-      "НЕ копируй config/ и scripts/ в Dockerfile — используй volumes",
-      "НЕ используй print() — только self.get_logger().info()",
-      "Используй black (line-length 120), isort (profile black), flake8 для Python",
-      "Пиши type hints для всех public методов"
+      "Следуй фазам: Research → Design (ревью!) → Plan (ревью!) → Implement",
+      "Каждая фаза — новое контекстное окно (новый чат/сессия)",
+      "Implement: делай git commit после каждой фазы плана, НЕ делай git push",
+      "Работай только над выбранной задачей — не трогай код не связанный с ней",
+      "Стандарты всегда: black 120, isort, flake8, type hints, self.get_logger()"
     ],
     "before_finish": [
-      "Выполни ВСЕ test_steps из выбранной задачи",
-      "Меняй status на done ТОЛЬКО после успешного прохождения всех тестов",
-      "Напиши краткое summary в progress.md (что сделал, какие файлы изменил, как тестировал)",
-      "ЗАПРЕЩЕНО удалять или редактировать другие задачи — только менять status своей задачи"
+      "Все quality gates из каждой фазы плана должны быть GREEN",
+      "Меняй status на done ТОЛЬКО после прохождения test_steps из задачи",
+      "Напиши краткое summary в progress.md (что сделал, какие файлы, как тестировал)",
+      "ЗАПРЕЩЕНО редактировать другие задачи — только менять status своей"
+    ],
+    "never": [
+      "Не пиши код без завершённой research фазы",
+      "Не делай git push без явной просьбы пользователя",
+      "Не деплой на роботов (10.1.1.20 / 10.1.1.21) самостоятельно",
+      "Не добавляй Co-authored-by в commit messages",
+      "Не копируй config/ и scripts/ в Dockerfile"
     ]
   },
   "tasks": [
@@ -378,8 +393,8 @@
         "Шаг 4: Все три сценария должны PASS"
       ],
       "dependencies": ["TASK-035"],
-      "status": "pending",
-      "notes": "Регрессионный тест для commit 37527df (dialogue_id propagation через /voice/current_dialogue_id). Ключевой инвариант который надо проверить: после нового dialogue_id — speak_text от старого диалога НЕ должны воспроизводиться. Сложность: нужно сделать barge-in пока старый диалог ещё активен — в тесте это значит inject_stt второго запроса до того как mock speak_text вернул результат. Подумать как сделать окно предсказуемым (задержка в mock? флаг 'sending'?)."
+      "status": "in-progress",
+      "notes": "Регрессионный тест для commit 37527df. Создан 00_barge_in.yaml (запускается первым, cold start). Сценарии A/B/C через inject_stt_no_wait + wait_for_speaking + inject_vad. A: PASS в CI; B/C: fixing isolation/contamination issues. Открытие: query_accumulation_timeout=2.5s (не 0.3s); rescue=тихо для LISTENING state. CI прогоны: 22260914787(2/6), 22261182367(4/6), 22261357434(2/6), 22261549863(in-progress)."
     }
   ]
 }
