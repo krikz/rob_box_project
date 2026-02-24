@@ -30,6 +30,11 @@ import os
 import random
 import sys
 import wave
+import warnings
+
+# Подавляем NumPy version warning от системного scipy (скомпилирован под NumPy 1.x)
+warnings.filterwarnings("ignore", message="A NumPy version", category=UserWarning)
+warnings.filterwarnings("ignore", message="module 'numpy'", category=UserWarning)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Целевые фразы: все варианты + окружение
@@ -74,7 +79,9 @@ def setup_silero(sample_rate: int = 16000):
         language="ru",
         speaker="v3_1_ru",
     )
-    model.eval()
+    # TTSModelMultiAcc_v3 и старше не имеют .eval() — вызываем только если доступно
+    if hasattr(model, "eval"):
+        model.eval()
     return model
 
 
