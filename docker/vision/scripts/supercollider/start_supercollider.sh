@@ -19,6 +19,13 @@ set -euo pipefail
 
 export JACK_NO_AUDIO_RESERVATION=1
 
+# ── Clean up stale JACK SHM files from previous crashes ──────────────────────
+# Without this, jackd fails with "default server already active" after
+# an ungraceful shutdown that leaves orphaned SHM/semaphore files in /dev/shm/.
+echo "[SuperCollider] Cleaning up stale JACK SHM files..."
+rm -f /dev/shm/jack-0-0 /dev/shm/jack-0-1 /dev/shm/jack_default_0_0 2>/dev/null || true
+rm -f /dev/shm/jack_sem.0_default_* 2>/dev/null || true
+
 echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000)..."
 
 jackd --no-realtime \
