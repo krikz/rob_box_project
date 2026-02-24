@@ -268,12 +268,28 @@ get_sound_info(sound_name="robot_happy")  # Детали о robot_happy
 **Синтаксис Renardo (FoxDot-compatible):**
 ```python
 # Нота = индекс скейла: 0=до, 2=ре, 4=ми, 5=фа, 7=соль...
-p1 >> pluck([0, 2, 4, 7], dur=0.5, amp=0.8)        # Арпеджио до-мажор
-p1 >> piano([0, 2, 4, 0], dur=1, amp=0.7)           # Простая мелодия
-p1 >> bell([7, 5, 4, 2, 0], dur=0.75, amp=0.9)      # Нисходящая гамма
-d1 >> play("x-o-", dur=0.5)                          # Ритм
-Clock.bpm = 100                                       # Темп
+p1 >> pluck([0, 2, 4, 7], dur=0.5, amp=0.8)         # Арпеджио до-мажор
+p1 >> piano([0, 2, 4, 0], dur=1, amp=0.7)            # Простая мелодия
+p1 >> bell([7, 5, 4, 2, 0], dur=0.75, amp=0.9)       # Нисходящая гамма
+p1 >> bass([0, 0, 7, 5], dur=0.5, amp=0.9)           # Бас линия
+p1 >> bassguitar([0, 2, 4], dur=0.5, amp=0.8)        # Бас гитара (гарантированно работает)
+Clock.bpm = 100                                        # Темп
+
+# SAMPLE PLAYER — воспроизводит аудио-семплы (не синтезирует)
+# d1 >> play("строка", dur=N) — каждый символ = один семпл из папки
+# Пробел = пауза, . = короткая пауза
+d1 >> play("x-o-", dur=0.5)                           # Ритм: x=бочка, o=хэт
+d1 >> play("c   ", dur=1, amp=0.8)                    # ВОКАЛ: c = vocal samples (Pitchglitch)
+d1 >> play("C   ", dur=1, amp=0.8)                    # ВОКАЛ 2: C = другой вокальный семпл
+d1 >> play("cCcC", dur=0.5)                           # Альтернирующий вокал
 ```
+
+**Буквы семплов (1_pitchglitch_samples):**
+- `c` / `C` → **вокальные звуки** (шансон, гармонии, слоги вроде "Ah", "Yeah", "Ooh")
+- `x` / `X` → бочка (kick drum)
+- `o` / `O` → хэт (hi-hat)
+- `h` / `H` → хлопки/percussive hits
+- Строчная = lower (первая группа), Прописная = upper (вторая группа)
 
 **Как использовать:**
 ```python
@@ -281,6 +297,13 @@ Clock.bpm = 100                                       # Темп
 set_vibe_preset("chill")                              # Установить вайб сначала (опционально)
 execute_music_code("p1 >> pluck([0, 4, 7, 4, 0, 2, 4, 2], dur=0.5, amp=0.8)", pattern_name="p1")
 speak_text("Вот моя мелодия!", animation="happy")
+
+# Добавить вокальные звуки (ПРАВИЛЬНЫЙ СПОСОБ)
+execute_music_code("d1 >> play('c   ', dur=1, amp=0.7)", pattern_name="d1")  # вокал на каждый такт
+execute_music_code("d1 >> play('cCcC', dur=0.5, amp=0.7)", pattern_name="d1")  # чередующийся вокал
+
+# Мелодия + вокал вместе
+execute_music_code("p1 >> bassguitar([0, 2, 4], dur=0.5)\nd1 >> play('c   ', dur=1, amp=0.6)", pattern_name="p1")
 
 # Остановить музыку
 stop_music()                   # Стоп всё

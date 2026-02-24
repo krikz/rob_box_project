@@ -51,6 +51,9 @@ RUN apt-get update && apt-get install -y debconf-utils \
     # sclang для компиляции SynthDef-ов (FoxDot/Renardo pipeline)
     # sdef.add() → write(.scd) → OSC /foxdot → sclang → /d_recv → scsynth
     supercollider-language \
+    # sc3-plugins: расширенные UGens (DFM1, Squiz, Decimator, RLPFD, Henon2DN и др.)
+    # Без них большинство renardo SynthDefs не компилируются → только bassguitar/ebass/virus
+    supercollider-sc3-plugins \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
@@ -98,6 +101,37 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel && \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
+
+# Патч brass.scd в renardo_lib — опубликованный пакет содержит git merge conflict маркеры
+# которые вызывают "syntax error, unexpected BINOP" при компиляции SynthDef.
+# Оставляем версию 03b34654 (с параметром atk и metadata, использует только стандартный RLPF).
+RUN python3 -c "
+import os
+path = '/usr/local/lib/python3.10/dist-packages/renardo_lib/SynthDefManagement/sclang_code/scsynth/brass.scd'
+content = open(path).read()
+if '<<<<<<<' in content:
+    fixed = '''SynthDef.new(\\brass, {
+        |vib=0, rate=0.3, sus=1, fmod=0, bus=0, atk=0.01, amp=1, freq=0, pan=0|
+        var osc, env;
+        freq = In.kr(bus, 1);
+        freq = [freq, freq + fmod];
+        rate = Lag.kr(freq, rate);
+        osc = (Saw.ar(rate, 0.4) + Saw.ar((rate + LFNoise2.ar(1).range(0.5, 1.1)), 0.4));
+        osc = (osc + Resonz.ar(osc, (freq * XLine.ar(1, 5, 0.13)), 1));
+        osc = BPF.ar(osc, (freq * 2.5), 0.3);
+        osc = RLPF.ar(osc, 1300, 0.78);
+        env = EnvGen.ar(Env.perc(level: amp, curve: 0, attackTime: atk, releaseTime: sus), doneAction: 0);
+        osc = (osc * env);
+        osc = Mix(osc) * 0.5;
+        osc = Pan2.ar(osc, pan);
+        ReplaceOut.ar(bus, osc)
+}).add;
+'''
+    open(path, 'w').write(fixed)
+    print('brass.scd: merge conflict fixed')
+else:
+    print('brass.scd: OK, no conflict')
+"
 
 # ============================================================
 # СКАЧИВАНИЕ СЕМПЛОВ RENARDO/FOXDOT ДЛЯ СИНТЕЗА МУЗЫКИ
