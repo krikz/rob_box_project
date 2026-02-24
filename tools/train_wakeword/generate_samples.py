@@ -85,10 +85,14 @@ def setup_silero(sample_rate: int = 16000):
     return model
 
 
+# Silero поддерживает: 8000, 24000, 48000 Hz — используем 24000 и ресэмплируем
+_SILERO_SR = 24000
+
+
 def synthesize(model, text: str, speaker: str, speed: float, sample_rate: int = 16000) -> bytes:
     """
-    Синтезирует речь и возвращает PCM-16 bytes.
-    Returns bytes of 16kHz mono int16 PCM.
+    Синтезирует речь через Silero TTS и возвращает PCM-16 на нужном SR.
+    Silero синтезирует на 24000 Hz, результат ресэмплируется numpy до sample_rate.
     """
     import torch
     import numpy as np
@@ -97,20 +101,25 @@ def synthesize(model, text: str, speaker: str, speed: float, sample_rate: int = 
         audio = model.apply_tts(
             text=text,
             speaker=speaker,
-            sample_rate=sample_rate,
+            sample_rate=_SILERO_SR,  # 24000 — ближайший валидный SR
             put_accent=True,
             put_yo=True,
         )
     # audio is a torch tensor
     if hasattr(audio, "numpy"):
-        audio_np = audio.numpy()
+        audio_np = audio.numpy().astype(np.float32)
     else:
-        audio_np = audio
+        audio_np = np.asarray(audio, dtype=np.float32)
 
-    # Normalize to int16
+    # Ресэмплинг 24000 → sample_rate (обычно 16000) через numpy интерполяцию
+    if _SILERO_SR != sample_rate:
+        old_len = len(audio_np)
+        new_len = int(old_len * sample_rate / _SILERO_SR)
+        indices = np.linspace(0, old_len - 1, new_len)
+        audio_np = np.interp(indices, np.arange(old_len), audio_np).astype(np.float32)
+
     audio_np = np.clip(audio_np, -1.0, 1.0)
-    pcm = (audio_np * 32767).astype(np.int16)
-    return pcm.tobytes()
+    return (audio_np * 32767).astype(np.int16).tobytes()
 
 
 def synthesize_yandex(text: str, speaker: str, speed: float, api_key: str, sample_rate: int = 16000) -> bytes:
@@ -164,39 +173,24 @@ def synthesize_yandex(text: str, speaker: str, speed: float, api_key: str, sampl
             raise RuntimeError(f"Yandex API вернул {resp.status}: {body}")
         raw = resp.read()
 
-    # raw - это raw LPCM 16-bit LE 48kHz mono
+    # raw — LPCM 16-bit LE 48kHz mono
     audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
 
-    # Ресэмплирование 48000 → 16000 (ratio = 1/3)
+    # Ресэмплирование 48000 → 16000 (3:1) — чистый numpy, без scipy
     if yandex_sr != sample_rate:
-        try:
-            from scipy.signal import resample_poly
-            # 48000 → 16000: downsample 3x
-            gcd = _gcd(yandex_sr, sample_rate)
-            up = sample_rate // gcd
-            down = yandex_sr // gcd
-            audio_np = resample_poly(audio_np, up, down).astype(np.float32)
-        except Exception:  # ImportError или AttributeError (scipy скомпилирован под numpy 1.x)
-            # Простой децимация без scipy — берём каждый 3-й семпл (если ratio целое)
+        if yandex_sr % sample_rate == 0:
+            # Точное кратное — простая децимация (48000÷16000=3, берём каждый 3-й)
             ratio = yandex_sr // sample_rate
-            if yandex_sr % sample_rate == 0:
-                audio_np = audio_np[::ratio]
-            else:
-                # Линейная интерполяция через numpy
-                old_len = len(audio_np)
-                new_len = int(old_len * sample_rate / yandex_sr)
-                indices = np.linspace(0, old_len - 1, new_len)
-                audio_np = np.interp(indices, np.arange(old_len), audio_np).astype(np.float32)
+            audio_np = audio_np[::ratio]
+        else:
+            # Произвольное соотношение — линейная интерполяция
+            old_len = len(audio_np)
+            new_len = int(old_len * sample_rate / yandex_sr)
+            indices = np.linspace(0, old_len - 1, new_len)
+            audio_np = np.interp(indices, np.arange(old_len), audio_np).astype(np.float32)
 
     pcm = np.clip(audio_np, -1.0, 1.0)
     return (pcm * 32767).astype(np.int16).tobytes()
-
-
-def _gcd(a: int, b: int) -> int:
-    """Наибольший общий делитель."""
-    while b:
-        a, b = b, a % b
-    return a
 
 
 def write_wav(path: str, pcm: bytes, sample_rate: int = 16000) -> None:
