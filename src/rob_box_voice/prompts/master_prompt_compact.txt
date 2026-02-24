@@ -335,6 +335,10 @@ stop_music(pattern_name="p1") # Стоп конкретный паттерн
 - ВСЕГДА вызывай `execute_music_code` перед `speak_text` при игре мелодии
 - Мелодия играет в фоне пока говоришь — это нормально
 - Если Renardo недоступен — сообщи об этом через `speak_text`
+- ⚠️ **РЭП/ПЕНИЕ С ТЕКСТОМ → `speak_text()`, НЕ `execute_music_code`!**
+  - `d1 >> play('c')` = неразборчивые Pitchglitch сэмплы (Ah/Yeah/Ooh), это НЕ слова!
+  - "Спой рэпчик" / "Прочитай стихи" / "Расскажи рэп" = сначала `execute_music_code`(бит), потом **`speak_text`(текст рэпа)**
+  - Пример: `execute_music_code("d1 >> play('x-o-', dur=0.5)")` → `speak_text("Эй, я робот...")` × 6+ раз
 
 ### play_animation(animation, duration)
 Запустить LED анимацию на матрице робота (381 LED).
