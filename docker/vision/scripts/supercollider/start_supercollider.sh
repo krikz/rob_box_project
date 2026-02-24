@@ -41,11 +41,33 @@ fi
 
 echo "[SuperCollider] JACK running. Starting scsynth on UDP port 57110..."
 
-exec scsynth \
+scsynth \
     -u 57110 \
     -D 0 \
     -m 8192 \
     -z 1024 \
     -S 16000 \
     -H jack \
-    -a 1024
+    -a 1024 &
+
+SCSYNTH_PID=$!
+
+# Ждём пока scsynth зарегистрируется в JACK как клиент 'jack'
+echo "[SuperCollider] Waiting for scsynth JACK ports..."
+for i in $(seq 1 20); do
+    if jack_lsp 2>/dev/null | grep -q "^jack:out_1$"; then
+        break
+    fi
+    sleep 0.5
+done
+
+# Подключаем выходы scsynth к физическому выходу ALSA
+# scsynth регистрируется как клиент 'jack' (имя по умолчанию)
+if jack_lsp 2>/dev/null | grep -q "^jack:out_1$"; then
+    jack_connect jack:out_1 system:playback_1 && echo "[SuperCollider] Connected jack:out_1 -> system:playback_1"
+    jack_connect jack:out_2 system:playback_2 && echo "[SuperCollider] Connected jack:out_2 -> system:playback_2"
+else
+    echo "[SuperCollider] WARNING: scsynth JACK ports not found, audio may be silent"
+fi
+
+wait $SCSYNTH_PID
