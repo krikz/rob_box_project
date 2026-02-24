@@ -120,6 +120,11 @@ class DialogueNode(Node):
         # ── Current agent task (cancelled on barge-in) ──────────────
         self._run_task: Optional[asyncio.Task] = None
         self._task_lock = threading.Lock()
+        # Flag set by _cancel_run: speak_text checks this before acquiring the
+        # output lock so that a still-running old speak_text coroutine (that
+        # was unblocked by the forced TTS-event flush) does not race with the
+        # new run's speak_text calls.
+        self._run_cancelled: bool = False
 
         # ── Barge-in grace period ────────────────────────────────────
         # After STT recognition, suppress VAD barge-in for N seconds so that
@@ -350,11 +355,15 @@ class DialogueNode(Node):
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
             Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            if self._run_cancelled:
+                return "CANCELLED"
             # Collect ALL spoken texts immediately (before lock) so that when
             # multiple speak_text calls queue on the lock, _spoken_texts already
             # has all texts for proper history saving.
             self._spoken_texts.append(text)
             async with lock:
+                if self._run_cancelled:
+                    return "CANCELLED"
                 result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
                 # ── Wait for TTS to actually finish playing ───────────────────
                 # MCP speak_text is async (returns immediately), but we hold
@@ -606,8 +615,12 @@ class DialogueNode(Node):
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
             Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            if self._run_cancelled:
+                return "CANCELLED"
             self._spoken_texts.append(text)
             async with lock:
+                if self._run_cancelled:
+                    return "CANCELLED"
                 result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
                 try:
                     speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
@@ -835,6 +848,7 @@ class DialogueNode(Node):
         """Run the OpenAI Agents SDK loop for a single user turn."""
         with self._task_lock:
             self._run_task = asyncio.current_task()
+        self._run_cancelled = False
         self._spoken_texts = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
         if self._voice_memory is not None:
@@ -940,6 +954,7 @@ class DialogueNode(Node):
 
     def _cancel_run(self, reason: str) -> None:
         self._spoken_texts = []
+        self._run_cancelled = True
         with self._task_lock:
             task = self._run_task
         if task and not task.done():

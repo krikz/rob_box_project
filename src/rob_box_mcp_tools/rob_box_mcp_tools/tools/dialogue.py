@@ -144,6 +144,10 @@ class SpeakTextTool(MCPTool):
             "neutral": "idle",
             "excited": "happy",
             "confused": "thinking",
+            "laughing": "happy",
+            "smiling": "happy",
+            "dancing": "excited",
+            "singing": "happy",
         }
         animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
         
