@@ -23,7 +23,11 @@ LABEL org.opencontainers.image.description="AI voice assistant with ReSpeaker an
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
+# ВАЖНО: DEBIAN_FRONTEND=noninteractive обязателен — jackd2 (зависимость supercollider-language)
+# в postinst через debconf спрашивает про realtime scheduling и вешает сборку без TTY (особенно под QEMU/aarch64).
+RUN apt-get update && apt-get install -y debconf-utils \
+    && echo "jackd2 jackd/tweak_rt_limits boolean false" | debconf-set-selections \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     # Аудио система
     python3-pip \
     python3-dev \
