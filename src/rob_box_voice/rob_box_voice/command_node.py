@@ -73,8 +73,9 @@ class CommandNode(Node):
             self.current_goal_handle = None  # Для отмены текущего goal
         
         # CommandParser from core module (replaces _build_command_patterns)
+        # Wake words must match stt_node and dialogue_node: ['робок', 'робот', 'роббокс']
         self.command_parser = CommandParser(
-            wake_words=['робот', 'робокс', 'робобокс'],
+            wake_words=['робок', 'робот', 'роббокс'],
             confidence_base=0.8
         )
         

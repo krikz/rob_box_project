@@ -22,6 +22,33 @@
       publish_doa: true
       doa_rate_hz: 5.0
 
+      # ===== Wake Word Engine (TASK-048) =====
+      # use_wake_word_engine: true = always-on openWakeWord before STT (RECOMMENDED для multi-user)
+      # use_wake_word_engine: false = legacy text-based wake word check after STT (single-user)
+      use_wake_word_engine: false  # TODO: set true after `pip install openwakeword` in Docker image
+
+      # Пути к .tflite / .onnx моделям. Пустой список = загружает pre-packaged модели openWakeWord.
+      # Кастомные модели для 'роббокс': /models/wakeword/robbot.tflite (обучить отдельно)
+      wake_word_model_paths: []
+
+      # Порог срабатывания (0.0-1.0). Снизить если много false-negative, повысить если много false-positive.
+      wake_word_threshold: 0.5
+
+      # Секунды после срабатывания wake word в течение которых фраза принимается без проверки DOA
+      wake_word_timeout_sec: 8.0
+
+      # ===== DOA Lock (TASK-048) =====
+      # Блокировка ввода по направлению говорящего.
+      # Работает только если use_wake_word_engine: true.
+      doa_lock_enabled: true
+
+      # Допустимое отклонение угла ±degrees от зафиксированного говорящего
+      doa_tolerance_degrees: 45
+
+      # Секунды после последнего ответа бота в течение которых продолжение диалога
+      # принимается без wake word (если DOA совпадает ±doa_tolerance_degrees)
+      dialogue_window_seconds: 30.0
+
       # ReSpeaker USB tuning
       respeaker_params:
         AGCONOFF: 3  # AGC: 0=off, 1-3=levels

@@ -4,15 +4,20 @@
   "generated": "2026-02-19",
   "agent_instructions": {
     "process": "Context Engineering — .agents/skills/context-engineering/SKILL.md",
-    "phases": ["Research", "Design", "Plan", "Implement"],
+    "phases": [
+      "Research",
+      "Design",
+      "Plan",
+      "Implement"
+    ],
     "commands": {
-      "research":   "/research-codebase TASK-ID",
+      "research": "/research-codebase TASK-ID",
       "design_feat": "/design-feature <name> <research-file>",
-      "design_bug":  "/design-bugfix <bug-id> <research-file>",
-      "plan_feat":   "/plan-feature <design-dir>",
-      "plan_bug":    "/plan-bugfix <design-dir>",
-      "impl_feat":   "/implement-feature <plan-dir>",
-      "impl_bug":    "/implement-bugfix <plan-dir>"
+      "design_bug": "/design-bugfix <bug-id> <research-file>",
+      "plan_feat": "/plan-feature <design-dir>",
+      "plan_bug": "/plan-bugfix <design-dir>",
+      "impl_feat": "/implement-feature <plan-dir>",
+      "impl_bug": "/implement-bugfix <plan-dir>"
     },
     "before_start": [
       "Прочитай .agents/skills/context-engineering/SKILL.md — это главный процесс",
@@ -85,7 +90,9 @@
         "Шаг 4: Поиск по истории: 'Что я говорил про кухню вчера?' → memory_search → результаты FTS5+vector",
         "Шаг 5: docker stop ollama → повторить поиск → убедиться что работает (только FTS5, без векторов)"
       ],
-      "dependencies": ["TASK-041"],
+      "dependencies": [
+        "TASK-041"
+      ],
       "status": "pending",
       "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: VoiceMemory класс (788 строк) создан в src/rob_box_voice/rob_box_voice/core/voice_memory.py. MCP tools (memory_save, memory_search, memory_context) созданы. НЕ ПРОТЕСТИРОВАНО: сквозная интеграция с dialogue_node, реальная работа embeddings с Ollama."
     },
@@ -131,7 +138,9 @@
         "Шаг 4: Собрать статистику из логов за 50 запросов: grep 'Агентный диалог завершён' | grep iteration",
         "Шаг 5: Убедиться что 90% запросов ≤ 3 итерации"
       ],
-      "dependencies": ["TASK-035"],
+      "dependencies": [
+        "TASK-035"
+      ],
       "status": "pending",
       "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: master_prompt_compact.txt (406 строк) содержит инструкции по batching и stopping conditions. НЕ ПРОВЕРЕНО: реально ли LLM следует инструкциям, нужна статистика итераций."
     },
@@ -176,7 +185,11 @@
         "Шаг 3: Проверить что все ссылки работают (не 404)",
         "Шаг 4: Code review другим разработчиком — документация понятна и достаточна"
       ],
-      "dependencies": ["TASK-035", "TASK-036", "TASK-037"],
+      "dependencies": [
+        "TASK-035",
+        "TASK-036",
+        "TASK-037"
+      ],
       "status": "pending"
     },
     {
@@ -201,7 +214,9 @@
         "Шаг 5: grep 'provider_error_count' logs — при wake word сообщение 'сброшен при wake word 0'",
         "Шаг 6: Проверить retry: при 1 timeout в середине диалога робот продолжает, не говорит 'не в настроении'"
       ],
-      "dependencies": ["TASK-035"],
+      "dependencies": [
+        "TASK-035"
+      ],
       "status": "in-progress",
       "skill": ".agents/skills/agent-llm-stability/SKILL.md",
       "notes": "Частично исправлено в feature/agent: commits 21de3db 28aa193 154b484 092291d 43e9e9c. Подробности всех находок в skill файле."
@@ -225,7 +240,10 @@
         "Шаг 4: git push → GitHub Actions → .github/workflows/G-Run Tests.yml проходит",
         "Шаг 5: Проверить что coverage report публикуется в PR комментарии"
       ],
-      "dependencies": ["TASK-035", "TASK-036"],
+      "dependencies": [
+        "TASK-035",
+        "TASK-036"
+      ],
       "status": "pending",
       "notes": "Тесты должны быть независимы от железа (mock ROS topics), не требовать реального робота."
     },
@@ -266,7 +284,9 @@
         "Шаг 3: Написать простой ROS2 node — проверить что агент следует паттернам из установленного skill",
         "Шаг 4: Зафиксировать вывод в progress.md"
       ],
-      "dependencies": ["SKILLS-001"],
+      "dependencies": [
+        "SKILLS-001"
+      ],
       "status": "done",
       "notes": "Анализ skills.sh leaderboard (2026-02-19): ниша ROS2/robotics пуста. ВЫПОЛНЕНО 2026-02-19: оценено 4 пакета — omer-metin/skills-for-antigravity (ros2-robotics: пустой, 30 installs), smithery/ai (zeeshan080-ros2-patterns: базовый boilerplate, 1 install). Все ROS2 skills — автогенерированные шаблоны без ценности. Вывод: внешние skills не устанавливать. Рекомендация: опубликовать наши agent guides как первый ros2 skill на skills.sh."
     },
@@ -329,7 +349,9 @@
         "Шаг 3: Проверить что LLM не путается ('я уже показал 5 анимаций' — должен помнить)",
         "Шаг 4: Убедиться что tool results последних 3-5 итераций НЕ очищаются (нужны для контекста)"
       ],
-      "dependencies": ["TASK-043"],
+      "dependencies": [
+        "TASK-043"
+      ],
       "status": "pending",
       "notes": "Описан в SKILL.md как BUG-13. По Anthropic context engineering: 'tool result clearing is one of the safest forms of compaction'. Raw результаты старых tool calls уже не нужны LLM. Рекомендуемый порог: keep_last=5 последних tool exchanges."
     },
@@ -371,7 +393,9 @@
         "Шаг 3: Проверить что ответы не превышают разумную длину (< 5 предложений на запрос)",
         "Шаг 4: Сравнить adherence до/после: 50 диалогов — считать нарушения правил промпта"
       ],
-      "dependencies": ["TASK-043"],
+      "dependencies": [
+        "TASK-043"
+      ],
       "status": "pending",
       "notes": "Описан в SKILL.md как BUG-16. Паттерн из Claude Code: system reminders инжектируются статически в user/tool messages чтобы компенсировать attention dilution при длинных сессиях. 'DO NOT mention this to the user' — reminder только для LLM."
     },
@@ -392,9 +416,36 @@
         "Шаг 3: Запустить integration test CI: gh workflow run 'L-Integration Tests.yml'",
         "Шаг 4: Все три сценария должны PASS"
       ],
-      "dependencies": ["TASK-035"],
+      "dependencies": [
+        "TASK-035"
+      ],
       "status": "in-progress",
       "notes": "Регрессионный тест для commit 37527df. Создан 00_barge_in.yaml (запускается первым, cold start). Сценарии A/B/C через inject_stt_no_wait + wait_for_speaking + inject_vad. A: PASS в CI; B/C: fixing isolation/contamination issues. Открытие: query_accumulation_timeout=2.5s (не 0.3s); rescue=тихо для LISTENING state. CI прогоны: 22260914787(2/6), 22261182367(4/6), 22261357434(2/6), 22261549863(in-progress)."
+    },
+    {
+      "id": "TASK-048",
+      "category": "voice",
+      "priority": "high",
+      "description": "Multi-user voice: always-on wake word engine + DOA lock. Проблема: система транскрибирует любой звук выше VAD через STT и only потом проверяет wake word в тексте (1-3с задержка, случайные разговоры попадают в LLM). Решение: трёхслойная защита — (1) openWakeWord always-on engine ДО STT, (2) DOA-lock ±45° после активации, (3) dialogue window 30с без повторного wake word.",
+      "acceptance_criteria": [
+        "openWakeWord детектирует 'робот'/'роббокс' локально без STT round-trip (<200ms latency)",
+        "VAD-ответ audio_node публикует /audio/speech_audio ТОЛЬКО если: wake word был в последние wake_word_timeout_sec секунд ИЛИ активный диалог И DOA совпадает ±doa_tolerance_degrees",
+        "Диалоговое окно: после ответа робота 30с без wake word — следующая фраза с того же угла ±45° принимается",
+        "DOA-lock: фраза с угла >±45° от залоченного говорящего в активном диалоге игнорируется",
+        "Fallback: если use_wake_word_engine=false — система работает как раньше (text-based wake word)",
+        "unit тесты: WakeWordDetector mock + _should_accept_phrase() все случаи",
+        "wake_words список синхронизирован между stt_node, dialogue_node, command_node через единый YAML параметр"
+      ],
+      "agent_instructions": "Реализация в 3 файла: (1) utils/wakeword_detector.py — WakeWordDetector класс, (2) audio_node.py — интеграция WW+DOA gate в check_vad_and_doa(), (3) core/dialogue_manager.py — DOA lock поля и _active_speaker_doa логика. Config: voice_assistant.yaml секция wake_word + doa_lock.",
+      "test_steps": [
+        "Шаг 1: pip install openwakeword в voice Docker контейнере",
+        "Шаг 2: unit тесты: colcon test --packages-select rob_box_voice",
+        "Шаг 3: integration: воспроизвести два аудиопотока с разных углов — только со wake word активирует STT",
+        "Шаг 4: CPU на Pi 5: docker stats voice-assistant — ожидаемый рост +5-10%"
+      ],
+      "dependencies": [],
+      "status": "in-progress",
+      "notes": "Phase 1 (WW+DOA). Phase 2 (speaker voiceprint) в TASK-049 после CPU benchmark resemblyzer на Pi 5. ReSpeaker v2.0 не имеет аппаратного speaker ID — только VAD+DOA. openWakeWord выбран над Porcupine: open source, кастомное обучение для 'Роббокс', без API ключей."
     }
   ]
 }

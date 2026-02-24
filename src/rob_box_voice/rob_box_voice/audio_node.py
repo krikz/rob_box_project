@@ -19,6 +19,7 @@ from typing import Optional
 
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
+from .utils.wakeword_detector import WakeWordDetector, WakeWordResult
 
 
 @contextmanager
@@ -83,6 +84,10 @@ class AudioNode(Node):
         self.direction_pub = self.create_publisher(Int32, '/audio/direction', 10)
         self.state_pub = self.create_publisher(String, '/audio/state', 10)
         self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
+        self.wake_word_pub = self.create_publisher(String, '/audio/wake_word', 10)  # Wake word events
+
+        # Subscriber: dialogue state (to know when in active dialogue for DOA window)
+        self.create_subscription(String, '/voice/dialogue/state', self._on_dialogue_state, 10)
         
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
@@ -95,6 +100,35 @@ class AudioNode(Node):
         self.is_running = False
         self.audio_thread: Optional[threading.Thread] = None
         
+        # Wake word engine параметры
+        self.declare_parameter('use_wake_word_engine', False)  # False = fallback (text-based)
+        self.declare_parameter('wake_word_model_paths', [''])  # Пути к .tflite/.onnx моделям
+        self.declare_parameter('wake_word_threshold', 0.5)     # Порог детекции (0.0-1.0)
+        self.declare_parameter('wake_word_timeout_sec', 8.0)   # Окно после wake word (сек)
+
+        # DOA lock параметры
+        self.declare_parameter('doa_lock_enabled', True)          # Включить DOA фильтрацию
+        self.declare_parameter('doa_tolerance_degrees', 45)       # Допуск угла ±deg
+        self.declare_parameter('dialogue_window_seconds', 30.0)   # Окно диалога без wake word
+
+        self._use_wake_word_engine: bool = self.get_parameter('use_wake_word_engine').value
+        self._wake_word_threshold: float = self.get_parameter('wake_word_threshold').value
+        self._wake_word_timeout_sec: float = self.get_parameter('wake_word_timeout_sec').value
+        self._doa_lock_enabled: bool = self.get_parameter('doa_lock_enabled').value
+        self._doa_tolerance_degrees: int = self.get_parameter('doa_tolerance_degrees').value
+        self._dialogue_window_seconds: float = self.get_parameter('dialogue_window_seconds').value
+
+        # Wake word state
+        self._last_wake_word_time: float = 0.0   # время последнего срабатывания WW
+        self._locked_doa_angle: Optional[int] = None  # угол при последней активации
+        self._last_dialogue_response_time: float = 0.0  # время последнего ответа бота
+        self._in_active_dialogue: bool = False    # True пока state = DIALOGUE/LISTENING
+        self._current_doa: int = 0               # последний прочитанный DOA
+
+        # Wake word engine (инициализируется после PyAudio)
+        self._wakeword_detector: Optional[WakeWordDetector] = None
+        self._ww_chunk_buffer: bytes = b''  # накопитель для 512-sample чанков
+
         # Параметры VAD
         self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
         self.declare_parameter('speech_prefetch', 0.5)      # Буфер перед началом речи
@@ -117,7 +151,7 @@ class AudioNode(Node):
         
         # Таймер для VAD/DoA (после sleep(5) безопасно!)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.check_vad_and_doa)
-        
+
         # Инициализация
         self.get_logger().info('AudioNode инициализирован')
         self.initialize_hardware()
@@ -138,6 +172,28 @@ class AudioNode(Node):
             self.get_logger().info(f'  VAD threshold: {self.vad_threshold} dB (по умолчанию)')
         else:
             self.get_logger().warn('⚠ ReSpeaker USB не найден для VAD/DoA')
+
+        # Инициализировать wake word engine (если включён)
+        if self._use_wake_word_engine:
+            raw_paths = list(self.get_parameter('wake_word_model_paths').value)
+            model_paths = [p for p in raw_paths if p.strip()]
+            self._wakeword_detector = WakeWordDetector(
+                model_paths=model_paths or None,
+                threshold=self._wake_word_threshold,
+            )
+            if self._wakeword_detector.available:
+                self.get_logger().info(
+                    f'✓ WakeWordDetector запущен: '  
+                    f'threshold={self._wake_word_threshold}, '
+                    f'models={model_paths or "pre-packaged"}'
+                )
+            else:
+                self.get_logger().warn(
+                    '⚠ WakeWordDetector недоступен (openWakeWord не установлен) — '
+                    'используем text-based fallback'
+                )
+        else:
+            self.get_logger().info('WakeWordDetector отключён (use_wake_word_engine=false) — text fallback')
         
         # Инициализация PyAudio (теперь ReSpeaker должен быть виден как аудио устройство)
         # Глушим ALSA ошибки как в jsk-ros-pkg
@@ -206,7 +262,19 @@ class AudioNode(Node):
             
             msg.data = list(audio_bytes)
             self.audio_pub.publish(msg)
-            
+
+            # --- Wake word engine: feed chunks ---
+            if self._use_wake_word_engine and self._wakeword_detector and self._wakeword_detector.available:
+                self._ww_chunk_buffer += audio_bytes
+                # Process when we have at least CHUNK_SAMPLES samples (512 * 2 = 1024 bytes)
+                chunk_bytes = WakeWordDetector.CHUNK_SAMPLES * 2
+                while len(self._ww_chunk_buffer) >= chunk_bytes:
+                    chunk = self._ww_chunk_buffer[:chunk_bytes]
+                    self._ww_chunk_buffer = self._ww_chunk_buffer[chunk_bytes:]
+                    result = self._wakeword_detector.process_chunk(chunk)
+                    if result:
+                        self._on_wake_word_detected(result)
+
             # Буферизация для speech_audio
             if self.is_speeching:
                 # Во время речи - добавляем в speech buffer
@@ -272,11 +340,19 @@ class AudioNode(Node):
                 duration = len(buf) / (self.sample_rate * 2)  # 16-bit = 2 bytes
                 
                 if self.speech_min_duration <= duration <= self.speech_max_duration:
-                    self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
-                    # Публикуем speech_audio
-                    msg = AudioData()
-                    msg.data = list(buf)
-                    self.speech_audio_pub.publish(msg)
+                    # --- Wake word + DOA gate ---
+                    if self._should_accept_phrase(self._current_doa):
+                        self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с (doa={self._current_doa}°)')
+                        msg = AudioData()
+                        msg.data = list(buf)
+                        self.speech_audio_pub.publish(msg)
+                    else:
+                        self.get_logger().info(
+                            f'🚫 Речь отфильтрована (WW/DOA gate): {duration:.2f}с, '
+                            f'doa={self._current_doa}°, '
+                            f'locked={self._locked_doa_angle}°, '
+                            f'ww_age={time.time()-self._last_wake_word_time:.1f}s'
+                        )
                 else:
                     self.get_logger().warn(f'❌ Речь отклонена: {duration:.2f}с (min={self.speech_min_duration}, max={self.speech_max_duration})')
             
@@ -284,6 +360,7 @@ class AudioNode(Node):
             try:
                 direction = self.respeaker.get_direction()
                 if direction is not None:
+                    self._current_doa = direction  # Обновляем текущий DOA
                     msg = Int32()
                     msg.data = direction
                     self.direction_pub.publish(msg)
@@ -296,6 +373,92 @@ class AudioNode(Node):
             if 'Pipe error' not in str(e):
                 self.get_logger().warn(f'VAD/DoA ошибка: {e}')
     
+    # ------------------------------------------------------------------
+    # Wake word + DOA gate
+    # ------------------------------------------------------------------
+
+    def _on_wake_word_detected(self, result: WakeWordResult) -> None:
+        """Called (from audio callback thread) when wake word engine fires."""
+        self._last_wake_word_time = result.timestamp
+        self._locked_doa_angle = self._current_doa
+        msg = String()
+        msg.data = result.model_name
+        self.wake_word_pub.publish(msg)
+        self.get_logger().info(
+            f'🔔 Wake word: model={result.model_name} score={result.score:.2f} '
+            f'doa={self._locked_doa_angle}°'
+        )
+
+    def _on_dialogue_state(self, msg: String) -> None:
+        """Track dialogue state for DOA window logic."""
+        state = msg.data.upper()
+        was_active = self._in_active_dialogue
+        self._in_active_dialogue = state in ('DIALOGUE', 'LISTENING')
+        # When bot finishes a response (transitions out of DIALOGUE), record time
+        # so the DOA dialogue window starts counting from bot's last reply.
+        if was_active and not self._in_active_dialogue:
+            self._last_dialogue_response_time = time.time()
+
+    def _should_accept_phrase(self, phrase_doa: int) -> bool:
+        """
+        Decide whether to forward a captured phrase to STT.
+
+        Logic (short-circuit evaluation):
+        1. If wake word engine is disabled → always accept (legacy behaviour).
+        2. If wake word engine unavailable (not installed) → always accept.
+        3. If wake word fired within wake_word_timeout_sec → accept and lock DOA.
+        4. If in active dialogue (DIALOGUE/LISTENING state) AND DOA matches → accept.
+        5. If dialogue window open (last bot response < dialogue_window_seconds ago)
+           AND DOA matches locked angle → accept continuation.
+        6. Otherwise → reject.
+
+        Args:
+            phrase_doa: DOA angle of the speech phrase (0-359°).
+
+        Returns:
+            True if phrase should be forwarded to STT.
+        """
+        # 1. Engine disabled — passthrough (text-based wake word still active in dialogue_node)
+        if not self._use_wake_word_engine:
+            return True
+
+        # 2. Engine installed but unavailable — graceful degradation
+        if self._wakeword_detector is None or not self._wakeword_detector.available:
+            return True
+
+        now = time.time()
+
+        # 3. Wake word recently fired
+        if now - self._last_wake_word_time <= self._wake_word_timeout_sec:
+            # Lock DOA on first accepted phrase after wake word
+            if self._locked_doa_angle is None:
+                self._locked_doa_angle = phrase_doa
+            return True
+
+        # DOA check helper
+        def _doa_matches(current: int, locked: int) -> bool:
+            if not self._doa_lock_enabled:
+                return True
+            diff = abs(current - locked)
+            diff = min(diff, 360 - diff)  # handle 359° vs 1° wraparound
+            return diff <= self._doa_tolerance_degrees
+
+        if self._locked_doa_angle is None:
+            return False  # No lock established yet
+
+        # 4. Active dialogue — accept from same direction
+        if self._in_active_dialogue:
+            return _doa_matches(phrase_doa, self._locked_doa_angle)
+
+        # 5. Dialogue window after bot response
+        if now - self._last_dialogue_response_time <= self._dialogue_window_seconds:
+            return _doa_matches(phrase_doa, self._locked_doa_angle)
+
+        # 6. No valid gate — reject
+        return False
+
+    # ------------------------------------------------------------------
+
     def publish_state(self, state: str):
         """Публиковать состояние ноды"""
         msg = String()
