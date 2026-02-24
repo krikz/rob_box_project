@@ -117,11 +117,30 @@ class MusicManager:
             # Если 0_foxdot_default не установлен — падает FileNotFoundError.
             # Создаём пустую структуру директорий заранее, чтобы импорт проходил.
             import pathlib
+            import shutil
 
             samples_base = pathlib.Path.home() / ".config" / "renardo" / "samples" / "0_foxdot_default"
             _SAMPLE_SUBDIRS = ["_", "_loop_"] + list("abcdefghijklmnopqrstuvwxyz")
             for subdir in _SAMPLE_SUBDIRS:
                 (samples_base / subdir).mkdir(parents=True, exist_ok=True)
+
+            # Renardo всегда ищет сэмплы ТОЛЬКО в 0_foxdot_default/ (sample_path_from_symbol
+            # захардкожена на DEFAULT_SAMPLES_PACK_NAME). Буква 'c' (vokals) отсутствует
+            # в foxdot_default, но есть в 1_pitchglitch_samples/c/.
+            # Копируем отсутствующие файлы чтобы play("c   ") находило вокальные сэмплы.
+            pitchglitch = pathlib.Path.home() / ".config" / "renardo" / "samples" / "1_pitchglitch_samples"
+            if pitchglitch.exists():
+                for letter in list("abcdefghijklmnopqrstuvwxyz"):
+                    for case_dir in ("lower", "upper"):
+                        src_dir = pitchglitch / letter / case_dir
+                        dst_dir = samples_base / letter / case_dir
+                        if not src_dir.exists():
+                            continue
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        dst_wavs = set(f.name for f in dst_dir.glob("*.wav"))
+                        for wav in src_dir.glob("*.wav"):
+                            if wav.name not in dst_wavs:
+                                shutil.copy2(wav, dst_dir / wav.name)
 
             # renardo_lib само по себе пустое; нужен renardo_lib.runtime
             import renardo_lib.runtime as _rt
