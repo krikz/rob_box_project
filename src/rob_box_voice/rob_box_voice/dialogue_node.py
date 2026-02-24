@@ -600,7 +600,7 @@ class DialogueNode(Node):
             nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
             if not nav_prompt:
                 nav_prompt = "Ты — модуль навигации РОББОКСА. Управляй движением робота."
-            skill = NavigationSkill(adapter=self._mcp, model=model, prompt=nav_prompt)
+            skill = NavigationSkill(adapter=self._mcp, model=model, prompt=nav_prompt, name="NavigationSkill")
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_navigation",
@@ -619,7 +619,7 @@ class DialogueNode(Node):
             mem_prompt = self._load_prompt_file("skills/memory_skill_prompt.txt")
             if not mem_prompt:
                 mem_prompt = "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
-            skill = MemorySkill(adapter=self._mcp, model=model, prompt=mem_prompt)
+            skill = MemorySkill(adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill")
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_memory",
@@ -638,7 +638,7 @@ class DialogueNode(Node):
             status_prompt = self._load_prompt_file("skills/status_skill_prompt.txt")
             if not status_prompt:
                 status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
-            skill = StatusSkill(adapter=self._mcp, model=model, prompt=status_prompt)
+            skill = StatusSkill(adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill")
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_status",
