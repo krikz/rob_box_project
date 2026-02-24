@@ -174,6 +174,11 @@ services:
       # VoiceMemory + Ollama
       - OLLAMA_BASE_URL=http://localhost:11434
       - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+      # Agent skills feature flag (set to false to revert to flat tool mode)
+      - USE_SKILLS=true
+      # Renardo paths (MusicSkill uses these to load reference docs and search samples)
+      - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
+      - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
     env_file:
       - .env.secrets  # API keys: QWEN_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
@@ -192,6 +197,8 @@ services:
       # Shared renardo samples — должны быть доступны scsynth в supercollider контейнере
       # start_voice_assistant.sh инициализирует этот volume из /renardo_samples_builtin/ при первом запуске
       - renardo_samples:/root/.config/renardo/samples
+      # Renardo/FoxDot reference documentation for MusicSkill LLM context
+      - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]

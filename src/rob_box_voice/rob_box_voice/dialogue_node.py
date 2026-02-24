@@ -41,6 +41,16 @@ except ImportError:
     _VoiceMemory = None  # type: ignore[assignment,misc]
     _VOICE_MEMORY_AVAILABLE = False
 
+try:
+    from .skills import MusicSkill, NavigationSkill, MemorySkill, StatusSkill
+
+    _SKILLS_AVAILABLE = True
+except ImportError:
+    _SKILLS_AVAILABLE = False  # skills module not yet installed
+
+# ── Feature flag — set USE_SKILLS=false to fall back to flat tool mode ────────
+USE_SKILLS: bool = os.getenv("USE_SKILLS", "true").lower() == "true"
+
 
 class DialogueNode(Node):
     """Voice dialogue agent built on OpenAI Agents SDK."""
@@ -200,6 +210,29 @@ class DialogueNode(Node):
             self.get_logger().warning(f"⚠️ Prompt not found ({exc}) — using default")
             return "Ты ROBBOX — умный робот-ассистент. Отвечай кратко и по делу."
 
+    def _load_prompt_file(self, filename: str) -> str:
+        """Load a prompt file by relative path under the package prompts/ directory.
+
+        Args:
+            filename: Relative path under prompts/, e.g. "compositor_prompt.txt"
+                      or "skills/music_skill_prompt.txt".
+
+        Returns:
+            File contents, or empty string on failure.
+        """
+        try:
+            from ament_index_python.packages import get_package_share_directory
+
+            pkg = get_package_share_directory("rob_box_voice")
+            path = os.path.join(pkg, "prompts", filename)
+            with open(path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+            self.get_logger().info(f"✅ Prompt loaded: {filename} ({len(content)} bytes)")
+            return content
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Prompt '{filename}' not found: {exc}")
+            return ""
+
     def _resolve_api_key(self) -> str:
         key = self.get_parameter("api_key").value
         if key:
@@ -250,11 +283,27 @@ class DialogueNode(Node):
             model = OpenAIChatCompletionsModel(
                 model=model_name, openai_client=openai_client
             )
-            tools = self._make_tools() if self._mcp else []
+
+            if USE_SKILLS and _SKILLS_AVAILABLE and self._mcp:
+                # ── Compositor mode: Compositor + 4 skill sub-agents ────────
+                instructions = self._load_prompt_file("compositor_prompt.txt") or self._system_prompt
+                agent_name = "Compositor"
+                tools = self._make_output_tools() + self._build_skills(model)
+                self.get_logger().info(
+                    f"🎭 Skills mode: USE_SKILLS=True, {len(tools)} tools "
+                    f"(3 output + {len(tools) - 3} skills)"
+                )
+            else:
+                # ── Flat mode: single agent with all 17 tools ────────────────
+                if USE_SKILLS and not _SKILLS_AVAILABLE:
+                    self.get_logger().warning("⚠️ USE_SKILLS=true but skills module unavailable — falling back to flat mode")
+                instructions = self._system_prompt
+                agent_name = "RobBox"
+                tools = self._make_tools() if self._mcp else []
 
             self._agent = Agent(
-                name="RobBox",
-                instructions=self._system_prompt,
+                name=agent_name,
+                instructions=instructions,
                 tools=tools,
                 model=model,
                 model_settings=ModelSettings(
@@ -263,10 +312,10 @@ class DialogueNode(Node):
                     parallel_tool_calls=False,
                 ),
             )
-            prompt_preview = self._system_prompt[:200].replace("\n", "↵")
+            prompt_preview = instructions[:200].replace("\n", "↵")
             self.get_logger().info(
                 f"🤖 Agent built: {model_name} @ {base_url} ({len(tools)} tools) | "
-                f"instructions={len(self._system_prompt)} bytes | "
+                f"instructions={len(instructions)} bytes | "
                 f'preview="{prompt_preview}..."'
             )
         except Exception as exc:
@@ -437,6 +486,173 @@ class DialogueNode(Node):
             set_volume, set_pitch,
             execute_music_code, stop_music, set_vibe_preset, get_music_state,
         ]
+
+    def _make_output_tools(self) -> list:
+        """Create speak_text / play_sound / play_animation tools for compositor mode.
+
+        These tools stay as flat tools on the Compositor because they hold
+        asyncio locks (_output_lock, _tts_events, _sound_done_event) that
+        are tightly coupled to DialogueNode's lifecycle.
+        """
+        mcp = self._mcp
+        lock = self._output_lock
+
+        async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            result = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
+            )
+            if isinstance(result, dict):
+                return result.get("result", json.dumps(result, ensure_ascii=False))
+            return str(result)
+
+        @function_tool
+        async def speak_text(text: str, animation: str = "neutral") -> str:
+            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
+            Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            self._spoken_texts.append(text)
+            async with lock:
+                result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+                try:
+                    speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+                except Exception:
+                    speech_id = ""
+                if speech_id:
+                    event = asyncio.Event()
+                    with self._tts_events_lock:
+                        self._tts_events[speech_id] = event
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                    finally:
+                        with self._tts_events_lock:
+                            self._tts_events.pop(speech_id, None)
+            return "TASK_COMPLETE"
+
+        @function_tool
+        async def play_sound(sound: str) -> str:
+            """Воспроизвести звуковой эффект."""
+            async with lock:
+                done_event = asyncio.Event()
+                with self._sound_event_lock:
+                    self._sound_done_event = done_event
+                result_str = await _call("play_sound", {"sound": sound})
+                try:
+                    duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
+                except Exception:
+                    duration = 1.5
+                try:
+                    await asyncio.wait_for(done_event.wait(), timeout=float(duration) + 2.0)
+                except asyncio.TimeoutError:
+                    self.get_logger().warning(f"⚠️ play_sound timeout waiting for 'ready': {sound}")
+                finally:
+                    with self._sound_event_lock:
+                        self._sound_done_event = None
+            return result_str
+
+        @function_tool
+        async def play_animation(animation: str, duration: float = 3.0) -> str:
+            """Запустить LED анимацию на указанное время."""
+            async with lock:
+                return await _call(
+                    "play_animation", {"animation": animation, "duration": duration}
+                )
+
+        return [speak_text, play_sound, play_animation]
+
+    def _build_skills(self, model) -> list:
+        """Instantiate skill sub-agents and return them as FunctionTools for the Compositor.
+
+        Each skill becomes a single tool that the Compositor can call with a
+        natural-language task string.  The skill runs its own focused LLM loop
+        and returns a plain string result.
+
+        Args:
+            model: Shared OpenAIChatCompletionsModel instance to pass to each skill.
+
+        Returns:
+            List of FunctionTool objects (one per skill that loaded successfully).
+        """
+        skill_tools = []
+
+        # ── MusicSkill ─────────────────────────────────────────────────────
+        try:
+            music_prompt = self._load_prompt_file("skills/music_skill_prompt.txt")
+            if not music_prompt:
+                music_prompt = "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
+            skill = MusicSkill(adapter=self._mcp, model=model, prompt_template=music_prompt)
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_music",
+                    tool_description=(
+                        "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
+                        "остановку музыки или изменение музыкального состояния."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ MusicSkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
+
+        # ── NavigationSkill ────────────────────────────────────────────────
+        try:
+            nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
+            if not nav_prompt:
+                nav_prompt = "Ты — модуль навигации РОББОКСА. Управляй движением робота."
+            skill = NavigationSkill(adapter=self._mcp, model=model, prompt=nav_prompt)
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_navigation",
+                    tool_description=(
+                        "Навигационный скилл: переместить робота в именованную точку "
+                        "или задать направление движения."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ NavigationSkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ NavigationSkill build failed: {exc}")
+
+        # ── MemorySkill ────────────────────────────────────────────────────
+        try:
+            mem_prompt = self._load_prompt_file("skills/memory_skill_prompt.txt")
+            if not mem_prompt:
+                mem_prompt = "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
+            skill = MemorySkill(adapter=self._mcp, model=model, prompt=mem_prompt)
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_memory",
+                    tool_description=(
+                        "Модуль памяти: сохранить новую информацию или найти "
+                        "ранее сохранённые факты в долгосрочной памяти."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ MemorySkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ MemorySkill build failed: {exc}")
+
+        # ── StatusSkill ────────────────────────────────────────────────────
+        try:
+            status_prompt = self._load_prompt_file("skills/status_skill_prompt.txt")
+            if not status_prompt:
+                status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
+            skill = StatusSkill(adapter=self._mcp, model=model, prompt=status_prompt)
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_status",
+                    tool_description=(
+                        "Модуль статуса: батарея, текущее время, статус робота, "
+                        "изменение громкости или высоты голоса."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ StatusSkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ StatusSkill build failed: {exc}")
+
+        return skill_tools
 
     def _log_config(self) -> None:
         self.get_logger().info(f"  Provider : {self._provider}")
