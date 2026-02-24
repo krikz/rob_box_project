@@ -50,10 +50,9 @@ RUN apt-get update && apt-get install -y debconf-utils \
     usbutils \
     # sclang для компиляции SynthDef-ов (FoxDot/Renardo pipeline)
     # sdef.add() → write(.scd) → OSC /foxdot → sclang → /d_recv → scsynth
+    # NOTE: supercollider-sc3-plugins не существует как apt-пакет для Ubuntu 22.04/arm64.
+    # DFM1, Squiz, Decimator UGens недоступны — synths их использующие молча не компилируются.
     supercollider-language \
-    # sc3-plugins: расширенные UGens (DFM1, Squiz, Decimator, RLPFD, Henon2DN и др.)
-    # Без них большинство renardo SynthDefs не компилируются → только bassguitar/ebass/virus
-    supercollider-sc3-plugins \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
