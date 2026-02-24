@@ -11,6 +11,7 @@ navigation.py - Инструменты навигации и движения р
 
 from typing import Dict, Any, List, TYPE_CHECKING
 import math
+import threading
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
@@ -22,6 +23,25 @@ if TYPE_CHECKING:
     pass
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+
+def _wait_future(future, timeout_sec: float) -> bool:
+    """Wait for an rclpy Future without touching the executor.
+
+    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
+    callback that is already executing under ``MultiThreadedExecutor`` — it
+    internally tries to add the node to a *new* executor, which corrupts the
+    existing one and silently breaks all subsequent subscription callbacks.
+
+    This helper attaches a ``done_callback`` to the future so that a plain
+    ``threading.Event`` is set when the future completes.  The calling thread
+    blocks on the event, leaving the ROS 2 executor completely undisturbed.
+
+    Returns True if the future completed within *timeout_sec*, False otherwise.
+    """
+    event = threading.Event()
+    future.add_done_callback(lambda _: event.set())
+    return event.wait(timeout=timeout_sec)
 
 
 class NavigateToWaypointTool(MCPTool):
@@ -111,9 +131,9 @@ class NavigateToWaypointTool(MCPTool):
         goal.pose.pose.orientation.w = math.cos(coords["theta"] / 2.0)
 
         # Отправка цели — ждём accept
-        import rclpy
         send_future = self.nav_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self.node, send_future, timeout_sec=5.0)
+        if not _wait_future(send_future, timeout_sec=5.0):
+            return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
 
         if send_future.result() is None:
             return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
@@ -126,7 +146,8 @@ class NavigateToWaypointTool(MCPTool):
 
         # Ждём реального завершения навигации (до 120s)
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=120.0)
+        if not _wait_future(result_future, timeout_sec=120.0):
+            return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
 
         if result_future.result() is None:
             return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
@@ -224,9 +245,9 @@ class MoveDirectionTool(MCPTool):
         goal.pose.pose.orientation.w = math.cos(coords["theta"] / 2.0)
 
         # Отправка цели — ждём accept
-        import rclpy
         send_future = self.nav_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self.node, send_future, timeout_sec=5.0)
+        if not _wait_future(send_future, timeout_sec=5.0):
+            return MCPToolResult(success=False, error="Nav2 не ответил на цель")
 
         if send_future.result() is None:
             return MCPToolResult(success=False, error="Nav2 не ответил на цель")
@@ -239,7 +260,8 @@ class MoveDirectionTool(MCPTool):
 
         # Ждём реального завершения (до 60s для движения на 1м)
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=60.0)
+        if not _wait_future(result_future, timeout_sec=60.0):
+            return MCPToolResult(success=False, error="Движение превысило таймаут", message="Не доехал")
 
         if result_future.result() is None:
             return MCPToolResult(success=False, error="Движение превысило таймаут", message="Не доехал")
