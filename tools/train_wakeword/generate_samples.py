@@ -169,7 +169,7 @@ def synthesize_yandex(text: str, speaker: str, speed: float, api_key: str, sampl
             up = sample_rate // gcd
             down = yandex_sr // gcd
             audio_np = resample_poly(audio_np, up, down).astype(np.float32)
-        except ImportError:
+        except Exception:  # ImportError или AttributeError (scipy скомпилирован под numpy 1.x)
             # Простой децимация без scipy — берём каждый 3-й семпл (если ratio целое)
             ratio = yandex_sr // sample_rate
             if yandex_sr % sample_rate == 0:
