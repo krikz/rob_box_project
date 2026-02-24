@@ -268,12 +268,23 @@ get_sound_info(sound_name="robot_happy")  # Детали о robot_happy
 **Синтаксис Renardo (FoxDot-compatible):**
 ```python
 # Нота = индекс скейла: 0=до, 2=ре, 4=ми, 5=фа, 7=соль...
-p1 >> pluck([0, 2, 4, 7], dur=0.5, amp=0.8)         # Арпеджио до-мажор
-p1 >> piano([0, 2, 4, 0], dur=1, amp=0.7)            # Простая мелодия
-p1 >> bell([7, 5, 4, 2, 0], dur=0.75, amp=0.9)       # Нисходящая гамма
-p1 >> bass([0, 0, 7, 5], dur=0.5, amp=0.9)           # Бас линия
-p1 >> bassguitar([0, 2, 4], dur=0.5, amp=0.8)        # Бас гитара (гарантированно работает)
+p1 >> pluck([0, 2, 4, 7], dur=0.5, amp=0.8)         # Арпеджио до-мажор (ГИТАРА)
+p1 >> piano([0, 2, 4, 0], dur=1, amp=0.7)            # Простая мелодия (ПИАНИНО)
+p1 >> bell([7, 5, 4, 2, 0], dur=0.75, amp=0.9)       # Нисходящая гамма (КОЛОКОЛ)
+p1 >> jbass([0, 0, 7, 5], dur=0.5, amp=0.9)          # Бас линия (БЕСКРЫЛЫЙ БАС)
 Clock.bpm = 100                                        # Темп
+
+# ⚠️ ВАЖНО — ТОЛЬКО Python-синты работают без sclang!
+# Гитара/струнные: pluck, nylon, twang, karp, sitar
+# Бас: jbass
+# Прочие: bell, marimba, piano, arpy, blip, saw, pulse, gong, flute-like=soft
+# НЕ ИСПОЛЬЗУЙ: bass, bassguitar, organ, strings — их нет! (piano — РАБОТАЕТ)
+# Полный список рабочих синтов:
+# melody: pluck nylon twang karp sitar arpy bell marimba piano blip gong klank
+# bass:   jbass
+# pad:    soft swell feel glass dub scatter
+# percussive/noise: zap lazer crunch dirt donk rave buzz=growl
+# wobbly: varsaw saw pulse quin razz ripple spark squish star
 
 # SAMPLE PLAYER — воспроизводит аудио-семплы (не синтезирует)
 # d1 >> play("строка", dur=N) — каждый символ = один семпл из папки
@@ -311,7 +322,7 @@ execute_music_code("d1 >> play('c   ', dur=1, amp=0.7)", pattern_name="d1")  # �
 execute_music_code("d1 >> play('cCcC', dur=0.5, amp=0.7)", pattern_name="d1")  # чередующийся вокал
 
 # Мелодия + вокал вместе
-execute_music_code("p1 >> bassguitar([0, 2, 4], dur=0.5)\nd1 >> play('c   ', dur=1, amp=0.6)", pattern_name="p1")
+execute_music_code("p1 >> pluck([0, 2, 4], dur=0.5)\nd1 >> play('c   ', dur=1, amp=0.6)", pattern_name="p1")
 
 # Остановить музыку
 stop_music()                   # Стоп всё
