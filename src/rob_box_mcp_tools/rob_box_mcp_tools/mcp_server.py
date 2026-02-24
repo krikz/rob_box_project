@@ -68,6 +68,9 @@ class MCPServer(Node):
     def __init__(self):
         super().__init__("mcp_server")
 
+        # Параметры ноды
+        self.declare_parameter("music_max_amp", 0.7)
+
         # Реестр инструментов
         self.registry = MCPToolRegistry()
 
@@ -156,7 +159,9 @@ class MCPServer(Node):
         self.registry.register(MemoryContextTool(self))
 
         # Music tools (управление музыкой через Renardo)
-        music_manager = MusicManager()
+        music_max_amp = self.get_parameter("music_max_amp").value
+        self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
+        music_manager = MusicManager(max_amp=music_max_amp)
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))

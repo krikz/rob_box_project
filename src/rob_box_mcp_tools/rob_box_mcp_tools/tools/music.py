@@ -58,7 +58,9 @@ class MusicManager:
     SC_HOST: str = "127.0.0.1"
     SC_PORT: int = 57110
 
-    def __init__(self) -> None:
+    def __init__(self, max_amp: float = 0.7) -> None:
+        #: максимальная амплитуда для любого паттерна (0.0-1.0)
+        self._max_amp: float = max(0.0, min(1.0, max_amp))
         #: pattern_name -> последний выполненный код
         self._pattern_history: Dict[str, str] = {}
         #: множество имён активных паттернов
@@ -213,6 +215,31 @@ class MusicManager:
             return False, f"Запрещённый токен в коде: '{match.group()}'"
         return True, ""
 
+    def _cap_amp(self, code: str) -> str:
+        """Ограничить все amp= значения в коде до self._max_amp.
+
+        Обрабатывает:
+        - ``amp=0.9``          → ``amp=0.7`` (если max_amp=0.7)
+        - ``amp=P[0.5, 1.0]``  → ``amp=P[0.5, 0.7]``
+        - ``amp=1``            → ``amp=0.7``
+        """
+        max_amp = self._max_amp
+
+        # 1. Сначала P[...] паттерны (более специфичный случай)
+        def _cap_p(m: re.Match) -> str:
+            def _cap_num(n: re.Match) -> str:
+                return f"{min(float(n.group()), max_amp):.3g}"
+            return "amp=P[" + re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, m.group(1)) + "]"
+
+        code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
+
+        # 2. Затем простые числа
+        def _cap_n(m: re.Match) -> str:
+            return f"amp={min(float(m.group(1)), max_amp):.3g}"
+
+        code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
+        return code
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -235,6 +262,9 @@ class MusicManager:
         is_safe, filter_error = self._filter_code(code)
         if not is_safe:
             return {"success": False, "error": filter_error}
+
+        # Ограничиваем amp до максимально допустимого значения
+        code = self._cap_amp(code)
 
         if not self._check_supercollider():
             return {
