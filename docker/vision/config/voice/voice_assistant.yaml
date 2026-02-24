@@ -182,6 +182,10 @@
       # Накопление запросов (Query Queue System)
       query_accumulation_timeout: 2.5  # секунд для накопления запросов перед обработкой
 
+      # Лимит ходов агента (tool-call turns)
+      # Музыка в несколько инструментов + speak_text + Clock.bpm = легко 10+ ходов
+      agent_max_turns: 20
+
     # ===== Sound Node (Аудио эффекты) =====
     sound_node:
       sound_pack_dir: "/ws/sound_pack"

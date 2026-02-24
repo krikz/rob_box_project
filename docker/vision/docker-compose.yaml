@@ -130,6 +130,8 @@ services:
     volumes:
       - ./scripts/supercollider:/scripts:ro
       - ./config/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
+      # Shared renardo samples — supercollider должен читать WAV файлы по тому же пути что renardo
+      - renardo_samples:/root/.config/renardo/samples:ro
     command: ["/scripts/start_supercollider.sh"]
     restart: unless-stopped
     healthcheck:
@@ -187,6 +189,9 @@ services:
       - ../../sound_pack:/ws/sound_pack:ro
       # VoiceMemory persistent storage
       - ./data/voice:/data
+      # Shared renardo samples — должны быть доступны scsynth в supercollider контейнере
+      # start_voice_assistant.sh инициализирует этот volume из /renardo_samples_builtin/ при первом запуске
+      - renardo_samples:/root/.config/renardo/samples
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
@@ -265,3 +270,10 @@ services:
     restart: unless-stopped
     labels:
       logging: "promtail"
+
+# Named volumes
+volumes:
+  # Shared renardo sample packs between voice-assistant (renardo) and supercollider (scsynth).
+  # Without this, scsynth can't find WAV files by path → "Buffer UGen: no buffer data".
+  # Initialized on first start by start_voice_assistant.sh from /renardo_samples_builtin/.
+  renardo_samples:

@@ -23,7 +23,25 @@ fi
 echo "Проверка аудио устройств..."
 arecord -l | grep -i "respeaker" || echo "⚠ ReSpeaker audio не найден"
 
-# Создать директорию для TTS кэша
+# Инициализация shared volume renardo семплов (один раз, при первом запуске после пересборки)
+# Без этого scsynth не может читать WAV файлы из voice-assistant и выдаёт "Buffer UGen: no buffer data"
+SAMPLES_VOLUME=/root/.config/renardo/samples
+SAMPLES_BUILTIN=/renardo_samples_builtin
+if [ ! -f "${SAMPLES_VOLUME}/.initialized" ]; then
+    if [ -d "${SAMPLES_BUILTIN}" ] && [ -n "$(ls -A ${SAMPLES_BUILTIN} 2>/dev/null)" ]; then
+        echo "Initializing renardo samples shared volume from builtin..."
+        mkdir -p "${SAMPLES_VOLUME}"
+        cp -rp "${SAMPLES_BUILTIN}/." "${SAMPLES_VOLUME}/"
+        touch "${SAMPLES_VOLUME}/.initialized"
+        echo "✓ Renardo samples initialized ($(find ${SAMPLES_VOLUME} -name '*.wav' | wc -l) WAV files)"
+    else
+        echo "⚠ Renardo builtin samples not found at ${SAMPLES_BUILTIN} — synth-only mode"
+    fi
+else
+    echo "✓ Renardo samples volume already initialized"
+fi
+
+# Создать директорию для ТТС кэша
 mkdir -p ${TTS_CACHE_DIR}
 
 # Настройка ALSA (если нужно)

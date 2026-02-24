@@ -119,6 +119,16 @@ COPY docker/vision/voice_assistant/download_samples.py /tmp/download_samples.py
 RUN python3 /tmp/download_samples.py || echo "WARNING: Renardo sample download failed — music will run in synth-only mode" \
     && rm -f /tmp/download_samples.py
 
+# Резервная копия семплов по фиксированному пути для инициализации shared volume.
+# При первом запуске start_voice_assistant.sh копирует сюда → /root/.config/renardo/samples/
+# (который смонтирован как named volume, shared с supercollider контейнером).
+# Без этого scsynth не может читать WAV файлы → "Buffer UGen: no buffer data".
+RUN if [ -d /root/.config/renardo/samples ]; then \
+        cp -rp /root/.config/renardo/samples /renardo_samples_builtin; \
+    else \
+        mkdir -p /renardo_samples_builtin; \
+    fi
+
 # Рабочая директория
 WORKDIR /ws
 RUN mkdir -p src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools
