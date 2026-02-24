@@ -1,0 +1,25 @@
+# Wake Word Training Pipeline — зависимости
+# Установка: pip install -r requirements.txt
+
+# ── Генерация сэмплов (Silero TTS) ──
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# ── Генерация сэмплов (Yandex SpeechKit) ──
+# Только stdlib (urllib) + scipy для ресэмплирования 48kHz→16kHz
+scipy>=1.10.0
+
+# ── Обучение openWakeWord ──
+openwakeword[train]>=0.6.0
+numpy>=1.24,<2.0
+
+# ── Инференс (проверка модели) ──
+# tflite-runtime нужен на ARM64 (Pi 5), на x86 используем tensorflow-lite
+# Раскомментируй нужное:
+# tflite-runtime         # Pi 5 ARM64
+# tensorflow-lite        # x86 альтернатива
+onnxruntime>=1.16.0      # кроссплатформенный инференс
+
+# ── Аудио утилиты ──
+soundfile>=0.12.0
+sounddevice>=0.4.6       # опционально, для record_your_voice.py
