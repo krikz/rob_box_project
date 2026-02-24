@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -109,6 +110,12 @@ class DialogueNode(Node):
         # ── Current agent task (cancelled on barge-in) ──────────────
         self._run_task: Optional[asyncio.Task] = None
         self._task_lock = threading.Lock()
+
+        # ── Barge-in grace period ────────────────────────────────────
+        # After STT recognition, suppress VAD barge-in for N seconds so that
+        # room echo / noise immediately after user speech doesn't cancel the run.
+        self._barge_in_grace_seconds: float = 3.0
+        self._agent_run_start_time: float = 0.0
 
         # ── TTS completion tracking ──────────────────────────────────
         # speak_text tool awaits these events so agent calls are sequential
@@ -541,6 +548,14 @@ class DialogueNode(Node):
         if is_speech and not self._vad_speech_detected:
             self._vad_speech_detected = True
             self.get_logger().debug("🎤 VAD: speech start")
+            # Grace period: ignore barge-in for N seconds after run started
+            # to avoid room echo / noise right after STT cancelling the agent.
+            elapsed = time.monotonic() - self._agent_run_start_time
+            if elapsed < self._barge_in_grace_seconds:
+                self.get_logger().debug(
+                    f"🔕 Barge-in suppressed (grace period, {elapsed:.1f}s < {self._barge_in_grace_seconds}s)"
+                )
+                return
             self._cancel_run("barge-in VAD")
         elif not is_speech and self._vad_speech_detected:
             self._vad_speech_detected = False
@@ -577,6 +592,9 @@ class DialogueNode(Node):
 
         # Cancel any in-progress run before starting a new one
         self._cancel_run("new STT input")
+
+        # Reset grace period timer
+        self._agent_run_start_time = time.monotonic()
 
         # ── Immediate thinking sound ─────────────────────────────────
         # Play confirmation immediately — before LLM even starts
