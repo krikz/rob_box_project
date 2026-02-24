@@ -14,6 +14,16 @@
 
 ---
 
+## Место в процессе (Context Engineering)
+
+Этот файл — **сервисный агент**, работает после git-agent (деплой).  
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+
+Вызывай для Docker CI/CD, сборки образов, деплоя через GitHub Actions.  
+См. также: `.agents/skills/github-actions-runner/SKILL.md` и `.agents/skills/docker-expert/SKILL.md`
+
+---
+
 ## When to Apply
 
 Use this skill when:

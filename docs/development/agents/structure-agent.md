@@ -14,6 +14,15 @@
 
 ---
 
+## Место в процессе (Context Engineering)
+
+Этот файл — **сервисный агент** для аудита структуры проекта.  
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+
+Вызывай при создании новых ROS 2 пакетов, аудите Docker структуры, или рефакторинге.
+
+---
+
 ## When to Apply
 
 Use this skill when:

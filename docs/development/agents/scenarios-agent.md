@@ -13,6 +13,17 @@
 
 ---
 
+## Место в процессе (Context Engineering)
+
+Этот файл — **domain context** для фаз Design и Implement.  
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+
+- **Research** → читай стек и структуру файлов из этого файла
+- **Design** → передай как контекст в `/design-feature` или `/design-bugfix`
+- **Implement** → Backend Developer агент использует domain стандарты из этого файла
+
+---
+
 ## When to Apply
 
 Use this skill when:

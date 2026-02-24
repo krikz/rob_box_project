@@ -14,6 +14,15 @@
 
 ---
 
+## Место в процессе (Context Engineering)
+
+Этот файл — **сервисный агент** для управления продуктом.  
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+
+Вызывай для актуализации `PRD.md`, приоритизации `tasks.json`, контроля прогресса Milestones.
+
+---
+
 ## When to Apply
 
 Use this skill when:

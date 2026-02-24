@@ -8,6 +8,15 @@
 
 ---
 
+## Место в процессе (Context Engineering)
+
+Этот файл — **сервисный агент**, работает после деплоя.  
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+
+Вызывай после каждого деплоя на роботов или при диагностике проблем в логах.
+
+---
+
 ## When to Apply
 
 Use this skill when:

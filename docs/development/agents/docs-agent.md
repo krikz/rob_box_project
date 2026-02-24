@@ -14,6 +14,15 @@
 
 ---
 
+## Место в процессе (Context Engineering)
+
+Этот файл — **сервисный агент**, работает после Implement.  
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+
+Вызывай после завершения фичи — обновить `docs/`, `CHANGELOG.md`, `PRD.md` если изменилась архитектура.
+
+---
+
 ## When to Apply
 
 Use this skill when:
