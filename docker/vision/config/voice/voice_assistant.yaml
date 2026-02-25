@@ -23,8 +23,9 @@ audio_node:
     # ===== Wake Word Engine (TASK-048) =====
     use_wake_word_engine: true
     wake_word_model_paths: ["/models/wakeword/robbot.onnx"]
-    wake_word_threshold: 0.5
+    wake_word_threshold: 0.7          # Повышен с 0.5 → снижаем false positives
     wake_word_timeout_sec: 8.0
+    wake_word_min_interval_sec: 4.0   # Cooldown: повторный trigger не раньше 4с
 
     # ===== DOA Lock (TASK-048) =====
     doa_lock_enabled: true

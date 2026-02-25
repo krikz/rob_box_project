@@ -44,6 +44,21 @@ fi
 # Создать директорию для ТТС кэша
 mkdir -p ${TTS_CACHE_DIR}
 
+# Скачать prerequisite модели openwakeword (melspectrogram.onnx, embedding_model.onnx)
+# Нельзя делать в Dockerfile — build runner нет доступа к GitHub releases
+echo "Проверка openwakeword моделей..."
+python3 -c "
+import openwakeword
+import os, pathlib
+models_dir = pathlib.Path(openwakeword.__file__).parent / 'resources' / 'models'
+if not (models_dir / 'melspectrogram.onnx').exists():
+    print('Скачиваем prerequisite модели openwakeword...')
+    openwakeword.utils.download_models()
+    print('✓ Модели скачаны')
+else:
+    print('✓ Модели уже есть')
+" 2>&1 | grep -v "onnxruntime\|device_discovery\|GPU\|ReadFile" || echo "⚠ Ошибка скачивания моделей openwakeword — используется fallback"
+
 # Настройка ALSA (если нужно)
 if [ -f /config/voice/asoundrc ]; then
     echo "Копирование ALSA конфигурации..."

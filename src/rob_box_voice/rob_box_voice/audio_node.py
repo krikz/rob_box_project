@@ -88,6 +88,9 @@ class AudioNode(Node):
 
         # Subscriber: dialogue state (to know when in active dialogue for DOA window)
         self.create_subscription(String, '/voice/dialogue/state', self._on_dialogue_state, 10)
+
+        # Subscriber: TTS state (to mute wake word while robot is speaking)
+        self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
         
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
@@ -105,6 +108,7 @@ class AudioNode(Node):
         self.declare_parameter('wake_word_model_paths', [''])  # Пути к .tflite/.onnx моделям
         self.declare_parameter('wake_word_threshold', 0.5)     # Порог детекции (0.0-1.0)
         self.declare_parameter('wake_word_timeout_sec', 8.0)   # Окно после wake word (сек)
+        self.declare_parameter('wake_word_min_interval_sec', 4.0)  # Минимальный интервал между событиями WW
 
         # DOA lock параметры
         self.declare_parameter('doa_lock_enabled', True)          # Включить DOA фильтрацию
@@ -114,12 +118,15 @@ class AudioNode(Node):
         self._use_wake_word_engine: bool = self.get_parameter('use_wake_word_engine').value
         self._wake_word_threshold: float = self.get_parameter('wake_word_threshold').value
         self._wake_word_timeout_sec: float = self.get_parameter('wake_word_timeout_sec').value
+        self._wake_word_min_interval_sec: float = self.get_parameter('wake_word_min_interval_sec').value
         self._doa_lock_enabled: bool = self.get_parameter('doa_lock_enabled').value
         self._doa_tolerance_degrees: int = self.get_parameter('doa_tolerance_degrees').value
         self._dialogue_window_seconds: float = self.get_parameter('dialogue_window_seconds').value
 
         # Wake word state
         self._last_wake_word_time: float = 0.0   # время последнего срабатывания WW
+        self._last_wake_word_event_time: float = 0.0  # время последней ПУБЛИКАЦИИ события WW (cooldown)
+        self._tts_active: bool = False            # True пока TTS воспроизводит речь
         self._locked_doa_angle: Optional[int] = None  # угол при последней активации
         self._last_dialogue_response_time: float = 0.0  # время последнего ответа бота
         self._in_active_dialogue: bool = False    # True пока state = DIALOGUE/LISTENING
@@ -379,7 +386,20 @@ class AudioNode(Node):
 
     def _on_wake_word_detected(self, result: WakeWordResult) -> None:
         """Called (from audio callback thread) when wake word engine fires."""
+        now = time.time()
+
+        # Подавление во время TTS: игнорируем пока робот говорит
+        if self._tts_active:
+            return
+
+        # Cooldown: не публикуем событие чаще чем раз в N секунд
+        if now - self._last_wake_word_event_time < self._wake_word_min_interval_sec:
+            # Обновляем только внутреннее время для поддержания активного окна
+            self._last_wake_word_time = result.timestamp
+            return
+
         self._last_wake_word_time = result.timestamp
+        self._last_wake_word_event_time = now
         self._locked_doa_angle = self._current_doa
         msg = String()
         msg.data = result.model_name
@@ -388,6 +408,11 @@ class AudioNode(Node):
             f'🔔 Wake word: model={result.model_name} score={result.score:.2f} '
             f'doa={self._locked_doa_angle}°'
         )
+
+    def _on_tts_state(self, msg: String) -> None:
+        """Track TTS state to mute wake word detection while robot speaks."""
+        state = msg.data.lower()
+        self._tts_active = state in ('playing', 'synthesizing')
 
     def _on_dialogue_state(self, msg: String) -> None:
         """Track dialogue state for DOA window logic."""
