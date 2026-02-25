@@ -62,6 +62,13 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 openai
 openai-agents
 # =============================================================================
+# Wake Word Detection: openwakeword engine (ONNX model inference)
+# Used in: rob_box_voice/audio_node.py (WakeWordDetector, 5-layer gate)
+# Model: /models/wakeword/robbot.onnx (custom trained on 600 positive samples)
+# =============================================================================
+openwakeword>=0.6.0
+onnxruntime>=1.16.0
+# =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
 # Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)
 # SuperCollider runs in separate container; renardo connects via OSC localhost:57110
