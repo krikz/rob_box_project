@@ -422,8 +422,8 @@ class AudioNode(Node):
 
         # Cooldown: не публикуем событие чаще чем раз в N секунд
         if now - self._last_wake_word_event_time < self._wake_word_min_interval_sec:
-            # Обновляем только внутреннее время для поддержания активного окна
-            self._last_wake_word_time = result.timestamp
+            # НЕ обновляем _last_wake_word_time — иначе фоновый звук (YouTube)
+            # каждые 4с обновляет окно и VAD-фразы вечно принимаются
             return
 
         self._last_wake_word_time = result.timestamp

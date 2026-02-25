@@ -116,6 +116,9 @@ class DialogueNode(Node):
         # Format: {"is_known": True, "name": "Иван", "confidence": 0.87} | {"is_known": False}
         self._current_speaker: dict = {"is_known": False}
         self._speaker_lock = threading.Lock()
+        # Session speaker lock: once first known speaker is detected in a session,
+        # subsequent turns from a DIFFERENT known speaker are rejected.
+        self._session_speaker_id: Optional[str] = None
 
         # ── Conversation history (SDK input-list format) ─────────────
         self._conversation: List[dict] = []
@@ -865,15 +868,8 @@ class DialogueNode(Node):
         self._publish_state()
 
         # ── Inject speaker name into user input ──────────────────────
-        if self._speaker_id_enabled:
-            with self._speaker_lock:
-                sp = self._current_speaker
-            if sp.get("is_known"):
-                speaker_name = sp.get("name", "")
-                clean = f"[{speaker_name}]: {clean}"
-                self.get_logger().info(
-                    f"👤 Speaker: {speaker_name} (conf={sp.get('confidence', 0):.2f})"
-                )
+        # NOTE: speaker injection + session lock is done inside _agent_run
+        # after a 250ms wait, to avoid the STT/speaker_id race condition.
 
         asyncio.run_coroutine_threadsafe(self._agent_run(clean), self._loop)
 
@@ -887,6 +883,34 @@ class DialogueNode(Node):
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
         self._spoken_texts = []
+
+        # ── Wait briefly for speaker_id_node to finish processing this utterance
+        # STT result arrives ~50-200ms before resemblyzer embedding (~100-300ms).
+        # Without this wait, _current_speaker still reflects the PREVIOUS utterance.
+        await asyncio.sleep(0.30)
+
+        # ── Speaker session lock ──────────────────────────────────────
+        if self._speaker_id_enabled:
+            with self._speaker_lock:
+                sp = dict(self._current_speaker)
+            if sp.get("is_known"):
+                sid = sp["speaker_id"]
+                name = sp.get("name", "")
+                conf = sp.get("confidence", 0.0)
+                if self._session_speaker_id is None:
+                    # Lock session to the first identified speaker
+                    self._session_speaker_id = sid
+                    self.get_logger().info(f"🔐 Session locked to '{name}' ({sid[:8]})")
+                elif self._session_speaker_id != sid:
+                    self.get_logger().info(
+                        f"🚫 Speaker mismatch: session={self._session_speaker_id[:8]} "
+                        f"got='{name}' ({sid[:8]} conf={conf:.2f}) — ignoring"
+                    )
+                    return  # Reject this turn — different person talking
+                # Prefix user input with speaker name for LLM context
+                user_input = f"[Говорит {name}]: {user_input}"
+                self.get_logger().info(f"👤 Speaker: '{name}' conf={conf:.2f}")
+
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
         if self._voice_memory is not None:
             try:

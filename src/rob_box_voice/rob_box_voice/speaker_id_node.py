@@ -16,11 +16,12 @@ Parameters:
     enabled              (bool)  — enable/disable node     [true]
 """
 
+import collections
 import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Deque, Optional, Tuple
 
 import numpy as np
 import rclpy
@@ -67,8 +68,11 @@ class SpeakerIdNode(Node):
         self._pending_register_name: Optional[str] = None
         self._pending_register_lock = threading.Lock()
 
-        # Latest embedding from last processed utterance (for registration)
-        self._last_embedding: Optional[np.ndarray] = None
+        # Recent embeddings ring-buffer: (timestamp, embedding) — keep last 20 utterances
+        # LLM may take 2-5s to call register_speaker, so a single _last_embedding
+        # can be overwritten by ambient noise. Keep a window instead.
+        self._recent_embeddings: Deque[Tuple[float, np.ndarray]] = collections.deque(maxlen=20)
+        self._MAX_EMBED_AGE_SEC: float = 30.0
 
         # ── Thread pool for inference (non-blocking ROS callbacks) ────────────
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker_id")
@@ -130,14 +134,22 @@ class SpeakerIdNode(Node):
         speaker_id_hint: Optional[str] = data.get("speaker_id")
 
         # If we have a fresh embedding from the latest utterance, register immediately
+        now = time.time()
         with self._pending_register_lock:
-            if self._last_embedding is not None:
-                embedding = self._last_embedding
-                self._last_embedding = None
+            # Find most recent embedding within MAX_EMBED_AGE_SEC
+            best_embedding = None
+            best_ts = 0.0
+            for ts, emb in reversed(self._recent_embeddings):
+                if now - ts <= self._MAX_EMBED_AGE_SEC and ts > best_ts:
+                    best_embedding = emb
+                    best_ts = ts
+            if best_embedding is not None:
                 self._executor.submit(
-                    self._do_register, name, embedding, speaker_id_hint
+                    self._do_register, name, best_embedding, speaker_id_hint
                 )
-                self.get_logger().info(f"📝 Registering '{name}' from last utterance")
+                self.get_logger().info(
+                    f"📝 Registering '{name}' from embedding {now - best_ts:.1f}s ago"
+                )
             else:
                 # No fresh utterance yet — pend for the next one
                 self._pending_register_name = name
@@ -161,7 +173,7 @@ class SpeakerIdNode(Node):
 
         # Store as latest embedding for possible registration
         with self._pending_register_lock:
-            self._last_embedding = embedding
+            self._recent_embeddings.append((time.time(), embedding))
             pending_name = self._pending_register_name
             self._pending_register_name = None
 
