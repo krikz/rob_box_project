@@ -76,6 +76,8 @@ class SpeakerIdNode(Node):
 
         # ── Thread pool for inference (non-blocking ROS callbacks) ────────────
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker_id")
+        # Warm up resemblyzer model immediately so first real inference is fast
+        self._executor.submit(self._warmup)
 
         # ── QoS ───────────────────────────────────────────────────────────────
         best_effort_qos = QoSProfile(
@@ -115,6 +117,16 @@ class SpeakerIdNode(Node):
         self.get_logger().info("🎙️ speaker_id_node ready")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _warmup(self) -> None:
+        """Pre-load the resemblyzer GE2E model so first real inference is fast."""
+        import time as _time
+        t0 = _time.monotonic()
+        # 1 second of silence at 16 kHz (int16 PCM)
+        silence = bytes(16000 * 2)
+        self._db.embed_audio(silence, sample_rate=16000)
+        elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        self.get_logger().info(f"🔥 Resemblyzer warmup done ({elapsed_ms} ms)")
 
     def _on_speech_audio(self, msg: AudioData) -> None:
         """Received a complete speech utterance — run inference asynchronously."""
