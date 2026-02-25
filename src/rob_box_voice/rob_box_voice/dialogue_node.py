@@ -14,6 +14,7 @@ Publishes:
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -179,6 +180,7 @@ class DialogueNode(Node):
         self._sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
         self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
         self._speaker_register_pub = self.create_publisher(String, "/voice/speaker/register", 10)
+        self._speaker_rename_pub = self.create_publisher(String, "/voice/speaker/rename", 10)
 
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg
@@ -598,6 +600,27 @@ class DialogueNode(Node):
             )
 
         @function_tool
+        async def rename_speaker(new_name: str) -> str:
+            """Переименовать голос текущего собеседника в базе распознавания.
+            Вызывать когда пользователь исправляет своё имя:
+            - "меня зовут не X, а Y" / "моё настоящее имя Y"
+            - "ты меня неправильно запомнил, я Y" / "перезапиши моё имя как Y"
+            Требуется, чтобы текущий собеседник был уже известен системе (speaker_id есть).
+            После вызова подтверди: 'Хорошо, теперь буду звать тебя [new_name].'"""  # noqa: E501
+            with self._speaker_lock:
+                sp = dict(self._current_speaker)
+            sid = sp.get("speaker_id", "")
+            if not sid:
+                return json.dumps(
+                    {"error": "current speaker not identified — cannot rename"},
+                    ensure_ascii=False,
+                )
+            msg = String()
+            msg.data = json.dumps({"speaker_id": sid, "new_name": new_name}, ensure_ascii=False)
+            self._speaker_rename_pub.publish(msg)
+            return json.dumps({"status": "ok", "renamed_to": new_name}, ensure_ascii=False)
+
+        @function_tool
         async def register_speaker(name: str) -> str:
             """Запомнить голос текущего собеседника под именем name в базе распознавания.
             ОБЯЗАТЕЛЬНО вызывай при ЛЮБОМ представлении по имени, например:
@@ -620,7 +643,7 @@ class DialogueNode(Node):
             navigate_to_waypoint, move_direction,
             set_volume, set_pitch,
             search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state,
-            register_speaker,
+            register_speaker, rename_speaker,
         ]
 
     def _make_output_tools(self) -> list:
@@ -875,7 +898,77 @@ class DialogueNode(Node):
         # NOTE: speaker injection + session lock is done inside _agent_run
         # after a 250ms wait, to avoid the STT/speaker_id race condition.
 
+        # ── Auto-register speaker by name if intro phrase detected ─────────
+        # This runs BEFORE LLM — regex is reliable, LLM is not.
+        if self._speaker_id_enabled:
+            self._maybe_auto_register_speaker(clean)
+            self._maybe_auto_rename_speaker(clean)
+
         asyncio.run_coroutine_threadsafe(self._agent_run(clean), self._loop)
+
+    # ────────────────────────────────────────────────────────────────
+    # Speaker auto-registration from STT text
+    # ────────────────────────────────────────────────────────────────
+
+    # Patterns: "меня зовут X", "я X", "зови меня X", "запомни меня как X"
+    # X = 1-2 capitalised/lower words, not a common Russian stop word
+    _NAME_INTRO_PATTERNS = [
+        re.compile(r"(?:меня\s+зовут|зовут\s+меня)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
+        re.compile(r"(?:зови\s+меня|называй\s+меня|запомни\s+меня\s+как|запомни\s+имя)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
+        re.compile(r"(?:запомни|записать)\s+(?:что\s+)?(?:меня\s+зовут|моё\s+имя)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
+    ]
+    # Words that look like names in pattern but are NOT names
+    _NAME_STOPWORDS = {
+        "как", "что", "это", "так", "всё", "все", "тебя", "меня", "себя",
+        "робот", "роббокс", "робакс", "здесь", "там", "тут",
+    }
+
+    def _maybe_auto_register_speaker(self, text: str) -> None:
+        """If text contains a name introduction, immediately push to speaker register."""
+        for pattern in self._NAME_INTRO_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                name = m.group(1).strip().capitalize()
+                if name.lower() not in self._NAME_STOPWORDS and len(name) >= 2:
+                    self.get_logger().info(f"📝 Auto-detected name intro: '{name}' — registering speaker")
+                    msg = String()
+                    msg.data = json.dumps({"name": name}, ensure_ascii=False)
+                    self._speaker_register_pub.publish(msg)
+                    return
+
+    # Patterns: "меня зовут не X а Y", "моё настоящее имя Y", "ты неправильно запомнил … Y"
+    _NAME_RENAME_PATTERNS = [
+        re.compile(
+            r"(?:меня\s+зовут\s+не\s+\S+\s+а|моё\s+(?:настоящее\s+)?имя|называй\s+меня\s+(?:лучше|теперь)?)\s+([а-яёa-z][а-яёa-z\-]{1,20})",
+            re.I,
+        ),
+        re.compile(
+            r"(?:перезапиши|переименуй|запомни\s+правильно|исправь\s+(?:моё\s+)?имя)\s+(?:на\s+)?([а-яёa-z][а-яёa-z\-]{1,20})",
+            re.I,
+        ),
+    ]
+
+    def _maybe_auto_rename_speaker(self, text: str) -> None:
+        """If text contains a name-correction phrase and we have a known current speaker, rename."""
+        if not self._speaker_id_enabled:
+            return
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        sid = sp.get("speaker_id", "")
+        if not sid:
+            return
+        for pattern in self._NAME_RENAME_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                new_name = m.group(1).strip().capitalize()
+                if new_name.lower() not in self._NAME_STOPWORDS and len(new_name) >= 2:
+                    self.get_logger().info(
+                        f"✏️ Auto-detected name correction: '{new_name}' — renaming {sid[:8]}…"
+                    )
+                    msg = String()
+                    msg.data = json.dumps({"speaker_id": sid, "new_name": new_name}, ensure_ascii=False)
+                    self._speaker_rename_pub.publish(msg)
+                    return
 
     # ────────────────────────────────────────────────────────────────
     # Agent execution
@@ -1105,6 +1198,12 @@ class DialogueNode(Node):
                         f"🧹 Clearing {len(self._conversation)} history items on IDLE timeout"
                     )
                     self._conversation = []
+            # Reset session speaker lock so next session is open to any speaker
+            if self._session_speaker_id is not None:
+                self.get_logger().info(
+                    f"🔓 Session speaker lock cleared (was {self._session_speaker_id[:8]})"
+                )
+                self._session_speaker_id = None
             self._publish_state()
 
     def _publish_state(self) -> None:

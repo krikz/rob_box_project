@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ── Tuning constants ─────────────────────────────────────────────────────────
 IDENTIFY_THRESHOLD: float = 0.75    # cosine similarity to accept a match
-MIN_AUDIO_DURATION_SEC: float = 0.8  # minimum speech length for reliable embedding
+MIN_AUDIO_DURATION_SEC: float = 0.3  # minimum speech length for reliable embedding
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
 
 
@@ -125,7 +125,7 @@ class SpeakerDatabase:
             pcm = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             duration = len(pcm) / sample_rate
             if duration < MIN_AUDIO_DURATION_SEC:
-                logger.debug(f"Audio too short for embedding: {duration:.2f}s < {MIN_AUDIO_DURATION_SEC}s")
+                logger.info(f"⏭️ Audio too short for embedding: {duration:.2f}s < {MIN_AUDIO_DURATION_SEC}s — skipped")
                 return None
 
             # Resample to 16 kHz if needed

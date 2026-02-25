@@ -105,6 +105,12 @@ class SpeakerIdNode(Node):
             self._on_register_request,
             reliable_qos,
         )
+        self.create_subscription(
+            String,
+            "/voice/speaker/rename",
+            self._on_rename_request,
+            reliable_qos,
+        )
 
         self.get_logger().info("🎙️ speaker_id_node ready")
 
@@ -198,6 +204,36 @@ class SpeakerIdNode(Node):
             self.get_logger().info(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
 
         self._publish_result(match)
+
+    def _on_rename_request(self, msg: String) -> None:
+        """Rename an existing speaker entry.
+
+        Expected JSON: {"speaker_id": "<uuid>", "new_name": "<name>"}
+        """
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("⚠️ rename_request: invalid JSON ignored")
+            return
+
+        speaker_id = data.get("speaker_id", "").strip()
+        new_name = data.get("new_name", "").strip()
+        if not speaker_id or not new_name:
+            self.get_logger().warning("⚠️ rename_request: missing speaker_id or new_name")
+            return
+
+        ok = self._db.rename(speaker_id, new_name)
+        if ok:
+            self.get_logger().info(f"✏️ Renamed {speaker_id[:8]}… → '{new_name}'")
+        else:
+            self.get_logger().warning(f"⚠️ rename failed: speaker {speaker_id[:8]}… not found in DB")
+
+        ack = String()
+        ack.data = json.dumps(
+            {"event": "renamed", "ok": ok, "speaker_id": speaker_id, "new_name": new_name},
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
 
     def _do_register(
         self,
