@@ -22,6 +22,7 @@ train.py — Обучение wake word модели для Rob Box.
 
 import argparse
 import os
+import random
 import sys
 import glob
 
@@ -33,10 +34,7 @@ def check_deps():
         import openwakeword
     except ImportError:
         missing.append("openwakeword[train]")
-    try:
-        import torch
-    except ImportError:
-        missing.append("torch")
+    # torch нужен только generate_samples.py (Silero TTS), не для training
     try:
         import numpy
     except ImportError:
@@ -76,102 +74,196 @@ def train(
     test_split: float = 0.1,
     target_false_positive_rate: float = 0.5,
 ):
-    """Запускает обучение модели openWakeWord."""
-    from openwakeword.train import train_model
+    """Запускает обучение модели openWakeWord 0.6.0.
 
-    n_pos = count_wav_files(positive_dir)
-    n_neg = count_wav_files(negative_dir)
+    API openwakeword 0.6.0:
+        - Model.auto_train(X_train, X_val, fp_val, steps=N)
+        - augment_clips(paths, total_length) → audio generator
+        - compute_features_from_generator(gen, ...) → .npy features
+        - mmap_batch_generator({label: npy_path}, ...) → batch iterator
+    """
+    import torch
+    import numpy as np
+    import openwakeword.utils
+    from openwakeword.train import Model, convert_onnx_to_tflite
+    from openwakeword.data import augment_clips
+    from openwakeword.utils import compute_features_from_generator
+
+    # Скачиваем базовые модели (melspectrogram.onnx и др.) если ещё нет
+    print("\n📥 Проверяю базовые модели openwakeword...")
+    openwakeword.utils.download_models()
+
+    # ── 1. Собираем клипы (deduplicate через set) ────────────────────────────────
+    positive_clips = sorted(set(
+        glob.glob(os.path.join(positive_dir, "**/*.wav"), recursive=True)
+        + glob.glob(os.path.join(positive_dir, "*.wav"))
+    ))
+    negative_clips = sorted(set(
+        glob.glob(os.path.join(negative_dir, "**/*.wav"), recursive=True)
+        + glob.glob(os.path.join(negative_dir, "*.wav"))
+    ))
+
+    n_pos, n_neg = len(positive_clips), len(negative_clips)
     print(f"\n📊 Датасет:")
-    print(f"   Позитивных сэмплов: {n_pos} (в {positive_dir}/)")
-    print(f"   Негативных сэмплов: {n_neg} (в {negative_dir}/)")
+    print(f"   Позитивных: {n_pos} (в {positive_dir}/)")
+    print(f"   Негативных: {n_neg} (в {negative_dir}/)")
 
     if n_pos < 100:
-        print(f"\n⚠ Мало позитивных сэмплов ({n_pos}). Рекомендуется ≥300.")
+        print(f"\n⚠ Мало позитивных ({n_pos}). Рекомендуется ≥300.")
         print("  Запусти: python3 generate_samples.py --count 500")
         if n_pos == 0:
             sys.exit(1)
-
     if n_neg < 500:
-        print(f"\n⚠ Мало негативных сэмплов ({n_neg}). Рекомендуется ≥1000.")
+        print(f"\n⚠ Мало негативных ({n_neg}). Рекомендуется ≥1000.")
         print("  Запусти: python3 download_background_noise.py --count 2000")
         if n_neg == 0:
             sys.exit(1)
 
-    os.makedirs(output_dir, exist_ok=True)
+    # ── 2. Train/val split ───────────────────────────────────────────────────
+    random.shuffle(positive_clips)
+    random.shuffle(negative_clips)
+    n_pos_val = max(20, int(n_pos * test_split))
+    n_neg_val = max(100, int(n_neg * test_split))
+    pos_train, pos_val = positive_clips[n_pos_val:], positive_clips[:n_pos_val]
+    neg_train, neg_val = negative_clips[n_neg_val:], negative_clips[:n_neg_val]
+    # FP validation = последние neg_val (не пересекается с train)
+    neg_fp = negative_clips[-(n_neg_val * 2) : -n_neg_val] if len(negative_clips) > n_neg_val * 3 else neg_val
 
-    print(f"\n🚀 Начинаю обучение...")
-    print(f"   Модель: {model_name}")
-    print(f"   Эпохи: {epochs}")
-    print(f"   Learning rate: {learning_rate}")
-    print(f"   Batch size: {batch_size}")
-    print(f"   Устройство: CPU (GPU опционален)")
+    # ── 3. Augment + feature extraction ─────────────────────────────────────
+    feat_dir = os.path.abspath(os.path.join(output_dir, "features"))
+    os.makedirs(feat_dir, exist_ok=True)
+    os.makedirs(os.path.abspath(output_dir), exist_ok=True)
 
-    # openWakeWord training API
-    # Docs: https://github.com/dscripka/openWakeWord/blob/main/docs/custom_models.md
-    try:
-        train_model(
-            model_name=model_name,
-            positive_example_directory=positive_dir,
-            background_data_directory=negative_dir,
-            output_directory=output_dir,
-            n_epochs=epochs,
-            learning_rate=learning_rate,
-            batch_size=batch_size,
-            val_split=test_split,
-            feature_extractor="melspectrogram",  # встроенный, без доп. зависимостей
-            use_synthetic_augmentation=True,     # микширование с фоном
-            target_false_positive_rate=target_false_positive_rate,
-            # Сохранить оба формата:
-            save_model_path=os.path.join(output_dir, f"{model_name}.tflite"),
+    TOTAL_LENGTH = 32000   # 2 с @ 16 kHz
+    AUG_ROUNDS   = 3       # x3 через аугментацию
+    AUG_BATCH    = 32
+
+    datasets = [
+        (os.path.join(feat_dir, "pos_train.npy"), pos_train * AUG_ROUNDS, "positive train"),
+        (os.path.join(feat_dir, "neg_train.npy"), neg_train * AUG_ROUNDS, "negative train"),
+        (os.path.join(feat_dir, "pos_val.npy"),   pos_val,                "positive val"),
+        (os.path.join(feat_dir, "neg_val.npy"),   neg_val,                "negative val"),
+        (os.path.join(feat_dir, "neg_fp.npy"),    neg_fp,                 "negative FP"),
+    ]
+
+    print(f"\n⚙ Аугментация и вычисление признаков (total_length={TOTAL_LENGTH})...")
+    for feat_path, clips, label in datasets:
+        if os.path.exists(feat_path):
+            stored = np.load(feat_path, mmap_mode='r').shape[0]
+            print(f"   ✓ {label}: {stored} признаков уже есть")
+            continue
+        print(f"   {label}: {len(clips)} клипов...")
+        gen = augment_clips(
+            clips,
+            total_length=TOTAL_LENGTH,
+            batch_size=AUG_BATCH,
+            background_clip_paths=negative_clips,
         )
-    except TypeError:
-        # Старые версии openWakeWord имеют другие параметры
-        print("⚠ Пробую legacy API...")
-        _train_legacy(
-            model_name=model_name,
-            positive_dir=positive_dir,
-            negative_dir=negative_dir,
-            output_dir=output_dir,
-            epochs=epochs,
-            learning_rate=learning_rate,
-            batch_size=batch_size,
+        compute_features_from_generator(
+            generator=gen,
+            n_total=len(clips),
+            clip_duration=TOTAL_LENGTH,
+            output_file=feat_path,
+            device="cpu",
         )
 
-    # Проверяем что модель создалась
-    tflite_path = os.path.join(output_dir, f"{model_name}.tflite")
-    onnx_path = os.path.join(output_dir, f"{model_name}.onnx")
+    # ── 4. DataLoaders ───────────────────────────────────────────────────────
+    # auto_train ожидает:
+    #   X_train  — БЕСКОНЕЧНЫЙ итератор (цикл по steps шагам)
+    #   X_val    — КОНЕЧНЫЙ (итерируется целиком на каждом val_step)
+    #   X_fp_val — КОНЕЧНЫЙ (то же)
+    from torch.utils.data import DataLoader, TensorDataset
+    from openwakeword.data import mmap_batch_generator
 
-    if os.path.exists(tflite_path):
-        size_kb = os.path.getsize(tflite_path) // 1024
-        print(f"\n✅ Модель сохранена: {tflite_path} ({size_kb}KB)")
+    def make_val_loader(pos_path, neg_path, bs):
+        """Конечный DataLoader для валидации."""
+        pos = np.load(pos_path).astype(np.float32)
+        neg = np.load(neg_path).astype(np.float32)
+        n_steps = pos.shape[1]
+        if neg.shape[1] != n_steps:
+            flat = neg.reshape(-1, neg.shape[-1])
+            n_batches = flat.shape[0] // n_steps
+            neg = flat[:n_batches * n_steps].reshape(n_batches, n_steps, neg.shape[-1])
+        X = np.concatenate([pos, neg], axis=0)
+        y = np.array([1.0] * len(pos) + [0.0] * len(neg), dtype=np.float32)
+        ds = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
+        return DataLoader(ds, batch_size=bs, shuffle=False)
+
+    def make_train_iter(pos_path, neg_path, bs):
+        """Бесконечный итератор для тренировки через mmap_batch_generator."""
+        pos_steps = np.load(pos_path, mmap_mode='r').shape[1]
+        neg_steps = np.load(neg_path, mmap_mode='r').shape[1]
+        transform = {}
+        if neg_steps != pos_steps:
+            n = pos_steps
+            transform = {"0": lambda x, n=n: (
+                x if x.shape[1] == n else
+                x.reshape(-1, x.shape[-1])[:((x.shape[0]*x.shape[1])//n)*n]
+                 .reshape(-1, n, x.shape[-1])
+            )}
+        gen = mmap_batch_generator(
+            data_files={"0": neg_path, "1": pos_path},
+            batch_size=bs,
+            data_transform_funcs=transform,
+        )
+
+        class InfiniteIter:
+            def __iter__(self): return self
+            def __next__(self):
+                x, y = next(gen)
+                return (torch.from_numpy(np.array(x, dtype=np.float32)),
+                        torch.from_numpy(np.array(y, dtype=np.float32)))
+        return InfiniteIter()
+
+    pos_feat_path = os.path.join(feat_dir, "pos_train.npy")
+    neg_feat_path = os.path.join(feat_dir, "neg_train.npy")
+    pos_val_path  = os.path.join(feat_dir, "pos_val.npy")
+    neg_val_path  = os.path.join(feat_dir, "neg_val.npy")
+    neg_fp_path   = os.path.join(feat_dir, "neg_fp.npy")
+
+    X_train  = make_train_iter(pos_feat_path, neg_feat_path, batch_size)
+    X_val    = make_val_loader(pos_val_path,  neg_val_path,  batch_size)
+    X_fp_val = make_val_loader(pos_val_path,  neg_fp_path,   batch_size)
+
+    # ── 5. Создаём модель ────────────────────────────────────────────────────
+    F = openwakeword.utils.AudioFeatures(device="cpu")
+    input_shape = F.get_embedding_shape(TOTAL_LENGTH / 16000)
+    print(f"\n🧠 Модель: input_shape={input_shape}")
+    oww = Model(n_classes=1, input_shape=input_shape)
+
+    # ── 6. Обучение ──────────────────────────────────────────────────────────
+    steps = max(10000, epochs * 50)
+    print(f"\n🚀 Обучение: {steps} шагов (lr={learning_rate})")
+    print(f"   Устройство: {'GPU' if torch.cuda.is_available() else 'CPU'}")
+    trained_model = oww.auto_train(
+        X_train,
+        X_val,
+        X_fp_val,
+        steps=steps,
+        target_fp_per_hour=target_false_positive_rate,
+    )
+
+    # ── 7. Экспорт ───────────────────────────────────────────────────────────
+    onnx_path   = os.path.join(os.path.abspath(output_dir), f"{model_name}.onnx")
+    tflite_path = os.path.join(os.path.abspath(output_dir), f"{model_name}.tflite")
+
+    print(f"\n💾 Экспорт ONNX → {onnx_path}")
+    oww.export_model(trained_model, model_name, os.path.abspath(output_dir))
+
     if os.path.exists(onnx_path):
         size_kb = os.path.getsize(onnx_path) // 1024
-        print(f"✅ ONNX модель: {onnx_path} ({size_kb}KB)")
-
-    return tflite_path
-
-
-def _train_legacy(model_name, positive_dir, negative_dir, output_dir, epochs, learning_rate, batch_size):
-    """Попытка для старых версий openWakeWord."""
-    from openwakeword import train
-
-    # Попробуем через класс trainer если доступен
-    if hasattr(train, "Trainer"):
-        trainer = train.Trainer(
-            model_name=model_name,
-            positive_clips=positive_dir,
-            negative_clips=negative_dir,
-        )
-        trainer.train(
-            n_epochs=epochs,
-            lr=learning_rate,
-            batch_size=batch_size,
-        )
-        trainer.save(output_dir)
+        print(f"✅ ONNX: {onnx_path} ({size_kb} KB)")
+        try:
+            convert_onnx_to_tflite(onnx_path, tflite_path)
+            if os.path.exists(tflite_path):
+                size_kb = os.path.getsize(tflite_path) // 1024
+                print(f"✅ TFLite: {tflite_path} ({size_kb} KB)")
+        except Exception as e:
+            print(f"⚠ TFLite конвертация: {e}")
     else:
-        print("❌ Не удалось найти совместимый training API.")
-        print("   Обновите: pip install 'openwakeword[train]>=0.6.0'")
-        sys.exit(1)
+        print(f"⚠ ONNX файл не найден после экспорта")
+
+    return tflite_path if os.path.exists(tflite_path) else onnx_path
 
 
 def test_model(model_path: str, positive_dir: str, negative_dir: str):

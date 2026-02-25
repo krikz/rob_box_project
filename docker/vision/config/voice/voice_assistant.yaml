@@ -25,11 +25,11 @@
       # ===== Wake Word Engine (TASK-048) =====
       # use_wake_word_engine: true = always-on openWakeWord before STT (RECOMMENDED для multi-user)
       # use_wake_word_engine: false = legacy text-based wake word check after STT (single-user)
-      use_wake_word_engine: false  # TODO: set true after `pip install openwakeword` in Docker image
+      use_wake_word_engine: true
 
       # Пути к .tflite / .onnx моделям. Пустой список = загружает pre-packaged модели openWakeWord.
-      # Кастомные модели для 'роббокс': /models/wakeword/robbot.tflite (обучить отдельно)
-      wake_word_model_paths: []
+      # Кастомная модель для 'роббокс': обучена через tools/train_wakeword/
+      wake_word_model_paths: ["/models/wakeword/robbot.onnx"]
 
       # Порог срабатывания (0.0-1.0). Снизить если много false-negative, повысить если много false-positive.
       wake_word_threshold: 0.5
