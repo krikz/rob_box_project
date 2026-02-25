@@ -81,6 +81,17 @@ dialogue_node:
     dialogue_timeout: 30.0
     llm_timeout_sec: 35.0
     verbose_llm: true
+    speaker_id_enabled: true  # Prepend [Name]: to LLM input when speaker is identified
+
+# -----------------------------------------------------------------------------
+# SpeakerIdNode: голосовая идентификация (resemblyzer d-vectors)
+# -----------------------------------------------------------------------------
+speaker_id_node:
+  ros__parameters:
+    enabled: true
+    db_path: "/data/speakers.db"   # Persistent speaker profiles
+    identify_threshold: 0.75       # Cosine similarity threshold (0-1)
+    sample_rate: 16000
 
 # -----------------------------------------------------------------------------
 # SoundNode: аудио эффекты / триггеры

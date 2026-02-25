@@ -90,6 +90,7 @@ class DialogueNode(Node):
         self.declare_parameter("enable_fallback", False)
         self.declare_parameter("llm_timeout_sec", 35.0)
         self.declare_parameter("verbose_llm", True)
+        self.declare_parameter("speaker_id_enabled", True)
 
         self._provider: str = self.get_parameter("provider").value
         self._temperature: float = self.get_parameter("temperature").value
@@ -108,6 +109,13 @@ class DialogueNode(Node):
             dialogue_timeout=self.get_parameter("dialogue_timeout").value,
         )
         self._vad_speech_detected: bool = False
+
+        # ── Speaker identification ───────────────────────────────────
+        self._speaker_id_enabled: bool = self.get_parameter("speaker_id_enabled").value
+        # Latest speaker result from speaker_id_node
+        # Format: {"is_known": True, "name": "Иван", "confidence": 0.87} | {"is_known": False}
+        self._current_speaker: dict = {"is_known": False}
+        self._speaker_lock = threading.Lock()
 
         # ── Conversation history (SDK input-list format) ─────────────
         self._conversation: List[dict] = []
@@ -167,6 +175,7 @@ class DialogueNode(Node):
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
         self._sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
         self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
+        self._speaker_register_pub = self.create_publisher(String, "/voice/speaker/register", 10)
 
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg
@@ -180,6 +189,10 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10, callback_group=cbg
         )
+        if self._speaker_id_enabled:
+            self.create_subscription(
+                String, "/voice/speaker/result", self._on_speaker_result, 10, callback_group=cbg
+            )
 
         # ── MCP Adapter ──────────────────────────────────────────────
         self._mcp: Optional[LLMToolCallAdapter] = None
@@ -581,6 +594,18 @@ class DialogueNode(Node):
                 ensure_ascii=False, indent=2,
             )
 
+        @function_tool
+        async def register_speaker(name: str) -> str:
+            """Запомнить голос текущего собеседника под именем name.
+            Вызывай, когда пользователь просит запомнить его голос или представляется.
+            Пример: 'запомни мой голос как Иван' → register_speaker('Иван').
+            После регистрации подтверди голосом."""
+            msg = String()
+            msg.data = json.dumps({"name": name}, ensure_ascii=False)
+            self._speaker_register_pub.publish(msg)
+            return json.dumps({"status": "ok", "message": f"Запоминаю голос как '{name}'"},
+                              ensure_ascii=False)
+
         return [
             speak_text, play_sound, play_animation,
             memory_context, memory_save, memory_search,
@@ -588,6 +613,7 @@ class DialogueNode(Node):
             navigate_to_waypoint, move_direction,
             set_volume, set_pitch,
             search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state,
+            register_speaker,
         ]
 
     def _make_output_tools(self) -> list:
@@ -838,6 +864,17 @@ class DialogueNode(Node):
         self.dialogue_manager.transition_state(DialogueState.DIALOGUE)
         self._publish_state()
 
+        # ── Inject speaker name into user input ──────────────────────
+        if self._speaker_id_enabled:
+            with self._speaker_lock:
+                sp = self._current_speaker
+            if sp.get("is_known"):
+                speaker_name = sp.get("name", "")
+                clean = f"[{speaker_name}]: {clean}"
+                self.get_logger().info(
+                    f"👤 Speaker: {speaker_name} (conf={sp.get('confidence', 0):.2f})"
+                )
+
         asyncio.run_coroutine_threadsafe(self._agent_run(clean), self._loop)
 
     # ────────────────────────────────────────────────────────────────
@@ -951,6 +988,21 @@ class DialogueNode(Node):
             event = self._sound_done_event
         if event is not None:
             self._loop.call_soon_threadsafe(event.set)
+
+    def _on_speaker_result(self, msg: String) -> None:
+        """Update current speaker from speaker_id_node result."""
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        # Registration ack — log it, LLM will handle spoken confirmation
+        if data.get("event") == "registered":
+            self.get_logger().info(
+                f"✅ Speaker registered: '{data.get('name')}' id={str(data.get('speaker_id', ''))[:8]}"
+            )
+            return
+        with self._speaker_lock:
+            self._current_speaker = data
 
     def _cancel_run(self, reason: str) -> None:
         self._spoken_texts = []

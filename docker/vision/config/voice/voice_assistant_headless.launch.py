@@ -142,7 +142,20 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
+    # === Speaker ID Node (Phase 6: Voice-based speaker identification) ===
+    speaker_id_node = Node(
+        package='rob_box_voice',
+        executable='speaker_id_node',
+        name='speaker_id_node',
+        namespace=namespace,
+        parameters=[config_file],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+
     # === MCP Server (Model Context Protocol Tools) ===
     mcp_server = Node(
         package='rob_box_mcp_tools',
@@ -166,5 +179,6 @@ def generate_launch_description():
         stt_node,
         sound_node,
         command_node,
+        speaker_id_node,
         mcp_server
     ])

@@ -46,6 +46,15 @@ scipy
 vosk
 
 # =============================================================================
+# Speaker identification (resemblyzer d-vector embeddings)
+# Used in: rob_box_voice/speaker_id_node.py
+# resemblyzer builds 256-dim GE2E speaker embeddings (~100ms on Pi 5)
+# scikit-learn: cosine_similarity for nearest-neighbour matching
+# =============================================================================
+resemblyzer
+scikit-learn
+
+# =============================================================================
 # gRPC for Yandex Cloud API v3 (STT + TTS)
 # Used in: rob_box_voice/tts_node.py (TTS with anton voice)
 #          scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
