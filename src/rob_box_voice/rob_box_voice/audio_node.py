@@ -4,6 +4,7 @@ AudioNode - захват аудио с ReSpeaker Mic Array v2.0
 Публикует: /audio/audio, /audio/vad, /audio/direction, /audio/speech_detected
 """
 
+import queue
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -135,6 +136,9 @@ class AudioNode(Node):
         # Wake word engine (инициализируется после PyAudio)
         self._wakeword_detector: Optional[WakeWordDetector] = None
         self._ww_chunk_buffer: bytes = b''  # накопитель для 512-sample чанков
+        # Background thread для ONNX инференса (чтобы не блокировать PyAudio callback)
+        self._ww_queue: queue.Queue = queue.Queue(maxsize=100)
+        self._ww_thread: Optional[threading.Thread] = None
 
         # Параметры VAD
         self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
@@ -243,7 +247,31 @@ class AudioNode(Node):
         self.stream.start_stream()
         self.get_logger().info('▶ Захват аудио запущен')
         self.publish_state('running')
+
+        # Запустить background thread для ONNX инференса (off main/callback thread)
+        if self._use_wake_word_engine and self._wakeword_detector and self._wakeword_detector.available:
+            self._ww_thread = threading.Thread(
+                target=self._ww_worker, name='ww-inference', daemon=True
+            )
+            self._ww_thread.start()
+            self.get_logger().info('▶ Wake word inference thread запущен (background)')
     
+    def _ww_worker(self) -> None:
+        """Фоновый тред для ONNX инференса wake word (не засоряет PyAudio callback)."""
+        while self.is_running:
+            try:
+                chunk = self._ww_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if chunk is None:  # sentinel → выход
+                break
+            try:
+                result = self._wakeword_detector.process_chunk(chunk)
+                if result:
+                    self._on_wake_word_detected(result)
+            except Exception as e:
+                self.get_logger().warn(f'WW inference error: {e}')
+
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream"""
         if status:
@@ -270,17 +298,17 @@ class AudioNode(Node):
             msg.data = list(audio_bytes)
             self.audio_pub.publish(msg)
 
-            # --- Wake word engine: feed chunks ---
+            # --- Wake word engine: enqueue chunks (inference runs in background thread) ---
             if self._use_wake_word_engine and self._wakeword_detector and self._wakeword_detector.available:
                 self._ww_chunk_buffer += audio_bytes
-                # Process when we have at least CHUNK_SAMPLES samples (512 * 2 = 1024 bytes)
                 chunk_bytes = WakeWordDetector.CHUNK_SAMPLES * 2
                 while len(self._ww_chunk_buffer) >= chunk_bytes:
                     chunk = self._ww_chunk_buffer[:chunk_bytes]
                     self._ww_chunk_buffer = self._ww_chunk_buffer[chunk_bytes:]
-                    result = self._wakeword_detector.process_chunk(chunk)
-                    if result:
-                        self._on_wake_word_detected(result)
+                    try:
+                        self._ww_queue.put_nowait(chunk)
+                    except queue.Full:
+                        pass  # Дропаем старый чанк если очередь переполнена
 
             # Буферизация для speech_audio
             if self.is_speeching:
@@ -505,6 +533,14 @@ class AudioNode(Node):
         """Корректное завершение работы"""
         self.get_logger().info('Остановка AudioNode...')
         self.is_running = False
+
+        # Остановить WW inference thread
+        try:
+            if self._ww_thread and self._ww_thread.is_alive():
+                self._ww_queue.put_nowait(None)  # sentinel
+                self._ww_thread.join(timeout=2.0)
+        except Exception:
+            pass
         
         try:
             if self.stream:
