@@ -134,11 +134,14 @@ class WakeWordDetector:
         """Load openWakeWord model. Called once at init."""
         try:
             if self.model_paths:
+                # Auto-detect inference framework by file extension
+                has_onnx = any(str(p).lower().endswith(".onnx") for p in self.model_paths)
+                framework = "onnx" if has_onnx else "tflite"
                 self._model = OWWModel(
                     wakeword_models=self.model_paths,
-                    inference_framework="tflite",
+                    inference_framework=framework,
                 )
-                logger.info(f"WakeWordDetector: loaded {len(self.model_paths)} model(s): {self.model_paths}")
+                logger.info(f"WakeWordDetector: loaded {len(self.model_paths)} model(s) [{framework}]: {self.model_paths}")
             else:
                 # Load bundled pre-trained models (hey_jarvis etc.)
                 self._model = OWWModel(inference_framework="tflite")
