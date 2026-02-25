@@ -101,6 +101,10 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
+# Скачиваем prerequisite модели openwakeword (melspectrogram.onnx, embedding_model.onnx)
+# Без них WakeWordDetector не запустится даже с кастомной .onnx моделью
+RUN python3 -c "import openwakeword; openwakeword.utils.download_models()" || true
+
 # Патч brass.scd в renardo_lib — опубликованный пакет содержит git merge conflict маркеры
 # которые вызывают "syntax error, unexpected BINOP" в sclang при компиляции SynthDef.
 # Оставляем версию 03b34654 (с параметром atk и metadata, использует только стандартный RLPF).
