@@ -906,10 +906,18 @@ class DialogueNode(Node):
                         f"🚫 Speaker mismatch: session={self._session_speaker_id[:8]} "
                         f"got='{name}' ({sid[:8]} conf={conf:.2f}) — ignoring"
                     )
-                    return  # Reject this turn — different person talking
+                    return  # Reject this turn — different known speaker
                 # Prefix user input with speaker name for LLM context
                 user_input = f"[Говорит {name}]: {user_input}"
                 self.get_logger().info(f"👤 Speaker: '{name}' conf={conf:.2f}")
+            else:
+                # Unknown (unregistered) speaker — reject if session is already locked
+                if self._session_speaker_id is not None:
+                    self.get_logger().info(
+                        f"🚫 Unknown speaker during locked session "
+                        f"({self._session_speaker_id[:8]}) — ignoring"
+                    )
+                    return  # Reject unknown speaker when session belongs to someone
 
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
         if self._voice_memory is not None:
