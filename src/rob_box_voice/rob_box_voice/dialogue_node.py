@@ -1015,6 +1015,10 @@ class DialogueNode(Node):
                         f"({self._session_speaker_id[:8]}) — ignoring"
                     )
                     return  # Reject unknown speaker when session belongs to someone
+                # Tag as stranger so LLM rules about unknown speakers fire correctly.
+                # Without this tag the LLM has no idea who is speaking and may
+                # answer personal questions using memory from a different person.
+                user_input = f"[Говорит: незнакомец]: {user_input}"
 
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
         if self._voice_memory is not None:
