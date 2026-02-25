@@ -195,7 +195,7 @@ class SpeakerIdNode(Node):
                 f"({elapsed:.0f} ms)"
             )
         else:
-            self.get_logger().debug(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
+            self.get_logger().info(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
 
         self._publish_result(match)
 
