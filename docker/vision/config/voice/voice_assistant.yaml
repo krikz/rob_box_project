@@ -14,7 +14,7 @@ audio_node:
     channels: 1
     chunk_size: 512
 
-    vad_threshold: 500
+    vad_threshold: 500.0
     speech_continuation: 1.5
     speech_prefetch: 0.5
     speech_min_duration: 0.3
