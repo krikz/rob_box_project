@@ -38,8 +38,7 @@ services:
     network_mode: host
     volumes:
       - ./data/apt-cache:/var/cache/apt-cacher-ng
-      # ВРЕМЕННО закомментировано: проверим с дефолтным конфигом sameersbn
-      # - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
+      - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "test -f /var/run/apt-cacher-ng/pid || exit 1"]
