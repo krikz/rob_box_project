@@ -178,7 +178,7 @@ jobs:
             --tag "${LOCAL_PREFIX}:pcl-latest" \
             --tag "${LOCAL_PREFIX}:pcl" \
             --load \
-            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-latest" \
+            --build-arg="BASE_IMAGE=${HOST_IP}:5000/krikz/rob_box_base:ros2-zenoh-latest" \
             --build-arg="APT_PROXY=http://${HOST_IP}:3142" \
             docker/base
 
