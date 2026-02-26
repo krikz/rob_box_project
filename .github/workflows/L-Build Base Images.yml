@@ -36,30 +36,9 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Generate buildkitd config with insecure registry
-        run: |
-          HOST_IP=$(hostname -I | awk '{print $1}')
-          cat > /tmp/buildkitd.toml << EOF
-          [registry."${HOST_IP}:5000"]
-            http = true
-            insecure = true
-          [registry."localhost:5000"]
-            http = true
-            insecure = true
-          EOF
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config: /tmp/buildkitd.toml
-
       - name: Build ros2-zenoh base image
         run: |
           echo "🏗️ Building ros2-zenoh base image..."
-          HOST_IP=$(hostname -I | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -68,7 +47,8 @@ jobs:
             --tag "${LOCAL_PREFIX}:ros2-zenoh-latest" \
             --tag "${LOCAL_PREFIX}:ros2-zenoh" \
             --load \
-            --build-arg="APT_PROXY=http://${HOST_IP}:3142" \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
@@ -87,30 +67,9 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Generate buildkitd config with insecure registry
-        run: |
-          HOST_IP=$(hostname -I | awk '{print $1}')
-          cat > /tmp/buildkitd.toml << EOF
-          [registry."${HOST_IP}:5000"]
-            http = true
-            insecure = true
-          [registry."localhost:5000"]
-            http = true
-            insecure = true
-          EOF
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config: /tmp/buildkitd.toml
-
       - name: Build rtabmap base image
         run: |
           echo "🏗️ Building rtabmap base image..."
-          HOST_IP=$(hostname -I | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -119,7 +78,8 @@ jobs:
             --tag "${LOCAL_PREFIX}:rtabmap-latest" \
             --tag "${LOCAL_PREFIX}:rtabmap" \
             --load \
-            --build-arg="APT_PROXY=http://${HOST_IP}:3142" \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
@@ -138,30 +98,9 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Generate buildkitd config with insecure registry
-        run: |
-          HOST_IP=$(hostname -I | awk '{print $1}')
-          cat > /tmp/buildkitd.toml << EOF
-          [registry."${HOST_IP}:5000"]
-            http = true
-            insecure = true
-          [registry."localhost:5000"]
-            http = true
-            insecure = true
-          EOF
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config: /tmp/buildkitd.toml
-
       - name: Build depthai base image
         run: |
           echo "🏗️ Building depthai base image..."
-          HOST_IP=$(hostname -I | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -170,7 +109,8 @@ jobs:
             --tag "${LOCAL_PREFIX}:depthai-latest" \
             --tag "${LOCAL_PREFIX}:depthai" \
             --load \
-            --build-arg="APT_PROXY=http://${HOST_IP}:3142" \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
@@ -190,30 +130,9 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Generate buildkitd config with insecure registry
-        run: |
-          HOST_IP=$(hostname -I | awk '{print $1}')
-          cat > /tmp/buildkitd.toml << EOF
-          [registry."${HOST_IP}:5000"]
-            http = true
-            insecure = true
-          [registry."localhost:5000"]
-            http = true
-            insecure = true
-          EOF
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config: /tmp/buildkitd.toml
-
       - name: Build pcl base image
         run: |
           echo "🏗️ Building pcl base image..."
-          HOST_IP=$(hostname -I | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -222,8 +141,9 @@ jobs:
             --tag "${LOCAL_PREFIX}:pcl-latest" \
             --tag "${LOCAL_PREFIX}:pcl" \
             --load \
-            --build-arg="BASE_IMAGE=${HOST_IP}:5000/krikz/rob_box_base:ros2-zenoh-latest" \
-            --build-arg="APT_PROXY=http://${HOST_IP}:3142" \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-latest" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
