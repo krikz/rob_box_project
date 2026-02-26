@@ -39,11 +39,22 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      - name: Generate buildkitd config with insecure registry
+        run: |
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          cat > /tmp/buildkitd.toml << EOF
+          [registry."${HOST_IP}:5000"]
+            http = true
+            insecure = true
+          [registry."localhost:5000"]
+            http = true
+            insecure = true
+          EOF
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          buildkitd-config: docker/build/buildkitd.toml
-          buildkitd-flags: --allow-insecure-entitlement network.host
+          buildkitd-config: /tmp/buildkitd.toml
 
       - name: Build ros2-zenoh base image
         run: |
@@ -79,11 +90,22 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      - name: Generate buildkitd config with insecure registry
+        run: |
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          cat > /tmp/buildkitd.toml << EOF
+          [registry."${HOST_IP}:5000"]
+            http = true
+            insecure = true
+          [registry."localhost:5000"]
+            http = true
+            insecure = true
+          EOF
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          buildkitd-config: docker/build/buildkitd.toml
-          buildkitd-flags: --allow-insecure-entitlement network.host
+          buildkitd-config: /tmp/buildkitd.toml
 
       - name: Build rtabmap base image
         run: |
@@ -119,11 +141,22 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      - name: Generate buildkitd config with insecure registry
+        run: |
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          cat > /tmp/buildkitd.toml << EOF
+          [registry."${HOST_IP}:5000"]
+            http = true
+            insecure = true
+          [registry."localhost:5000"]
+            http = true
+            insecure = true
+          EOF
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          buildkitd-config: docker/build/buildkitd.toml
-          buildkitd-flags: --allow-insecure-entitlement network.host
+          buildkitd-config: /tmp/buildkitd.toml
 
       - name: Build depthai base image
         run: |
@@ -160,11 +193,22 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      - name: Generate buildkitd config with insecure registry
+        run: |
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          cat > /tmp/buildkitd.toml << EOF
+          [registry."${HOST_IP}:5000"]
+            http = true
+            insecure = true
+          [registry."localhost:5000"]
+            http = true
+            insecure = true
+          EOF
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          buildkitd-config: docker/build/buildkitd.toml
-          buildkitd-flags: --allow-insecure-entitlement network.host
+          buildkitd-config: /tmp/buildkitd.toml
 
       - name: Build pcl base image
         run: |
