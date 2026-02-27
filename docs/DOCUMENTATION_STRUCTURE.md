@@ -17,45 +17,61 @@
 - Общая архитектура (SYSTEM_OVERVIEW.md)
 - Аппаратные компоненты (HARDWARE.md)
 - Программные компоненты (SOFTWARE.md)
+- Сетевая топология (NETWORK_TOPOLOGY.md)
 - Internal Dialogue + Voice Assistant
+- ICP Одометрия, Zenoh Cloud Namespaces
+- **archive/** — устаревшие документы (1 файл)
 
 ### 📦 [packages/](packages/)
 Документация ROS 2 пакетов
-- rob_box_voice - голосовой ассистент
-- rob_box_animations - LED анимации
-- rob_box_bringup - системный запуск
-- Mapping commands
-- Sound effects integration
+- Основная документация пакетов → `src/*/README.md`
+- Mapping commands (команды маппинга)
+- Sound effects integration (интеграция звуков)
 
 ### 🚀 [deployment/](deployment/)
 Развёртывание на роботе
+- Deployment Workflow (GitHub Actions)
 - Чеклисты готовности
 - Vision Pi deployment
 - Voice Assistant в Docker
+- Мониторинг деплоймент
 
 ### 🛠️ [development/](development/)
 Для разработчиков
-- Agent Guide
-- Docker стандарты
-- Build optimization
-- Linting и testing guides
-- AI development reports
+- Agent Guide, AI агенты (agents/)
+- Docker стандарты, теги, оптимизация сборки
+- Python стиль, линтинг, тестирование
+- Voice Agent, LLM рефакторинг
+- AprilTag/Model Cache оптимизация
+- **archive/** — устаревшие/дублирующие документы (15 файлов)
 
 ### 📖 [guides/](guides/)
 Руководства пользователя
-- Quick Start
+- Quick Start, Troubleshooting
 - Настройка компонентов (Nav2, CAN, LSLIDAR)
-- Управление питанием
-- Troubleshooting
-- Visualization
-- Animation Editor
+- Управление питанием, USB Power Fix
+- Visualization, Animation Editor
+- Мониторинг (quick ref, system, health)
+- Операционные предупреждения
+- **archive/** — устаревшие документы (1 файл)
+
+### 🔧 [fixes/](fixes/)
+Исправления и багфиксы
+- Zenoh (9 документов)
+- RViz, Docker, Robot/URDF, ROS2
+- Анимации, TTS, звуки, токены
 
 ### 📊 [reports/](reports/)
-Технические отчёты
-- USB Power Audit
-- Container fixes
-- Docker build fixes
-- Hardware VAD fix
+Технические отчёты и аудиты
+- USB Power Audit, Container fixes
+- Zenoh analysis, TF transformation
+- Silero V5, NAV2 analysis
+- Voice Assistant builds
+- **archive/** — устаревшие версии отчётов (2 файла)
+
+### 📝 [prompts/](prompts/)
+Промпты и вспомогательные материалы
+- PRD промпты, транскрипты
 
 ## 📝 Правила документации
 
@@ -86,12 +102,14 @@
 ```
 README.md
   └── docs/README.md
-       ├── architecture/
-       ├── packages/
-       ├── deployment/
-       ├── development/
-       ├── guides/
-       └── reports/
+       ├── architecture/     (8 файлов + archive/)
+       ├── packages/         (6 файлов)
+       ├── deployment/       (6 файлов)
+       ├── development/      (~30 файлов + agents/ + archive/)
+       ├── guides/           (~27 файлов + archive/)
+       ├── fixes/            (~40 файлов)
+       ├── reports/          (~43 файлов + archive/)
+       └── prompts/          (4 файла)
 ```
 
 ### Перекрёстные ссылки
@@ -109,10 +127,11 @@ README.md
 - ✅ Внешние ссылки на GitHub repos
 
 ### Метрики
-- **Всего файлов:** 112 markdown документов
-- **Категорий:** 6 основных разделов
-- **Orphaned:** 0 критических (все важные документы связаны)
-- **Broken links:** 0 (все исправлены)
+- **Активных файлов:** ~185 markdown документов
+- **Архивированных:** ~18 документов (в archive/ подпапках)
+- **Категорий:** 8 основных разделов
+- **Orphaned:** не проверялось после реорганизации
+- **Broken links:** исправлены основные (copilot-instructions, CHANGELOG)
 
 ## 🤝 Обновление документации
 
@@ -131,5 +150,5 @@ README.md
 
 ---
 
-**Последнее обновление:** 2025-10-21
-**Статус:** ✅ Структура организована и валидирована
+**Последнее обновление:** 2026-02-27
+**Статус:** ✅ Структура реорганизована и актуализирована

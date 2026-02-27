@@ -16,7 +16,7 @@
 ### [HARDWARE.md](HARDWARE.md)
 **Аппаратные компоненты**
 
-- Main Pi (Raspberry Pi 5, 8GB)
+- Main Pi (Raspberry Pi 5, 16GB)
 - Vision Pi (Raspberry Pi 5, 8GB)
 - Сенсоры (OAK-D Lite, LSLIDAR N10, ReSpeaker)
 - Актуаторы (VESC, моторы)

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [Февраль 2026]
+
 ### Добавлено
 - PRD.md — Product Requirements Document с 34 задачами, milestones и acceptance criteria (19 февраля 2026)
 - 11 специализированных AI-агентов в `docs/development/agents/`: navigation, backend, voice, frontend, devops, docs, git, security, scenarios, structure, **diagnostics** (19 февраля 2026)
@@ -14,6 +16,28 @@
 - tasks.json — структурированный список задач с приоритетами и test_steps (19 февраля 2026)
 - progress.md — лог выполнения задач агентами (19 февраля 2026)
 - `docs/architecture/NETWORK_TOPOLOGY.md` — отдельный документ сетевой топологии (19 февраля 2026)
+- SKILLS-001: добавлены `When to Apply` секции во все 12 agent guides (19 февраля 2026)
+- SKILLS-002: оценка 4 пакетов skills.sh — ROS2 ниша пуста, внешние skills не установлены (19 февраля 2026)
+- SKILLS-003: установлены 2 quality skills — `python-testing-patterns` и `code-review-specialist` (20 февраля 2026)
+
+### Исправлено
+- **TASK-048**: Double timeout hang (BUG-10 + BUG-15) — `_continue_after_tool_calls` переписан с рекурсии на итеративный while-цикл, устранено зависание 120с (20 февраля 2026)
+- **TASK-035**: Серия фиксов стабильности agent mode (20 февраля 2026):
+  - dmix `asound.conf` — параллельный TTS+sound через ALSA dmix
+  - PlaySoundTool INSTANT — убран `time.sleep()`, fire-and-forget
+  - ThreadPoolExecutor hang — `shutdown(wait=False)` в `_ask_llm_streaming` и `_continue_after_tool_calls`
+  - interrupt_agent_loop — STT STOP прерывает цикл на итерации 2+
+  - GetCurrentTimeTool — убрана инъекция времени в system_prompt (KV cache miss)
+  - Убран preload past_turns — устранена "каша" с предыдущими сессиями
+  - `conversation_history.clear()` при wake word из IDLE
+  - TIME_CONTEXT_MARKER — исправлен поиск маркера для вставки времени
+  - speak_text animation — добавлены псевдонимы neutral/excited/confused в enum
+
+### Изменено
+- Реорганизация документации: 10 файлов из корня `docs/` перемещены в соответствующие категории (27 февраля 2026)
+- Архивировано 19 устаревших/дублирующих файлов документации (27 февраля 2026)
+- Исправлены все ссылки на "Raspberry Pi 4" → "Raspberry Pi 5" (11 файлов) (27 февраля 2026)
+- Консолидированы мелкие категории документации: `operations/` → `guides/`, `optimization/` → `development/` (27 февраля 2026)
 
 ## [Январь 2026]
 
@@ -38,6 +62,10 @@
 - **TTS ошибка устройства** — publish error state и сообщение при недоступности аудио устройства (30 января 2026)
 - Удалён `set_emotion`, заменён на `play_animation` в системных промтах (30 января 2026)
 - Fallback для Qwen отключён в конфигурации dialogue_node (30 января 2026)
+
+## [Октябрь–Декабрь 2025]
+
+### Добавлено
 - Документация ICP Odometry: `docs/architecture/ICP_ODOMETRY.md` (декабрь 2025)
 - GUI интерфейс управления роботом `tools/robot_control_gui_simple.py` (ноябрь 2025)
 - Параметр `enable_search` для Qwen API web-поиска в dialogue_node и reflection_node (ноябрь 2025)
@@ -63,7 +91,7 @@
 - Миграция с ROS 2 topics на Zenoh pub/sub
 - Переход на offline-first стратегию для STT/TTS
 - Реорганизация Docker структуры по стандартам проекта
-- Оптимизация сборки для Raspberry Pi 4
+- Оптимизация сборки для Raspberry Pi 5
 - Система накопления запросов в dialogue_node — все запросы отправляются одним пакетом в DeepSeek (таймаут 2.5с) (4 ноября 2025)
 - Автоматический fallback между Qwen и DeepSeek в dialogue_node и reflection_node (ноябрь 2025)
 - Провайдер LLM по умолчанию изменён на DeepSeek (ноябрь 2025)
@@ -85,7 +113,7 @@
 - Поворот лидара на 180° — корректная ориентация LSLIDAR N10 (20 ноября 2025)
 - Ориентация колёс и осей (20 ноября 2025)
 - Парсинг JSON для ответов Qwen и DeepSeek (ноябрь 2025)
-- Chipmunk эффект TTS — восстановлен оригинальный голос ([документ](docs/CHIPMUNK_VOICE_FIX_SUMMARY.md))
+- Chipmunk эффект TTS — восстановлен оригинальный голос ([документ](docs/fixes/CHIPMUNK_VOICE_FIX_SUMMARY.md))
 
 ## [0.1.0] - 2025-10-04
 

@@ -6,7 +6,7 @@
 
 ## Summary
 
-ExpressLRS Joystick successfully connects via Bluetooth HID on Ubuntu 22.04 (dev machine) but fails to create joystick device node on Raspberry Pi 4 (Ubuntu Plucky).
+ExpressLRS Joystick successfully connects via Bluetooth HID on Ubuntu 22.04 (dev machine) but fails to create joystick device node on Raspberry Pi 5 (Ubuntu Plucky).
 
 ## Working Configuration (Dev Machine)
 
@@ -97,7 +97,7 @@ joydev                 32768  0
 ### System Info
 - **OS:** Ubuntu Plucky (25.04)
 - **Kernel:** 6.14.0-1016-raspi
-- **Architecture:** arm64 (Raspberry Pi 4)
+- **Architecture:** arm64 (Raspberry Pi 5)
 - **IP:** 10.1.1.20
 
 ### Bluetooth Connection Attempts

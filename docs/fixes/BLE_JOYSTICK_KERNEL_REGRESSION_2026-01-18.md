@@ -3,7 +3,7 @@
 **Дата:** 18 января 2026  
 **Статус:** ❌ ЗАБЛОКИРОВАНО багом в ядре  
 **Устройство:** ExpressLRS Joystick (MAC: 8C:4F:00:C2:04:96)  
-**Платформа:** Raspberry Pi 4, Ubuntu 25.04 Plucky, Kernel 6.14.0-raspi
+**Платформа:** Raspberry Pi 5, Ubuntu 25.04 Plucky, Kernel 6.14.0-raspi
 
 ## Описание проблемы
 

@@ -196,7 +196,7 @@ Node(
 
 ## Обзор системы
 
-**Rob Box Project** - автономный робот на базе двух Raspberry Pi 4 с OAK-D Lite камерой и RTAB-Map SLAM.
+**Rob Box Project** - автономный робот на базе двух Raspberry Pi 5 с OAK-D Lite камерой и RTAB-Map SLAM.
 
 ### Компоненты системы
 

@@ -19,13 +19,13 @@
 | 2026-02-19 | SKILLS-002 | product-manager-agent | Оценка 4 пакетов skills.sh: omer-metin/skills-for-antigravity (ros2-robotics: пустой шаблон, 30 installs), smithery/ai/zeeshan080-ros2-patterns (базовый boilerplate, 1 install), ros2-robotics standalone (404), zeeshan080/ros2-patterns standalone (404). Вердикт: все ROS2 skills — автогенерированные шаблоны без ценности. Внешние skills не устанавливать — наши agent guides в 20x лучше. Рекомендация: публикация как первый ros2 skill на skills.sh | tasks.json | ✅ |
 | 2026-02-20 | SKILLS-003 | product-manager-agent | Установка 2 quality skills из smithery/ai. smithery/ai — виртуальная коллекция skills.sh, GitHub-репо `smithery/ai` не существует (404). Скрипты установки npx skills не работали. Решение: созданы SKILL.md вручную из контента skills.sh страниц, адаптированного под Rob Box. Установлено: (1) `python-testing-patterns` — pytest fixtures/mock/async/parametrize для TASK-035/037/041; (2) `code-review-specialist` — review template с Docker/ROS2/Python специфичными правилами | `.agents/github-copilot/python-testing-patterns/SKILL.md`, `.agents/github-copilot/code-review-specialist/SKILL.md` | ✅ |
 
-| 2026-05-30 | TASK-035 | copilot-agent | Анализ live-логов робота (Vision Pi 10.1.1.21): agent cycle работает (iter 12/30, нет deadlocks, нет ThreadPoolExecutor ошибок, batching tool calls х3). Исправлены 2 бага: (1) TIME_CONTEXT_MARKER — маркер `"# Формат ответа"` → `"Формат ответа"` + rfind для поиска начала строки; исправлял повтор песен т.к. время вставлялось в конец промпта. (2) speak_text animation `neutral` — добавлены псевдонимы neutral/excited/confused в enum параметра; validate_parameters отклонял их до вызова execute() с animation_map. Remaining: race condition timeout, параллельные диалоги. | `dialogue_node.py`, `rob_box_mcp_tools/tools/dialogue.py` | ✅ commit 610800d |
-| 2026-05-30 | TASK-035 | copilot-agent | Актуализация документации проекта | 13 файлов (`docs/development/agents/*.md`) | ✅ |
+| 2026-02-20 | TASK-035 | copilot-agent | Анализ live-логов робота (Vision Pi 10.1.1.21): agent cycle работает (iter 12/30, нет deadlocks, нет ThreadPoolExecutor ошибок, batching tool calls х3). Исправлены 2 бага: (1) TIME_CONTEXT_MARKER — маркер `"# Формат ответа"` → `"Формат ответа"` + rfind для поиска начала строки; исправлял повтор песен т.к. время вставлялось в конец промпта. (2) speak_text animation `neutral` — добавлены псевдонимы neutral/excited/confused в enum параметра; validate_parameters отклонял их до вызова execute() с animation_map. Remaining: race condition timeout, параллельные диалоги. | `dialogue_node.py`, `rob_box_mcp_tools/tools/dialogue.py` | ✅ commit 610800d |
+| 2026-02-20 | TASK-035 | copilot-agent | Актуализация документации проекта | 13 файлов (`docs/development/agents/*.md`) | ✅ |
 | 2026-02-20 | TASK-035 | copilot-agent | **Фиксы стабильности agent mode (серия):** (1) dmix asound.conf — параллельный TTS+sound через ALSA dmix, устранён конфликт hw:1,0; (2) PlaySoundTool INSTANT — убран time.sleep(), fire-and-forget; (3) ThreadPoolExecutor hang `shutdown(wait=False)` в 2 местах `_ask_llm_streaming` и `_continue_after_tool_calls` — устранено зависание ROS2 коллбэка при timeout; (4) interrupt_agent_loop в `_continue_after_tool_calls` — STT STOP во время итерации 2+ теперь прерывает цикл; (5) GetCurrentTimeTool — убрана инъекция времени в system_prompt (KV cache miss), LLM теперь вызывает инструмент; (6) Убран preload past_turns в conversation_history при старте — устранена "каша" с предыдущими сессиями; (7) conversation_history.clear() при каждом wake word из IDLE — контекст растёт только внутри одного диалога; (8) Промпт: guidance не вызывать memory_context без явного запроса, обновлён пример get_current_time | `dialogue_node.py`, `tools/system.py`, `tools/__init__.py`, `tools/sound.py`, `docker/vision/config/asound.conf`, `docker/vision/docker-compose.yaml`, `prompts/master_prompt_compact.txt` | ✅ commits 21de3db 28aa193 154b484 |
 
 | Блокер | Влияет на задачи | Статус |
 |--------|-----------------|--------|
-| Agent cycle стабильность не протестирована | TASK-035, TASK-038, слияние в develop | 🔴 В работе |
+| Agent cycle стабильность — частично стабилизирована, требуется финальное тестирование | TASK-035, TASK-038, слияние в develop | 🟡 В работе (множество коммитов) |
 | Voice Memory интеграция не протестирована | TASK-036 | 🟠 Pending |
 | MCP Tools без unit тестов | TASK-037 | 🟠 Pending |
 
@@ -33,8 +33,8 @@
 
 ## Метрики прогресса
 
-- Всего задач: 7 (агентский режим)
-- Завершено: 0
-- В работе: 0
+- Всего задач: 15 (13 в tasks.json + SKILLS-001 + SKILLS-002)
+- Завершено: 4 (SKILLS-001, SKILLS-002, TASK-048, TASK-042-LLM частично)
+- В работе: 2 (TASK-035, TASK-042)
 - Заблокировано: 0
-- Pending: 7
+- Pending: 9

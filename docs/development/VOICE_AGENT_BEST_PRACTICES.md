@@ -160,7 +160,7 @@ class VoiceActivityDetector:
 **Performance:**
 - Latency: **< 50ms** (vs 200-300ms от STT)
 - False positive rate: < 1%
-- CPU overhead: minimal (~5% on Raspberry Pi 4)
+- CPU overhead: minimal (~5% on Raspberry Pi 5)
 
 **Как применить к Rob Box:**
 ```python

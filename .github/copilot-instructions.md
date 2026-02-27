@@ -33,7 +33,7 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | CI/CD Pipeline | `docs/CI_CD_PIPELINE.md` |
 | Тестирование | `docs/development/TESTING_GUIDE.md` |
 | Линтинг | `docs/development/LINTING_GUIDE.md` |
-| Деплой | `docs/DEPLOYMENT_WORKFLOW.md` |
+| Деплой | `docs/deployment/DEPLOYMENT_WORKFLOW.md` |
 
 ### ⚙️ Команды Claude (`.claude/commands/`)
 
@@ -52,18 +52,18 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | Проблема | Решение |
 |----------|---------|
 | Общие проблемы | `docs/guides/TROUBLESHOOTING.md` |
-| Камера не публикует данные | `docs/guides/CAMERA_TROUBLESHOOTING.md` |
+| Камера не публикует данные | `docs/guides/TROUBLESHOOTING.md` |
 | Zenoh connection issues | `docs/fixes/ZENOH_FIX_SUMMARY_2025-11-10.md` |
-| Мониторинг системы | `docs/MONITORING_QUICK_REF.md` |
+| Мониторинг системы | `docs/guides/MONITORING_QUICK_REF.md` |
 
 ### 📦 Пакеты ROS 2
 
 | Пакет | Назначение | Документация |
 |-------|-----------|--------------|
-| `rob_box_voice` | Voice assistant (STT, TTS, dialogue) | `docs/packages/rob_box_voice/` |
-| `rob_box_perception` | Health monitor, context aggregator | `docs/packages/rob_box_perception/` |
-| `rob_box_animations` | LED matrix animations (381 LEDs) | `docs/packages/rob_box_animations/` |
-| `rob_box_description` | URDF robot model | `docs/packages/rob_box_description/` |
+| `rob_box_voice` | Voice assistant (STT, TTS, dialogue) | `src/rob_box_voice/README.md` |
+| `rob_box_perception` | Health monitor, context aggregator | `src/rob_box_perception/README.md` |
+| `rob_box_animations` | LED matrix animations (381 LEDs) | `src/rob_box_animations/README.md` |
+| `rob_box_description` | URDF robot model | `src/rob_box_description/` |
 
 ### 🌐 Сеть и middleware
 
@@ -125,7 +125,7 @@ ros2 topic hz /scan        # Частота публикации
 - ❌ **НИКОГДА** самостоятельно не копировать файлы на робота (scp, rsync)
 - ❌ **НИКОГДА** не редактировать файлы напрямую на роботе
 - ❌ **НИКОГДА** не делать `git pull` на роботе без запроса пользователя
-- ✅ **ВСЕГДА** деплой через GitHub Actions workflow (`docs/DEPLOYMENT_WORKFLOW.md`)
+- ✅ **ВСЕГДА** деплой через GitHub Actions workflow (`docs/deployment/DEPLOYMENT_WORKFLOW.md`)
 - ✅ **ВСЕГДА** репозитории на роботах должны быть чистыми (`git status` = clean)
 - ✅ **ТОЛЬКО** по явной просьбе пользователя выполнять команды на роботе
 - ⚠️ Изменения делаем в dev-репозитории → commit → push → workflow деплоит на роботов
@@ -159,5 +159,5 @@ docs(readme): update hardware specs
 - `@docs/CI_CD_PIPELINE.md` - GitHub Actions workflows
 
 ---
-**Обновлено:** 24 февраля 2026  
+**Обновлено:** 27 февраля 2026  
 **Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`

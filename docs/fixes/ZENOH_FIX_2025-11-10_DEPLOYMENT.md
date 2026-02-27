@@ -301,7 +301,7 @@ docker compose restart zenoh-router
 
 ### Q: Сколько дополнительной памяти будет использоваться?
 
-**A:** Примерно +1 MB на каждом Pi (с 2 MB до 3 MB для Zenoh router). Это приемлемо для Raspberry Pi 4 с 4GB RAM.
+**A:** Примерно +1 MB на каждом Pi (с 2 MB до 3 MB для Zenoh router). Это приемлемо для Raspberry Pi 5.
 
 ### Q: Что делать, если ошибки продолжаются?
 
