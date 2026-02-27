@@ -82,9 +82,9 @@ class DialogueNode(Node):
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
-        self.declare_parameter("history_max_turns", 10)
+        self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("agent_max_turns", 10)
-        self.declare_parameter("dialogue_timeout", 30.0)
+        self.declare_parameter("dialogue_timeout", 300.0)
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("enable_fallback", False)
@@ -816,7 +816,11 @@ class DialogueNode(Node):
             self.dialogue_manager.transition_state(DialogueState.LISTENING)
             self._publish_state()
 
-        # ── LISTENING / DIALOGUE: process ───────────────────────────
+        # ── LISTENING / DIALOGUE: require wake word for every message ─
+        if not self.dialogue_manager.has_wake_word(text_lower):
+            self.get_logger().debug(f"🔇 Ignored (no wake word): {text[:60]}")
+            return
+
         clean = self.dialogue_manager.remove_wake_word(text_lower) or text
 
         if self.dialogue_manager.is_silence_command(text_lower):
@@ -1007,16 +1011,7 @@ class DialogueNode(Node):
         if running:
             return  # Never timeout while agent is working (fixes the bug we had!)
         if self.dialogue_manager.check_timeout():
-            self.get_logger().info("⏰ Dialogue timeout → IDLE")
-            # Clear conversation history so next session starts fresh.
-            # Without this, old context (e.g. joke about "таракашку") persists
-            # into the next session and LLM uses it to answer unrelated requests.
-            with self._conv_lock:
-                if self._conversation:
-                    self.get_logger().info(
-                        f"🧹 Clearing {len(self._conversation)} history items on IDLE timeout"
-                    )
-                    self._conversation = []
+            self.get_logger().info("⏰ Dialogue timeout → IDLE (history preserved, sliding window)")
             self._publish_state()
 
     def _publish_state(self) -> None:

@@ -173,7 +173,8 @@
 
       # Промпт система
       system_prompt_file: "master_prompt_compact.txt"  # Агентный промпт с tool calls (только имя файла!)
-      context_window: 10  # Последние N сообщений
+      history_max_turns: 20  # Скользящее окно: 20 пар (user+assistant) = 40 сообщений
+      dialogue_timeout: 300.0  # Таймаут сессии: 5 минут без wake word → IDLE
 
       # Тайминги
       response_timeout_sec: 30.0

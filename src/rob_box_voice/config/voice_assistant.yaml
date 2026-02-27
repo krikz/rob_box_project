@@ -94,7 +94,8 @@
       system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 
       # История
-      history_size: 10            # пар user/assistant (20 сообщений)
+      history_max_turns: 20       # Скользящее окно: 20 пар user/assistant (40 сообщений)
+      dialogue_timeout: 300.0     # Таймаут сессии: 5 минут без wake word → IDLE
 
       # Streaming
       streaming: false             # Потоковый вывод LLM (false = один JSON ответ)

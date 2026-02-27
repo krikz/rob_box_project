@@ -196,8 +196,10 @@ class DialogueManager:
         if self.state == DialogueState.IDLE:
             return self.has_wake_word(text)
         
-        # In LISTENING or DIALOGUE, always respond
-        return self.state in (DialogueState.LISTENING, DialogueState.DIALOGUE)
+        # In LISTENING or DIALOGUE, require wake word for every message
+        if self.state in (DialogueState.LISTENING, DialogueState.DIALOGUE):
+            return self.has_wake_word(text)
+        return False
     
     def transition_state(self, new_state: DialogueState):
         """
