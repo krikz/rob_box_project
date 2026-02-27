@@ -221,6 +221,16 @@ Launch файл для тестирования RTAB-Map с 2D LiDAR
 
 ## 🔧 Troubleshooting
 
+> **Полное руководство:** `.agents/skills/zenoh-dev-setup/SKILL.md`
+
+### ⚠️ КРИТИЧНО: 5 правил Zenoh подключения
+
+1. **Переменная `ZENOH_SESSION_CONFIG_URI`** — НЕ `ZENOH_CONFIG` (rmw_zenoh_cpp игнорирует `ZENOH_CONFIG`)
+2. **Mode: "peer"** — НЕ "client" (client не видит топики через локальный роутер)
+3. **Namespace `robots/RBXU100001`** — должен совпадать с роботом (без namespace видны только `/parameter_events`, `/rosout`)
+4. **`#iface=wlp1s0`** — указать WiFi интерфейс в конфиге роутера (проверить: `ip link show`)
+5. **`ros2 daemon stop`** — сбросить кэш daemon при смене конфига или перезапуске роутера
+
 ### Проблема: "No topics found"
 
 **Причина:** Zenoh не может подключиться к роботу

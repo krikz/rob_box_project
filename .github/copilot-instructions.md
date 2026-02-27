@@ -29,6 +29,7 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | Задача | Документация |
 |--------|--------------|
 | **Процесс (методология)** | `.agents/skills/context-engineering/SKILL.md` |
+| **Zenoh dev-машина** | `.agents/skills/zenoh-dev-setup/SKILL.md` |
 | Docker сборка | `docs/development/BUILD_OPTIMIZATION.md` |
 | CI/CD Pipeline | `docs/CI_CD_PIPELINE.md` |
 | Тестирование | `docs/development/TESTING_GUIDE.md` |
