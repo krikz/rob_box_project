@@ -256,7 +256,13 @@ class JoystickControlNode(Node):
         self.joy_callback_sbus(joy_msg)
 
     def joy_callback_sbus(self, msg: Joy):
-        """Process SBUS joystick messages."""
+        """Process SBUS joystick messages.
+
+        When disarmed, we do NOT publish to cmd_vel_joy so that twist_mux
+        times out the joystick source and falls through to lower-priority
+        inputs (web, nav2, voice). A single stop message is sent on the
+        armed→disarmed transition for immediate braking.
+        """
         self.last_joy_msg = msg
 
         # ARM channel is used as enable (>1500 = armed)
@@ -275,13 +281,13 @@ class JoystickControlNode(Node):
             if self.enable_voice:
                 self.speak("Моторы отключены")
             self.was_enabled = False
+            # Send ONE stop message for immediate braking, then let twist_mux timeout
             self.publish_stop()
 
-        # Publish cmd_vel only if armed
+        # Publish cmd_vel only if armed; when disarmed, don't publish
+        # so twist_mux times out cmd_vel_joy and uses lower-priority sources
         if button_pressed:
             self.publish_cmd_vel_sbus(msg)
-        else:
-            self.publish_stop()
 
     def publish_cmd_vel_sbus(self, joy_msg: Joy):
         """Convert SBUS joystick to velocity commands."""
@@ -303,7 +309,11 @@ class JoystickControlNode(Node):
 
 
     def joy_callback(self, msg: Joy):
-        """Process joystick messages (for non-SBUS mode)."""
+        """Process joystick messages (for non-SBUS mode).
+
+        Same logic as SBUS mode: only publish when enabled, let twist_mux
+        timeout handle the fallthrough when disabled.
+        """
         self.last_joy_msg = msg
 
         # Check enable button (must be held down)
@@ -322,13 +332,13 @@ class JoystickControlNode(Node):
             if self.enable_voice:
                 self.speak("Моторы отключены")
             self.was_enabled = False
+            # Send ONE stop message for immediate braking, then let twist_mux timeout
             self.publish_stop()
 
-        # Publish cmd_vel only if button is held
+        # Publish cmd_vel only if button is held; when released, don't publish
+        # so twist_mux times out cmd_vel_joy and uses lower-priority sources
         if button_pressed:
             self.publish_cmd_vel(msg)
-        else:
-            self.publish_stop()
 
     def publish_cmd_vel(self, joy_msg: Joy):
         """Convert joystick to velocity commands."""
