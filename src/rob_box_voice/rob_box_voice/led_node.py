@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 LEDNode - управление 12× RGB LED на ReSpeaker Mic Array v2.0
-Подписывается на: /voice/state, /audio/direction
+Подписывается на: /voice/state, /audio/direction, /voice/animation/request
 Предоставляет сервис: /voice/set_led_mode
+
+Синхронизация с LED-матрицей:
+  Когда LED-матрица играет анимацию (police_lights, ambulance, fire_truck),
+  кольцо ReSpeaker показывает соответствующие цвета.
 """
 
 import rclpy
@@ -166,6 +170,14 @@ class LEDNode(Node):
             10
         )
         
+        # Подписка на запросы анимаций LED-матрицы для синхронизации кольца
+        self.animation_sub = self.create_subscription(
+            String,
+            '/voice/animation/request',
+            self.animation_request_callback,
+            10
+        )
+        
         # Service
         self.led_service = self.create_service(
             SetBool,
@@ -176,6 +188,31 @@ class LEDNode(Node):
         # Состояние
         self.current_mode = 'idle'
         self.current_direction = 0
+        self.animation_override = False  # Флаг: кольцо синхронизировано с анимацией
+        self.animation_timer = None  # Таймер для анимации кольца
+        self.animation_return_timer = None  # Таймер возврата к voice state
+        self.ring_animation_phase = 0  # Фаза анимации кольца
+        
+        # Маппинг анимаций LED-матрицы → эффекты кольца ReSpeaker
+        # Формат: animation_name → список цветов для чередования
+        self.ring_sync_map = {
+            'police_lights': {
+                'colors': [(0, 0, 255), (255, 0, 0)],  # синий ↔ красный
+                'interval': 0.3,  # секунды между переключениями
+            },
+            'ambulance': {
+                'colors': [(255, 0, 0), (255, 255, 255)],  # красный ↔ белый
+                'interval': 0.25,
+            },
+            'fire_truck': {
+                'colors': [(255, 0, 0), (255, 80, 0)],  # красный ↔ оранжевый
+                'interval': 0.2,
+            },
+            'road_service': {
+                'colors': [(255, 165, 0), (255, 255, 0)],  # оранжевый ↔ жёлтый
+                'interval': 0.35,
+            },
+        }
         
         # Инициализация
         self.get_logger().info('LEDNode инициализирован')
@@ -193,10 +230,101 @@ class LEDNode(Node):
             speaking_color = tuple(self.colors['speaking'])
             self.pixel_ring.set_color_palette(thinking_color, speaking_color)
             
-            # Начальное состояние
-            self.pixel_ring.off()
+            # Начальное состояние — trace (DoA tracking)
+            self.pixel_ring.trace()
         else:
             self.get_logger().error('❌ ReSpeaker LED не найден')
+    
+    def animation_request_callback(self, msg: String):
+        """Синхронизация кольца ReSpeaker с анимацией LED-матрицы"""
+        request = msg.data.strip()
+        
+        # Парсим формат "animation_name" или "animation_name:duration"
+        animation_name = request
+        duration = None
+        if ':' in request:
+            parts = request.split(':', 1)
+            animation_name = parts[0].strip()
+            try:
+                duration = float(parts[1].strip())
+            except ValueError:
+                pass
+        
+        # Проверяем, есть ли синхронизация для этой анимации
+        if animation_name in self.ring_sync_map:
+            config = self.ring_sync_map[animation_name]
+            self.get_logger().info(f'🔄 Синхронизация кольца с анимацией: {animation_name}')
+            self._start_ring_animation(config['colors'], config['interval'], duration)
+        else:
+            # Для остальных анимаций — снимаем override, возвращаемся к voice state
+            self._stop_ring_animation()
+    
+    def _start_ring_animation(self, colors: list, interval: float, duration: float = None):
+        """Запуск анимации чередования цветов на кольце"""
+        # Останавливаем предыдущую анимацию
+        self._stop_ring_animation(restore=False)
+        
+        self.animation_override = True
+        self.ring_animation_phase = 0
+        self._ring_colors = colors
+        
+        # Устанавливаем первый цвет
+        r, g, b = colors[0]
+        self.pixel_ring.mono(r, g, b)
+        
+        # Таймер чередования цветов
+        self.animation_timer = self.create_timer(interval, self._ring_animation_tick)
+        
+        # Таймер возврата (используем duration или дефолт 15 сек)
+        timeout = duration if duration and duration > 0 else 15.0
+        self.animation_return_timer = self.create_timer(timeout, self._stop_ring_animation_callback)
+        self.get_logger().debug(f'⏱️ Таймер возврата кольца: {timeout:.1f}s')
+    
+    def _ring_animation_tick(self):
+        """Тик анимации — переключение на следующий цвет"""
+        self.ring_animation_phase = (self.ring_animation_phase + 1) % len(self._ring_colors)
+        r, g, b = self._ring_colors[self.ring_animation_phase]
+        self.pixel_ring.mono(r, g, b)
+    
+    def _stop_ring_animation_callback(self):
+        """Callback таймера — останавливает анимацию кольца"""
+        self._stop_ring_animation()
+    
+    def _stop_ring_animation(self, restore: bool = True):
+        """Остановка анимации кольца и возврат к voice state"""
+        if self.animation_timer is not None:
+            self.animation_timer.cancel()
+            self.animation_timer = None
+        if self.animation_return_timer is not None:
+            self.animation_return_timer.cancel()
+            self.animation_return_timer = None
+        
+        was_overridden = self.animation_override
+        self.animation_override = False
+        
+        if restore and was_overridden:
+            self.get_logger().info('🔄 Возврат кольца к voice state')
+            # Восстанавливаем состояние по текущему voice state
+            self._apply_voice_state(self.current_mode)
+    
+    def _apply_voice_state(self, state: str):
+        """Применить цвет кольца по voice state"""
+        if state == 'idle':
+            self.pixel_ring.trace()
+        elif state == 'listening':
+            r, g, b = self.colors['listening']
+            self.pixel_ring.mono(r, g, b)
+        elif state in ['thinking', 'generating']:
+            self.pixel_ring.think()
+        elif state == 'speaking':
+            self.pixel_ring.speak()
+        elif state == 'error':
+            r, g, b = self.colors['error']
+            self.pixel_ring.mono(r, g, b)
+        elif state == 'trace':
+            self.pixel_ring.trace()
+        else:
+            self.pixel_ring.trace()
     
     def state_callback(self, msg: String):
         """Обработка изменения состояния голосового ассистента"""
@@ -208,31 +336,13 @@ class LEDNode(Node):
         
         self.get_logger().debug(f'State changed: {state}')
         
+        # Если активна анимация кольца — не перебиваем её voice state
+        if self.animation_override:
+            self.get_logger().debug(f'⏸️ Пропуск voice state: активна анимация кольца')
+            return
+        
         # Переключение режима LED
-        if state == 'idle':
-            self.pixel_ring.off()
-        
-        elif state == 'listening':
-            # Зелёное свечение
-            r, g, b = self.colors['listening']
-            self.pixel_ring.mono(r, g, b)
-        
-        elif state in ['thinking', 'generating']:
-            # Синяя пульсация
-            self.pixel_ring.think()
-        
-        elif state == 'speaking':
-            # Голубое вращение
-            self.pixel_ring.speak()
-        
-        elif state == 'error':
-            # Красное свечение
-            r, g, b = self.colors['error']
-            self.pixel_ring.mono(r, g, b)
-        
-        elif state == 'trace':
-            # Следование за направлением звука
-            self.pixel_ring.trace()
+        self._apply_voice_state(state)
     
     def direction_callback(self, msg: Int32):
         """Обработка изменения направления на источник звука"""
@@ -247,8 +357,8 @@ class LEDNode(Node):
         self.get_logger().info(response.message)
         
         if not self.auto_mode:
-            # Выключить LED при отключении авто режима
-            self.pixel_ring.off()
+            # Переключить на trace при отключении авто режима
+            self.pixel_ring.trace()
         
         return response
     
@@ -270,6 +380,7 @@ class LEDNode(Node):
     def shutdown(self):
         """Корректное завершение"""
         self.get_logger().info('Остановка LEDNode...')
+        self._stop_ring_animation(restore=False)
         self.pixel_ring.off()
         self.get_logger().info('✓ LEDNode остановлен')
 

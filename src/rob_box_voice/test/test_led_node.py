@@ -529,6 +529,99 @@ class TestLEDNode(unittest.TestCase):
         self.assertIn('speaking', self.node.colors)
         self.assertIn('error', self.node.colors)
 
+    def test_ring_sync_map_exists(self):
+        """Тест: маппинг синхронизации кольца определён"""
+        self.assertIsInstance(self.node.ring_sync_map, dict)
+        self.assertIn('police_lights', self.node.ring_sync_map)
+        self.assertIn('ambulance', self.node.ring_sync_map)
+        self.assertIn('fire_truck', self.node.ring_sync_map)
+        self.assertIn('road_service', self.node.ring_sync_map)
+
+    def test_animation_request_police(self):
+        """Тест: запрос police_lights активирует синхронизацию кольца"""
+        msg = String()
+        msg.data = 'police_lights:10'
+        self.node.animation_request_callback(msg)
+
+        self.assertTrue(self.node.animation_override)
+        self.assertIsNotNone(self.node.animation_timer)
+        self.assertIsNotNone(self.node.animation_return_timer)
+        # Первый цвет — синий
+        self.mock_ring_instance.mono.assert_called_with(0, 0, 255)
+
+    def test_animation_request_unknown_stops_override(self):
+        """Тест: неизвестная анимация не активирует override"""
+        # Сначала запускаем police
+        msg = String()
+        msg.data = 'police_lights'
+        self.node.animation_request_callback(msg)
+        self.assertTrue(self.node.animation_override)
+
+        # Затем запрашиваем неизвестную — override снимается
+        msg.data = 'happy'
+        self.node.animation_request_callback(msg)
+        self.assertFalse(self.node.animation_override)
+
+    def test_voice_state_blocked_during_animation(self):
+        """Тест: voice state не перебивает активную анимацию кольца"""
+        # Запускаем анимацию
+        msg = String()
+        msg.data = 'police_lights:5'
+        self.node.animation_request_callback(msg)
+        self.mock_ring_instance.reset_mock()
+
+        # Отправляем voice state — не должно сменить LED
+        state_msg = String()
+        state_msg.data = 'idle'
+        self.node.state_callback(state_msg)
+
+        # off() не должен быть вызван (override активен)
+        self.mock_ring_instance.off.assert_not_called()
+
+    def test_ring_animation_tick(self):
+        """Тест: тик анимации чередует цвета"""
+        self.node._ring_colors = [(0, 0, 255), (255, 0, 0)]
+        self.node.ring_animation_phase = 0
+        self.node.animation_override = True
+
+        self.node._ring_animation_tick()
+        self.assertEqual(self.node.ring_animation_phase, 1)
+        self.mock_ring_instance.mono.assert_called_with(255, 0, 0)
+
+        self.node._ring_animation_tick()
+        self.assertEqual(self.node.ring_animation_phase, 0)
+        self.mock_ring_instance.mono.assert_called_with(0, 0, 255)
+
+    def test_stop_ring_animation_restores_voice_state(self):
+        """Тест: остановка анимации возвращает к voice state"""
+        self.node.current_mode = 'listening'
+        self.node.animation_override = True
+        self.mock_ring_instance.reset_mock()
+
+        self.node._stop_ring_animation(restore=True)
+
+        self.assertFalse(self.node.animation_override)
+        # Должен быть вызван mono с цветом listening
+        r, g, b = self.node.colors['listening']
+        self.mock_ring_instance.mono.assert_called_with(r, g, b)
+
+    def test_animation_request_parses_duration(self):
+        """Тест: парсинг duration из запроса анимации"""
+        msg = String()
+        msg.data = 'police_lights:7.5'
+        self.node.animation_request_callback(msg)
+        # Должна быть создана анимация (таймеры активны)
+        self.assertTrue(self.node.animation_override)
+
+    def test_animation_subscriber_created(self):
+        """Тест: подписчик /voice/animation/request создан"""
+        subscriptions = self.node.get_subscriber_names_and_types_by_node(
+            self.node.get_name(),
+            self.node.get_namespace()
+        )
+        sub_topics = [name for name, _ in subscriptions]
+        self.assertIn('/voice/animation/request', sub_topics)
+
 
 class TestLEDNodeIntegration(unittest.TestCase):
     """Интеграционные тесты LEDNode"""
