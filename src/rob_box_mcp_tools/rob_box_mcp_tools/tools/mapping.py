@@ -62,23 +62,20 @@ class StartMappingTool(MCPTool):
             self.log_warning("⚠️ Backup не удался, продолжаем без backup")
 
         # 2. Сбросить память RTABMap
-        if not self.reset_memory_client.wait_for_service(timeout_sec=2.0):
-            return MCPToolResult(success=False, error="RTABMap reset service недоступен")
-
-        request = Empty.Request()
-        future = self.reset_memory_client.call_async(request)
-        # NOTE: В реальном использовании нужно дождаться результата
-
-        self.log_info("Память RTABMap сброшена")
+        if self.reset_memory_client.service_is_ready():
+            request = Empty.Request()
+            self.reset_memory_client.call_async(request)
+            self.log_info("Память RTABMap сброшена")
+        else:
+            self.log_warning("⚠️ RTABMap reset service не готов, пропускаем сброс")
 
         # 3. Переключить в режим mapping
-        if not self.set_mode_mapping_client.wait_for_service(timeout_sec=2.0):
-            return MCPToolResult(success=False, error="RTABMap set_mode service недоступен")
-
-        request = Empty.Request()
-        future = self.set_mode_mapping_client.call_async(request)
-
-        self.log_info("Режим mapping активирован")
+        if self.set_mode_mapping_client.service_is_ready():
+            request = Empty.Request()
+            self.set_mode_mapping_client.call_async(request)
+            self.log_info("Режим mapping активирован")
+        else:
+            self.log_warning("⚠️ RTABMap set_mode service не готов, пропускаем")
 
         # 4. Создать новую карту в WaypointStore
         map_id = None
@@ -97,26 +94,17 @@ class StartMappingTool(MCPTool):
         )
 
     def _create_backup(self) -> bool:
-        """Создать backup RTABMap базы данных через ROS 2 сервис /rtabmap/rtabmap/backup"""
+        """Создать backup RTABMap базы данных через ROS 2 сервис /rtabmap/rtabmap/backup (fire-and-forget)"""
         try:
-            if not self.backup_client.wait_for_service(timeout_sec=3.0):
-                self.log_warning("⚠️ RTABMap backup service недоступен")
+            if not self.backup_client.service_is_ready():
+                self.log_warning("⚠️ RTABMap backup service ещё не готов, пропускаем")
                 return False
 
             from std_srvs.srv import Empty
             request = Empty.Request()
-            future = self.backup_client.call_async(request)
-
-            # Ждём ответа до 10 секунд
-            import rclpy
-            rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
-
-            if future.done() and future.result() is not None:
-                self.log_info("✅ Backup создан успешно через ROS 2 сервис")
-                return True
-            else:
-                self.log_warning("⚠️ Backup timeout или ошибка")
-                return False
+            self.backup_client.call_async(request)
+            self.log_info("✅ Backup запрос отправлен (fire-and-forget)")
+            return True
         except Exception as e:
             self.log_error(f"❌ Backup error: {e}")
             return False
@@ -152,11 +140,12 @@ class ContinueMappingTool(MCPTool):
         """Продолжить картографирование"""
         self.log_info("Продолжение картографирования")
 
-        if not self.set_mode_mapping_client.wait_for_service(timeout_sec=2.0):
-            return MCPToolResult(success=False, error="RTABMap set_mode service недоступен")
+        if not self.set_mode_mapping_client.service_is_ready():
+            return MCPToolResult(success=False, error="RTABMap set_mode service не готов")
 
+        from std_srvs.srv import Empty
         request = Empty.Request()
-        future = self.set_mode_mapping_client.call_async(request)
+        self.set_mode_mapping_client.call_async(request)
 
         self.log_info("Режим mapping активирован")
 
@@ -204,13 +193,13 @@ class FinishMappingTool(MCPTool):
         """Завершить картографирование"""
         self.log_info("Завершение картографирования")
 
-        if not self.set_mode_localization_client.wait_for_service(timeout_sec=2.0):
-            return MCPToolResult(success=False, error="RTABMap set_mode service недоступен")
-
-        request = Empty.Request()
-        future = self.set_mode_localization_client.call_async(request)
-
-        self.log_info("Режим localization активирован")
+        if self.set_mode_localization_client.service_is_ready():
+            from std_srvs.srv import Empty
+            request = Empty.Request()
+            self.set_mode_localization_client.call_async(request)
+            self.log_info("Режим localization активирован")
+        else:
+            self.log_warning("⚠️ RTABMap localization service не готов")
 
         # Имя карты (если указано)
         if map_name and self.waypoint_store:
