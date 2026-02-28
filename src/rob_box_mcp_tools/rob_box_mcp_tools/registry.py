@@ -87,20 +87,20 @@ class MCPToolRegistry:
         """Устаревший метод. Используйте get_openai_tools()"""
         return self.get_openai_tools()
 
-    def execute(self, name: str, **kwargs) -> MCPToolResult:
+    def execute(self, tool_name: str, **kwargs) -> MCPToolResult:
         """
         Выполнить инструмент по имени с заданными параметрами
 
         Args:
-            name: Имя инструмента
+            tool_name: Имя инструмента
             **kwargs: Параметры для инструмента
 
         Returns:
             MCPToolResult: Результат выполнения
         """
-        tool = self.get_tool(name)
+        tool = self.get_tool(tool_name)
         if tool is None:
-            return MCPToolResult(success=False, error=f"Инструмент '{name}' не найден")
+            return MCPToolResult(success=False, error=f"Инструмент '{tool_name}' не найден")
 
         # Валидация параметров
         valid, error_msg = tool.validate_parameters(**kwargs)
@@ -111,7 +111,7 @@ class MCPToolRegistry:
         try:
             return tool.execute(**kwargs)
         except Exception as e:
-            error_msg = f"Ошибка выполнения инструмента '{name}': {str(e)}"
+            error_msg = f"Ошибка выполнения инструмента '{tool_name}': {str(e)}"
             if tool.node:
                 tool.node.get_logger().error(error_msg)
             return MCPToolResult(success=False, error=error_msg)
