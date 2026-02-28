@@ -62,7 +62,7 @@ class StartMappingTool(MCPTool):
             self.log_warning("⚠️ Backup не удался, продолжаем без backup")
 
         # 2. Сбросить память RTABMap
-        if not self.reset_memory_client.wait_for_service(timeout_sec=2.0):
+        if not self.reset_memory_client.wait_for_service(timeout_sec=5.0):
             return MCPToolResult(success=False, error="RTABMap reset service недоступен")
 
         request = Empty.Request()
@@ -72,7 +72,7 @@ class StartMappingTool(MCPTool):
         self.log_info("Память RTABMap сброшена")
 
         # 3. Переключить в режим mapping
-        if not self.set_mode_mapping_client.wait_for_service(timeout_sec=2.0):
+        if not self.set_mode_mapping_client.wait_for_service(timeout_sec=5.0):
             return MCPToolResult(success=False, error="RTABMap set_mode service недоступен")
 
         request = Empty.Request()
@@ -109,7 +109,7 @@ class StartMappingTool(MCPTool):
 
             # Ждём ответа до 10 секунд
             import rclpy
-            rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=10.0)
 
             if future.done() and future.result() is not None:
                 self.log_info("✅ Backup создан успешно через ROS 2 сервис")
@@ -152,7 +152,7 @@ class ContinueMappingTool(MCPTool):
         """Продолжить картографирование"""
         self.log_info("Продолжение картографирования")
 
-        if not self.set_mode_mapping_client.wait_for_service(timeout_sec=2.0):
+        if not self.set_mode_mapping_client.wait_for_service(timeout_sec=5.0):
             return MCPToolResult(success=False, error="RTABMap set_mode service недоступен")
 
         request = Empty.Request()
@@ -204,7 +204,7 @@ class FinishMappingTool(MCPTool):
         """Завершить картографирование"""
         self.log_info("Завершение картографирования")
 
-        if not self.set_mode_localization_client.wait_for_service(timeout_sec=2.0):
+        if not self.set_mode_localization_client.wait_for_service(timeout_sec=5.0):
             return MCPToolResult(success=False, error="RTABMap set_mode service недоступен")
 
         request = Empty.Request()
