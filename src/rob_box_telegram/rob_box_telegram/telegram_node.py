@@ -217,7 +217,7 @@ class TelegramNode(Node):
         msg = String()
         msg.data = text
         self.tts_pub.publish(msg)
-        self.get_logger().info("TTS request: %s", text[:80])
+        self.get_logger().info(f"TTS request: {text[:80]}")
 
     # ── Telegram Bot Setup ──────────────────────────────────────────
 
@@ -240,7 +240,7 @@ class TelegramNode(Node):
         try:
             loop.run_until_complete(self._run_telegram(token))
         except Exception as e:
-            self.get_logger().error("Telegram bot crashed: %s", e)
+            self.get_logger().error(f"Telegram bot crashed: {e}")
         finally:
             loop.close()
 
