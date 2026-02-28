@@ -14,6 +14,7 @@ Publishes:
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -761,8 +762,9 @@ class DialogueNode(Node):
                 skill.as_tool(
                     tool_name="handle_navigation",
                     tool_description=(
-                        "Навигационный скилл: переместить робота в именованную точку "
-                        "или задать направление движения."
+                        "Навигационный скилл: переместить робота в именованную точку, "
+                        "сохранить/удалить/список точек (вейпоинтов), "
+                        "картографирование (маппинг), направление движения."
                     ),
                 )
             )
@@ -934,7 +936,16 @@ class DialogueNode(Node):
 
         try:
             with self._conv_lock:
-                input_list = list(self._conversation) + [
+                # Strip [tools: ...] markers from history before feeding to LLM.
+                # These markers were causing the LLM to copy the pattern as
+                # plain text instead of actually making tool calls.
+                cleaned = []
+                for msg in self._conversation:
+                    c = dict(msg)
+                    if c.get("role") == "assistant" and isinstance(c.get("content"), str):
+                        c["content"] = re.sub(r"^\[tools:[^\]]*\]\s*", "", c["content"])
+                    cleaned.append(c)
+                input_list = cleaned + [
                     {"role": "user", "content": user_input}
                 ]
 
@@ -973,6 +984,16 @@ class DialogueNode(Node):
             if tool_names_used:
                 tool_tag = "[tools: " + ", ".join(sorted(tool_names_used)) + "] "
                 spoken = tool_tag + spoken
+            # Auto-speak fallback: if LLM returned text without calling
+            # speak_text, speak the response directly so the robot is never silent.
+            if not self._spoken_texts and spoken:
+                clean_spoken = re.sub(r"^\[tools:[^\]]*\]\s*", "", spoken).strip()
+                if clean_spoken and clean_spoken.lower() != "done":
+                    self.get_logger().warning(
+                        f"⚠️ Auto-speak fallback (LLM skipped speak_text): {clean_spoken[:80]}"
+                    )
+                    self._speak_direct(clean_spoken)
+
             if self._verbose_llm:
                 self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
             else:
