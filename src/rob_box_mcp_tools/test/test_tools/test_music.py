@@ -47,6 +47,7 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
 def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) -> MusicManager:
     """Create a MusicManager with patched infrastructure."""
     mgr = MusicManager.__new__(MusicManager)
+    mgr._max_amp = 0.7
     mgr._pattern_history = {}
     mgr._active_patterns = set()
     mgr._current_preset = None
@@ -112,9 +113,26 @@ class TestMusicManagerFilter:
         ok, err = self.mgr._filter_code("__builtins__['eval']('1')")
         assert ok is False
 
-    def test_getattr_is_blocked(self):
-        ok, err = self.mgr._filter_code("getattr(obj, 'dangerous')")
-        assert ok is False
+    def test_setattr_is_allowed(self):
+        """setattr must pass — needed for Clock.future() BPM/Scale changes."""
+        ok, err = self.mgr._filter_code("Clock.future(8, lambda: setattr(Clock, 'bpm', 170))")
+        assert ok is True
+        assert err == ""
+
+    def test_getattr_is_allowed(self):
+        """getattr must pass — needed for pattern introspection."""
+        ok, err = self.mgr._filter_code("getattr(p1, 'degree')")
+        assert ok is True
+        assert err == ""
+
+    def test_clock_future_setattr_scale_passes(self):
+        """Clock.future with setattr for Scale/Root changes must pass."""
+        ok, err = self.mgr._filter_code(
+            "Clock.future(16, lambda: setattr(Scale, 'default', 'minor'))\n"
+            "Clock.future(16, lambda: setattr(Root, 'default', 4))"
+        )
+        assert ok is True
+        assert err == ""
 
     def test_scale_code_passes(self):
         ok, err = self.mgr._filter_code("Scale.default = Scale.major\nClock.bpm = 120")
@@ -259,11 +277,11 @@ class TestMusicManagerExecuteCode:
 class TestMusicManagerStop:
     """Тесты остановки паттернов."""
 
-    def test_stop_unknown_pattern_fails(self):
+    def test_stop_unknown_pattern_succeeds_without_sc(self):
+        """stop_pattern always succeeds (discards from active set) even for unknown patterns."""
         mgr = _make_manager()
         result = mgr.stop_pattern("unknown")
-        assert result["success"] is False
-        assert "unknown" in result["error"]
+        assert result["success"] is True
 
     def test_stop_known_pattern_removes_from_active(self):
         mgr = _make_manager(sc_running=False, renardo_available=False)
@@ -331,25 +349,35 @@ class TestMusicManagerPreset:
         assert "Scale.default" in executed_code
         assert "Clock.bpm" in executed_code
 
-    def test_set_preset_without_sc_stores_in_context(self):
+    def test_set_preset_without_sc_remembers_name(self):
         mgr = _make_manager(sc_running=False)
         result = mgr.set_vibe_preset("energetic")
         assert result["success"] is True
-        assert "__preset_bpm__" in mgr._renardo_context
-        assert mgr._renardo_context["__preset_bpm__"] == MusicManager.VIBE_PRESETS["energetic"]["bpm"]
+        assert mgr._current_preset == "energetic"
 
     def test_chill_preset_values(self):
         mgr = _make_manager(sc_running=False)
         result = mgr.set_vibe_preset("chill")
         assert result["preset"]["scale"] == "major"
         assert result["preset"]["bpm"] == 85
-        assert result["preset"]["root"] == "C"
+        assert result["preset"]["root"] == 0  # C = 0 semitones from C
 
     def test_dark_preset_values(self):
         mgr = _make_manager(sc_running=False)
         result = mgr.set_vibe_preset("dark")
         assert result["preset"]["scale"] == "phrygian"
         assert result["preset"]["bpm"] == 100
+        assert result["preset"]["root"] == 4  # E = 4 semitones from C
+
+    @pytest.mark.parametrize("preset", ["rock", "latin", "electronic", "cinematic", "funk", "reggae", "classical"])
+    def test_new_presets_execute_successfully(self, preset):
+        mgr = _make_manager(sc_running=False)
+        result = mgr.set_vibe_preset(preset)
+        assert result["success"] is True
+        assert mgr._current_preset == preset
+        assert "scale" in result["preset"]
+        assert "bpm" in result["preset"]
+        assert "root" in result["preset"]
 
 
 # ---------------------------------------------------------------------------
@@ -469,10 +497,11 @@ class TestStopMusicTool:
         assert result.success is True
         assert "p1" not in mgr._active_patterns
 
-    def test_stop_unknown_pattern_fails(self, mock_node):
+    def test_stop_unknown_pattern_succeeds(self, mock_node):
+        """stop_pattern always succeeds — LLM can stop any player name."""
         tool, _ = self._make_tool(mock_node)
         result = tool.execute(pattern_name="nonexistent")
-        assert result.success is False
+        assert result.success is True
 
 
 # ---------------------------------------------------------------------------

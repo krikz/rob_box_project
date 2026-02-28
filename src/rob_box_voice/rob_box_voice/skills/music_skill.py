@@ -231,7 +231,9 @@ class MusicSkill(BaseSkill):
             """Apply a vibe preset that configures BPM, scale, and root key.
 
             Args:
-                preset: One of 'chill', 'energetic', 'ambient', 'jazz', 'dark'.
+                preset: One of 'chill', 'energetic', 'ambient', 'jazz', 'dark',
+                        'rock', 'latin', 'electronic', 'cinematic', 'funk',
+                        'reggae', 'classical'.
             """
             return await _call("set_vibe_preset", {"preset_name": preset})
 

@@ -126,11 +126,9 @@ class DialogueNode(Node):
         # new run's speak_text calls.
         self._run_cancelled: bool = False
 
-        # ── Barge-in grace period ────────────────────────────────────
-        # After STT recognition, suppress VAD barge-in for N seconds so that
-        # room echo / noise immediately after user speech doesn't cancel the run.
-        self._barge_in_grace_seconds: float = 5.0
-        self._agent_run_start_time: float = 0.0
+        # ── VAD speech flag (no barge-in) ────────────────────────────
+        # VAD only tracks whether speech is happening; barge-in requires
+        # wake word via STT, so background noise never cancels a run.
 
         # ── TTS completion tracking ──────────────────────────────────
         # speak_text tool awaits these events so agent calls are sequential
@@ -345,8 +343,6 @@ class DialogueNode(Node):
                 None,
                 lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
             )
-            # Each tool result resets barge-in grace — LLM is actively working
-            self._agent_run_start_time = time.monotonic()
             if isinstance(result, dict):
                 return result.get("result", json.dumps(result, ensure_ascii=False))
             return str(result)
@@ -605,8 +601,6 @@ class DialogueNode(Node):
                 None,
                 lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
             )
-            # Each tool result resets barge-in grace — LLM is actively working
-            self._agent_run_start_time = time.monotonic()
             if isinstance(result, dict):
                 return result.get("result", json.dumps(result, ensure_ascii=False))
             return str(result)
@@ -690,7 +684,14 @@ class DialogueNode(Node):
             music_prompt = self._load_prompt_file("skills/music_skill_prompt.txt")
             if not music_prompt:
                 music_prompt = "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
-            skill = MusicSkill(adapter=self._mcp, model=model, prompt_template=music_prompt, agent_max_turns=6)
+            skill = MusicSkill(
+                adapter=self._mcp,
+                model=model,
+                prompt_template=music_prompt,
+                agent_max_turns=10,
+                max_tokens=1200,
+                temperature=0.85,
+            )
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_music",
@@ -776,20 +777,17 @@ class DialogueNode(Node):
     # ────────────────────────────────────────────────────────────────
 
     def _on_vad(self, msg: Bool) -> None:
-        """Rising-edge VAD barge-in: cancel current run on speech start."""
+        """Track VAD speech state (flag only, no barge-in).
+
+        Barge-in is handled exclusively by _on_stt() which requires
+        a confirmed wake word before cancelling any active run.
+        This prevents background noise (TV, radio) from interrupting
+        the agent mid-response.
+        """
         is_speech = msg.data
         if is_speech and not self._vad_speech_detected:
             self._vad_speech_detected = True
             self.get_logger().debug("🎤 VAD: speech start")
-            # Grace period: ignore barge-in for N seconds after run started
-            # to avoid room echo / noise right after STT cancelling the agent.
-            elapsed = time.monotonic() - self._agent_run_start_time
-            if elapsed < self._barge_in_grace_seconds:
-                self.get_logger().debug(
-                    f"🔕 Barge-in suppressed (grace period, {elapsed:.1f}s < {self._barge_in_grace_seconds}s)"
-                )
-                return
-            self._cancel_run("barge-in VAD")
         elif not is_speech and self._vad_speech_detected:
             self._vad_speech_detected = False
 
@@ -829,9 +827,6 @@ class DialogueNode(Node):
 
         # Cancel any in-progress run before starting a new one
         self._cancel_run("new STT input")
-
-        # Reset grace period timer
-        self._agent_run_start_time = time.monotonic()
 
         # ── Immediate thinking sound ─────────────────────────────────
         # Play confirmation immediately — before LLM even starts

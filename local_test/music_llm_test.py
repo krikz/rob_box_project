@@ -120,7 +120,7 @@ class DryRunMusicManager:
 import re as _re
 _BLOCKED_TOKENS = _re.compile(
     r"\b(import|os|sys|subprocess|shutil|socket|requests|urllib|http|"
-    r"open|exec|eval|compile|globals|locals|vars|getattr|setattr|delattr)\b"
+    r"open|exec|eval|compile|globals|locals|vars|delattr)\b"
 )
 
 class LiveMusicManager:
@@ -128,11 +128,18 @@ class LiveMusicManager:
 
     # Root ноты как числа полутонов (C=0, D=2, E=4, F=5, G=7, A=9, B=11)
     VIBE_PRESETS = {
-        "chill":     {"scale": "major",    "bpm": 85,  "root": 0},
-        "energetic": {"scale": "minor",    "bpm": 140, "root": 9},
-        "ambient":   {"scale": "dorian",   "bpm": 70,  "root": 2},
-        "jazz":      {"scale": "lydian",   "bpm": 120, "root": 5},
-        "dark":      {"scale": "phrygian", "bpm": 100, "root": 4},
+        "chill":      {"scale": "major",      "bpm": 85,  "root": 0},
+        "energetic":  {"scale": "minor",      "bpm": 140, "root": 9},
+        "ambient":    {"scale": "dorian",     "bpm": 70,  "root": 2},
+        "jazz":       {"scale": "lydian",     "bpm": 120, "root": 5},
+        "dark":       {"scale": "phrygian",   "bpm": 100, "root": 4},
+        "rock":       {"scale": "mixolydian", "bpm": 130, "root": 4},
+        "latin":      {"scale": "dorian",     "bpm": 105, "root": 2},
+        "electronic": {"scale": "minor",      "bpm": 128, "root": 0},
+        "cinematic":  {"scale": "minor",      "bpm": 90,  "root": 2},
+        "funk":       {"scale": "mixolydian", "bpm": 110, "root": 4},
+        "reggae":     {"scale": "major",      "bpm": 80,  "root": 0},
+        "classical":  {"scale": "major",      "bpm": 100, "root": 0},
     }
 
     def __init__(self) -> None:
@@ -143,7 +150,22 @@ class LiveMusicManager:
         self._renardo_available = False
         self._init_renardo()
 
+    @staticmethod
+    def _fix_synthdef_conflicts() -> None:
+        """Fix unresolved git merge conflicts in renardo_lib .scd files."""
+        try:
+            fix_script = ROOT / "scripts" / "utils" / "fix_renardo_synthdef_conflicts.py"
+            if fix_script.exists():
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("fix_conflicts", fix_script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                mod.main()
+        except Exception as e:
+            print(f"⚠️  SynthDef conflict fixer: {e}")
+
     def _init_renardo(self) -> None:
+        self._fix_synthdef_conflicts()
         try:
             import renardo_lib.runtime as _rt
             import time

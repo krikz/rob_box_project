@@ -24,7 +24,7 @@ _BLOCKED_TOKENS = re.compile(
     r"\b("
     r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
     r"importlib|builtins|__import__|__builtins__|__class__|__subclasses__|"
-    r"open|exec|eval|compile|globals|locals|vars|getattr|setattr|delattr"
+    r"open|exec|eval|compile|globals|locals|vars|delattr"
     r")\b"
 )
 
@@ -48,11 +48,18 @@ class MusicManager:
     #: Доступные вайб-пресеты: имя -> {scale, bpm, root}
     #: root — целое число полутонов от C (C=0, D=2, E=4, F=5, G=7, A=9, B=11)
     VIBE_PRESETS: Dict[str, Dict[str, Any]] = {
-        "chill":     {"scale": "major",    "bpm": 85,  "root": 0},   # C
-        "energetic": {"scale": "minor",    "bpm": 140, "root": 9},   # A
-        "ambient":   {"scale": "dorian",   "bpm": 70,  "root": 2},   # D
-        "jazz":      {"scale": "lydian",   "bpm": 120, "root": 5},   # F
-        "dark":      {"scale": "phrygian", "bpm": 100, "root": 4},   # E
+        "chill":      {"scale": "major",       "bpm": 85,  "root": 0},   # C
+        "energetic":  {"scale": "minor",       "bpm": 140, "root": 9},   # A
+        "ambient":    {"scale": "dorian",      "bpm": 70,  "root": 2},   # D
+        "jazz":       {"scale": "lydian",      "bpm": 120, "root": 5},   # F
+        "dark":       {"scale": "phrygian",    "bpm": 100, "root": 4},   # E
+        "rock":       {"scale": "minor",       "bpm": 120, "root": 4},   # E
+        "latin":      {"scale": "dorian",      "bpm": 105, "root": 2},   # D
+        "electronic": {"scale": "minor",       "bpm": 128, "root": 9},   # A
+        "cinematic":  {"scale": "minor",       "bpm": 90,  "root": 0},   # C
+        "funk":       {"scale": "mixolydian",  "bpm": 110, "root": 7},   # G
+        "reggae":     {"scale": "major",       "bpm": 75,  "root": 7},   # G
+        "classical":  {"scale": "major",       "bpm": 100, "root": 0},   # C
     }
 
     SC_HOST: str = "127.0.0.1"
