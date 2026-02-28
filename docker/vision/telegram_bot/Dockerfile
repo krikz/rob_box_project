@@ -32,7 +32,7 @@ COPY src/rob_box_telegram /ws/src/rob_box_telegram
 # Собираем ROS 2 пакет
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --packages-select rob_box_telegram --symlink-install && \
-    rm -rf /ws/build /ws/log
+    colcon build --packages-select rob_box_telegram && \
+    rm -rf /ws/log
 
 WORKDIR /ws
