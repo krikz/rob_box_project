@@ -9,7 +9,7 @@ telegram_node:
 
     # Camera topics
     camera_topic: "/camera/rgb/image_raw/compressed"
-    camera_up_topic: "/camera_up/rgb/image_raw/compressed"
+    camera_up_topic: "/ceiling_camera/image_raw/compressed"
     camera_cache_ttl: 5.0      # seconds — discard frames older than this
 
     # LLM settings

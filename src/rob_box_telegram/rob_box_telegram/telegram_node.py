@@ -10,7 +10,7 @@ Architecture:
 
 Topics subscribed:
     /camera/rgb/image_raw/compressed  (sensor_msgs/CompressedImage) — front camera
-    /camera_up/rgb/image_raw/compressed (sensor_msgs/CompressedImage) — ceiling camera
+    /ceiling_camera/image_raw/compressed (sensor_msgs/CompressedImage) — ceiling camera
     /mcp/result (std_msgs/String) — MCP tool execution results
     /mcp/tools  (std_msgs/String) — available MCP tool definitions
 
@@ -89,7 +89,7 @@ class TelegramNode(Node):
         self.declare_parameter("max_angular_speed", 0.5)
         self.declare_parameter("move_duration", 0.5)
         self.declare_parameter("camera_topic", "/camera/rgb/image_raw/compressed")
-        self.declare_parameter("camera_up_topic", "/camera_up/rgb/image_raw/compressed")
+        self.declare_parameter("camera_up_topic", "/ceiling_camera/image_raw/compressed")
         self.declare_parameter("camera_cache_ttl", 5.0)
         self.declare_parameter("llm_provider", "deepseek")
         self.declare_parameter("llm_max_history", 20)
