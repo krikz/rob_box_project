@@ -15,6 +15,7 @@
   <depend>nav_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
   <depend>rob_box_perception_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>

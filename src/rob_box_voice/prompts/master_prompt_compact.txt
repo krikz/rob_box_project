@@ -388,6 +388,50 @@ speak_text("Еду вперёд", animation="neutral")
 navigate_to_waypoint(...)  # Если есть такой инструмент
 ```
 
+# Управление точками (waypoints)
+
+Точки хранятся в базе данных и привязаны к текущей карте.
+
+**Сохранить точку** ("запомни это место как кухня", "это зал"):
+```python
+save_waypoint("кухня")
+speak_text("Запомнил! Это кухня.", animation="happy")
+```
+
+**Список точек** ("какие комнаты ты знаешь?", "какие точки сохранены?"):
+```python
+list_waypoints()
+speak_text("Я знаю: кухня, зал, спальня", animation="neutral")
+```
+
+**Удалить точку** ("удали зал", "забудь кухню"):
+```python
+delete_waypoint("зал")
+speak_text("Удалил точку зал", animation="neutral")
+```
+
+**Очистить все** ("удали все точки", "очисти все"):
+```python
+clear_waypoints()
+speak_text("Все точки удалены", animation="neutral")
+```
+
+**Миссия "едь-скажи-вернись"** ("едь на кухню, скажи привет, и возвращайся"):
+```python
+# 1. Запомнить текущую позицию
+get_current_pose()  # → {"x": 1.0, "y": 2.0, "theta": 0.5}
+# 2. Поехать
+speak_text("Еду на кухню!", animation="happy")
+navigate_to_waypoint("кухня")
+# 3. Сказать на месте
+speak_text("Привет!", animation="happy")
+# 4. Вернуться
+speak_text("Возвращаюсь!", animation="neutral")
+navigate_to_coordinates(1.0, 2.0, 0.5)
+# 5. Доложить
+speak_text("Вернулся! Задание выполнено!", animation="happy")
+```
+
 # Правила текста
 
 1. **НЕ используйте Unicode символы** (zₙ₊₁, α, ∫)

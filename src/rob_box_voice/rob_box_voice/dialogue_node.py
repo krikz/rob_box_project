@@ -447,8 +447,13 @@ class DialogueNode(Node):
 
         @function_tool
         async def navigate_to_waypoint(waypoint: str) -> str:
-            """Направить робота к именованной точке. БЛОКИРУЕТСЯ до прибытия — speak_text после вызывать ТОЛЬКО после завершения."""
+            """Направить робота к сохранённой точке. БЛОКИРУЕТСЯ до прибытия. Сначала проверь list_waypoints()."""
             return await _call("navigate_to_waypoint", {"waypoint": waypoint}, timeout=130.0)
+
+        @function_tool
+        async def navigate_to_coordinates(x: float, y: float, theta: float = 0.0) -> str:
+            """Навигация к произвольным координатам (x, y, theta) на карте. Используй после get_current_pose() для возврата."""
+            return await _call("navigate_to_coordinates", {"x": x, "y": y, "theta": theta}, timeout=130.0)
 
         @function_tool
         async def move_direction(direction: str, distance: float = 0.5) -> str:
@@ -457,6 +462,31 @@ class DialogueNode(Node):
             return await _call(
                 "move_direction", {"direction": direction, "distance": distance}, timeout=70.0
             )
+
+        @function_tool
+        async def list_waypoints() -> str:
+            """Получить список всех сохранённых точек на текущей карте."""
+            return await _call("list_waypoints", {})
+
+        @function_tool
+        async def save_waypoint(name: str) -> str:
+            """Сохранить текущую позицию робота как именованную точку. Используй когда пользователь говорит 'запомни это место как кухня', 'это зал'."""
+            return await _call("save_waypoint", {"name": name})
+
+        @function_tool
+        async def delete_waypoint(name: str) -> str:
+            """Удалить сохранённую точку по имени. Используй когда пользователь говорит 'удали зал', 'забудь кухню'."""
+            return await _call("delete_waypoint", {"name": name})
+
+        @function_tool
+        async def clear_waypoints() -> str:
+            """Удалить ВСЕ сохранённые точки на текущей карте."""
+            return await _call("clear_waypoints", {})
+
+        @function_tool
+        async def get_current_pose() -> str:
+            """Получить текущую позицию робота (x, y, theta) на карте. Используй перед миссиями для запоминания точки возврата."""
+            return await _call("get_current_pose", {})
 
         @function_tool
         async def set_volume(action: str) -> str:
@@ -581,7 +611,8 @@ class DialogueNode(Node):
             speak_text, play_sound, play_animation,
             memory_context, memory_save, memory_search,
             get_current_time, get_robot_status, get_battery_level,
-            navigate_to_waypoint, move_direction,
+            navigate_to_waypoint, navigate_to_coordinates, move_direction,
+            list_waypoints, save_waypoint, delete_waypoint, clear_waypoints, get_current_pose,
             set_volume, set_pitch,
             search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state,
         ]

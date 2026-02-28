@@ -26,9 +26,14 @@ from .music import *
 __all__ = [
     # Navigation tools
     "NavigateToWaypointTool",
+    "NavigateToCoordinatesTool",
     "MoveDirectionTool",
     "StopNavigationTool",
     "ListWaypointsTool",
+    "SaveWaypointTool",
+    "DeleteWaypointTool",
+    "ClearWaypointsTool",
+    "GetCurrentPoseTool",
     # System tools
     "SetVolumeTool",
     "SetPitchTool",

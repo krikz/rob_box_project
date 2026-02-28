@@ -8,12 +8,13 @@ mapping.py - Инструменты для управления картогра
 - FinishMappingTool: Завершить картографирование и перейти в локализацию
 """
 
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 import subprocess
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
     from std_srvs.srv import Empty
+    from ..waypoint_store import WaypointStore
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
@@ -21,8 +22,9 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class StartMappingTool(MCPTool):
     """Инструмент для начала нового картографирования"""
 
-    def __init__(self, node):
+    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None):
         super().__init__(node)
+        self.waypoint_store = waypoint_store
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         
@@ -71,8 +73,19 @@ class StartMappingTool(MCPTool):
 
         self.log_info("Режим mapping активирован")
 
+        # 4. Создать новую карту в WaypointStore
+        map_id = None
+        if self.waypoint_store:
+            try:
+                map_id = self.waypoint_store.create_map()
+                self.log_info(f"📍 Новая карта создана: {map_id[:8]}...")
+            except Exception as e:
+                self.log_warning(f"⚠️ Не удалось создать карту в WaypointStore: {e}")
+
         return MCPToolResult(
-            success=True, message="Начинаю новое исследование. Старая карта сохранена в резервной копии."
+            success=True,
+            data={"map_id": map_id} if map_id else None,
+            message="Начинаю новое исследование. Старая карта сохранена в резервной копии."
         )
 
     def _create_backup(self) -> bool:
@@ -156,8 +169,9 @@ class ContinueMappingTool(MCPTool):
 class FinishMappingTool(MCPTool):
     """Инструмент для завершения картографирования"""
 
-    def __init__(self, node):
+    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None):
         super().__init__(node)
+        self.waypoint_store = waypoint_store
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         
@@ -169,17 +183,27 @@ class FinishMappingTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Завершить картографирование и перейти в режим навигации по готовой карте (локализация)."
+        return (
+            "Завершить картографирование и перейти в режим навигации по готовой карте (локализация). "
+            "Можно указать имя карты (например 'квартира', 'офис')."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
-        return []
+        return [
+            MCPToolParameter(
+                name="map_name",
+                type="string",
+                description="Название карты (опционально, например 'квартира')",
+                required=False,
+            )
+        ]
 
     @property
     def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.MEDIUM  # Переключение в localization 2-10s
+        return ToolExecutionType.MEDIUM
 
-    def execute(self) -> MCPToolResult:
+    def execute(self, map_name: str = "") -> MCPToolResult:
         """Завершить картографирование"""
         self.log_info("Завершение картографирования")
 
@@ -191,4 +215,18 @@ class FinishMappingTool(MCPTool):
 
         self.log_info("Режим localization активирован")
 
-        return MCPToolResult(success=True, message="Заканчиваю исследование. Переключаюсь в режим навигации.")
+        # Имя карты (если указано)
+        if map_name and self.waypoint_store:
+            try:
+                active_map_id = self.waypoint_store.get_active_map_id()
+                if active_map_id:
+                    self.waypoint_store.rename_map(active_map_id, map_name.strip())
+                    self.log_info(f"📍 Карта названа: '{map_name}'")
+            except Exception as e:
+                self.log_warning(f"⚠️ Не удалось назвать карту: {e}")
+
+        suffix = f" Карта: '{map_name}'." if map_name else ""
+        return MCPToolResult(
+            success=True,
+            message=f"Заканчиваю исследование. Переключаюсь в режим навигации.{suffix}"
+        )

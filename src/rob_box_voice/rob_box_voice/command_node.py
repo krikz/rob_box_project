@@ -78,19 +78,15 @@ class CommandNode(Node):
             confidence_base=0.8
         )
         
-        # Waypoints (заранее известные точки)
-        self.waypoints = {
-            'дом': {'x': 0.0, 'y': 0.0, 'theta': 0.0},
-            'кухня': {'x': 2.0, 'y': 1.0, 'theta': 0.0},
-            'гостиная': {'x': 3.0, 'y': 2.0, 'theta': 1.57},
-            'точка 1': {'x': 1.0, 'y': 0.0, 'theta': 0.0},
-            'точка 2': {'x': 2.0, 'y': 0.0, 'theta': 0.0},
-            'точка 3': {'x': 3.0, 'y': 0.0, 'theta': 0.0},
-        }
+        # Waypoints — deprecated: dynamic waypoints are now managed via MCP tools
+        # (save_waypoint, list_waypoints, etc.) and stored in SQLite DB.
+        # CommandNode regex-based navigation is a fallback; the LLM agent path
+        # handles all waypoint CRUD.
+        self.waypoints = {}
         
         self.get_logger().info('✅ CommandNode инициализирован (using CommandParser from core)')
         self.get_logger().info(f'  Navigation: {"✓" if self.enable_navigation else "✗"}')
-        self.get_logger().info(f'  Waypoints: {len(self.waypoints)}')
+        self.get_logger().info(f'  Waypoints: динамические (через MCP tools)')
     
     def dialogue_state_callback(self, msg: String):
         """Callback для состояния dialogue_node"""

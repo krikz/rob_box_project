@@ -24,9 +24,14 @@ from typing import Dict, Any
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
+    NavigateToCoordinatesTool,
     MoveDirectionTool,
     StopNavigationTool,
     ListWaypointsTool,
+    SaveWaypointTool,
+    DeleteWaypointTool,
+    ClearWaypointsTool,
+    GetCurrentPoseTool,
     SetVolumeTool,
     SetPitchTool,
     SetSpeedTool,
@@ -51,6 +56,7 @@ from .tools import (
     SetVibePresetTool,
     GetMusicStateTool,
 )
+from .waypoint_store import WaypointStore
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -77,6 +83,12 @@ class MCPServer(Node):
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
         self._init_voice_memory()
+
+        # WaypointStore — SQLite CRUD для вейпоинтов (одна БД с VoiceMemory)
+        self.waypoint_store = self._init_waypoint_store()
+
+        # TF Buffer для определения текущей позиции робота
+        self.tf_buffer = self._init_tf_buffer()
 
         # Регистрация инструментов
         self._register_tools()
@@ -116,13 +128,53 @@ class MCPServer(Node):
         self.get_logger().info(f"🛠️ MCP Server запущен с {len(self.registry)} инструментами")
         self.get_logger().info(f"   Инструменты: {', '.join(self.registry.list_tools())}")
 
+    def _init_waypoint_store(self) -> WaypointStore:
+        """Инициализация WaypointStore (SQLite для вейпоинтов)."""
+        import os
+
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        try:
+            store = WaypointStore(db_path=db_path)
+            active = store.get_active_map()
+            if active:
+                wp_count = len(store.list_waypoints())
+                self.get_logger().info(
+                    f"📍 WaypointStore: карта '{active['name'] or active['map_id'][:8]}', "
+                    f"{wp_count} точек"
+                )
+            else:
+                self.get_logger().info("📍 WaypointStore: активная карта не задана (будет создана при первом сохранении)")
+            return store
+        except Exception as exc:
+            self.get_logger().error(f"❌ Ошибка инициализации WaypointStore: {exc}")
+            # Fallback — create in-memory so tools don't crash
+            return WaypointStore(db_path=":memory:")
+
+    def _init_tf_buffer(self):
+        """Инициализация TF2 Buffer + Listener для определения позиции робота."""
+        try:
+            import tf2_ros
+
+            tf_buffer = tf2_ros.Buffer()
+            tf2_ros.TransformListener(tf_buffer, self)
+            self.get_logger().info("🗺️  TF2 Buffer + Listener инициализированы")
+            return tf_buffer
+        except Exception as exc:
+            self.get_logger().error(f"❌ TF2 init failed: {exc}")
+            return None
+
     def _register_tools(self):
         """Регистрация всех доступных инструментов"""
-        # Navigation tools
-        self.registry.register(NavigateToWaypointTool(self))
+        # Navigation tools (require waypoint_store and/or tf_buffer)
+        self.registry.register(NavigateToWaypointTool(self, self.waypoint_store))
+        self.registry.register(NavigateToCoordinatesTool(self))
         self.registry.register(MoveDirectionTool(self))
         self.registry.register(StopNavigationTool(self))
-        self.registry.register(ListWaypointsTool(self))
+        self.registry.register(ListWaypointsTool(self, self.waypoint_store))
+        self.registry.register(SaveWaypointTool(self, self.waypoint_store, self.tf_buffer))
+        self.registry.register(DeleteWaypointTool(self, self.waypoint_store))
+        self.registry.register(ClearWaypointsTool(self, self.waypoint_store))
+        self.registry.register(GetCurrentPoseTool(self, self.tf_buffer))
 
         # System tools
         self.registry.register(SetVolumeTool(self))
@@ -138,9 +190,9 @@ class MCPServer(Node):
         self.registry.register(self.battery_tool)
 
         # Mapping tools
-        self.registry.register(StartMappingTool(self))
+        self.registry.register(StartMappingTool(self, self.waypoint_store))
         self.registry.register(ContinueMappingTool(self))
-        self.registry.register(FinishMappingTool(self))
+        self.registry.register(FinishMappingTool(self, self.waypoint_store))
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))

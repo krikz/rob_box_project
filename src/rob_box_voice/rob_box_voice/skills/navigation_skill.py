@@ -1,9 +1,15 @@
 """
-navigation_skill.py — NavigationSkill: sub-agent for robot movement and navigation.
+navigation_skill.py — NavigationSkill: sub-agent for robot movement, navigation and waypoint management.
 
 Tools exposed to the sub-agent:
-  navigate_to_waypoint  — travel to a named location
-  move_direction        — move a short distance in a direction
+  navigate_to_waypoint   — travel to a named location (from DB)
+  navigate_to_coordinates — travel to arbitrary (x, y, theta)
+  move_direction          — move a short distance in a direction
+  list_waypoints          — get all saved waypoints
+  save_waypoint           — save current position as named waypoint
+  delete_waypoint         — remove a named waypoint
+  clear_waypoints         — remove all waypoints on the current map
+  get_current_pose        — get robot's current position on the map
 """
 
 import asyncio
@@ -14,10 +20,11 @@ from .base_skill import BaseSkill
 
 
 class NavigationSkill(BaseSkill):
-    """Sub-agent that handles all navigation and movement requests.
+    """Sub-agent that handles all navigation, movement and waypoint management.
 
-    Uses navigate_to_waypoint and move_direction MCP tools.  The sub-agent
-    waits for movement to complete before returning.
+    Uses navigate_to_waypoint, move_direction, save_waypoint, delete_waypoint,
+    clear_waypoints, list_waypoints, get_current_pose and navigate_to_coordinates
+    MCP tools.  The sub-agent waits for movement to complete before returning.
     """
 
     def _make_tools(self) -> list:
@@ -26,13 +33,28 @@ class NavigationSkill(BaseSkill):
 
         @function_tool
         async def navigate_to_waypoint(waypoint: str) -> str:
-            """Navigate the robot to a named waypoint.
+            """Navigate the robot to a named waypoint from the database.
             Blocks until arrival or failure.  Returns status string.
+            Call list_waypoints first to see available waypoints.
 
             Args:
-                waypoint: Named location (e.g. 'kitchen', 'entrance', 'charging_dock').
+                waypoint: Named location (e.g. 'кухня', 'зал', 'спальня').
             """
             return await _call("navigate_to_waypoint", {"waypoint": waypoint}, timeout=130.0)
+
+        @function_tool
+        async def navigate_to_coordinates(x: float, y: float, theta: float = 0.0) -> str:
+            """Navigate the robot to arbitrary coordinates in the map frame.
+            Use after get_current_pose to return to a saved position.
+
+            Args:
+                x: X coordinate in metres.
+                y: Y coordinate in metres.
+                theta: Orientation in radians (default 0.0).
+            """
+            return await _call(
+                "navigate_to_coordinates", {"x": x, "y": y, "theta": theta}, timeout=130.0
+            )
 
         @function_tool
         async def move_direction(direction: str, distance: float = 0.5) -> str:
@@ -46,4 +68,55 @@ class NavigationSkill(BaseSkill):
                 "move_direction", {"direction": direction, "distance": distance}, timeout=70.0
             )
 
-        return [navigate_to_waypoint, move_direction]
+        @function_tool
+        async def list_waypoints() -> str:
+            """Get a list of all saved waypoints on the current map.
+            Returns waypoint names and coordinates.
+            """
+            return await _call("list_waypoints", {})
+
+        @function_tool
+        async def save_waypoint(name: str) -> str:
+            """Save the robot's current position as a named waypoint.
+            Use when user says 'запомни это место как кухня', 'это зал'.
+
+            Args:
+                name: Human-friendly name for the waypoint (e.g. 'кухня', 'зал').
+            """
+            return await _call("save_waypoint", {"name": name})
+
+        @function_tool
+        async def delete_waypoint(name: str) -> str:
+            """Delete a saved waypoint by name.
+            Use when user says 'удали зал', 'забудь кухню'.
+
+            Args:
+                name: Name of the waypoint to delete.
+            """
+            return await _call("delete_waypoint", {"name": name})
+
+        @function_tool
+        async def clear_waypoints() -> str:
+            """Delete ALL saved waypoints on the current map.
+            Use when user says 'очисти все точки', 'удали все точки'.
+            """
+            return await _call("clear_waypoints", {})
+
+        @function_tool
+        async def get_current_pose() -> str:
+            """Get the robot's current position (x, y, theta) on the map.
+            Use before a 'go-speak-return' mission to remember the return position,
+            or when user asks 'где ты?'.
+            """
+            return await _call("get_current_pose", {})
+
+        return [
+            navigate_to_waypoint,
+            navigate_to_coordinates,
+            move_direction,
+            list_waypoints,
+            save_waypoint,
+            delete_waypoint,
+            clear_waypoints,
+            get_current_pose,
+        ]
