@@ -17,14 +17,46 @@ if [ -f "$PARAMS_FILE" ]; then
     SERIAL_PORT=$(grep "serial_port:" "$PARAMS_FILE" | awk '{print $2}' | tr -d '"' || echo "")
     
     if [ -n "$USE_SBUS" ] && [ -n "$SERIAL_PORT" ]; then
-        echo "📡 SBUS Serial mode enabled - joystick_control_node will read from $SERIAL_PORT"
+        echo "📡 SBUS Serial mode enabled - configured port: $SERIAL_PORT"
         echo "   No joy_node needed"
         
-        # Check if serial port exists
-        if [ -e "$SERIAL_PORT" ]; then
-            echo "✅ Serial port found: $SERIAL_PORT"
+        # Auto-detect serial port if configured one not found
+        # Look for any ttyACM device (CH340G USB-UART adapter)
+        if [ ! -e "$SERIAL_PORT" ]; then
+            echo "⚠️  Configured port $SERIAL_PORT not found, auto-detecting..."
+            # Try all ttyACM devices
+            FOUND_PORT=""
+            for port in /dev/ttyACM*; do
+                if [ -e "$port" ]; then
+                    echo "   Found serial port: $port"
+                    FOUND_PORT="$port"
+                fi
+            done
+            
+            if [ -n "$FOUND_PORT" ]; then
+                echo "✅ Using auto-detected port: $FOUND_PORT"
+                SERIAL_PORT="$FOUND_PORT"
+                # Override in params via command line (will be passed to node)
+                SERIAL_PORT_OVERRIDE="$FOUND_PORT"
+            else
+                echo "❌ No ttyACM devices found! Waiting 30s..."
+                TIMEOUT=30
+                ELAPSED=0
+                while [ $ELAPSED -lt $TIMEOUT ]; do
+                    for port in /dev/ttyACM*; do
+                        if [ -e "$port" ]; then
+                            SERIAL_PORT="$port"
+                            SERIAL_PORT_OVERRIDE="$port"
+                            echo "✅ Found port after ${ELAPSED}s: $port"
+                            break 2
+                        fi
+                    done
+                    sleep 1
+                    ELAPSED=$((ELAPSED + 1))
+                done
+            fi
         else
-            echo "⚠️  Warning: Serial port not found: $SERIAL_PORT"
+            echo "✅ Serial port found: $SERIAL_PORT"
         fi
     else
         echo "🎮 HID mode - will use joy_linux_node with /dev/input/event* devices"
@@ -71,8 +103,15 @@ echo "🚀 Starting joystick_control_node..."
 # Start joystick_control_node
 # Note: due to --symlink-install, the executable is named .py
 if [ -n "$PARAMS_FILE" ]; then
+    # Add serial port override if port was auto-detected
+    EXTRA_ARGS=""
+    if [ -n "$SERIAL_PORT_OVERRIDE" ]; then
+        EXTRA_ARGS="-p serial_port:=$SERIAL_PORT_OVERRIDE"
+        echo "   Overriding serial_port to: $SERIAL_PORT_OVERRIDE"
+    fi
     ros2 run rob_box_teleop joystick_control_node.py --ros-args \
         --params-file "$PARAMS_FILE" \
+        $EXTRA_ARGS \
         --log-level info &
 else
     ros2 run rob_box_teleop joystick_control_node.py --ros-args \

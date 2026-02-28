@@ -391,8 +391,8 @@ services:
       - ./scripts:/ros_scripts:ro
       - ./scripts/teleop:/scripts:ro
       - /dev/input:/dev/input  # Доступ к джойстику (для non-SBUS режима)
-    devices:
-      - /dev/ttyACM1:/dev/ttyACM1  # ELRS SBUS receiver (CH341)
+      - /dev:/dev  # Полный доступ к /dev для SBUS (номера ttyACM могут меняться)
+    # privileged: true + /dev монтировано = автоматический доступ ко всем serial портам
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_teleop.sh"]
     depends_on:
       - zenoh-router
