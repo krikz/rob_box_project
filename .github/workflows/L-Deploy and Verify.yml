@@ -243,7 +243,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' 
+            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
       - name: "[Vision Pi] Update Code"
@@ -253,11 +253,17 @@ jobs:
           echo "📥 Updating Vision Pi code from branch: ${{ github.ref_name }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            "cd ~/rob_box_project && \
-             GIT_SSH_COMMAND='ssh $SSH_OPTS' git fetch origin && \
-             git checkout ${{ github.ref_name }} && \
-             GIT_SSH_COMMAND='ssh $SSH_OPTS' git pull origin ${{ github.ref_name }}"
+          # Retry git operations (Pi WiFi to github.com can be flaky)
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git pull origin ${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -297,7 +303,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' 
+            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
       - name: "[Main Pi] Update Code"
@@ -307,11 +313,17 @@ jobs:
           echo "📥 Updating Main Pi code from branch: ${{ github.ref_name }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            "cd ~/rob_box_project && \
-             GIT_SSH_COMMAND='ssh $SSH_OPTS' git fetch origin && \
-             git checkout ${{ github.ref_name }} && \
-             GIT_SSH_COMMAND='ssh $SSH_OPTS' git pull origin ${{ github.ref_name }}"
+          # Retry git operations (Pi WiFi to github.com can be flaky)
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git pull origin ${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
