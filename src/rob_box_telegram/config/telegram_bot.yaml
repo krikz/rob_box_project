@@ -1,0 +1,25 @@
+# Rob Box Telegram Bot Configuration
+telegram_bot:
+  ros__parameters:
+    # Movement safety limits
+    max_linear_speed: 0.3      # m/s
+    max_angular_speed: 0.5     # rad/s
+    move_duration: 0.5         # seconds per button press
+
+    # Camera
+    photo_jpeg_quality: 85
+    camera_topic: "/camera/rgb/image_raw/compressed"
+    camera_up_topic: "/camera_up/rgb/image_raw/compressed"
+    camera_cache_ttl: 5.0      # seconds — discard frames older than this
+
+    # LLM
+    llm_provider: "deepseek"   # deepseek | qwen
+    llm_max_history: 20        # messages per user session
+    llm_temperature: 0.7
+
+    # Voice messages
+    voice_stt_method: "yandex"  # yandex | whisper
+    voice_stt_language: "ru-RU"
+
+    # Polling
+    telegram_poll_timeout: 30   # seconds
