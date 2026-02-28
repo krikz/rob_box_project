@@ -78,7 +78,7 @@ class NavigationSkill(BaseSkill):
         @function_tool
         async def save_waypoint(name: str) -> str:
             """Save the robot's current position as a named waypoint.
-            Use when user says 'запомни это место как кухня', 'это зал'.
+            ALWAYS use when user names a place/location: 'это кухня', 'тут база', 'здесь зал', 'это его база', 'запомни это место'. NOT memory_save!
 
             Args:
                 name: Human-friendly name for the waypoint (e.g. 'кухня', 'зал').

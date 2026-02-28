@@ -421,9 +421,9 @@ class DialogueNode(Node):
             return await _call("memory_context", {"limit": limit})
 
         @function_tool
-        async def memory_save(content: str, tags: str = "") -> str:
-            """Сохранить важную информацию в долгосрочную память."""
-            return await _call("memory_save", {"content": content, "tags": tags})
+        async def memory_save(fact: str, category: str = "general") -> str:
+            """Сохранить факт о пользователе в долгосрочную память (имя, предпочтения, привычки). НЕ для мест/локаций — для этого используй save_waypoint!"""
+            return await _call("memory_save", {"fact": fact, "category": category})
 
         @function_tool
         async def memory_search(query: str, limit: int = 5) -> str:
@@ -470,7 +470,7 @@ class DialogueNode(Node):
 
         @function_tool
         async def save_waypoint(name: str) -> str:
-            """Сохранить текущую позицию робота как именованную точку. Используй когда пользователь говорит 'запомни это место как кухня', 'это зал'."""
+            """Сохранить текущую позицию робота как именованную точку (waypoint). ВСЕГДА используй когда пользователь называет место/локацию: 'это кухня', 'тут база', 'здесь зал', 'запомни это место', 'это его база'. НЕ memory_save!"""
             return await _call("save_waypoint", {"name": name})
 
         @function_tool
