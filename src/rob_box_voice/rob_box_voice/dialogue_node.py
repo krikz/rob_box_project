@@ -27,9 +27,11 @@ from std_msgs.msg import Bool, String
 
 from agents import Agent, Runner, function_tool
 from agents.exceptions import MaxTurnsExceeded
+from agents.items import ToolCallItem
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
-from openai import AsyncOpenAI
+from httpx import Timeout as HttpxTimeout
+from openai import APIConnectionError, AsyncOpenAI
 
 from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
@@ -145,6 +147,12 @@ class DialogueNode(Node):
         # ── spoken texts accumulator ──────────────────────────────────
         # Collects all speak_text calls for building clean history.
         self._spoken_texts: List[str] = []
+
+        # ── Tool call tracker ─────────────────────────────────────────
+        # Tracks which MCP tools were called during an agent turn.
+        # Used to add [tools: X] markers to conversation history so that
+        # the LLM doesn't hallucinate actions without calling tools.
+        self._tools_called: List[str] = []
 
         # ── Output serialisation lock ────────────────────────────────
         # speak_text / play_sound / play_animation must not run in parallel.
@@ -290,7 +298,12 @@ class DialogueNode(Node):
             base_url = self._resolve_base_url()
             model_name = self._resolve_model()
 
-            openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            openai_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=HttpxTimeout(60.0, connect=15.0),
+                max_retries=3,
+            )
             model = OpenAIChatCompletionsModel(
                 model=model_name, openai_client=openai_client
             )
@@ -339,6 +352,7 @@ class DialogueNode(Node):
         lock = self._output_lock
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            self._tools_called.append(tool_name)
             result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
@@ -628,6 +642,7 @@ class DialogueNode(Node):
         lock = self._output_lock
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            self._tools_called.append(tool_name)
             result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
@@ -874,12 +889,42 @@ class DialogueNode(Node):
     # Agent execution
     # ────────────────────────────────────────────────────────────────
 
+    async def _run_agent_with_retry(
+        self,
+        input_list: list,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ):
+        """Run Agent with retry on APIConnectionError (WiFi flakiness)."""
+        last_exc = None
+        for attempt in range(1 + max_retries):
+            try:
+                return await Runner.run(
+                    self._agent, input_list, max_turns=self._agent_max_turns
+                )
+            except APIConnectionError as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    self.get_logger().warning(
+                        f"⚠️ APIConnectionError (attempt {attempt + 1}/{1 + max_retries}), "
+                        f"retrying in {delay:.0f}s: {exc}"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    self.get_logger().error(
+                        f"❌ APIConnectionError after {1 + max_retries} attempts: {exc}"
+                    )
+                    raise
+        raise last_exc  # unreachable, but keeps type checker happy
+
     async def _agent_run(self, user_input: str) -> None:
         """Run the OpenAI Agents SDK loop for a single user turn."""
         with self._task_lock:
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
         self._spoken_texts = []
+        self._tools_called = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
         if self._voice_memory is not None:
             try:
@@ -904,15 +949,30 @@ class DialogueNode(Node):
                 )
 
             result = await asyncio.wait_for(
-                Runner.run(self._agent, input_list, max_turns=self._agent_max_turns),
+                self._run_agent_with_retry(input_list),
                 timeout=self._llm_timeout * 3,
             )
 
-            # Build clean history: user text + what was spoken, without tool_call
-            # patterns. Using to_input_list() would include assistant tool_call
-            # messages which cause the LLM to repeat action sequences (e.g. counting)
-            # when asked an unrelated follow-up request.
+            # Build clean history with tool-call markers so the LLM knows
+            # that previous actions were executed via tools (not just text).
+            # Without markers, the LLM sees "добавь точку X" → "Точка X добавлена!"
+            # and learns to skip tool calls, just echoing the pattern.
             spoken = " ".join(self._spoken_texts) if self._spoken_texts else (result.final_output or "")
+            # Detect which tools were called from:
+            #  1) result.new_items (ToolCallItem) — reliable SDK API
+            #  2) self._tools_called — populated by _call() helpers as fallback
+            tool_names_used = set()
+            try:
+                for item in result.new_items:
+                    if isinstance(item, ToolCallItem) and hasattr(item.raw_item, "name"):
+                        tool_names_used.add(item.raw_item.name)
+            except Exception:
+                pass
+            # Fallback: merge tools tracked by _call() helpers
+            tool_names_used.update(self._tools_called)
+            if tool_names_used:
+                tool_tag = "[tools: " + ", ".join(sorted(tool_names_used)) + "] "
+                spoken = tool_tag + spoken
             if self._verbose_llm:
                 self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
             else:

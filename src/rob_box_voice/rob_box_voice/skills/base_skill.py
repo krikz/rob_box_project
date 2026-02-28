@@ -12,11 +12,15 @@ returns a plain string result back to the Compositor.
 
 import asyncio
 import json
+import logging
 from abc import ABC, abstractmethod
 
 from agents import Agent, Runner, function_tool
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from openai import APIConnectionError
+
+logger = logging.getLogger(__name__)
 
 
 class BaseSkill(ABC):
@@ -96,10 +100,27 @@ class BaseSkill(ABC):
         """
         agent = self.build_agent()
         max_turns = self._agent_max_turns
+        skill_name = self._name
 
         async def _run_skill(task: str) -> str:
-            result = await Runner.run(agent, input=task, max_turns=max_turns)
-            return result.final_output or ""
+            last_exc = None
+            for attempt in range(3):  # 1 + 2 retries
+                try:
+                    result = await Runner.run(agent, input=task, max_turns=max_turns)
+                    return result.final_output or ""
+                except APIConnectionError as exc:
+                    last_exc = exc
+                    if attempt < 2:
+                        delay = 2.0 * (2 ** attempt)
+                        logger.warning(
+                            f"⚠️ {skill_name} APIConnectionError (attempt {attempt + 1}/3), "
+                            f"retrying in {delay:.0f}s: {exc}"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"❌ {skill_name} APIConnectionError after 3 attempts: {exc}")
+                        raise
+            raise last_exc  # unreachable
 
         _run_skill.__name__ = tool_name
         _run_skill.__doc__ = tool_description

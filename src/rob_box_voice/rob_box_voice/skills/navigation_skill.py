@@ -110,6 +110,27 @@ class NavigationSkill(BaseSkill):
             """
             return await _call("get_current_pose", {})
 
+        @function_tool
+        async def start_mapping() -> str:
+            """Start new mapping session. Creates a backup of the current map and resets RTABMap.
+            Use when user says 'начни карту', 'новая карта', 'начинаем маппинг', 'исследуй территорию'.
+            """
+            return await _call("start_mapping", {}, timeout=15.0)
+
+        @function_tool
+        async def continue_mapping() -> str:
+            """Continue an existing mapping session (resume RTABMap mapping mode).
+            Use when user says 'продолжи маппинг', 'продолжай исследовать'.
+            """
+            return await _call("continue_mapping", {}, timeout=10.0)
+
+        @function_tool
+        async def finish_mapping() -> str:
+            """Finish mapping and switch to localization mode.
+            Use when user says 'закончи карту', 'хватит маппить', 'завершить исследование'.
+            """
+            return await _call("finish_mapping", {}, timeout=10.0)
+
         return [
             navigate_to_waypoint,
             navigate_to_coordinates,
@@ -119,4 +140,7 @@ class NavigationSkill(BaseSkill):
             delete_waypoint,
             clear_waypoints,
             get_current_pose,
+            start_mapping,
+            continue_mapping,
+            finish_mapping,
         ]

@@ -67,7 +67,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     goal.pose.pose.orientation.w = math.cos(theta / 2.0)
 
     send_future = nav_client.send_goal_async(goal)
-    if not _wait_future(send_future, timeout_sec=5.0) or send_future.result() is None:
+    if not _wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
         return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
 
     goal_handle = send_future.result()
