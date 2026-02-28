@@ -157,5 +157,167 @@ erpm = cmd_velocities[i] × gear_ratio × pole_pairs × 60 / (2π)
 
 ---
 
+## 6. Результаты реального тестирования RPM-режима (2026-02-28)
+
+### 6.1 Реализованные изменения
+
+Все изменения из плана (секция 4) были реализованы и задеплоены на робота:
+- `control_mode=rpm` в xacro
+- `sendSpeedRpm()` в VescHandler (m/s → ERPM конвертация)
+- `sendCommand()` диспетчер в HW interface
+- `angular.z.max_velocity: 3.0` в controller_manager.yaml
+
+**Коммит vesc_nexus**: `fc655f0` на ветке `feat/rpm-control-mode`  
+**Коммит main repo**: `dbb5598` на ветке `feature/agent-skills`
+
+### 6.2 Инициализация — ОК
+
+Логи подтверждают корректную инициализацию:
+```
+Control mode: RPM (closed-loop velocity via VESC PID)
+Gear ratio configured: 2.5
+[left_front_wheel_joint] can_id=49, max_rps=6.50, gear_ratio=2.5, max_speed=1.90 m/s, min_duty=0.040, mode=RPM
+```
+
+Все 4 колеса видны, CAN-интерфейс `can0` в состоянии `ERROR-ACTIVE` (нормально).
+
+### 6.3 Проблема Zenoh маршрутизации (косметическая)
+
+При тестировании обнаружена проблема маршрутизации cmd_vel:
+- Основной процесс (`ros2_control_node`) использует `ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5`
+- CLI-команды `ros2 topic pub` используют другой конфиг `/config/zenoh_session_config.json5`
+- Из-за этого CLI-сессии не находили подписчиков контроллера
+
+**Решение**: При работе внутри ros2-control контейнера необходимо использовать тот же конфиг:
+```bash
+export ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+```
+
+### 6.4 Тест движения: RPM режим работает, но с проблемами
+
+Отправлена команда 0.1 м/с через `/diff_drive_controller/cmd_vel_unstamped`:
+
+#### Выход (команды ERPM):
+```
+speed=0.0200 m/s → ERPM=62   (разгон, шаг 1)
+speed=0.0400 m/s → ERPM=123  (разгон, шаг 2)
+speed=0.0600 m/s → ERPM=185  (разгон, шаг 3)
+speed=0.0800 m/s → ERPM=247  (разгон, шаг 4)
+speed=0.1000 m/s → ERPM=308  (целевая скорость)
+```
+
+diff_drive_controller плавно разгоняет/замедляет через velocity ramp.
+
+#### Обратная связь (реальные ERPM с left_front_wheel_joint):
+```
+Целевой: 308 ERPM
+Реальный: 35 → 454 → 478 → 348 → 232 → 425 → -22 → 249 → 108 → 368
+```
+
+**ERPM скачет от -22 до 478 при целевых 308!** Хаотичные осцилляции ±200% от цели.
+
+#### Наблюдения:
+- Робот **поехал**, но дальше, чем нужно (10 секунд на 0.1 м/с ≈ 80 см, а не 10 см)
+- Моторы **дребездят** (rattling sound) при движении
+- После остановки один мотор показал ERPM=-1618 (PID overshoot при торможении)
+
+### 6.5 Корневая причина дребезга: Sensorless FOC на низких ERPM
+
+#### Исследование исходного кода VESC firmware
+
+Функция `foc_run_pid_control_speed()` в `motor/foc_math.c` (bldc firmware):
+
+```c
+// Если целевой ERPM ниже порога — полностью отпустить мотор
+if (fabsf(motor->m_speed_pid_set_rpm) < conf_now->s_pid_min_erpm) {
+    motor->m_speed_i_term = 0.0;
+    motor->m_iq_set = 0.0;  // ток = 0
+    return;
+}
+```
+
+**Ключевые параметры VESC Speed PID:**
+
+| Параметр | Что делает |
+|---|---|
+| `s_pid_kp` | Пропорциональный коэффициент |
+| `s_pid_ki` | Интегральный коэффициент |
+| `s_pid_kd` | Дифференциальный коэффициент |
+| `s_pid_kd_filter` | Фильтр D-компоненты |
+| `s_pid_min_erpm` | Минимальный ERPM (ниже → мотор отпускается) |
+| `s_pid_allow_braking` | Разрешить торможение через PID |
+| `s_pid_ramp_erpms_s` | Скорость нарастания целевого ERPM |
+| `s_pid_speed_source` | Источник: PLL (фильтр), Fast, Faster |
+
+#### Vedder (автор VESC) о низких скоростях (GitHub Issue #139):
+
+> "Very low speed operation (depending on how low) will always be a problem with hall sensors, even if they are perfectly spaced and/or perfectly calibrated. The reason is that there are no updates between the discrete 60 degree position updates. If you are operating on too low speeds there is no other choice than using some sort of encoder with higher resolution."
+
+Для **sensorless** (наш случай) ситуация **ещё хуже**: observer теряет точность фазы при ERPM < ~500-1000, что делает PID-контроль нестабильным.
+
+#### Issue #864 — аналогичный кейс (дифференциальный робот):
+
+Пользователь: "I have a differential drive robot and don't want to go down the slope when speed is zero."  
+Вывод: VESC speed mode при нулевой скорости **полностью отпускает мотор** (нет holding torque), в отличие от ODrive.
+
+#### Issue #640 — PID использует фильтрованную скорость:
+
+Speed PID по умолчанию использует `m_pll_speed` (фильтрованный с лагом). Vedder добавил опцию `s_pid_speed_source` для выбора `m_speed_est_fast` (меньше лаг, лучше PID).
+
+#### Issue #884 — флуктуации скорости при любых оборотах:
+
+Даже при средних скоростях наблюдаются колебания. Предлагается lowpass filter на выход PID.
+
+### 6.6 Рекомендации по настройке VESC для RPM-режима
+
+#### Через VESC Tool (требуется USB-подключение к каждому ESC):
+
+1. **Speed PID Kp/Ki** — уменьшить от дефолтных значений для меньшего overshoot
+2. **s_pid_min_erpm** — установить 500-1000 (чтобы VESC не пытался работать на недопустимо низких оборотах)
+3. **s_pid_speed_source** — попробовать "Fast" вместо PLL для меньшего лага
+4. **s_pid_allow_braking** — включить для робота (нужно торможение)
+5. **FOC switching frequency** — увеличить до 25-30 кГц (лучше для низких скоростей)
+6. **Current controller time constant** — попробовать 600-800µs (от дефолтных 1000µs, по рекомендации из Issue #139)
+7. **Observer gain** — попробовать 2/3 от расчётного (по рекомендации Aquaharmonics)
+
+#### Программные решения (без VESC Tool):
+
+1. **Min ERPM порог в коде** — не отправлять |ERPM| < 500, использовать deadzone в `sendSpeedRpm()`
+2. **Гибридный режим** — duty cycle для < 0.3 м/с, RPM для > 0.3 м/с
+3. **Увеличить минимальную скорость** робота — не посылать cmd_vel < 0.2 м/с
+
+#### Аппаратные решения:
+
+1. **Hall sensors** — добавить датчики Холла на моторы (лучше для низких скоростей)
+2. **Энкодеры** — AS5047P на каждый мотор (идеальная точность)
+3. **HFI (High Frequency Injection)** — sensorless метод для низких скоростей (зависит от FW версии и мощности мотора)
+
+---
+
+## 7. Телеоп и маршрутизация топиков
+
+### 7.1 Проверка спама нулями
+
+Проверены все cmd_vel топики — **телеоп НЕ спамит**:
+- `/cmd_vel_joy` — нет публикаций
+- `/cmd_vel_web` — нет публикаций
+- `/cmd_vel` (выход twist-mux) — нет публикаций
+
+### 7.2 Маршрутизация cmd_vel
+
+Топология (подтверждено `ros2 topic info -v`):
+```
+twist_mux (publisher) → /diff_drive_controller/cmd_vel_unstamped → diff_drive_controller (subscriber)
+```
+
+twist-mux приоритеты (из конфига):
+- emergency (255) > joystick (100) > web (50) > voice (25) > nav2 (10)
+
+Входные топики: `/cmd_vel_emergency`, `/cmd_vel_joy`, `/cmd_vel_web`, `/cmd_vel_voice`, `/cmd_vel`  
+Выходной топик: `/diff_drive_controller/cmd_vel_unstamped`
+
+---
+
 **Автор**: GitHub Copilot  
-**Следующий шаг**: Реализация (этот же PR)
+**Статус**: Задокументированы находки первого реального тестирования RPM-режима  
+**Следующий шаг**: Настройка VESC PID через VESC Tool + программный min ERPM порог
