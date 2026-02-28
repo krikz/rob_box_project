@@ -56,7 +56,7 @@
       <param name="poles">30</param>               <!-- Количество полюсов мотора -->
       <param name="min_erpm">24</param>           <!-- Минимальный ERPM для движения -->
       <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
-      <param name="max_rps">10</param>              <!-- Калибровка 2026-02-28: ERPM=929@duty=0.125 → ~8.3 rps, запас 10 -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s, max_rps=10×1.22 -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -74,7 +74,7 @@
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
       <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
-      <param name="max_rps">10</param>              <!-- Калибровка 2026-02-28: ERPM=929@duty=0.125 → ~8.3 rps, запас 10 -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -92,7 +92,7 @@
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
       <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
-      <param name="max_rps">10</param>              <!-- Калибровка 2026-02-28: ERPM=929@duty=0.125 → ~8.3 rps, запас 10 -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -110,7 +110,7 @@
       <param name="poles">30</param>
       <param name="min_erpm">24</param>
       <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
-      <param name="max_rps">10</param>              <!-- Калибровка 2026-02-28: ERPM=929@duty=0.125 → ~8.3 rps, запас 10 -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>
   </ros2_control>
 
