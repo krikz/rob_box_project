@@ -40,7 +40,7 @@ jobs:
             DOCKER_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
+          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
             DOCKER_TAG="test"
           else
             DOCKER_TAG="local"

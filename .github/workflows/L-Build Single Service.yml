@@ -39,6 +39,7 @@ on:
           - led-matrix
           - ceiling-camera
           - voice-assistant
+          - telegram-bot
           - supercollider
           - apriltag
           # Common to both
@@ -103,6 +104,8 @@ jobs:
             DOCKER_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             DOCKER_TAG="dev"
+          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
+            DOCKER_TAG="test"
           else
             DOCKER_TAG="local"
           fi
@@ -219,6 +222,13 @@ jobs:
                   IMAGE_NAME="apriltag"
                   DOCKERFILE="docker/vision/apriltag/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  ;;
+                "telegram-bot"|"telegram_bot")
+                  SERVICE_NAME="telegram_bot"
+                  IMAGE_NAME="telegram-bot"
+                  DOCKERFILE="docker/vision/telegram_bot/Dockerfile"
+                  BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
                   ;;
                 "supercollider")
