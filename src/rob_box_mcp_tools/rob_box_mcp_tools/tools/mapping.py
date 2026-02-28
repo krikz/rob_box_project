@@ -9,7 +9,6 @@ mapping.py - Инструменты для управления картогра
 """
 
 from typing import List, Optional, TYPE_CHECKING
-import subprocess
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
@@ -29,6 +28,7 @@ class StartMappingTool(MCPTool):
         from std_srvs.srv import Empty
         
         # Service clients для RTABMap
+        self.backup_client = node.create_client(Empty, "/rtabmap/rtabmap/backup")
         self.reset_memory_client = node.create_client(Empty, "/rtabmap/reset_memory")
         self.set_mode_mapping_client = node.create_client(Empty, "/rtabmap/set_mode_mapping")
 
@@ -42,17 +42,24 @@ class StartMappingTool(MCPTool):
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
-        return []
+        return [
+            MCPToolParameter(
+                name="map_name",
+                type="string",
+                description="Название новой карты (опционально, например 'квартира', 'офис')",
+                required=False,
+            )
+        ]
 
-    def execute(self) -> MCPToolResult:
+    def execute(self, map_name: str = "") -> MCPToolResult:
         """Начать картографирование"""
         self.log_info("Запуск нового картографирования")
 
-        # 1. Создать backup текущей карты
+        # 1. Создать backup текущей карты через ROS 2 сервис
         self.log_info("Создание backup карты...")
         backup_success = self._create_backup()
         if not backup_success:
-            return MCPToolResult(success=False, error="Не удалось создать backup карты", message="Операция отменена")
+            self.log_warning("⚠️ Backup не удался, продолжаем без backup")
 
         # 2. Сбросить память RTABMap
         if not self.reset_memory_client.wait_for_service(timeout_sec=2.0):
@@ -77,45 +84,39 @@ class StartMappingTool(MCPTool):
         map_id = None
         if self.waypoint_store:
             try:
-                map_id = self.waypoint_store.create_map()
+                map_id = self.waypoint_store.create_map(map_name.strip() if map_name else None)
                 self.log_info(f"📍 Новая карта создана: {map_id[:8]}...")
             except Exception as e:
                 self.log_warning(f"⚠️ Не удалось создать карту в WaypointStore: {e}")
 
+        suffix = f" Карта: '{map_name}'." if map_name else ""
         return MCPToolResult(
             success=True,
             data={"map_id": map_id} if map_id else None,
-            message="Начинаю новое исследование. Старая карта сохранена в резервной копии."
+            message=f"Начинаю новое исследование. Старая карта сохранена в резервной копии.{suffix}"
         )
 
     def _create_backup(self) -> bool:
-        """Создать backup RTABMap базы данных через Docker"""
+        """Создать backup RTABMap базы данных через ROS 2 сервис /rtabmap/rtabmap/backup"""
         try:
-            result = subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "rtabmap",
-                    "bash",
-                    "-c",
-                    "mkdir -p /maps/backups && "
-                    "cp /maps/rtabmap.db /maps/backups/rtabmap_backup_$(date +%Y%m%d_%H%M%S).db && "
-                    "echo OK",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            if not self.backup_client.wait_for_service(timeout_sec=3.0):
+                self.log_warning("⚠️ RTABMap backup service недоступен")
+                return False
 
-            if result.returncode == 0 and "OK" in result.stdout:
-                self.log_info("✅ Backup создан успешно")
+            from std_srvs.srv import Empty
+            request = Empty.Request()
+            future = self.backup_client.call_async(request)
+
+            # Ждём ответа до 10 секунд
+            import rclpy
+            rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
+
+            if future.done() and future.result() is not None:
+                self.log_info("✅ Backup создан успешно через ROS 2 сервис")
                 return True
             else:
-                self.log_error(f"❌ Backup failed: {result.stderr}")
+                self.log_warning("⚠️ Backup timeout или ошибка")
                 return False
-        except subprocess.TimeoutExpired:
-            self.log_error("❌ Backup timeout (10s)")
-            return False
         except Exception as e:
             self.log_error(f"❌ Backup error: {e}")
             return False
@@ -142,10 +143,6 @@ class ContinueMappingTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.MEDIUM  # Переключение режима 2-10s
 
     @property
     def execution_type(self) -> ToolExecutionType:
