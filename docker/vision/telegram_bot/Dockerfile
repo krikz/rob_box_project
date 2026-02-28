@@ -4,7 +4,7 @@
 # Деплоится на Vision Pi рядом с voice-assistant
 #
 # ВАЖНО: конфиги и скрипты монтируются через volumes, НЕ COPY!
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box:ros2-zenoh-humble-latest
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
 FROM ${BASE_IMAGE}
 
