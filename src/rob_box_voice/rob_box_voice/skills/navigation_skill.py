@@ -135,6 +135,18 @@ class NavigationSkill(BaseSkill):
             """
             return await _call("finish_mapping", {}, timeout=10.0)
 
+        @function_tool
+        async def speak_text(text: str, animation: str = "talking") -> str:
+            """Make the robot say something out loud via TTS.
+            Use for go-speak-return missions: navigate first, then speak_text at destination.
+            Допустимые animation: idle talking wakeup sleep happy sad angry surprised thinking victory error excited confused neutral
+
+            Args:
+                text: Text to say (max 150 chars recommended).
+                animation: LED animation to play while speaking (default 'talking').
+            """
+            return await _call("speak_text", {"text": text, "animation": animation})
+
         return [
             navigate_to_waypoint,
             navigate_to_coordinates,
@@ -147,4 +159,5 @@ class NavigationSkill(BaseSkill):
             start_mapping,
             continue_mapping,
             finish_mapping,
+            speak_text,
         ]
