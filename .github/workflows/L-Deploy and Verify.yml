@@ -291,7 +291,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             docker compose up -d"
+             docker compose up -d --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -351,7 +351,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             docker compose up -d"
+             docker compose up -d --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
 
