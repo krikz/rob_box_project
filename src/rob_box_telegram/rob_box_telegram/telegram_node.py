@@ -213,9 +213,21 @@ class TelegramNode(Node):
     # ── Publish helpers ─────────────────────────────────────────────
 
     def publish_tts(self, text: str) -> None:
-        """Publish text for the robot to speak."""
+        """Publish text for the robot to speak via /voice/tts/request.
+
+        tts_node expects JSON: {"ssml": "<speak>text</speak>", "speech_id": "..."}
+        """
+        import uuid
+
+        payload = json.dumps(
+            {
+                "ssml": f"<speak>{text}</speak>",
+                "speech_id": str(uuid.uuid4()),
+            },
+            ensure_ascii=False,
+        )
         msg = String()
-        msg.data = text
+        msg.data = payload
         self.tts_pub.publish(msg)
         self.get_logger().info(f"TTS request: {text[:80]}")
 
