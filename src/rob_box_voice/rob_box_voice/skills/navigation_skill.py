@@ -111,11 +111,15 @@ class NavigationSkill(BaseSkill):
             return await _call("get_current_pose", {})
 
         @function_tool
-        async def start_mapping() -> str:
+        async def start_mapping(map_name: str = "") -> str:
             """Start new mapping session. Creates a backup of the current map and resets RTABMap.
             Use when user says 'начни карту', 'новая карта', 'начинаем маппинг', 'исследуй территорию'.
+
+            Args:
+                map_name: Optional name for the new map (e.g. 'квартира', 'офис').
             """
-            return await _call("start_mapping", {}, timeout=15.0)
+            params = {"map_name": map_name} if map_name else {}
+            return await _call("start_mapping", params, timeout=15.0)
 
         @function_tool
         async def continue_mapping() -> str:
