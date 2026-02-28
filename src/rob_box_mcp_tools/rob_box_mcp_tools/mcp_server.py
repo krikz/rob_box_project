@@ -16,6 +16,7 @@ ROS 2 интерфейс:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
@@ -108,7 +109,16 @@ class MCPServer(Node):
         self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
 
         # Subscriber для запросов на выполнение
-        self.execute_sub = self.create_subscription(String, "/mcp/execute", self.on_execute_request, qos_profile)
+        # ReentrantCallbackGroup — критически важно!
+        # on_execute_request блокируется ожидая action result.
+        # Если он в дефолтной MutuallyExclusiveCallbackGroup,
+        # ActionClient response callbacks НЕ МОГУТ выполниться
+        # (та же группа "залочена") → deadlock → "Nav2 не ответил".
+        self._execute_cb_group = ReentrantCallbackGroup()
+        self.execute_sub = self.create_subscription(
+            String, "/mcp/execute", self.on_execute_request, qos_profile,
+            callback_group=self._execute_cb_group
+        )
 
         # Подписка на perception context для обновления инструментов
         try:
