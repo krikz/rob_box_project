@@ -132,40 +132,64 @@ class LLMChat:
         return self.sessions[chat_id]
 
     def _truncate_history(self, chat_id: int) -> None:
-        """Keep only the last max_history messages."""
+        """Keep only the last max_history messages, never cutting mid tool-call sequence."""
         history = self.sessions.get(chat_id, [])
-        if len(history) > self.max_history:
-            # Keep system-relevant context: trim oldest user/assistant pairs
-            self.sessions[chat_id] = history[-self.max_history :]
+        if len(history) <= self.max_history:
+            return
+        # Trim from the start, but skip forward to avoid starting mid-sequence:
+        # i.e. the first kept message must not be role:tool (orphaned)
+        trimmed = history[-self.max_history :]
+        # Advance past any leading tool messages that lost their assistant+tool_calls parent
+        while trimmed and trimmed[0].get("role") == "tool":
+            trimmed = trimmed[1:]
+        self.sessions[chat_id] = trimmed
 
     @staticmethod
     def _sanitize_messages(messages: List[Dict]) -> List[Dict]:
         """Remove orphaned role:tool messages and dangling assistant+tool_calls.
 
         DeepSeek requires that every role:tool message is immediately preceded
-        by a role:assistant message that contains tool_calls. After truncation
-        or partial history loading this invariant can break, causing HTTP 400.
+        by a role:assistant message that contains tool_calls, AND that ALL
+        tool_call_ids referenced in tool_calls have corresponding tool messages.
+        After truncation or partial history loading this invariant can break,
+        causing HTTP 400.
+
+        Algorithm (two-pass):
+        1. Build groups: each assistant+tool_calls message + its consecutive
+           tool messages form a "group". Check coverage of all tool_call_ids.
+           If coverage is incomplete → strip tool_calls, drop orphan tools.
+        2. Also drop any role:tool messages that appear without a preceding
+           valid assistant+tool_calls.
         """
         result = []
-        for i, msg in enumerate(messages):
-            if msg.get("role") == "tool":
-                # Only include if previous message is assistant with tool_calls
-                prev = result[-1] if result else None
-                if prev and prev.get("role") == "assistant" and prev.get("tool_calls"):
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                required_ids = {tc.get("id", "") for tc in msg["tool_calls"]}
+                # Collect consecutive tool messages that follow
+                j = i + 1
+                tool_msgs = []
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    tool_msgs.append(messages[j])
+                    j += 1
+                covered_ids = {tm.get("tool_call_id", "") for tm in tool_msgs}
+                if required_ids and required_ids.issubset(covered_ids):
+                    # All tool_call_ids are covered — keep the whole sequence
                     result.append(msg)
-                # else: drop orphaned tool message
-            elif msg.get("role") == "assistant" and msg.get("tool_calls"):
-                # Check if the NEXT message in original list is a tool result
-                # If not (e.g. history was truncated mid-sequence), strip tool_calls
-                next_msg = messages[i + 1] if i + 1 < len(messages) else None
-                if next_msg and next_msg.get("role") == "tool":
-                    result.append(msg)
+                    result.extend(tool_msgs)
                 else:
-                    # Strip tool_calls so it's a plain assistant message
+                    # Incomplete — strip tool_calls from assistant, drop tool msgs
                     clean = {k: v for k, v in msg.items() if k != "tool_calls"}
                     result.append(clean)
+                    # Skip the incomplete tool messages (don't add to result)
+                i = j  # advance past all consumed messages
+            elif msg.get("role") == "tool":
+                # Orphaned tool message (no preceding assistant+tool_calls) — drop
+                i += 1
             else:
                 result.append(msg)
+                i += 1
         return result
 
     def clear_session(self, chat_id: int) -> None:
