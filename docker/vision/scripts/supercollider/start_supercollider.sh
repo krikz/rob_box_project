@@ -51,7 +51,7 @@ echo "[SuperCollider] JACK running. Starting scsynth on UDP port 57110..."
 scsynth \
     -u 57110 \
     -D 0 \
-    -m 8192 \
+    -m 65536 \
     -z 1024 \
     -S 16000 \
     -H jack \

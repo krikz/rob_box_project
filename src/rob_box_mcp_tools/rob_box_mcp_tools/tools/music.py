@@ -320,16 +320,47 @@ class MusicManager:
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
     def stop_all(self) -> Dict[str, Any]:
-        """Остановить всю музыку через Clock.clear().
+        """Остановить всю музыку: остановить все плееры + Clock.clear() + SC freeAll.
+
+        Трёхэтапная остановка:
+        1. Вызвать .stop() на каждом известном плеере (d1-d9, p1-p9, s1-s9, l1-l9)
+           чтобы снять их с Clock до очистки.
+        2. Clock.clear() — убрать все запланированные события из шедулера.
+        3. OSC /g_freeAll — убить все живые синтезаторы в scsynth (Group 1).
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
         if self._renardo_available and self._check_supercollider():
+            # Шаг 1: остановить все плееры которые есть в контексте
+            player_names = (
+                [f"d{i}" for i in range(1, 10)]
+                + [f"p{i}" for i in range(1, 10)]
+                + [f"s{i}" for i in range(1, 10)]
+                + [f"l{i}" for i in range(1, 10)]
+            )
+            stop_code = "\n".join(
+                f"try:\n  {name}.stop()\nexcept Exception:\n  pass"
+                for name in player_names
+            )
+            try:
+                exec(stop_code, self._renardo_context)  # noqa: S102
+            except Exception:
+                pass  # best-effort, продолжаем
+
+            # Шаг 2: очистить Clock
             try:
                 exec("Clock.clear()", self._renardo_context)  # noqa: S102
             except Exception as exc:
-                return {"success": False, "error": f"Ошибка остановки: {exc}"}
+                return {"success": False, "error": f"Ошибка остановки Clock: {exc}"}
+
+            # Шаг 3: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
+            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass  # если SC недоступен — не страшно, Clock уже очищен
 
         self._active_patterns.clear()
         return {"success": True, "message": "Вся музыка остановлена"}
