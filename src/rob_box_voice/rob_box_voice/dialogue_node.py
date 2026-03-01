@@ -936,9 +936,11 @@ class DialogueNode(Node):
 
         try:
             with self._conv_lock:
-                # Strip [tools: ...] markers from history before feeding to LLM.
-                # These markers were causing the LLM to copy the pattern as
-                # plain text instead of actually making tool calls.
+                # Conversation history uses [выполнено через: ...] markers
+                # on tool-assisted turns.  These markers STAY in the LLM input
+                # so the model sees that previous responses came from tool calls
+                # and doesn't try to pattern-copy the response text.
+                # Only strip legacy [tools: ...] markers (from old history entries).
                 cleaned = []
                 for msg in self._conversation:
                     c = dict(msg)
@@ -981,13 +983,25 @@ class DialogueNode(Node):
                 pass
             # Fallback: merge tools tracked by _call() helpers
             tool_names_used.update(self._tools_called)
+
+            # Build the string stored in conversation history.
+            # CRITICAL: if tools were used, store a non-speakable summary
+            # format so the LLM cannot pattern-copy it as a direct answer.
+            # Without this, history like:
+            #   user: "едь на базу" → assistant: "Приехал на базу!"
+            # causes LLM to skip tools and just output "Приехал на X!" for
+            # every subsequent navigation request.
             if tool_names_used:
-                tool_tag = "[tools: " + ", ".join(sorted(tool_names_used)) + "] "
-                spoken = tool_tag + spoken
+                tool_list = ", ".join(sorted(tool_names_used))
+                clean_text = spoken.strip()
+                history_entry = f"[выполнено через: {tool_list}] {clean_text}"
+            else:
+                history_entry = spoken
+
             # Auto-speak fallback: if LLM returned text without calling
             # speak_text, speak the response directly so the robot is never silent.
             if not self._spoken_texts and spoken:
-                clean_spoken = re.sub(r"^\[tools:[^\]]*\]\s*", "", spoken).strip()
+                clean_spoken = re.sub(r"^\[выполнено через:[^\]]*\]\s*", "", spoken).strip()
                 if clean_spoken and clean_spoken.lower() != "done":
                     self.get_logger().warning(
                         f"⚠️ Auto-speak fallback (LLM skipped speak_text): {clean_spoken[:80]}"
@@ -1009,7 +1023,7 @@ class DialogueNode(Node):
                 self._conversation = self._trim_history(
                     list(self._conversation)
                     + [{"role": "user", "content": user_input},
-                       {"role": "assistant", "content": spoken}]
+                       {"role": "assistant", "content": history_entry}]
                 )
 
         except asyncio.CancelledError:
