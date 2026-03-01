@@ -1,19 +1,26 @@
 # docker-compose.test.yml — интеграционное тестирование голосового ассистента
 #
-# LLM: DeepSeek API (api.deepseek.com) — передать DEEPSEEK_API_KEY при запуске
+# LLM: Ollama + qwen2.5:0.5b (~350MB, CPU, понимает русский)
+# Первый запуск: модель скачивается автоматически (~30s)
+# Последующие: из volume ollama-models (мгновенно)
 #
 # Запуск локально:
-#   DEEPSEEK_API_KEY=sk-xxx docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
+#   docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
 #
 # QEMU (реальный ARM образ):
 #   docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-#   PLATFORM=linux/arm64 DEEPSEEK_API_KEY=sk-xxx docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
+#   PLATFORM=linux/arm64 docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
+#
+# Сменить модель:
+#   LLM_MODEL=smollm2:360m docker compose -f docker-compose.test.yml up ...
+#   LLM_MODEL=gemma3:1b    (лучше качество, 815MB)
 
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: "0"
   RMW_IMPLEMENTATION: rmw_zenoh_cpp
   ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
   ROBOT_ID: "test-bot"
+  ZENOH_SESSION_CONFIG_URI: /test-config/zenoh_test_session.json5
   RUST_LOG: zenoh=warn
 
 services:
@@ -24,13 +31,37 @@ services:
     network_mode: host
     environment:
       RUST_LOG: zenoh=warn
-    # Запускаем без config — по умолчанию: router mode, listen tcp:[::]:7447
+    volumes:
+      - ./config/zenoh_router_test.json5:/zenoh_config.json5
+    command: -c /zenoh_config.json5
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 7447 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
       interval: 3s
       timeout: 5s
       retries: 20
       start_period: 5s
+
+  # ─── Ollama — реальный локальный LLM (OpenAI-compatible API) ──────────────
+  # Первый запуск вытягивает модель. Последующие используют volume.
+  ollama:
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
+    container_name: ollama-test
+    network_mode: host
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 1h
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+    volumes:
+      - ollama-models:/root/.ollama          # персистентный кэш моделей
+    healthcheck:
+      # Healthcheck проходит только после того как модель загружена и готова отвечать
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 60       # до 5 минут на первый pull (на быстром интернете ~30s)
+      start_period: 10s
 
   # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
   voice-test:
@@ -44,71 +75,29 @@ services:
       <<: *ros-env
       ROS_DISTRO: humble
       PYTHONUNBUFFERED: "1"
-      # DeepSeek API key — передаётся при запуске, не коммитится
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      # Указываем на конфиг который создадим инлайн в command
-      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
-    command:
-      - /bin/bash
-      - -c
-      - |
-        source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
-        source /ws/install/setup.bash &&
-        echo "Ожидание Zenoh router (localhost:7447)..." &&
-        until (echo > /dev/tcp/localhost/7447) 2>/dev/null; do sleep 2; done &&
-        echo "✓ Zenoh router доступен" &&
-        echo "Запись Zenoh session config в /tmp/zenoh_session.json5..." &&
-        cat << 'ENDOFZENOH' | sed 's/^        //' > /tmp/zenoh_session.json5 &&
-        {
-          mode: "peer",
-          connect: { endpoints: ["tcp/localhost:7447"] },
-          scouting: { multicast: { enabled: false } },
-          transport: { shared_memory: { enabled: false } }
-        }
-        ENDOFZENOH
-        echo "Запись конфига в /tmp/voice_params.yaml..." &&
-        cat << 'ENDOFYAML' | sed 's/^        //' > /tmp/voice_params.yaml &&
-        /dialogue_node:
-          ros__parameters:
-            provider: "deepseek"
-            api_key: ""
-            base_url: "https://api.deepseek.com"
-            model: "deepseek-chat"
-            temperature: 0.5
-            max_tokens: 200
-            streaming: true
-            enable_fallback: false
-            enable_mcp_tools: true
-            internet_available: true
-            wake_words: [""]
-            silence_words: ["стоп", "тихо", "замолчи"]
-            max_history_messages: 0
-            history_window_tokens: 0
-            llm_timeout_sec: 35.0
-            dialogue_timeout: 15.0
-        ENDOFYAML
-        echo "Запуск dialogue_node (DeepSeek API)..." &&
-        mkdir -p /data &&
-        cp /db_seed/voice_memory.db /data/voice_memory.db &&
-        echo "✓ voice_memory.db скопирована из db_seed ($(stat -c%s /data/voice_memory.db) bytes)" &&
-        exec ros2 run rob_box_voice dialogue_node \
-          --ros-args \
-          --params-file /tmp/voice_params.yaml
+      # Ollama — не нужен реальный API key
+      QWEN_API_KEY: ollama-no-key
+      DEEPSEEK_API_KEY: ollama-no-key
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+      # Путь к тестовой конфигурации
+      VOICE_TEST_CONFIG: /test-config/voice_assistant_test.yaml
     volumes:
-      - db_seed:/db_seed:ro
+      - ./config:/test-config:ro
+    command: ["/test-config/start_voice_test.sh"]
     depends_on:
       zenoh-router-test:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "ros2 node list 2>/dev/null | grep -q dialogue_node || exit 1"]
       interval: 5s
       timeout: 5s
-      retries: 15
-      start_period: 20s
+      retries: 12
+      start_period: 30s
 
   # ─── Scenario Runner ─────────────────────────────────────────────────────────
   scenario-runner:
-    platform: ${PLATFORM:-linux/arm64}
     build:
       context: ./scenario_runner
       dockerfile: Dockerfile
@@ -122,42 +111,17 @@ services:
       PYTHONUNBUFFERED: "1"
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
-      OVERALL_TIMEOUT: "720"
-      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
+      OVERALL_TIMEOUT: "120"
     volumes:
+      - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
-    command:
-      - /bin/bash
-      - -c
-      - |
-        cat << 'ENDOFZENOH' | sed 's/^        //' > /tmp/zenoh_session.json5 &&
-        {
-          mode: "peer",
-          connect: { endpoints: ["tcp/localhost:7447"] },
-          scouting: { multicast: { enabled: false } },
-          transport: { shared_memory: { enabled: false } }
-        }
-        ENDOFZENOH
-        source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
-        source /ws/install/setup.bash &&
-        exec python3 /runner/runner.py
+    command: ["python3", "/runner/runner.py"]
     depends_on:
       voice-test:
         condition: service_healthy
 
-  # ─── DB init: копирует voice_memory.db из образа в named volume ────────────
-  db-init:
-    platform: ${PLATFORM:-linux/arm64}
-    build:
-      context: ./scenario_runner
-      dockerfile: Dockerfile
-      args:
-        BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
-    container_name: db-init-test
-    network_mode: host
-    volumes:
-      - db_seed:/seed_vol
-    entrypoint: ["/bin/sh", "-c", "cp /baked_db/voice_memory.db /seed_vol/voice_memory.db && echo '✓ DB запекана в volume' && exit 0"]
-
 volumes:
-  db_seed: {}
+  # Кэш моделей Ollama — сохраняется между запусками тестов
+  # Удалить: docker volume rm voice-test_ollama-models
+  ollama-models:
+    name: voice-test_ollama-models

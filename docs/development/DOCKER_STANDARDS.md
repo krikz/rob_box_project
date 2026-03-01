@@ -317,7 +317,7 @@ environment:
 #### Image names:
 - Формат: `<service>-custom:latest` для кастомных образов
 - Пример: `robot-state-publisher-custom:latest`, `rtabmap-custom:latest`
-- Официальные образы: `eclipse/zenoh:latest`, `ros:humble-ros-base`
+- Официальные образы: `eclipse/zenoh:1.6.2`, `ros:humble-ros-base`
 
 #### Volume paths:
 - Всегда относительные пути от папки с docker-compose: `./config`, `./maps`, `./scripts`

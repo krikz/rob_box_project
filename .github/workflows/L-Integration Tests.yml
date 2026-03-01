@@ -25,10 +25,7 @@ on:
       test_branch:
         description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
         required: false
-        default: ""
-      deepseek_api_key:
-        description: "DeepSeek API key для тестов (не сохраняется)"
-        required: true
+        default: "feature/agent"
 
 env:
   LOCAL_REGISTRY: localhost:5000
@@ -36,12 +33,6 @@ env:
   GHCR_PREFIX: ghcr.io/krikz/rob_box
   ROS_DISTRO: humble
   TEST_DIR: docker/vision/test
-
-# Предотвращаем параллельные запуски на одном self-hosted runner
-# (конфликт имён контейнеров/томов при одновременном использовании)
-concurrency:
-  group: integration-tests-local
-  cancel-in-progress: true
 
 jobs:
   integration-tests:
@@ -53,49 +44,38 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
 
     steps:
-      # ── Docker от предыдущих запусков мог создать root-owned директории ──────
-      # (bind mount несуществующего файла → docker создаёт dir с правами root)
-      # git clean не может их удалить → checkout не перезаписывает → файл = dir
-      - name: Fix root-owned stale paths from Docker
-        run: |
-          sudo chown -R "$USER:$USER" . 2>/dev/null || true
-          # Удаляем директории с именами файлов конфига (Docker создаёт dir вместо файла)
-          find docker/vision/test -name "*.json5" -type d -exec sudo rm -rf {} + 2>/dev/null || true
-          find docker/vision/test -name "*.sh" -type d -exec sudo rm -rf {} + 2>/dev/null || true
-          find docker/vision/test -name "*.db" -type d -exec sudo rm -rf {} + 2>/dev/null || true
-          echo "Stale Docker-created dirs removed"
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Тестовые файлы берутся из той же ветки что запустила workflow
-          # (можно переопределить через test_branch input)
-          ref: ${{ github.event.inputs.test_branch || github.ref_name || 'feature/agent' }}
+          # Тестовые файлы живут на feature/agent (или другой ветке из input)
+          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
           clean: true
-          fetch-depth: 0
 
       # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
       - name: Cleanup previous test containers
         working-directory: ${{ env.TEST_DIR }}
-        run: |
-          docker compose -f docker-compose.test.yml down --remove-orphans --volumes 2>/dev/null || true
-          docker volume rm test_db_seed 2>/dev/null || true
+        # НЕ --volumes: сохраняем voice-test_ollama-models (кэш модели ~350MB)
+        run: docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
 
       # ── Проверка что нужные файлы есть после checkout ─────────────────────
       - name: Verify test files exist
         run: |
           echo "=== Test directory ==="
           ls -la ${{ env.TEST_DIR }}/
+          echo "=== ollama/ ==="
+          ls -la ${{ env.TEST_DIR }}/ollama/
           echo "=== config/ ==="
           ls -la ${{ env.TEST_DIR }}/config/
+          echo "=== File type checks (stat) ==="
+          stat ${{ env.TEST_DIR }}/ollama/entrypoint.sh
+          stat ${{ env.TEST_DIR }}/config/zenoh_router_test.json5
           echo "=== Ensure regular files (not dirs) ==="
+          test -f ${{ env.TEST_DIR }}/ollama/entrypoint.sh && echo "entrypoint.sh: IS FILE ✓" || echo "entrypoint.sh: NOT A FILE ✗"
           test -f ${{ env.TEST_DIR }}/config/zenoh_router_test.json5 && echo "zenoh_router_test.json5: IS FILE ✓" || echo "NOT A FILE ✗"
-          test -f ${{ env.TEST_DIR }}/config/voice_assistant_test.yaml && echo "voice_assistant_test.yaml: IS FILE ✓" || echo "NOT A FILE ✗"
-          echo "=== fixtures/ ==="
-          ls -la ${{ env.TEST_DIR }}/fixtures/ || echo "(fixtures dir missing)"
-          test -f ${{ env.TEST_DIR }}/fixtures/voice_memory_seed.sql && echo "voice_memory_seed.sql: IS FILE ✓ ($(wc -l < ${{ env.TEST_DIR }}/fixtures/voice_memory_seed.sql) lines)" || echo "voice_memory_seed.sql: NOT A FILE ✗"
+          echo "=== First 3 lines of entrypoint.sh ==="
+          head -3 ${{ env.TEST_DIR }}/ollama/entrypoint.sh || true
           echo "=== Docker version ==="
-          docker version --format 'Client: {{.Client.Version}}' || docker version
+          docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Engine.Version}}'
 
       # ── Определить тег ─────────────────────────────────────────────────────
       - name: Determine image tag
@@ -128,21 +108,16 @@ jobs:
         working-directory: ${{ env.TEST_DIR }}
         env:
           SERVICE_IMAGE_PREFIX: ${{ env.LOCAL_PREFIX }}
+          # Compose уже добавляет ${ROS_DISTRO}- префикс — передаём только branch tag
           IMAGE_TAG: ${{ steps.tag.outputs.tag }}
           ROS_DISTRO: ${{ env.ROS_DISTRO }}
           PLATFORM: linux/arm64
-          DEEPSEEK_API_KEY: ${{ github.event.inputs.deepseek_api_key }}
         run: |
-          # Заполняем named volume с DB (db-init завершается до основного up)
-          docker compose -f docker-compose.test.yml run --rm --build db-init
-          # Основные тесты — db-init не участвует чтобы не триггерить abort-on-exit
           docker compose -f docker-compose.test.yml up \
             --build \
-            --force-recreate \
             --abort-on-container-exit \
             --exit-code-from scenario-runner \
-            --scale db-init=0 \
-            --timeout 600
+            --timeout 300
         continue-on-error: true
 
       # ── Логи при падении ───────────────────────────────────────────────────
@@ -154,8 +129,8 @@ jobs:
           docker compose -f docker-compose.test.yml logs scenario-runner || true
           echo "=== voice-test logs (tail 50) ==="
           docker compose -f docker-compose.test.yml logs voice-test --tail 50 || true
-          echo "=== zenoh-router logs ==="
-          docker compose -f docker-compose.test.yml logs zenoh-router-test --tail 20 || true
+          echo "=== ollama logs (tail 20) ==="
+          docker compose -f docker-compose.test.yml logs ollama --tail 20 || true
 
       # ── Остановка ─────────────────────────────────────────────────────────
       - name: Stop containers
