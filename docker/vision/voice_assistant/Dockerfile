@@ -23,7 +23,11 @@ LABEL org.opencontainers.image.description="AI voice assistant with ReSpeaker an
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
+# ВАЖНО: DEBIAN_FRONTEND=noninteractive обязателен — jackd2 (зависимость supercollider-language)
+# в postinst через debconf спрашивает про realtime scheduling и вешает сборку без TTY (особенно под QEMU/aarch64).
+RUN apt-get update && apt-get install -y debconf-utils \
+    && echo "jackd2 jackd/tweak_rt_limits boolean false" | debconf-set-selections \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     # Аудио система
     python3-pip \
     python3-dev \
@@ -44,6 +48,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     usbutils \
+    # sclang для компиляции SynthDef-ов (FoxDot/Renardo pipeline)
+    # sdef.add() → write(.scd) → OSC /foxdot → sclang → /d_recv → scsynth
+    # NOTE: supercollider-sc3-plugins не существует как apt-пакет для Ubuntu 22.04/arm64.
+    # DFM1, Squiz, Decimator UGens недоступны — synths их использующие молча не компилируются.
+    supercollider-language \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка ROS2 зависимостей для сборки пакетов (rob_box_animations требует sensor_msgs)
@@ -92,9 +101,37 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
+# Патч brass.scd в renardo_lib — опубликованный пакет содержит git merge conflict маркеры
+# которые вызывают "syntax error, unexpected BINOP" в sclang при компиляции SynthDef.
+# Оставляем версию 03b34654 (с параметром atk и metadata, использует только стандартный RLPF).
+COPY docker/vision/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
+RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
+
+# ============================================================
+# СКАЧИВАНИЕ СЕМПЛОВ RENARDO/FOXDOT ДЛЯ СИНТЕЗА МУЗЫКИ
+# ============================================================
+# Без семплов работают только чистые SC-синтезаторы (pluck, bass, bell).
+# С семплами доступны ударные и перкуссия: bd=bass drum, sd=snare, hh=hi-hat, cp=clap и др.
+# Скачиваем в Docker layer — кeshируется, на роботе всегда есть.
+# Пакеты: 0_foxdot_default (базовые ~371 файл), 1_pitchglitch_samples (~2453 файла).
+# Ошибка скачивания НЕ роняет build — fallback на synth-only режим.
+COPY docker/vision/voice_assistant/download_samples.py /tmp/download_samples.py
+RUN python3 /tmp/download_samples.py || echo "WARNING: Renardo sample download failed — music will run in synth-only mode" \
+    && rm -f /tmp/download_samples.py
+
+# Резервная копия семплов по фиксированному пути для инициализации shared volume.
+# При первом запуске start_voice_assistant.sh копирует сюда → /root/.config/renardo/samples/
+# (который смонтирован как named volume, shared с supercollider контейнером).
+# Без этого scsynth не может читать WAV файлы → "Buffer UGen: no buffer data".
+RUN if [ -d /root/.config/renardo/samples ]; then \
+        cp -rp /root/.config/renardo/samples /renardo_samples_builtin; \
+    else \
+        mkdir -p /renardo_samples_builtin; \
+    fi
+
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_voice src/rob_box_animations
+RUN mkdir -p src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
@@ -112,21 +149,25 @@ RUN cd /ws/src && \
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
 COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
 
 # Шаг 3: Установка ROS зависимостей через rosdep
 # Этот слой кешируется пока package.xml не изменяется
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs --ignore-src -r -y || true
+    rosdep install --from-paths src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools --ignore-src -r -y || true
 
 # Шаг 4: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
 COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
+COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
+COPY src/rob_box_mcp_tools/setup.cfg /ws/src/rob_box_mcp_tools/
 
 # Шаг 5: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
+COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
 COPY sound_pack /ws/sound_pack
 
 # Шаг 6: Копируем launch файлы и конфигурации
@@ -153,10 +194,16 @@ RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
 # Шаг 9: Копируем исходный код Python (меняется чаще всего - последний слой!)
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
 COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
+COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
 
 # Шаг 10: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
 COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
+
+# Шаг 11: Копируем FoxDot SC init скрипт для sclang
+# sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
+# на порту 57120 для получения запросов на компиляцию SynthDef-ов от renardo.
+COPY docker/vision/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
 
 # ============================================================
 # ВНЕШНИЕ ЗАВИСИМОСТИ (ReSpeaker drivers, models)
@@ -236,9 +283,12 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
 # которые мешают правильному поиску библиотек через CMake package config.
 # Sourcing /opt/ros/humble/setup.sh достаточно для правильной настройки путей.
 # Используем --symlink-install для избежания копирования Python файлов.
+# ДОПОЛНИТЕЛЬНО: очищаем CMake кеш перед сборкой для избежания проблем с base image
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
+    ldconfig && \
     colcon build \
-    --packages-select audio_common_msgs rob_box_perception_msgs rob_box_voice rob_box_animations \
+    --packages-select audio_common_msgs rob_box_perception_msgs rob_box_mcp_tools rob_box_voice rob_box_animations \
     --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \

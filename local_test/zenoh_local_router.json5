@@ -6,9 +6,9 @@
   mode: "router",
   
   // Connect to Main Pi router (eth0 IP)
-  // КРИТИЧНО: #iface=wlo1 принудительно направляет трафик через WiFi (как на Vision Pi #iface=eth0)
+  // КРИТИЧНО: #iface=wlp1s0 принудительно направляет трафик через WiFi (как на Vision Pi #iface=eth0)
   connect: {
-    endpoints: ["tcp/10.1.1.10:7447#iface=wlo1"],
+    endpoints: ["tcp/10.1.1.10:7447#iface=wlp1s0"],
     timeout_ms: { router: -1, peer: -1, client: 0 },
     exit_on_failure: { router: false, peer: false, client: true },
     retry: {

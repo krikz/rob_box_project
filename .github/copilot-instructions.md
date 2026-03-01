@@ -2,7 +2,7 @@
 
 ## 🎯 Проект
 **Rob Box** — автономный ровер на ROS 2 Humble + Zenoh DDS  
-Dual Raspberry Pi 4: Main (10.1.1.10) + Vision (10.1.1.11)
+Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 
 ## 📚 Где искать информацию
 
@@ -10,7 +10,8 @@ Dual Raspberry Pi 4: Main (10.1.1.10) + Vision (10.1.1.11)
 
 | Тема | Файл | Что внутри |
 |------|------|-----------|
-| **AI Agents Guide** | `docs/development/AGENT_GUIDE.md` | Архитектура Docker, Zenoh, примеры workflow, deployment |
+| **Процесс разработки (ГЛАВНОЕ)** | `.agents/skills/context-engineering/SKILL.md` | Research→Design→Plan→Implement, команды, правила |
+| **Бэклог задач** | `tasks.json` | Задачи, acceptance criteria, зависимости, agent_instructions |
 | **Docker Rules** | `docs/development/DOCKER_STANDARDS.md` | ❌ COPY config/scripts, ✅ volumes, network_mode: host |
 | **Python Style** | `docs/development/PYTHON_STYLE_GUIDE.md` | black, isort, flake8, ROS 2 patterns, naming |
 
@@ -27,29 +28,43 @@ Dual Raspberry Pi 4: Main (10.1.1.10) + Vision (10.1.1.11)
 
 | Задача | Документация |
 |--------|--------------|
+| **Процесс (методология)** | `.agents/skills/context-engineering/SKILL.md` |
+| **Zenoh dev-машина** | `.agents/skills/zenoh-dev-setup/SKILL.md` |
 | Docker сборка | `docs/development/BUILD_OPTIMIZATION.md` |
 | CI/CD Pipeline | `docs/CI_CD_PIPELINE.md` |
 | Тестирование | `docs/development/TESTING_GUIDE.md` |
 | Линтинг | `docs/development/LINTING_GUIDE.md` |
-| Деплой | `docs/DEPLOYMENT_WORKFLOW.md` |
+| Деплой | `docs/deployment/DEPLOYMENT_WORKFLOW.md` |
+
+### ⚙️ Команды Claude (`.claude/commands/`)
+
+| Фаза | Команда | Когда использовать |
+|------|---------|--------------------|
+| **Research** | `/research-codebase TASK-ID` | Начало любой задачи |
+| **Design (фича)** | `/design-feature <name> <research.md>` | После research |
+| **Design (баг)** | `/design-bugfix <id> <research.md>` | После research |
+| **Plan (фича)** | `/plan-feature <design-dir>` | После ревью дизайна |
+| **Plan (баг)** | `/plan-bugfix <design-dir>` | После ревью дизайна |
+| **Implement (фича)** | `/implement-feature <plan-dir>` | После ревью плана |
+| **Implement (баг)** | `/implement-bugfix <plan-dir>` | После ревью плана |
 
 ### 🐛 Отладка
 
 | Проблема | Решение |
 |----------|---------|
 | Общие проблемы | `docs/guides/TROUBLESHOOTING.md` |
-| Камера не публикует данные | `docs/guides/CAMERA_TROUBLESHOOTING.md` |
+| Камера не публикует данные | `docs/guides/TROUBLESHOOTING.md` |
 | Zenoh connection issues | `docs/fixes/ZENOH_FIX_SUMMARY_2025-11-10.md` |
-| Мониторинг системы | `docs/MONITORING_QUICK_REF.md` |
+| Мониторинг системы | `docs/guides/MONITORING_QUICK_REF.md` |
 
 ### 📦 Пакеты ROS 2
 
 | Пакет | Назначение | Документация |
 |-------|-----------|--------------|
-| `rob_box_voice` | Voice assistant (STT, TTS, dialogue) | `docs/packages/rob_box_voice/` |
-| `rob_box_perception` | Health monitor, context aggregator | `docs/packages/rob_box_perception/` |
-| `rob_box_animations` | LED matrix animations (381 LEDs) | `docs/packages/rob_box_animations/` |
-| `rob_box_description` | URDF robot model | `docs/packages/rob_box_description/` |
+| `rob_box_voice` | Voice assistant (STT, TTS, dialogue) | `src/rob_box_voice/README.md` |
+| `rob_box_perception` | Health monitor, context aggregator | `src/rob_box_perception/README.md` |
+| `rob_box_animations` | LED matrix animations (381 LEDs) | `src/rob_box_animations/README.md` |
+| `rob_box_description` | URDF robot model | `src/rob_box_description/` |
 
 ### 🌐 Сеть и middleware
 
@@ -111,7 +126,7 @@ ros2 topic hz /scan        # Частота публикации
 - ❌ **НИКОГДА** самостоятельно не копировать файлы на робота (scp, rsync)
 - ❌ **НИКОГДА** не редактировать файлы напрямую на роботе
 - ❌ **НИКОГДА** не делать `git pull` на роботе без запроса пользователя
-- ✅ **ВСЕГДА** деплой через GitHub Actions workflow (`docs/DEPLOYMENT_WORKFLOW.md`)
+- ✅ **ВСЕГДА** деплой через GitHub Actions workflow (`docs/deployment/DEPLOYMENT_WORKFLOW.md`)
 - ✅ **ВСЕГДА** репозитории на роботах должны быть чистыми (`git status` = clean)
 - ✅ **ТОЛЬКО** по явной просьбе пользователя выполнять команды на роботе
 - ⚠️ Изменения делаем в dev-репозитории → commit → push → workflow деплоит на роботов
@@ -145,6 +160,5 @@ docs(readme): update hardware specs
 - `@docs/CI_CD_PIPELINE.md` - GitHub Actions workflows
 
 ---
-**Обновлено:** 19 ноября 2025  
-**Размер:** ~150 строк (было 823)  
-**Подход:** Навигация → детали в отдельных файлах
+**Обновлено:** 27 февраля 2026  
+**Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`

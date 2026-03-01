@@ -40,6 +40,8 @@ jobs:
             DOCKER_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             DOCKER_TAG="dev"
+          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
+            DOCKER_TAG="test"
           else
             DOCKER_TAG="local"
           fi
@@ -183,9 +185,76 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
+  build-telegram-bot:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build telegram-bot
+        run: |
+          SERVICE="telegram_bot"
+          GHCR_TAG="${IMAGE_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Вычисляем hash Python исходников для инвалидации кеша
+          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-supercollider:
+    needs: prepare
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build supercollider
+        run: |
+          SERVICE="supercollider"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/vision/${SERVICE}
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
   # Итоговая сводка
   summary:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant, build-telegram-bot, build-supercollider]
     runs-on: self-hosted
     if: always()
     steps:
@@ -202,3 +271,5 @@ jobs:
           echo "  ✅ led-matrix"
           echo "  ✅ ceiling-camera"
           echo "  ✅ voice-assistant"
+          echo "  ✅ telegram-bot"
+          echo "  ✅ supercollider"

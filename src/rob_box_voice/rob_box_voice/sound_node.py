@@ -11,6 +11,7 @@ from std_msgs.msg import String
 
 import os
 import sys
+import json
 import random
 import threading
 import time
@@ -88,11 +89,16 @@ class SoundNode(Node):
         self.playback_manager = AudioPlaybackManager.get_instance()
 
         # Хранилище звуков
-        self.sounds: Dict[str, AudioSegment] = {}
+        self.sounds: Dict[str, AudioSegment] = {}  # filename (без .mp3) → AudioSegment
+        self.trigger_map: Dict[str, str] = {}  # trigger → filename mapping из catalog.json
         self.sound_groups: Dict[str, List[str]] = {
+            # Random groups for variety
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
-            "angry": ["angry_1", "angry_2"],
             "cute": ["cute", "very_cute"],
+            "confused": ["confused", "confused_alt"],
+            "drip": ["robot_drip_a1", "robot_drip_d4", "robot_drip_d5", "robot_drip_e4"],
+            "work": ["dot_matrix_1", "dot_matrix_2", "dot_matrix_3"],
+            "talk_beep": ["videogame_talk_beep", "videogame_talk_beep_high"],
         }
 
         # Состояние
@@ -105,23 +111,21 @@ class SoundNode(Node):
         self.load_sounds()
 
     def initialize_audio_device(self):
-        """Инициализация аудио устройства для воспроизведения"""
+        """Инициализация аудио устройства для воспроизведения.
+
+        ВАЖНО: всегда используем device=None (ALSA default).
+        asound.conf маршрутизирует default → dmix_respeaker → hw:1,0.
+        dmix позволяет TTS и sound_node воспроизводить одновременно.
+        Если использовать прямой hardware-индекс (hw:1,0), dmix обходится
+        и второй sd.play() получает PaErrorCode -9985 (Device unavailable).
+        """
+        self.device_index = None  # ALSA default → dmix_respeaker (через asound.conf)
         try:
-            # Поиск ReSpeaker устройства
-            self.device_index = find_respeaker_device_sounddevice()
-            
-            if self.device_index is not None:
-                devices = sd.query_devices()
-                device_name = devices[self.device_index]['name']
-                self.get_logger().info(f"✅ ReSpeaker найден для playback: device {self.device_index} ({device_name})")
-            else:
-                # Fallback на default device
-                self.get_logger().warn("⚠️ ReSpeaker не найден, используем default device")
-                self.device_index = None  # None означает default device в sounddevice
-                
+            default_out = sd.query_devices(kind='output')
+            device_name = default_out.get('name', '?') if isinstance(default_out, dict) else str(default_out)
+            self.get_logger().info(f"✅ Sound playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка инициализации аудио устройства: {e}")
-            self.device_index = None
+            self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def load_sounds(self):
         """Загрузка всех звуковых файлов из sound_pack/"""
@@ -132,6 +136,30 @@ class SoundNode(Node):
 
         self.get_logger().info(f"📂 Загрузка звуков из {self.sound_pack_dir}...")
 
+        # Загрузить catalog.json для mapping trigger → filename
+        catalog_path = os.path.join(self.sound_pack_dir, "sound_catalog.json")
+        if os.path.exists(catalog_path):
+            try:
+                with open(catalog_path, 'r', encoding='utf-8') as f:
+                    catalog = json.load(f)
+                    
+                # Построить trigger_map из catalog['sounds']
+                sounds = catalog.get('sounds', {})
+                for filename, info in sounds.items():
+                    if not filename.endswith('.mp3'):
+                        continue
+                    if 'trigger' in info:
+                        sound_name = filename.replace(".mp3", "")
+                        self.trigger_map[info['trigger']] = sound_name
+                        
+                self.get_logger().info(f"✅ Загружено {len(self.trigger_map)} trigger mappings из catalog.json")
+                
+            except Exception as e:
+                self.get_logger().error(f"❌ Ошибка чтения catalog.json: {e}")
+        else:
+            self.get_logger().warn(f"⚠️ Файл catalog.json не найден: {catalog_path}")
+
+        # Загрузить все mp3 файлы
         loaded_count = 0
         for filename in os.listdir(self.sound_pack_dir):
             if filename.endswith(".mp3"):
@@ -192,17 +220,23 @@ class SoundNode(Node):
 
     def select_sound(self, trigger: str) -> Optional[str]:
         """Выбрать звук по триггеру"""
-        # Прямое совпадение
+        # 1. Проверить trigger_map (из catalog.json)
+        if trigger in self.trigger_map:
+            sound_name = self.trigger_map[trigger]
+            if sound_name in self.sounds:
+                return sound_name
+        
+        # 2. Прямое совпадение с filename (для обратной совместимости)
         if trigger in self.sounds:
             return trigger
 
-        # Проверить группы (например, trigger="talk" → random из talk_1..4)
+        # 3. Проверить группы (например, trigger="talk" → random из talk_1..4)
         if trigger in self.sound_groups:
             available = [name for name in self.sound_groups[trigger] if name in self.sounds]
             if available:
                 return random.choice(available)
 
-        # Попробовать найти похожий
+        # 4. Попробовать найти похожий
         for sound_name in self.sounds.keys():
             if trigger.lower() in sound_name.lower():
                 return sound_name
@@ -297,20 +331,88 @@ class SoundNode(Node):
 
     def trigger_animation(self, trigger: str):
         """Триггер соответствующей анимации"""
-        # Маппинг звуков на анимации
+        # Маппинг звуков на анимации (расширенный для новых звуков)
         animation_map = {
+            # Legacy names
             "thinking": "thinking",
             "surprise": "surprise",
             "confused": "confused",
             "angry": "angry",
             "angry_1": "angry",
-            "angry_2": "angry",
+            "error": "error",
             "cute": "happy",
             "very_cute": "very_happy",
             "talk": "talking",
+            "talk_1": "talking",
+            "talk_2": "talking",
+            "talk_3": "talking",
+            "talk_4": "talking",
+            
+            # BASE robot emotional sounds
+            "robot_thinking": "thinking",
+            "robot_surprise": "surprise",
+            "robot_confused": "confused",
+            "robot_confused_alt": "confused",
+            "robot_angry": "angry",
+            "robot_error": "error",
+            "robot_cute": "happy",
+            "robot_very_cute": "very_happy",
+            "robot_happy": "happy",
+            "robot_sigh": "sad",
+            "robot_concerned": "confused",
+            "robot_affirm": None,  # No animation for affirmation
+            "robot_confirm": None,  # No animation for confirmation
+            "robot_talk_1": "talking",
+            "robot_talk_2": "talking",
+            "robot_talk_3": "talking",
+            "robot_talk_4": "talking",
+            
+            # Drip sounds - no specific animation
+            "robot_drip_a1": None,
+            "robot_drip_d4": None,
+            "robot_drip_d5": None,
+            "robot_drip_e4": None,
+            
+            # UI sounds - no animations
+            "ui_activate": None,
+            "ui_bell": None,
+            "ui_button": None,
+            "ui_chime": None,
+            "ui_confirm": None,
+            "ui_dot": None,
+            "ui_menu_click": None,
+            "ui_note_e": None,
+            "ui_notification": None,
+            "ui_radio_start": None,
+            "ui_random": None,
+            "ui_roger": None,
+            
+            # Robot special effects
+            "robot_glitch": "error",
+            "robot_alert": "error",
+            "robot_power_up": "thinking",
+            "robot_bubbles": None,
+            "robot_fantasy": None,
+            "robot_flyby": None,
+            "robot_impact": None,
+            "robot_liquid": None,
+            "robot_loop": "thinking",
+            "robot_stinger": None,
+            "robot_stun": None,
+            "robot_talk_beep_1": "talking",
+            "robot_talk_beep_2": "talking",
+            "robot_terminal": "thinking",
+            "robot_whoosh": None,
+            "robot_work_1": "thinking",
+            "robot_work_2": "thinking",
+            "robot_work_3": "thinking",
         }
 
         animation = animation_map.get(trigger, trigger)
+        
+        # Skip animation trigger if explicitly set to None
+        if animation is None:
+            return
 
         try:
             msg = String()

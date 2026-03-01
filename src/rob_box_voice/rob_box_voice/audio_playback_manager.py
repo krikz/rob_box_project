@@ -96,6 +96,9 @@ class AudioPlaybackManager:
                 # Ждать окончания воспроизведения
                 sd.wait()
                 self._current_stream = None
+                # ВАЖНО: небольшая задержка чтобы ALSA успел закрыть stream
+                # Без этого следующий play() может получить "Device unavailable"
+                time.sleep(0.05)
             else:
                 # Для non-blocking: подождать немного чтобы stream стартовал
                 time.sleep(0.05)

@@ -1,0 +1,223 @@
+name: "L: Integration Tests"
+
+# Интеграционные тесты на self-hosted Pi runner (native arm64, без QEMU).
+#
+# Требования к машине:
+#   - GitHub Actions runner зарегистрирован с label: self-hosted
+#   - Docker + docker compose установлены
+#   - Локальный registry доступен на localhost:5000
+#     (образы уже собраны через L-Build Vision Pi Services)
+#
+# Запуск:
+#   - Автоматически после L-Build Vision Pi Services
+#   - Вручную через workflow_dispatch
+
+on:
+  workflow_run:
+    workflows: ["L: Build Vision Pi Services"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag (latest / dev / test / local)"
+        required: false
+        default: ""
+      test_branch:
+        description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
+        required: false
+        default: ""
+      deepseek_api_key:
+        description: "DeepSeek API key для тестов (не сохраняется)"
+        required: true
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  GHCR_PREFIX: ghcr.io/krikz/rob_box
+  ROS_DISTRO: humble
+  TEST_DIR: docker/vision/test
+
+# Предотвращаем параллельные запуски на одном self-hosted runner
+# (конфликт имён контейнеров/томов при одновременном использовании)
+concurrency:
+  group: integration-tests-local
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    name: Integration Tests (native arm64)
+    runs-on: self-hosted
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # ── Docker от предыдущих запусков мог создать root-owned директории ──────
+      # (bind mount несуществующего файла → docker создаёт dir с правами root)
+      # git clean не может их удалить → checkout не перезаписывает → файл = dir
+      - name: Fix root-owned stale paths from Docker
+        run: |
+          sudo chown -R "$USER:$USER" . 2>/dev/null || true
+          # Удаляем директории с именами файлов конфига (Docker создаёт dir вместо файла)
+          find docker/vision/test -name "*.json5" -type d -exec sudo rm -rf {} + 2>/dev/null || true
+          find docker/vision/test -name "*.sh" -type d -exec sudo rm -rf {} + 2>/dev/null || true
+          find docker/vision/test -name "*.db" -type d -exec sudo rm -rf {} + 2>/dev/null || true
+          echo "Stale Docker-created dirs removed"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Тестовые файлы берутся из той же ветки что запустила workflow
+          # (можно переопределить через test_branch input)
+          ref: ${{ github.event.inputs.test_branch || github.ref_name || 'feature/agent' }}
+          clean: true
+          fetch-depth: 0
+
+      # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
+      - name: Cleanup previous test containers
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          docker compose -f docker-compose.test.yml down --remove-orphans --volumes 2>/dev/null || true
+          docker volume rm test_db_seed 2>/dev/null || true
+
+      # ── Проверка что нужные файлы есть после checkout ─────────────────────
+      - name: Verify test files exist
+        run: |
+          echo "=== Test directory ==="
+          ls -la ${{ env.TEST_DIR }}/
+          echo "=== config/ ==="
+          ls -la ${{ env.TEST_DIR }}/config/
+          echo "=== Ensure regular files (not dirs) ==="
+          test -f ${{ env.TEST_DIR }}/config/zenoh_router_test.json5 && echo "zenoh_router_test.json5: IS FILE ✓" || echo "NOT A FILE ✗"
+          test -f ${{ env.TEST_DIR }}/config/voice_assistant_test.yaml && echo "voice_assistant_test.yaml: IS FILE ✓" || echo "NOT A FILE ✗"
+          echo "=== fixtures/ ==="
+          ls -la ${{ env.TEST_DIR }}/fixtures/ || echo "(fixtures dir missing)"
+          test -f ${{ env.TEST_DIR }}/fixtures/voice_memory_seed.sql && echo "voice_memory_seed.sql: IS FILE ✓ ($(wc -l < ${{ env.TEST_DIR }}/fixtures/voice_memory_seed.sql) lines)" || echo "voice_memory_seed.sql: NOT A FILE ✗"
+          echo "=== Docker version ==="
+          docker version --format 'Client: {{.Client.Version}}' || docker version
+
+      # ── Определить тег ─────────────────────────────────────────────────────
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+            case "$BRANCH" in
+              main)                 TAG="latest" ;;
+              develop)              TAG="dev" ;;
+              feature/*|copilot/*) TAG="test" ;;
+              *)                    TAG="local" ;;
+            esac
+          fi
+          FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: voice-assistant-${FULL_TAG}"
+
+      # ── Подготовка ─────────────────────────────────────────────────────────
+      - name: Prepare results directory
+        run: mkdir -p ${{ env.TEST_DIR }}/results
+
+      # ── Запуск тестов ──────────────────────────────────────────────────────
+      # Образ берётся из локального registry (уже собран L-Build)
+      - name: Run integration tests
+        id: run_tests
+        working-directory: ${{ env.TEST_DIR }}
+        env:
+          SERVICE_IMAGE_PREFIX: ${{ env.LOCAL_PREFIX }}
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          ROS_DISTRO: ${{ env.ROS_DISTRO }}
+          PLATFORM: linux/arm64
+          DEEPSEEK_API_KEY: ${{ github.event.inputs.deepseek_api_key }}
+        run: |
+          # Заполняем named volume с DB (db-init завершается до основного up)
+          docker compose -f docker-compose.test.yml run --rm --build db-init
+          # Основные тесты — db-init не участвует чтобы не триггерить abort-on-exit
+          docker compose -f docker-compose.test.yml up \
+            --build \
+            --force-recreate \
+            --abort-on-container-exit \
+            --exit-code-from scenario-runner \
+            --scale db-init=0 \
+            --timeout 600
+        continue-on-error: true
+
+      # ── Логи при падении ───────────────────────────────────────────────────
+      - name: Show logs on failure
+        if: steps.run_tests.outcome != 'success'
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          echo "=== scenario-runner logs ==="
+          docker compose -f docker-compose.test.yml logs scenario-runner || true
+          echo "=== voice-test logs (tail 50) ==="
+          docker compose -f docker-compose.test.yml logs voice-test --tail 50 || true
+          echo "=== zenoh-router logs ==="
+          docker compose -f docker-compose.test.yml logs zenoh-router-test --tail 20 || true
+
+      # ── Остановка ─────────────────────────────────────────────────────────
+      - name: Stop containers
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: docker compose -f docker-compose.test.yml down --remove-orphans || true
+
+      # ── Вывод результатов ─────────────────────────────────────────────────
+      - name: Display results
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          if [ -f results/test_results.json ]; then
+            python3 -c "
+          import json
+          d = json.load(open('results/test_results.json'))
+          print(f\"Results: {d['passed']}/{d['total']} passed ({d['failed']} failed)\")
+          for s in d['scenarios']:
+              icon = '✓' if s['passed'] else '✗'
+              print(f\"  {icon} {s['name']}\")
+          "
+          else
+            echo "No results file found"
+          fi
+
+      # ── GitHub Step Summary ────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          echo "## 🤖 Integration Test Results (local runner)" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** \`voice-assistant-${{ steps.tag.outputs.full_tag }}\` from \`${{ env.LOCAL_REGISTRY }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f results/test_results.json ]; then
+            python3 -c "
+          import json, os
+          d = json.load(open('results/test_results.json'))
+          summary = os.environ['GITHUB_STEP_SUMMARY']
+          with open(summary, 'a') as f:
+              f.write(f\"**{d['passed']}/{d['total']} passed**\n\n\")
+              f.write('| Scenario | Status |\n|----------|--------|\n')
+              for s in d['scenarios']:
+                  icon = '✅' if s['passed'] else '❌'
+                  f.write(f\"| {s['name']} | {icon} |\n\")
+          "
+          else
+            echo "⚠️ No results file — tests may have crashed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── Артефакты ─────────────────────────────────────────────────────────
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results-local-${{ steps.tag.outputs.full_tag }}
+          path: ${{ env.TEST_DIR }}/results/test_results.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Финал ─────────────────────────────────────────────────────────────
+      - name: Fail if tests failed
+        if: steps.run_tests.outcome != 'success'
+        run: |
+          echo "❌ Integration tests FAILED"
+          exit 1

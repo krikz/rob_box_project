@@ -4,6 +4,20 @@
 
 ## 📄 Документы
 
+### [agents/](agents/) 🆕
+**Промпты специализированных AI-агентов**
+
+- `docs-agent.md` — документация (этот агент)
+- `navigation-agent.md` — Nav2, SLAM, одометрия
+- `backend-agent.md` — REST API, FastAPI, база данных
+- `voice-agent.md` — speech-to-text, TTS, LLM
+- `frontend-agent.md` — React веб-интерфейс
+- `devops-agent.md` — Docker, CI/CD, деплой
+- `security-agent.md` — безопасность, секреты, TLS
+- `git-agent.md` — коммиты, PR, ветки
+- `scenarios-agent.md` — сценарии доставки, логика
+- `structure-agent.md` — архитектура кода, рефакторинг
+
 ### [AGENT_GUIDE.md](AGENT_GUIDE.md) ⭐
 **Руководство для AI агентов**
 

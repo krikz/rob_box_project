@@ -60,4 +60,5 @@ jobs:
           echo ""
           echo "Vision Pi сервисы:"
           echo "  - ghcr.io/krikz/rob_box:oak-d (with integrated AprilTag detection)"
+          echo "  - ghcr.io/krikz/rob_box:telegram-bot"
           echo "  - ghcr.io/krikz/rob_box:lslidar"

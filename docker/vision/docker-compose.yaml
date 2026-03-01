@@ -115,6 +115,34 @@ services:
     labels:
       logging: "promtail"
 
+  supercollider:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-latest}
+    container_name: supercollider
+    network_mode: host
+    privileged: true  # Для доступа к ALSA audio
+    ipc: host      # Share host IPC namespace so dmix SHM is shared with voice-assistant
+    shm_size: '256m'  # JACK использует /dev/shm для mmap (~107MB), default 64MB недостаточно
+    devices:
+      - /dev/snd:/dev/snd  # ALSA audio devices (shared via dmix)
+    ulimits:
+      memlock: -1  # Разрешаем JACK блокировать память (требуется для RT audio)
+      rtprio: 99   # RT-приоритет для JACK
+    volumes:
+      - ./scripts/supercollider:/scripts:ro
+      - ./config/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
+      # Shared renardo samples — supercollider должен читать WAV файлы по тому же пути что renardo
+      - renardo_samples:/root/.config/renardo/samples:ro
+    command: ["/scripts/start_supercollider.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep scsynth || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   voice-assistant:
     # Image tags automatically determined by IMAGE_TAG environment variable:
     # - IMAGE_TAG=latest  → voice-assistant-humble-latest (main branch)
@@ -125,6 +153,7 @@ services:
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
+    ipc: host      # Share host IPC namespace so dmix SHM is shared with supercollider
     devices:
       - /dev/snd:/dev/snd  # ALSA audio devices
       - /dev/bus/usb:/dev/bus/usb  # USB для ReSpeaker
@@ -142,6 +171,14 @@ services:
       - TTS_CACHE_DIR=/cache/tts
       # Python для audio
       - PYTHONUNBUFFERED=1
+      # VoiceMemory + Ollama
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+      # Agent skills feature flag (set to false to revert to flat tool mode)
+      - USE_SKILLS=true
+      # Renardo paths (MusicSkill uses these to load reference docs and search samples)
+      - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
+      - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
     env_file:
       - .env.secrets  # API keys: QWEN_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
@@ -151,16 +188,63 @@ services:
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
       - ./cache/tts:/cache/tts
+      # ALSA dmix config (allows TTS + sound effects to play simultaneously)
+      - ./config/asound.conf:/etc/asound.conf:ro
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
+      # VoiceMemory persistent storage
+      - ./data/voice:/data
+      # Shared renardo samples — должны быть доступны scsynth в supercollider контейнере
+      # start_voice_assistant.sh инициализирует этот volume из /renardo_samples_builtin/ при первом запуске
+      - renardo_samples:/root/.config/renardo/samples
+      # Renardo/FoxDot reference documentation for MusicSkill LLM context
+      - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
     depends_on:
       - zenoh-router
+      - supercollider
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # ============ Telegram Bot ============
+  # Операторский интерфейс через Telegram
+  # Управление роботом с телефона: фото, голос, движение, LLM чат
+  telegram-bot:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: telegram-bot
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env.secrets  # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, DEEPSEEK_API_KEY, YANDEX_API_KEY, etc.
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/telegram_bot:/scripts:ro
+    mem_limit: 512m
+    memswap_limit: 640m
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f telegram_node || exit 1"]
       interval: 15s
       timeout: 5s
       start_period: 20s
@@ -211,3 +295,29 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     restart: unless-stopped
+
+  # ============ AI Memory (Optional) ============
+  # Ollama - локальный сервер для генерации эмбеддингов (VoiceMemory семантический поиск)
+  # Активация: docker compose --profile ai up -d ollama
+  # Первый запуск модели: docker exec ollama ollama pull nomic-embed-text
+  # Модель: nomic-embed-text (768d, мультиязычная, < 300 MB RAM, работает на CPU)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["ai"]
+    network_mode: host
+    volumes:
+      - ./data/ollama:/root/.ollama  # Модели хранятся между перезапусками
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h  # Держать модель загруженной
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+
+# Named volumes
+volumes:
+  # Shared renardo sample packs between voice-assistant (renardo) and supercollider (scsynth).
+  # Without this, scsynth can't find WAV files by path → "Buffer UGen: no buffer data".
+  # Initialized on first start by start_voice_assistant.sh from /renardo_samples_builtin/.
+  renardo_samples:

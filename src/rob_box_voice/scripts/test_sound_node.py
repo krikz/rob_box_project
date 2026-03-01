@@ -34,7 +34,7 @@ def main():
         'surprise',
         'confused',
         'angry_1',
-        'angry_2',
+        'error',  # бывший angry_2
         'cute',
         'very_cute',
         'talk_1',
@@ -43,7 +43,6 @@ def main():
         'talk_4',
         # Группы
         'talk',   # Random из talk_1..4
-        'angry',  # Random из angry_1..2
         'cute',   # Random из cute/very_cute
     ]
     

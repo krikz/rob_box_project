@@ -1,0 +1,163 @@
+# docker-compose.test.yml — интеграционное тестирование голосового ассистента
+#
+# LLM: DeepSeek API (api.deepseek.com) — передать DEEPSEEK_API_KEY при запуске
+#
+# Запуск локально:
+#   DEEPSEEK_API_KEY=sk-xxx docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from scenario-runner
+#
+# QEMU (реальный ARM образ):
+#   docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#   PLATFORM=linux/arm64 DEEPSEEK_API_KEY=sk-xxx docker compose -f docker-compose.test.yml up --abort-on-container-exit ...
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: "0"
+  RMW_IMPLEMENTATION: rmw_zenoh_cpp
+  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+  ROBOT_ID: "test-bot"
+  RUST_LOG: zenoh=warn
+
+services:
+  # ─── Zenoh router ───────────────────────────────────────────────────────────
+  zenoh-router-test:
+    image: eclipse/zenoh:1.6.2
+    container_name: zenoh-router-test
+    network_mode: host
+    environment:
+      RUST_LOG: zenoh=warn
+    # Запускаем без config — по умолчанию: router mode, listen tcp:[::]:7447
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 7447 || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
+  voice-test:
+    # QEMU: установить PLATFORM=linux/arm64 для тестирования реального ARM образа
+    # По умолчанию linux/amd64 для быстрого CI без QEMU
+    platform: ${PLATFORM:-linux/amd64}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: voice-test
+    network_mode: host
+    environment:
+      <<: *ros-env
+      ROS_DISTRO: humble
+      PYTHONUNBUFFERED: "1"
+      # DeepSeek API key — передаётся при запуске, не коммитится
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      # Указываем на конфиг который создадим инлайн в command
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
+    command:
+      - /bin/bash
+      - -c
+      - |
+        source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
+        source /ws/install/setup.bash &&
+        echo "Ожидание Zenoh router (localhost:7447)..." &&
+        until (echo > /dev/tcp/localhost/7447) 2>/dev/null; do sleep 2; done &&
+        echo "✓ Zenoh router доступен" &&
+        echo "Запись Zenoh session config в /tmp/zenoh_session.json5..." &&
+        cat << 'ENDOFZENOH' | sed 's/^        //' > /tmp/zenoh_session.json5 &&
+        {
+          mode: "peer",
+          connect: { endpoints: ["tcp/localhost:7447"] },
+          scouting: { multicast: { enabled: false } },
+          transport: { shared_memory: { enabled: false } }
+        }
+        ENDOFZENOH
+        echo "Запись конфига в /tmp/voice_params.yaml..." &&
+        cat << 'ENDOFYAML' | sed 's/^        //' > /tmp/voice_params.yaml &&
+        /dialogue_node:
+          ros__parameters:
+            provider: "deepseek"
+            api_key: ""
+            base_url: "https://api.deepseek.com"
+            model: "deepseek-chat"
+            temperature: 0.5
+            max_tokens: 200
+            streaming: true
+            enable_fallback: false
+            enable_mcp_tools: true
+            internet_available: true
+            wake_words: [""]
+            silence_words: ["стоп", "тихо", "замолчи"]
+            max_history_messages: 0
+            history_window_tokens: 0
+            llm_timeout_sec: 35.0
+            dialogue_timeout: 15.0
+        ENDOFYAML
+        echo "Запуск dialogue_node (DeepSeek API)..." &&
+        mkdir -p /data &&
+        cp /db_seed/voice_memory.db /data/voice_memory.db &&
+        echo "✓ voice_memory.db скопирована из db_seed ($(stat -c%s /data/voice_memory.db) bytes)" &&
+        exec ros2 run rob_box_voice dialogue_node \
+          --ros-args \
+          --params-file /tmp/voice_params.yaml
+    volumes:
+      - db_seed:/db_seed:ro
+    depends_on:
+      zenoh-router-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # ─── Scenario Runner ─────────────────────────────────────────────────────────
+  scenario-runner:
+    platform: ${PLATFORM:-linux/arm64}
+    build:
+      context: ./scenario_runner
+      dockerfile: Dockerfile
+      args:
+        # Используем тот же образ что и voice-test (тег совпадает)
+        BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: scenario-runner-test
+    network_mode: host
+    environment:
+      <<: *ros-env
+      PYTHONUNBUFFERED: "1"
+      SCENARIOS_DIR: /scenarios
+      RESULTS_FILE: /results/test_results.json
+      OVERALL_TIMEOUT: "720"
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session.json5
+    volumes:
+      - ./results:/results
+    command:
+      - /bin/bash
+      - -c
+      - |
+        cat << 'ENDOFZENOH' | sed 's/^        //' > /tmp/zenoh_session.json5 &&
+        {
+          mode: "peer",
+          connect: { endpoints: ["tcp/localhost:7447"] },
+          scouting: { multicast: { enabled: false } },
+          transport: { shared_memory: { enabled: false } }
+        }
+        ENDOFZENOH
+        source /opt/ros/${ROS_DISTRO:-humble}/setup.bash &&
+        source /ws/install/setup.bash &&
+        exec python3 /runner/runner.py
+    depends_on:
+      voice-test:
+        condition: service_healthy
+
+  # ─── DB init: копирует voice_memory.db из образа в named volume ────────────
+  db-init:
+    platform: ${PLATFORM:-linux/arm64}
+    build:
+      context: ./scenario_runner
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: db-init-test
+    network_mode: host
+    volumes:
+      - db_seed:/seed_vol
+    entrypoint: ["/bin/sh", "-c", "cp /baked_db/voice_memory.db /seed_vol/voice_memory.db && echo '✓ DB запекана в volume' && exit 0"]
+
+volumes:
+  db_seed: {}

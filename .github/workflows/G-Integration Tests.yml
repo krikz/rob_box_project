@@ -1,0 +1,198 @@
+name: "G: Integration Tests"
+
+# Запуск интеграционных тестов голосового ассистента.
+#
+# Стратегия: ubuntu-latest (amd64) + QEMU для эмуляции arm64.
+# Образ voice-assistant (arm64) подтягивается из GHCR и запускается через QEMU.
+# Медленнее нативного Pi (~5-10 мин), но не требует self-hosted runner.
+#
+# Запуск:
+#   - Автоматически после успешной сборки G-Build Vision Pi Services
+#   - Вручную через workflow_dispatch (можно указать тег образа)
+
+on:
+  workflow_run:
+    workflows: ["G: Build Vision Pi Services"]
+    types: [completed]
+    branches: [main, develop, "feature/**"]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag (latest / dev / test)"
+        required: false
+        default: ""
+      test_branch:
+        description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
+        required: false
+        default: "feature/agent"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+  ROS_DISTRO: humble
+  TEST_DIR: docker/vision/test
+
+jobs:
+  # ==========================================================================
+  # Integration Tests (QEMU arm64 на ubuntu-latest)
+  # ==========================================================================
+  integration-tests:
+    name: Integration Tests (arm64 via QEMU)
+    runs-on: ubuntu-latest
+
+    # Запускаем только если сборка образов прошла успешно (или ручной запуск)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Тестовые файлы живут на feature/agent (или другой ветке из input)
+          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
+
+      # ── QEMU для запуска arm64 образов на amd64 runner ────────────────────
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Определить тег образа ──────────────────────────────────────────────
+      - name: Determine image tag
+        id: tag
+        run: |
+          # Если передан вручную — использовать его
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            # Определяем ветку: из workflow_run или из текущей ветки
+            BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+            echo "Branch: $BRANCH"
+            case "$BRANCH" in
+              main)        TAG="latest" ;;
+              develop)     TAG="dev" ;;
+              feature/*|copilot/*) TAG="test" ;;
+              *)           TAG="test" ;;
+            esac
+          fi
+          FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: voice-assistant-${FULL_TAG}"
+
+      # ── Логин в GHCR для pull образов ─────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Pull актуальных образов ────────────────────────────────────────────
+      - name: Pull voice-assistant image
+        run: |
+          IMAGE="${{ env.IMAGE_PREFIX }}:voice-assistant-${{ steps.tag.outputs.full_tag }}"
+          echo "Pulling: $IMAGE"
+          docker pull "$IMAGE"
+
+      # ── Подготовка ────────────────────────────────────────────────────────
+      - name: Prepare results directory
+        run: mkdir -p ${{ env.TEST_DIR }}/results
+
+      # ── Запуск тестов ──────────────────────────────────────────────────────
+      - name: Run integration tests
+        id: run_tests
+        working-directory: ${{ env.TEST_DIR }}
+        env:
+          SERVICE_IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          IMAGE_TAG: ${{ steps.tag.outputs.full_tag }}
+          ROS_DISTRO: ${{ env.ROS_DISTRO }}
+          PLATFORM: linux/arm64
+        run: |
+          docker compose -f docker-compose.test.yml up \
+            --build \
+            --abort-on-container-exit \
+            --exit-code-from scenario-runner \
+            --timeout 300
+        # Не прерываем пайплайн сразу — сначала собираем артефакты
+        continue-on-error: true
+
+      # ── Логи при падении ──────────────────────────────────────────────────
+      - name: Show logs on failure
+        if: steps.run_tests.outcome != 'success'
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          echo "=== scenario-runner logs ==="
+          docker compose -f docker-compose.test.yml logs scenario-runner || true
+          echo "=== voice-test logs ==="
+          docker compose -f docker-compose.test.yml logs voice-test --tail 50 || true
+
+      # ── Остановка контейнеров ─────────────────────────────────────────────
+      - name: Stop containers
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: docker compose -f docker-compose.test.yml down --remove-orphans || true
+
+      # ── Вывод результатов ─────────────────────────────────────────────────
+      - name: Display results
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          if [ -f results/test_results.json ]; then
+            python3 -c "
+          import json
+          d = json.load(open('results/test_results.json'))
+          print(f\"Results: {d['passed']}/{d['total']} passed ({d['failed']} failed)\")
+          for s in d['scenarios']:
+              icon = '✓' if s['passed'] else '✗'
+              print(f\"  {icon} {s['name']}\")
+          "
+          else
+            echo "No results file found"
+          fi
+
+      # ── Summary в GitHub UI ───────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        working-directory: ${{ env.TEST_DIR }}
+        run: |
+          echo "## 🤖 Integration Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** \`voice-assistant-${{ steps.tag.outputs.full_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f results/test_results.json ]; then
+            python3 -c "
+          import json, os
+          d = json.load(open('results/test_results.json'))
+          total, passed, failed = d['total'], d['passed'], d['failed']
+          summary = os.environ['GITHUB_STEP_SUMMARY']
+          with open(summary, 'a') as f:
+              f.write(f'**{passed}/{total} passed**\n\n')
+              f.write('| Scenario | Status |\n|----------|--------|\n')
+              for s in d['scenarios']:
+                  icon = '✅' if s['passed'] else '❌'
+                  f.write(f\"| {s['name']} | {icon} |\n\")
+          "
+          else
+            echo "⚠️ No results file — tests may have crashed before writing results" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── Загрузка артефактов ────────────────────────────────────────────────
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results-${{ steps.tag.outputs.full_tag }}
+          path: ${{ env.TEST_DIR }}/results/test_results.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Финал: провалить джоб если тесты упали ────────────────────────────
+      - name: Fail if tests failed
+        if: steps.run_tests.outcome != 'success'
+        run: |
+          echo "❌ Integration tests FAILED"
+          exit 1
