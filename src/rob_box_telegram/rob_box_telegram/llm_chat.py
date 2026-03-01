@@ -135,6 +135,36 @@ class LLMChat:
             # Keep system-relevant context: trim oldest user/assistant pairs
             self.sessions[chat_id] = history[-self.max_history :]
 
+    @staticmethod
+    def _sanitize_messages(messages: List[Dict]) -> List[Dict]:
+        """Remove orphaned role:tool messages and dangling assistant+tool_calls.
+
+        DeepSeek requires that every role:tool message is immediately preceded
+        by a role:assistant message that contains tool_calls. After truncation
+        or partial history loading this invariant can break, causing HTTP 400.
+        """
+        result = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "tool":
+                # Only include if previous message is assistant with tool_calls
+                prev = result[-1] if result else None
+                if prev and prev.get("role") == "assistant" and prev.get("tool_calls"):
+                    result.append(msg)
+                # else: drop orphaned tool message
+            elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Check if the NEXT message in original list is a tool result
+                # If not (e.g. history was truncated mid-sequence), strip tool_calls
+                next_msg = messages[i + 1] if i + 1 < len(messages) else None
+                if next_msg and next_msg.get("role") == "tool":
+                    result.append(msg)
+                else:
+                    # Strip tool_calls so it's a plain assistant message
+                    clean = {k: v for k, v in msg.items() if k != "tool_calls"}
+                    result.append(clean)
+            else:
+                result.append(msg)
+        return result
+
     def clear_session(self, chat_id: int) -> None:
         """Clear conversation history for a user."""
         self.sessions.pop(chat_id, None)
@@ -159,7 +189,9 @@ class LLMChat:
         history = self._get_history(chat_id)
         history.append({"role": "user", "content": user_message})
 
-        messages = [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
+        messages = self._sanitize_messages(
+            [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
+        )
 
         # Build request
         payload: Dict[str, Any] = {
@@ -274,7 +306,9 @@ class LLMChat:
             })
 
         # Ask LLM to summarize results — direct API call without adding a user message
-        messages = [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
+        messages = self._sanitize_messages(
+            [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
+        )
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
