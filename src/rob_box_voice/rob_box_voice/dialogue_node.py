@@ -364,8 +364,9 @@ class DialogueNode(Node):
 
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
-            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
-            Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            """Произнести текст голосом. ОБЯЗАТЕЛЬНЫЙ инструмент — весь ответ ТОЛЬКО через speak_text!
+            НЕЛЬЗЯ просто напечатать текст — пользователь ничего не услышит без вызова этого инструмента.
+            Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'."""
             if self._run_cancelled:
                 return "CANCELLED"
             # Collect ALL spoken texts immediately (before lock) so that when
@@ -654,8 +655,9 @@ class DialogueNode(Node):
 
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
-            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
-            Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            """Произнести текст голосом. ОБЯЗАТЕЛЬНЫЙ инструмент — весь ответ ТОЛЬКО через speak_text!
+            НЕЛЬЗЯ просто напечатать текст — пользователь ничего не услышит без вызова этого инструмента.
+            Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'."""
             if self._run_cancelled:
                 return "CANCELLED"
             self._spoken_texts.append(text)
@@ -1110,14 +1112,60 @@ class DialogueNode(Node):
     # Helpers
     # ────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _split_into_chunks(text: str, max_len: int = 200) -> list:
+        """Split text into sentence chunks ≤ max_len to avoid Yandex TTS 'Too long text'."""
+        raw = re.split(r'(?<=[.!?;])\s+', text.strip())
+        chunks: list = []
+        buf = ""
+        for part in raw:
+            part = part.strip()
+            if not part:
+                continue
+            candidate = (buf + " " + part).strip() if buf else part
+            if len(candidate) <= max_len:
+                buf = candidate
+            else:
+                if buf:
+                    chunks.append(buf)
+                if len(part) > max_len:
+                    sub_parts = re.split(r'(?<=,)\s+', part)
+                    sub_buf = ""
+                    for sp in sub_parts:
+                        sub_c = (sub_buf + " " + sp).strip() if sub_buf else sp
+                        if len(sub_c) <= max_len:
+                            sub_buf = sub_c
+                        else:
+                            if sub_buf:
+                                chunks.append(sub_buf)
+                            sub_buf = sp
+                    buf = sub_buf
+                else:
+                    buf = part
+        if buf:
+            chunks.append(buf)
+        return [c for c in chunks if c.strip()] or [text]
+
     def _speak_direct(self, text: str) -> None:
-        """Publish a response directly (no LLM) — errors, silence confirmations."""
-        msg = String()
-        msg.data = json.dumps(
-            {"chunk": "final", "ssml": f"<speak>{text}</speak>", "emotion": "neutral"},
-            ensure_ascii=False,
-        )
-        self._response_pub.publish(msg)
+        """Publish a response directly (no LLM) — errors, silence confirmations.
+
+        Uses sentence splitting so each TTS request stays under Yandex's 250-char
+        SSML limit.  Without this the fallback path caused 'Too long text' errors
+        and forced slow Silero synthesis.
+        """
+        import uuid
+        chunks = self._split_into_chunks(text, max_len=200)
+        for chunk in chunks:
+            msg = String()
+            msg.data = json.dumps(
+                {
+                    "ssml": f"<speak>{chunk}</speak>",
+                    "speech_id": str(uuid.uuid4()),
+                    "emotion": "neutral",
+                },
+                ensure_ascii=False,
+            )
+            self._response_pub.publish(msg)
 
     def _handle_silence(self) -> None:
         self._cancel_run("silence command")
