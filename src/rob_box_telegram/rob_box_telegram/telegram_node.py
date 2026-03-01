@@ -206,9 +206,19 @@ class TelegramNode(Node):
         try:
             tools = json.loads(msg.data)
             if isinstance(tools, list):
-                tool_names = [t.get("function", {}).get("name", t.get("name", "?")) for t in tools]
-                self.llm_chat.update_tools(tools)
-                self.get_logger().info(f"🔧 MCP tools updated ({len(tools)}): {', '.join(tool_names)}")
+                tool_names = sorted(
+                    t.get("function", {}).get("name", t.get("name", "?")) for t in tools
+                )
+                # Log only when the tool set actually changes
+                prev_names = getattr(self, "_last_tool_names", None)
+                if tool_names != prev_names:
+                    self._last_tool_names = tool_names
+                    self.llm_chat.update_tools(tools)
+                    self.get_logger().info(
+                        f"🔧 MCP tools updated ({len(tools)}): {', '.join(tool_names)}"
+                    )
+                else:
+                    self.llm_chat.update_tools(tools)
         except json.JSONDecodeError as e:
             self.get_logger().warning(f"⚠️ Failed to parse MCP tools: {e}")
 

@@ -10,6 +10,7 @@ Supports MCP tool calling through the same tool definitions.
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -173,6 +174,59 @@ class LLMChat:
         """Update available MCP tool definitions."""
         self.tools = tools
 
+    @staticmethod
+    def _parse_dsml_tool_calls(text: str) -> List[Dict]:
+        """Parse DeepSeek legacy DSML tool call format embedded in response text.
+
+        DeepSeek sometimes outputs tool calls as text like:
+          <｜DSML｜function_calls><｜DSML｜invoke name="speak_text">
+            <｜DSML｜parameter name="text" string="true">...</｜DSML｜parameter>
+          </｜DSML｜invoke></｜DSML｜function_calls>
+        Returns list of parsed tool call dicts (same format as API tool_calls).
+        """
+        # ｜ = U+FF5C fullwidth vertical line (DeepSeek uses this)
+        if "\uff5cDSML\uff5c" not in text and "|DSML|" not in text:
+            return []
+
+        results = []
+        import uuid
+        # Handle both <｜DSML｜ (fullwidth) and <|DSML| (ascii)
+        invoke_pattern = re.compile(
+            r'<[|\uff5c]DSML[|\uff5c]invoke\s+name=["\']([^"\']+)["\']>(.*?)<[|\uff5c]/DSML[|\uff5c]invoke>',
+            re.DOTALL,
+        )
+        param_pattern = re.compile(
+            r'<[|\uff5c]DSML[|\uff5c]parameter\s+name=["\']([^"\']+)["\'][^>]*>(.*?)<[|\uff5c]/DSML[|\uff5c]parameter>',
+            re.DOTALL,
+        )
+        for invoke_match in invoke_pattern.finditer(text):
+            tool_name = invoke_match.group(1).strip()
+            invoke_body = invoke_match.group(2)
+            args = {}
+            for param_match in param_pattern.finditer(invoke_body):
+                pname = param_match.group(1).strip()
+                pvalue = param_match.group(2).strip()
+                args[pname] = pvalue
+            results.append({
+                "id": f"dsml_{uuid.uuid4().hex[:8]}",
+                "name": tool_name,
+                "arguments": args,
+            })
+        return results
+
+    @staticmethod
+    def _strip_dsml(text: str) -> str:
+        """Remove DSML function_call blocks from response text."""
+        if "\uff5cDSML\uff5c" not in text and "|DSML|" not in text:
+            return text
+        cleaned = re.sub(
+            r'<[|\uff5c]DSML[|\uff5c]function_calls>.*?<[|\uff5c]/DSML[|\uff5c]function_calls>',
+            '',
+            text,
+            flags=re.DOTALL,
+        )
+        return cleaned.strip()
+
     async def chat(self, chat_id: int, user_message: str) -> Dict[str, Any]:
         """Send a message and get LLM response.
 
@@ -271,74 +325,105 @@ class LLMChat:
     ) -> str:
         """Full chat loop: send message, execute tool calls, return final text.
 
-        Args:
-            chat_id: Telegram chat ID.
-            user_message: User's text message.
-            tool_executor: Callable(tool_name, args) -> str that executes MCP tools.
-
-        Returns:
-            Final LLM response text (after tool execution, if any).
+        Handles multi-round tool calling and DeepSeek legacy DSML text format.
+        Loops up to _MAX_TOOL_ROUNDS times while LLM keeps returning tool calls.
         """
-        result = await self.chat(chat_id, user_message)
+        _MAX_TOOL_ROUNDS = 5
 
+        result = await self.chat(chat_id, user_message)
         if result.get("error"):
             return f"⚠️ Ошибка LLM: {result['error']}"
 
-        # If no tool calls, return text directly
-        if not result["tool_calls"]:
-            return result["text"] or "🤔 Пустой ответ"
-
-        # Execute tool calls and collect results
         history = self._get_history(chat_id)
-        tool_output_parts = []
+        all_tool_output: List[str] = []
 
-        for tc in result["tool_calls"]:
+        for _round in range(_MAX_TOOL_ROUNDS):
+            tool_calls = result["tool_calls"]
+            response_text = result["text"] or ""
+
+            # Also check for DeepSeek DSML tool calls embedded in text
+            dsml_calls = self._parse_dsml_tool_calls(response_text)
+            if dsml_calls and not tool_calls:
+                logger.info("Detected %d DSML tool call(s) in response text", len(dsml_calls))
+                tool_calls = dsml_calls
+
+            # No tool calls → we're done
+            if not tool_calls:
+                final = self._strip_dsml(response_text)
+                return final or ("✅ Выполнено" if all_tool_output else "🤔 Пустой ответ")
+
+            # Execute all tool calls in this round
+            for tc in tool_calls:
+                try:
+                    tool_result = await tool_executor(tc["name"], tc["arguments"])
+                except Exception as e:
+                    tool_result = f"Ошибка: {e}"
+                all_tool_output.append(f"🔧 {tc['name']}: {tool_result}")
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": str(tool_result),
+                })
+
+            # Ask LLM for next step (may return more tool calls or final text)
+            messages = self._sanitize_messages(
+                [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
+            )
+            payload: Dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": 4096,
+            }
+            if self.tools:
+                payload["tools"] = self.tools
+                payload["tool_choice"] = "auto"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
             try:
-                tool_result = await tool_executor(tc["name"], tc["arguments"])
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        if resp.status != 200:
+                            body = await resp.text()
+                            logger.error("LLM follow-up error %d: %s", resp.status, body[:300])
+                            return "\n".join(all_tool_output)
+                        data = await resp.json()
             except Exception as e:
-                tool_result = f"Ошибка: {e}"
-            tool_output_parts.append(f"🔧 {tc['name']}: {tool_result}")
-            # Add proper tool result message (OpenAI format — role:tool with tool_call_id)
-            history.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": str(tool_result),
-            })
-
-        # Ask LLM to summarize results — direct API call without adding a user message
-        messages = self._sanitize_messages(
-            [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
-        )
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": 4096,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status != 200:
-                        return "\n".join(tool_output_parts)
-                    data = await resp.json()
+                logger.error("LLM follow-up error: %s", e)
+                return "\n".join(all_tool_output)
 
             choice = data.get("choices", [{}])[0]
-            final_text = choice.get("message", {}).get("content", "") or ""
-            if final_text:
-                history.append({"role": "assistant", "content": final_text})
-                self._truncate_history(chat_id)
-                return final_text
-        except Exception as e:
-            logger.error("LLM follow-up error: %s", e)
+            message = choice.get("message", {})
+            followup_text = message.get("content", "") or ""
+            followup_tool_calls_raw = message.get("tool_calls", [])
 
-        # Fallback: return raw tool output
-        return "\n".join(tool_output_parts)
+            # Store in history
+            if followup_tool_calls_raw:
+                history.append({"role": "assistant", "content": followup_text, "tool_calls": followup_tool_calls_raw})
+            else:
+                history.append({"role": "assistant", "content": followup_text})
+            self._truncate_history(chat_id)
+
+            # Parse tool calls for next round
+            parsed = []
+            for tc in followup_tool_calls_raw:
+                func = tc.get("function", {})
+                try:
+                    args = json.loads(func.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {}
+                parsed.append({"id": tc.get("id", ""), "name": func.get("name", ""), "arguments": args})
+
+            result = {"text": followup_text, "tool_calls": parsed, "error": None}
+
+        # Exceeded max rounds — return last text or tool output
+        final = self._strip_dsml(result.get("text", "") or "")
+        return final or "\n".join(all_tool_output)
+
