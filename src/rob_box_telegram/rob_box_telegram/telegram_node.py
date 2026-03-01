@@ -206,9 +206,11 @@ class TelegramNode(Node):
         try:
             tools = json.loads(msg.data)
             if isinstance(tools, list):
+                tool_names = [t.get("function", {}).get("name", t.get("name", "?")) for t in tools]
                 self.llm_chat.update_tools(tools)
-        except json.JSONDecodeError:
-            pass
+                self.get_logger().info(f"🔧 MCP tools updated ({len(tools)}): {', '.join(tool_names)}")
+        except json.JSONDecodeError as e:
+            self.get_logger().warning(f"⚠️ Failed to parse MCP tools: {e}")
 
     # ── Publish helpers ─────────────────────────────────────────────
 

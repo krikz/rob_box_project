@@ -52,7 +52,7 @@ class MCPBridge:
         try:
             data = json.loads(msg.data)
         except json.JSONDecodeError:
-            self._logger.warning("Invalid JSON in /mcp/result: %s", msg.data[:200])
+            self._logger.warning(f"Invalid JSON in /mcp/result: {msg.data[:200]}")
             return
 
         request_id = data.get("request_id")
@@ -105,7 +105,7 @@ class MCPBridge:
         except asyncio.TimeoutError:
             with self._lock:
                 self._pending.pop(request_id, None)
-            self._logger.warning("MCP tool '%s' timed out (request_id=%s)", tool_name, request_id)
+            self._logger.warning(f"MCP tool '{tool_name}' timed out (request_id={request_id})")
             return {
                 "tool_name": tool_name,
                 "request_id": request_id,

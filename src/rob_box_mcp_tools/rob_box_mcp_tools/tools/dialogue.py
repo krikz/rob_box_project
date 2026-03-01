@@ -107,19 +107,70 @@ class SpeakTextTool(MCPTool):
             ),
         ]
 
+    # Максимальная длина чанка для Yandex TTS (лимит ~250 символов SSML)
+    _MAX_CHUNK_CHARS = 200
+
+    @staticmethod
+    def _split_sentences(text: str, max_len: int = 200) -> list:
+        """Разбивает текст на предложения не длиннее max_len символов.
+
+        Сначала режет по знакам конца предложения (. ! ? ;), потом при
+        необходимости разбивает слишком длинные куски по запятым/пробелам.
+        """
+        import re
+        # Разбиваем по концу предложений, сохраняя разделители
+        raw = re.split(r'(?<=[.!?;])\s+', text.strip())
+        chunks: list = []
+        buf = ""
+        for part in raw:
+            part = part.strip()
+            if not part:
+                continue
+            candidate = (buf + " " + part).strip() if buf else part
+            if len(candidate) <= max_len:
+                buf = candidate
+            else:
+                if buf:
+                    chunks.append(buf)
+                # Если одно предложение само по себе длиннее лимита — бьём по запятым
+                if len(part) > max_len:
+                    sub_parts = re.split(r'(?<=,)\s+', part)
+                    sub_buf = ""
+                    for sp in sub_parts:
+                        sub_candidate = (sub_buf + " " + sp).strip() if sub_buf else sp
+                        if len(sub_candidate) <= max_len:
+                            sub_buf = sub_candidate
+                        else:
+                            if sub_buf:
+                                chunks.append(sub_buf)
+                            # Последний резорт — режем по словам
+                            words = sp.split()
+                            word_buf = ""
+                            for w in words:
+                                wc = (word_buf + " " + w).strip() if word_buf else w
+                                if len(wc) <= max_len:
+                                    word_buf = wc
+                                else:
+                                    if word_buf:
+                                        chunks.append(word_buf)
+                                    word_buf = w
+                            sub_buf = word_buf
+                    buf = sub_buf
+                else:
+                    buf = part
+        if buf:
+            chunks.append(buf)
+        return [c for c in chunks if c.strip()]
+
     def execute(self, text: str, animation: str = "neutral") -> MCPToolResult:
         """Произнести текст"""
         import json
         import uuid
-        
+
         self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation})")
 
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
-
-        # Предупреждение о длинных текстах (Yandex TTS ограничение + долгое воспроизведение)
-        if len(text) > 300:
-            self.log_warning(f"⚠️ Текст слишком длинный ({len(text)} символов). Рекомендуется разбить на части.")
 
         # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
         animation_map = {
@@ -150,20 +201,6 @@ class SpeakTextTool(MCPTool):
             "singing": "happy",
         }
         animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
-        
-        # Генерируем speech_id
-        speech_id = str(uuid.uuid4())
-
-        # Устанавливаем анимацию (если не idle)
-        if animation and animation != "idle":
-            try:
-                from std_msgs.msg import String as StringMsg
-                anim_msg = StringMsg()
-                anim_msg.data = animation
-                self.animation_pub.publish(anim_msg)
-                self.log_info(f"🎨 Установлена анимация '{animation}'")
-            except Exception as e:
-                self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
 
         # Определяем pitch для голоса на основе анимации (только для эмоциональных)
         pitch_map = {
@@ -173,39 +210,55 @@ class SpeakTextTool(MCPTool):
             "excited": "x-high",
             "surprised": "high"
         }
-        
-        # Формируем SSML с pitch если есть соответствие
-        if animation in pitch_map:
-            pitch = pitch_map[animation]
-            ssml_text = f"<speak><prosody pitch='{pitch}'>{text}</prosody></speak>"
-        else:
-            ssml_text = f"<speak>{text}</speak>"
+        pitch = pitch_map.get(animation, None)
 
-        # Регистрируем ожидание
-        with self.pending_speeches_lock:
-            self.pending_speeches[speech_id] = None
-            self.log_info(f"📝 Зарегистрирован speech_id: {speech_id[:8]}... в pending_speeches")
+        def _make_ssml(chunk: str) -> str:
+            if pitch:
+                return f"<speak><prosody pitch='{pitch}'>{chunk}</prosody></speak>"
+            return f"<speak>{chunk}</speak>"
 
-        # Публикуем запрос TTS в JSON формате (включаем dialogue_id для отброса устаревших)
+        # Разбиваем текст на чанки ≤ _MAX_CHUNK_CHARS (лимит Yandex TTS)
+        chunks = self._split_sentences(text, self._MAX_CHUNK_CHARS)
+        if len(chunks) > 1:
+            self.log_info(f"✂️ Текст разбит на {len(chunks)} чанков (длина: {len(text)} символов)")
+
         from std_msgs.msg import String
-        tts_request = {"ssml": ssml_text, "speech_id": speech_id}
-        if self._current_dialogue_id:
-            tts_request["dialogue_id"] = self._current_dialogue_id
-        msg = String()
-        msg.data = json.dumps(tts_request, ensure_ascii=False)
-        self.tts_pub.publish(msg)
+        speech_ids = []
+        for i, chunk in enumerate(chunks):
+            speech_id = str(uuid.uuid4())
+            speech_ids.append(speech_id)
 
-        self.log_info(
-            f"📤 TTS запрос отправлен: {text[:30]}... "
-            f"(speech_id: {speech_id[:8]}, dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
-        )
+            # Анимацию ставим только для первого чанка (чтобы не мигало)
+            if i == 0 and animation and animation != "idle":
+                try:
+                    from std_msgs.msg import String as StringMsg
+                    anim_msg = StringMsg()
+                    anim_msg.data = animation
+                    self.animation_pub.publish(anim_msg)
+                    self.log_info(f"🎨 Установлена анимация '{animation}'")
+                except Exception as e:
+                    self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
 
-        # ✅ Возвращаем результат СРАЗУ (асинхронный режим)
-        # TTS будет выполняться в фоне, это позволяет LLM быстро вызывать другие tool calls
-        self.log_info(f"✅ TTS запрос принят (асинхронный режим)")
+            # Регистрируем ожидание
+            with self.pending_speeches_lock:
+                self.pending_speeches[speech_id] = None
+
+            tts_request = {"ssml": _make_ssml(chunk), "speech_id": speech_id}
+            if self._current_dialogue_id:
+                tts_request["dialogue_id"] = self._current_dialogue_id
+            msg = String()
+            msg.data = json.dumps(tts_request, ensure_ascii=False)
+            self.tts_pub.publish(msg)
+            self.log_info(
+                f"📤 TTS чанк {i+1}/{len(chunks)}: {chunk[:40]!r}... "
+                f"(speech_id: {speech_id[:8]}, dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
+            )
+
+        self.log_info(f"✅ TTS запрос(ов) принято: {len(chunks)} (асинхронный режим)")
         return MCPToolResult(
-            success=True, data={"text": text, "animation": animation, "speech_id": speech_id, "async": True},
-            message=f"TTS запрос отправлен: {text[:50]}..."
+            success=True,
+            data={"text": text, "animation": animation, "chunks": len(chunks), "speech_ids": speech_ids, "async": True},
+            message=f"TTS запрос отправлен ({len(chunks)} чанк(ов)): {text[:50]}..."
         )
 
 class ListenForResponseTool(MCPTool):

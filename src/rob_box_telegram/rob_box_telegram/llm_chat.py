@@ -20,7 +20,57 @@ logger = logging.getLogger(__name__)
 OPERATOR_SYSTEM_PROMPT = """Ты — Rob Box, автономный ровер. Оператор общается с тобой через Telegram.
 Отвечай кратко и по делу. Ты можешь выполнять команды через инструменты (tools).
 Если оператор просит что-то сделать (поехать, сказать, анимация и т.д.) — используй инструменты.
-Язык общения: русский, если оператор не пишет на другом языке."""
+Язык общения: русский, если оператор не пишет на другом языке.
+
+## МУЗЫКА (ОБЯЗАТЕЛЬНО читай перед любым запросом на музыку)
+
+Для воспроизведения музыки ВСЕГДА вызывай execute_music_code с реальным FoxDot/Renardo Python-кодом.
+get_music_state — только для ПРОВЕРКИ текущего состояния. Один лишь get_music_state НЕ запускает музыку!
+
+ИМЕНА ПЛЕЕРОВ: d1-d9 (ударные/play), p1-p9 (синтезатор), s1-s9 (семплы). ТОЛЬКО эти имена!
+УДАРНЫЕ: d1 >> play("X.X.", ...) — через play() с буквами
+СИНТЕЗАТОР: p1 >> blip([0,2,4], dur=1, amp=0.7) — через инструмент
+
+ИЗВЕСТНЫЕ БУКВЫ (не нужен search_samples):
+  X = кик (case="upper")   o = снейр   - = пауза    h = хай-хэт
+
+АЛГОРИТМ для обычного запроса "красивая/весёлая/грустная мелодия":
+  1. Сразу вызови execute_music_code с готовым кодом (не вызывай get_music_state первым!)
+  2. НЕ НУЖЕН search_samples для простых запросов — используй известные буквы
+
+ПРИМЕР красивой мелодии:
+```python
+Clock.bpm = 100
+p1 >> blip([0,2,4,7,4,2], dur=0.5, amp=0.7, oct=5, cutoff=3000)
+p2 >> keys([0,-2,0,3], dur=2, amp=0.4, oct=4)
+d1 >> play("X-o-X-o-", amp=0.6)
+```
+
+ПРИМЕР спокойной/красивой:
+```python
+Clock.bpm = 80
+p1 >> arpy([0,3,7,0,3,7], dur=0.5, amp=0.6, oct=5)
+p2 >> epiano([0,-3,0,2], dur=4, amp=0.4, oct=4)
+d1 >> play("X---o---", amp=0.5)
+```
+
+ЗАПРЕЩЕНО в коде: псевдонимы (rooster1=d1), Clock.bpm.set(N), play("kick"), play("bass_drum").
+РАЗРЕШЕНО: d1.stop(), p1.stop(), Clock.clear() — для остановки.
+
+## КОНВЕРТАЦИЯ МУЗ. НОТАЦИЙ (MML/RTTTL)
+
+Формат `4a2 16c3 8#d2`: длительность + нота + октава. `#` = диез.
+Длительности → доли бита (при bpm=120): 1=2.0, 2=1.0, 4=0.5, 8=0.25, 16=0.125, 8.=0.375
+Ноты в MIDI (октава*12 + смещение): C=0, D=2, E=4, F=5, G=7, A=9, B=11, #+1
+Пример: `a2` = октава 2, A = 9 → midinote = 2*12+9 = 33. `#d2` = 2*12+2+1 = 27.
+Используй `p1 >> pluck(midinote=[...], dur=[...], amp=0.7)` для мелодии.
+Левый канал (нижние ноты) → p1/p2 с oct смещением или отдельным голосом s1.
+
+## МУЛЬТИ-ДЕЙСТВИЯ
+
+Если запрос содержит несколько действий («произнеси И добавь звук», «сыграй И скажи»)
+→ вызови ВСЕ инструменты последовательно, не ограничивайся одним.
+Порядок: сначала speak_text, потом play_sound или execute_music_code."""
 
 
 class LLMChat:
@@ -116,7 +166,7 @@ class LLMChat:
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": 1024,
+            "max_tokens": 4096,
         }
 
         # Add tools if available
@@ -150,8 +200,11 @@ class LLMChat:
             assistant_text = message.get("content", "") or ""
             tool_calls = message.get("tool_calls", [])
 
-            # Store assistant response in history
-            history.append({"role": "assistant", "content": assistant_text})
+            # Store assistant response in history (with tool_calls for proper follow-up format)
+            if tool_calls:
+                history.append({"role": "assistant", "content": assistant_text, "tool_calls": tool_calls})
+            else:
+                history.append({"role": "assistant", "content": assistant_text})
             self._truncate_history(chat_id)
 
             # Parse tool calls
@@ -203,27 +256,55 @@ class LLMChat:
         if not result["tool_calls"]:
             return result["text"] or "🤔 Пустой ответ"
 
-        # Execute tool calls and feed results back
-        tool_results = []
+        # Execute tool calls and collect results
+        history = self._get_history(chat_id)
+        tool_output_parts = []
+
         for tc in result["tool_calls"]:
             try:
                 tool_result = await tool_executor(tc["name"], tc["arguments"])
-                tool_results.append(f"🔧 {tc['name']}: {tool_result}")
             except Exception as e:
-                tool_results.append(f"❌ {tc['name']}: {e}")
+                tool_result = f"Ошибка: {e}"
+            tool_output_parts.append(f"🔧 {tc['name']}: {tool_result}")
+            # Add proper tool result message (OpenAI format — role:tool with tool_call_id)
+            history.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": str(tool_result),
+            })
 
-        # Add tool results to history and get follow-up response
-        history = self._get_history(chat_id)
-        tool_summary = "\n".join(tool_results)
-        history.append({"role": "user", "content": f"[Результаты инструментов]\n{tool_summary}"})
+        # Ask LLM to summarize results — direct API call without adding a user message
+        messages = [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}] + history
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": 4096,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        return "\n".join(tool_output_parts)
+                    data = await resp.json()
 
-        followup = await self.chat(chat_id, "")
-        # Remove the empty user message we just added
-        if history and history[-1]["role"] == "user" and history[-1]["content"] == "":
-            history.pop()
+            choice = data.get("choices", [{}])[0]
+            final_text = choice.get("message", {}).get("content", "") or ""
+            if final_text:
+                history.append({"role": "assistant", "content": final_text})
+                self._truncate_history(chat_id)
+                return final_text
+        except Exception as e:
+            logger.error("LLM follow-up error: %s", e)
 
-        final_text = followup.get("text", "")
-        if not final_text:
-            return tool_summary
-
-        return final_text
+        # Fallback: return raw tool output
+        return "\n".join(tool_output_parts)

@@ -9,6 +9,7 @@ Voice messages are transcribed and then processed as text or spoken by the robot
 import logging
 
 from telegram import Update
+from telegram.error import TimedOut, NetworkError
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
@@ -35,8 +36,11 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not user_text:
         return
 
-    # Show typing indicator
-    await update.message.chat.send_action("typing")
+    # Show typing indicator (best-effort — ignore network errors)
+    try:
+        await update.message.chat.send_action("typing")
+    except (TimedOut, NetworkError) as e:
+        logger.warning("send_action typing failed (ignored): %s", e)
 
     # Execute LLM chat with MCP tool support
     async def tool_executor(tool_name: str, args: dict) -> str:
@@ -70,7 +74,11 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not voice:
         return
 
-    await update.message.chat.send_action("typing")
+    # Show typing indicator (best-effort — ignore network errors)
+    try:
+        await update.message.chat.send_action("typing")
+    except (TimedOut, NetworkError) as e:
+        logger.warning("send_action typing failed (ignored): %s", e)
 
     # Download voice file
     try:
@@ -105,7 +113,10 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         # Mode A: Route to LLM chat
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
-        await update.message.chat.send_action("typing")
+        try:
+            await update.message.chat.send_action("typing")
+        except (TimedOut, NetworkError) as e:
+            logger.warning("send_action typing failed (ignored): %s", e)
 
         async def tool_executor(tool_name: str, args: dict) -> str:
             return await node.mcp_bridge.execute_simple(tool_name, args)
