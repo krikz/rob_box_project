@@ -2,6 +2,25 @@
 
 ## 🌿 Стратегия веток (Git Flow)
 
+### 📋 Таблица именования веток
+
+| Тип | Шаблон | Пример | Создаётся из | Мержится в |
+|-----|--------|--------|--------------|------------|
+| Production | `main` | `main` | — | — |
+| Integration | `develop` | `develop` | — | — |
+| Фича | `feature/{slug}` | `feature/voice-assistant` | `develop` | `develop` |
+| Исправление | `fix/{slug}` | `fix/camera-memory-leak` | `develop` | `develop` |
+| **Релиз** | **`release/v{MAJOR}.{MINOR}.{PATCH}`** | **`release/v0.1.0`** | **`develop`** | **`main` + `develop`** |
+| Hotfix | `hotfix/{slug}` | `hotfix/vesc-critical-bug` | `main` | `main` + `develop` |
+
+**Версионирование релизов (SemVer):**
+- `MAJOR` — несовместимые изменения API / архитектурные переломные изменения  
+- `MINOR` — новые фичи, обратно совместимые (0.1.0 → 0.2.0)  
+- `PATCH` — bag fixes, мелкие улучшения (0.1.0 → 0.1.1)  
+- Стартовая версия: `v0.1.0` (первый pre-stable release)
+
+---
+
 ### Основные ветки
 
 #### `main` - Production
@@ -51,14 +70,16 @@
 - **Создаётся из:** `develop`
 - **Мержится в:** `main` и обратно в `develop`
 - **Сборка Docker:** ✅ Автоматическая с тегом `rc-X.Y.Z`
-- **Именование:** `release/v1.0.0`, `release/v1.1.0`
+- **Именование:** `release/v0.1.0`, `release/v1.0.0`, `release/v1.1.0`
+- **Версии:** SemVer — первый релиз `v0.1.0`, стабильный `v1.0.0`
 - **Пример:**
   ```bash
   git checkout develop
-  git checkout -b release/v1.0.0
+  git pull origin develop
+  git checkout -b release/v0.1.0
   # Обновить версии, финальное тестирование
-  git push origin release/v1.0.0
-  # Создать PR: release/v1.0.0 → main
+  git push origin release/v0.1.0
+  # Создать PR: release/v0.1.0 → main
   # После merge в main, также merge обратно в develop
   ```
 
@@ -109,25 +130,27 @@ git push origin feature/my-awesome-feature
 
 ### 4. Подготовка релиза
 ```bash
-# Создать release branch
+# Создать release branch от develop
 git checkout develop
-git checkout -b release/v1.0.0
+git pull origin develop
+git checkout -b release/v0.1.0
 
-# Обновить версию в файлах
+# Обновить версию в файлах:
 # - docker-compose.yaml
 # - package.xml
 # - README.md
+# - CHANGELOG.md
 
 git add .
-git commit -m "Bump version to 1.0.0"
-git push origin release/v1.0.0
+git commit -m "chore(release): bump version to 0.1.0"
+git push origin release/v0.1.0
 
-# Создать PR: release/v1.0.0 → main
+# Создать PR: release/v0.1.0 → main
 # После merge создать Git tag
 git checkout main
 git pull origin main
-git tag -a v1.0.0 -m "Release version 1.0.0"
-git push origin v1.0.0
+git tag -a v0.1.0 -m "Release version 0.1.0"
+git push origin v0.1.0
 
 # Merge обратно в develop
 git checkout develop
