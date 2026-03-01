@@ -2,7 +2,7 @@
 
 > **Дата создания**: 2025-10-11  
 > **Статус**: ✅ Production Ready  
-> **Платформа**: Main Pi (Raspberry Pi 4)
+> **Платформа**: Main Pi (Raspberry Pi 5)
 
 ## 📋 Оглавление
 
@@ -518,7 +518,7 @@ wait_for_transform: 1.0    # было 0.5
 
 ## 📊 Оптимизация
 
-### Производительность на Raspberry Pi 4
+### Производительность на Raspberry Pi 5
 
 **Базовое использование**:
 - CPU: ~15-20% (controller_server + planner_server)

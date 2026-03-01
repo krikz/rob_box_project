@@ -6,6 +6,7 @@ on:
     branches:
       - develop        # Автосборка при пуше в develop
       - 'feature/**'   # Автосборка для feature веток (для тестирования)
+      - 'feat/**'      # Автосборка для feat веток (сокращённый префикс)
       - 'copilot/**'   # Автосборка для copilot веток (AI-ассистированная разработка)
     paths:
       - 'docker/vision/**'
@@ -40,8 +41,8 @@ jobs:
             BRANCH_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             BRANCH_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]]; then
-            # Feature ветки получают тег 'test'
+          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]]; then
+            # Feature/feat ветки получают тег 'test'
             BRANCH_TAG="test"
           elif [[ "$BRANCH_NAME" == copilot/* ]]; then
             # Copilot ветки получают тег 'test' (аналогично feature веткам)
@@ -262,10 +263,105 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
-  # Проверка сборки всех сервисов прошла успешно
+  # Telegram Bot (Operator interface via Telegram)
+  build-telegram-bot:
+    needs: determine-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=telegram-bot-${{ needs.determine-tag.outputs.full_tag }}
+            type=raw,value=telegram-bot-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=telegram-bot-${{ env.ROS_DISTRO }}-
+
+      - name: Build and push telegram-bot
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/vision/telegram_bot/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
+
+  # SuperCollider Server (for Renardo/FoxDot real-time music)
+  build-supercollider:
+    needs: determine-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: |
+            type=raw,value=supercollider-${{ needs.determine-tag.outputs.docker_tag }}
+            type=raw,value=supercollider-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=supercollider-
+
+      - name: Build and push supercollider
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/vision/supercollider
+          file: docker/vision/supercollider/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   verify-build:
     runs-on: ubuntu-latest
-    needs: [build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant]
+    needs: [build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant, build-telegram-bot, build-supercollider]
     steps:
       - name: Verify all builds succeeded
         run: echo "✅ All Vision Pi services built successfully!"

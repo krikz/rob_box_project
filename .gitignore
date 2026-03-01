@@ -7,6 +7,8 @@ __pycache__/
 build/
 # Allow docker/build directory (build machine infrastructure)
 !docker/build/
+# Allow scripts/build directory (build scripts)
+!scripts/build/
 develop-eggs/
 dist/
 downloads/
@@ -50,8 +52,19 @@ docker-compose.override.yml
 # Temporary files
 *.tmp
 *.bak
-*.log
 .cache/
+
+# Build and diagnostic logs (only in root)
+/*.log
+/frames_*.gv
+/frames_*.pdf
+/clog
+
+# AI Agent Skills
+# .agents/github-copilot/ — Rob Box кастомные скилы, КОММИТИМ
+# .continue/ .qwen/ — авто-установка сторонних тулов, игнорируем
+.continue/
+.qwen/
 
 # System files
 .Trash-*/

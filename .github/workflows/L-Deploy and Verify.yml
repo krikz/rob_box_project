@@ -98,6 +98,12 @@ jobs:
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
+          # SSH options: timeout protection against WiFi flakiness / Pi unresponsiveness
+          # ConnectTimeout=10      — fail fast if Pi unreachable
+          # ServerAliveInterval=5  — send keepalive every 5s to detect broken connections
+          # ServerAliveCountMax=3  — drop after 3 missed keepalives (15s)
+          echo "SSH_OPTS=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3" >> $GITHUB_ENV
+
           # Установка sshpass для автоматической аутентификации
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
@@ -236,8 +242,8 @@ jobs:
           echo "🛑 Stopping Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans' \
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
       - name: "[Vision Pi] Update Code"
@@ -247,11 +253,17 @@ jobs:
           echo "📥 Updating Vision Pi code from branch: ${{ github.ref_name }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
-            "cd ~/rob_box_project && \
-             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git fetch origin && \
-             git checkout ${{ github.ref_name }} && \
-             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ github.ref_name }}"
+          # Retry git operations (Pi WiFi to github.com can be flaky)
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git pull origin ${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -261,11 +273,11 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             docker compose pull" \
+             docker compose pull --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       - name: "[Vision Pi] Start Containers"
@@ -275,11 +287,11 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             docker compose up -d"
+             docker compose up -d --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -290,8 +302,8 @@ jobs:
           echo "🛑 Stopping Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans' \
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
       - name: "[Main Pi] Update Code"
@@ -301,11 +313,17 @@ jobs:
           echo "📥 Updating Main Pi code from branch: ${{ github.ref_name }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
-            "cd ~/rob_box_project && \
-             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git fetch origin && \
-             git checkout ${{ github.ref_name }} && \
-             GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' git pull origin ${{ github.ref_name }}"
+          # Retry git operations (Pi WiFi to github.com can be flaky)
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git pull origin ${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -315,11 +333,11 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             docker compose pull" \
+             docker compose pull --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       - name: "[Main Pi] Start Containers"
@@ -329,11 +347,11 @@ jobs:
           echo "🚀 Starting Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             docker compose up -d"
+             docker compose up -d --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
 
@@ -356,7 +374,7 @@ jobs:
           echo "🔍 Checking Vision Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
 
           echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
@@ -381,7 +399,7 @@ jobs:
           echo "🔍 Checking Main Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          STATUS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json')
 
           echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
@@ -411,7 +429,7 @@ jobs:
           echo "" > $LOGS_FILE
 
           # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
@@ -439,9 +457,9 @@ jobs:
             echo "Checking logs for: $container"
 
             # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
             
             # Объединяем логи для анализа
@@ -512,7 +530,7 @@ jobs:
           echo "" > $LOGS_FILE
 
           # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
@@ -549,9 +567,9 @@ jobs:
             echo "Checking logs for: $container"
 
             # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
             
             # Объединяем логи для анализа
@@ -625,7 +643,7 @@ jobs:
 
           # Проверяем топики OAK-D камеры
           echo "Checking oak-d container topics..."
-          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.vision_pi_ip }} \
+          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then
@@ -665,7 +683,7 @@ jobs:
 
           # Проверяем топики в rtabmap контейнере
           echo "Checking rtabmap container topics..."
-          TOPICS=$(sshpass -p 'open' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ros2@${{ env.main_pi_ip }} \
+          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then

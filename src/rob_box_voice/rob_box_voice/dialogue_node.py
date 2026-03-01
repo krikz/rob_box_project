@@ -1,1782 +1,1156 @@
 #!/usr/bin/env python3
 """
-DialogueNode - LLM диалоговая система с DeepSeek API (streaming)
+dialogue_node.py — Voice dialogue agent (OpenAI Agents SDK + DeepSeek/Qwen)
 
-Подписывается на: /voice/stt/result (распознанная речь)
-Публикует: /voice/dialogue/response (JSON chunks для TTS)
-Использует: DeepSeek API streaming + accent_replacer
+Subscribes:
+    /voice/stt/result (String) — recognised speech
+    /audio/vad        (Bool)   — VAD for barge-in
+
+Publishes:
+    /voice/dialogue/response (String) — JSON response with SSML
+    /voice/dialogue/state    (String) — current state (IDLE / LISTENING / DIALOGUE / SILENCED)
 """
 
+import asyncio
 import json
 import os
 import re
-import subprocess
-import sys
+import threading
 import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
+from typing import List, Optional
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import String
-from std_srvs.srv import Empty
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, String
 
-# Импортируем из scripts
-scripts_path = Path(__file__).parent.parent / "scripts"
-sys.path.insert(0, str(scripts_path))
+from agents import Agent, Runner, function_tool
+from agents.exceptions import MaxTurnsExceeded
+from agents.items import ToolCallItem
+from agents.model_settings import ModelSettings
+from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from httpx import Timeout as HttpxTimeout
+from openai import APIConnectionError, AsyncOpenAI
+
+from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
+
+from .core.dialogue_manager import DialogueManager, DialogueState
 
 try:
-    from accent_replacer import AccentReplacer
-    from openai import OpenAI
-except ImportError as e:
-    print(f"❌ Ошибка импорта: {e}")
-    print("Установите: pip install openai")
-    sys.exit(1)
+    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
+
+    _VOICE_MEMORY_AVAILABLE = True
+except ImportError:
+    _VoiceMemory = None  # type: ignore[assignment,misc]
+    _VOICE_MEMORY_AVAILABLE = False
+
+try:
+    from .skills import MusicSkill, NavigationSkill, MemorySkill, StatusSkill
+
+    _SKILLS_AVAILABLE = True
+except ImportError:
+    _SKILLS_AVAILABLE = False  # skills module not yet installed
+
+# ── Feature flag — set USE_SKILLS=false to fall back to flat tool mode ────────
+USE_SKILLS: bool = os.getenv("USE_SKILLS", "true").lower() == "true"
 
 
 class DialogueNode(Node):
-    """ROS2 нода для LLM диалога с поддержкой Qwen и DeepSeek"""
+    """Voice dialogue agent built on OpenAI Agents SDK."""
 
-    # Конфигурации провайдеров
+    # ── Provider configs ────────────────────────────────────────────
     PROVIDERS = {
+        "deepseek": {
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-chat",
+            "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
+        },
         "qwen": {
             "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             "model": "qwen-max",
-            "env_var": "QWEN_API_KEY",  # Основная переменная для Qwen
-            "fallback_env": "LLM_API_KEY",  # Fallback на унифицированную
-            "name": "Qwen",
+            "env_vars": ["QWEN_API_KEY", "LLM_API_KEY"],
         },
-        "deepseek": {
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "env_var": "DEEPSEEK_API_KEY",  # Основная переменная для DeepSeek
-            "fallback_env": "LLM_API_KEY",  # Fallback на унифицированную
-            "name": "DeepSeek",
-        }
     }
 
     def __init__(self):
         super().__init__("dialogue_node")
 
-        # Параметры
-        self.declare_parameter("provider", "deepseek")  # qwen | deepseek
-        self.declare_parameter("enable_fallback", True)  # Автоматический fallback на другой провайдер
+        # ── Parameters ──────────────────────────────────────────────
+        self.declare_parameter("provider", "deepseek")
         self.declare_parameter("api_key", "")
-        self.declare_parameter("base_url", "")  # Если пусто - берём из PROVIDERS
-        self.declare_parameter("model", "")      # Если пусто - берём из PROVIDERS
+        self.declare_parameter("base_url", "")
+        self.declare_parameter("model", "")
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
-        self.declare_parameter("system_prompt_file", "master_prompt.txt")  # Полный мастер промпт
-        self.declare_parameter("streaming", True)  # Включаем streaming
+        self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
+        self.declare_parameter("history_max_turns", 20)
+        self.declare_parameter("agent_max_turns", 10)
+        self.declare_parameter("dialogue_timeout", 300.0)
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
-        self.declare_parameter("silence_commands", ["помолч", "замолч", "хватит"])
-        self.declare_parameter("query_accumulation_timeout", 2.5)  # секунд для накопления запросов
+        self.declare_parameter("enable_mcp_tools", True)
+        self.declare_parameter("enable_fallback", False)
+        self.declare_parameter("llm_timeout_sec", 35.0)
+        self.declare_parameter("verbose_llm", True)
 
-        # Выбор провайдера с fallback
-        self.primary_provider = self.get_parameter("provider").value
-        self.enable_fallback = self.get_parameter("enable_fallback").value
-        self.current_provider = self.primary_provider
-        self.provider_error_count = 0  # Счётчик ошибок текущего провайдера
-        self.provider_error_threshold = 3  # Порог для переключения на fallback
-        
-        # Инициализация клиента с выбранным провайдером
-        self._init_llm_client()
+        self._provider: str = self.get_parameter("provider").value
+        self._temperature: float = self.get_parameter("temperature").value
+        self._max_tokens: int = self.get_parameter("max_tokens").value
+        self._max_turns: int = self.get_parameter("history_max_turns").value
+        self._agent_max_turns: int = self.get_parameter("agent_max_turns").value
+        self._llm_timeout: float = self.get_parameter("llm_timeout_sec").value
+        self._verbose_llm: bool = self.get_parameter("verbose_llm").value
 
-        # Accent replacer
-        self.accent_replacer = AccentReplacer()
-        stats = self.accent_replacer.get_stats()
-        self.get_logger().info(f'📖 Словарь ударений: {stats["total_words"]} слов')
+        # ── System prompt ────────────────────────────────────────────
+        self._system_prompt: str = self._load_system_prompt()
 
-        # System prompt
-        self.system_prompt = self._load_system_prompt()
+        # ── Dialogue state ───────────────────────────────────────────
+        self.dialogue_manager = DialogueManager(
+            wake_words=self.get_parameter("wake_words").value,
+            dialogue_timeout=self.get_parameter("dialogue_timeout").value,
+        )
+        self._vad_speech_detected: bool = False
 
-        # История диалога
-        self.conversation_history = []
+        # ── Conversation history (SDK input-list format) ─────────────
+        self._conversation: List[dict] = []
+        self._conv_lock = threading.Lock()
 
-        # Подписка на распознанную речь
-        self.stt_sub = self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
+        # ── asyncio loop in daemon thread ────────────────────────────
+        self._loop = asyncio.new_event_loop()
+        threading.Thread(target=self._loop.run_forever, daemon=True).start()
 
-        # Подписка на feedback от command_node (Phase 5)
-        self.command_feedback_sub = self.create_subscription(
-            String, "/voice/command/feedback", self.command_feedback_callback, 10
+        # ── Current agent task (cancelled on barge-in) ──────────────
+        self._run_task: Optional[asyncio.Task] = None
+        self._task_lock = threading.Lock()
+        # Flag set by _cancel_run: speak_text checks this before acquiring the
+        # output lock so that a still-running old speak_text coroutine (that
+        # was unblocked by the forced TTS-event flush) does not race with the
+        # new run's speak_text calls.
+        self._run_cancelled: bool = False
+
+        # ── VAD speech flag (no barge-in) ────────────────────────────
+        # VAD only tracks whether speech is happening; barge-in requires
+        # wake word via STT, so background noise never cancels a run.
+
+        # ── TTS completion tracking ──────────────────────────────────
+        # speak_text tool awaits these events so agent calls are sequential
+        self._tts_events: dict = {}  # speech_id -> asyncio.Event
+        self._tts_events_lock = threading.Lock()
+
+        # ── Sound completion tracking ─────────────────────────────────
+        # play_sound tool awaits this event until sound_node publishes "ready".
+        # Avoids relying on catalog duration (which is shorter than real playback
+        # due to audio startup latency + cleanup_playback_noise 0.1s delay).
+        self._sound_done_event: Optional[asyncio.Event] = None
+        self._sound_event_lock = threading.Lock()
+
+        # ── spoken texts accumulator ──────────────────────────────────
+        # Collects all speak_text calls for building clean history.
+        self._spoken_texts: List[str] = []
+
+        # ── Tool call tracker ─────────────────────────────────────────
+        # Tracks which MCP tools were called during an agent turn.
+        # Used to add [tools: X] markers to conversation history so that
+        # the LLM doesn't hallucinate actions without calling tools.
+        self._tools_called: List[str] = []
+
+        # ── Output serialisation lock ────────────────────────────────
+        # speak_text / play_sound / play_animation must not run in parallel.
+        # DeepSeek ignores parallel_tool_calls=False, so we enforce ordering
+        # here: each output tool acquires the lock before executing and holds
+        # it until the action is fully complete (TTS finished / sound done).
+        self._output_lock = asyncio.Lock()
+
+        # ── ROS2 pub/sub ─────────────────────────────────────────────
+        cbg = ReentrantCallbackGroup()
+        qos_r = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
         )
 
-        # Публикация ответов (JSON chunks)
-        self.response_pub = self.create_publisher(String, "/voice/dialogue/response", 10)
+        self._response_pub = self.create_publisher(String, "/voice/dialogue/response", 10)
+        self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
+        self._sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+        self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
 
-        # Публикация в TTS для синтеза (Phase 6 - добавлено!)
-        self.tts_pub = self.create_publisher(String, "/voice/tts/request", 10)
+        self.create_subscription(
+            String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg
+        )
+        self.create_subscription(
+            Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg
+        )
+        self.create_subscription(
+            String, "/voice/tts/finished", self._on_tts_finished_dlg, 10, callback_group=cbg
+        )
+        self.create_subscription(
+            String, "/voice/sound/state", self._on_sound_state, 10, callback_group=cbg
+        )
 
-        # Публикация звуковых триггеров (Phase 4)
-        self.sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+        # ── MCP Adapter ──────────────────────────────────────────────
+        self._mcp: Optional[LLMToolCallAdapter] = None
+        if self.get_parameter("enable_mcp_tools").value:
+            try:
+                self._mcp = LLMToolCallAdapter(self)
+                self.get_logger().info("✅ MCP adapter ready")
+            except Exception as exc:
+                self.get_logger().error(f"❌ MCP adapter failed: {exc}")
 
-        # Публикация запросов анимаций (emotion-based)
-        self.animation_pub = self.create_publisher(String, "/voice/animation/request", 10)
+        # ── Long-term memory (voice_turns DB) ─────────────────────────
+        self._voice_memory = None
+        self._init_voice_memory()
 
-        # Публикация control commands в TTS
-        self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
+        # ── Build agent ──────────────────────────────────────────────
+        self._agent: Optional[Agent] = None
+        self._build_agent()
 
-        # Публикация state для других нод (command_node)
-        self.state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
+        # ── Timeout timer ────────────────────────────────────────────
+        self.create_timer(5.0, self._on_timeout_check)
 
-        # Публикация срочных запросов к внутреннему диалогу (reflection)
-        self.reflection_request_pub = self.create_publisher(String, "/perception/user_speech", 10)
+        self._log_config()
+        self.get_logger().info("✅ DialogueNode (OpenAI Agents SDK) ready")
 
-        # ============ Internet Status Monitoring & Time Awareness ============
-        self.internet_available = True  # Assume available by default
-        self.current_time_info = None  # Store time information from perception
-
-        # Подписка на perception context для мониторинга интернета и времени
-        try:
-            from rob_box_perception_msgs.msg import PerceptionEvent
-
-            self.perception_sub = self.create_subscription(
-                PerceptionEvent, "/perception/context_update", self._on_perception_update, 10
-            )
-            self.get_logger().info("✅ Подписан на /perception/context_update для мониторинга интернета и времени")
-        except ImportError:
-            self.get_logger().warning("⚠️  PerceptionEvent не найден - мониторинг интернета и времени отключен")
-            self.perception_sub = None
-
-        # ============ State Machine ============
-        # IDLE -> LISTENING -> DIALOGUE -> SILENCED
-        self.state = "IDLE"  # IDLE | LISTENING | DIALOGUE | SILENCED
-        self.silence_until = None  # Timestamp когда закончится SILENCED
-        self.last_interaction_time = time.time()
-        self.dialogue_timeout = 30.0  # секунд без активности -> IDLE
-
-        # Wake words и silence commands из параметров
-        self.wake_words = self.get_parameter("wake_words").value
-        self.silence_commands = self.get_parameter("silence_commands").value
-
-        # Unsilence commands - команды для выхода из SILENCED режима
-        self.unsilence_commands = [
-            "говори",
-            "включ",  # включись, включайся
-            "работ",  # работай, работайте
-            "отвеч",  # отвечай, отвечайте
-            "разговар",  # разговаривай
-        ]
-
-        # Флаг что dialogue_node обработал запрос (чтобы игнорировать command feedback)
-        self.dialogue_in_progress = False
-
-        # Текущий streaming запрос (для прерывания)
-        self.current_stream = None
-
-        # Dialogue session tracking (для синхронизации с TTS)
-        self.current_dialogue_id = None
-
-        # ============ Query Queue System ============
-        # Очередь накопленных запросов для пакетной обработки
-        self.pending_queries = []  # List of user messages
-        self.query_accumulation_timeout = self.get_parameter("query_accumulation_timeout").value
-        self.last_query_time = None  # Timestamp последнего запроса
-        self.accumulation_timer = None  # Таймер для проверки накопления
-        self.llm_processing = False  # Флаг что LLM сейчас обрабатывает запрос
-        self.error_retry_delay = 1.0  # секунд задержки перед повтором при ошибке LLM
-
-        # ============ RTABMap Control (Mapping Commands) ============
-        # Service clients для управления картографией
-        self.reset_memory_client = self.create_client(Empty, "/rtabmap/reset_memory")
-        self.set_mode_mapping_client = self.create_client(Empty, "/rtabmap/set_mode_mapping")
-        self.set_mode_localization_client = self.create_client(Empty, "/rtabmap/set_mode_localization")
-
-        # Mapping intent patterns
-        self.mapping_intents = {
-            "start_mapping": [
-                r"исследуй территорию",
-                r"начни исследование",
-                r"создай новую карту",
-                r"начни картографию",
-                r"новая карта",
-                r"начать сначала",
-                r"исследовать",
-            ],
-            "continue_mapping": [
-                r"продолжи исследование",
-                r"продолжить картографию",
-                r"продолжай карту",
-                r"добавь к карте",
-                r"продолжи создание карты",
-                r"продолжить",
-            ],
-            "finish_mapping": [
-                r"закончи исследование",
-                r"завершить картографию",
-                r"перейди в навигацию",
-                r"режим локализации",
-                r"карта готова",
-                r"хватит исследовать",
-                r"закончить",
-            ],
-        }
-
-        # Система подтверждения (для start_mapping)
-        self.pending_confirmation = None  # 'start_mapping' или None
-        self.confirmation_time = None  # Timestamp запроса подтверждения
-        self.confirmation_timeout = 30.0  # секунд для ответа
-
-        # Таймер для проверки dialogue timeout
-        self.timeout_timer = self.create_timer(5.0, self._check_dialogue_timeout)
-
-        self.get_logger().info("✅ DialogueNode инициализирован")
-        self.get_logger().info(f"  🤖 Provider: {self.PROVIDERS[self.current_provider]['name']} (fallback: {'ON' if self.enable_fallback else 'OFF'})")
-        self.get_logger().info(f'  Wake words: {", ".join(self.wake_words)}')
-        self.get_logger().info(f'  Silence commands: {", ".join(self.silence_commands)}')
-        self.get_logger().info(f"  Temperature: {self.temperature}")
-        self.get_logger().info(f"  Max tokens: {self.max_tokens}")
-        self.get_logger().info(f"  Dialogue timeout: {self.dialogue_timeout}s")
-        self.get_logger().info(f"  Query accumulation timeout: {self.query_accumulation_timeout}s")
+    # ────────────────────────────────────────────────────────────────
+    # Agent construction
+    # ────────────────────────────────────────────────────────────────
 
     def _load_system_prompt(self) -> str:
-        """Загрузить упрощённый system prompt"""
         prompt_file = self.get_parameter("system_prompt_file").value
-
-        # Ищем в share/rob_box_voice/prompts/
-        from ament_index_python.packages import get_package_share_directory
-
         try:
-            pkg_share = get_package_share_directory("rob_box_voice")
-            prompt_path = os.path.join(pkg_share, "prompts", prompt_file)
+            from ament_index_python.packages import get_package_share_directory
 
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                prompt = f.read()
-
-            self.get_logger().info(f"✅ Загружен prompt: {prompt_file} ({len(prompt)} байт)")
+            pkg = get_package_share_directory("rob_box_voice")
+            path = os.path.join(pkg, "prompts", prompt_file)
+            with open(path, "r", encoding="utf-8") as fh:
+                prompt = fh.read()
+            self.get_logger().info(f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes)")
             return prompt
-        except Exception as e:
-            self.get_logger().warning(f"⚠ Не удалось загрузить prompt: {e}")
-            return 'Ты ROBBOX - мобильный робот-ассистент. Отвечай в JSON: {"ssml": "<speak>...</speak>"}'
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Prompt not found ({exc}) — using default")
+            return "Ты ROBBOX — умный робот-ассистент. Отвечай кратко и по делу."
 
-    def _map_emotion_to_animation(self, emotion: str) -> str:
-        """Маппинг эмоций от DeepSeek в имена анимаций"""
-        emotion_map = {
-            "happy": "happy",
-            "sad": "sad",
-            "angry": "angry",
-            "surprised": "surprised",
-            "neutral": "idle",
-            "thinking": "thinking",
-            "excited": "victory",
-            "confused": "thinking",
-            "worried": "sad",
-            "calm": "idle"
-        }
-        return emotion_map.get(emotion.lower(), "idle")
+    def _load_prompt_file(self, filename: str) -> str:
+        """Load a prompt file by relative path under the package prompts/ directory.
 
-    def _init_llm_client(self):
-        """Инициализация LLM клиента с выбранным провайдером"""
-        provider_name = self.current_provider
-        
-        if provider_name not in self.PROVIDERS:
-            self.get_logger().error(f"❌ Неизвестный провайдер: {provider_name}")
-            raise RuntimeError(f"Unknown provider: {provider_name}")
-        
-        provider_config = self.PROVIDERS[provider_name]
-        
-        # API Key - проверяем параметр, потом env переменные
-        api_key = self.get_parameter("api_key").value
-        if not api_key:
-            # Пробуем унифицированную переменную
-            api_key = os.getenv(provider_config["env_var"])
-        if not api_key:
-            # Пробуем специфичную для провайдера
-            api_key = os.getenv(provider_config["fallback_env"])
-        
-        if not api_key:
-            self.get_logger().error(
-                f"❌ API ключ не найден для {provider_config['name']}! "
-                f"Установите {provider_config['env_var']} или {provider_config['fallback_env']}"
-            )
-            raise RuntimeError(f"API key required for {provider_name}")
-        
-        # Base URL - из параметра или конфига провайдера
-        base_url = self.get_parameter("base_url").value
-        if not base_url:
-            base_url = provider_config["base_url"]
-        
-        # Model - из параметра или конфига провайдера
-        model = self.get_parameter("model").value
-        if not model:
-            model = provider_config["model"]
-        
-        self.model = model
-        self.temperature = self.get_parameter("temperature").value
-        self.max_tokens = self.get_parameter("max_tokens").value
-        self.streaming = self.get_parameter("streaming").value
-        
-        # Создаём OpenAI клиент с timeout
-        from httpx import Timeout
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=Timeout(60.0, connect=10.0)
+        Args:
+            filename: Relative path under prompts/, e.g. "compositor_prompt.txt"
+                      or "skills/music_skill_prompt.txt".
+
+        Returns:
+            File contents, or empty string on failure.
+        """
+        try:
+            from ament_index_python.packages import get_package_share_directory
+
+            pkg = get_package_share_directory("rob_box_voice")
+            path = os.path.join(pkg, "prompts", filename)
+            with open(path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+            self.get_logger().info(f"✅ Prompt loaded: {filename} ({len(content)} bytes)")
+            return content
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Prompt '{filename}' not found: {exc}")
+            return ""
+
+    def _resolve_api_key(self) -> str:
+        key = self.get_parameter("api_key").value
+        if key:
+            return key
+        for env in self.PROVIDERS.get(self._provider, {}).get("env_vars", []):
+            val = os.environ.get(env, "")
+            if val:
+                return val
+        raise RuntimeError(
+            f"API key not found for provider '{self._provider}'. "
+            f"Set one of: {self.PROVIDERS.get(self._provider, {}).get('env_vars', [])}"
         )
-        
-        self.get_logger().info(f"✅ LLM клиент инициализирован: {provider_config['name']}")
-        self.get_logger().info(f"  📡 Base URL: {base_url}")
-        self.get_logger().info(f"  🤖 Model: {self.model}")
-        self.get_logger().info(f"  🌊 Streaming: {self.streaming}")
-    
-    def _try_fallback_provider(self):
-        """Попытка переключиться на резервный провайдер"""
-        if not self.enable_fallback:
-            self.get_logger().warning("⚠️ Fallback отключён в настройках")
-            return False
-        
-        # Определяем fallback провайдера
-        fallback_provider = "deepseek" if self.current_provider == "qwen" else "qwen"
-        
-        if fallback_provider not in self.PROVIDERS:
-            self.get_logger().error(f"❌ Fallback провайдер недоступен: {fallback_provider}")
-            return False
-        
-        self.get_logger().warning(f"🔄 Переключение на резервный провайдер: {self.PROVIDERS[fallback_provider]['name']}")
-        
+
+    def _resolve_base_url(self) -> str:
+        val = self.get_parameter("base_url").value
+        return val or self.PROVIDERS.get(self._provider, {}).get("base_url", "")
+
+    def _resolve_model(self) -> str:
+        val = self.get_parameter("model").value
+        return val or self.PROVIDERS.get(self._provider, {}).get("model", "deepseek-chat")
+
+    def _init_voice_memory(self) -> None:
+        """Init VoiceMemory for persistent turn logging. Fails silently."""
+        if not _VOICE_MEMORY_AVAILABLE:
+            self.get_logger().warning("⚠️ VoiceMemory unavailable — turn logging disabled")
+            return
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         try:
-            # Сохраняем текущий провайдер
-            old_provider = self.current_provider
-            self.current_provider = fallback_provider
-            
-            # Пробуем инициализировать нового провайдера
-            self._init_llm_client()
-            
-            self.get_logger().info(f"✅ Успешно переключились с {self.PROVIDERS[old_provider]['name']} на {self.PROVIDERS[fallback_provider]['name']}")
-            return True
-            
-        except Exception as e:
-            self.get_logger().error(f"❌ Не удалось переключиться на fallback: {e}")
-            # Восстанавливаем старый провайдер
-            self.current_provider = old_provider
-            return False
-
-    # ============================================================
-    # Wake Word & Silence Detection
-    # ============================================================
-
-    def _has_wake_word(self, text: str) -> bool:
-        """Проверка наличия wake word"""
-        for wake_word in self.wake_words:
-            if wake_word in text:
-                return True
-        return False
-
-    def _remove_wake_word(self, text: str) -> str:
-        """Убрать wake word из текста"""
-        for wake_word in self.wake_words:
-            text = text.replace(wake_word, "").strip()
-        return text
-
-    def _is_silence_command(self, text: str) -> bool:
-        """Проверка: команда замолчать?"""
-        # Используем silence_commands из параметров
-        for command in self.silence_commands:
-            if command in text:
-                return True
-
-        return False
-
-    def _is_unsilence_command(self, text: str) -> bool:
-        """Проверка: команда выхода из silence режима?"""
-        for command in self.unsilence_commands:
-            if command in text:
-                return True
-
-        return False
-
-    def _handle_silence_command(self):
-        """Обработка команды silence"""
-        self.get_logger().warning("🔇 SILENCE: останавливаем TTS и переходим в SILENCED")
-
-        # 1. Прервать текущий streaming
-        if self.current_stream:
-            try:
-                # Не можем прервать генератор, но можем установить флаг
-                self.current_stream = None
-            except Exception as e:
-                self.get_logger().error(f"Ошибка прерывания stream: {e}")
-
-        # 2. Очистить очередь запросов
-        if self.pending_queries:
-            cleared_count = len(self.pending_queries)
-            self.pending_queries.clear()
-            self.get_logger().info(f"  → Очищено {cleared_count} запросов из очереди")
-
-        # 3. Остановить таймер накопления
-        if self.accumulation_timer is not None:
-            self.accumulation_timer.cancel()
-            self.accumulation_timer = None
-            self.get_logger().info("  → Таймер накопления остановлен")
-
-        # 4. Сбросить флаги обработки
-        self.llm_processing = False
-
-        # 5. Отправить STOP в TTS
-        stop_msg = String()
-        stop_msg.data = "STOP"
-        self.tts_control_pub.publish(stop_msg)
-        self.get_logger().info("  → STOP отправлен в TTS")
-
-        # 6. Перейти в SILENCED на 5 минут
-        self.state = "SILENCED"
-        self.silence_until = time.time() + 300  # 5 минут
-        self._publish_state()
-        self.get_logger().info("  → State: SILENCED (5 минут)")
-
-        # 7. Короткое подтверждение (через TTS напрямую)
-        self._speak_simple("Хорошо, молчу")
-
-    def _speak_simple(self, text: str):
-        """Простая речь без LLM"""
-        # Генерируем новый dialogue_id для каждого простого ответа
-        dialogue_id = str(uuid.uuid4())
-        self.current_dialogue_id = dialogue_id
-
-        response_json = {"dialogue_id": dialogue_id, "ssml": f"<speak>{text}</speak>"}
-
-        response_msg = String()
-        response_msg.data = json.dumps(response_json, ensure_ascii=False)
-        self.response_pub.publish(response_msg)
-        # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
-
-    def _publish_state(self):
-        """Публикация текущего состояния dialogue_node"""
-        msg = String()
-        msg.data = self.state
-        self.state_pub.publish(msg)
-
-    def _on_perception_update(self, msg):
-        """Обработка обновления контекста восприятия для мониторинга интернета и времени"""
-        # Update internet status
-        if hasattr(msg, "internet_available"):
-            was_available = self.internet_available
-            self.internet_available = msg.internet_available
-
-            # Логируем изменения статуса
-            if was_available and not self.internet_available:
-                self.get_logger().warning("⚠️  Интернет недоступен - переход на fallback режим")
-            elif not was_available and self.internet_available:
-                self.get_logger().info("✅ Интернет восстановлен - нормальный режим")
-
-        # Update time information
-        if hasattr(msg, "time_context_json") and msg.time_context_json:
-            try:
-                self.current_time_info = json.loads(msg.time_context_json)
-                self.get_logger().debug(f'🕐 Обновлено время: {self.current_time_info.get("time_only", "N/A")}')
-            except json.JSONDecodeError as e:
-                self.get_logger().warning(f"⚠️  Ошибка парсинга time_context_json: {e}")
-                self.get_logger().debug(f"   Raw JSON: {msg.time_context_json[:100]}...")
-
-    def _generate_fallback_response(self, user_message: str) -> str:
-        """Генерация fallback ответа когда интернет недоступен"""
-        user_lower = user_message.lower()
-
-        # Простые правила для fallback
-        if any(word in user_lower for word in ["привет", "здравствуй", "хай", "hello"]):
-            return "Привет! Извините, сейчас нет подключения к интернету, мои возможности ограничены."
-        elif any(word in user_lower for word in ["как дела", "как ты", "что делаешь"]):
-            return "Всё работает, но интернет недоступен. Мои возможности сейчас ограничены простыми ответами."
-        elif any(word in user_lower for word in ["спасибо", "благодар"]):
-            return "Пожалуйста!"
-        elif any(word in user_lower for word in ["пока", "до свидания", "bye"]):
-            return "До свидания!"
-        else:
-            return "Извините, интернет сейчас недоступен. Я могу только отвечать на простые приветствия."
-
-    # ============================================================
-    # Main Callback
-    # ============================================================
-
-    def stt_callback(self, msg: String):
-        """Обработка распознанной речи с State Machine"""
-        user_message = msg.data.strip()
-        if not user_message:
-            return
-
-        user_message_lower = user_message.lower()
-        self.get_logger().info(f"👤 User: {user_message} [State: {self.state}]")
-
-        # ============ ПРИОРИТЕТ 1: Проверка SILENCE command ============
-        if self._is_silence_command(user_message_lower):
-            self.get_logger().warning("🔇 SILENCE COMMAND обнаружена!")
-            self._handle_silence_command()
-            return
-
-        # ============ ПРИОРИТЕТ 2: Проверка SILENCED state ============
-        if self.state == "SILENCED":
-            # В SILENCED: проверяем unsilence команды с wake word
-            if self._has_wake_word(user_message_lower):
-                # Проверяем: команда выхода из silence?
-                if self._is_unsilence_command(user_message_lower):
-                    self.get_logger().info("🔓 Unsilence command обнаружена → IDLE")
-                    self.state = "IDLE"
-                    self.silence_until = None
-                    self._publish_state()
-                    self._speak_simple("Хорошо, слушаю!")
-                    return
-                else:
-                    # Обычная команда с wake word в SILENCED
-                    self.get_logger().info("🔓 Wake word в SILENCED → разрешаем ТОЛЬКО команды")
-                    # TODO: передать в command_node для навигации/LED
-                    # Пока просто логируем
-                    self.get_logger().info("  → Команда должна быть обработана command_node")
-                    return
-            else:
-                self.get_logger().debug("🔇 SILENCED: игнорируем (нет wake word)")
-                return
-
-        # ============ ПРИОРИТЕТ 3: Wake Word Detection ============
-        if self.state == "IDLE":
-            # В IDLE: требуется wake word
-            if self._has_wake_word(user_message_lower):
-                self.get_logger().info("👋 Wake word обнаружен → LISTENING")
-                self.state = "LISTENING"
-                self._publish_state()
-                self.last_interaction_time = time.time()
-
-                # Убираем wake word из текста
-                user_message_clean = self._remove_wake_word(user_message_lower)
-                if not user_message_clean:
-                    # Только wake word без команды/вопроса
-                    self._speak_simple("Слушаю!")
-                    return
-
-                user_message = user_message_clean
-            else:
-                self.get_logger().debug("⏸️  IDLE: игнорируем (нет wake word)")
-                return
-
-        # ============ State: LISTENING или DIALOGUE ============
-        self.state = "DIALOGUE"
-        self._publish_state()
-        self.last_interaction_time = time.time()
-        self.dialogue_in_progress = True
-
-        # ============ ПРИОРИТЕТ 4: Проверка подтверждения (start_mapping) ============
-        if self.pending_confirmation:
-            elapsed = time.time() - self.confirmation_time if self.confirmation_time else 999
-
-            if elapsed > self.confirmation_timeout:
-                # Timeout подтверждения
-                self.get_logger().warning("⏰ Confirmation timeout → отмена")
-                self.pending_confirmation = None
-                self.confirmation_time = None
-                self._speak_simple("Время ожидания истекло. Операция отменена.")
-                self.dialogue_in_progress = False
-                return
-
-            # Проверяем ответ: да/нет
-            if any(
-                word in user_message_lower for word in ["да", "давай", "начинай", "начни", "подтверждаю", "ок", "угу"]
-            ):
-                self.get_logger().info("✅ Подтверждение получено!")
-
-                if self.pending_confirmation == "start_mapping":
-                    # Выполнить start_mapping
-                    import asyncio
-
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    response = loop.run_until_complete(self._confirm_start_mapping())
-                    loop.close()
-
-                    self.pending_confirmation = None
-                    self.confirmation_time = None
-                    self._speak_simple(response)
-                    self.dialogue_in_progress = False
-                    return
-
-            elif any(word in user_message_lower for word in ["нет", "отмена", "стоп", "не надо", "передумал"]):
-                self.get_logger().info("❌ Подтверждение отклонено")
-                self.pending_confirmation = None
-                self.confirmation_time = None
-                self._speak_simple("Хорошо, операция отменена.")
-                self.dialogue_in_progress = False
-                return
-            else:
-                # Неясный ответ - повторить вопрос
-                self.get_logger().warning("⚠️ Неясный ответ на подтверждение")
-                self._speak_simple("Пожалуйста, ответьте да или нет.")
-                self.dialogue_in_progress = False
-                return
-
-        # ============ ПРИОРИТЕТ 5: Проверка Volume Control Commands ============
-        volume_intent = self._detect_volume_intent(user_message_lower)
-        if volume_intent:
-            self.get_logger().info(f"🔊 Обнаружена volume команда: {volume_intent}")
-            response = self._handle_volume_command(volume_intent)
-            self._speak_simple(response)
-            self.dialogue_in_progress = False
-            return
-
-        # ============ ПРИОРИТЕТ 6: Проверка Pitch Control Commands ============
-        pitch_intent = self._detect_pitch_intent(user_message_lower)
-        if pitch_intent:
-            self.get_logger().info(f"🎵 Обнаружена pitch команда: {pitch_intent}")
-            response = self._handle_pitch_command(pitch_intent)
-            self._speak_simple(response)
-            self.dialogue_in_progress = False
-            return
-
-        # ============ ПРИОРИТЕТ 7: Проверка Speed Control Commands ============
-        speed_intent = self._detect_speed_intent(user_message_lower)
-        if speed_intent:
-            self.get_logger().info(f"⚡ Обнаружена speed команда: {speed_intent}")
-            response = self._handle_speed_command(speed_intent)
-            self._speak_simple(response)
-            self.dialogue_in_progress = False
-            return
-
-        # ============ ПРИОРИТЕТ 8: Проверка Mapping Commands ============
-        mapping_intent = self._detect_mapping_intent(user_message_lower)
-        if mapping_intent:
-            self.get_logger().info(f"🗺️ Обнаружена mapping команда: {mapping_intent}")
-
-            # Обработать команду
-            import asyncio
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            response = loop.run_until_complete(self._handle_mapping_command(mapping_intent, user_message))
-            loop.close()
-
-            if response:
-                self._speak_simple(response)
-                self.dialogue_in_progress = False
-                return
-
-        # ============ ПРИОРИТЕТ 8: Проверка доступности интернета ============
-        if not self.internet_available:
-            self.get_logger().warning("⚠️  Интернет недоступен - используем fallback")
-            fallback_response = self._generate_fallback_response(user_message)
-            self._speak_simple(fallback_response)
-            self.dialogue_in_progress = False
-            return
-
-        # ============ ПРИОРИТЕТ 9: Обычный диалог с LLM ============
-        # Добавляем запрос в очередь для накопления
-        self.pending_queries.append(user_message)
-        self.last_query_time = time.time()
-
-        self.get_logger().info(f"📥 Запрос добавлен в очередь (всего: {len(self.pending_queries)})")
-
-        # Если LLM уже обрабатывает запрос - просто добавляем в очередь и ждём
-        if self.llm_processing:
-            self.get_logger().info("⏳ LLM занят, запрос будет обработан после завершения текущего")
-            return
-
-        # Если это первый запрос или прошло достаточно времени - начинаем накопление
-        if self.accumulation_timer is None:
-            # Создаём таймер для проверки когда можно обработать накопленные запросы
-            self.accumulation_timer = self.create_timer(self.query_accumulation_timeout, self._check_and_process_queue)
-            self.get_logger().info(f"⏰ Запущен таймер накопления ({self.query_accumulation_timeout}s)")
-
-        # Триггер звука "thinking" только при первом запросе
-        if len(self.pending_queries) == 1:
-            self._trigger_sound("thinking")
-
-    def _check_and_process_queue(self):
-        """Проверить очередь и обработать накопленные запросы"""
-        # Останавливаем таймер
-        if self.accumulation_timer is not None:
-            self.accumulation_timer.cancel()
-            self.accumulation_timer = None
-
-        # Если очередь пуста - ничего не делаем
-        if not self.pending_queries:
-            self.get_logger().debug("📭 Очередь пуста, нечего обрабатывать")
-            return
-
-        # Проверяем: прошло ли достаточно времени с последнего запроса
-        if self.last_query_time:
-            current_time = time.time()
-            time_since_last = current_time - self.last_query_time
-            if time_since_last < self.query_accumulation_timeout:
-                # Ещё рано, перезапускаем таймер
-                remaining = self.query_accumulation_timeout - time_since_last
-                self.accumulation_timer = self.create_timer(remaining, self._check_and_process_queue)
-                self.get_logger().debug(f"⏰ Ещё рано, жду {remaining:.1f}s")
-                return
-
-        # Забираем все накопленные запросы
-        queries_to_process = self.pending_queries.copy()
-        self.pending_queries.clear()
-
-        query_count = len(queries_to_process)
-        self.get_logger().info(f"🔄 Обрабатываю {query_count} накопленных запросов")
-
-        # Объединяем запросы в один контекст
-        if query_count == 1:
-            # Один запрос - обрабатываем как обычно
-            combined_message = queries_to_process[0]
-            self.get_logger().info(f"💬 Один запрос: {combined_message}")
-        else:
-            # Несколько запросов - формируем нумерованный список для понятности LLM
-            questions_list = "\n".join([f"{i+1}. {q}" for i, q in enumerate(queries_to_process)])
-            combined_message = f"Ответь на следующие вопросы:\n{questions_list}"
-            self.get_logger().info(f"💬 Пакетный запрос ({query_count} вопросов):\n{combined_message}")
-
-        # Добавляем в историю диалога
-        self.conversation_history.append({"role": "user", "content": combined_message})
-
-        # Ограничиваем историю (последние 10 сообщений)
-        if len(self.conversation_history) > 10:
-            self.conversation_history = self.conversation_history[-10:]
-
-        # Устанавливаем флаг обработки
-        self.llm_processing = True
-
-        # Запрос к LLM (streaming или обычный)
-        if self.streaming:
-            self._ask_llm_streaming()
-        else:
-            self._ask_llm_non_streaming()
-
-    # Marker for inserting time context in system prompt
-    TIME_CONTEXT_MARKER = "# Формат ответа"
-    TIME_CONTEXT_SECTION_TITLE = "# Текущее время"
-
-    def _build_system_prompt_with_context(self) -> str:
-        """Построить system prompt с добавлением текущего времени"""
-        base_prompt = self.system_prompt
-
-        # Добавляем информацию о текущем времени, если доступна
-        if self.current_time_info:
-            time_context = []
-            time_context.append(f"\n{self.TIME_CONTEXT_SECTION_TITLE}\n")
-            time_context.append(f"**Сейчас:** {self.current_time_info.get('time_only', 'N/A')}")
-            time_context.append(f"**Дата:** {self.current_time_info.get('date_only', 'N/A')}")
-            time_context.append(f"**Период суток:** {self.current_time_info.get('period_ru', 'N/A')}")
-            time_context.append(f"**День недели:** {self.current_time_info.get('weekday_ru', 'N/A')}")
-
-            time_info = "\n".join(time_context)
-
-            # Вставляем время после характеристик робота, перед форматом ответа
-            # Используем маркер для надёжного определения места вставки
-            if self.TIME_CONTEXT_MARKER in base_prompt:
-                prompt_parts = base_prompt.split(self.TIME_CONTEXT_MARKER, 1)
-                return f"{prompt_parts[0]}{time_info}\n\n{self.TIME_CONTEXT_MARKER}{prompt_parts[1]}"
-            else:
-                # Если маркер не найден, добавляем в конец
-                self.get_logger().warning(
-                    f'⚠️  Маркер "{self.TIME_CONTEXT_MARKER}" не найден в промпте, ' "добавляем время в конец"
-                )
-                return f"{base_prompt}\n{time_info}"
-
-        return base_prompt
-
-    def _ask_llm_streaming(self):
-        """Streaming запрос к LLM провайдеру с парсингом JSON chunks и timeout"""
-        # Генерируем новый dialogue_id для этого диалога
-        dialogue_id = str(uuid.uuid4())
-        self.current_dialogue_id = dialogue_id
-        self.get_logger().info(f"🆔 Новый диалог: {dialogue_id[:8]}...")
-
-        # Используем system prompt с контекстом времени
-        system_prompt_with_context = self._build_system_prompt_with_context()
-
-        messages = [{"role": "system", "content": system_prompt_with_context}, *self.conversation_history]
-
-        provider_name = self.PROVIDERS[self.current_provider]["name"]
-        self.get_logger().info(f"🤔 Запрос к {provider_name}...")
-
-        # Timeout между chunks - если нет данных 15 секунд, прерываем
-        CHUNK_TIMEOUT = 15.0
-        # Общий timeout для всего запроса - 60 секунд
-        TOTAL_REQUEST_TIMEOUT = 60.0
-
-        # Результаты streaming (для передачи между потоками)
-        streaming_result = {"full_response": "", "chunk_count": 0, "error": None}
-
-        def _do_streaming():
-            """Внутренняя функция для streaming в отдельном потоке"""
-            full_response = ""
-            current_chunk = ""
-            brace_count = 0
-            in_json = False
-            chunk_count = 0
-            start_time = time.time()  # Засекаем время начала
-            last_chunk_time = start_time  # Время последнего chunk с контентом
-
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                stream=True
+            self._voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            stats = self._voice_memory.get_stats()
+            self.get_logger().info(
+                f"🧠 DialogueNode VoiceMemory: {db_path} "
+                f"(turns={stats['turn_count']}, sessions={stats['session_count']})"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"❌ VoiceMemory init failed: {exc}")
+            self._voice_memory = None
+
+    def _build_agent(self) -> None:
+        """(Re)build the Agent — also called after fallback provider switch."""
+        try:
+            api_key = self._resolve_api_key()
+            base_url = self._resolve_base_url()
+            model_name = self._resolve_model()
+
+            openai_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=HttpxTimeout(60.0, connect=15.0),
+                max_retries=3,
+            )
+            model = OpenAIChatCompletionsModel(
+                model=model_name, openai_client=openai_client
             )
 
-            for chunk in stream:
-                # Timeout если между chunks прошло слишком много времени
-                # Проверяем на каждой итерации - защита от зависания на любом этапе
-                elapsed_since_content = time.time() - last_chunk_time
-                if elapsed_since_content > CHUNK_TIMEOUT:
-                    streaming_result["error"] = f"No data for {elapsed_since_content:.1f}s (after {chunk_count} chunks)"
-                    return
-
-                # ВАЖНО: Сначала обрабатываем content, потом проверяем finish_reason!
-                # У Qwen последний chunk может содержать и content и finish_reason одновременно
-                if chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    full_response += token
-                    current_chunk += token
-                    last_chunk_time = time.time()  # Обновляем время - контент идёт
-                    
-                    # DEBUG: Показываем сырые данные
-                    self.get_logger().debug(f"📦 Raw token: {repr(token[:100])}")
-
-                    # Подсчёт скобок для определения границ JSON
-                    for char in token:
-                        if char == "{":
-                            brace_count += 1
-                            in_json = True
-                        elif char == "}":
-                            brace_count -= 1
-
-                    # Если скобки сбалансированы - парсим
-                    if in_json and brace_count == 0:
-                        # Может быть несколько JSON объектов в current_chunk
-                        # Два формата:
-                        # 1. DeepSeek: {"chunk":1}{"chunk":2} (без переносов)
-                        # 2. Qwen: {"chunk":1}\n{"chunk":2} (с переносами)
-                        # Универсальное решение: split по \n, потом по }{
-                        import re
-                        json_objects = []
-                        
-                        # Разбиваем по переносам строк
-                        lines = current_chunk.strip().split('\n')
-                        
-                        for line in lines:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            # В каждой строке может быть несколько JSON подряд: }{
-                            parts = re.split(r'(?<=\})(?=\{)', line)
-                            json_objects.extend([p.strip() for p in parts if p.strip()])
-                        
-                        for json_text in json_objects:
-                            json_text = json_text.strip()
-                            if not json_text:
-                                continue
-                            
-                            # DEBUG: Показываем что пытаемся парсить
-                            self.get_logger().info(f"🔍 Пытаюсь парсить JSON: {json_text[:200]}...")
-
-                            # Убираем markdown ```json если есть
-                            if json_text.startswith("```json"):
-                                json_text = json_text.replace("```json", "").replace("```", "").strip()
-
-                            # Парсим JSON
-                            try:
-                                chunk_data = json.loads(json_text)
-                                self.get_logger().info(f"✅ JSON успешно распарсен: chunk={chunk_data.get('chunk', '?')}, emotion={chunk_data.get('emotion', '?')}")
-
-                                # ============ ПРОВЕРКА: ask_reflection команда ============
-                                if "action" in chunk_data and chunk_data["action"] == "ask_reflection":
-                                    question = chunk_data.get("question", "")
-                                    self.get_logger().warning(f'🔁 LLM перенаправляет к Reflection: "{question}"')
-
-                                    # Публикуем в /perception/user_speech для reflection_node
-                                    reflection_msg = String()
-                                    reflection_msg.data = question
-                                    self.reflection_request_pub.publish(reflection_msg)
-                                    self.get_logger().info("  → Запрос отправлен к внутреннему диалогу")
-                                    continue  # Не обрабатываем дальше как обычный chunk
-
-                                # Применяем автоударения
-                                if "ssml" in chunk_data:
-                                    ssml = chunk_data["ssml"]
-                                    ssml_with_accents = self.accent_replacer.add_accents(ssml)
-                                    chunk_data["ssml"] = ssml_with_accents
-
-                                    # Добавляем dialogue_id к chunk
-                                    chunk_data["dialogue_id"] = dialogue_id
-
-                                    # Публикуем chunk
-                                    chunk_count += 1
-                                    
-                                    # Публикуем анимацию для первого chunk (до начала речи)
-                                    if chunk_count == 1:
-                                        emotion = chunk_data.get("emotion", "neutral")
-                                        animation_name = self._map_emotion_to_animation(emotion)
-                                        
-                                        if animation_name and animation_name != "idle":
-                                            anim_msg = String()
-                                            anim_msg.data = animation_name
-                                            self.animation_pub.publish(anim_msg)
-                                            self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
-                                    
-                                    self.get_logger().info(
-                                        f"📤 Chunk {chunk_count} (dialogue_id: {dialogue_id[:8]}...): {ssml[:50]}..."
-                                    )
-
-                                    # Обновляем время взаимодействия (робот говорит)
-                                    self.last_interaction_time = time.time()
-
-                                    response_msg = String()
-                                    response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                                    self.response_pub.publish(response_msg)
-                                    # NOTE: НЕ публикуем в tts_pub - tts_node уже подписан на response_pub
-
-                                    self.get_logger().info(f"🔊 Отправлено в TTS: chunk {chunk_count}")
-
-                            except json.JSONDecodeError as e:
-                                self.get_logger().warning(f"⚠️  JSON decode failed: {e}, text: {json_text[:200]}...")
-                                pass  # Этот JSON неполный
-
-                        # Сброс для следующего chunk
-                        current_chunk = ""
-                        in_json = False
-                        brace_count = 0
-
-                # ВАЖНО: Проверяем finish_reason ПОСЛЕ обработки всего content
-                # У Qwen последний chunk может содержать и content и finish_reason
-                if chunk.choices[0].finish_reason:
-                    self.get_logger().info(f"🏁 Stream завершён: {chunk.choices[0].finish_reason} (обработано {chunk_count} chunks)")
-                    break
-
-            # Сохраняем результаты
-            streaming_result["full_response"] = full_response
-            streaming_result["chunk_count"] = chunk_count
-            
-            # DEBUG: Итоговая статистика
-            self.get_logger().info(f"📊 Stream завершён: {len(full_response)} chars, {chunk_count} chunks")
-            
-            # FALLBACK: Если получен ответ без JSON разметки - отправляем как plain text
-            if chunk_count == 0 and len(full_response) > 0:
-                self.get_logger().warning(f"⚠️  Получен plain text без JSON ({len(full_response)} chars), отправляю как один chunk")
-                
-                # Формируем JSON с текстом
-                chunk_data = {
-                    "chunk": "end",
-                    "text": full_response.strip(),
-                    "emotion": "neutral"
-                }
-                
-                # Публикуем в response (tts_node подписан на него)
-                response_msg = String()
-                response_msg.data = json.dumps(chunk_data, ensure_ascii=False)
-                self.response_pub.publish(response_msg)
-                
-                chunk_count = 1  # Считаем это как 1 chunk
-                streaming_result["chunk_count"] = 1
-                
-                self.get_logger().info(f"🔊 Plain text отправлен в TTS как 1 chunk")
-
-        # Запускаем streaming в отдельном потоке с timeout
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_do_streaming)
-                future.result(timeout=TOTAL_REQUEST_TIMEOUT)
-
-            # Проверяем внутренний timeout
-            if streaming_result["error"]:
-                raise TimeoutError(streaming_result["error"])
-
-            # Streaming успешно завершён
-            full_response = streaming_result["full_response"]
-            chunk_count = streaming_result["chunk_count"]
-
-            # Сохраняем ответ в историю
-            self.conversation_history.append({"role": "assistant", "content": full_response})
-
-            # Успешный запрос - сбрасываем счётчик ошибок
-            if self.provider_error_count > 0:
-                self.get_logger().info(f"✅ Провайдер работает! Сброс счётчика ошибок ({self.provider_error_count} → 0)")
-                self.provider_error_count = 0
-
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().info(f"✅ {provider_name} ответил ({chunk_count} chunks)")
-
-            # Сбрасываем флаг обработки LLM
-            self.llm_processing = False
-
-            # Проверяем очередь - есть ли ещё накопленные запросы
-            if self.pending_queries:
-                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
-                # Обновляем время последнего запроса для корректного накопления
-                self.last_query_time = time.time()
-                # Запускаем таймер накопления чтобы дождаться возможных дополнительных запросов
-                if self.accumulation_timer is None:
-                    self.accumulation_timer = self.create_timer(
-                        self.query_accumulation_timeout, self._check_and_process_queue
-                    )
-                    self.get_logger().info(
-                        f"⏰ Запущен таймер накопления для оставшихся запросов ({self.query_accumulation_timeout}s)"
-                    )
-                # Не сбрасываем dialogue_in_progress - ещё есть запросы в очереди
-            else:
-                # Очередь пуста - завершаем диалог
-                self.dialogue_in_progress = False
-
-        except (FuturesTimeoutError, TimeoutError) as e:
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().error(f"⏱️ TIMEOUT: {provider_name} streaming не ответил за {TOTAL_REQUEST_TIMEOUT}s - {e}")
-            
-            # Увеличиваем счётчик ошибок
-            self.provider_error_count += 1
-            self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
-            
-            # Пробуем fallback если превысили порог
-            if self.provider_error_count >= self.provider_error_threshold:
-                self.get_logger().warning(f"🔄 Слишком много ошибок, пытаемся переключиться на fallback...")
-                if self._try_fallback_provider():
-                    self.provider_error_count = 0  # Сбрасываем счётчик
-                    # Пробуем снова с новым провайдером если есть запросы в очереди
-                    if self.pending_queries:
-                        self.get_logger().info("♻️ Повторяем запрос с новым провайдером")
-                        self.llm_processing = False
-                        self.last_query_time = time.time()
-                        if self.accumulation_timer is not None:
-                            self.accumulation_timer.cancel()
-                        self.accumulation_timer = self.create_timer(0.5, self._check_and_process_queue)
-                        return
-            
-            # Говорим fallback ответ
-            self._speak_simple("Извините, я сейчас не в настроении думать")
-            # Сбрасываем флаг обработки LLM
-            self.llm_processing = False
-            self.dialogue_in_progress = False
-
-        except Exception as e:
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().error(f"❌ Ошибка {provider_name}: {e}")
-            
-            # Увеличиваем счётчик ошибок
-            self.provider_error_count += 1
-            self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
-            
-            # Пробуем fallback если превысили порог
-            if self.provider_error_count >= self.provider_error_threshold:
-                self.get_logger().warning(f"🔄 Слишком много ошибок, пытаемся переключиться на fallback...")
-                if self._try_fallback_provider():
-                    self.provider_error_count = 0  # Сбрасываем счётчик
-            
-            # Сбрасываем флаг обработки LLM
-            self.llm_processing = False
-
-            # Проверяем очередь даже при ошибке
-            if self.pending_queries:
+            if USE_SKILLS and _SKILLS_AVAILABLE and self._mcp:
+                # ── Compositor mode: Compositor + 4 skill sub-agents ────────
+                instructions = self._load_prompt_file("compositor_prompt.txt") or self._system_prompt
+                agent_name = "Compositor"
+                tools = self._make_output_tools() + self._build_skills(model)
                 self.get_logger().info(
-                    f"📬 В очереди есть запросы ({len(self.pending_queries)}), пробую снова после задержки..."
+                    f"🎭 Skills mode: USE_SKILLS=True, {len(tools)} tools "
+                    f"(3 output + {len(tools) - 3} skills)"
                 )
-                # Обновляем время последнего запроса
-                self.last_query_time = time.time()
-                # Небольшая задержка перед повтором при ошибке
-                # Отменяем существующий таймер если есть
-                if self.accumulation_timer is not None:
-                    self.accumulation_timer.cancel()
-                # Создаём новый таймер с задержкой для повтора
-                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
-                # Не сбрасываем dialogue_in_progress - ещё есть запросы для повтора
             else:
-                # Очередь пуста - завершаем диалог даже при ошибке
-                self.dialogue_in_progress = False
+                # ── Flat mode: single agent with all 17 tools ────────────────
+                if USE_SKILLS and not _SKILLS_AVAILABLE:
+                    self.get_logger().warning("⚠️ USE_SKILLS=true but skills module unavailable — falling back to flat mode")
+                instructions = self._system_prompt
+                agent_name = "RobBox"
+                tools = self._make_tools() if self._mcp else []
 
-    def _ask_llm_non_streaming(self):
-        """Non-streaming запрос к LLM провайдеру - один JSON ответ"""
-        try:
-            # Собираем все сообщения для контекста
-            messages = [{"role": "system", "content": self.system_prompt}]
-            messages.extend(self.conversation_history)
-
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().info(f"🤖 {provider_name} запрос (non-streaming): {self.conversation_history[-1]['content'][:80]}...")
-
-            # Формируем extra_body в зависимости от провайдера
-            extra_body = {}
-            if self.current_provider == 0:  # Qwen поддерживает enable_search
-                extra_body["enable_search"] = True
-
-            # Делаем синхронный запрос
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                stream=False,
-                extra_body=extra_body
+            self._agent = Agent(
+                name=agent_name,
+                instructions=instructions,
+                tools=tools,
+                model=model,
+                model_settings=ModelSettings(
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                    parallel_tool_calls=False,
+                ),
             )
-
-            # Получаем полный ответ
-            full_response = response.choices[0].message.content
-
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().info(f"📥 {provider_name} ответ получен: {len(full_response)} символов")
-
-            # Успешный запрос - сбрасываем счётчик ошибок
-            if self.provider_error_count > 0:
-                self.get_logger().info(f"✅ Провайдер работает! Сброс счётчика ошибок ({self.provider_error_count} → 0)")
-                self.provider_error_count = 0
-
-            # Сохраняем в историю
-            self.conversation_history.append({"role": "assistant", "content": full_response})
-
-            # Парсим JSON и публикуем
-            try:
-                # Пытаемся распарсить как один JSON объект
-                response_json = json.loads(full_response)
-                
-                # DEBUG: Логируем полный JSON
-                provider_name = self.PROVIDERS[self.current_provider]["name"]
-                self.get_logger().info(f"🔍 {provider_name} JSON: {json.dumps(response_json, ensure_ascii=False)[:500]}...")
-                
-                # Проверяем наличие action для перенаправления к reflection
-                if "action" in response_json:
-                    if response_json["action"] == "ask_reflection" and "question" in response_json:
-                        self.get_logger().info(f"🔄 Перенаправление к внутреннему диалогу: {response_json['question']}")
-                        msg = String()
-                        msg.data = response_json["question"]
-                        self.reflection_request_pub.publish(msg)
-                        return
-
-                # Обычный ответ с SSML
-                if "ssml" in response_json:
-                    # Получаем эмоцию и публикуем анимацию
-                    emotion = response_json.get("emotion", "neutral")
-                    animation_name = self._map_emotion_to_animation(emotion)
-                    
-                    if animation_name and animation_name != "idle":
-                        anim_msg = String()
-                        anim_msg.data = animation_name
-                        self.animation_pub.publish(anim_msg)
-                        self.get_logger().info(f"🎨 Отправлена анимация: {animation_name} (emotion: {emotion})")
-                    
-                    # Публикуем как один chunk
-                    chunk_msg = String()
-                    chunk_msg.data = json.dumps({
-                        "chunk": 1,
-                        "ssml": response_json["ssml"],
-                        "emotion": emotion,
-                        "commands": response_json.get("commands", [])
-                    })
-                    self.response_pub.publish(chunk_msg)
-                    self.get_logger().info(f"✅ Ответ опубликован")
-
-                    # Финальный chunk
-                    end_msg = String()
-                    end_msg.data = json.dumps({"chunk": "end"})
-                    self.response_pub.publish(end_msg)
-                else:
-                    self.get_logger().warning("⚠️ JSON без поля 'ssml'")
-                    self._speak_simple("Извините, я запутался")
-
-            except json.JSONDecodeError as e:
-                self.get_logger().error(f"❌ Не удалось распарсить JSON: {e}")
-                self.get_logger().error(f"Ответ: {full_response[:200]}")
-                self._speak_simple("Извините, я немного запутался в формате ответа")
-
-            # Сбрасываем флаг обработки LLM
-            self.llm_processing = False
-
-            # Проверяем очередь - есть ли ещё накопленные запросы
-            if self.pending_queries:
-                self.get_logger().info(f"📬 В очереди есть ещё запросы ({len(self.pending_queries)})")
-                self.last_query_time = time.time()
-                if self.accumulation_timer is None:
-                    self.accumulation_timer = self.create_timer(
-                        self.query_accumulation_timeout, self._check_and_process_queue
-                    )
-            else:
-                self.dialogue_in_progress = False
-
-        except Exception as e:
-            provider_name = self.PROVIDERS[self.current_provider]["name"]
-            self.get_logger().error(f"❌ Ошибка {provider_name} non-streaming: {e}")
-            
-            # Увеличиваем счётчик ошибок
-            self.provider_error_count += 1
-            self.get_logger().warning(f"⚠️ Ошибка {self.provider_error_count}/{self.provider_error_threshold} для {provider_name}")
-            
-            # Пробуем fallback если превысили порог
-            if self.provider_error_count >= self.provider_error_threshold:
-                self.get_logger().warning(f"🔄 Слишком много ошибок, пытаемся переключиться на fallback...")
-                if self._try_fallback_provider():
-                    self.provider_error_count = 0  # Сбрасываем счётчик
-            
-            self.llm_processing = False
-            self._speak_simple("Извините, возникла проблема с ответом")
-            
-            if self.pending_queries:
-                self.last_query_time = time.time()
-                if self.accumulation_timer is not None:
-                    self.accumulation_timer.cancel()
-                self.accumulation_timer = self.create_timer(self.error_retry_delay, self._check_and_process_queue)
-            else:
-                self.dialogue_in_progress = False
-
-    def _trigger_sound(self, sound_name: str):
-        """Триггер звукового эффекта (Phase 4)"""
-        try:
-            msg = String()
-            msg.data = sound_name
-            self.sound_trigger_pub.publish(msg)
-            self.get_logger().debug(f"🔔 Триггер звука: {sound_name}")
-        except Exception as e:
-            self.get_logger().warning(f"⚠️ Ошибка триггера звука: {e}")
-
-    # ============================================================
-    # Volume Control Commands
-    # ============================================================
-
-    def _detect_volume_intent(self, text: str):
-        """Определить intent для команд управления громкостью
-
-        Returns:
-            str: 'louder', 'quieter', 'max', 'normal', None
-        """
-        text_lower = text.lower()
-
-        # Паттерны для различных команд громкости
-        volume_patterns = {
-            "louder": [
-                r"громче",
-                r"громко",
-                r"прибав\w* громкост",
-                r"увелич\w* громкост",
-            ],
-            "quieter": [
-                r"тише",
-                r"потише",
-                r"убав\w* громкост",
-                r"уменьш\w* громкост",
-            ],
-            "max": [
-                r"говори громко",
-                r"максимальн\w* громкост",
-                r"на полную громкост",
-            ],
-            "normal": [
-                r"нормальн\w* громкост",
-                r"стандартн\w* громкост",
-                r"обычн\w* громкост",
-            ],
-        }
-
-        for intent, patterns in volume_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, text_lower):
-                    return intent
-
-        return None
-
-    def _handle_volume_command(self, intent: str) -> str:
-        """Обработка команды изменения громкости
-
-        Args:
-            intent: 'louder', 'quieter', 'max', 'normal'
-
-        Returns:
-            str: Ответ для пользователя
-        """
-        # Получаем текущую громкость TTS ноды через ROS параметры
-        try:
-            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-            from rcl_interfaces.srv import GetParameters, SetParameters
-
-            # Создаем клиенты для работы с параметрами TTS и Sound нод
-            tts_get_params_client = self.create_client(GetParameters, "/tts_node/get_parameters")
-            tts_set_params_client = self.create_client(SetParameters, "/tts_node/set_parameters")
-            sound_set_params_client = self.create_client(SetParameters, "/sound_node/set_parameters")
-
-            # Ждем доступности сервисов
-            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().error("❌ TTS node параметры недоступны")
-                return "Извините, не могу изменить громкость. Система недоступна."
-
-            # Получаем текущий volume_db
-            get_request = GetParameters.Request()
-            get_request.names = ["volume_db"]
-            future = tts_get_params_client.call_async(get_request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-
-            if future.result() is None:
-                self.get_logger().error("❌ Не удалось получить volume_db")
-                return "Извините, не могу изменить громкость."
-
-            current_volume_db = future.result().values[0].double_value
-            self.get_logger().info(f"📊 Текущая громкость: {current_volume_db:.1f} dB")
-
-            # Вычисляем новую громкость
-            new_volume_db = current_volume_db
-            response_text = ""
-
-            if intent == "louder":
-                new_volume_db = min(current_volume_db + 3.0, 6.0)  # +3dB, макс +6dB
-                response_text = "Делаю громче"
-            elif intent == "quieter":
-                new_volume_db = max(current_volume_db - 3.0, -20.0)  # -3dB, мин -20dB
-                response_text = "Делаю тише"
-            elif intent == "max":
-                new_volume_db = 6.0  # Максимальная громкость +6dB (~2x)
-                response_text = "Максимальная громкость"
-            elif intent == "normal":
-                new_volume_db = -3.0  # Нормальная громкость -3dB (70%)
-                response_text = "Нормальная громкость"
-
-            # Устанавливаем новую громкость
-            if abs(new_volume_db - current_volume_db) < 0.1:
-                # Громкость уже на пределе
-                if intent == "louder":
-                    return "Громкость уже максимальная"
-                elif intent == "quieter":
-                    return "Громкость уже минимальная"
-
-            # Устанавливаем параметры для TTS ноды
-            set_request = SetParameters.Request()
-            param = Parameter()
-            param.name = "volume_db"
-            param.value = ParameterValue()
-            param.value.type = ParameterType.PARAMETER_DOUBLE
-            param.value.double_value = new_volume_db
-            set_request.parameters = [param]
-
-            future = tts_set_params_client.call_async(set_request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-
-            if future.result() is None or not future.result().results[0].successful:
-                self.get_logger().error("❌ Не удалось установить volume_db для TTS")
-                return "Извините, не могу изменить громкость."
-
-            # Также устанавливаем для Sound ноды (если доступна)
-            if sound_set_params_client.wait_for_service(timeout_sec=0.5):
-                future = sound_set_params_client.call_async(set_request)
-                rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-                if future.result() and future.result().results[0].successful:
-                    self.get_logger().info("✅ Громкость звуков также изменена")
-
-            self.get_logger().info(f"✅ Громкость изменена: {current_volume_db:.1f} → {new_volume_db:.1f} dB")
-            return response_text
-
-        except Exception as e:
-            self.get_logger().error(f"❌ Ошибка изменения громкости: {e}")
-            return "Извините, произошла ошибка."
-
-    # ============================================================
-    # Pitch Control Commands
-    # ============================================================
-
-    def _detect_pitch_intent(self, text: str):
-        """Определить intent для команд управления высотой голоса (pitch)
-
-        Returns:
-            str: 'higher', 'lower', 'normal', None
-        """
-        text_lower = text.lower()
-
-        # Паттерны для различных команд pitch
-        pitch_patterns = {
-            "higher": [
-                r"говори выше",
-                r"голос выше",
-                r"повыс\w* голос",
-                r"выше говор",
-            ],
-            "lower": [
-                r"говори ниже",
-                r"голос ниже",
-                r"пониж\w* голос",
-                r"ниже говор",
-            ],
-            "normal": [
-                r"нормальн\w* голос",
-                r"обычн\w* голос",
-                r"говори нормально",
-            ],
-        }
-
-        for intent, patterns in pitch_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, text_lower):
-                    return intent
-
-        return None
-
-    def _handle_pitch_command(self, intent: str) -> str:
-        """Обработка команды изменения высоты голоса через pitch_shift
-
-        Args:
-            intent: 'higher', 'lower', 'normal'
-
-        Returns:
-            str: Ответ для пользователя
-        """
-        # Управляем pitch через pitch_shift параметр
-        # pitch_shift - это дополнительный множитель к базовому эффекту бурундука (2.0x)
-        # pitch_shift=1.0 → стандартный ROBBOX (2.0x эффект)
-        # pitch_shift=1.5 → голос ещё выше (3.0x эффект)
-        # pitch_shift=0.8 → голос ниже (1.6x эффект)
-        # ВАЖНО: chipmunk_mode всегда остаётся True для сохранения эффекта ROBBOX
-        try:
-            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-            from rcl_interfaces.srv import GetParameters, SetParameters
-
-            # Создаем клиенты для работы с параметрами TTS ноды
-            tts_get_params_client = self.create_client(GetParameters, "/tts_node/get_parameters")
-            tts_set_params_client = self.create_client(SetParameters, "/tts_node/set_parameters")
-
-            # Ждем доступности сервисов
-            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().error("❌ TTS node параметры недоступны")
-                return "Извините, не могу изменить высоту голоса. Система недоступна."
-
-            # Получаем текущий pitch_shift
-            get_request = GetParameters.Request()
-            get_request.names = ["pitch_shift"]
-            future = tts_get_params_client.call_async(get_request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-
-            if future.result() is None or len(future.result().values) < 1:
-                self.get_logger().error("❌ Не удалось получить параметры TTS")
-                return "Извините, не могу изменить высоту голоса."
-
-            # Извлекаем текущее значение pitch_shift
-            current_pitch = future.result().values[0].double_value
-
+            prompt_preview = instructions[:200].replace("\n", "↵")
             self.get_logger().info(
-                f"📊 Текущий pitch_shift: {current_pitch:.2f} (итого: {2.0 * current_pitch:.1f}x эффект)"
+                f"🤖 Agent built: {model_name} @ {base_url} ({len(tools)} tools) | "
+                f"instructions={len(instructions)} bytes | "
+                f'preview="{prompt_preview}..."'
+            )
+        except Exception as exc:
+            self.get_logger().error(f"❌ Agent build failed: {exc}")
+
+    def _make_tools(self) -> list:
+        """Create @function_tool wrappers around MCP ROS2 calls."""
+        mcp = self._mcp
+        # Captured once per tool-set build; bound to self._loop on first await.
+        lock = self._output_lock
+
+        async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            self._tools_called.append(tool_name)
+            result = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
+            )
+            if isinstance(result, dict):
+                return result.get("result", json.dumps(result, ensure_ascii=False))
+            return str(result)
+
+        @function_tool
+        async def speak_text(text: str, animation: str = "neutral") -> str:
+            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
+            Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            if self._run_cancelled:
+                return "CANCELLED"
+            # Collect ALL spoken texts immediately (before lock) so that when
+            # multiple speak_text calls queue on the lock, _spoken_texts already
+            # has all texts for proper history saving.
+            self._spoken_texts.append(text)
+            async with lock:
+                if self._run_cancelled:
+                    return "CANCELLED"
+                result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+                # ── Wait for TTS to actually finish playing ───────────────────
+                # MCP speak_text is async (returns immediately), but we hold
+                # the output lock until TTS finishes, so the next tool call
+                # (play_sound, play_animation, etc.) only starts afterwards.
+                try:
+                    speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+                except Exception:
+                    speech_id = ""
+                if speech_id:
+                    event = asyncio.Event()
+                    with self._tts_events_lock:
+                        self._tts_events[speech_id] = event
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                    finally:
+                        with self._tts_events_lock:
+                            self._tts_events.pop(speech_id, None)
+            return "TASK_COMPLETE"
+
+        @function_tool
+        async def play_sound(sound: str) -> str:
+            """Воспроизвести звуковой эффект."""
+            async with lock:
+                # Register done-event BEFORE sending trigger to avoid race.
+                done_event = asyncio.Event()
+                with self._sound_event_lock:
+                    self._sound_done_event = done_event
+                result_str = await _call("play_sound", {"sound": sound})
+                # Wait for sound_node to publish "ready" (actual playback finished,
+                # including cleanup_playback_noise 0.1s delay).
+                # Fallback timeout = catalog duration + 2s safety margin.
+                try:
+                    duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
+                except Exception:
+                    duration = 1.5
+                try:
+                    await asyncio.wait_for(done_event.wait(), timeout=float(duration) + 2.0)
+                except asyncio.TimeoutError:
+                    self.get_logger().warning(f"⚠️ play_sound timeout waiting for 'ready': {sound}")
+                finally:
+                    with self._sound_event_lock:
+                        self._sound_done_event = None
+            return result_str
+
+        @function_tool
+        async def play_animation(animation: str, duration: float = 3.0) -> str:
+            """Запустить LED анимацию на указанное время."""
+            async with lock:
+                return await _call(
+                    "play_animation", {"animation": animation, "duration": duration}
+                )
+
+        @function_tool
+        async def memory_context(limit: int = 10) -> str:
+            """Получить контекст прошлых диалогов из долгосрочной памяти."""
+            return await _call("memory_context", {"limit": limit})
+
+        @function_tool
+        async def memory_save(fact: str, category: str = "general") -> str:
+            """Сохранить факт о пользователе в долгосрочную память (имя, предпочтения, привычки). НЕ для мест/локаций — для этого используй save_waypoint!"""
+            return await _call("memory_save", {"fact": fact, "category": category})
+
+        @function_tool
+        async def memory_search(query: str, limit: int = 5) -> str:
+            """Найти релевантную информацию в долгосрочной памяти."""
+            return await _call("memory_search", {"query": query, "limit": limit})
+
+        @function_tool
+        async def get_current_time() -> str:
+            """Получить текущее время и дату."""
+            return await _call("get_current_time", {})
+
+        @function_tool
+        async def get_robot_status() -> str:
+            """Получить статус робота: батарея, сенсоры, состояние навигации."""
+            return await _call("get_robot_status", {})
+
+        @function_tool
+        async def get_battery_level() -> str:
+            """Получить уровень заряда батареи."""
+            return await _call("get_battery_level", {})
+
+        @function_tool
+        async def navigate_to_waypoint(waypoint: str) -> str:
+            """Направить робота к сохранённой точке. БЛОКИРУЕТСЯ до прибытия. Сначала проверь list_waypoints()."""
+            return await _call("navigate_to_waypoint", {"waypoint": waypoint}, timeout=130.0)
+
+        @function_tool
+        async def navigate_to_coordinates(x: float, y: float, theta: float = 0.0) -> str:
+            """Навигация к произвольным координатам (x, y, theta) на карте. Используй после get_current_pose() для возврата."""
+            return await _call("navigate_to_coordinates", {"x": x, "y": y, "theta": theta}, timeout=130.0)
+
+        @function_tool
+        async def move_direction(direction: str, distance: float = 0.5) -> str:
+            """Передвинуть робота. direction: 'вперёд', 'назад', 'налево', 'направо'.
+            БЛОКИРУЕТСЯ до завершения движения — speak_text вызывать ТОЛЬКО после этого."""
+            return await _call(
+                "move_direction", {"direction": direction, "distance": distance}, timeout=70.0
             )
 
-            # Вычисляем новое значение pitch_shift
-            # Диапазон: 0.5 (низкий бурундук, 1.0x эффект) - 2.0 (очень высокий, 4.0x эффект)
-            # ROBBOX стандарт: 1.0 = оригинальный голос бурундука (2.0x эффект)
-            new_pitch = current_pitch
-            response_text = ""
+        @function_tool
+        async def list_waypoints() -> str:
+            """Получить список всех сохранённых точек на текущей карте."""
+            return await _call("list_waypoints", {})
 
-            if intent == "higher":
-                # Увеличиваем pitch - делаем голос выше
-                new_pitch = min(current_pitch + 0.2, 2.0)  # +0.2, макс 2.0 (4.0x эффект!)
-                response_text = "Говорю выше"
-            elif intent == "lower":
-                # Уменьшаем pitch - делаем голос ниже (но всё ещё бурундук!)
-                new_pitch = max(current_pitch - 0.2, 0.5)  # -0.2, мин 0.5 (1.0x эффект - лёгкий)
-                response_text = "Говорю ниже"
-            elif intent == "normal":
-                # Нормальный ROBBOX голос с эффектом бурундука
-                new_pitch = 1.0  # 2.0x эффект - как в оригинале!
-                response_text = "Нормальный голос"
+        @function_tool
+        async def save_waypoint(name: str) -> str:
+            """Сохранить текущую позицию робота как именованную точку (waypoint). ВСЕГДА используй когда пользователь называет место/локацию: 'это кухня', 'тут база', 'здесь зал', 'запомни это место', 'это его база'. НЕ memory_save!"""
+            return await _call("save_waypoint", {"name": name})
 
-            # Проверяем изменение pitch
-            if abs(new_pitch - current_pitch) < 0.01:
-                # Параметр не изменился
-                if intent == "higher":
-                    return "Голос уже максимально высокий"
-                elif intent == "lower":
-                    return "Голос уже минимально низкий"
+        @function_tool
+        async def delete_waypoint(name: str) -> str:
+            """Удалить сохранённую точку по имени. Используй когда пользователь говорит 'удали зал', 'забудь кухню'."""
+            return await _call("delete_waypoint", {"name": name})
 
-            # Устанавливаем новый pitch_shift для TTS ноды
-            set_request = SetParameters.Request()
+        @function_tool
+        async def clear_waypoints() -> str:
+            """Удалить ВСЕ сохранённые точки на текущей карте."""
+            return await _call("clear_waypoints", {})
 
-            param_pitch = Parameter()
-            param_pitch.name = "pitch_shift"
-            param_pitch.value = ParameterValue()
-            param_pitch.value.type = ParameterType.PARAMETER_DOUBLE
-            param_pitch.value.double_value = new_pitch
+        @function_tool
+        async def get_current_pose() -> str:
+            """Получить текущую позицию робота (x, y, theta) на карте. Используй перед миссиями для запоминания точки возврата."""
+            return await _call("get_current_pose", {})
 
-            set_request.parameters = [param_pitch]
+        @function_tool
+        async def set_volume(action: str) -> str:
+            """Изменить громкость голоса.
+            action: 'louder' — громче, 'quieter' — тише, 'max' — максимум, 'normal' — норма."""
+            return await _call("set_volume", {"action": action})
 
-            future = tts_set_params_client.call_async(set_request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+        @function_tool
+        async def set_pitch(pitch: float) -> str:
+            """Установить высоту голоса 0.5-2.0."""
+            return await _call("set_pitch", {"pitch": pitch})
 
-            if future.result() is None:
-                self.get_logger().error("❌ Не удалось установить параметры TTS")
-                return "Извините, не могу изменить высоту голоса."
+        @function_tool
+        async def execute_music_code(code: str, pattern_name: str = "p1") -> str:
+            """Запустить музыкальный код на синтезаторе Renardo/SuperCollider.
+            Использовать ВСЕГДА когда пользователь просит сыграть мелодию, музыку, ноты.
+            Пример: execute_music_code("p1 >> pluck([0,2,4,7], dur=0.5, amp=0.8)", pattern_name="p1")"""
+            return await _call("execute_music_code", {"code": code, "pattern_name": pattern_name}, timeout=15.0)
 
-            # Проверяем успешность установки
-            if not future.result().results[0].successful:
-                self.get_logger().error("❌ Параметр pitch_shift не установился")
-                return "Извините, не могу изменить высоту голоса."
+        @function_tool
+        async def stop_music(pattern_name: str = "") -> str:
+            """Остановить музыку. pattern_name="" — остановить всё, иначе конкретный паттерн."""
+            params = {"pattern_name": pattern_name} if pattern_name else {}
+            return await _call("stop_music", params)
 
-            self.get_logger().info(
-                f"✅ Pitch изменён: {current_pitch:.2f} → {new_pitch:.2f} "
-                f"(эффект: {2.0 * current_pitch:.1f}x → {2.0 * new_pitch:.1f}x)"
+        @function_tool
+        async def set_vibe_preset(preset: str) -> str:
+            """Установить музыкальный вайб-пресет перед игрой мелодии.
+            Доступные пресеты: chill, energetic, ambient, jazz, dark."""
+            return await _call("set_vibe_preset", {"preset_name": preset})
+
+        @function_tool
+        async def get_music_state() -> str:
+            """Получить текущее состояние музыкального синтезатора: что играет, темп, вайб."""
+            return await _call("get_music_state", {})
+
+        @function_tool
+        def search_samples(
+            query: str,
+            pack: str = "0_foxdot_default",
+            case: str = "lower",
+        ) -> str:
+            """Найти семплы для play() по ключевому слову в имени файла.
+
+            ВЫЗЫВАЙ перед созданием паттернов с play() если нужно найти букву.
+            Для вокала/vocal: pack="1_pitchglitch_samples", для стандартных — pack="0_foxdot_default".
+            query="*" → компактный обзор всех букв с количеством файлов.
+
+            Args:
+                query: Ключевое слово (kick, snare, hat, bass, synth, vocal, glitch).
+                pack:  "0_foxdot_default" (стандартный) или "1_pitchglitch_samples" (вокал/FX).
+                case:  "lower" → строчная буква в play(); "upper" → заглавная.
+
+            Returns:
+                JSON: letter, sample_index, filename, play_code для подстановки в play().
+            """
+            samples_root = Path(os.getenv("RENARDO_SAMPLES_PATH", "/root/.config/renardo/samples"))
+            if not samples_root.exists():
+                return json.dumps(
+                    {"error": f"Samples dir not found: {samples_root}",
+                     "hint": "Use: d1 >> play('c', sample=P[0,1,2,3]) for vocal"},
+                    ensure_ascii=False,
+                )
+            pack_path = samples_root / pack
+            if not pack_path.exists():
+                available = [d.name for d in samples_root.iterdir() if d.is_dir()]
+                return json.dumps(
+                    {"error": f"Pack '{pack}' not found", "available_packs": available},
+                    ensure_ascii=False,
+                )
+            exts = {".wav", ".aif", ".aiff", ".mp3"}
+            all_packs = sorted([d.name for d in samples_root.iterdir() if d.is_dir()])
+            spack_num = all_packs.index(pack) if pack in all_packs else 0
+            spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
+            if query.strip() == "*":
+                overview = {}
+                for folder in sorted(pack_path.iterdir()):
+                    if not folder.is_dir() or folder.name.startswith("."):
+                        continue
+                    sub = folder / case
+                    if not sub.exists():
+                        sub = folder
+                    count = sum(1 for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts)
+                    if count:
+                        overview[folder.name] = count
+                return json.dumps(
+                    {"pack": pack, "case": case, "letters": overview,
+                     "hint": 'search_samples("kick") or search_samples("vocal", pack="1_pitchglitch_samples")'},
+                    ensure_ascii=False, indent=2,
+                )
+            q = query.lower().strip()
+            results = []
+            for folder in sorted(pack_path.iterdir()):
+                if not folder.is_dir() or folder.name.startswith("."):
+                    continue
+                sub = folder / case
+                if not sub.exists():
+                    sub = folder
+                files = sorted([f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts])
+                for idx, f in enumerate(files):
+                    if q in f.name.lower():
+                        play_letter = folder.name.upper() if case == "upper" else folder.name
+                        results.append(
+                            {"letter": play_letter, "sample_index": idx, "spack": spack_num,
+                             "filename": f.name,
+                             "play_code": f'd1 >> play("{play_letter}", sample={idx}{spack_suffix})'}
+                        )
+                if len(results) >= 30:
+                    break
+            if not results:
+                return json.dumps(
+                    {"query": query, "pack": pack, "found": 0,
+                     "hint": 'Try: "kick", "snare", "hat", "bass", "vocal", "*"'},
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"query": query, "pack": pack, "case": case, "found": len(results), "results": results},
+                ensure_ascii=False, indent=2,
             )
-            return response_text
 
-        except Exception as e:
-            self.get_logger().error(f"❌ Ошибка изменения pitch: {e}")
-            return "Извините, произошла ошибка."
+        return [
+            speak_text, play_sound, play_animation,
+            memory_context, memory_save, memory_search,
+            get_current_time, get_robot_status, get_battery_level,
+            navigate_to_waypoint, navigate_to_coordinates, move_direction,
+            list_waypoints, save_waypoint, delete_waypoint, clear_waypoints, get_current_pose,
+            set_volume, set_pitch,
+            search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state,
+        ]
 
-    # ============================================================
-    # Speed Control Commands
-    # ============================================================
+    def _make_output_tools(self) -> list:
+        """Create speak_text / play_sound / play_animation tools for compositor mode.
 
-    def _detect_speed_intent(self, text: str):
-        """Определить intent для команд управления скоростью речи
-
-        Returns:
-            str: 'faster', 'slower', 'normal', None
+        These tools stay as flat tools on the Compositor because they hold
+        asyncio locks (_output_lock, _tts_events, _sound_done_event) that
+        are tightly coupled to DialogueNode's lifecycle.
         """
-        text_lower = text.lower()
+        mcp = self._mcp
+        lock = self._output_lock
 
-        # Паттерны для различных команд скорости
-        speed_patterns = {
-            "faster": [
-                r"говори быстрее",
-                r"быстрее",
-                r"ускор\w*",
-                r"побыстрее",
-            ],
-            "slower": [
-                r"говори медленнее",
-                r"медленнее",
-                r"замедл\w*",
-                r"помедленнее",
-            ],
-            "normal": [
-                r"нормальн\w* скорост",
-                r"обычн\w* скорост",
-            ],
-        }
+        async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            self._tools_called.append(tool_name)
+            result = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
+            )
+            if isinstance(result, dict):
+                return result.get("result", json.dumps(result, ensure_ascii=False))
+            return str(result)
 
-        for intent, patterns in speed_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, text_lower):
-                    return intent
+        @function_tool
+        async def speak_text(text: str, animation: str = "neutral") -> str:
+            """Произнести текст с анимацией. ВСЕГДА вызывать для ответа пользователю.
+            Возвращает TASK_COMPLETE — после этого верни текстовый ответ без tool_calls чтобы завершить итерацию."""
+            if self._run_cancelled:
+                return "CANCELLED"
+            self._spoken_texts.append(text)
+            async with lock:
+                if self._run_cancelled:
+                    return "CANCELLED"
+                result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+                try:
+                    speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+                except Exception:
+                    speech_id = ""
+                if speech_id:
+                    event = asyncio.Event()
+                    with self._tts_events_lock:
+                        self._tts_events[speech_id] = event
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                    finally:
+                        with self._tts_events_lock:
+                            self._tts_events.pop(speech_id, None)
+            return "TASK_COMPLETE"
 
-        return None
+        @function_tool
+        async def play_sound(sound: str) -> str:
+            """Воспроизвести звуковой эффект."""
+            async with lock:
+                done_event = asyncio.Event()
+                with self._sound_event_lock:
+                    self._sound_done_event = done_event
+                result_str = await _call("play_sound", {"sound": sound})
+                try:
+                    duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
+                except Exception:
+                    duration = 1.5
+                try:
+                    await asyncio.wait_for(done_event.wait(), timeout=float(duration) + 2.0)
+                except asyncio.TimeoutError:
+                    self.get_logger().warning(f"⚠️ play_sound timeout waiting for 'ready': {sound}")
+                finally:
+                    with self._sound_event_lock:
+                        self._sound_done_event = None
+            return result_str
 
-    def _handle_speed_command(self, intent: str) -> str:
-        """Обработка команды изменения скорости речи через yandex_speed
+        @function_tool
+        async def play_animation(animation: str, duration: float = 3.0) -> str:
+            """Запустить LED анимацию на указанное время."""
+            async with lock:
+                return await _call(
+                    "play_animation", {"animation": animation, "duration": duration}
+                )
+
+        return [speak_text, play_sound, play_animation]
+
+    def _build_skills(self, model) -> list:
+        """Instantiate skill sub-agents and return them as FunctionTools for the Compositor.
+
+        Each skill becomes a single tool that the Compositor can call with a
+        natural-language task string.  The skill runs its own focused LLM loop
+        and returns a plain string result.
 
         Args:
-            intent: 'faster', 'slower', 'normal'
+            model: Shared OpenAIChatCompletionsModel instance to pass to each skill.
 
         Returns:
-            str: Ответ для пользователя
+            List of FunctionTool objects (one per skill that loaded successfully).
         """
-        # Управляем скоростью синтеза через yandex_speed параметр
-        # Диапазон: 0.1-3.0, где 1.0 = нормальная скорость
+        skill_tools = []
+
+        # ── MusicSkill ─────────────────────────────────────────────────────
         try:
-            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-            from rcl_interfaces.srv import GetParameters, SetParameters
+            music_prompt = self._load_prompt_file("skills/music_skill_prompt.txt")
+            if not music_prompt:
+                music_prompt = "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
+            skill = MusicSkill(
+                adapter=self._mcp,
+                model=model,
+                prompt_template=music_prompt,
+                agent_max_turns=10,
+                max_tokens=1200,
+                temperature=0.85,
+            )
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_music",
+                    tool_description=(
+                        "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
+                        "остановку музыки или изменение музыкального состояния."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ MusicSkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
 
-            # Создаем клиенты для работы с параметрами TTS ноды
-            tts_get_params_client = self.create_client(GetParameters, "/tts_node/get_parameters")
-            tts_set_params_client = self.create_client(SetParameters, "/tts_node/set_parameters")
+        # ── NavigationSkill ────────────────────────────────────────────────
+        try:
+            nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
+            if not nav_prompt:
+                nav_prompt = "Ты — модуль навигации РОББОКСА. Управляй движением робота."
+            skill = NavigationSkill(adapter=self._mcp, model=model, prompt=nav_prompt, name="NavigationSkill")
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_navigation",
+                    tool_description=(
+                        "Навигационный скилл: переместить робота в именованную точку, "
+                        "сохранить/удалить/список точек (вейпоинтов), "
+                        "картографирование (маппинг), направление движения."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ NavigationSkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ NavigationSkill build failed: {exc}")
 
-            # Ждем доступности сервисов
-            if not tts_get_params_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().error("❌ TTS node параметры недоступны")
-                return "Извините, не могу изменить скорость речи. Система недоступна."
+        # ── MemorySkill ────────────────────────────────────────────────────
+        try:
+            mem_prompt = self._load_prompt_file("skills/memory_skill_prompt.txt")
+            if not mem_prompt:
+                mem_prompt = "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
+            skill = MemorySkill(adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill")
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_memory",
+                    tool_description=(
+                        "Модуль памяти: сохранить новую информацию или найти "
+                        "ранее сохранённые факты в долгосрочной памяти."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ MemorySkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ MemorySkill build failed: {exc}")
 
-            # Получаем текущий yandex_speed
-            get_request = GetParameters.Request()
-            get_request.names = ["yandex_speed"]
-            future = tts_get_params_client.call_async(get_request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+        # ── StatusSkill ────────────────────────────────────────────────────
+        try:
+            status_prompt = self._load_prompt_file("skills/status_skill_prompt.txt")
+            if not status_prompt:
+                status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
+            skill = StatusSkill(adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill")
+            skill_tools.append(
+                skill.as_tool(
+                    tool_name="handle_status",
+                    tool_description=(
+                        "Модуль статуса: батарея, текущее время, статус робота, "
+                        "изменение громкости или высоты голоса."
+                    ),
+                )
+            )
+            self.get_logger().info("✅ StatusSkill loaded")
+        except Exception as exc:
+            self.get_logger().error(f"❌ StatusSkill build failed: {exc}")
 
-            if future.result() is None or len(future.result().values) < 1:
-                self.get_logger().error("❌ Не удалось получить yandex_speed")
-                return "Извините, не могу изменить скорость речи."
+        return skill_tools
 
-            current_speed = future.result().values[0].double_value
-            self.get_logger().info(f"📊 Текущая скорость синтеза: {current_speed:.2f}")
+    def _log_config(self) -> None:
+        self.get_logger().info(f"  Provider : {self._provider}")
+        self.get_logger().info(f"  Model    : {self._resolve_model()}")
+        self.get_logger().info(f"  Wake     : {self.dialogue_manager.wake_words}")
+        self.get_logger().info(f"  History  : {self._max_turns} turns")
+        self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s")
+        self.get_logger().info(f"  VerboseLLM: {self._verbose_llm}")
 
-            # Вычисляем новую скорость
-            # Диапазон: 0.5 (медленно) - 2.0 (быстро), 1.0 = нормально
-            new_speed = current_speed
-            response_text = ""
+    # ────────────────────────────────────────────────────────────────
+    # ROS2 callbacks
+    # ────────────────────────────────────────────────────────────────
 
-            if intent == "faster":
-                new_speed = min(current_speed + 0.2, 2.0)  # +0.2, макс 2.0
-                response_text = "Говорю быстрее"
-            elif intent == "slower":
-                new_speed = max(current_speed - 0.2, 0.5)  # -0.2, мин 0.5
-                response_text = "Говорю медленнее"
-            elif intent == "normal":
-                new_speed = 1.0  # Нормальная скорость
-                response_text = "Нормальная скорость"
+    def _on_vad(self, msg: Bool) -> None:
+        """Track VAD speech state (flag only, no barge-in).
 
-            # Проверяем изменение
-            if abs(new_speed - current_speed) < 0.01:
-                if intent == "faster":
-                    return "Скорость уже максимальная"
-                elif intent == "slower":
-                    return "Скорость уже минимальная"
+        Barge-in is handled exclusively by _on_stt() which requires
+        a confirmed wake word before cancelling any active run.
+        This prevents background noise (TV, radio) from interrupting
+        the agent mid-response.
+        """
+        is_speech = msg.data
+        if is_speech and not self._vad_speech_detected:
+            self._vad_speech_detected = True
+            self.get_logger().debug("🎤 VAD: speech start")
+        elif not is_speech and self._vad_speech_detected:
+            self._vad_speech_detected = False
 
-            # Устанавливаем новую скорость
-            set_request = SetParameters.Request()
-            param = Parameter()
-            param.name = "yandex_speed"
-            param.value = ParameterValue()
-            param.value.type = ParameterType.PARAMETER_DOUBLE
-            param.value.double_value = new_speed
-            set_request.parameters = [param]
+    def _on_stt(self, msg: String) -> None:
+        """Handle STT result — gate on wake word / silence, then start agent."""
+        text = msg.data.strip()
+        if not text:
+            return
 
-            future = tts_set_params_client.call_async(set_request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-
-            if future.result() is None or not future.result().results[0].successful:
-                self.get_logger().error("❌ Не удалось установить yandex_speed")
-                return "Извините, не могу изменить скорость речи."
-
-            self.get_logger().info(f"✅ Скорость изменена: {current_speed:.2f} → {new_speed:.2f}")
-            return response_text
-
-        except Exception as e:
-            self.get_logger().error(f"❌ Ошибка изменения скорости: {e}")
-            return "Извините, произошла ошибка."
-
-    # ============================================================
-    # Mapping Commands (RTABMap Control)
-    # ============================================================
-
-    def _detect_mapping_intent(self, text: str):
-        """Определить intent для команд картографии"""
+        state = self.dialogue_manager.state
         text_lower = text.lower()
 
-        for intent, patterns in self.mapping_intents.items():
-            for pattern in patterns:
-                if re.search(pattern, text_lower):
-                    return intent
-
-        return None
-
-    async def _backup_rtabmap_db(self) -> bool:
-        """Создать backup текущей БД RTABMap через Docker"""
-        try:
-            # Docker exec на Main Pi для backup
-            # Предполагается что контейнер rtabmap доступен
-            result = subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "rtabmap",
-                    "bash",
-                    "-c",
-                    "mkdir -p /maps/backups && "
-                    "cp /maps/rtabmap.db /maps/backups/rtabmap_backup_$(date +%Y%m%d_%H%M%S).db && "
-                    "echo OK",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-
-            if result.returncode == 0 and "OK" in result.stdout:
-                self.get_logger().info("✅ RTABMap backup создан")
-                return True
-            else:
-                self.get_logger().error(f"❌ Backup failed: {result.stderr}")
-                return False
-        except subprocess.TimeoutExpired:
-            self.get_logger().error("❌ Backup timeout (10s)")
-            return False
-        except Exception as e:
-            self.get_logger().error(f"❌ Backup error: {e}")
-            return False
-
-    async def _handle_mapping_command(self, intent: str, text: str) -> str:
-        """Обработка команд картографии"""
-        self.get_logger().info(f"🗺️ Mapping intent: {intent}")
-
-        if intent == "start_mapping":
-            # Запрос подтверждения
-            self.pending_confirmation = "start_mapping"
-            self.confirmation_time = time.time()
-            self._trigger_sound("confused")  # Звук вопроса
-            return "Начать новое исследование? Старая карта будет сохранена в резервную копию."
-
-        elif intent == "continue_mapping":
-            # Переключить в mapping mode
-            try:
-                self.get_logger().info("  → Переключение в SLAM mode...")
-                _future = self.set_mode_mapping_client.call_async(Empty.Request())  # noqa: F841
-                # Не ждём ответа (async), просто отправляем
-                self._trigger_sound("cute")  # Звук подтверждения
-                return "Продолжаю исследование территории. Добавляю новые области к карте."
-            except Exception as e:
-                self.get_logger().error(f"❌ Ошибка set_mode_mapping: {e}")
-                self._trigger_sound("confused")
-                return "Извините, не удалось переключить режим картографии."
-
-        elif intent == "finish_mapping":
-            # Переключить в localization mode
-            try:
-                self.get_logger().info("  → Переключение в Localization mode...")
-                _future = self.set_mode_localization_client.call_async(Empty.Request())  # noqa: F841
-                # Не ждём ответа (async), просто отправляем
-                self._trigger_sound("cute")  # Звук подтверждения
-                return "Заканчиваю исследование. Переключаюсь в режим навигации по готовой карте."
-            except Exception as e:
-                self.get_logger().error(f"❌ Ошибка set_mode_localization: {e}")
-                self._trigger_sound("confused")
-                return "Извините, не удалось переключить в режим локализации."
-
-        return None
-
-    async def _confirm_start_mapping(self) -> str:
-        """Подтверждение start_mapping - создать backup и reset БД"""
-        self.get_logger().warning("🗺️ Подтверждение start_mapping...")
-
-        # 1. Backup
-        backup_ok = await self._backup_rtabmap_db()
-        if not backup_ok:
-            self._trigger_sound("angry_2")
-            return "Не удалось создать резервную копию карты. Операция отменена."
-
-        # 2. Reset memory
-        try:
-            self.get_logger().info("  → Reset RTABMap memory...")
-            _future = self.reset_memory_client.call_async(Empty.Request())  # noqa: F841
-            # Не ждём ответа (async)
-            self._trigger_sound("cute")  # Звук успеха
-            return "Начинаю исследование. Старая карта сохранена в резервной копии."
-        except Exception as e:
-            self.get_logger().error(f"❌ Ошибка reset_memory: {e}")
-            self._trigger_sound("angry_2")
-            return "Не удалось сбросить память RTABMap. Попробуйте позже."
-
-    def command_feedback_callback(self, msg: String):
-        """Обработка feedback от command_node (Phase 5)"""
-        feedback = msg.data.strip()
-        if not feedback:
+        # ── SILENCED: only listen for unsilence command ──────────────
+        if state == DialogueState.SILENCED:
+            if self.dialogue_manager.is_unsilence_command(text_lower):
+                self.dialogue_manager.transition_state(DialogueState.LISTENING)
+                self._publish_state()
             return
 
-        # Игнорируем feedback если dialogue уже обработал запрос
-        if self.dialogue_in_progress:
-            self.get_logger().debug(f"🔇 Игнор command feedback (dialogue in progress): {feedback}")
-            return
-
-        self.get_logger().info(f"📢 Command feedback: {feedback}")
-
-        # Генерируем новый dialogue_id для feedback
-        dialogue_id = str(uuid.uuid4())
-        self.current_dialogue_id = dialogue_id
-
-        # Отправить feedback в TTS (напрямую в response)
-        response_json = {"dialogue_id": dialogue_id, "ssml": f"<speak>{feedback}</speak>"}
-
-        response_msg = String()
-        response_msg.data = json.dumps(response_json, ensure_ascii=False)
-        self.response_pub.publish(response_msg)
-
-    def _check_dialogue_timeout(self):
-        """Проверить тайм-аут диалога и вернуться в IDLE если нет активности"""
-        if self.state not in ["LISTENING", "DIALOGUE"]:
-            return
-
-        elapsed = time.time() - self.last_interaction_time
-        if elapsed > self.dialogue_timeout:
-            self.get_logger().info(f"⏰ Dialogue timeout ({elapsed:.1f}s) → IDLE")
-            self.state = "IDLE"
+        # ── IDLE: require wake word ──────────────────────────────────
+        if state == DialogueState.IDLE:
+            if not self.dialogue_manager.has_wake_word(text_lower):
+                return
+            self.dialogue_manager.transition_state(DialogueState.LISTENING)
             self._publish_state()
 
+        # ── LISTENING / DIALOGUE: require wake word for every message ─
+        if not self.dialogue_manager.has_wake_word(text_lower):
+            self.get_logger().debug(f"🔇 Ignored (no wake word): {text[:60]}")
+            return
 
-def main(args=None):
+        clean = self.dialogue_manager.remove_wake_word(text_lower) or text
+
+        if self.dialogue_manager.is_silence_command(text_lower):
+            self._handle_silence()
+            return
+
+        # Cancel any in-progress run before starting a new one
+        self._cancel_run("new STT input")
+
+        # ── Immediate thinking sound ─────────────────────────────────
+        # Play confirmation immediately — before LLM even starts
+        _snd = String()
+        _snd.data = "thinking"
+        self._sound_trigger_pub.publish(_snd)
+
+        self.dialogue_manager.transition_state(DialogueState.DIALOGUE)
+        self._publish_state()
+
+        asyncio.run_coroutine_threadsafe(self._agent_run(clean), self._loop)
+
+    # ────────────────────────────────────────────────────────────────
+    # Agent execution
+    # ────────────────────────────────────────────────────────────────
+
+    async def _run_agent_with_retry(
+        self,
+        input_list: list,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ):
+        """Run Agent with retry on APIConnectionError (WiFi flakiness)."""
+        last_exc = None
+        for attempt in range(1 + max_retries):
+            try:
+                return await Runner.run(
+                    self._agent, input_list, max_turns=self._agent_max_turns
+                )
+            except APIConnectionError as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    self.get_logger().warning(
+                        f"⚠️ APIConnectionError (attempt {attempt + 1}/{1 + max_retries}), "
+                        f"retrying in {delay:.0f}s: {exc}"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    self.get_logger().error(
+                        f"❌ APIConnectionError after {1 + max_retries} attempts: {exc}"
+                    )
+                    raise
+        raise last_exc  # unreachable, but keeps type checker happy
+
+    async def _agent_run(self, user_input: str) -> None:
+        """Run the OpenAI Agents SDK loop for a single user turn."""
+        with self._task_lock:
+            self._run_task = asyncio.current_task()
+        self._run_cancelled = False
+        self._spoken_texts = []
+        self._tools_called = []
+        self.get_logger().info(f"🤔 User: {user_input[:120]}")
+        if self._voice_memory is not None:
+            try:
+                self._voice_memory.save_turn("user", user_input)
+            except Exception as exc:
+                self.get_logger().warning(f"⚠️ memory save_turn(user) failed: {exc}")
+
+        try:
+            with self._conv_lock:
+                # Conversation history uses [выполнено через: ...] markers
+                # on tool-assisted turns.  These markers STAY in the LLM input
+                # so the model sees that previous responses came from tool calls
+                # and doesn't try to pattern-copy the response text.
+                # Only strip legacy [tools: ...] markers (from old history entries).
+                cleaned = []
+                for msg in self._conversation:
+                    c = dict(msg)
+                    if c.get("role") == "assistant" and isinstance(c.get("content"), str):
+                        c["content"] = re.sub(r"^\[tools:[^\]]*\]\s*", "", c["content"])
+                    cleaned.append(c)
+                input_list = cleaned + [
+                    {"role": "user", "content": user_input}
+                ]
+
+            if self._agent is None:
+                self.get_logger().error("❌ Agent not initialised")
+                return
+
+            if self._verbose_llm:
+                self.get_logger().info(
+                    f"📥 LLM INPUT ({len(input_list)} messages):\n"
+                    + json.dumps(input_list, ensure_ascii=False, indent=2)
+                )
+
+            result = await asyncio.wait_for(
+                self._run_agent_with_retry(input_list),
+                timeout=self._llm_timeout * 3,
+            )
+
+            # Build clean history with tool-call markers so the LLM knows
+            # that previous actions were executed via tools (not just text).
+            # Without markers, the LLM sees "добавь точку X" → "Точка X добавлена!"
+            # and learns to skip tool calls, just echoing the pattern.
+            spoken = " ".join(self._spoken_texts) if self._spoken_texts else (result.final_output or "")
+            # Detect which tools were called from:
+            #  1) result.new_items (ToolCallItem) — reliable SDK API
+            #  2) self._tools_called — populated by _call() helpers as fallback
+            tool_names_used = set()
+            try:
+                for item in result.new_items:
+                    if isinstance(item, ToolCallItem) and hasattr(item.raw_item, "name"):
+                        tool_names_used.add(item.raw_item.name)
+            except Exception:
+                pass
+            # Fallback: merge tools tracked by _call() helpers
+            tool_names_used.update(self._tools_called)
+
+            # Build the string stored in conversation history.
+            # CRITICAL: if tools were used, store a non-speakable summary
+            # format so the LLM cannot pattern-copy it as a direct answer.
+            # Without this, history like:
+            #   user: "едь на базу" → assistant: "Приехал на базу!"
+            # causes LLM to skip tools and just output "Приехал на X!" for
+            # every subsequent navigation request.
+            if tool_names_used:
+                tool_list = ", ".join(sorted(tool_names_used))
+                clean_text = spoken.strip()
+                history_entry = f"[выполнено через: {tool_list}] {clean_text}"
+            else:
+                history_entry = spoken
+
+            # Auto-speak fallback: if LLM returned text without calling
+            # speak_text, speak the response directly so the robot is never silent.
+            if not self._spoken_texts and spoken:
+                clean_spoken = re.sub(r"^\[выполнено через:[^\]]*\]\s*", "", spoken).strip()
+                if clean_spoken and clean_spoken.lower() != "done":
+                    self.get_logger().warning(
+                        f"⚠️ Auto-speak fallback (LLM skipped speak_text): {clean_spoken[:80]}"
+                    )
+                    self._speak_direct(clean_spoken)
+
+            if self._verbose_llm:
+                self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
+            else:
+                self.get_logger().info(f"✅ Agent done. Response: {spoken[:80]}")
+
+            if self._voice_memory is not None and spoken:
+                try:
+                    self._voice_memory.save_turn("assistant", spoken)
+                except Exception as exc:
+                    self.get_logger().warning(f"⚠️ memory save_turn(assistant) failed: {exc}")
+
+            with self._conv_lock:
+                self._conversation = self._trim_history(
+                    list(self._conversation)
+                    + [{"role": "user", "content": user_input},
+                       {"role": "assistant", "content": history_entry}]
+                )
+
+        except asyncio.CancelledError:
+            self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
+            # Do NOT update history — partial turn discarded
+
+        except MaxTurnsExceeded:
+            self.get_logger().error(
+                f"❌ Agent exceeded max tool-call turns ({self._agent_max_turns}). "
+                "Consider increasing agent_max_turns param."
+            )
+
+        except asyncio.TimeoutError:
+            self.get_logger().error(f"❌ Agent timed out ({self._llm_timeout * 3:.0f}s)")
+            self._speak_direct("Извините, не получилось ответить вовремя.")
+
+        except Exception as exc:
+            self.get_logger().error(f"❌ Agent error: {exc}")
+            if "invalid_request_error" in str(exc) or "tool" in str(exc).lower():
+                self.get_logger().warning("🧹 Clearing conversation history due to malformed state")
+                with self._conv_lock:
+                    self._conversation = []
+
+        finally:
+            with self._task_lock:
+                self._run_task = None
+            if self.dialogue_manager.state == DialogueState.DIALOGUE:
+                self.dialogue_manager.transition_state(DialogueState.LISTENING)
+                self._publish_state()
+
+    def _on_tts_finished_dlg(self, msg: String) -> None:
+        """Release speak_text awaiter when TTS finishes playing."""
+        try:
+            data = json.loads(msg.data)
+            speech_id = data.get("speech_id", "")
+        except Exception:
+            speech_id = msg.data.strip()
+        if not speech_id:
+            return
+        with self._tts_events_lock:
+            event = self._tts_events.get(speech_id)
+        if event:
+            self._loop.call_soon_threadsafe(event.set)
+
+    def _on_sound_state(self, msg: String) -> None:
+        """Release play_sound awaiter when sound_node publishes 'ready'."""
+        if msg.data != "ready":
+            return
+        with self._sound_event_lock:
+            event = self._sound_done_event
+        if event is not None:
+            self._loop.call_soon_threadsafe(event.set)
+
+    def _cancel_run(self, reason: str) -> None:
+        self._spoken_texts = []
+        self._run_cancelled = True
+        with self._task_lock:
+            task = self._run_task
+        if task and not task.done():
+            self.get_logger().info(f"🛑 Cancel: {reason}")
+            self._loop.call_soon_threadsafe(task.cancel)
+        # Always flush TTS queue on cancel — even if no task was running,
+        # the TTS node may still have queued phrases from a previous run.
+        stop_msg = String()
+        stop_msg.data = "STOP"
+        self._tts_control_pub.publish(stop_msg)
+        # Release any pending TTS events so speak_text doesn't hang
+        with self._tts_events_lock:
+            for event in self._tts_events.values():
+                self._loop.call_soon_threadsafe(event.set)
+            self._tts_events.clear()
+        # Release pending sound-done event so play_sound doesn't hang
+        with self._sound_event_lock:
+            if self._sound_done_event is not None:
+                self._loop.call_soon_threadsafe(self._sound_done_event.set)
+                self._sound_done_event = None
+
+    def _trim_history(self, items: list) -> list:
+        """Keep the last `max_turns` complete user+assistant pairs."""
+        max_items = self._max_turns * 2
+        return items[-max_items:] if len(items) > max_items else items
+
+    # ────────────────────────────────────────────────────────────────
+    # Helpers
+    # ────────────────────────────────────────────────────────────────
+
+    def _speak_direct(self, text: str) -> None:
+        """Publish a response directly (no LLM) — errors, silence confirmations."""
+        msg = String()
+        msg.data = json.dumps(
+            {"chunk": "final", "ssml": f"<speak>{text}</speak>", "emotion": "neutral"},
+            ensure_ascii=False,
+        )
+        self._response_pub.publish(msg)
+
+    def _handle_silence(self) -> None:
+        self._cancel_run("silence command")
+        self.dialogue_manager.enable_silence(duration=300.0)
+        self._publish_state()
+        self._speak_direct("Хорошо, молчу.")
+
+    def _on_timeout_check(self) -> None:
+        """Every-5s timer: transition LISTENING→IDLE after inactivity."""
+        with self._task_lock:
+            running = self._run_task is not None and not self._run_task.done()
+        if running:
+            return  # Never timeout while agent is working (fixes the bug we had!)
+        if self.dialogue_manager.check_timeout():
+            self.get_logger().info("⏰ Dialogue timeout → IDLE (history preserved, sliding window)")
+            self._publish_state()
+
+    def _publish_state(self) -> None:
+        msg = String()
+        msg.data = self.dialogue_manager.state.value
+        self._state_pub.publish(msg)
+
+
+def main(args=None) -> None:
     rclpy.init(args=args)
     node = DialogueNode()
-
+    executor = rclpy.executors.MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    rclpy.shutdown()
 
 
 if __name__ == "__main__":

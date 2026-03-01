@@ -1,0 +1,35 @@
+# voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
+#
+# LLM: DeepSeek API (api.deepseek.com, deepseek-chat)
+# API key передаётся через env DEEPSEEK_API_KEY — не коммитить
+
+/dialogue_node:
+  ros__parameters:
+    provider: "deepseek"
+    api_key: ""   # берётся из env DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
+    temperature: 0.5
+    max_tokens: 150       # короткие ответы = быстрые тесты
+    streaming: true
+
+    enable_fallback: false
+    enable_mcp_tools: false
+    internet_available: true
+
+    # Пустой список wake_words — любая фраза идёт в LLM
+    wake_words: ""
+    silence_words: "стоп,тихо,замолчи"
+
+    # Системный промпт для тестов — краткие ответы быстрее
+    system_prompt: |
+      Ты — робот ROBBOX. Отвечай очень кратко, 1-2 предложения.
+      Всегда отвечай на русском языке.
+      На приветствие отвечай: "Привет! Я ROBBOX."
+      На вопрос об имени: "Меня зовут ROBBOX."
+
+    max_history_messages: 6
+    history_window_tokens: 1000
+
+    llm_timeout_sec: 30.0
+    max_iterations: 3

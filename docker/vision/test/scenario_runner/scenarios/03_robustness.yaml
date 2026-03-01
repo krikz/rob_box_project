@@ -1,0 +1,56 @@
+# scenarios/03_robustness.yaml
+# Сценарии устойчивости: пустые фразы, быстрые reinjections, VAD interrupt
+#
+# Цель: диалог_нода не падает и не зависает после пограничных сценариев.
+
+scenarios:
+
+  - name: empty_message_no_crash
+    description: "Пустая строка — нода не падает, нет ответа"
+    steps:
+      - inject_stt: ""
+        timeout_s: 3
+        assert_no_response: true
+
+  - name: rapid_messages_no_crash
+    description: "Быстрые сообщения подряд — нода не зависает"
+    fail_fast: false
+    steps:
+      # Минимум 3 слова: dialogue_node фильтрует фразы < 3 слов (word_count < 3)
+      - inject_stt: "это сообщение первое"
+        timeout_s: 45
+        assert_response_not_empty: true
+      - wait_ms: 300
+      - inject_stt: "это сообщение второе"
+        timeout_s: 45
+        assert_response_not_empty: true
+      - wait_ms: 300
+      - inject_stt: "это сообщение третье"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  - name: vad_interrupt_no_hang
+    description: "VAD interrupt когда робот уже говорит — нода не зависает"
+    steps:
+      # Отправляем запрос без ожидания ответа — чтобы успеть прервать
+      - inject_stt_no_wait: "расскажи длинный анекдот про программиста"
+      # Ждём пока speak_text не придёт (робот начал говорить)
+      - wait_for_speaking: true
+        timeout_s: 20
+      # Прерываем VAD пока робот говорит (или делает follow-up LLM вызов)
+      - inject_vad: true
+      - wait_ms: 300
+      - inject_vad: false
+      # Новый запрос после прерывания — нода должна его обработать.
+      # timeout_s: 50 — после barge-in возможна ошибка DeepSeek 1/3 + retry ~30s.
+      - inject_stt: "о чём мы говорили"
+        timeout_s: 50
+        assert_response_not_empty: true
+
+  - name: long_message_within_timeout
+    description: "Длинное сообщение — ответ в разумный срок"
+    steps:
+      - inject_stt: "расскажи подробно о том как ты работаешь, что ты умеешь делать, какие у тебя возможности и ограничения"
+        timeout_s: 35
+        assert_response_not_empty: true
+

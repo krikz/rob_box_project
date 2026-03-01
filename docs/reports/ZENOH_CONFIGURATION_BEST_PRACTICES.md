@@ -49,7 +49,7 @@
 **Для всей системы:**
 - Main Pi router: ~2.5 MB
 - Vision Pi router: ~2.5 MB
-- **Общее увеличение:** ~5 MB (приемлемо для Raspberry Pi 4 с 4GB RAM)
+- **Общее увеличение:** ~5 MB (приемлемо для Raspberry Pi 5)
 
 ---
 

@@ -1,0 +1,38 @@
+# scenarios/02_tool_call.yaml
+# Сценарии поведения ноды при разных человеческих командах
+#
+# enable_mcp_tools: true — dialogue_node получает список инструментов от mock-MCP сервера
+# (runner.py публикует MOCK_MCP_TOOLS в /mcp/tools и отвечает на /mcp/execute).
+# Если LLM вызовет tool — mock ответит успехом и вызов будет залогирован.
+# Ассерции проверяют что нода не падает и ответ приходит.
+
+scenarios:
+
+  - name: navigation_command
+    description: "Команда навигации → нода не падает, ответ приходит"
+    steps:
+      - inject_stt: "поехали на кухню"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  - name: status_query
+    description: "Вопрос о местоположении → нода не падает, ответ приходит"
+    steps:
+      - inject_stt: "где ты сейчас находишься?"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  - name: stop_command
+    description: "Команда стоп → нода не падает, ответ приходит"
+    steps:
+      - inject_stt: "стоп, остановись"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  - name: response_is_valid_json
+    description: "Ответ dialogue_node всегда JSON с полем ssml"
+    steps:
+      - inject_stt: "выполни какую-нибудь команду"
+        timeout_s: 45
+        assert_response_valid_json: true
+        assert_response_has_key: "ssml"

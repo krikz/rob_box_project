@@ -58,11 +58,15 @@ diff_drive_controller:
     # Подтверждены ручными измерениями: база 390мм, колея 289мм
 
     # Расстояние между центрами левых и правых колес (база робота) в метрах
-    # Для rocker-bogie это расстояние по оси X между левой и правой группой
-    wheel_separation: 0.390  # 390 мм (база: left↔right по X)
+    # Физическая колея: 0.50м, расстояние между мостами: 0.30м
+    # Для 4WD skid-steer эффективное значение ~2× физической колеи из-за проскальзывания
+    # Калибровка 2026-02-28:
+    #   ws=0.81→295° | ws=0.97→334° | ws=1.05→348° | ws=1.09→354.5°
+    #   Коррекция: 1.09 × (360/354.5) = 1.107 → 1.11
+    wheel_separation: 1.11
 
-    # Радиус колеса в метрах (калиброван по тесту 4.45м: 0.115 × 1.2 = 0.138)
-    wheel_radius: 0.138  # 138 мм (калибровочный коэффициент 1.2)
+    # Радиус колеса в метрах (9" колёса с редукторами: диаметр 9" = 0.2286м → радиус 0.1143м)
+    wheel_radius: 0.1143  # замер 2026-02-23
 
     # Количество колес с каждой стороны
     wheels_per_side: 2
@@ -108,11 +112,11 @@ diff_drive_controller:
 
     # Угловая скорость (повороты)
     angular.z.has_velocity_limits: true
-    angular.z.max_velocity: 15.0      # rad/s - увеличено для нормального поворота
-    angular.z.min_velocity: -15.0     # rad/s
+    angular.z.max_velocity: 3.0       # rad/s (~172°/с) — реалистичный предел для 62 кг скид-стира
+    angular.z.min_velocity: -3.0      # rad/s
     angular.z.has_acceleration_limits: true
-    angular.z.max_acceleration: 10.0  # rad/s² - увеличено
-    angular.z.min_acceleration: -10.0 # rad/s²
+    angular.z.max_acceleration: 3.0   # rad/s² — плавнее для скид-стира
+    angular.z.min_acceleration: -3.0  # rad/s²
     angular.z.has_jerk_limits: false
 
     # ───────────────────────────────────────────────────────────────

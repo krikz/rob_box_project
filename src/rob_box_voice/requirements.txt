@@ -43,3 +43,8 @@ openai>=1.0.0
 # === Утилиты ===
 pyyaml>=6.0
 requests>=2.28.0
+
+# === Долгосрочная память (VoiceMemory) ===
+# sqlite-vec: векторный поиск для SQLite (опционально, graceful degradation)
+# Требует Ollama для генерации эмбеддингов: docker compose --profile ai up ollama
+sqlite-vec>=0.1.0

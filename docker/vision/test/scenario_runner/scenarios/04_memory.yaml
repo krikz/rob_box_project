@@ -1,0 +1,38 @@
+# scenarios/04_memory.yaml
+# Тесты долгосрочной памяти (voice_memory.db)
+#
+# Предусловие: в voice-test смонтирована fixtures/voice_memory.db —
+# реальная БД с 85 репликами с робота (песни, анекдоты, истории).
+#
+# Цель: убедиться что нода ИСПОЛЬЗУЕТ историю при ответе, а не игнорирует её.
+# Ассерции не проверяют точные слова — только что ответ пришёл и непустой.
+
+scenarios:
+
+  - name: recall_past_conversation
+    description: "Робот вспоминает о чём говорили — в БД есть 85 реплик"
+    steps:
+      - inject_stt: "о чём мы с тобой говорили в прошлый раз"
+        timeout_s: 30
+        assert_response_not_empty: true
+
+  - name: recall_song_memory
+    description: "Упоминание енота из прошлых разговоров — нода не падает"
+    steps:
+      # timeout_s: 50 — memory_context вызывается до speak_text: LLM call 1 (~5s)
+      # + memory_context tool (~0s mock) + LLM call 2 (~20-25s) = ~30s суммарно.
+      # Плюс возможный retry DeepSeek. 50s достаточно с запасом.
+      - inject_stt: "помнишь как ты пел мне песенку про енота"
+        timeout_s: 50
+        assert_response_not_empty: true
+
+  - name: memory_with_context_no_crash
+    description: "Многоходовой диалог с апеллированием к памяти — нода не падает"
+    steps:
+      - inject_stt: "мы с тобой обсуждали анекдоты и песни"
+        timeout_s: 50
+        assert_response_not_empty: true
+      - wait_ms: 1500
+      - inject_stt: "расскажи ещё один анекдот как тогда"
+        timeout_s: 50
+        assert_response_not_empty: true

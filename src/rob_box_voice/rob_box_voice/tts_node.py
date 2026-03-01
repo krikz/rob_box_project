@@ -12,6 +12,7 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback
 import io
 import json
 import os
+import re
 import sys
 import time
 import wave
@@ -212,9 +213,16 @@ class TTSNode(Node):
         # Подписка на control commands (STOP)
         self.control_sub = self.create_subscription(String, "/voice/tts/control", self.control_callback, 10)
 
+        # Подписка на новый dialogue_id от dialogue_node.
+        # Позволяет отбрасывать устаревшие TTS-запросы от старого диалога после barge-in.
+        self._new_dialogue_id_sub = self.create_subscription(
+            String, "/voice/current_dialogue_id", self._on_new_dialogue_id, 1
+        )
+
         # Публикация аудио и состояния
         self.audio_pub = self.create_publisher(AudioData, "/voice/audio/speech", 10)
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
+        self.finished_pub = self.create_publisher(String, "/voice/tts/finished", 10)  # Публикация завершения произношения
 
         # Флаг для остановки воспроизведения
         self.stop_requested = False
@@ -223,6 +231,7 @@ class TTSNode(Node):
         # Dialogue session tracking (для синхронизации с dialogue_node)
         self.current_dialogue_id = None
         self.processing_dialogue_id = None  # ID диалога в процессе синтеза/воспроизведения
+        self.current_speech_id = None  # ID текущего произношения (для MCP tools)
 
         # Публикуем начальное состояние
         self.publish_state("ready")
@@ -248,23 +257,22 @@ class TTSNode(Node):
             self.get_logger().warn("⚠️  Yandex gRPC не подключен - будет использован только Silero fallback")
 
     def initialize_audio_device(self):
-        """Инициализация аудио устройства для воспроизведения"""
+        """Инициализация аудио устройства для воспроизведения.
+
+        ВАЖНО: всегда используем device=None (ALSA default).
+        asound.conf маршрутизирует default → dmix_respeaker → hw:1,0.
+        dmix позволяет TTS и sound_node воспроизводить одновременно.
+        Если использовать прямой hardware-индекс (hw:1,0), dmix обходится
+        и второй sd.play() получает PaErrorCode -9985 (Device unavailable).
+        """
+        self.device_index = None  # ALSA default → dmix_respeaker (через asound.conf)
         try:
-            # Поиск ReSpeaker устройства
-            self.device_index = find_respeaker_device_sounddevice()
-            
-            if self.device_index is not None:
-                devices = sd.query_devices()
-                device_name = devices[self.device_index]['name']
-                self.get_logger().info(f"✅ ReSpeaker найден для TTS playback: device {self.device_index} ({device_name})")
-            else:
-                # Fallback на default device
-                self.get_logger().warn("⚠️ ReSpeaker не найден для TTS, используем default device")
-                self.device_index = None  # None означает default device в sounddevice
-                
+            # Логируем что именно sounddevice считает default-устройством
+            default_out = sd.query_devices(kind='output')
+            device_name = default_out.get('name', '?') if isinstance(default_out, dict) else str(default_out)
+            self.get_logger().info(f"✅ TTS playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка инициализации аудио устройства для TTS: {e}")
-            self.device_index = None
+            self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def _load_silero_model(self):
         """Загрузить Silero TTS модель (lazy loading)"""
@@ -330,6 +338,10 @@ class TTSNode(Node):
     def _interrupt_playback(self):
         """Прервать текущее воспроизведение (helper метод)"""
         self.stop_requested = True
+        # Сбрасываем current_dialogue_id: последующие TTS-запросы без dialogue_id
+        # или с устаревшим dialogue_id будут отброшены.
+        self.current_dialogue_id = None
+        self.processing_dialogue_id = None
 
         # Остановить текущий sounddevice stream если есть
         if self.current_stream:
@@ -338,6 +350,19 @@ class TTSNode(Node):
                 self.current_stream = None
             except Exception as e:
                 self.get_logger().error(f"❌ Ошибка остановки stream: {e}")
+
+    def _on_new_dialogue_id(self, msg: String):
+        """Обновляем current_dialogue_id как только dialogue_node начинает новый диалог.
+        Если в очереди tts_node ещё остались запросы от старого диалога — они будут отброшены.
+        """
+        new_id = msg.data
+        if new_id and new_id != self.current_dialogue_id:
+            self.get_logger().info(
+                f"🔄 Новый диалог: {new_id[:8]} "
+                f"(старый: {self.current_dialogue_id[:8] if self.current_dialogue_id else 'None'}) "
+                f"— устаревшие TTS-запросы будут отброшены"
+            )
+            self.current_dialogue_id = new_id
 
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от dialogue_node"""
@@ -348,8 +373,31 @@ class TTSNode(Node):
                 self.get_logger().warn("⚠ Chunk без SSML")
                 return
 
+            # Генерируем speech_id для отслеживания
+            import uuid
+            speech_id = chunk_data.get("speech_id", str(uuid.uuid4()))
+            self.current_speech_id = speech_id
+
             # Проверяем dialogue_id (если присутствует)
             dialogue_id = chunk_data.get("dialogue_id", None)
+
+            # Старый запрос от устаревшего диалога — отбрасываем ДО синтеза
+            if dialogue_id and self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
+                self.get_logger().warning(
+                    f"❌ Отбрасываем устаревший TTS диалога {dialogue_id[:8]} "
+                    f"(текущий: {self.current_dialogue_id[:8]})"
+                )
+                # Опубликуем finished с error=True чтобы MCP speak_text не вис в ожидании
+                speech_id_to_drop = chunk_data.get("speech_id")
+                if speech_id_to_drop:
+                    import json as _json
+                    _drop_msg = String()
+                    _drop_msg.data = _json.dumps(
+                        {"speech_id": speech_id_to_drop, "success": False, "error": "stale_dialogue"},
+                        ensure_ascii=False
+                    )
+                    self.finished_pub.publish(_drop_msg)
+                return
 
             if dialogue_id:
                 # Если это новый диалог - прерываем предыдущий
@@ -385,13 +433,13 @@ class TTSNode(Node):
             ssml_attributes = self._parse_ssml_attributes(ssml)
 
             self.get_logger().info(
-                f'🔊 TTS: {text[:50]}... (dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}...)'
+                f'🔊 TTS: {text[:50]}... (speech_id: {speech_id[:8]}, dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}...)'
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
 
             # Синтез и воспроизведение
-            self._synthesize_and_play(ssml, text, dialogue_id, ssml_attributes)
+            self._synthesize_and_play(ssml, text, dialogue_id, ssml_attributes, speech_id)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ JSON parse error: {e}")
@@ -413,8 +461,6 @@ class TTSNode(Node):
         Returns:
             dict: {'pitch': float, 'rate': float} или пустой dict
         """
-        import re
-        
         attributes = {}
         
         # Ищем <prosody> теги с атрибутами
@@ -474,7 +520,7 @@ class TTSNode(Node):
         
         return attributes
 
-    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None):
+    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None):
         """Синтез речи и воспроизведение"""
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
@@ -525,12 +571,19 @@ class TTSNode(Node):
                 if ssml_attributes:
                     self.get_logger().info(f"🎵 SSML атрибуты для Silero: {ssml_attributes}")
 
-                # Оборачиваем в SSML для Silero
-                # Silero поддерживает SSML напрямую через apply_tts
-                if not ssml.startswith("<speak>"):
-                    ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
+                # Оборачиваем нормализованный text в SSML для Silero.
+                # ВАЖНО: всегда используем нормализованный `text`, а не оригинальный `ssml`.
+                # `ssml` приходит от dialogue.py уже обёрнутым в <speak>...</speak>,
+                # но содержит цифры/латиницу/emoji, которые Silero не умеет читать.
+                # Восстанавливаем SSML-атрибуты из оригинала (pitch если был).
+                _prosody_attrs = ""
+                _pitch_m = re.search(r"<prosody[^>]*pitch=['\"]([^'\"]+)['\"]", ssml)
+                if _pitch_m:
+                    _prosody_attrs = f' pitch="{_pitch_m.group(1)}"'
+                if _prosody_attrs:
+                    ssml_text = f'<speak><prosody{_prosody_attrs}>{text}</prosody></speak>'
                 else:
-                    ssml_text = ssml
+                    ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
 
                 # Используем новые флаги v5 для расстановки ударений
                 audio = self.silero_model.apply_tts(
@@ -648,6 +701,23 @@ class TTSNode(Node):
                 if not success:
                     self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
                     self.current_stream = None
+                    # КРИТИЧНО: публикуем события завершения даже при ошибке!
+                    self.publish_state("ready")
+                    
+                    # Публикуем ошибку для MCP tools и animation_player
+                    if speech_id:
+                        finished_msg = String()
+                        finished_msg.data = json.dumps(
+                            {"speech_id": speech_id, "success": False, "error": "Device unavailable"}, 
+                            ensure_ascii=False
+                        )
+                        self.finished_pub.publish(finished_msg)
+                        self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
+                    
+                    # Очищаем processing_dialogue_id
+                    if dialogue_id and self.processing_dialogue_id == dialogue_id:
+                        self.processing_dialogue_id = None
+                    
                     return
                 
                 self.current_stream = None
@@ -659,9 +729,21 @@ class TTSNode(Node):
             if self.stop_requested:
                 self.publish_state("stopped")
                 self.get_logger().warn("🔇 Воспроизведение прервано")
+                # Публикуем ошибку для MCP tools
+                if speech_id:
+                    finished_msg = String()
+                    finished_msg.data = json.dumps({"speech_id": speech_id, "success": False, "error": "stopped"}, ensure_ascii=False)
+                    self.finished_pub.publish(finished_msg)
             else:
                 self.publish_state("ready")
                 self.get_logger().info("✅ Воспроизведение завершено")
+                # Публикуем успех для MCP tools
+                if speech_id:
+                    finished_msg = String()
+                    finished_msg.data = json.dumps({"speech_id": speech_id, "success": True}, ensure_ascii=False)
+                    self.get_logger().info(f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., success=True")
+                    self.finished_pub.publish(finished_msg)
+                    self.get_logger().info(f"✅ TTS finished event опубликован на /voice/tts/finished")
 
             # Очищаем processing_dialogue_id после завершения
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -670,6 +752,11 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().error(f"❌ Synthesis error: {e}")
             self.publish_state("ready")
+            # Публикуем ошибку для MCP tools
+            if speech_id:
+                finished_msg = String()
+                finished_msg.data = json.dumps({"speech_id": speech_id, "success": False, "error": str(e)}, ensure_ascii=False)
+                self.finished_pub.publish(finished_msg)
             # Очищаем processing_dialogue_id при ошибке
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None

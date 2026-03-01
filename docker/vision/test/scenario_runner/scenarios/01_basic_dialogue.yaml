@@ -1,0 +1,47 @@
+# scenarios/01_basic_dialogue.yaml
+# Базовые сценарии: диалог с настоящей LLM (Ollama)
+#
+# Ассерции проверяют поведение ноды (ответ пришёл, не пустой, валидный JSON),
+# а не точные слова ответа (LLM недетерминирован).
+
+scenarios:
+
+  - name: greeting_gets_response
+    description: "Приветствие → нода отвечает непустым текстом"
+    steps:
+      - inject_stt: "привет"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  - name: identity_contains_robbox
+    description: "ЛЛМ знает имя робота из system prompt — отвечает не пустым текстом"
+    steps:
+      - inject_stt: "как тебя зовут"
+        timeout_s: 45
+        assert_response_not_empty: true
+        # НЕ проверяем точное название — DeepSeek недетерминирован, может ответить “РОББОКС”, “Роббокс” или “ROBBOX”
+
+  - name: multi_turn_no_crash
+    description: "Несколько реплик подряд — нода не падает"
+    # ВАЖНО: фразы >= 3 слов — dialogue_node фильтрует короткие фразы в состоянии DIALOGUE
+    steps:
+      - inject_stt: "привет как дела"
+        timeout_s: 45
+        assert_response_not_empty: true
+      - wait_ms: 1000
+      - inject_stt: "как тебя зовут"
+        timeout_s: 45
+        assert_response_not_empty: true
+      - wait_ms: 1000
+      - inject_stt: "пока до свидания"
+        timeout_s: 45
+        assert_response_not_empty: true
+
+  - name: response_is_valid_json
+    description: "Ответ должен быть валидным JSON с SSML"
+    steps:
+      - inject_stt: "расскажи о себе"
+        timeout_s: 45
+        assert_response_valid_json: true
+        assert_response_has_key: "ssml"
+

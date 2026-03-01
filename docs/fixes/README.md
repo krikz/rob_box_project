@@ -2,6 +2,82 @@
 
 Документация по исправлениям проблем, багфиксам и решениям технических задач.
 
+## 🗣️ Исправления Voice Assistant (Январь 2026)
+
+### [ANIMATION_LOOP_FIX.md](ANIMATION_LOOP_FIX.md) 🆕
+**Исправление бесконечного цикла анимаций**
+
+- Проблема: LED анимации зависали в бесконечном цикле
+- Решение: Добавлен MAX_ITERATIONS и таймер для force stop
+- Результат: Анимации корректно останавливаются через заданное время
+
+### [ANIMATION_TTS_FIX.md](ANIMATION_TTS_FIX.md) 🆕
+**Синхронизация TTS и анимаций**
+
+- Проблема: Анимация "thinking" не останавливалась после TTS
+- Решение: Обновлена логика state machine и sync механизма
+- Результат: Плавный переход между состояниями голосового ассистента
+
+### [SCARY_STORY_FIX.md](SCARY_STORY_FIX.md) 🆕
+**Исправление scary story dialogue node**
+
+- Проблема: Ошибки в скриптах историй, неправильное завершение
+- Решение: Рефакторинг dialogue flow, добавлены fallback механизмы
+- Результат: Истории проигрываются без ошибок, корректное завершение
+
+### [PROMPT_REPETITION_FIX.md](PROMPT_REPETITION_FIX.md) 🆕
+**Исправление повторяющихся промптов в LLM**
+
+- Проблема: DeepSeek R1 получал дублирующиеся промпты
+- Решение: Дедупликация context в dialogue manager
+- Результат: Более релевантные ответы, меньше токенов
+
+### [QOS_MISMATCH_FIX.md](QOS_MISMATCH_FIX.md) 🆕
+**Исправление QoS mismatch между нодами**
+
+- Проблема: Некоторые ноды не получали сообщения из-за QoS несоответствия
+- Решение: Стандартизация QoS политик для `/voice/*` топиков
+- Результат: Stable communication между voice nodes
+
+## 🤖 Исправления LLM Backend (Январь 2026)
+
+### [DEEPSEEK_CONNECTION_POOL_FIX.md](DEEPSEEK_CONNECTION_POOL_FIX.md) 🆕
+**Исправление connection pool deadlock**
+
+- Проблема: ThreadPoolExecutor зависал при множественных запросах к DeepSeek
+- Решение: Отдельные пулы для R1 и V3, увеличены лимиты, таймауты
+- Результат: Стабильная parallel обработка streaming запросов
+
+### [DEEPSEEK_REASONER_FIX.md](DEEPSEEK_REASONER_FIX.md) 🆕
+**Исправление DeepSeek R1 reasoning chunks**
+
+- Проблема: Reasoning токены попадали в TTS, "chipmunk voice"
+- Решение: Фильтрация reasoning before sending to TTS
+- Результат: Только финальный текст озвучивается, корректная скорость
+
+### [TOKEN_USAGE_LOGGING.md](TOKEN_USAGE_LOGGING.md) 🆕
+**Система логирования токенов LLM**
+
+- Реализация: PostgreSQL таблица для tracking token usage
+- Метрики: input/output tokens, cost, latency, model
+- Использование: Анализ стоимости, оптимизация промптов
+
+### [TOKEN_USAGE_RU.md](TOKEN_USAGE_RU.md) 🆕
+**Инструкция по настройке token usage tracking (RU)**
+
+- Пошаговая настройка PostgreSQL и таблиц
+- Интеграция с dialogue_node
+- Dashboard и визуализация данных
+
+### [FIX_SUMMARY.md](FIX_SUMMARY.md) 🆕
+**Общий summary всех январских фиксов**
+
+- Краткое описание всех 10 исправлений
+- Связи между фиксами
+- Результаты и метрики
+
+---
+
 ## 🤖 Исправления роботной платформы
 
 ### [NAV2_NAVIGATION_TUNING_2025-12-16.md](NAV2_NAVIGATION_TUNING_2025-12-16.md) 🆕

@@ -4,7 +4,7 @@
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -141,6 +141,16 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
+    # === MCP Server (Agentive Tools Integration) ===
+    # ⚠️ Workaround: Python entry points not recognized by ROS 2
+    # Using ExecuteProcess instead of Node to run Python module directly
+    mcp_server = ExecuteProcess(
+        cmd=['python3', '-m', 'rob_box_mcp_tools.mcp_server', '--ros-args', '--log-level', 'info'],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0
+    )
+    
     # === Command Node (Phase 5: TODO) ===
     # sound_node = Node(
     #     package='rob_box_voice',
@@ -176,5 +186,6 @@ def generate_launch_description():
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition
+        mcp_server,     # ✅ MCP Tools: Agentive LLM Integration
     ])
 

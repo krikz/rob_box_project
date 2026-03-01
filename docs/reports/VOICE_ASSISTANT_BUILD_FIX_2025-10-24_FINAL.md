@@ -30,7 +30,7 @@ Failed   <<< rob_box_perception_msgs [17.9s, exited with code 1]
 
 ### Контекст
 - **Build Platform:** linux/amd64 (GitHub Actions runner)
-- **Target Platform:** linux/arm64 (Raspberry Pi 4)
+- **Target Platform:** linux/arm64 (Raspberry Pi 5)
 - **Build Method:** Docker BuildKit с QEMU emulation
 - **Base Image:** `ghcr.io/krikz/rob_box:nav2-humble-latest`
 

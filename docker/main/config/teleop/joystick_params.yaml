@@ -1,0 +1,37 @@
+# Joystick Control Configuration for Rob Box - SBUS Mode
+# ExpressLRS SBUS receiver via USB-UART adapter (/dev/ttyACM1)
+
+joystick_control_node:
+  ros__parameters:
+    # Connection mode
+    use_sbus: true  # true = SBUS serial, false = traditional /dev/input/js0
+    serial_port: "/dev/ttyACM1"  # USB-UART adapter (CH340G)
+    serial_baudrate: 100000  # SBUS standard: 100000 baud, 8E2
+    
+    # Device settings (for HID mode, if use_sbus=false)
+    device_path: "/dev/input/js0"
+    device_name: "ExpressLRS SBUS"
+
+    # SBUS channel mapping (zero-indexed: 0-15)
+    # Typical ELRS mapping:
+    # Ch1(0)=Roll, Ch2(1)=Pitch, Ch3(2)=Throttle, Ch4(3)=Yaw, Ch5(4)=ARM
+    channel_roll: 0       # Roll (left/right strafe - not used for diff drive)
+    channel_pitch: 1      # Pitch -> linear.x (forward/backward)
+    channel_throttle: 2   # Throttle (not used for ground robot)
+    channel_yaw: 3        # Yaw -> angular.z (rotation)
+    channel_arm: 4        # ARM switch (HIGH = motors enabled)
+    
+    # For non-SBUS mode
+    axis_linear_x: 1      # Pitch (forward/backward)
+    axis_angular_z: 4     # Yaw (left/right rotation)
+    enable_button: 0      # Safety button
+
+    # Speed limits
+    max_linear_speed: 1.0   # m/s
+    max_angular_speed: 15.0  # rad/s
+    
+    # Deadzone to prevent drift
+    deadzone: 0.1
+    
+    # Voice feedback
+    enable_voice_feedback: true

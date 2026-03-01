@@ -59,10 +59,10 @@ jobs:
           mkdir -p ${{ github.workspace }}/test_ws/src
           cp -r src/* ${{ github.workspace }}/test_ws/src/
 
-          # Build packages
+          # Build packages (use --packages-up-to to include dependencies)
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-select rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run unit tests

@@ -16,7 +16,7 @@
 ### [HARDWARE.md](HARDWARE.md)
 **Аппаратные компоненты**
 
-- Main Pi (Raspberry Pi 5, 8GB)
+- Main Pi (Raspberry Pi 5, 16GB)
 - Vision Pi (Raspberry Pi 5, 8GB)
 - Сенсоры (OAK-D Lite, LSLIDAR N10, ReSpeaker)
 - Актуаторы (VESC, моторы)
@@ -43,6 +43,14 @@
 - Роли узлов: ros2-control, icp_odometry, rtabmap
 - TF дерево и потоки данных
 - Параметры ICP алгоритма
+
+### [NETWORK_TOPOLOGY.md](NETWORK_TOPOLOGY.md)
+**Сетевая топология**
+
+- IP-адресация: Main Pi (10.1.1.10/20), Vision Pi (10.1.1.11/21)
+- Dual Network: Ethernet (данные) + WiFi (управление)
+- Zenoh топология: peer/client/cloud modes
+- Порты сервисов и SSH доступ
 
 ### [ZENOH_CLOUD_NAMESPACES.md](ZENOH_CLOUD_NAMESPACES.md)
 **Zenoh: Облачное подключение и Namespaces**
