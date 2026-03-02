@@ -75,10 +75,10 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
     # Подписывается на локальные OAK-D топики (не через Zenoh), публикует /rgbd_image через Zenoh
-    # depthai_ros_driver_v3 публикует под namespace /oak/
-    # rgb/image       ← /oak/rgb/image_raw
-    # depth/image     ← /oak/stereo/image_raw
-    # rgb/camera_info ← /oak/rgb/camera_info
+    # depthai_ros_driver v2 топики (v2.12.2-humble):
+    # rgb/image       ← /camera/rgb/image_raw
+    # depth/image     ← /camera/depth/image_rect_raw
+    # rgb/camera_info ← /camera/rgb/camera_info
     command:
       - /ros_scripts/ros_with_namespace.sh
       - ros2
@@ -87,11 +87,11 @@ services:
       - rgbd_sync
       - --ros-args
       - -r
-      - rgb/image:=/oak/rgb/image_raw
+      - rgb/image:=/camera/rgb/image_raw
       - -r
-      - depth/image:=/oak/stereo/image_raw
+      - depth/image:=/camera/depth/image_rect_raw
       - -r
-      - rgb/camera_info:=/oak/rgb/camera_info
+      - rgb/camera_info:=/camera/rgb/camera_info
       - -p
       - approx_sync:=true
       - -p

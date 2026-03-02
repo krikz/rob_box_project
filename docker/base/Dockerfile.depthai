@@ -1,7 +1,8 @@
 # Базовый образ для DepthAI (OAK-D camera)
 # Наследуется от официального образа Luxonis и добавляет Zenoh
-# ВАЖНО: humble-latest только amd64, для arm64 (Raspberry Pi) нужен humble-arm64-latest
-FROM luxonis/depthai-ros:humble-arm64-latest
+# ВАЖНО: humble-latest стал amd64-only с 27.02.2026 (перешёл на v3 API)
+# Пинируем v2.12.2-humble — последняя v2 версия с поддержкой arm64 + amd64
+FROM luxonis/depthai-ros:v2.12.2-humble
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""
