@@ -1,27 +1,33 @@
+# depthai_ros_driver v2.12.2-humble configuration
+# Node path: /camera/camera (namespace='camera', name='camera')
+# Topics published: /camera/rgb/image_raw, /camera/rgb/camera_info,
+#                   /camera/depth/image_rect_raw (rs_compat aligned depth)
+
 /camera/camera:
   ros__parameters:
     camera:
-      i_nn_type: none  # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
+      i_nn_type: none              # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
       i_pipeline_type: "RGBD"
-      i_rgb_resolution: "720p"  # СНИЖЕНО с 1080p до 720p для Raspberry Pi
-      i_stereo_width: 640  # СНИЖЕНО с 1280 до 640
-      i_stereo_height: 400  # СНИЖЕНО с 720 до 400
-      i_fps: 5.0  # СНИЖЕНО с 10 до 5 FPS - критично для Pi!
-      i_enable_ir: false  # Отключаем ИК
-      i_laser_dot_brightness: 0  # Отключаем лазер
-      i_floodlight_brightness: 0  # Отключаем прожектор
-      i_publish_tf_from_calibration: false  # ОТКЛЮЧЕНО: TF публикует robot_state_publisher
-      i_tf_base_frame: "camera_link"  # Камера публикует относительно camera_link
-      i_enable_imu: true  # ✅ IMU нужен для RTAB-Map ICP odometry
+      i_rgb_resolution: "720p"     # Снижено с 1080p для Raspberry Pi
+      i_stereo_width: 640
+      i_stereo_height: 400
+      i_fps: 15.0                  # Повышено: 5 FPS создавало проблемы синхронизации
+      i_enable_ir: false
+      i_laser_dot_brightness: 0
+      i_floodlight_brightness: 0
+      i_publish_tf_from_calibration: false
+      i_tf_base_frame: "camera_link"
+      i_enable_imu: true           # IMU для RTAB-Map ICP odometry
       i_enable_preview: false
       i_enable_diagnostics: false
       i_usb_speed: "SUPER"
-      rs_compat: true
+      rs_compat: true              # RealSense-совместимые имена топиков:
+                                   # /camera/depth/image_rect_raw (aligned depth)
     color:
       i_low_bandwidth: false
       i_publish_compressed: false
-      i_fps: 5.0
-      i_max_q_size: 1
+      i_fps: 15.0
+      i_max_q_size: 2
       i_interleaved: false
       i_board_socket_id: 0
       i_enable_lazy_publisher: false
@@ -30,8 +36,8 @@
     depth:
       i_low_bandwidth: false
       i_publish_compressed: false
-      i_fps: 5.0
-      i_max_q_size: 1
+      i_fps: 15.0
+      i_max_q_size: 2
       i_enable_lazy_publisher: false
       i_publish_topic: true
       i_output_disparity: false
@@ -39,62 +45,12 @@
       i_add_exposure_offset: false
       i_exposure_offset: 0
       i_alpha_scaling: 0.0
+      i_align_depth: true          # Align depth to RGB frame for RGBD SLAM
     left:
       i_low_bandwidth: false
-      i_fps: 5.0
+      i_fps: 15.0
       i_max_q_size: 2
     right:
       i_low_bandwidth: false
-      i_fps: 5.0
-      i_max_q_size: 2
-
-## ARCHIVED v2 config (depthai_ros_driver, humble-latest amd64-only):
-#/camera/camera:
-#  ros__parameters:
-#    camera:
-#      i_nn_type: none  # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
-#      i_pipeline_type: "RGBD"
-      i_rgb_resolution: "720p"  # СНИЖЕНО с 1080p до 720p для Raspberry Pi
-      i_stereo_width: 640  # СНИЖЕНО с 1280 до 640
-      i_stereo_height: 400  # СНИЖЕНО с 720 до 400
-      i_fps: 5.0  # СНИЖЕНО с 10 до 5 FPS - критично для Pi!
-      i_enable_ir: false  # Отключаем ИК
-      i_laser_dot_brightness: 0  # Отключаем лазер
-      i_floodlight_brightness: 0  # Отключаем прожектор
-      i_publish_tf_from_calibration: false  # ОТКЛЮЧЕНО: TF публикует robot_state_publisher
-      i_tf_base_frame: "camera_link"  # Изменено с base_link - теперь камера публикует относительно camera_link
-      i_enable_imu: true  # ✅ ВКЛЮЧЕНО: IMU нужен для RTAB-Map ICP odometry
-      i_enable_preview: false  # Отключаем preview поток
-      i_enable_diagnostics: false  # ОТКЛЮЧАЕМ диагностику - вызывает X_LINK_ERROR
-      i_usb_speed: "SUPER"  # Принудительно USB 3.0
-      rs_compat: true
-    color:
-      i_low_bandwidth: false  # ОТКЛЮЧЕНО: вызывает cv_bridge ошибку
-      i_publish_compressed: false  # ОТКЛЮЧЕНО: используем image_transport для компрессии (AprilTag подписывается через image_transport: compressed)
-      i_fps: 5.0  # СНИЖЕНО до 5 FPS
-      i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
-      i_interleaved: false
-      i_board_socket_id: 0
-      i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
-      i_publish_topic: true  # Явно включаем публикацию
-      i_keep_preview_aspect_ratio: false
-    depth:
-      i_low_bandwidth: false  # ОТКЛЮЧЕНО: для совместимости
-      i_publish_compressed: false  # ОТКЛЮЧЕНО: используем image_transport для компрессии
-      i_fps: 5.0  # СНИЖЕНО до 5 FPS
-      i_max_q_size: 1  # КРИТИЧНО: 1 кадр в очереди для экономии RAM (было 2)
-      i_enable_lazy_publisher: false  # КРИТИЧНО: отключаем lazy publisher
-      i_publish_topic: true  # Явно включаем публикацию
-      i_output_disparity: false  # Не публикуем disparity - экономим bandwidth
-      i_get_base_device_timestamp: false
-      i_add_exposure_offset: false
-      i_exposure_offset: 0
-      i_alpha_scaling: 0.0
-    left:
-      i_low_bandwidth: false
-      i_fps: 5.0
-      i_max_q_size: 2
-    right:
-      i_low_bandwidth: false
-      i_fps: 5.0
+      i_fps: 15.0
       i_max_q_size: 2

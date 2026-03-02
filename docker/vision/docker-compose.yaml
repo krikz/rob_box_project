@@ -95,11 +95,11 @@ services:
       - -p
       - approx_sync:=true
       - -p
-      - approx_sync_max_interval:=0.05
+      - approx_sync_max_interval:=0.1
       - -p
-      - topic_queue_size:=5
+      - topic_queue_size:=10
       - -p
-      - sync_queue_size:=5
+      - sync_queue_size:=10
     depends_on:
       - zenoh-router
       - oak-d

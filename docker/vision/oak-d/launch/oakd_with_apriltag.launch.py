@@ -8,21 +8,19 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription([
         # OAK-D Camera Node
+        # namespace='camera' makes node path /camera/camera which matches
+        # the /camera/camera: key in oak_d_config.yaml, so all params apply.
+        # Topics are still under /camera/ prefix (e.g. /camera/rgb/image_raw).
         Node(
             package='depthai_ros_driver',
             executable='camera_node',
             name='camera',
+            namespace='camera',
             output='screen',
             parameters=['/config/oak-d/oak_d_config.yaml'],
-            remappings=[
-                ('/camera/color/image_raw', '/camera/camera/color/image_raw'),
-                ('/camera/color/camera_info', '/camera/camera/color/camera_info'),
-            ],
         ),
-        
+
         # AprilTag Detection Node (runs in the same container)
-        # NOTE: image_transport: compressed в apriltag_config.yaml автоматически
-        # подписывается на /camera/rgb/image_raw/compressed
         Node(
             package='apriltag_ros',
             executable='apriltag_node',
@@ -30,9 +28,9 @@ def generate_launch_description():
             output='screen',
             parameters=['/config/apriltag/apriltag_config.yaml'],
             remappings=[
-                ('image_rect', '/camera/rgb/image_raw'),  # image_transport добавит /compressed
+                ('image_rect', '/camera/rgb/image_raw'),
                 ('camera_info', '/camera/rgb/camera_info'),
-                ('detections', '/detections'),  # Публиковать детекции на /detections для RTAB-Map
+                ('detections', '/detections'),
             ],
         ),
     ])
