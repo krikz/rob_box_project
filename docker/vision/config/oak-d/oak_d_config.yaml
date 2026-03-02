@@ -1,8 +1,31 @@
-/camera/camera:
+# depthai_ros_driver v3 config (humble-arm64-latest)
+# Topics: /oak/rgb/image_raw, /oak/rgb/camera_info, /oak/stereo/image_raw
+/oak:
   ros__parameters:
-    camera:
-      i_nn_type: none  # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
-      i_pipeline_type: "RGBD"
+    pipeline_gen:
+      i_nn_type: none
+      i_enable_rgbd: true
+      i_pipeline_type: rgbd
+    rgb:
+      i_fps: 5.0
+      i_max_q_size: 1
+      i_enable_lazy_publisher: false
+      i_publish_topic: true
+    stereo:
+      i_fps: 5.0
+      i_max_q_size: 1
+      i_enable_lazy_publisher: false
+      i_publish_topic: true
+      i_depth_preset: DEFAULT
+    imu:
+      i_enable_imu_rosie: true
+
+## ARCHIVED v2 config (depthai_ros_driver, humble-latest amd64-only):
+#/camera/camera:
+#  ros__parameters:
+#    camera:
+#      i_nn_type: none  # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
+#      i_pipeline_type: "RGBD"
       i_rgb_resolution: "720p"  # СНИЖЕНО с 1080p до 720p для Raspberry Pi
       i_stereo_width: 640  # СНИЖЕНО с 1280 до 640
       i_stereo_height: 400  # СНИЖЕНО с 720 до 400

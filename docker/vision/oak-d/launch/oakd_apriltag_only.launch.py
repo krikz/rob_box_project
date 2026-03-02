@@ -1,19 +1,26 @@
 from launch import LaunchDescription
-from launch_ros.actions import Node
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import PathJoinSubstitution
 
-# Minimal launch for OAK-D: only publishes color image and camera_info for AprilTag
-
+# OAK-D launch for depthai_ros_driver_v3 (humble-arm64-latest)
+# Publishes:
+#   /oak/rgb/image_raw        — colour image
+#   /oak/rgb/camera_info      — colour camera_info
+#   /oak/stereo/image_raw     — aligned depth image
 def generate_launch_description():
     return LaunchDescription([
-        Node(
-            package='depthai_ros_driver',
-            executable='camera_node',
-            name='camera',
-            output='screen',
-            parameters=['/config/oak_d_config.yaml'],
-            remappings=[
-                ('/camera/color/image_raw', '/camera/camera/color/image_raw'),
-                ('/camera/color/camera_info', '/camera/camera/color/camera_info'),
-            ],
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                PathJoinSubstitution([
+                    FindPackageShare('depthai_ros_driver_v3'),
+                    'launch', 'rgbd_pcl.launch.py'
+                ])
+            ]),
+            launch_arguments={
+                'name': 'oak',
+                'params_file': '/config/oak_d_config.yaml',
+            }.items(),
         ),
     ])
