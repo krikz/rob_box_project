@@ -11,22 +11,25 @@ rtabmap:
     # Основные параметры
     queue_size: 10
 
-    # Режим работы: только LaserScan, без RGB-D
+    # Режим работы: LiDAR ICP одометрия + OAK-D RGB-D для 3D карты и loop closure
     Mem/IncrementalMemory: true
     Mem/InitWMWithAllNodes: false
 
-    # LaserScan параметры - ВАЖНО: boolean без кавычек!
+    # Подписки - ВАЖНО: boolean без кавычек!
     subscribe_scan: true
-    subscribe_rgbd: false
+    subscribe_rgbd: true    # Подписываемся на /rgbd_image (пресинхронизовано rtabmap-sync на Vision Pi)
     subscribe_rgb: false
-    subscribe_depth: false
+    subscribe_depth: false  # false = используем pre-synced rgbd_image, не отдельные топики
     subscribe_stereo: false
 
-    # Grid mapping параметры для лидара - строковые значения в кавычках
-    Grid/FromDepth: "false"  # Не используем depth камеру
+    # Grid mapping: оба сенсора (лидар + depth камера)
+    Grid/FromDepth: "false"  # ICP одометрия использует лидар
+    Grid/Sensor: "2"         # 2 = лидар + depth камера (было 0 = только лидар)
     Grid/CellSize: "0.05"    # 5см разрешение сетки
     Grid/RangeMax: "10.0"    # Используем лидар до 10м
     Grid/RangeMin: "0.2"     # Минимальная дистанция
+    Grid/MaxObstacleHeight: "1.5"  # Препятствия выше 1.5м игнорируем
+    Grid/MinGroundHeight: "-0.1"   # Фильтруем пол (точки ниже -0.1м от base_footprint)
 
     # Оптимизация для 2D лидара
     Reg/Strategy: "1"        # ICP (Iterative Closest Point)

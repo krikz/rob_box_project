@@ -54,6 +54,58 @@ services:
     labels:
       logging: "promtail"
 
+  # === RTAB-Map rgbd_sync ===
+  # Синхронизирует RGB и Depth с OAK-D в один топик /rgbd_image и пересылает через Zenoh на Main Pi.
+  # Это уменьшает Zenoh-трафик: 1 топик RGBDImage вместо 2 отдельных сырых изображений.
+  # Main Pi (rtabmap сервис) подписывается на /rgbd_image через subscribe_rgbd:=true.
+  rtabmap-sync:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    container_name: rtabmap-sync
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+    # Подписывается на локальные OAK-D топики (не через Zenoh), публикует /rgbd_image через Zenoh
+    # rgb/image       ← /camera/rgb/image_raw
+    # depth/image     ← /camera/depth/image_rect_raw
+    # rgb/camera_info ← /camera/rgb/camera_info
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - ros2
+      - run
+      - rtabmap_sync
+      - rgbd_sync
+      - --ros-args
+      - -r
+      - rgb/image:=/camera/rgb/image_raw
+      - -r
+      - depth/image:=/camera/depth/image_rect_raw
+      - -r
+      - rgb/camera_info:=/camera/rgb/camera_info
+      - -p
+      - approx_sync:=true
+      - -p
+      - approx_sync_max_interval:=0.05
+      - -p
+      - topic_queue_size:=5
+      - -p
+      - sync_queue_size:=5
+    depends_on:
+      - zenoh-router
+      - oak-d
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+
   led-matrix:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: led-matrix
