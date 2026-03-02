@@ -21,9 +21,9 @@
       i_enable_preview: false
       i_enable_diagnostics: false
       i_usb_speed: "SUPER"
-      rs_compat: true              # RealSense-совместимые имена топиков:
+      i_rs_compat: true              # RealSense-совместимые имена топиков:
                                    # /camera/depth/image_rect_raw (aligned depth)
-    color:
+    rgb:
       i_low_bandwidth: false
       i_publish_compressed: false
       i_fps: 15.0
@@ -33,7 +33,7 @@
       i_enable_lazy_publisher: false
       i_publish_topic: true
       i_keep_preview_aspect_ratio: false
-    depth:
+    stereo:
       i_low_bandwidth: false
       i_publish_compressed: false
       i_fps: 15.0
