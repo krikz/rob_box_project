@@ -4,6 +4,13 @@
 #   /camera/camera/color/image_raw      — colour image
 #   /camera/camera/color/camera_info    — colour camera_info
 #   /camera/camera/depth/image_rect_raw — aligned depth (rs_compat renames stereo→depth)
+#
+# Bandwidth optimizations (2026-03-03):
+#   i_low_bandwidth: true  — on-chip H.264 encoding on OAK-D before USB transfer
+#                            reduces eth0 Vision Pi → Main Pi from ~89 MB/s to ~15-20 MB/s
+#                            source: https://docs.luxonis.com/software/ros/depthai-ros/driver/
+#   i_enable_lazy_publisher: true — skip publishing when no subscriber
+#   i_max_q_size: 1               — minimal buffer = lower latency
 
 /camera/camera:
   ros__parameters:
@@ -26,21 +33,23 @@
       i_rs_compat: true              # RealSense-совместимые имена топиков:
                                    # rgb→color, stereo→depth
     rgb:
-      i_low_bandwidth: false
+      i_low_bandwidth: true            # H.264 on-chip encoding → ~5-8 MB/s vs ~28 MB/s raw
+      i_low_bandwidth_quality: 85      # 85% quality — достаточно для AprilTag + SLAM
       i_publish_compressed: false
       i_fps: 10.0
-      i_max_q_size: 2
+      i_max_q_size: 1                  # минимальный буфер, меньше задержка
       i_interleaved: false
       i_board_socket_id: 0
-      i_enable_lazy_publisher: false
+      i_enable_lazy_publisher: true    # не публиковать без подписчиков
       i_publish_topic: true
       i_keep_preview_aspect_ratio: false
     stereo:
-      i_low_bandwidth: false
+      i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~3-5 MB/s vs ~18 MB/s
+      i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам
       i_publish_compressed: false
       i_fps: 10.0
-      i_max_q_size: 2
-      i_enable_lazy_publisher: false
+      i_max_q_size: 1
+      i_enable_lazy_publisher: true
       i_publish_topic: true
       i_output_disparity: false
       i_get_base_device_timestamp: false
@@ -51,8 +60,12 @@
     left:
       i_low_bandwidth: false
       i_fps: 10.0
-      i_max_q_size: 2
+      i_max_q_size: 1
+      i_enable_lazy_publisher: true    # не используется rtabmap напрямую
+      i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
     right:
       i_low_bandwidth: false
       i_fps: 10.0
-      i_max_q_size: 2
+      i_max_q_size: 1
+      i_enable_lazy_publisher: true
+      i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
