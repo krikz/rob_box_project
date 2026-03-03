@@ -12,17 +12,11 @@ source /opt/ros/humble/setup.bash
 
 echo "[start_rtabmap.sh] Starting static TF publisher: camera_rgb_camera_optical_frame → camera_color_optical_frame"
 
+# ROS 2 Humble positional format: x y z qx qy qz qw parent_frame child_frame
 ros2 run tf2_ros static_transform_publisher \
-    --ros-args \
-    -p translation.x:=0.0 \
-    -p translation.y:=0.0 \
-    -p translation.z:=0.0 \
-    -p rotation.x:=0.0 \
-    -p rotation.y:=0.0 \
-    -p rotation.z:=0.0 \
-    -p rotation.w:=1.0 \
-    --frame-id camera_rgb_camera_optical_frame \
-    --child-frame-id camera_color_optical_frame &
+    0 0 0 0 0 0 1 \
+    camera_rgb_camera_optical_frame \
+    camera_color_optical_frame &
 
 TF_PID=$!
 echo "[start_rtabmap.sh] Static TF publisher PID: $TF_PID"
