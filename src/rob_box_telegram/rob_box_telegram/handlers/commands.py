@@ -165,11 +165,16 @@ async def photo_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 def _depth_compressed_to_jpeg(data: bytes) -> bytes:
     """Convert compressedDepth bytes to a colorized JPEG.
 
-    compressedDepth format: 4-byte float header + PNG (16-bit grayscale).
+    compressedDepth format (ROS 2 Humble): 12-byte header
+    (int32 format + float depthQuantA + float depthQuantB) + PNG (16-bit grayscale).
     Result: colorized JPEG (blue=near, red=far).
     """
-    # Strip the 4-byte compressedDepth header
-    png_bytes = data[4:]
+    # Find PNG magic bytes to skip the variable-length header robustly
+    PNG_SIG = b"\x89PNG\r\n\x1a\n"
+    offset = data.find(PNG_SIG)
+    if offset == -1:
+        raise ValueError(f"No PNG signature in compressedDepth data (len={len(data)})")
+    png_bytes = data[offset:]
     img = Image.open(io.BytesIO(png_bytes))
     arr = np.array(img, dtype=np.float32)
 
