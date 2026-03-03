@@ -70,13 +70,13 @@
       i_exposure_offset: 0
       i_alpha_scaling: 0.0
       i_align_depth: true          # Align depth to RGB frame for RGBD SLAM
-    left:
+    infra1:    # rs_compat: left→infra1
       i_low_bandwidth: false
       i_fps: 5.0
       i_max_q_size: 1
       i_enable_lazy_publisher: true    # не используется rtabmap напрямую
       i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
-    right:
+    infra2:    # rs_compat: right→infra2
       i_low_bandwidth: false
       i_fps: 5.0
       i_max_q_size: 1
