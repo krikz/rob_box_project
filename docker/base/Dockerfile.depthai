@@ -1,6 +1,7 @@
 # Базовый образ для DepthAI (OAK-D camera)
 # Наследуется от официального образа Luxonis и добавляет Zenoh
-FROM luxonis/depthai-ros:humble-latest
+# WARN: humble-latest broke 2026-02-27 (became amd64-only, v3 API). Pin to v2.12.2-humble.
+FROM luxonis/depthai-ros:v2.12.2-humble
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""

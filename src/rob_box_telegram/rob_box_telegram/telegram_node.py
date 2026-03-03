@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Optional
 
 import rclpy
@@ -257,16 +258,26 @@ class TelegramNode(Node):
         self.get_logger().info("Telegram bot thread started")
 
     def _run_telegram_loop(self, token: str) -> None:
-        """Entry point for the Telegram bot background thread."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        """Entry point for the Telegram bot background thread. Retries on crash."""
+        retry_delay = 5.0
+        max_retry_delay = 60.0
+        attempt = 0
 
-        try:
-            loop.run_until_complete(self._run_telegram(token))
-        except Exception as e:
-            self.get_logger().error(f"Telegram bot crashed: {e}")
-        finally:
-            loop.close()
+        while rclpy.ok():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._run_telegram(token))
+                loop.close()
+                break  # clean shutdown — no retry needed
+            except Exception as e:
+                attempt += 1
+                delay = min(retry_delay * attempt, max_retry_delay)
+                self.get_logger().error(
+                    f"Telegram bot crashed (attempt {attempt}): {e}. Restarting in {delay:.0f}s..."
+                )
+                loop.close()
+                time.sleep(delay)
 
     async def _run_telegram(self, token: str) -> None:
         """Build Telegram Application, register handlers, and start polling."""
