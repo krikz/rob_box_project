@@ -40,7 +40,8 @@
       i_usb_speed: "SUPER"
       i_rs_compat: true              # RealSense-совместимые имена топиков:
                                    # rgb→color, stereo→depth
-    rgb:
+                                   # ВАЖНО: секции параметров тоже переименовываются!
+    color:    # rs_compat: rgb→color (секция параметров)
       i_low_bandwidth: true            # H.264 on-chip encoding → ~300 KB/s s JPEG vs ~7 MB/s raw
       i_low_bandwidth_quality: 85      # 85% quality — достаточно для AprilTag + SLAM
       i_publish_compressed: false
@@ -55,7 +56,7 @@
       i_height: 400                    # vs 1280*720*3*10fps = 27 MB/s (6x меньше!)
       i_output_isp: false              # Must be false to use i_width/i_height (VIDEO output, not ISP)
                                        # NOTE: width+height must be div by 16 for RGBD alignment!
-    stereo:
+    depth:    # rs_compat: stereo→depth (секция параметров)
       i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~1-2 MB/s compressed
       i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам
       i_publish_compressed: false
