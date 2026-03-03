@@ -133,7 +133,8 @@ local_costmap:
       width: 5
       height: 5
       resolution: 0.05
-      transform_tolerance: 0.5  # Tolerate ICP odometry processing delay (30-125ms)
+      transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
+      tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
       # Круговой footprint для skid-steer: не меняется при вращении!
       # Макс. диагональ робота 0.90м → радиус 0.45м
       robot_radius: 0.45
@@ -178,7 +179,8 @@ global_costmap:
       # Круговой footprint для skid-steer (соответствует local_costmap)
       robot_radius: 0.45
       resolution: 0.05
-      transform_tolerance: 0.5  # Tolerate ICP odometry processing delay
+      transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
+      tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
       track_unknown_space: true
       # Rolling window mode для работы без статической карты
       # Размер 50x50м покрывает типичную область работы робота
