@@ -35,6 +35,15 @@ class MCPBridge:
         timeout: Max seconds to wait for result.
     """
 
+    # Tools that block until physical action completes — no timeout cap.
+    _NO_TIMEOUT_TOOLS = frozenset({
+        "navigate_to_waypoint",
+        "navigate_to_coordinates",
+        "move_direction",
+        "finish_mapping",
+        "start_mapping",
+    })
+
     def __init__(self, execute_pub, ros_logger=None, timeout: float = 10.0):
         self._execute_pub = execute_pub
         self._logger = ros_logger or logger
@@ -99,8 +108,12 @@ class MCPBridge:
         msg.data = json.dumps(request, ensure_ascii=False)
         self._execute_pub.publish(msg)
 
+        effective_timeout = None if tool_name in self._NO_TIMEOUT_TOOLS else self._timeout
         try:
-            result = await asyncio.wait_for(future, timeout=self._timeout)
+            if effective_timeout is None:
+                result = await future  # wait as long as the action takes
+            else:
+                result = await asyncio.wait_for(future, timeout=effective_timeout)
             return result
         except asyncio.TimeoutError:
             with self._lock:
