@@ -195,6 +195,9 @@ services:
       - use_sim_time:=false
       - args:=--delete_db_on_start
       - cfg:=/config/rtabmap/rtabmap.ini
+      - --ros-args
+      - --params-file
+      - /config/rtabmap/rtabmap.yaml
     depends_on:
       - zenoh-router
     restart: unless-stopped
