@@ -111,7 +111,7 @@ Visualization Manager:
         Value: /rtabmap/cloud_map
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
