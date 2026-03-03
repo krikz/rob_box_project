@@ -203,7 +203,6 @@ services:
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false
-      - args:=--delete_db_on_start
       - cfg:=/config/rtabmap/rtabmap.ini
     depends_on:
       - zenoh-router
