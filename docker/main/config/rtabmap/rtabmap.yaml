@@ -1,12 +1,18 @@
-# RTAB-Map параметры для режима ТОЛЬКО LaserScan (без камеры)
-# Оптимизировано для работы через Zenoh между Pi
+# RTAB-Map параметры
+# Используются через: ros2 launch rtabmap_launch rtabmap.launch.py ... --ros-args --params-file /config/rtabmap/rtabmap.yaml
+#
+# ВАЖНО: Grid/Sensor НУЖНО передавать как явный ROS2-параметр (не через INI cfg:=),
+# т.к. rtabmap принудительно сбрасывает Grid/Sensor=0 при subscribe_scan=true,
+# если параметр не объявлен явно через ROS2 param server.
+# Нода запускается в namespace /rtabmap → полный путь /rtabmap/rtabmap
 
 /**:
   ros__parameters:
     queue_size: 10
     approx_sync: true  # КРИТИЧНО! Exact sync не работает - timestamps не совпадают
 
-rtabmap:
+# Параметры для ноды /rtabmap/rtabmap (namespace=rtabmap, node=rtabmap)
+/rtabmap/rtabmap:
   ros__parameters:
     # Основные параметры
     queue_size: 10
@@ -23,6 +29,8 @@ rtabmap:
     subscribe_stereo: false
 
     # Grid mapping: оба сенсора (лидар + depth камера)
+    # Grid/Sensor: "2" ДОЛЖЕН быть здесь как явный ROS2 параметр (НЕ в INI)
+    # чтобы rtabmap не сбросил его в 0 при subscribe_scan=true
     Grid/FromDepth: "false"  # ICP одометрия использует лидар
     Grid/Sensor: "2"         # 2 = лидар + depth камера (было 0 = только лидар)
     Grid/CellSize: "0.05"    # 5см разрешение сетки
