@@ -141,7 +141,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.30  # robot_radius 0.45 + 0.30 = 0.75м от центра
+        inflation_radius: 0.55  # MUST be >= inscribed_radius (0.451). 0.55 = robot(0.45) + 0.10м запас
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: true
@@ -203,7 +203,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.30  # robot_radius 0.45 + 0.30 = 0.75м от центра
+        inflation_radius: 0.55  # MUST be >= inscribed_radius (0.451). 0.55 = robot(0.45) + 0.10м запас
       always_send_full_costmap: true
 
 planner_server:
