@@ -13,7 +13,7 @@
       i_rgb_resolution: "720p"     # Снижено с 1080p для Raspberry Pi
       i_stereo_width: 640
       i_stereo_height: 400
-      i_fps: 15.0                  # Повышено: 5 FPS создавало проблемы синхронизации
+      i_fps: 10.0                  # Снижено с 15: уменьшает сетевую нагрузку ~33%
       i_enable_ir: false
       i_laser_dot_brightness: 0
       i_floodlight_brightness: 0
@@ -28,7 +28,7 @@
     rgb:
       i_low_bandwidth: false
       i_publish_compressed: false
-      i_fps: 15.0
+      i_fps: 10.0
       i_max_q_size: 2
       i_interleaved: false
       i_board_socket_id: 0
@@ -38,7 +38,7 @@
     stereo:
       i_low_bandwidth: false
       i_publish_compressed: false
-      i_fps: 15.0
+      i_fps: 10.0
       i_max_q_size: 2
       i_enable_lazy_publisher: false
       i_publish_topic: true
@@ -50,9 +50,9 @@
       i_align_depth: true          # Align depth to RGB frame for RGBD SLAM
     left:
       i_low_bandwidth: false
-      i_fps: 15.0
+      i_fps: 10.0
       i_max_q_size: 2
     right:
       i_low_bandwidth: false
-      i_fps: 15.0
+      i_fps: 10.0
       i_max_q_size: 2
