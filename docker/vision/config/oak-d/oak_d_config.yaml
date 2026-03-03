@@ -11,16 +11,22 @@
 #                            source: https://docs.luxonis.com/software/ros/depthai-ros/driver/
 #   i_enable_lazy_publisher: true — skip publishing when no subscriber
 #   i_max_q_size: 1               — minimal buffer = lower latency
+#
+# Resolution / FPS tradeoffs (2026-03-04):
+#   RGB compressed (JPEG) over Zenoh: ~500 KB/s at 640px 5fps
+#   RGB relay raw (Main Pi → Vision Pi via Zenoh): 640*360*3*5fps = 3.4 MB/s
+#   vs 1280x720 10fps relay: 27 MB/s (OVERLOADS Zenoh router!)
+#   Visual SLAM works well at 640x360 — adequate for loop closure
 
 /camera/camera:
   ros__parameters:
     camera:
       i_nn_type: none              # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
       i_pipeline_type: "RGBD"
-      i_rgb_resolution: "720p"     # Снижено с 1080p для Raspberry Pi
+      i_rgb_resolution: "720p"     # Capture 720p, crop до 640x360 в rgb секции
       i_stereo_width: 640
-      i_stereo_height: 400
-      i_fps: 10.0                  # Снижено с 15: уменьшает сетевую нагрузку ~33%
+      i_stereo_height: 360          # Сопоставляем с RGB crop
+      i_fps: 5.0                   # 5fps: relay=3.4 MB/s vs 27 MB/s при 10fps
       i_enable_ir: false
       i_laser_dot_brightness: 0
       i_floodlight_brightness: 0
@@ -33,21 +39,23 @@
       i_rs_compat: true              # RealSense-совместимые имена топиков:
                                    # rgb→color, stereo→depth
     rgb:
-      i_low_bandwidth: true            # H.264 on-chip encoding → ~5-8 MB/s vs ~28 MB/s raw
+      i_low_bandwidth: true            # H.264 on-chip encoding → ~300 KB/s s JPEG vs ~7 MB/s raw
       i_low_bandwidth_quality: 85      # 85% quality — достаточно для AprilTag + SLAM
       i_publish_compressed: false
-      i_fps: 10.0
+      i_fps: 5.0                       # Снижено с 10: relay 3.4 MB/s вместо 27 MB/s
       i_max_q_size: 1                  # минимальный буфер, меньше задержка
       i_interleaved: false
       i_board_socket_id: 0
       i_enable_lazy_publisher: true    # не публиковать без подписчиков
       i_publish_topic: true
       i_keep_preview_aspect_ratio: false
+      i_width: 640                     # Crop 1280→640px: relay 640*360*3*5fps = 3.4 MB/s
+      i_height: 360                    # vs 1280*720*3*10fps = 27 MB/s (10x меньше!)
     stereo:
-      i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~3-5 MB/s vs ~18 MB/s
+      i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~1-2 MB/s compressed
       i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам
       i_publish_compressed: false
-      i_fps: 10.0
+      i_fps: 5.0                       # Sync с RGB fps
       i_max_q_size: 1
       i_enable_lazy_publisher: true
       i_publish_topic: true
@@ -59,13 +67,13 @@
       i_align_depth: true          # Align depth to RGB frame for RGBD SLAM
     left:
       i_low_bandwidth: false
-      i_fps: 10.0
+      i_fps: 5.0
       i_max_q_size: 1
       i_enable_lazy_publisher: true    # не используется rtabmap напрямую
       i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
     right:
       i_low_bandwidth: false
-      i_fps: 10.0
+      i_fps: 5.0
       i_max_q_size: 1
       i_enable_lazy_publisher: true
       i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
