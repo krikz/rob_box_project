@@ -13,10 +13,16 @@ Tools exposed to the sub-agent:
 """
 
 import asyncio
+import json
+import logging
+import re
 
-from agents import function_tool
+from agents import Agent, Runner, function_tool
+from agents.model_settings import ModelSettings
 
 from .base_skill import BaseSkill
+
+logger = logging.getLogger(__name__)
 
 
 class NavigationSkill(BaseSkill):
@@ -161,3 +167,149 @@ class NavigationSkill(BaseSkill):
             finish_mapping,
             speak_text,
         ]
+
+    def as_tool(self, tool_name: str, tool_description: str):
+        """Override: adds anti-hallucination verification for save_waypoint tasks.
+
+        Strategy: for save-intent tasks, compare list_waypoints count before/after
+        sub-agent run. If count is unchanged despite the agent claiming success,
+        the LLM hallucinated — extract the waypoint name from the task and call
+        save_waypoint directly via the adapter.
+        """
+        agent = self.build_agent()
+        max_turns = self._agent_max_turns
+        skill_name = self._name
+        adapter = self._adapter
+
+        # Keywords that indicate a save-waypoint intent
+        _SAVE_KWS = [
+            "сохрани", "запомни", "отметь", "назови", "save", "mark",
+            "это кухня", "это зал", "это спальня", "это база", "это коридор",
+            "тут база", "здесь", "это место", "это точка",
+        ]
+
+        # Try to extract the canonical waypoint name from the task text
+        _NAME_RE = re.compile(
+            r"(?:как|as|:)\s*[\"']?([\w\-а-яА-ЯёЁ]+)[\"']?",
+            re.IGNORECASE,
+        )
+        # Fallback: last capitalized / cyrillic word cluster
+        _LAST_WORD_RE = re.compile(r"[\"']?([\w\-а-яА-ЯёЁ]{2,})[\"']?\s*$", re.IGNORECASE)
+
+        def _has_save_intent(task: str) -> bool:
+            t = task.lower()
+            return any(kw in t for kw in _SAVE_KWS)
+
+        def _extract_name(task: str) -> str | None:
+            m = _NAME_RE.search(task)
+            if m:
+                return m.group(1).strip()
+            m = _LAST_WORD_RE.search(task)
+            if m:
+                n = m.group(1).strip()
+                if n.lower() not in ("как", "as", "место", "точку", "точка", "здесь", "тут"):
+                    return n
+            return None
+
+        def _count_waypoints(raw: str) -> int:
+            """Heuristic: count waypoint entries in list_waypoints output."""
+            raw = raw.strip()
+            if not raw or "нет" in raw.lower() or "пусто" in raw.lower() or raw == "[]":
+                return 0
+            # Count lines/entries separated by newlines or commas
+            if "\n" in raw:
+                return len([ln for ln in raw.splitlines() if ln.strip()])
+            return len([x for x in raw.split(",") if x.strip()])
+
+        def _direct_call(tool: str, params: dict, timeout: float = 10.0) -> str:
+            """Call MCP tool directly via adapter (sync, for executor)."""
+            result = adapter.execute_tool_call_sync(tool, params, timeout=timeout)
+            if isinstance(result, dict):
+                return result.get("result", json.dumps(result, ensure_ascii=False))
+            return str(result)
+
+        async def _run_skill(task: str) -> str:
+            from openai import APIConnectionError
+
+            loop = asyncio.get_running_loop()
+            is_save = _has_save_intent(task)
+
+            # ── Baseline snapshot before sub-agent runs ──────────────────────
+            count_before = 0
+            if is_save:
+                try:
+                    wp_before = await loop.run_in_executor(
+                        None, lambda: _direct_call("list_waypoints", {}, timeout=5.0)
+                    )
+                    count_before = _count_waypoints(wp_before)
+                except Exception as e:
+                    logger.warning(f"[NavigationSkill] list_waypoints (before) failed: {e}")
+
+            # ── Run sub-agent ─────────────────────────────────────────────────
+            last_exc = None
+            output = ""
+            for attempt in range(3):
+                try:
+                    result = await Runner.run(agent, input=task, max_turns=max_turns)
+                    output = result.final_output or ""
+                    break
+                except APIConnectionError as exc:
+                    last_exc = exc
+                    if attempt < 2:
+                        delay = 2.0 * (2 ** attempt)
+                        logger.warning(
+                            f"⚠️ {skill_name} APIConnectionError (attempt {attempt + 1}/3), "
+                            f"retrying in {delay:.0f}s: {exc}"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        return f"Ошибка связи с LLM: {exc}"
+
+            if not is_save:
+                return output
+
+            # ── Post-run verification ─────────────────────────────────────────
+            try:
+                wp_after = await loop.run_in_executor(
+                    None, lambda: _direct_call("list_waypoints", {}, timeout=5.0)
+                )
+                count_after = _count_waypoints(wp_after)
+            except Exception as e:
+                logger.warning(f"[NavigationSkill] list_waypoints (after) failed: {e}")
+                return output
+
+            if count_after > count_before:
+                # Sub-agent actually saved something — all good
+                return output
+
+            # ── Hallucination detected ────────────────────────────────────────
+            name = _extract_name(task)
+            logger.warning(
+                f"⚠️ NavigationSkill hallucination detected: count_before={count_before} "
+                f"count_after={count_after}, extracted name={name!r}. "
+                f"Calling save_waypoint directly."
+            )
+            if not name:
+                return (
+                    f"⚠️ Не смог определить название точки из задания. "
+                    f"Пожалуйста, уточни название (например: 'запомни как база')."
+                )
+
+            rescue = await loop.run_in_executor(
+                None, lambda: _direct_call("save_waypoint", {"name": name}, timeout=10.0)
+            )
+            logger.info(f"💾 Direct save_waypoint('{name}'): {rescue}")
+
+            if "недоступен" in rescue or "неизвестна" in rescue or "error" in rescue.lower():
+                return (
+                    f"⚠️ Не удалось сохранить точку '{name}': {rescue}\n"
+                    f"Убедись что rtabmap запущен и TF map→base_link доступен."
+                )
+
+            return f"✅ Точка '{name}' сохранена: {rescue}"
+
+        async def _nav_skill_tool(task: str) -> str:
+            return await _run_skill(task)
+
+        return function_tool(_nav_skill_tool, name_override=tool_name, description_override=tool_description)
+
