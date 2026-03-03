@@ -1,7 +1,9 @@
 # depthai_ros_driver v2.12.2-humble configuration
 # Node path: /camera/camera (namespace='camera', name='camera')
-# Topics published: /camera/rgb/image_raw, /camera/rgb/camera_info,
-#                   /camera/depth/image_rect_raw (rs_compat aligned depth)
+# Topics published with i_rs_compat:true:
+#   /camera/camera/color/image_raw      — colour image
+#   /camera/camera/color/camera_info    — colour camera_info
+#   /camera/camera/depth/image_rect_raw — aligned depth (rs_compat renames stereo→depth)
 
 /camera/camera:
   ros__parameters:
@@ -22,7 +24,7 @@
       i_enable_diagnostics: false
       i_usb_speed: "SUPER"
       i_rs_compat: true              # RealSense-совместимые имена топиков:
-                                   # /camera/depth/image_rect_raw (aligned depth)
+                                   # rgb→color, stereo→depth
     rgb:
       i_low_bandwidth: false
       i_publish_compressed: false
