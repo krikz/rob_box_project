@@ -2,7 +2,7 @@
   ros__parameters:
     # USB Camera settings
     video_device: "/dev/video0"
-    framerate: 5.0             # Reduced from 10fps: saves ~9 MB/s on Zenoh relay
+    framerate: 15.0        # Increased from 5fps: rtabmap CPU freed, bandwidth OK
     image_width: 640           # Reduced from 1280: adequate for Telegram/monitoring
     image_height: 480          # Reduced from 720: 640x480@5fps@YUV422 = 3 MB/s vs 18 MB/s
     pixel_format: "yuyv"

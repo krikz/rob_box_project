@@ -13,9 +13,9 @@
 #   i_max_q_size: 1               — minimal buffer = lower latency
 #
 # Resolution / FPS tradeoffs (2026-03-04):
-#   RGB compressed (JPEG) over Zenoh: ~500 KB/s at 640px 5fps
-#   RGB relay raw (Main Pi → Vision Pi via Zenoh): 640*400*3*5fps = 4.8 MB/s
-#   vs 1280x720 10fps relay: 27 MB/s (6x меньше!)
+#   RGB compressed (JPEG) over Zenoh: ~1.5 MB/s at 640px 15fps
+#   RGB relay raw (local on Main Pi): 640*400*3*15fps = 11.5 MB/s
+#   Bandwidth OK: rtabmap CPU freed from 93% → 20% after BinDataKept=false fix
 #   Visual SLAM works well at 640x400 — adequate for loop closure
 #   NOTE: i_width/i_height requires i_output_isp: false (video output, not ISP)
 #         For RGBD alignment: width + height MUST be divisible by 16! 640%16=0 ✓, 400%16=0 ✓
@@ -28,7 +28,7 @@
       i_rgb_resolution: "720p"     # Capture 720p, video output crop до 640x400
       i_stereo_width: 640
       i_stereo_height: 400          # Aligned to RGB video output size (must match)
-      i_fps: 5.0                   # 5fps: relay=3.4 MB/s vs 27 MB/s при 10fps
+      i_fps: 15.0                  # 15fps: H.264 compressed ~1.5 MB/s over Zenoh
       i_enable_ir: false
       i_laser_dot_brightness: 0
       i_floodlight_brightness: 0
@@ -45,22 +45,22 @@
       i_low_bandwidth: true            # H.264 on-chip encoding → ~300 KB/s s JPEG vs ~7 MB/s raw
       i_low_bandwidth_quality: 85      # 85% quality — достаточно для AprilTag + SLAM
       i_publish_compressed: false
-      i_fps: 5.0                       # Снижено с 10: relay 3.4 MB/s вместо 27 MB/s
+      i_fps: 15.0                      # Поднято до 15fps после оптимизации rtabmap
       i_max_q_size: 1                  # минимальный буфер, меньше задержка
       i_interleaved: false
       i_board_socket_id: 0
       i_enable_lazy_publisher: true    # не публиковать без подписчиков
       i_publish_topic: true
       i_keep_preview_aspect_ratio: false
-      i_width: 640                     # Video output 640x400: relay 640*400*3*5fps = 4.8 MB/s
-      i_height: 400                    # vs 1280*720*3*10fps = 27 MB/s (6x меньше!)
+      i_width: 640                     # Video output 640x400: relay 640*400*3*15fps = 11.5 MB/s
+      i_height: 400                    # 15fps viable after BinDataKept=false — rtabmap CPU 93%→20%
       i_output_isp: false              # Must be false to use i_width/i_height (VIDEO output, not ISP)
                                        # NOTE: width+height must be div by 16 for RGBD alignment!
     depth:    # rs_compat: stereo→depth (секция параметров)
       i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~1-2 MB/s compressed
       i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам
       i_publish_compressed: false
-      i_fps: 5.0                       # Sync с RGB fps
+      i_fps: 15.0                      # Sync с RGB fps
       i_max_q_size: 1
       i_enable_lazy_publisher: true
       i_publish_topic: true
@@ -72,13 +72,13 @@
       i_align_depth: true          # Align depth to RGB frame for RGBD SLAM
     infra1:    # rs_compat: left→infra1
       i_low_bandwidth: false
-      i_fps: 5.0
+      i_fps: 15.0
       i_max_q_size: 1
       i_enable_lazy_publisher: true    # не используется rtabmap напрямую
       i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
     infra2:    # rs_compat: right→infra2
       i_low_bandwidth: false
-      i_fps: 5.0
+      i_fps: 15.0
       i_max_q_size: 1
       i_enable_lazy_publisher: true
       i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
