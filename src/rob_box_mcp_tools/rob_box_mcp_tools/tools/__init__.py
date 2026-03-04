@@ -47,6 +47,8 @@ __all__ = [
     "StartMappingTool",
     "ContinueMappingTool",
     "FinishMappingTool",
+    "OptimizeMapTool",
+    "LoadMapTool",
     # Animation tools
     "PlayAnimationTool",
     # Sound tools

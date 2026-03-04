@@ -43,6 +43,8 @@ from .tools import (
     StartMappingTool,
     ContinueMappingTool,
     FinishMappingTool,
+    OptimizeMapTool,
+    LoadMapTool,
     PlayAnimationTool,
     PlaySoundTool,
     GetSoundInfoTool,
@@ -203,6 +205,8 @@ class MCPServer(Node):
         self.registry.register(StartMappingTool(self, self.waypoint_store))
         self.registry.register(ContinueMappingTool(self))
         self.registry.register(FinishMappingTool(self, self.waypoint_store))
+        self.registry.register(OptimizeMapTool(self))
+        self.registry.register(LoadMapTool(self, self.waypoint_store))
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))
