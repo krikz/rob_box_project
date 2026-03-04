@@ -93,6 +93,12 @@ class DialogueNode(Node):
         self.declare_parameter("enable_fallback", False)
         self.declare_parameter("llm_timeout_sec", 35.0)
         self.declare_parameter("verbose_llm", True)
+        # Tool names whose turns are excluded from conversation history.
+        # Prevents DeepSeek V3 multi-turn FC pattern-completion bug where the
+        # model sees e.g. save_waypoint(X)->"X saved!" in history and skips
+        # tool calls for the next similar request.
+        # Configure via voice_assistant.yaml: history_excluded_tools: ["handle_navigation"]
+        self.declare_parameter("history_excluded_tools", ["handle_navigation"])
 
         self._provider: str = self.get_parameter("provider").value
         self._temperature: float = self.get_parameter("temperature").value
@@ -101,6 +107,9 @@ class DialogueNode(Node):
         self._agent_max_turns: int = self.get_parameter("agent_max_turns").value
         self._llm_timeout: float = self.get_parameter("llm_timeout_sec").value
         self._verbose_llm: bool = self.get_parameter("verbose_llm").value
+        self._history_excluded_tools: set = set(
+            self.get_parameter("history_excluded_tools").value
+        )
 
         # ── System prompt ────────────────────────────────────────────
         self._system_prompt: str = self._load_system_prompt()
@@ -1029,11 +1038,17 @@ class DialogueNode(Node):
                     self.get_logger().warning(f"⚠️ memory save_turn(assistant) failed: {exc}")
 
             with self._conv_lock:
-                self._conversation = self._trim_history(
-                    list(self._conversation)
-                    + [{"role": "user", "content": user_input},
-                       {"role": "assistant", "content": history_entry}]
-                )
+                excluded = tool_names_used & self._history_excluded_tools
+                if excluded:
+                    self.get_logger().info(
+                        f"🚫 Turn excluded from history (tools: {excluded})"
+                    )
+                else:
+                    self._conversation = self._trim_history(
+                        list(self._conversation)
+                        + [{"role": "user", "content": user_input},
+                           {"role": "assistant", "content": history_entry}]
+                    )
 
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")

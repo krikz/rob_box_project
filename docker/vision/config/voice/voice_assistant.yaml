@@ -187,6 +187,14 @@
       # Музыка в несколько инструментов + speak_text + Clock.bpm = легко 10+ ходов
       agent_max_turns: 20
 
+      # Инструменты, чьи тёрны исключаются из истории диалога.
+      # Предотвращает баг DeepSeek V3 multi-turn FC pattern-completion:
+      # модель видит save_waypoint(X)->"X сохранена!" в истории и при следующем
+      # похожем запросе пропускает вызов инструментов, просто копируя паттерн.
+      # Добавь "handle_music" если хочешь исключить музыкальные тёрны.
+      history_excluded_tools:
+        - "handle_navigation"
+
     # ===== Sound Node (Аудио эффекты) =====
     sound_node:
       sound_pack_dir: "/ws/sound_pack"
