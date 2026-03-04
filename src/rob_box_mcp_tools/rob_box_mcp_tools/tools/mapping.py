@@ -30,9 +30,13 @@ class StartMappingTool(MCPTool):
         from std_srvs.srv import Empty
         
         # Service clients для RTABMap
-        from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         self.backup_client = node.create_client(Empty, "/rtabmap/rtabmap/backup")
-        self.load_database_client = node.create_client(LoadDatabase, "/rtabmap/rtabmap/load_database")
+        # LoadDatabase импортируется лениво в execute() — rtabmap_msgs может отсутствовать на Vision Pi
+        try:
+            from rtabmap_msgs.srv import LoadDatabase  # type: ignore
+            self.load_database_client = node.create_client(LoadDatabase, "/rtabmap/rtabmap/load_database")
+        except ImportError:
+            self.load_database_client = None
         self.set_mode_mapping_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_mapping")
 
     @property
@@ -74,8 +78,8 @@ class StartMappingTool(MCPTool):
             self.log_warning("⚠️ Backup не удался, продолжаем без backup")
 
         # 2. Загрузить базу данных (clear=True если новая локация, иначе только reload)
-        from rtabmap_msgs.srv import LoadDatabase  # type: ignore
-        if self.load_database_client.service_is_ready():
+        if self.load_database_client is not None and self.load_database_client.service_is_ready():
+            from rtabmap_msgs.srv import LoadDatabase  # type: ignore
             req = LoadDatabase.Request()
             req.path = "/maps/rtabmap.db"
             req.clear = bool(new_location)
@@ -315,10 +319,14 @@ class LoadMapTool(MCPTool):
     def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
-        from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         from std_srvs.srv import Empty
 
-        self.load_database_client = node.create_client(LoadDatabase, "/rtabmap/rtabmap/load_database")
+        # LoadDatabase импортируется лениво — rtabmap_msgs может отсутствовать на Vision Pi
+        try:
+            from rtabmap_msgs.srv import LoadDatabase  # type: ignore
+            self.load_database_client = node.create_client(LoadDatabase, "/rtabmap/rtabmap/load_database")
+        except ImportError:
+            self.load_database_client = None
         self.set_mode_localization_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_localization")
 
     @property
