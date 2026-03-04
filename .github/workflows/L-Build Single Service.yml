@@ -457,8 +457,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "ℹ️  No changes to commit"
           else
-            git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"
-            git push origin ${{ inputs.branch }}
+            git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"              git pull --rebase origin ${{ inputs.branch }}            git push origin ${{ inputs.branch }}
             echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG}"
           fi
 
