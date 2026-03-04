@@ -182,6 +182,7 @@ docs(readme): update hardware specs
 | `skill-creator` | Создание и обновление скилов |
 | `writing-skills` | Написание качественных скилов |
 | `senior-devops` | CI/CD pipelines, IaC (Terraform), контейнеры, облака (AWS/GCP/Azure), оптимизация деплоя |
+| `python-expert` | Senior Python: clean code, type hints, PEP 8, оптимизация, дебаггинг, алгоритмы |
 
 ## 📖 Расширенная документация
 
