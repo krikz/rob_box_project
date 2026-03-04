@@ -578,11 +578,11 @@ class ContextAggregatorNode(Node):
         
         # Определяем статус
         if len(issues) == 0:
-            status = "healthy"
+            status = "HEALTHY"
         elif len(issues) <= 2:
-            status = "degraded"
+            status = "DEGRADED"
         else:
-            status = "critical"
+            status = "UNHEALTHY"
         
         return status, issues
     

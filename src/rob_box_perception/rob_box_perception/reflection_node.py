@@ -677,8 +677,7 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150 if urgent else 200,
-                response_format={"type": "json_object"},
-                stream_options={"include_usage": True}
+                response_format={"type": "json_object"}
             )
             
             # Логируем токены
@@ -719,8 +718,7 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150,
-                response_format={"type": "json_object"},
-                stream_options={"include_usage": True}
+                response_format={"type": "json_object"}
             )
             
             # Логируем токены
