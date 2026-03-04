@@ -21,7 +21,8 @@ services:
       logging: "promtail"
 
   oak-d:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${OAK_D_TAG:-latest}
     container_name: oak-d
     network_mode: host
     privileged: true
@@ -59,7 +60,8 @@ services:
   # Это уменьшает Zenoh-трафик: 1 топик RGBDImage вместо 2 отдельных сырых изображений.
   # Main Pi (rtabmap сервис) подписывается на /rgbd_image через subscribe_rgbd:=true.
   rtabmap-sync:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_SYNC_TAG:-latest}
     container_name: rtabmap-sync
     network_mode: host
     environment:
@@ -108,7 +110,8 @@ services:
       logging: "promtail"
 
   led-matrix:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${LED_MATRIX_TAG:-latest}
     container_name: led-matrix
     network_mode: host
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
@@ -140,7 +143,8 @@ services:
       logging: "promtail"
 
   ceiling-camera:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${CEILING_CAMERA_TAG:-latest}
     container_name: ceiling-camera
     network_mode: host
     privileged: true  # Для доступа к USB camera
@@ -197,12 +201,9 @@ services:
       logging: "promtail"
 
   voice-assistant:
-    # Image tags automatically determined by IMAGE_TAG environment variable:
-    # - IMAGE_TAG=latest  → voice-assistant-humble-latest (main branch)
-    # - IMAGE_TAG=dev     → voice-assistant-humble-dev (develop branch)
-    # - IMAGE_TAG=test    → voice-assistant-humble-test (feature/* branches)
-    # Built via GitHub Actions: .github/workflows/build-vision-services.yml
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    # Format: VOICE_ASSISTANT_TAG=env-gitsha (e.g. test-abc1234) → immutable, pinned to specific build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-latest}
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
@@ -272,7 +273,8 @@ services:
   # Операторский интерфейс через Telegram
   # Управление роботом с телефона: фото, голос, движение, LLM чат
   telegram-bot:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-latest}
     container_name: telegram-bot
     network_mode: host
     environment:

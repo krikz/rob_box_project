@@ -1,0 +1,12 @@
+# Vision Pi image versions — production (main branch)
+# Managed automatically by CI (L-Build Single Service workflow)
+# Each var holds the exact Docker tag suffix for that service
+# After build: SERVICE_TAG=latest-{gitsha}  (immutable, specific to that commit)
+# Initial/fallback: SERVICE_TAG=latest       (mutable, always points to last build)
+
+OAK_D_TAG=latest
+RTABMAP_SYNC_TAG=latest
+LED_MATRIX_TAG=latest
+CEILING_CAMERA_TAG=latest
+VOICE_ASSISTANT_TAG=latest
+TELEGRAM_BOT_TAG=latest

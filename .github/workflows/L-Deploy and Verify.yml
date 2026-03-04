@@ -277,6 +277,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              docker compose pull --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
@@ -291,6 +292,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              docker compose up -d --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
@@ -337,6 +339,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              docker compose pull --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
@@ -351,6 +354,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              docker compose up -d --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
