@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from agents import Agent, Runner, function_tool
 from agents.model_settings import ModelSettings
@@ -34,6 +35,9 @@ class BaseSkill(ABC):
         temperature:    LLM temperature (default 0.7).
         max_tokens:     Max tokens for each LLM response (default 500).
         agent_max_turns: Max tool-call iterations per sub-agent run (default 12).
+        tool_choice:    If set, forces the sub-agent to use a tool on every turn
+                        (e.g. ``"required"`` prevents the LLM from hallucinating
+                        tool calls as plain text). Passed directly to ModelSettings.
     """
 
     def __init__(
@@ -45,6 +49,7 @@ class BaseSkill(ABC):
         temperature: float = 0.7,
         max_tokens: int = 500,
         agent_max_turns: int = 12,
+        tool_choice: Optional[str] = None,
     ) -> None:
         self._adapter = adapter
         self._model = model
@@ -53,6 +58,7 @@ class BaseSkill(ABC):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._agent_max_turns = agent_max_turns
+        self._tool_choice = tool_choice
 
     # ── Internal helper ──────────────────────────────────────────────────────
 
@@ -76,16 +82,19 @@ class BaseSkill(ABC):
 
     def build_agent(self) -> Agent:
         """Build (or rebuild) the sub-Agent for this skill.  Call once at init."""
+        model_settings_kwargs = dict(
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            parallel_tool_calls=False,
+        )
+        if self._tool_choice is not None:
+            model_settings_kwargs["tool_choice"] = self._tool_choice
         return Agent(
             name=self._name,
             instructions=self._prompt,
             tools=self._make_tools(),
             model=self._model,
-            model_settings=ModelSettings(
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                parallel_tool_calls=False,
-            ),
+            model_settings=ModelSettings(**model_settings_kwargs),
         )
 
     def as_tool(self, tool_name: str, tool_description: str):

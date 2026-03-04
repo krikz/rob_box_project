@@ -759,7 +759,14 @@ class DialogueNode(Node):
             nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
             if not nav_prompt:
                 nav_prompt = "Ты — модуль навигации РОББОКСА. Управляй движением робота."
-            skill = NavigationSkill(adapter=self._mcp, model=model, prompt=nav_prompt, name="NavigationSkill")
+            skill = NavigationSkill(
+                adapter=self._mcp,
+                model=model,
+                prompt=nav_prompt,
+                name="NavigationSkill",
+                max_tokens=1000,
+                tool_choice="required",
+            )
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_navigation",
