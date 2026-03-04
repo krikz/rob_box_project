@@ -46,10 +46,10 @@ class StartMappingTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Начать картографирование. ОБЯЗАТЕЛЬНО передавай new_location явно. "
-            "Правило: если пользователь упоминает название места (квартира, офис, склад, дом, комната) "
-            "или говорит 'новая карта' / 'новое место' / 'с нуля' — new_location=true. "
-            "Если говорит 'продолжить', 'продолжай', 'добавь' — new_location=false."
+            "Начать картографирование. "
+            "Если пользователь называет место (квартира, офис, склад, дом, комната) или говорит 'новая карта' / 'с нуля' — "
+            "передай map_name с названием; new_location автоматически станет True. "
+            "Если говорит 'продолжить', 'продолжай', 'добавь' — передай new_location=false."
         )
 
     @property
@@ -58,20 +58,23 @@ class StartMappingTool(MCPTool):
             MCPToolParameter(
                 name="map_name",
                 type="string",
-                description="Название новой карты (опционально, например 'квартира', 'офис')",
+                description="Название новой карты (например 'квартира', 'офис'). Если передан — автоматически включает new_location=True.",
                 required=False,
             ),
             MCPToolParameter(
                 name="new_location",
                 type="boolean",
-                description="ОБЯЗАТЕЛЬНЫЙ. True — стереть базу и начать с нуля (новая локация/место). False — продолжить текущую карту.",
-                required=True,
+                description="True — стереть базу и начать с нуля. False — продолжить текущую карту. Если не указан — True когда передан map_name, иначе False.",
+                required=False,
             ),
         ]
 
-    def execute(self, map_name: str = "", new_location: bool = False) -> MCPToolResult:
+    def execute(self, map_name: str = "", new_location: Optional[bool] = None) -> MCPToolResult:
         """Начать картографирование"""
-        self.log_info(f"Запуск картографирования (new_location={new_location})")
+        # Если new_location не указан явно — выводим из map_name
+        if new_location is None:
+            new_location = bool(map_name.strip())
+        self.log_info(f"Запуск картографирования (new_location={new_location}, map_name='{map_name}')")
 
         # 1. Создать backup текущей карты
         self.log_info("Создание backup карты...")
