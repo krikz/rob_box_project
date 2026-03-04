@@ -89,11 +89,11 @@ services:
       - rgbd_sync
       - --ros-args
       - -r
-      - rgb/image:=/camera/camera/color/image_raw
+      - rgb/image:=camera/camera/color/image_raw
       - -r
-      - depth/image:=/camera/camera/depth/image_rect_raw
+      - depth/image:=camera/camera/depth/image_rect_raw
       - -r
-      - rgb/camera_info:=/camera/camera/color/camera_info
+      - rgb/camera_info:=camera/camera/color/camera_info
       - -p
       - approx_sync:=true
       - -p
