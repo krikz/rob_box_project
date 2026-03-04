@@ -348,6 +348,78 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
+  # Обновление .image-versions — SHA-тег после успешной сборки
+  update-image-versions:
+    needs:
+      - prepare
+      - build-robot-state-publisher
+      - build-rtabmap
+      - build-twist-mux
+      - build-teleop
+      - build-micro-ros-agent
+      - build-ros2-control
+      - build-nav2
+      - build-lslidar
+      - build-perception
+    runs-on: self-hosted
+    if: success() && inputs.push_to_registry != false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Tag with SHA and update .image-versions
+        run: |
+          DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          tag_and_push() {
+            local LOCAL_TAG="$1"
+            local SHA_TAG="${LOCAL_TAG}-${SHORT_SHA}"
+            docker tag "$LOCAL_TAG" "$SHA_TAG" && docker push "$SHA_TAG"
+            echo "✅ $SHA_TAG"
+          }
+
+          tag_and_push "${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:nav2-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:lslidar-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:perception-${ROS_DISTRO}-${DOCKER_TAG}"
+          # teleop excluded: still uses IMAGE_TAG in docker-compose
+
+          VERSIONS_FILE="docker/main/.image-versions.${DOCKER_TAG}"
+          if [ -f "$VERSIONS_FILE" ]; then
+            sed -i \
+              -e "s|^TWIST_MUX_TAG=.*|TWIST_MUX_TAG=${NEW_TAG}|" \
+              -e "s|^MICRO_ROS_AGENT_TAG=.*|MICRO_ROS_AGENT_TAG=${NEW_TAG}|" \
+              -e "s|^ROBOT_STATE_PUBLISHER_TAG=.*|ROBOT_STATE_PUBLISHER_TAG=${NEW_TAG}|" \
+              -e "s|^RTABMAP_TAG=.*|RTABMAP_TAG=${NEW_TAG}|" \
+              -e "s|^ROS2_CONTROL_TAG=.*|ROS2_CONTROL_TAG=${NEW_TAG}|" \
+              -e "s|^LSLIDAR_TAG=.*|LSLIDAR_TAG=${NEW_TAG}|" \
+              -e "s|^PERCEPTION_TAG=.*|PERCEPTION_TAG=${NEW_TAG}|" \
+              -e "s|^NAV2_TAG=.*|NAV2_TAG=${NEW_TAG}|" \
+              "$VERSIONS_FILE"
+
+            git config user.email "ci@rob-box.local"
+            git config user.name "Rob Box CI"
+            git add "$VERSIONS_FILE"
+            if ! git diff --cached --quiet; then
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
+              git push origin "$BRANCH"
+              echo "✅ Committed .image-versions: all main tags → ${NEW_TAG}"
+            fi
+          else
+            echo "⚠️  $VERSIONS_FILE not found"
+          fi
+
   # Итоговая сводка
   summary:
     needs:
