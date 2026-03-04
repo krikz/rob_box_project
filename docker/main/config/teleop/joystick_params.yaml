@@ -23,12 +23,12 @@ joystick_control_node:
     
     # For non-SBUS mode
     axis_linear_x: 1      # Pitch (forward/backward)
-    axis_angular_z: 1     # Yaw (left/right rotation)
+    axis_angular_z: 4     # Yaw (left/right rotation)
     enable_button: 0      # Safety button
 
     # Speed limits
     max_linear_speed: 1.0   # m/s
-    max_angular_speed: 15.0  # rad/s
+    max_angular_speed: 5.0  # rad/s
     
     # Deadzone to prevent drift
     deadzone: 0.1
