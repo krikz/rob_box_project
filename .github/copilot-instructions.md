@@ -181,6 +181,7 @@ docs(readme): update hardware specs
 | `agent-llm-stability` | Стабильность LLM-агентов |
 | `skill-creator` | Создание и обновление скилов |
 | `writing-skills` | Написание качественных скилов |
+| `senior-devops` | CI/CD pipelines, IaC (Terraform), контейнеры, облака (AWS/GCP/Azure), оптимизация деплоя |
 
 ## 📖 Расширенная документация
 
