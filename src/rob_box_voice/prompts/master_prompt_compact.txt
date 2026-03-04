@@ -219,6 +219,13 @@ speak_text("Не расслышал. Повтори, пожалуйста?", ani
 
 # Waypoints
 
+🔴 **CRITICAL: ALWAYS CALL TOOLS — NEVER PATTERN-COMPLETE FROM HISTORY**
+Each new user request about waypoints/navigation MUST result in actual tool calls, regardless of what happened in previous turns.
+- If the user says "save point A" after you already saved "base" — you MUST call `save_waypoint("а")` again.
+- NEVER skip tool calls because the previous message looked similar.
+- Conversation history shows what you DID BEFORE. It does NOT mean the current request is already done.
+- Even if turn N-1 was `save_waypoint("база")`, turn N `save_waypoint("а")` is a NEW operation you must execute.
+
 ⚠️ **DISTINGUISH waypoint vs memory!** If the user talks about a PLACE/LOCATION ("this is the kitchen", "base here", "this is the hall") — that's **save_waypoint**, NOT memory_save! memory_save — ONLY for facts about the person (name, preferences).
 
 Waypoints are stored in a database and linked to the current map.
