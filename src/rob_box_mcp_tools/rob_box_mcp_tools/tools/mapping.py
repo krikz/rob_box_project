@@ -46,7 +46,9 @@ class StartMappingTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Начать картографирование. new_location=true — создать чистую базу (новая локация). "
+            "Начать картографирование. "
+            "Если пользователь говорит 'новая карта', 'новое место', 'новая локация' или называет конкретное место (квартира, офис, склад) — ОБЯЗАТЕЛЬНО передай new_location=true. "
+            "new_location=true — стереть старую базу и начать с нуля (новая локация). "
             "new_location=false (по умолчанию) — продолжить добавлять в существующую карту."
         )
 
@@ -91,6 +93,7 @@ class StartMappingTool(MCPTool):
 
         # 3. Переключить в режим mapping
         if self.set_mode_mapping_client.service_is_ready():
+            from std_srvs.srv import Empty
             request = Empty.Request()
             self.set_mode_mapping_client.call_async(request)
             self.log_info("Режим mapping активирован")
