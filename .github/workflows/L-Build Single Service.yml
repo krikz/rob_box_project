@@ -69,7 +69,7 @@ env:
   ROS_DISTRO: humble
 
 permissions:
-  contents: read
+  contents: write  # Required for git push of .image-versions files
   issues: write
 
 jobs:
