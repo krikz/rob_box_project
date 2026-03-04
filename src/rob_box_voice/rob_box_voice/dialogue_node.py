@@ -835,6 +835,7 @@ class DialogueNode(Node):
         self.get_logger().info(f"  Model    : {self._resolve_model()}")
         self.get_logger().info(f"  Wake     : {self.dialogue_manager.wake_words}")
         self.get_logger().info(f"  History  : {self._max_turns} turns")
+        self.get_logger().info(f"  ExcludeFromHistory: {sorted(self._history_excluded_tools)}")
         self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s")
         self.get_logger().info(f"  VerboseLLM: {self._verbose_llm}")
 
