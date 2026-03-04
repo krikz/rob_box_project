@@ -36,6 +36,26 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | Линтинг | `docs/development/LINTING_GUIDE.md` |
 | Деплой | `docs/deployment/DEPLOYMENT_WORKFLOW.md` |
 
+### 🦸 Superpowers Skills (`.agents/skills/`)
+
+| Скилл | Когда использовать |
+|-------|--------------------|
+| `brainstorming` | Перед любой разработкой фичи — рефайн идей через диалог |
+| `writing-plans` | После дизайна — детальный план реализации по шагам |
+| `executing-plans` | Выполнение плана в отдельной сессии с чекпоинтами |
+| `subagent-driven-development` | Выполнение плана в текущей сессии через сабагентов |
+| `test-driven-development` | При реализации любой фичи или исправлении бага |
+| `systematic-debugging` | При любом баге или неожиданном поведении |
+| `verification-before-completion` | Перед заявлением о завершении работы |
+| `requesting-code-review` | После выполнения задачи или перед мержем |
+| `receiving-code-review` | При получении фидбека на код-ревью |
+| `dispatching-parallel-agents` | При 2+ независимых задачах без shared state |
+| `using-git-worktrees` | При старте фичи требующей изоляции от текущего workspace |
+| `finishing-a-development-branch` | Когда реализация завершена — мерж/PR/дискард |
+| `writing-skills` | При создании или обновлении скиллов |
+| `using-superpowers` | В начале любого разговора — как найти и использовать скиллы |
+| `debugger` | При отладке ошибок, краш-анализе, разборе stack trace (shubhamsaboo/awesome-llm-apps) |
+
 ### ⚙️ Команды Claude (`.claude/commands/`)
 
 | Фаза | Команда | Когда использовать |
@@ -160,5 +180,6 @@ docs(readme): update hardware specs
 - `@docs/CI_CD_PIPELINE.md` - GitHub Actions workflows
 
 ---
-**Обновлено:** 27 февраля 2026  
-**Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`
+**Обновлено:** 4 марта 2026  
+**Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`  
+**Superpowers:** 14 скиллов из `obra/superpowers` в `.agents/skills/`
