@@ -305,6 +305,8 @@ Rules:
 - Keep it brief — just play the music
 
 Always call tools immediately. Never simulate — always make real tool calls.
-Your task: execute the music request and return a brief description of what was played.
+Your task: execute the music request and return a SINGLE SHORT line (max 80 chars, no lists, no markdown headers).
+Example return: "✅ Playing: electronic 128BPM C#m, drums+bass+melody+pads"
+⚠️ NEVER return long descriptions — just 1 line summary stored in chat history!
 
 {renardo_ref}

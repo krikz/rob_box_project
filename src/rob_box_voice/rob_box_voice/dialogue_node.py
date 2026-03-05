@@ -1104,9 +1104,33 @@ class DialogueNode(Node):
             if isinstance(item, dict) and item.get("role") == "user"
         ]
         if len(user_positions) <= self._max_turns:
-            return list(items)
-        cutoff_idx = user_positions[-self._max_turns]
-        return list(items[cutoff_idx:])
+            trimmed = list(items)
+        else:
+            cutoff_idx = user_positions[-self._max_turns]
+            trimmed = list(items[cutoff_idx:])
+        return self._truncate_history_outputs(trimmed)
+
+    def _truncate_history_outputs(self, items: list, max_len: int = 200) -> list:
+        """Truncate long function_call_output values to prevent context bloat.
+
+        Sub-agents like handle_music can return 500+ char descriptions.
+        Storing them verbatim in history balloons every subsequent DeepSeek
+        request, causing timeouts on turns like "develop the melody".
+        We keep the first 200 chars — enough for the LLM to understand what
+        happened without slowing down future calls.
+        """
+        result = []
+        for item in items:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "function_call_output"
+                and isinstance(item.get("output"), str)
+                and len(item["output"]) > max_len
+            ):
+                item = dict(item)  # shallow copy — don't mutate the original
+                item["output"] = item["output"][:max_len] + "…[truncated]"
+            result.append(item)
+        return result
 
     # ────────────────────────────────────────────────────────────────
     # Helpers
