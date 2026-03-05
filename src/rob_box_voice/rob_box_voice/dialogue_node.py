@@ -834,8 +834,7 @@ class DialogueNode(Node):
         self.get_logger().info(f"  Provider : {self._provider}")
         self.get_logger().info(f"  Model    : {self._resolve_model()}")
         self.get_logger().info(f"  Wake     : {self.dialogue_manager.wake_words}")
-        self.get_logger().info(f"  History  : {self._max_turns} turns")
-        self.get_logger().info(f"  ExcludeFromHistory: {sorted(self._history_excluded_tools)}")
+        self.get_logger().info(f"  History  : {self._max_turns} turns (SDK to_input_list format)")
         self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s")
         self.get_logger().info(f"  VerboseLLM: {self._verbose_llm}")
 
@@ -955,18 +954,11 @@ class DialogueNode(Node):
 
         try:
             with self._conv_lock:
-                # Conversation history uses [выполнено через: ...] markers
-                # on tool-assisted turns.  These markers STAY in the LLM input
-                # so the model sees that previous responses came from tool calls
-                # and doesn't try to pattern-copy the response text.
-                # Only strip legacy [tools: ...] markers (from old history entries).
-                cleaned = []
-                for msg in self._conversation:
-                    c = dict(msg)
-                    if c.get("role") == "assistant" and isinstance(c.get("content"), str):
-                        c["content"] = re.sub(r"^\[tools:[^\]]*\]\s*", "", c["content"])
-                    cleaned.append(c)
-                input_list = cleaned + [
+                # Build input: stored history (SDK to_input_list format) + current user message.
+                # History contains real function_call / function_call_output items, so the
+                # LLM sees actual tool invocations and cannot pattern-complete them as text.
+                # This eliminates the DeepSeek multi-turn FC pattern-completion bug.
+                input_list = list(self._conversation) + [
                     {"role": "user", "content": user_input}
                 ]
 
@@ -985,14 +977,8 @@ class DialogueNode(Node):
                 timeout=self._llm_timeout * 3,
             )
 
-            # Build clean history with tool-call markers so the LLM knows
-            # that previous actions were executed via tools (not just text).
-            # Without markers, the LLM sees "добавь точку X" → "Точка X добавлена!"
-            # and learns to skip tool calls, just echoing the pattern.
             spoken = " ".join(self._spoken_texts) if self._spoken_texts else (result.final_output or "")
-            # Detect which tools were called from:
-            #  1) result.new_items (ToolCallItem) — reliable SDK API
-            #  2) self._tools_called — populated by _call() helpers as fallback
+            # Collect tool names used — for logging and auto-speak fallback detection.
             tool_names_used = set()
             try:
                 for item in result.new_items:
@@ -1000,22 +986,7 @@ class DialogueNode(Node):
                         tool_names_used.add(item.raw_item.name)
             except Exception:
                 pass
-            # Fallback: merge tools tracked by _call() helpers
             tool_names_used.update(self._tools_called)
-
-            # Build the string stored in conversation history.
-            # CRITICAL: if tools were used, store a non-speakable summary
-            # format so the LLM cannot pattern-copy it as a direct answer.
-            # Without this, history like:
-            #   user: "едь на базу" → assistant: "Приехал на базу!"
-            # causes LLM to skip tools and just output "Приехал на X!" for
-            # every subsequent navigation request.
-            if tool_names_used:
-                tool_list = ", ".join(sorted(tool_names_used))
-                clean_text = spoken.strip()
-                history_entry = f"[выполнено через: {tool_list}] {clean_text}"
-            else:
-                history_entry = spoken
 
             # Auto-speak fallback: if LLM returned text without calling
             # speak_text, speak the response directly so the robot is never silent.
@@ -1030,7 +1001,9 @@ class DialogueNode(Node):
             if self._verbose_llm:
                 self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
             else:
-                self.get_logger().info(f"✅ Agent done. Response: {spoken[:80]}")
+                self.get_logger().info(
+                    f"✅ Agent done. Tools: {sorted(tool_names_used)}. Response: {spoken[:80]}"
+                )
 
             if self._voice_memory is not None and spoken:
                 try:
@@ -1038,18 +1011,12 @@ class DialogueNode(Node):
                 except Exception as exc:
                     self.get_logger().warning(f"⚠️ memory save_turn(assistant) failed: {exc}")
 
+            # Store full SDK transcript for next turn.
+            # result.to_input_list() contains real function_call / function_call_output items.
+            # On the next turn the LLM sees actual tool invocations in history — not text
+            # summaries it could pattern-complete. Robot naturally remembers what it did.
             with self._conv_lock:
-                excluded = tool_names_used & self._history_excluded_tools
-                if excluded:
-                    self.get_logger().info(
-                        f"🚫 Turn excluded from history (tools: {excluded})"
-                    )
-                else:
-                    self._conversation = self._trim_history(
-                        list(self._conversation)
-                        + [{"role": "user", "content": user_input},
-                           {"role": "assistant", "content": history_entry}]
-                    )
+                self._conversation = self._trim_history(result.to_input_list())
 
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
@@ -1127,9 +1094,19 @@ class DialogueNode(Node):
                 self._sound_done_event = None
 
     def _trim_history(self, items: list) -> list:
-        """Keep the last `max_turns` complete user+assistant pairs."""
-        max_items = self._max_turns * 2
-        return items[-max_items:] if len(items) > max_items else items
+        """Keep the last `max_turns` complete turns in SDK input-list format.
+
+        A turn starts at each user message. We keep the last max_turns turns
+        intact, preserving all function_call / function_call_output pairs within.
+        """
+        user_positions = [
+            i for i, item in enumerate(items)
+            if isinstance(item, dict) and item.get("role") == "user"
+        ]
+        if len(user_positions) <= self._max_turns:
+            return list(items)
+        cutoff_idx = user_positions[-self._max_turns]
+        return list(items[cutoff_idx:])
 
     # ────────────────────────────────────────────────────────────────
     # Helpers

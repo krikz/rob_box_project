@@ -191,9 +191,10 @@
       # Предотвращает баг DeepSeek V3 multi-turn FC pattern-completion:
       # модель видит save_waypoint(X)->"X сохранена!" в истории и при следующем
       # похожем запросе пропускает вызов инструментов, просто копируя паттерн.
-      # Добавь "handle_music" если хочешь исключить музыкальные тёрны.
+      # handle_music тоже исключаем: DeepSeek pattern-completion на 3-м муз. тёрне.
       history_excluded_tools:
         - "handle_navigation"
+        - "handle_music"
 
     # ===== Sound Node (Аудио эффекты) =====
     sound_node:
