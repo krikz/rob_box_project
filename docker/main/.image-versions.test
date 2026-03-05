@@ -1,11 +1,11 @@
 # Main Pi image versions — test (feature/* branches)
 # Managed automatically by CI (L-Build Single Service workflow)
 
-TWIST_MUX_TAG=test-5b96771
-MICRO_ROS_AGENT_TAG=test-5b96771
-ROBOT_STATE_PUBLISHER_TAG=test-5b96771
-RTABMAP_TAG=test-5b96771
-ROS2_CONTROL_TAG=test-5b96771
-LSLIDAR_TAG=test-5b96771
-PERCEPTION_TAG=test-5b96771
-NAV2_TAG=test-5b96771
+TWIST_MUX_TAG=test-fad817f
+MICRO_ROS_AGENT_TAG=test-fad817f
+ROBOT_STATE_PUBLISHER_TAG=test-fad817f
+RTABMAP_TAG=test-fad817f
+ROS2_CONTROL_TAG=test-fad817f
+LSLIDAR_TAG=test-fad817f
+PERCEPTION_TAG=test-fad817f
+NAV2_TAG=test-fad817f
