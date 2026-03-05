@@ -835,7 +835,7 @@ class DialogueNode(Node):
         self.get_logger().info(f"  Model    : {self._resolve_model()}")
         self.get_logger().info(f"  Wake     : {self.dialogue_manager.wake_words}")
         self.get_logger().info(f"  History  : {self._max_turns} turns (SDK to_input_list format)")
-        self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s")
+        self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s (dialogue) / {self._llm_timeout * 3:.0f}s (LLM wait_for)")
         self.get_logger().info(f"  VerboseLLM: {self._verbose_llm}")
 
     # ────────────────────────────────────────────────────────────────
