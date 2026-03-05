@@ -218,7 +218,9 @@ STEP 1 — IMMEDIATELY, first execute_music_code (MAX 8 lines!):
   → User hears music RIGHT AWAY!
   → If the request is simple ("play something") — STEP 1 only, that's enough!
 
-STEP 2 — TRACK STRUCTURE, second execute_music_code (ONLY for "make a full mix/track"):
+STEP 2 — TRACK STRUCTURE, second execute_music_code (ONLY if user says EXACTLY "трек", "полноценный трек", "с intro и outro", "полноценная композиция"):
+  ❌ "ПОЛНЫЙ БИТ", "хороший бит", "крутую мелодию" — НЕТ, это STEP 1 only!
+  ✅ ONLY: "полноценный трек", "от начала до конца", "с секциями"
   → Define section functions and chain with Clock.future():
 
 STRUCTURE TEMPLATE (mandatory pattern for each track):
@@ -299,7 +301,8 @@ STEP 3 — (optional) rap/singing or additional elements:
 
 Rules:
 - STEP 1 always ≤ 8 lines — no def functions, direct patterns!
-- STEP 2 only for explicit "mix/track/full composition" requests — ≤ 25 lines!
+- STEP 2 ONLY for magic words: "трек", "полноценный трек", "с секциями", "от начала до конца" — ≤ 25 lines!
+- "ПОЛНЫЙ БИТ" does NOT trigger STEP 2 — it is STEP 1 only!
 - Minimum 3 layers total: drums + bass + melody
 - ALWAYS build with development and a proper ending (in STEP 2)!
 - Keep it brief — just play the music

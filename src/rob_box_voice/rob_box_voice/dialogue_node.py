@@ -86,12 +86,12 @@ class DialogueNode(Node):
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
         self.declare_parameter("history_max_turns", 20)
-        self.declare_parameter("agent_max_turns", 10)
+        self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("enable_fallback", False)
-        self.declare_parameter("llm_timeout_sec", 35.0)
+        self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
         # Tool names whose turns are excluded from conversation history.
         # Prevents DeepSeek V3 multi-turn FC pattern-completion bug where the
@@ -747,7 +747,7 @@ class DialogueNode(Node):
                 model=model,
                 prompt_template=music_prompt,
                 agent_max_turns=10,
-                max_tokens=1200,
+                max_tokens=500,   # hard cap → forces ≤8-line STEP 1 code, halves inference time
                 temperature=0.85,
             )
             skill_tools.append(
