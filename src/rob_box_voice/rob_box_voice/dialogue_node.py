@@ -747,7 +747,7 @@ class DialogueNode(Node):
                 model=model,
                 prompt_template=music_prompt,
                 agent_max_turns=10,
-                max_tokens=800,   # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
+                max_tokens=2000,   # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
                 temperature=0.85,
             )
             skill_tools.append(
