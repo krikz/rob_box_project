@@ -130,8 +130,17 @@ class NavigationSkill(BaseSkill):
         async def finish_mapping() -> str:
             """Finish mapping and switch to localization mode.
             Use when user says 'закончи карту', 'хватит маппить', 'завершить исследование'.
+            Do NOT use for optimize/improve map — use optimize_map() instead.
             """
             return await _call("finish_mapping", {}, timeout=10.0)
+
+        @function_tool
+        async def optimize_map() -> str:
+            """Post-process and optimize the map: detect loop closures, bundle adjustment, cleanup occupancy grids, backup.
+            Use when user says 'оптимизируй карту', 'улучши карту', 'запусти оптимизацию карты', 'оптимизация карты'.
+            This is NOT finish_mapping — it runs post-processing on an already finished map.
+            """
+            return await _call("optimize_map", {}, timeout=180.0)
 
         @function_tool
         async def speak_text(text: str, animation: str = "talking") -> str:
@@ -157,6 +166,7 @@ class NavigationSkill(BaseSkill):
             start_mapping,
             continue_mapping,
             finish_mapping,
+            optimize_map,
             speak_text,
         ]
 

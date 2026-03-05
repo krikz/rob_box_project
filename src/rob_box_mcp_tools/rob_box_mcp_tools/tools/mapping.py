@@ -251,11 +251,24 @@ class OptimizeMapTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         from std_srvs.srv import Empty
+        import threading
 
         self.loop_closures_client = node.create_client(Empty, "/rtabmap/rtabmap/detect_more_loop_closures")
         self.bundle_adjustment_client = node.create_client(Empty, "/rtabmap/rtabmap/global_bundle_adjustment")
         self.cleanup_client = node.create_client(Empty, "/rtabmap/rtabmap/cleanup_local_grids")
         self.backup_client = node.create_client(Empty, "/rtabmap/rtabmap/backup")
+
+        # Прогрев Zenoh discovery в фоне: без этого cross-Pi service_is_ready не срабатывает
+        def _warmup():
+            for client, name in [
+                (self.loop_closures_client, "detect_more_loop_closures"),
+                (self.bundle_adjustment_client, "global_bundle_adjustment"),
+                (self.cleanup_client, "cleanup_local_grids"),
+            ]:
+                ready = client.wait_for_service(timeout_sec=30.0)
+                self.log_info(f"[warmup] {name}: {'ready' if ready else 'not ready'}")
+
+        threading.Thread(target=_warmup, daemon=True, name="OptimizeMapWarmup").start()
 
     @property
     def name(self) -> str:
@@ -279,44 +292,53 @@ class OptimizeMapTool(MCPTool):
     def execute(self) -> MCPToolResult:
         """Запустить постобработку карты"""
         from std_srvs.srv import Empty
+        import concurrent.futures
+        import time
 
+        request = Empty.Request()
         steps = []
+        failed = []
 
-        if self.loop_closures_client.service_is_ready():
-            self.loop_closures_client.call_async(Empty.Request())
-            self.log_info("🔄 Поиск loop closures запущен")
-            steps.append("loop closures")
-        else:
-            self.log_warning("⚠️ detect_more_loop_closures service не готов")
+        def _call_with_timeout(client, svc_name, timeout=12.0):
+            """Вызвать сервис и ждать ответа до timeout секунд"""
+            future = client.call_async(request)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if future.done():
+                    return True
+                time.sleep(0.1)
+            return False
 
-        if self.bundle_adjustment_client.service_is_ready():
-            self.bundle_adjustment_client.call_async(Empty.Request())
-            self.log_info("📐 Bundle adjustment запущен")
-            steps.append("bundle adjustment")
-        else:
-            self.log_warning("⚠️ global_bundle_adjustment service не готов")
+        for client, svc_name, ok_msg, step_label in [
+            (self.loop_closures_client,    "detect_more_loop_closures", "🔄 Поиск loop closures запущен",    "loop closures"),
+            (self.bundle_adjustment_client, "global_bundle_adjustment",  "📐 Bundle adjustment запущен",       "bundle adjustment"),
+            (self.cleanup_client,           "cleanup_local_grids",       "🧹 Очистка occupancy grid запущена", "cleanup grids"),
+            (self.backup_client,            "backup",                    "💾 Backup запущен",                  "backup"),
+        ]:
+            try:
+                ok = _call_with_timeout(client, svc_name, timeout=12.0)
+                if ok:
+                    self.log_info(ok_msg)
+                    steps.append(step_label)
+                else:
+                    self.log_warning(f"⚠️ {svc_name}: нет ответа за 12с (сервис недоступен через Zenoh)")
+                    failed.append(svc_name)
+            except Exception as e:
+                self.log_warning(f"⚠️ {svc_name}: {e}")
+                failed.append(svc_name)
 
-        if self.cleanup_client.service_is_ready():
-            self.cleanup_client.call_async(Empty.Request())
-            self.log_info("🧹 Очистка occupancy grid запущена")
-            steps.append("cleanup grids")
-        else:
-            self.log_warning("⚠️ cleanup_local_grids service не готов")
+        if not steps and failed:
+            return MCPToolResult(
+                success=False,
+                error=f"RTABMap сервисы недоступны: {', '.join(failed)}. Возможно нужно вызывать с Main Pi."
+            )
 
-        if self.backup_client.service_is_ready():
-            self.backup_client.call_async(Empty.Request())
-            self.log_info("💾 Backup запущен")
-            steps.append("backup")
-        else:
-            self.log_warning("⚠️ backup service не готов")
+        result_msg = f"Оптимизация карты выполнена: {', '.join(steps)}."
+        if failed:
+            result_msg += f" Недоступны: {', '.join(failed)}."
+        result_msg += " Это может занять несколько минут."
 
-        if not steps:
-            return MCPToolResult(success=False, error="Ни один сервис RTABMap не был доступен")
-
-        return MCPToolResult(
-            success=True,
-            message=f"Оптимизация карты запущена: {', '.join(steps)}. Это может занять несколько минут."
-        )
+        return MCPToolResult(success=bool(steps), message=result_msg)
 
 
 class LoadMapTool(MCPTool):
