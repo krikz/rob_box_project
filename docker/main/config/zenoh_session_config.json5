@@ -809,4 +809,31 @@
       write: false,
     },
   },
+
+  /// QoS overwrite: make large visualization topics droppable.
+  ///
+  /// Problem: rtabmap publishes cloud_map with RELIABLE QoS (CongestionControl::Block).
+  /// At loop closure, cloud_map can be 10-200MB. If the Zenoh router's TCP buffer fills
+  /// up (e.g. RViz subscriber on slow WiFi), Zenoh closes the entire transport session —
+  /// rtabmap loses ALL input topics (camera, lidar) and freezes.
+  ///
+  /// Fix: override congestion_control to "drop" for 3D cloud topics.
+  /// The message will be silently skipped if the network is busy, but the transport
+  /// stays alive. ROS2 subscribers see no QoS incompatibility (still RELIABLE profile).
+  qos: {
+    publication: [
+      {
+        /// Match cloud_map and related 3D visualization topics in any namespace
+        key_exprs: [
+          "rt/**/cloud_map",
+          "rt/**/cloud_obstacles",
+          "rt/**/cloud_ground",
+          "rt/**/cloud_empty_space",
+        ],
+        config: {
+          congestion_control: "drop",
+        },
+      },
+    ],
+  },
 }
