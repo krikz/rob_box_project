@@ -378,6 +378,8 @@ class DialogueNode(Node):
             Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'."""
             if self._run_cancelled:
                 return "CANCELLED"
+            # Strip history marker prefix — LLM sometimes copies [выполнено через: ...] from history
+            text = re.sub(r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text).strip()
             # Collect ALL spoken texts immediately (before lock) so that when
             # multiple speak_text calls queue on the lock, _spoken_texts already
             # has all texts for proper history saving.
@@ -669,6 +671,8 @@ class DialogueNode(Node):
             Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'."""
             if self._run_cancelled:
                 return "CANCELLED"
+            # Strip history marker prefix — LLM sometimes copies [выполнено через: ...] from history
+            text = re.sub(r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text).strip()
             self._spoken_texts.append(text)
             async with lock:
                 if self._run_cancelled:

@@ -152,6 +152,8 @@ class NavigationSkill(BaseSkill):
                 text: Text to say (max 150 chars recommended).
                 animation: LED animation to play while speaking (default 'talking').
             """
+            import re
+            text = re.sub(r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text).strip()
             return await _call("speak_text", {"text": text, "animation": animation})
 
         return [
