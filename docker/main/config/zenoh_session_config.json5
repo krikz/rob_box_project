@@ -42,7 +42,9 @@
     ///
     /// Main Pi setting: Подключаемся к локальному роутеру через IP eth0 (НЕ localhost!)
     /// Это гарантирует что весь трафик идёт через Gigabit Ethernet интерфейс
-    endpoints: ["tcp/10.1.1.10:7447"],
+    // so_sndbuf/so_rcvbuf=16MB: защита от Zenoh transport closure при публикации
+    // больших сообщений (rtabmap cloud_map после loop closure ~50-200MB без вокселизации).
+    endpoints: ["tcp/10.1.1.10:7447#so_sndbuf=16777216;so_rcvbuf=16777216"],
 
     /// Global connect configuration,
     /// Accepts a single value or different values for router, peer and client.

@@ -204,11 +204,15 @@ services:
       - rtabmap_viz:=false
       - rviz:=false
       - visual_odometry:=false
-      - localization:=true
+      - localization:=false
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false
       - cfg:=/config/rtabmap/rtabmap.ini
+      # Вокселизация cloud_map: уменьшает размер сообщения в ~100-1000x.
+      # Предотвращает переполнение Zenoh TCP буфера при loop closure.
+      # Без этого rtabmap теряет все топики после первого большого loop closure.
+      - cloud_output_voxels:=0.1
     depends_on:
       - zenoh-router
     restart: unless-stopped
