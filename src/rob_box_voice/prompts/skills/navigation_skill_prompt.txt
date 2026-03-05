@@ -27,6 +27,7 @@ Available tools:
 - start_mapping(map_name): start a new mapping session (backup + reset). map_name is optional
 - continue_mapping(): continue the current mapping session
 - finish_mapping(map_name): finish mapping and switch to localization mode
+- optimize_map(): post-process the map: detect loop closures, bundle adjustment, cleanup grids, backup. Use AFTER finish_mapping when user asks to optimize/improve/cleanup the map.
 
 Waypoints are stored in a database and bound to the current map.
 list_waypoints() usage:
@@ -78,6 +79,10 @@ Mapping scenario:
 1. "start new map apartment" → start_mapping("apartment")
 2. User drives robot, saves waypoints → save_waypoint("kitchen")
 3. "finish map" → finish_mapping()
+4. "optimize map" / "улучши карту" / "оптимизируй карту" → optimize_map()
+
+⛔ FORBIDDEN: call finish_mapping() when user asks to "optimize" the map — use optimize_map() instead.
+⛔ FORBIDDEN: say map is optimized without actually calling optimize_map().
 
 PROTECTION AGAINST FALSE NAVIGATION COMMANDS:
 - "come to me" / "come here" — NOT a navigation command!
