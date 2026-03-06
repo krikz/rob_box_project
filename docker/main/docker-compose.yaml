@@ -212,8 +212,9 @@ services:
       - cfg:=/config/rtabmap/rtabmap.ini
       # Вокселизация cloud_map: уменьшает размер сообщения в ~100-1000x.
       # Предотвращает переполнение Zenoh TCP буфера при loop closure.
-      # Без этого rtabmap теряет все топики после первого большого loop closure.
-      - cloud_output_voxels:=0.1
+      # 0.3 = 3x крупнее вокселей чем 0.1 → ~27x меньше точек → ~27x меньший publish.
+      # Для навигации 30cm вокселей достаточно — nav2 использует 2D costmap, не 3D облако.
+      - cloud_output_voxels:=0.3
     depends_on:
       - zenoh-router
     restart: unless-stopped

@@ -646,15 +646,18 @@
           /// In the case of the transport link MTU being smaller than the ZN_BATCH_SIZE,
           /// then amount of memory being allocated for each queue is SIZE_XXX * LINK_MTU.
           /// If qos is false, then only the DATA priority will be allocated.
+          // Увеличены с 2 до 16 (макс): защита от Zenoh transport closure при
+          // бурстовой публикации больших reliable-сообщений (rtabmap cloud_map/mapData
+          // после optimize_map/finish_mapping). 16 × 65535 = ~1MB буфера на приоритет.
           size: {
             control: 2,
             real_time: 2,
-            interactive_high: 2,
-            interactive_low: 2,
-            data_high: 2,
-            data: 2,
-            data_low: 2,
-            background: 2,
+            interactive_high: 4,
+            interactive_low: 4,
+            data_high: 16,
+            data: 16,
+            data_low: 16,
+            background: 8,
           },
           /// Congestion occurs when the queue is empty (no available batch).
           congestion_control: {
@@ -669,9 +672,10 @@
             block: {
               /// The maximum time in microseconds to wait for an available batch before closing the transport session when sending a blocking message
               /// if still no batch is available.
-              /// ROS setting: increase the value to avoid unecessary link closure at launch time where congestion is likely
-              ///              to occur even over the loopback since all the Nodes are starting at the same time.
-              wait_before_close: 60000000,
+              /// ROS setting: 5s — компромисс между защитой от ложных закрытий при старте
+              /// и быстрым recovery после congestion (вместо 60s висеть сломанным).
+              /// При старте с большим числом нод достаточно 5s (все ноды стартуют < 30s).
+              wait_before_close: 5000000,
             },
           },
           /// Perform batching of messages if they are smaller of the batch_size
@@ -699,7 +703,9 @@
         /// For very high throughput scenarios, the rx_buffer_size can be increased to accommodate
         /// more in-flight data. This is particularly relevant when dealing with large messages.
         /// E.g. for 16MiB rx_buffer_size set the value to: 16777216.
-        buffer_size: 65535,
+        /// Увеличен до 16MB чтобы соответствовать TCP so_rcvbuf=16MB и принимать
+        /// большие сообщения (rtabmap cloud_map после loop closure до 200MB фрагментами).
+        buffer_size: 16777216,
         /// Maximum size of the defragmentation buffer at receiver end.
         /// Fragmented messages that are larger than the configured size will be dropped.
         /// The default value is 1GiB. This would work in most scenarios.
