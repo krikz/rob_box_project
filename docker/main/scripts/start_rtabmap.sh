@@ -10,6 +10,36 @@
 
 source /opt/ros/humble/setup.bash
 
+# ── Mapping Lifecycle: determine localization mode ─────────────────────────
+# Default: always start in localization. Only switch to mapping mode if
+# the state file explicitly says mode=mapping (robot restarted mid-mapping).
+#
+# State file: /maps/mapping_state.json (same volume as rtabmap.db)
+# Written by MCP tools (StartMappingTool / FinishMappingTool).
+STATE_FILE="/maps/mapping_state.json"
+LOCALIZATION_MODE="true"  # safe default
+
+if [ -f "$STATE_FILE" ]; then
+    MODE=$(python3 -c "import json,sys; d=json.load(open('$STATE_FILE')); print(d.get('mode','localization'))" 2>/dev/null || echo "localization")
+    MAP_NAME=$(python3 -c "import json,sys; d=json.load(open('$STATE_FILE')); print(d.get('map_name','') or '')" 2>/dev/null || echo "")
+    if [ "$MODE" = "mapping" ]; then
+        LOCALIZATION_MODE="false"
+        echo "[start_rtabmap.sh] ⚠️  State file: mode=mapping — starting in SLAM mode (map: '${MAP_NAME}')"
+    else
+        echo "[start_rtabmap.sh] ✅ State file: mode=localization — starting in localization mode (map: '${MAP_NAME}')"
+    fi
+else
+    echo "[start_rtabmap.sh] ℹ️  No state file found, defaulting to localization mode"
+    # Write default state so tools can read it
+    mkdir -p /maps
+    python3 -c "
+import json, time, pathlib
+p = pathlib.Path('$STATE_FILE')
+if not p.exists():
+    p.write_text(json.dumps({'mode':'localization','map_name':None,'map_id':None,'updated_at':time.time()}, indent=2))
+" 2>/dev/null || true
+fi
+
 # Patch rtabmap.launch.py to inject Grid/Sensor=2 as explicit ROS2 parameter.
 # Required because rtabmap auto-resets Grid/Sensor=0 when subscribe_scan=true,
 # unless the parameter is explicitly present in the Node's parameters dict.
@@ -29,5 +59,5 @@ echo "[start_rtabmap.sh] Static TF publisher PID: $TF_PID"
 # Trap to kill TF publisher when main process exits
 trap "kill $TF_PID 2>/dev/null" EXIT
 
-echo "[start_rtabmap.sh] Launching: $@"
-exec "$@"
+echo "[start_rtabmap.sh] Launching with localization:=${LOCALIZATION_MODE}: $@"
+exec "$@" "localization:=${LOCALIZATION_MODE}"

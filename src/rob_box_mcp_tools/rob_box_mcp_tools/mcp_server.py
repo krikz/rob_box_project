@@ -60,6 +60,7 @@ from .tools import (
     GetMusicStateTool,
 )
 from .waypoint_store import WaypointStore
+from .mapping_state import MappingState
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -89,6 +90,13 @@ class MCPServer(Node):
 
         # WaypointStore — SQLite CRUD для вейпоинтов (одна БД с VoiceMemory)
         self.waypoint_store = self._init_waypoint_store()
+
+        # MappingState — FSM персистентное состояние (localization / mapping)
+        self.mapping_state = MappingState()
+        _ms = self.mapping_state.get()
+        self.get_logger().info(
+            f"🗺️  MappingState: mode={_ms['mode']}, map='{_ms.get('map_name') or 'none'}'"
+        )
 
         # TF Buffer для определения текущей позиции робота
         self.tf_buffer = self._init_tf_buffer()
@@ -183,7 +191,7 @@ class MCPServer(Node):
         self.registry.register(MoveDirectionTool(self))
         self.registry.register(StopNavigationTool(self))
         self.registry.register(ListWaypointsTool(self, self.waypoint_store))
-        self.registry.register(SaveWaypointTool(self, self.waypoint_store, self.tf_buffer))
+        self.registry.register(SaveWaypointTool(self, self.waypoint_store, self.tf_buffer, self.mapping_state))
         self.registry.register(DeleteWaypointTool(self, self.waypoint_store))
         self.registry.register(ClearWaypointsTool(self, self.waypoint_store))
         self.registry.register(GetCurrentPoseTool(self, self.tf_buffer))
@@ -202,11 +210,11 @@ class MCPServer(Node):
         self.registry.register(self.battery_tool)
 
         # Mapping tools
-        self.registry.register(StartMappingTool(self, self.waypoint_store))
+        self.registry.register(StartMappingTool(self, self.waypoint_store, self.mapping_state))
         self.registry.register(ContinueMappingTool(self))
-        self.registry.register(FinishMappingTool(self, self.waypoint_store))
+        self.registry.register(FinishMappingTool(self, self.waypoint_store, self.mapping_state))
         self.registry.register(OptimizeMapTool(self))
-        self.registry.register(LoadMapTool(self, self.waypoint_store))
+        self.registry.register(LoadMapTool(self, self.waypoint_store, self.mapping_state))
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))
@@ -291,6 +299,25 @@ class MCPServer(Node):
             if not tool_name:
                 self._publish_error("Не указано имя инструмента", request_id)
                 return
+
+            # ── FSM Guard: block disallowed tools during active mapping ──
+            if not self.mapping_state.is_tool_allowed(tool_name):
+                _ms = self.mapping_state.get()
+                _map_label = f" '{_ms.get('map_name')}'" if _ms.get("map_name") else ""
+                _block_msg = (
+                    f"Идёт картографирование{_map_label}. "
+                    "Сначала скажи 'завершить картографирование' — "
+                    "тогда смогу помочь с навигацией и другими командами."
+                )
+                self.get_logger().warning(f"🚫 FSM blocked '{tool_name}' during mapping")
+                from .base import MCPToolResult
+                _result = MCPToolResult(success=False, error=_block_msg)
+                _resp = {"tool_name": tool_name, "request_id": request_id, "result": _result.to_dict()}
+                _msg_out = String()
+                _msg_out.data = json.dumps(_resp, ensure_ascii=False)
+                self.result_pub.publish(_msg_out)
+                return
+            # ────────────────────────────────────────────────────────────
 
             # Выполнить инструмент
             result = self.registry.execute(tool_name, **parameters)

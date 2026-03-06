@@ -16,6 +16,7 @@ from typing import List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from std_srvs.srv import Empty
     from ..waypoint_store import WaypointStore
+    from ..mapping_state import MappingState
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
@@ -23,9 +24,10 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class StartMappingTool(MCPTool):
     """Инструмент для начала нового картографирования"""
 
-    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None):
+    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
+        self.mapping_state = mapping_state
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         
@@ -112,6 +114,14 @@ class StartMappingTool(MCPTool):
             except Exception as e:
                 self.log_warning(f"⚠️ Не удалось создать карту в WaypointStore: {e}")
 
+        # 5. Обновить FSM состояние → mapping
+        if self.mapping_state is not None:
+            self.mapping_state.set_mapping(
+                map_name=map_name.strip() if map_name else None,
+                map_id=map_id,
+            )
+            self.log_info(f"🗺️  MappingState → mapping (map='{map_name}')")
+
         suffix = f" Карта: '{map_name}'." if map_name else ""
         mode_msg = "чистой базе" if new_location else "существующей карте"
         return MCPToolResult(
@@ -182,9 +192,10 @@ class ContinueMappingTool(MCPTool):
 class FinishMappingTool(MCPTool):
     """Инструмент для завершения картографирования"""
 
-    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None):
+    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
+        self.mapping_state = mapping_state
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         
@@ -220,6 +231,17 @@ class FinishMappingTool(MCPTool):
         """Завершить картографирование"""
         self.log_info("Завершение картографирования")
 
+        # Имя карты (если указано) — до переключения, пока ещё знаем map_id
+        active_map_id = None
+        if self.waypoint_store:
+            try:
+                active_map_id = self.waypoint_store.get_active_map_id()
+                if map_name and active_map_id:
+                    self.waypoint_store.rename_map(active_map_id, map_name.strip())
+                    self.log_info(f"📍 Карта названа: '{map_name}'")
+            except Exception as e:
+                self.log_warning(f"⚠️ Не удалось назвать карту: {e}")
+
         if self.set_mode_localization_client.service_is_ready():
             from std_srvs.srv import Empty
             request = Empty.Request()
@@ -228,15 +250,13 @@ class FinishMappingTool(MCPTool):
         else:
             self.log_warning("⚠️ RTABMap localization service не готов")
 
-        # Имя карты (если указано)
-        if map_name and self.waypoint_store:
-            try:
-                active_map_id = self.waypoint_store.get_active_map_id()
-                if active_map_id:
-                    self.waypoint_store.rename_map(active_map_id, map_name.strip())
-                    self.log_info(f"📍 Карта названа: '{map_name}'")
-            except Exception as e:
-                self.log_warning(f"⚠️ Не удалось назвать карту: {e}")
+        # Обновить FSM состояние → localization
+        if self.mapping_state is not None:
+            self.mapping_state.set_localization(
+                map_name=map_name.strip() if map_name else None,
+                map_id=active_map_id,
+            )
+            self.log_info(f"🗺️  MappingState → localization (map='{map_name}')")
 
         suffix = f" Карта: '{map_name}'." if map_name else ""
         return MCPToolResult(
@@ -313,9 +333,10 @@ class OptimizeMapTool(MCPTool):
 class LoadMapTool(MCPTool):
     """Загрузить существующую карту и перейти в режим локализации"""
 
-    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None):
+    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
+        self.mapping_state = mapping_state
         from std_srvs.srv import Empty
 
         # LoadDatabase импортируется лениво — rtabmap_msgs может отсутствовать на Vision Pi
@@ -387,6 +408,20 @@ class LoadMapTool(MCPTool):
             self.log_info("🧭 Режим локализации активирован")
         else:
             self.log_warning("⚠️ RTABMap localization service не готов")
+
+        # Обновить FSM состояние → localization
+        if self.mapping_state is not None:
+            resolved_id = None
+            if self.waypoint_store:
+                try:
+                    resolved_id = self.waypoint_store.get_active_map_id()
+                except Exception:
+                    pass
+            self.mapping_state.set_localization(
+                map_name=map_name.strip() if map_name.strip() else None,
+                map_id=resolved_id,
+            )
+            self.log_info(f"🗺️  MappingState → localization via load_map (map='{map_name}')")
 
         suffix = f" Карта: '{map_name}'." if map_name.strip() else ""
         return MCPToolResult(
