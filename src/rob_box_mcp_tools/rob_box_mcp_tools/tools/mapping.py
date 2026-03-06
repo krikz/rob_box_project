@@ -88,7 +88,7 @@ class StartMappingTool(MCPTool):
         if self.load_database_client is not None and self.load_database_client.service_is_ready():
             from rtabmap_msgs.srv import LoadDatabase  # type: ignore
             req = LoadDatabase.Request()
-            req.path = "/maps/rtabmap.db"
+            req.database_path = "/maps/rtabmap.db"
             req.clear = bool(new_location)
             self.load_database_client.call_async(req)
             action = "очищена и перезагружена" if new_location else "перезагружена"
@@ -395,7 +395,7 @@ class LoadMapTool(MCPTool):
         # Перезагрузить базу данных (clear=False — не стирать, просто reload)
         if self.load_database_client.service_is_ready():
             req = LoadDatabase.Request()
-            req.path = "/maps/rtabmap.db"
+            req.database_path = "/maps/rtabmap.db"
             req.clear = False
             self.load_database_client.call_async(req)
             self.log_info("🗺️ База данных перезагружена")
