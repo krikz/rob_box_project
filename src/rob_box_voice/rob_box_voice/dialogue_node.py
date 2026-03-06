@@ -634,6 +634,53 @@ class DialogueNode(Node):
                 ensure_ascii=False, indent=2,
             )
 
+        @function_tool
+        async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
+            """Показать список треков в медиатеке робота.
+            ВСЕГДА вызывай этот инструмент когда пользователь спрашивает про сохранённые треки,
+            мелодии или музыкальную библиотеку — НЕ отвечай по памяти!
+            tag="" — показать все; примеры тегов: 'full_track', 'robot_authored', 'minor'.
+            min_rating=0 — все треки; min_rating=4 — только хорошие."""
+            params: dict = {}
+            if tag:
+                params["tag"] = tag
+            if min_rating:
+                params["min_rating"] = min_rating
+            return await _call("list_tracks", params)
+
+        @function_tool
+        async def save_track(name: str, title: str = "", description: str = "",
+                             tags: str = "", rating: int = 0, notes: str = "") -> str:
+            """Сохранить текущий или последний сыгранный трек в медиатеку.
+            Используй когда пользователь говорит 'сохрани этот трек', 'запомни мелодию', 'сохрани'.
+            name — уникальный slug (например: 'chill_dnb_v1').
+            tags — строка через запятую, будет разбита в список."""
+            params: dict = {"name": name}
+            if title:
+                params["title"] = title
+            if description:
+                params["description"] = description
+            if tags:
+                params["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+            if rating:
+                params["rating"] = rating
+            if notes:
+                params["notes"] = notes
+            return await _call("save_track", params)
+
+        @function_tool
+        async def load_track(name: str) -> str:
+            """Загрузить трек из медиатеки и воспроизвести его.
+            Используй когда пользователь просит 'сыграй <название>', 'включи сохранённый трек'.
+            Сначала вызови list_tracks() чтобы узнать точное имя."""
+            return await _call("load_track", {"name": name})
+
+        @function_tool
+        async def delete_track(name: str) -> str:
+            """Удалить трек из медиатеки. Необратимо.
+            Используй когда пользователь говорит 'удали трек', 'забудь мелодию'."""
+            return await _call("delete_track", {"name": name})
+
         return [
             speak_text, play_sound, play_animation,
             memory_context, memory_save, memory_search,
@@ -642,6 +689,7 @@ class DialogueNode(Node):
             list_waypoints, save_waypoint, delete_waypoint, clear_waypoints, get_current_pose,
             set_volume, set_pitch,
             search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state,
+            list_tracks, save_track, load_track, delete_track,
         ]
 
     def _make_output_tools(self) -> list:
