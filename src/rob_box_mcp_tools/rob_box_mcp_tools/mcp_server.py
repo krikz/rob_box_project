@@ -358,7 +358,7 @@ class MCPServer(Node):
                 "timestamp": msg.timestamp if hasattr(msg, "timestamp") else 0.0,
                 "internet_available": msg.internet_available if hasattr(msg, "internet_available") else False,
                 "battery_percentage": msg.battery_percentage if hasattr(msg, "battery_percentage") else 0.0,
-                # Добавьте другие поля по необходимости
+                "mapping_mode": msg.mapping_mode if hasattr(msg, "mapping_mode") else "unknown",
             }
             self.perception_context_tool.update_context(context)
 
