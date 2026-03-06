@@ -54,10 +54,15 @@ from .tools import (
     MemorySearchTool,
     MemoryContextTool,
     MusicManager,
+    TrackLibrary,
     ExecuteMusicCodeTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    SaveTrackTool,
+    ListTracksTool,
+    LoadTrackTool,
+    DeleteTrackTool,
 )
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
@@ -236,10 +241,16 @@ class MCPServer(Node):
         music_max_amp = self.get_parameter("music_max_amp").value
         self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
         music_manager = MusicManager(max_amp=music_max_amp)
+        track_library = TrackLibrary()
+        self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
+        self.registry.register(SaveTrackTool(self, track_library, music_manager))
+        self.registry.register(ListTracksTool(self, track_library))
+        self.registry.register(LoadTrackTool(self, track_library, music_manager))
+        self.registry.register(DeleteTrackTool(self, track_library))
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
