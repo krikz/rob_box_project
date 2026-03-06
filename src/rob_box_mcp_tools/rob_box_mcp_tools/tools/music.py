@@ -16,10 +16,12 @@ music.py - Инструменты для управления музыкой в 
 """
 
 import json
+import os
 import re
 import socket
+import sqlite3
+import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -655,132 +657,92 @@ class GetMusicStateTool(MCPTool):
 
 
 # ---------------------------------------------------------------------------
-# TrackLibrary — персистентная медиатека треков
+# TrackLibrary — персистентная медиатека треков (SQLite)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_LIBRARY_PATH = Path("/config/music_library.json")
+from pathlib import Path as _Path
 
-#: Трек-рекорд сохранённый роботом 6 марта 2026 — первый трек по собственному желанию
-_BOOTSTRAP_TRACKS: Dict[str, Any] = {
-    "csm_132_full_track": {
-        "name": "csm_132_full_track",
-        "title": "C# Minor Full Track (первый авторский)",
-        "code": (
-            'Clock.bpm = 132\n'
-            'Scale.default = "minor"\n'
-            'Root.default = "C#"\n'
-            '\n'
-            '# Intro - атмосферное начало\n'
-            'def intro():\n'
-            '    d1 >> play("X...", sample=1, amp=0.2, room=0.3)\n'
-            '    p1 >> pads([0,4,5,3], dur=8, amp=0.15, room=0.6, sus=8)\n'
-            '    p2 >> space([0], dur=16, amp=0.1, room=0.8, sus=16)\n'
-            '    Clock.future(16, verse)\n'
-            '\n'
-            '# Verse - появляется бас и мелодия\n'
-            'def verse():\n'
-            '    d1 >> play("X..X.o..", sample=1, amp=0.25, room=0.2)\n'
-            '    p1 >> pads([0,4,5,3], dur=4, amp=0.2, room=0.5)\n'
-            '    p2 >> dub([0,-2,0,-3], dur=2, oct=3, amp=0.3, room=0.3)\n'
-            '    p3 >> blip([0,2,4,7,4,2,0,-2], dur=0.5, amp=0.5, room=0.2)\n'
-            '    Clock.future(32, chorus)\n'
-            '\n'
-            '# Chorus - максимальная энергия\n'
-            'def chorus():\n'
-            '    d1 >> play("X.o.X.o.", sample=1, amp=0.3, room=0.2)\n'
-            '    d2 >> play("--.-", sample=3, amp=0.15, room=0.2)\n'
-            '    p1 >> pads([0,4,7,4], dur=2, amp=0.25, room=0.4)\n'
-            '    p2 >> dub([0,-2,3,-1], dur=1, oct=3, amp=0.35, room=0.3)\n'
-            '    p3 >> blip([0,4,7,4,0,2,5,3], dur=0.25, amp=0.6, room=0.2)\n'
-            '    p4 >> strings((0,2,4), dur=8, amp=0.15, room=0.5, sus=8)\n'
-            '    Clock.future(32, bridge)\n'
-            '\n'
-            '# Bridge - переломный момент\n'
-            'def bridge():\n'
-            '    d1 >> play("X...X...", sample=1, amp=0.2, room=0.3)\n'
-            '    d2.stop()\n'
-            '    p1 >> pads([0,4,5,3], dur=4, amp=0.3, room=0.6)\n'
-            '    p2 >> dub([0,-2], dur=4, oct=3, amp=0.25, room=0.4)\n'
-            '    p3.stop()\n'
-            '    p4.stop()\n'
-            '    Clock.future(16, chorus2)\n'
-            '\n'
-            '# Final chorus - с усилением\n'
-            'def chorus2():\n'
-            '    d1 >> play("X.o.X.o.", sample=1, amp=0.35, room=0.2)\n'
-            '    d2 >> play("--.-", sample=3, amp=0.2, room=0.2)\n'
-            '    p1 >> pads([0,4,7,4], dur=2, amp=0.3, room=0.4)\n'
-            '    p2 >> dub([0,-2,3,-1], dur=1, oct=3, amp=0.4, room=0.3)\n'
-            '    p3 >> blip([0,4,7,4,0,2,5,3], dur=0.25, amp=0.65, room=0.2)\n'
-            '    p4 >> strings((0,2,4), dur=8, amp=0.2, room=0.5, sus=8)\n'
-            '    Clock.future(32, outro)\n'
-            '\n'
-            '# Outro - плавное завершение\n'
-            'def outro():\n'
-            '    d1 >> play("X...", sample=1, amp=0.15, room=0.3)\n'
-            '    d2.stop()\n'
-            '    p1 >> pads([0,4,5,3], dur=8, amp=0.2, room=0.6, sus=8)\n'
-            '    p2.stop()\n'
-            '    p3.stop()\n'
-            '    p4.stop()\n'
-            '    Clock.future(16, lambda: Clock.clear())\n'
-            '\n'
-            'intro()'
-        ),
-        "tags": ["full_track", "minor", "132bpm", "C#", "atmospheric", "robot_authored"],
-        "description": (
-            "Полноструктурная вещь: Intro → Verse → Chorus → Bridge → Chorus2 → Outro. "
-            "C# minor, 132 BPM. Первый трек который робот написал сам по собственному желанию — 6 марта 2026."
-        ),
-        "created_at": "2026-03-06T00:00:00+00:00",
-        "rating": 5,
-        "notes": "Робот сам захотел сделать что-то творческое и сочинил этот трек когда его спросили, что он хочет сделать.",
-        "play_count": 0,
-    }
-}
+_MIGRATION_DIR = _Path(__file__).resolve().parents[4] / "migrations"
+_MIGRATION_FILE = _MIGRATION_DIR / "004_music_library.sql"
+
+# Inline DDL fallback when migration file is not present (e.g. inside Docker).
+# Matches 004_music_library.sql exactly (CREATE TABLE + bootstrap INSERT).
+_INLINE_DDL = """
+CREATE TABLE IF NOT EXISTS music_tracks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE,
+    title       TEXT    NOT NULL DEFAULT '',
+    code        TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    tags        TEXT    NOT NULL DEFAULT '[]',
+    rating      INTEGER NOT NULL DEFAULT 0
+                        CHECK (rating BETWEEN 0 AND 5),
+    notes       TEXT    NOT NULL DEFAULT '',
+    play_count  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_music_tracks_rating ON music_tracks(rating);
+CREATE INDEX IF NOT EXISTS idx_music_tracks_name   ON music_tracks(name);
+"""
 
 
 class TrackLibrary:
-    """Персистентная медиатека треков.
+    """Персистентная SQLite медиатека треков.
 
-    Хранит треки в JSON-файле на диске. При первом запуске создаёт файл
-    с bootstrap-треком (первый авторский трек робота от 6 марта 2026).
+    Использует ту же БД что и VoiceMemory/WaypointStore (VOICE_MEMORY_DB_PATH).
+    Миграция ``004_music_library.sql`` применяется идемпотентно при инициализации.
+    Bootstrap-трек (первое авторское произведение робота, 2026-03-06) вставляется
+    через ``INSERT OR IGNORE`` в миграции — не хранится в Python-коде.
+
+    Thread-safe: все публичные методы используют ``self._lock``.
 
     Args:
-        library_path: Путь к JSON-файлу медиатеки.
+        db_path: Путь к SQLite-файлу. По умолчанию — из VOICE_MEMORY_DB_PATH
+                 или ``/data/voice_memory.db``.
     """
 
-    def __init__(self, library_path: Path = _DEFAULT_LIBRARY_PATH) -> None:
-        self._path = library_path
-        self._tracks: Dict[str, Any] = {}
-        self._load()
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        self._lock = threading.Lock()
+
+        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.row_factory = sqlite3.Row
+        self._apply_migration()
 
     # ------------------------------------------------------------------
-    # Persistence
+    # Migration
     # ------------------------------------------------------------------
 
-    def _load(self) -> None:
-        """Загрузить треки с диска. При отсутствии файла — создать с bootstrap-треком."""
-        if self._path.exists():
-            try:
-                data = json.loads(self._path.read_text("utf-8"))
-                self._tracks = data.get("tracks", {})
-                return
-            except (json.JSONDecodeError, OSError):
-                self._tracks = {}
+    def _apply_migration(self) -> None:
+        """Применить 004_music_library DDL идемпотентно (IF NOT EXISTS)."""
+        if _MIGRATION_FILE.exists():
+            ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
+        else:
+            ddl = _INLINE_DDL
 
-        # Первый запуск — создаём файл с bootstrap-треком
-        self._tracks = dict(_BOOTSTRAP_TRACKS)
-        self._save()
+        with self._lock:
+            self._conn.executescript(ddl)
+            self._conn.commit()
 
-    def _save(self) -> None:
-        """Сохранить медиатеку на диск."""
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"tracks": self._tracks}
-            self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
-        except OSError:
-            pass  # нет доступа к /config — продолжаем работать в памяти
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _slug(name: str) -> str:
+        return re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row, include_code: bool = True) -> Dict[str, Any]:
+        d = dict(row)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        if not include_code:
+            d.pop("code", None)
+        return d
 
     # ------------------------------------------------------------------
     # Public API
@@ -796,7 +758,7 @@ class TrackLibrary:
         rating: int = 0,
         notes: str = "",
     ) -> Dict[str, Any]:
-        """Сохранить трек в медиатеку.
+        """Сохранить или обновить трек в медиатеке (INSERT OR REPLACE).
 
         Args:
             name: Уникальный идентификатор (slug, без пробелов).
@@ -808,32 +770,50 @@ class TrackLibrary:
             notes: Личные заметки о треке.
 
         Returns:
-            dict ``success``, ``message``.
+            dict ``success``, ``message``, ``name``.
         """
-        slug = re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
+        slug = self._slug(name)
         if not slug:
             return {"success": False, "error": "Некорректное имя трека"}
 
         ts = datetime.now(timezone.utc).isoformat()
-        existing = self._tracks.get(slug, {})
-        self._tracks[slug] = {
-            "name": slug,
-            "title": title or name,
-            "code": code,
-            "tags": tags or [],
-            "description": description,
-            "created_at": existing.get("created_at", ts),
-            "updated_at": ts,
-            "rating": max(0, min(5, rating)),
-            "notes": notes,
-            "play_count": existing.get("play_count", 0),
-        }
-        self._save()
-        action = "обновлён" if existing else "сохранён"
+        tags_json = json.dumps(tags or [], ensure_ascii=False)
+        rating = max(0, min(5, rating))
+
+        with self._lock:
+            # Сохраняем created_at существующей записи если она есть
+            row = self._conn.execute(
+                "SELECT created_at FROM music_tracks WHERE name = ?", (slug,)
+            ).fetchone()
+            created_at = row["created_at"] if row else ts
+            action = "обновлён" if row else "сохранён"
+
+            self._conn.execute(
+                """
+                INSERT INTO music_tracks
+                    (name, title, code, description, tags, rating, notes,
+                     play_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(
+                    (SELECT play_count FROM music_tracks WHERE name = ?), 0
+                ), ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    title       = excluded.title,
+                    code        = excluded.code,
+                    description = excluded.description,
+                    tags        = excluded.tags,
+                    rating      = excluded.rating,
+                    notes       = excluded.notes,
+                    updated_at  = excluded.updated_at
+                """,
+                (slug, title or name, code, description, tags_json,
+                 rating, notes, slug, created_at, ts),
+            )
+            self._conn.commit()
+
         return {"success": True, "message": f"Трек '{slug}' {action}", "name": slug}
 
     def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0) -> Dict[str, Any]:
-        """Вернуть список треков с фильтрацией.
+        """Вернуть список треков с фильтрацией (без поля code).
 
         Args:
             tag: Фильтр по тегу (опционально).
@@ -842,46 +822,55 @@ class TrackLibrary:
         Returns:
             dict ``success``, ``tracks`` (list of dicts), ``total``.
         """
-        result = []
-        for track in self._tracks.values():
-            if track.get("rating", 0) < min_rating:
-                continue
-            if tag and tag not in track.get("tags", []):
-                continue
-            result.append({
-                "name": track["name"],
-                "title": track.get("title", track["name"]),
-                "description": track.get("description", ""),
-                "tags": track.get("tags", []),
-                "rating": track.get("rating", 0),
-                "play_count": track.get("play_count", 0),
-                "created_at": track.get("created_at", ""),
-                "notes": track.get("notes", ""),
-            })
-        result.sort(key=lambda t: (-t["rating"], t["name"]))
-        return {"success": True, "tracks": result, "total": len(result)}
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT name, title, description, tags, rating, notes,
+                       play_count, created_at, updated_at
+                FROM music_tracks
+                WHERE rating >= ?
+                ORDER BY rating DESC, name ASC
+                """,
+                (min_rating,),
+            ).fetchall()
+
+        tracks = [self._row_to_dict(r, include_code=False) for r in rows]
+        if tag:
+            tracks = [t for t in tracks if tag in t.get("tags", [])]
+        return {"success": True, "tracks": tracks, "total": len(tracks)}
 
     def load_track(self, name: str) -> Dict[str, Any]:
-        """Получить код трека для воспроизведения.
+        """Получить код трека и инкрементировать play_count.
 
         Args:
             name: Имя трека.
 
         Returns:
-            dict ``success``, ``code``, ``track`` (метаданные) или ``error``.
+            dict ``success``, ``code``, ``track`` (метаданные без code) или ``error``.
         """
-        slug = re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
-        track = self._tracks.get(slug)
-        if not track:
-            available = ", ".join(self._tracks.keys()) or "библиотека пуста"
-            return {"success": False, "error": f"Трек '{slug}' не найден. Доступны: {available}"}
+        slug = self._slug(name)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM music_tracks WHERE name = ?", (slug,)
+            ).fetchone()
 
-        # Увеличиваем счётчик воспроизведений
-        self._tracks[slug]["play_count"] = track.get("play_count", 0) + 1
-        self._save()
+            if not row:
+                names = [r[0] for r in self._conn.execute(
+                    "SELECT name FROM music_tracks ORDER BY name"
+                ).fetchall()]
+                available = ", ".join(names) or "библиотека пуста"
+                return {"success": False, "error": f"Трек '{slug}' не найден. Доступны: {available}"}
 
-        meta = {k: v for k, v in self._tracks[slug].items() if k != "code"}
-        return {"success": True, "code": track["code"], "track": meta}
+            self._conn.execute(
+                "UPDATE music_tracks SET play_count = play_count + 1 WHERE name = ?",
+                (slug,),
+            )
+            self._conn.commit()
+
+        full = self._row_to_dict(row, include_code=True)
+        code = full.pop("code")
+        full["play_count"] += 1  # reflect incremented value
+        return {"success": True, "code": code, "track": full}
 
     def delete_track(self, name: str) -> Dict[str, Any]:
         """Удалить трек из медиатеки.
@@ -892,32 +881,17 @@ class TrackLibrary:
         Returns:
             dict ``success``, ``message`` или ``error``.
         """
-        slug = re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
-        if slug not in self._tracks:
+        slug = self._slug(name)
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM music_tracks WHERE name = ? RETURNING name", (slug,)
+            )
+            deleted = cur.fetchone()
+            self._conn.commit()
+
+        if not deleted:
             return {"success": False, "error": f"Трек '{slug}' не найден"}
-        del self._tracks[slug]
-        self._save()
         return {"success": True, "message": f"Трек '{slug}' удалён из медиатеки"}
-
-    def rate_track(self, name: str, rating: int, notes: str = "") -> Dict[str, Any]:
-        """Обновить рейтинг и заметки трека.
-
-        Args:
-            name: Имя трека.
-            rating: Оценка 0-5.
-            notes: Обновлённые заметки (опционально).
-
-        Returns:
-            dict ``success``, ``message`` или ``error``.
-        """
-        slug = re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
-        if slug not in self._tracks:
-            return {"success": False, "error": f"Трек '{slug}' не найден"}
-        self._tracks[slug]["rating"] = max(0, min(5, rating))
-        if notes:
-            self._tracks[slug]["notes"] = notes
-        self._save()
-        return {"success": True, "message": f"Трек '{slug}' обновлён: рейтинг={rating}"}
 
 
 # ---------------------------------------------------------------------------
