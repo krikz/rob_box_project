@@ -817,18 +817,18 @@
   /// up (e.g. RViz subscriber on slow WiFi), Zenoh closes the entire transport session —
   /// rtabmap loses ALL input topics (camera, lidar) and freezes.
   ///
-  /// Fix: override congestion_control to "drop" for 3D cloud topics.
-  /// The message will be silently skipped if the network is busy, but the transport
-  /// stays alive. ROS2 subscribers see no QoS incompatibility (still RELIABLE profile).
+  /// Fix: override congestion_control to "drop" for ALL rtabmap output topics.
+  /// Covers cloud_map, cloud_obstacles, cloud_ground, cloud_empty_space, grid_map,
+  /// proj_map, mapData (heaviest at high WM), and any future rtabmap outputs.
+  /// The message will be silently skipped if the network is congested, but the
+  /// Zenoh transport stays alive. ROS2 subscribers see no QoS incompatibility.
+  /// Root cause: at WM=200+ loop closure triggers massive mapData + grid_map publish,
+  /// which with RELIABLE/CongestionControl::Block would freeze then kill transport.
   qos: {
     publication: [
       {
-        /// Match cloud_map and related 3D visualization topics in any namespace
         key_exprs: [
-          "rt/**/cloud_map",
-          "rt/**/cloud_obstacles",
-          "rt/**/cloud_ground",
-          "rt/**/cloud_empty_space",
+          "rt/rtabmap/**",
         ],
         config: {
           congestion_control: "drop",
