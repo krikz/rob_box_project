@@ -84,7 +84,19 @@ class StartMappingTool(MCPTool):
         if not backup_success:
             self.log_warning("⚠️ Backup не удался, продолжаем без backup")
 
-        # 2. Загрузить базу данных (clear=True если новая локация, иначе только reload)
+        # 2. Переключить в режим mapping СНАЧАЛА (до LoadDatabase!)
+        # LoadDatabase(clear=True) в localization режиме вызывает краш rtabmap
+        # (pure virtual method called / SIGABRT)
+        if self.set_mode_mapping_client.service_is_ready():
+            from std_srvs.srv import Empty
+            request = Empty.Request()
+            self.set_mode_mapping_client.call_async(request)
+            self.log_info("Режим mapping активирован")
+        else:
+            self.log_warning("⚠️ RTABMap set_mode service не готов, пропускаем")
+
+        # 3. Загрузить базу данных (clear=True если новая локация, иначе только reload)
+        # Вызывается ПОСЛЕ set_mode_mapping чтобы избежать краша в localization mode
         if self.load_database_client is not None and self.load_database_client.service_is_ready():
             from rtabmap_msgs.srv import LoadDatabase  # type: ignore
             req = LoadDatabase.Request()
@@ -95,15 +107,6 @@ class StartMappingTool(MCPTool):
             self.log_info(f"База данных {action}")
         else:
             self.log_warning("⚠️ RTABMap load_database service не готов, пропускаем")
-
-        # 3. Переключить в режим mapping
-        if self.set_mode_mapping_client.service_is_ready():
-            from std_srvs.srv import Empty
-            request = Empty.Request()
-            self.set_mode_mapping_client.call_async(request)
-            self.log_info("Режим mapping активирован")
-        else:
-            self.log_warning("⚠️ RTABMap set_mode service не готов, пропускаем")
 
         # 4. Создать новую карту в WaypointStore
         map_id = None
