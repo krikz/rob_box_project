@@ -253,6 +253,8 @@ services:
       - renardo_samples:/root/.config/renardo/samples
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
+      # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
+      - ../../migrations:/migrations:ro
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
