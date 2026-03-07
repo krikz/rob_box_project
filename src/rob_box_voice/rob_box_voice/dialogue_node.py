@@ -1336,7 +1336,8 @@ class DialogueNode(Node):
             "3) BPM от 60 до 145, sus не более 8. "
             "4) Никаких p_all.stop()/d_all.stop() — не существуют. "
             "5) В КОНЦЕ — set_dj_mode(enabled=True, next_transition_sec=X): "
-            "X=30-40 для энергичного, X=50-70 для среднего, X=70-90 для амбиента."
+            "X=30-40 для энергичного, X=50-70 для среднего, X=70-90 для амбиента. "
+            "⚠️ В set_dj_mode НЕ передавай параметр theme — тема уже сохранена системой!"
         )
 
     def _on_dj_mode_msg(self, msg: String) -> None:
@@ -1350,11 +1351,17 @@ class DialogueNode(Node):
 
         self._dj_mode_enabled = enabled
         if enabled:
-            # Сохраняем тему вечеринки если передана (только при явной передаче — не затирать)
+            # Сохраняем тему вечеринки только при первом включении.
+            # Авто-переходы НЕ должны перезаписывать тему — она устанавливается один раз!
             theme = data.get("theme")
             if theme and isinstance(theme, str) and theme.strip():
-                self._dj_theme = theme.strip()
-                self.get_logger().info(f"🎧 DJ Mode тема: {self._dj_theme!r}")
+                if self._dj_transition_count == 0 or not self._dj_theme:
+                    self._dj_theme = theme.strip()
+                    self.get_logger().info(f"🎧 DJ Mode тема: {self._dj_theme!r}")
+                else:
+                    self.get_logger().debug(
+                        f"🎧 DJ Mode: тема уже установлена ({self._dj_theme!r}), игнорируем '{theme}'"
+                    )
             # Интервал задаётся LLM через next_transition_sec; фолбэк 60с для первого включения
             next_sec = data.get("next_transition_sec")
             if next_sec:
