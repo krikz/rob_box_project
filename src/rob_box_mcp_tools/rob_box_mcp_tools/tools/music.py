@@ -295,6 +295,34 @@ class MusicManager:
                 "error": "Renardo недоступен. Установите пакет renardo_lib.",
             }
 
+        # Если код содержит Clock.clear() — сначала форсировано освобождаем все
+        # SC-узлы через /g_freeAll + пересоздаём Group 1.
+        #
+        # Почему это нужно: Clock.clear() останавливает планировщик Renardo
+        # (player.kill()), но НЕ посылает /g_freeAll в scsynth. Уже запущенные
+        # синтезаторы продолжают жить до конца sus-конверта (до 8 beats × 60/BPM
+        # секунд). После 3-5 переходов 1024-нодовая таблица SC забивается
+        # → "too many nodes" / "negative node IDs" → тишина.
+        if "Clock.clear()" in code:
+            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass  # если SC недоступен — продолжаем, Clock.clear() сам справится
+            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
+            import struct as _struct
+            msg_gnew = bytearray()
+            for part in [b"/g_new\x00\x00", b",iii\x00\x00\x00\x00"]:
+                msg_gnew.extend(part)
+            for v in [1, 0, 0]:
+                msg_gnew.extend(_struct.pack(">i", v))
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(bytes(msg_gnew), (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass
+
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
