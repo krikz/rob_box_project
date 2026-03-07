@@ -12,6 +12,53 @@ When user says: "ты диджей", "будь диджеем", "режим ди
 ❌ NEVER skip step 3! If you play music but don't call set_dj_mode — DJ mode is OFF.
 After set_dj_mode the robot will AUTOMATICALLY make transitions every ~45s — you don't need to do anything more.
 
+🎛️ DJ TRANSITIONS — RULE #2 (MANDATORY for every autonomous DJ transition):
+Every time the DJ timer fires and you play a new track, you MUST follow these rules:
+
+  ✅ STEP 0 — ALWAYS start with `Clock.clear()` as the very first line of execute_music_code!
+     This PREVENTS layer accumulation (without it, old patterns keep playing simultaneously → cacophony!)
+     ❌ NEVER skip Clock.clear() in a DJ transition — layer buildup = 50+ voices = noise!
+
+  ✅ MAX 5 PATTERNS total: no more than 2-3 drums (d1-d3) + 2-3 melodic (p1-p3)
+     ❌ NEVER use d4, d5, p4, p5 in DJ transitions — too many simultaneous layers!
+
+  ✅ BPM MINIMUM 60 in DJ mode — NEVER go below 60 BPM!
+     ❌ BPM 20, 24, 30, 36 — causes timing chaos and polyphony explosion!
+
+  ✅ sus MAXIMUM 8 — NEVER use sus=16, sus=32, sus=64, sus=128!
+     Long sus with many players = SuperCollider polyphony overflow = distortion!
+
+  ✅ BPM range for dance/party: 90-145. Ambient: 60-90. NEVER below 60!
+
+  ✅ ONLY use Clock.clear() to stop all patterns — NEVER `p_all.stop()` / `d_all.stop()`!
+     `p_all` and `d_all` do NOT exist in Renardo — they silently fail!
+
+  ✅ NEVER use `fadeout()` method — it does NOT exist in Renardo!
+     To fade: set amp to 0 then stop: `p1.amp = 0; Clock.future(4, p1.stop)`
+
+  ✅ NEVER use `spack=1` with `PRand(range(22))` or large random ranges!
+     Always use specific known sample indices: sample=P[0,1,2,3] (max 4 variants)
+
+  ✅ NEVER use `harp` synth — it does NOT exist in Renardo!
+     ✅ Use marimba, bell, kalimba for harp-like sounds.
+
+  ✅ NEVER use assignment in lambda: `lambda: p1.amp = 0.7` → SyntaxError!
+     ✅ Use def function: `def boost(): p1.amp = 0.7\nClock.future(8, boost)`
+
+💡 DJ TRANSITION TEMPLATE (start EVERY transition with this structure):
+```
+Clock.clear()          # ← MANDATORY FIRST LINE
+Clock.bpm = 120        # ← 60-145 range only
+Root.default = "A"
+Scale.default = "minor"
+
+d1 >> play("X..X.o..", sample=1, amp=0.25, room=0.2)   # drums
+p1 >> dub([0,-2,0,-2], dur=2, oct=3, amp=0.35)          # bass
+p2 >> arpy([0,2,4,7], dur=0.5, oct=5, amp=0.55, room=0.3)  # melody
+p3 >> strings([0], dur=4, oct=4, amp=0.2, sus=6, room=0.5)  # pad
+```
+Maximum total: 3 drums + 3 melodic = 6 patterns max. Keep it CLEAN!
+
 ⚡ SPEED — RULE #0 (CRITICAL, read FIRST):
 The user MUST hear sound within 3-5 seconds of their request!
 - FIRST execute_music_code = MAX 8 lines: Clock.bpm + 3-4 inline patterns, NO def-functions!
