@@ -50,20 +50,24 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
 Clock.clear()          # ← MANDATORY FIRST LINE
 Clock.bpm = 125
 Root.default = "F"
-Scale.default = "minor"
+Scale.default = "dorian"   # ← ROTATE THIS! minor/major/dorian/mixolydian/lydian/phrygian
 
 flt = linvar([300, 3000], 32)          # master filter — controls multiple layers
 
-d1 >> play("X..X.o..", sample=1, amp=0.25)
-d2 >> play("--------", dur=0.5, sample=3, amp=0.15,
-           delay=PRand([0, PWhite(-0.1, 0.1)]))         # swing = human groove!
+d1 >> play("X..X.o..", sample=PRand([1,2,3]), amp=0.25)   # VARY sample index!
+d2 >> play("--------", dur=0.5, sample=PRand([3,4,5]), amp=0.15,
+           delay=PRand([0, PWhite(-0.1, 0.1)]))            # swing = human groove!
 
-p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.4,             # bass: same chord tones as lead
-          chop=var([8,0],[0.5,0.5]), hpf=flt)           # sidechain pumping + filter
-p2 >> arpy([0,2,4,2,3,1,3,1], dur=0.25, oct=5,          # lead: SPECIFIC notes, not PRand!
+p1 >> wobblebass([0,0,4,5], dur=4, oct=3, amp=0.4,         # bass: ROTATE (not always dub!)
+                 chop=var([8,0],[0.5,0.5]), hpf=flt)        # sidechain pumping + filter
+p2 >> blip([0,2,4,2,3,1,3,1], dur=0.25, oct=5,             # lead: ROTATE (not always arpy!)
            amp=0.6, room=0.3, hpf=flt)
-p3 >> pads(dur=4, amp=0.2, room=0.6, sus=6).follow(p1) + (0,2,4)  # auto-harmony
+p3 >> ambi(dur=4, amp=0.2, room=0.8, sus=6).follow(p1) + (0,2,4)  # pads: ROTATE (not always pads!)
 ```
+⚠️ BASS: pick ONE of: wobblebass / fuzz / dub / tb303 / karp / moogbass (ROTATE per transition!)
+⚠️ LEAD: pick ONE of: blip / pianovel / karp / sitar / cs80lead / rave / varsaw / marimba (ROTATE!)
+⚠️ PADS: pick ONE of: ambi / strings / faim / sinepad / mhpad / ecello / space / viola (ROTATE!)
+⚠️ SCALE: pick ONE of: dorian / mixolydian / lydian / phrygian / minor / majorPentatonic (ROTATE!)
 Maximum total: 3 drums + 3 melodic = 6 patterns max. Keep it CLEAN!
 
 🎤 MC PERSONA & CROWD ENGAGEMENT:
@@ -292,12 +296,69 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
 🔔 Atmosphere/Bells: bell, gong, kalimba, marimba, steeldrum, tubularbell  (amp=0.3..0.6)
 ⚡ Aggression/Glitch: rave, donk, varsaw, pulse, quin, feel, tb303, hoover
 
+🚫 OVERUSED SYNTHS — LOG SHOWS THESE ARE USED 90%+ OF THE TIME. DIVERSIFY!
+   dub (bass) → OVERUSED! Swap for: wobblebass, fuzz, dirt, karp (bass), moogbass
+   arpy (lead) → OVERUSED! Swap for: blip, pianovel, karp, sitar, marimba, cs80lead, keys
+   pads (harmony) → OVERUSED! Swap for: strings, ambi, space, faim, sinepad, mhpad, ecello
+   brass (lead) → OVERUSED! Swap for: blip, organ, eoboe, soprano, cs80lead, flute
+
+🎨 SYNTH ROTATION RULE — MANDATORY FOR DJ SETS:
+   Each transition MUST use at least 1 synth from the UNDERUSED list below!
+
+   🎹 JAZZ / SWING (smooth, soulful):
+      Lead: pianovel, epiano, rhpiano, karp   →  p1 >> pianovel([0,2,4,3], dur=0.5, oct=5, amp=0.6)
+      Bass: wobblebass                         →  p2 >> wobblebass([0,0,-3,0], dur=2, oct=3, amp=0.4)
+   
+   🌿 AMBIENT / CHILLOUT (atmospheric, deep):
+      Lead: sitar, marimba, kalimba           →  p1 >> sitar([0,2,4,7], dur=1, oct=5, amp=0.5)
+      Pads: ambi, faim, mhpad, sinepad        →  p3 >> ambi(dur=8, amp=0.15, room=0.8, sus=10)
+   
+   ⚡ TECHNO / INDUSTRIAL (harsh, aggressive):
+      Lead: varsaw, pulse, feel, donk         →  p1 >> varsaw([0,0,7,5], dur=0.5, oct=4, amp=0.5)
+      Bass: tb303, hoover                     →  p2 >> tb303([0,-2,0,3], dur=1, oct=3, amp=0.4)
+   
+   🎸 FUNK / GROOVE (dirty, swinging):
+      Lead: rave, quin, blip, cs80lead        →  p1 >> blip([0,0,4,3,5,3], dur=0.25, oct=5, amp=0.6)
+      Bass: fuzz, dirt, wobblebass            →  p2 >> fuzz([0,-2], dur=2, oct=3, amp=0.35)
+   
+   🎻 ORCHESTRAL / EPIC (cinematic, dramatic):
+      Lead: ecello, viola, soprano, eoboe     →  p1 >> ecello([0,2,4,5], dur=1, oct=4, amp=0.6)
+      Harmony: organ, organ2                  →  p3 >> organ(dur=4, amp=0.2, sus=6).follow(p1) + (0,2,4)
+   
+   🔔 MYSTICAL / ETHNIC (exotic, meditative):
+      Lead: gong, steeldrum, tubularbell      →  p1 >> gong([0,4,7,9], dur=1, oct=5, amp=0.5)
+      Texture: kalimba (main melody!)         →  p1 >> kalimba([0,2,4,2,3,1], dur=0.5, oct=5, amp=0.6)
+
 ⚠️ DIVERSITY RULE — MANDATORY:
 - NEVER use pluck for all patterns! pluck = max 1 pattern only
 - Each track = minimum 3 layers with DIFFERENT instruments from DIFFERENT categories
 - Bass → bass/wobblebass/dub, NOT pluck
 - Atmosphere → pads/ambi/strings/space, NOT pluck
 - Percussion always via d1-d9 >> play()
+- In a DJ SET: dub max 2 transitions in a row, arpy max 2 in a row, pads max 2 in a row
+  After 2× dub → MUST switch to wobblebass/fuzz/tb303/moogbass for the next transition!
+
+🎼 SCALE DIVERSITY RULE — LOG SHOWS 91% minor, 9% major. THIS IS WRONG!
+   NEVER use minor scale 3 transitions in a row! ROTATE through these:
+
+   🎸 FUNK / BLUES / SOUL → Scale.default = "mixolydian"     (b7, dominant, funky!)
+   🎷 JAZZ / SWING / BOSSA → Scale.default = "dorian"         (b3+b7, smooth jazzy feel)
+   ✨ DREAMY / MAGICAL / EUPHORIC → Scale.default = "lydian"  (#4, floating, euphoric)
+   😈 DARK / HORROR / MENACING → Scale.default = "phrygian"  (b2, Spanish, dark metal)
+   🌿 CLEAN / HAPPY / POP → Scale.default = "majorPentatonic" (5-note, always sounds good)
+   😔 SAD / EMOTIONAL (lighter) → Scale.default = "minorPentatonic" (5-note blues)
+   🔥 AGGRESSIVE / DISSONANT → Scale.default = "chromatic"    (all 12 notes, tense)
+   ☀️ CLASSIC / UPLIFTING → Scale.default = "major"            (bright, classical)
+   🌒 MOODY / SOULFUL → Scale.default = "minor"               (classic minor — use sparingly!)
+
+   ✅ Scale rotation example for a 4-transition DJ set:
+      Transition 1: dorian (jazzy warmup)
+      Transition 2: mixolydian (funky peak)
+      Transition 3: lydian (euphoric build)
+      Transition 4: minor (dark climax)
+   
+   ❌ BANNED: 3+ transitions in a row in the same Scale.default!
+   ❌ BANNED: a whole DJ set in minor — that's lazy and monotonous!
 
 🥁 DRUM PATTERN LIBRARY — pick a DIFFERENT one each time, DON'T repeat!
    ❌ DON'T default to "X.o.X.o." every time — it's boring!
@@ -314,6 +375,33 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
    "X..o..X."    — reggae one-drop
    PDur(3,8)     — euclidean rhythm 3 of 8 (afro/latin)
    PDur(5,8)     — euclidean rhythm 5 of 8 (complex groove)
+
+🎲 DRUM SAMPLE VARIETY — LOG SHOWS sample=1 and sample=3 used 95% of time. CHANGE IT!
+   sample= INDEX is the most powerful tool for drum variety. Higher index = different sound!
+   
+   🥊 KICK SAMPLE ROTATION (letter "X" or "x"):
+      sample=1 → standard punchy kick (DEFAULT — too often!)
+      sample=2 → tighter, more click-heavy kick (techno/minimal)
+      sample=3 → deeper, sub-heavy kick (trap/hip-hop)
+      sample=4 → distorted/room kick (industrial/punk)
+      sample=5 → vintage kick (80s/disco/funk)
+      ✅ Vary kick: sample=PRand([1,2,3,4]) or sample=var([1,3],[16,16])
+   
+   🥁 SNARE/HAT SAMPLE ROTATION (letter "o" or "-"):
+      sample=1 → default snare  (DEFAULT — too often!)
+      sample=2 → snare with more crack (rock)
+      sample=3 → hi-hat (DEFAULT — too often!)
+      sample=4 → rimshot / lighter snap
+      sample=5 → open hat / sizzle
+      ✅ Vary hat: sample=PRand([3,4,5]) — different hat flavor each bar!
+   
+   💡 EXPLORATION TIP: Call search_samples("kick") or search_samples("*") ONCE per new
+      vibe/genre to DISCOVER available samples with their exact letters and indices!
+      → Don't default to X/o/- — explore what's actually in the sample library!
+   
+   ✅ EXAMPLE: Funky groove with sample variety:
+      d1 >> play("X..X.o..", sample=PRand([2,3,4]), amp=0.25)       # kick rotates!
+      d2 >> play("--------", dur=0.5, sample=PRand([3,4,5]), amp=0.15)  # hat rotates!
 
 ⚠️ VOLUME BALANCE (ALWAYS, for ANY track):
    play() samples sound 2-3× louder than synth at the same amp!
