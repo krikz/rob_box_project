@@ -14,7 +14,6 @@ Publishes:
 import asyncio
 import json
 import os
-import random
 import re
 import threading
 import time
@@ -1281,6 +1280,9 @@ class DialogueNode(Node):
         "(переопредели p1/p2/p3/d1 с новыми параметрами — они обновятся плавно без перезапуска). "
         "Можно сменить BPM на ±5-15, сдвинуть гамму/тональность, добавить новый слой или убрать старый. "
         "По своему усмотрению произнеси короткую энергичную DJ-фразу (не обязательно каждый раз). "
+        "ОБЯЗАТЕЛЬНО в конце вызови set_dj_mode(enabled=True, next_transition_sec=X) где X — "
+        "количество секунд до следующего перехода которое ТЫ выбираешь исходя из темпа сета: "
+        "быстрый энергичный → 30–40с, медленный амбиент → 60–90с. "
         "Главное — непрерывный поток музыки и хорошее настроение публики."
     )
 
@@ -1295,13 +1297,18 @@ class DialogueNode(Node):
 
         self._dj_mode_enabled = enabled
         if enabled:
-            # Первый переход через 30–60 секунд
-            delay = random.uniform(30.0, 60.0)
+            # Интервал задаётся LLM через next_transition_sec; фолбэк 60с для первого включения
+            next_sec = data.get("next_transition_sec")
+            if next_sec:
+                delay = float(max(15, min(300, int(next_sec))))
+            else:
+                delay = 60.0  # дефолт при первом включении без явного интервала
             self._dj_next_transition_at = time.time() + delay
-            self._dj_transition_count = 0
             self.get_logger().info(
-                f"🎧 DJ Mode ENABLED — первый переход через {delay:.0f}с"
+                f"🎧 DJ Mode: следующий переход через {delay:.0f}с"
             )
+            if self._dj_transition_count == 0:
+                self.get_logger().info("🎧 DJ Mode ENABLED")
         else:
             self._dj_next_transition_at = 0.0
             self._dj_transition_count = 0
@@ -1327,10 +1334,11 @@ class DialogueNode(Node):
             self._dj_next_transition_at = now + 15.0
             return
 
-        # Запланировать следующий переход ПЕРЕД запуском агента
+        # Устанавливаем безопасный фолбэк-интервал (120с) — LLM должен перезаписать
+        # его через set_dj_mode(enabled=True, next_transition_sec=X) в конце перехода.
         self._dj_transition_count += 1
         n = self._dj_transition_count
-        self._dj_next_transition_at = now + random.uniform(30.0, 60.0)
+        self._dj_next_transition_at = now + 120.0  # фолбэк если LLM не вызвал set_dj_mode
 
         prompt = self._DJ_TRANSITION_PROMPT_TEMPLATE.replace("{n}", str(n))
         self.get_logger().info(f"🎧 DJ Auto-transition #{n}: запускаю агента")

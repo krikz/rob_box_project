@@ -1204,6 +1204,18 @@ class SetDjModeTool(MCPTool):
                 description="true — включить DJ-режим (автопереходы), false — выключить",
                 required=True,
             ),
+            MCPToolParameter(
+                name="next_transition_sec",
+                type="integer",
+                description=(
+                    "Через сколько секунд сделать следующий автоматический переход (30–120). "
+                    "ЛЛМ выбирает сам исходя из темпа сета: "
+                    "быстрый энергичный сет → 30–40 сек, "
+                    "медленный амбиент → 60–90 сек. "
+                    "Обязательно передавай при enabled=true, в том числе при каждом DJ-переходе."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -1214,12 +1226,16 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
+        payload: dict = {"enabled": enabled}
+        if next_transition_sec is not None:
+            payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
         msg = _String()
-        msg.data = json.dumps({"enabled": enabled})
+        msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
         action = "включён" if enabled else "выключен"
-        self.log_info(f"🎧 DJ-режим {action}")
-        return MCPToolResult(success=True, message=f"DJ-режим {action}")
+        interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
+        self.log_info(f"🎧 DJ-режим {action}{interval_info}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}")

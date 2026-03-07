@@ -310,22 +310,30 @@ class MusicSkill(BaseSkill):
             return await _call("delete_track", {"name": name})
 
         @function_tool
-        async def set_dj_mode(enabled: bool) -> str:
+        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0) -> str:
             """Enable or disable autonomous DJ mode.
 
             In DJ mode the robot automatically makes smooth music transitions
-            every 30–60 seconds, like a live DJ at a party.
+            like a live DJ at a party.
 
             Workflow:
                 1. Start music: execute_music_code(...)
-                2. Enable DJ mode: set_dj_mode(enabled=True)
-                3. Robot will autonomously evolve patterns — no action needed.
-                4. To stop: set_dj_mode(enabled=False), then stop_music() if needed.
+                2. Enable DJ mode: set_dj_mode(enabled=True, next_transition_sec=45)
+                3. Robot will autonomously evolve patterns using YOU as the engine.
+                4. At the END of every DJ transition call this again with the chosen
+                   next_transition_sec so you control the pacing.
+                5. To stop: set_dj_mode(enabled=False), then stop_music() if needed.
 
             Args:
                 enabled: True to enable, False to disable.
+                next_transition_sec: Seconds until next auto-transition (15–300).
+                    YOU decide based on the set: fast/energetic → 30–40s,
+                    slow/ambient → 60–90s. ALWAYS provide when enabled=True.
             """
-            return await _call("set_dj_mode", {"enabled": enabled})
+            params: dict = {"enabled": enabled}
+            if next_transition_sec:
+                params["next_transition_sec"] = next_transition_sec
+            return await _call("set_dj_mode", params)
 
         return [
             search_samples, execute_music_code, stop_music, set_vibe_preset,
