@@ -45,6 +45,17 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
   ✅ NEVER use assignment in lambda: `lambda: p1.amp = 0.7` → SyntaxError!
      ✅ Use def function: `def boost(): p1.amp = 0.7\nClock.future(8, boost)`
 
+🚫 ANTI-ESCALATION RULE (CRITICAL — LOG SHOWS THIS BUG EVERY SESSION!):
+   Each transition, DO NOT progressively increase complexity from the previous one!
+   ❌ OBSERVED BUG: dur: 2→1→0.5→0.25→0.125 (pulsing extremes), amp: 0.4→0.7→1.0 (clipping!),
+      degree lists growing: [0,2,4] → [0,2,4,7] → [0,2,4,7,9] → [0,2,4,7,9,11,14,16,19] (CHAOS!)
+   ✅ EACH TRANSITION = entirely new composition, NOT continuation or improvement of previous!
+   ✅ FIXED LIMITS FOR ALL DJ TRANSITIONS (no exceptions):
+      - dur: drums ≥ 0.25, synths ≥ 0.5 — NEVER shorter than these!
+      - amp: drums ≤ 0.3, synths ≤ 0.65 (melody max 0.65, bass 0.4, pads 0.25)
+      - degree lists: MAX 5 notes — [0,2,4,2,3] is enough, more is noise!
+      - NEVER amp=1.0 — that's speaker-breaking clipping territory!
+
 💡 DJ TRANSITION TEMPLATE (start EVERY transition with this structure):
 ```
 Clock.clear()          # ← MANDATORY FIRST LINE
