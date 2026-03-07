@@ -1284,43 +1284,109 @@ class DialogueNode(Node):
         ("sitar+tb303+arpy", "pluck+saw+blip", "мелодичный прогрессив"),
     ]
 
+    # Ключевые слова для определения энергетики темы
+    _THEME_LOW_ENERGY_KW: tuple = (
+        "сон", "тих", "спок", "chill", "relax", "релакс", "ambient",
+        "мягк", "нежн", "колыб", "медит", "lounge", "засып", "dreamy",
+        "quiet", "slow", "медленн", "ночн", "убаюк",
+    )
+    _THEME_HIGH_ENERGY_KW: tuple = (
+        "техно", "хаус", "house", "techno", "энерг", "рок", "рэп",
+        "punk", "огонь", "жёстк", "жест", "адрен", "rage", "hardcore",
+    )
+    _THEME_DARK_KW: tuple = (
+        "ужас", "страшн", "dark", "horror", "мрак", "готич",
+        "stranger things", "странн", "halloween", "хэллоуин",
+    )
+
+    def _classify_theme(self) -> str:
+        """Return energy class of current party theme: low / high / dark / normal."""
+        if not self._dj_theme:
+            return "normal"
+        t = self._dj_theme.lower()
+        if any(k in t for k in self._THEME_LOW_ENERGY_KW):
+            return "low"
+        if any(k in t for k in self._THEME_DARK_KW):
+            return "dark"
+        if any(k in t for k in self._THEME_HIGH_ENERGY_KW):
+            return "high"
+        return "normal"
+
     def _build_dj_prompt(self, n: int) -> str:
         """Build DJ auto-transition prompt with set progression and party theme."""
+        energy_class = self._classify_theme()
+
+        # --- BPM envelope зависит от темы ---
+        if energy_class == "low":
+            # Сонная / спокойная вечеринка — BPM не выходит за 95
+            bpm_ranges = {
+                "warmup_start": (60, 70), "warmup": (65, 75),
+                "build": (70, 80), "peak": (80, 90), "comedown": (65, 75),
+            }
+            energy_override = (
+                "⚠️ ТЕМА = НИЗКАЯ ЭНЕРГИЯ (сон/релакс): "
+                "БПМ НИКОГДА выше 90! Никакого 'нагнетания' и 'пика'. "
+                "Вместо энергии — глубина, атмосфера, мягкость. "
+                "Синты: pads, strings, dub, epiano, space, faim — тихие и текучие. "
+                "Барабаны: тихие хэты и лёгкое биение, без резких акцентов. "
+            )
+        elif energy_class == "dark":
+            bpm_ranges = {
+                "warmup_start": (70, 80), "warmup": (75, 85),
+                "build": (80, 88), "peak": (85, 95), "comedown": (75, 83),
+            }
+            energy_override = (
+                "⚠️ ТЕМА = ТЁМНАЯ/МРАЧНАЯ: "
+                "BPM медленный, зловещий грув. Минор/фригийская гамма. "
+                "Синты: space+distort, varsaw, tb303, strings — с reverb и эффектами. "
+                "Атмосфера: саспенс, загадочность, тёмная электроника. "
+            )
+        elif energy_class == "high":
+            bpm_ranges = {
+                "warmup_start": (100, 110), "warmup": (110, 120),
+                "build": (120, 132), "peak": (132, 145), "comedown": (115, 125),
+            }
+            energy_override = ""
+        else:
+            bpm_ranges = {
+                "warmup_start": (90, 100), "warmup": (95, 110),
+                "build": (110, 125), "peak": (125, 140), "comedown": (100, 115),
+            }
+            energy_override = ""
+
         # --- Set progression phase ---
         if n == 1:
             phase = "warmup_start"
+            blo, bhi = bpm_ranges["warmup_start"]
             phase_hint = (
-                "ФАЗА РАЗОГРЕВА (трек #1): плавный вход, BPM 90-100, лёгкий грув. "
-                "Публика только собирается — не перегружай. "
-                "Представься как DJ ROB-BOX коротко и энергично."
+                f"ФАЗА РАЗОГРЕВА (трек #1): плавный вход, BPM {blo}-{bhi}. "
+                "Публика только собирается. "
+                "Представься как DJ ROB-BOX коротко и в духе темы вечеринки."
             )
         elif n <= 4:
             phase = "warmup"
+            blo, bhi = bpm_ranges["warmup"]
             phase_hint = (
-                f"ФАЗА РАЗОГРЕВА (трек #{n}): постепенно наращивай энергию. "
-                f"BPM +5-10 от предыдущего (целевой диапазон {90 + (n-1)*8}-{105 + (n-1)*8}). "
-                "Добавляй новые элементы, публика разогревается."
+                f"ФАЗА РАЗОГРЕВА (трек #{n}): плавное нарастание, BPM {blo}-{bhi}. "
+                "Добавляй новые слои, публика входит в настроение."
             )
         elif n <= 8:
             phase = "build"
+            blo, bhi = bpm_ranges["build"]
             phase_hint = (
-                f"ФАЗА ПОДЪЁМА (трек #{n}): энергия растёт к пику. "
-                "BPM 115-130, плотный грув, нагнетай атмосферу. "
-                "Объяви что пик близко — одной острой фразой!"
+                f"ФАЗА ПОДЪЁМА (трек #{n}): наращивай атмосферу, BPM {blo}-{bhi}. "
             )
         elif n <= 13:
             phase = "peak"
+            blo, bhi = bpm_ranges["peak"]
             phase_hint = (
-                f"ПИКОВАЯ ФАЗА (трек #{n}): МАКСИМАЛЬНАЯ ЭНЕРГИЯ! "
-                "BPM 128-145, полный напор, самый жирный звук. "
-                "Именно сейчас — самые громкие MC-фразы, call-and-response!"
+                f"ПИКОВАЯ ФАЗА (трек #{n}): максимальная атмосфера темы, BPM {blo}-{bhi}. "
             )
         else:
             phase = "comedown"
+            blo, bhi = bpm_ranges["comedown"]
             phase_hint = (
-                f"ФАЗА СПУСКА (трек #{n}): плавно снижай интенсивность. "
-                "BPM -5-10 от предыдущего, публика устала — не обваливай резко, "
-                "плавный спуск удерживает людей на танцполе дольше."
+                f"ФАЗА СПУСКА (трек #{n}): плавно снижай интенсивность, BPM {blo}-{bhi}. "
             )
 
         # --- Theme block ---
@@ -1336,32 +1402,54 @@ class DialogueNode(Node):
                 "Изредка (каждые 2-3 перехода, не каждый раз!) произнеси 1 острую MC-фразу. "
             )
 
-        # --- Synth rotation block ---
+        # --- Synth rotation + theme override ---
         rot_idx = (n - 1) % len(self._DJ_SYNTH_ROTATION)
         forbidden_synths, recommended_synths, style_hint = self._DJ_SYNTH_ROTATION[rot_idx]
+
+        # Для низкоэнергетических тем синт-ротация переопределяется тематическими синтами
+        if energy_class == "low":
+            low_energy_synts = [
+                "pads+strings+dub", "epiano+space+faim", "mhpad+pluck+dub",
+                "strings+pads+epiano", "space+faim+mhpad", "dub+pads+strings",
+        ]
+            recommended_synths = low_energy_synts[(n - 1) % len(low_energy_synts)]
+            style_hint = "спокойный и атмосферный"
+            forbidden_synths = "saw+wobblebass+tb303+varsaw (слишком агрессивно для темы!)"
+        elif energy_class == "dark":
+            dark_synths = ["space+varsaw+strings", "tb303+fuzz+pads", "varsaw+mhpad+dub"]
+            recommended_synths = dark_synths[(n - 1) % len(dark_synths)]
+            style_hint = "тёмный и зловещий"
+            forbidden_synths = "blip+cs80lead+pluck (слишком весёлые для тёмной темы!)"
+
+        # Формируем пример task-описания с заданной темой и слайтом
+        if self._dj_theme:
+            task_example = f'"{self._dj_theme}, {style_hint}, BPM={blo}-{bhi}"'
+        else:
+            task_example = f'"{style_hint}, BPM={blo}-{bhi}"'
 
         return (
             f"[DJ_AUTO переход #{n} / фаза: {phase}] "
             "Ты DJ ROB-BOX — первый в мире робот-диджей. "
             f"{phase_hint} "
             f"{theme_block}"
+            f"{energy_override}"
             "Используй инструмент handle_music для DJ-перехода. "
-            f"⚠️ В handle_music(task=...) передавай КРАТКОЕ ОПИСАНИЕ ЗАДАЧИ словами (напр. '{style_hint}, BPM=110'), "
-            "НЕ готовый Python-код! MusicSkill сам напишет разнообразный код. "
+            f"⚠️ В handle_music(task=...) передавай описание задачи словами, напр. {task_example}. "
+            "НЕ передавай готовый Python-код! MusicSkill сам напишет музыку. "
             "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА: "
             "1) ПЕРВАЯ строка кода = Clock.clear() — обязательно! "
             "2) Максимум 6 паттернов: d1-d3 + p1-p3. "
-            "3) BPM от 60 до 145, sus не более 8. "
+            "3) sus не более 8. "
             "4) Никаких p_all.stop()/d_all.stop() — не существуют. "
             "5) В КОНЦЕ — set_dj_mode(enabled=True, next_transition_sec=X): "
-            "X=30-40 для энергичного, X=50-70 для среднего, X=70-90 для амбиента. "
+            "X=30-40 для энергичного, X=50-70 для среднего, X=70-120 для спокойного. "
             "⚠️ В set_dj_mode НЕ передавай параметр theme — тема уже сохранена системой! "
-            f"🎛️ СИНТ-РОТАЦИЯ (КРИТИЧНО): "
-            f"❌ ЗАПРЕЩЕНЫ синты: {forbidden_synths} — этот набор уже был! Нарушение = скучно! "
-            f"✅ РЕКОМЕНДОВАНЫ: {recommended_synths} ({style_hint}) — но можешь выбрать другие кроме запрещённых! "
-            "🚫 АНТИ-ЭСКАЛАЦИЯ (КРИТИЧНО): "
+            f"🎛️ СИНТ-РОТАЦИЯ: "
+            f"❌ ЗАПРЕЩЕНЫ: {forbidden_synths}. "
+            f"✅ РЕКОМЕНДОВАНЫ: {recommended_synths} ({style_hint}). "
+            "🚫 АНТИ-ЭСКАЛАЦИЯ: "
             "❌ НЕ увеличивай amp с каждым переходом! Максимум: барабаны amp≤0.3, синты amp≤0.7! "
-            "❌ НЕ уменьшай dur ниже 0.25 — dur=0.125 у барабанов = пулемёт, не музыка! "
+            "❌ НЕ уменьшай dur ниже 0.25! "
             "❌ НЕ расширяй списки нот до 9+ элементов! Максимум 5-6 нот в списке degree! "
             "❌ НЕ копируй паттерны предыдущего перехода и не 'улучшай' их добавляя элементы! "
             "✅ Каждый переход = НОВЫЙ звук с другим синтом/гаммой/ритмом, НЕ продолжение!"
