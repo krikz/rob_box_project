@@ -1272,6 +1272,18 @@ class DialogueNode(Node):
 
     # ── DJ mode ─────────────────────────────────────────────────────
 
+    # Синт-ротация: 6 групп, каждый переход запрещает предыдущую группу
+    # и рекомендует текущую — гарантирует разнообразие каждые 6 переходов
+    _DJ_SYNTH_ROTATION: list = [
+        # (запрещено_за_нарушение, рекомендовано_сейчас, описание_стиля)
+        ("pluck+saw+blip", "wobblebass+cs80lead+mhpad", "клубный техно-грув"),
+        ("wobblebass+cs80lead+mhpad", "bass+pads+strings", "мягкий эмоциональный"),
+        ("bass+pads+strings", "dub+epiano+space", "джаз-эмбиент"),
+        ("dub+epiano+space", "varsaw+fuzz+faim", "тёмный индастриал"),
+        ("varsaw+fuzz+faim", "sitar+tb303+arpy", "психоделик-кислота"),
+        ("sitar+tb303+arpy", "pluck+saw+blip", "мелодичный прогрессив"),
+    ]
+
     def _build_dj_prompt(self, n: int) -> str:
         """Build DJ auto-transition prompt with set progression and party theme."""
         # --- Set progression phase ---
@@ -1324,20 +1336,29 @@ class DialogueNode(Node):
                 "Изредка (каждые 2-3 перехода, не каждый раз!) произнеси 1 острую MC-фразу. "
             )
 
+        # --- Synth rotation block ---
+        rot_idx = (n - 1) % len(self._DJ_SYNTH_ROTATION)
+        forbidden_synths, recommended_synths, style_hint = self._DJ_SYNTH_ROTATION[rot_idx]
+
         return (
             f"[DJ_AUTO переход #{n} / фаза: {phase}] "
             "Ты DJ ROB-BOX — первый в мире робот-диджей. "
             f"{phase_hint} "
             f"{theme_block}"
             "Используй инструмент handle_music для DJ-перехода. "
+            f"⚠️ В handle_music(task=...) передавай КРАТКОЕ ОПИСАНИЕ ЗАДАЧИ словами (напр. '{style_hint}, BPM=110'), "
+            "НЕ готовый Python-код! MusicSkill сам напишет разнообразный код. "
             "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА: "
-            "1) ПЕРВАЯ строка = Clock.clear() — обязательно! "
+            "1) ПЕРВАЯ строка кода = Clock.clear() — обязательно! "
             "2) Максимум 6 паттернов: d1-d3 + p1-p3. "
             "3) BPM от 60 до 145, sus не более 8. "
             "4) Никаких p_all.stop()/d_all.stop() — не существуют. "
             "5) В КОНЦЕ — set_dj_mode(enabled=True, next_transition_sec=X): "
             "X=30-40 для энергичного, X=50-70 для среднего, X=70-90 для амбиента. "
             "⚠️ В set_dj_mode НЕ передавай параметр theme — тема уже сохранена системой! "
+            f"🎛️ СИНТ-РОТАЦИЯ (КРИТИЧНО): "
+            f"❌ ЗАПРЕЩЕНЫ синты: {forbidden_synths} — этот набор уже был! Нарушение = скучно! "
+            f"✅ РЕКОМЕНДОВАНЫ: {recommended_synths} ({style_hint}) — но можешь выбрать другие кроме запрещённых! "
             "🚫 АНТИ-ЭСКАЛАЦИЯ (КРИТИЧНО): "
             "❌ НЕ увеличивай amp с каждым переходом! Максимум: барабаны amp≤0.3, синты amp≤0.7! "
             "❌ НЕ уменьшай dur ниже 0.25 — dur=0.125 у барабанов = пулемёт, не музыка! "

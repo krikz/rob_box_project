@@ -295,21 +295,35 @@ class MusicManager:
                 "error": "Renardo недоступен. Установите пакет renardo_lib.",
             }
 
-        # Если код содержит Clock.clear() — сначала форсировано освобождаем все
-        # SC-узлы через /g_freeAll + пересоздаём Group 1.
+        # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем новые
+        # паттерны), ПОТОМ посылаем /g_freeAll чтобы убить старые SC-ноды.
         #
-        # Почему это нужно: Clock.clear() останавливает планировщик Renardo
-        # (player.kill()), но НЕ посылает /g_freeAll в scsynth. Уже запущенные
-        # синтезаторы продолжают жить до конца sus-конверта (до 8 beats × 60/BPM
-        # секунд). После 3-5 переходов 1024-нодовая таблица SC забивается
-        # → "too many nodes" / "negative node IDs" → тишина.
-        if "Clock.clear()" in code:
+        # Порядок важен для бесшовного перехода:
+        # 1. exec(code): Clock.clear() + новые паттерны зарегистрированы (мгновенно)
+        # 2. /g_freeAll: убиваем старые SC-синтезаторы (они играли пока LLM думал)
+        # 3. /g_new: пересоздаём Group 1 для новых нот
+        # При таком порядке нет тишины — новые паттерны уже ждут следующего beat,
+        # а /g_freeAll только убивает СТАРЫЕ ноды, которые overlap не нужен.
+        #
+        # Почему нужен /g_freeAll: Clock.clear() останавливает планировщик Renardo,
+        # но НЕ посылает /g_freeAll в scsynth. Уже запущенные синтезаторы живут
+        # до конца sus-конверта. После многих переходов 1024-нодовая таблица SC
+        # забивается → "too many nodes" / "negative node IDs" → тишина.
+        has_clock_clear = "Clock.clear()" in code
+
+        try:
+            exec(code, self._renardo_context)  # noqa: S102
+        except Exception as exc:
+            return {"success": False, "error": f"Ошибка выполнения: {exc}"}
+
+        if has_clock_clear:
+            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
             osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
                     _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
             except Exception:
-                pass  # если SC недоступен — продолжаем, Clock.clear() сам справится
+                pass  # если SC недоступен — не критично, старые ноды умрут сами
             # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
             import struct as _struct
             msg_gnew = bytearray()
@@ -322,11 +336,6 @@ class MusicManager:
                     _s.sendto(bytes(msg_gnew), (self.SC_HOST, self.SC_PORT))
             except Exception:
                 pass
-
-        try:
-            exec(code, self._renardo_context)  # noqa: S102
-        except Exception as exc:
-            return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
         if pattern_name:
             self._pattern_history[pattern_name] = code
