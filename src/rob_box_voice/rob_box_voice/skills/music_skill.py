@@ -242,4 +242,74 @@ class MusicSkill(BaseSkill):
             """Get current music state: SC availability, active patterns, preset."""
             return await _call("get_music_state", {})
 
-        return [search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state]
+        @function_tool
+        async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
+            """List saved tracks in the robot's music library.
+
+            ALWAYS call this when the user asks about saved tracks, melodies or
+            the music library — do NOT answer from memory!
+
+            Args:
+                tag: Filter by tag, e.g. 'full_track', 'robot_authored', 'minor'. Empty = all.
+                min_rating: Show only tracks rated this or higher (0-5).
+            """
+            params: dict = {}
+            if tag:
+                params["tag"] = tag
+            if min_rating:
+                params["min_rating"] = min_rating
+            return await _call("list_tracks", params)
+
+        @function_tool
+        async def save_track(name: str, title: str = "", description: str = "",
+                             tags: str = "", rating: int = 0, notes: str = "") -> str:
+            """Save the current or last played track to the persistent music library.
+
+            Use when the user says 'save this track', 'remember this melody', etc.
+
+            Args:
+                name: Unique slug identifier (e.g. 'chill_dnb_v1').
+                title: Human-readable title.
+                description: Mood, structure, notes about the track.
+                tags: Comma-separated tags (e.g. 'chill,minor,90bpm').
+                rating: Star rating 0-5.
+                notes: Personal notes.
+            """
+            params: dict = {"name": name}
+            if title:
+                params["title"] = title
+            if description:
+                params["description"] = description
+            if tags:
+                params["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+            if rating:
+                params["rating"] = rating
+            if notes:
+                params["notes"] = notes
+            return await _call("save_track", params)
+
+        @function_tool
+        async def load_track(name: str) -> str:
+            """Load a track from the library and play it.
+
+            Use when the user asks to play a saved track by name.
+            Call list_tracks() first to get the exact name.
+
+            Args:
+                name: Track slug (e.g. 'csm_132_full_track').
+            """
+            return await _call("load_track", {"name": name})
+
+        @function_tool
+        async def delete_track(name: str) -> str:
+            """Delete a track from the music library (irreversible).
+
+            Args:
+                name: Track slug to delete.
+            """
+            return await _call("delete_track", {"name": name})
+
+        return [
+            search_samples, execute_music_code, stop_music, set_vibe_preset,
+            get_music_state, list_tracks, save_track, load_track, delete_track,
+        ]
