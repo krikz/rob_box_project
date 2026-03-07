@@ -485,12 +485,36 @@ Correct layering example (with proper balance + sidechain + swing):
                dur=[0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,2],
                amp=0.65, room=0.2)
 
-🎤 VOCAL RULE:
+🎵 STRANGER THINGS (Intro Theme — Hawkins):
+   Clock.bpm = 83; Root.default = "C"; Scale.default = "major"
+   d1 >> play("X-X---", dur=0.5, sample=2, amp=0.25)                      # сердцебиение: два удара + пауза
+   p1 >> space(midinote=[48,52,55,59,62,59,55,52], dur=0.5, amp=0.3,      # lead ARP — C3 E3 G3 B3 D4 вверх/вниз
+               room=0.5, distort=0.3, hpf=200)
+   p2 >> dub(midinote=[36,40,43,47,50,47,43,40], dur=1, amp=0.25,          # бас — те же ступени, октавой ниже
+             room=0.3)
+   p3 >> strings(midinote=[52,55,59], dur=8, amp=0.15, sus=8, room=0.8)   # пэд E3-G3-B3 (жуткий аккорд)
+   ⚠️ Ужас-тембр: space + distort=0.3-0.5 + hpf=150-300 + room=0.6-0.9
+   ⚠️ Сердцебиение "X-X---" dur=0.5 при BPM=83 — КРИТИЧНО для характера!
+
+�🎤 VOCAL RULE:
 ✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!
    d1 >> play("c", sample=P[0,1,2,3,4], spack=1, dur=1, sus=1, amp=0.6, room=0.4)
 - amp MINIMUM 0.5, otherwise vocals drown in the mix
 - Always add sus= equal to dur= (otherwise long samples get cut off!)
 ✅ d1 >> play("c", sample=N, spack=1, dur=6, sus=6, amp=0.55, room=0.4)  ← CORRECT
+
+🎛️ ACID TECHNO РЕЦЕПТ (живой лайв-кодинг стиль):
+   Clock.bpm = 130; Root.default = "F#"; Scale.default = "minor"
+   # Acid лид — случайные ноты пентатоники, saw + супер-короткий envelope
+   p1 >> saw(PRand([0,1,2,3,4]), dur=0.25, oct=3, amp=0.45,
+             attack=0.01, decay=0.08, sus=0.05, room=0.2)
+   # Кислотный бас — те же ноты, oct=2, случайные длительности
+   p2 >> bass(PRand([0,1,2,3,4]), dur=PRand([0.5,1,2]), oct=2, amp=0.4)
+   d1 >> play("X...X...", sample=5, amp=0.4)       # жёсткий кик
+   d2 >> play("..o...o.", sample=3, amp=0.2)       # клэп/снэр
+   ⚠️ Acid-звук = attack=0.01 + decay=0.05-0.1 + sus≤0.1 → характерные "щелчки"
+   ⚠️ PRand([0,1,2,3,4]) = случайные ноты пентатоники = живой непредсказуемый звук
+   💡 Для разнообразия: менять bpm=128-145, scale=minor/phrygian, hpf=linvar([0,2000],16)
 
 ⚡ TRACK BUILDING STRATEGY — deliver a COMPLETE COMPOSITION:
 
