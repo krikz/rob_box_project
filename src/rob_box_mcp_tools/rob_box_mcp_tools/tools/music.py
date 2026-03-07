@@ -1171,3 +1171,55 @@ class DeleteTrackTool(MCPTool):
         if result["success"]:
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
+
+
+class SetDjModeTool(MCPTool):
+    """Включить или выключить режим DJ — автономные плавные переходы между треками."""
+
+    def __init__(self, node) -> None:
+        super().__init__(node)
+        from std_msgs.msg import String as _String
+        self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
+
+    @property
+    def name(self) -> str:
+        return "set_dj_mode"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Включить или выключить режим DJ. "
+            "В режиме DJ робот автономно делает плавные переходы между музыкальными треками "
+            "каждые 30–60 секунд, создавая атмосферу живой вечеринки. "
+            "Используй enabled=true чтобы включить, enabled=false чтобы выключить. "
+            "Перед включением убедись что музыка уже играет (запусти трек через execute_music_code)."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="enabled",
+                type="boolean",
+                description="true — включить DJ-режим (автопереходы), false — выключить",
+                required=True,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.INSTANT
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, enabled: bool) -> MCPToolResult:
+        """Опубликовать команду включения/выключения DJ-режима."""
+        from std_msgs.msg import String as _String
+        msg = _String()
+        msg.data = json.dumps({"enabled": enabled})
+        self._dj_mode_pub.publish(msg)
+        action = "включён" if enabled else "выключен"
+        self.log_info(f"🎧 DJ-режим {action}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}")

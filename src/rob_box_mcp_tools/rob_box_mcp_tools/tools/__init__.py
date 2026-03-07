@@ -67,4 +67,5 @@ __all__ = [
     "StopMusicTool",
     "SetVibePresetTool",
     "GetMusicStateTool",
+    "SetDjModeTool",
 ]

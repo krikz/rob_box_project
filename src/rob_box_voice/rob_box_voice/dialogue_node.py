@@ -14,6 +14,7 @@ Publishes:
 import asyncio
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -196,6 +197,9 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10, callback_group=cbg
         )
+        self.create_subscription(
+            String, "/voice/dj_mode", self._on_dj_mode_msg, 10, callback_group=cbg
+        )
 
         # ── MCP Adapter ──────────────────────────────────────────────
         self._mcp: Optional[LLMToolCallAdapter] = None
@@ -216,6 +220,12 @@ class DialogueNode(Node):
 
         # ── Timeout timer ────────────────────────────────────────────
         self.create_timer(5.0, self._on_timeout_check)
+
+        # ── DJ mode state ─────────────────────────────────────────────
+        self._dj_mode_enabled: bool = False
+        self._dj_next_transition_at: float = 0.0
+        self._dj_transition_count: int = 0
+        self.create_timer(5.0, self._on_dj_tick_check)
 
         self._log_config()
         self.get_logger().info("✅ DialogueNode (OpenAI Agents SDK) ready")
@@ -1258,6 +1268,73 @@ class DialogueNode(Node):
         if self.dialogue_manager.check_timeout():
             self.get_logger().info("⏰ Dialogue timeout → IDLE (history preserved, sliding window)")
             self._publish_state()
+
+    # ── DJ mode ─────────────────────────────────────────────────────
+
+    # Prompt injected as synthetic user message for each autonomous transition.
+    # The LLM is asked to evolve existing Renardo patterns (no Clock.clear) and
+    # optionally speak a short DJ phrase.
+    _DJ_TRANSITION_PROMPT_TEMPLATE = (
+        "[DJ_AUTO переход #{n}] "
+        "Ты сейчас работаешь диджеем на вечеринке. "
+        "Сделай плавный DJ-переход: измени/эволюционируй текущие Renardo-паттерны "
+        "(переопредели p1/p2/p3/d1 с новыми параметрами — они обновятся плавно без перезапуска). "
+        "Можно сменить BPM на ±5-15, сдвинуть гамму/тональность, добавить новый слой или убрать старый. "
+        "По своему усмотрению произнеси короткую энергичную DJ-фразу (не обязательно каждый раз). "
+        "Главное — непрерывный поток музыки и хорошее настроение публики."
+    )
+
+    def _on_dj_mode_msg(self, msg: String) -> None:
+        """Обработать команду включения/выключения DJ-режима от MCP-инструмента."""
+        try:
+            data = json.loads(msg.data)
+            enabled = bool(data.get("enabled", False))
+        except (json.JSONDecodeError, KeyError):
+            self.get_logger().warning(f"⚠️ DJ mode: некорректное сообщение: {msg.data!r}")
+            return
+
+        self._dj_mode_enabled = enabled
+        if enabled:
+            # Первый переход через 30–60 секунд
+            delay = random.uniform(30.0, 60.0)
+            self._dj_next_transition_at = time.time() + delay
+            self._dj_transition_count = 0
+            self.get_logger().info(
+                f"🎧 DJ Mode ENABLED — первый переход через {delay:.0f}с"
+            )
+        else:
+            self._dj_next_transition_at = 0.0
+            self._dj_transition_count = 0
+            self.get_logger().info("🎧 DJ Mode DISABLED")
+
+    def _on_dj_tick_check(self) -> None:
+        """Every-5s timer: fire autonomous DJ transition when it's time."""
+        if not self._dj_mode_enabled:
+            return
+
+        now = time.time()
+        if now < self._dj_next_transition_at:
+            return
+
+        # Не прерывать активный диалог — откладываем на 15 секунд
+        if self.dialogue_manager.state in (DialogueState.DIALOGUE, DialogueState.SILENCED):
+            self._dj_next_transition_at = now + 15.0
+            return
+
+        with self._task_lock:
+            running = self._run_task is not None and not self._run_task.done()
+        if running:
+            self._dj_next_transition_at = now + 15.0
+            return
+
+        # Запланировать следующий переход ПЕРЕД запуском агента
+        self._dj_transition_count += 1
+        n = self._dj_transition_count
+        self._dj_next_transition_at = now + random.uniform(30.0, 60.0)
+
+        prompt = self._DJ_TRANSITION_PROMPT_TEMPLATE.replace("{n}", str(n))
+        self.get_logger().info(f"🎧 DJ Auto-transition #{n}: запускаю агента")
+        asyncio.run_coroutine_threadsafe(self._agent_run(prompt), self._loop)
 
     def _publish_state(self) -> None:
         msg = String()

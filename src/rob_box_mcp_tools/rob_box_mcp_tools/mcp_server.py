@@ -63,6 +63,7 @@ from .tools import (
     ListTracksTool,
     LoadTrackTool,
     DeleteTrackTool,
+    SetDjModeTool,
 )
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
@@ -251,6 +252,7 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+        self.registry.register(SetDjModeTool(self))
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
