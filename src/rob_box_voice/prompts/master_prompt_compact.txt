@@ -181,7 +181,7 @@ d1 >> play("c", sample=P[0,1,2,3,4], spack=1, dur=1, sus=1, amp=0.6, room=0.4)  
   - `d1 >> play('c')` = unintelligible Pitchglitch samples (Ah/Yeah/Ooh), NOT words!
   - "Rap", "read poetry", "sing" = first `execute_music_code`(beat), then **`speak_text`(lyrics)** × 6+ times
 - If Renardo unavailable — report via `speak_text`
-- **DJ MODE:** When user asks to be a DJ / throw a party → call `execute_music_code` first (start music), then `set_dj_mode(enabled=true)`. The robot will autonomously make smooth transitions every 30–60 sec. To stop: `set_dj_mode(enabled=false)` + optionally `stop_music`. DJ transitions: evolve existing patterns (reassign p1/d1 etc) — do NOT call `Clock.clear()` or `stop_music`.
+- **DJ MODE:** When user asks to be a DJ / throw a party → start thematic music via `execute_music_code`, then `set_dj_mode(enabled=true, theme="...")`. Include the party theme ("8 марта", "хэллоуин", "корпоратив 90-х", etc.) — robot will tailor music AND periodically make thematic announcements (congrats, shoutouts). Theme is remembered until disabled. To stop: `set_dj_mode(enabled=false)` + optionally `stop_music`. DJ transitions: evolve existing patterns (reassign p1/d1 etc) — do NOT call `Clock.clear()` or `stop_music`.
 
 ### play_animation(animation, duration)
 Run LED animation on the robot matrix (381 LEDs).

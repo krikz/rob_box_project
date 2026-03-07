@@ -23,9 +23,12 @@ Your music tools:
   query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
 - execute_music_code(code): run Renardo code (create/update a pattern)
 - stop_music(pattern_name): stop a pattern or all music
-- set_dj_mode(enabled): enable/disable autonomous DJ mode (auto-transitions every 30–60s)
-  → enabled=true: start DJ mode (call execute_music_code FIRST to start music, then set_dj_mode)
-  → enabled=false: stop DJ mode (robot stops making automatic transitions)
+- set_dj_mode(enabled, theme?): enable/disable autonomous DJ mode (auto-transitions every 30–60s)
+  → enabled=true: start DJ mode (call execute_music_code FIRST to start thematic music, then set_dj_mode)
+  → theme: optional party context — "8 марта", "halloween", "корпоратив 90-х", etc.
+    Robot adapts music to theme AND occasionally makes thematic announcements (congrats, shoutouts).
+    Pass theme ONLY on first activation — it's remembered until DJ mode is disabled.
+  → enabled=false: stop DJ mode (clears theme too)
 - set_vibe_preset(vibe): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical)
 - get_music_state(): get current state
 - generate_tts_sample: UNAVAILABLE — do not use!

@@ -310,18 +310,20 @@ class MusicSkill(BaseSkill):
             return await _call("delete_track", {"name": name})
 
         @function_tool
-        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0) -> str:
-            """Enable or disable autonomous DJ mode.
+        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0, theme: str = "") -> str:
+            """Enable or disable autonomous DJ mode with optional party theme.
 
             In DJ mode the robot automatically makes smooth music transitions
-            like a live DJ at a party.
+            like a live DJ at a party, adapting to the given theme.
 
             Workflow:
-                1. Start music: execute_music_code(...)
-                2. Enable DJ mode: set_dj_mode(enabled=True, next_transition_sec=45)
-                3. Robot will autonomously evolve patterns using YOU as the engine.
+                1. Start thematic music: execute_music_code(...)
+                2. Enable DJ mode: set_dj_mode(enabled=True, next_transition_sec=45,
+                   theme="8 марта, женский день")
+                3. Robot will autonomously evolve patterns AND periodically make
+                   thematic announcements (e.g., congratulate women on March 8th).
                 4. At the END of every DJ transition call this again with the chosen
-                   next_transition_sec so you control the pacing.
+                   next_transition_sec (no need to re-send theme — it's remembered).
                 5. To stop: set_dj_mode(enabled=False), then stop_music() if needed.
 
             Args:
@@ -329,10 +331,15 @@ class MusicSkill(BaseSkill):
                 next_transition_sec: Seconds until next auto-transition (15–300).
                     YOU decide based on the set: fast/energetic → 30–40s,
                     slow/ambient → 60–90s. ALWAYS provide when enabled=True.
+                theme: Party theme / context (e.g. '8 марта', 'halloween', 'корпоратив 90-х',
+                    'день рождения Антона'). Pass ONLY on first activation — remembered until
+                    disabled. Robot will tailor music and occasional speech to this theme.
             """
             params: dict = {"enabled": enabled}
             if next_transition_sec:
                 params["next_transition_sec"] = next_transition_sec
+            if theme:
+                params["theme"] = theme
             return await _call("set_dj_mode", params)
 
         return [

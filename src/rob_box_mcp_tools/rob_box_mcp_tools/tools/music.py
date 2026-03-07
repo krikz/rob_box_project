@@ -1216,6 +1216,18 @@ class SetDjModeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="theme",
+                type="string",
+                description=(
+                    "Тема вечеринки / контекст для DJ (например: '8 марта, женский день', "
+                    "'день рождения Антона', 'хэллоуин', 'корпоратив в стиле 90-х'). "
+                    "Передавай при первом включении DJ-режима — робот будет подстраивать музыку "
+                    "и иногда тематически обращаться к публике. При повторных вызовах set_dj_mode "
+                    "внутри DJ-переходов тему передавать не нужно — она запомнена."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -1226,12 +1238,14 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
         payload: dict = {"enabled": enabled}
         if next_transition_sec is not None:
             payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
+        if theme and isinstance(theme, str) and theme.strip():
+            payload["theme"] = theme.strip()
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)

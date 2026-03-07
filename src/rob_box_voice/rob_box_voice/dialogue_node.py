@@ -224,6 +224,7 @@ class DialogueNode(Node):
         self._dj_mode_enabled: bool = False
         self._dj_next_transition_at: float = 0.0
         self._dj_transition_count: int = 0
+        self._dj_theme: str = ""  # party theme/context set at DJ mode activation
         self.create_timer(5.0, self._on_dj_tick_check)
 
         self._log_config()
@@ -1270,21 +1271,32 @@ class DialogueNode(Node):
 
     # ── DJ mode ─────────────────────────────────────────────────────
 
-    # Prompt injected as synthetic user message for each autonomous transition.
-    # The LLM is asked to evolve existing Renardo patterns (no Clock.clear) and
-    # optionally speak a short DJ phrase.
-    _DJ_TRANSITION_PROMPT_TEMPLATE = (
-        "[DJ_AUTO переход #{n}] "
-        "Ты сейчас работаешь диджеем на вечеринке. "
-        "Сделай плавный DJ-переход: измени/эволюционируй текущие Renardo-паттерны "
-        "(переопредели p1/p2/p3/d1 с новыми параметрами — они обновятся плавно без перезапуска). "
-        "Можно сменить BPM на ±5-15, сдвинуть гамму/тональность, добавить новый слой или убрать старый. "
-        "По своему усмотрению произнеси короткую энергичную DJ-фразу (не обязательно каждый раз). "
-        "ОБЯЗАТЕЛЬНО в конце вызови set_dj_mode(enabled=True, next_transition_sec=X) где X — "
-        "количество секунд до следующего перехода которое ТЫ выбираешь исходя из темпа сета: "
-        "быстрый энергичный → 30–40с, медленный амбиент → 60–90с. "
-        "Главное — непрерывный поток музыки и хорошее настроение публики."
-    )
+    def _build_dj_prompt(self, n: int) -> str:
+        """Build DJ auto-transition prompt, injecting party theme/context if set."""
+        if self._dj_theme:
+            theme_block = (
+                f'Тема вечеринки: "{self._dj_theme}". '
+                "Музыка должна отражать тему — подбирай подходящие инструменты, гамму, темп, эффекты. "
+                f"Каждые 2-3 перехода (по своему выбору, не каждый раз!) тематически обратись к публике: "
+                "поздравь, произнеси тематический анонс или сделай отсылку к теме — "
+                "коротко, энергично, в стиле живого DJ. Молчание тоже часть арта. "
+            )
+        else:
+            theme_block = (
+                "По своему усмотрению произнеси короткую энергичную DJ-фразу (не обязательно каждый раз). "
+            )
+        return (
+            f"[DJ_AUTO переход #{n}] "
+            "Ты сейчас работаешь диджеем на вечеринке. "
+            f"{theme_block}"
+            "Сделай плавный DJ-переход: измени/эволюционируй текущие Renardo-паттерны "
+            "(переопредели p1/p2/p3/d1 с новыми параметрами — они обновятся плавно без перезапуска). "
+            "Можно сменить BPM на ±5-15, сдвинуть гамму/тональность, добавить новый слой или убрать старый. "
+            "ОБЯЗАТЕЛЬНО в конце вызови set_dj_mode(enabled=True, next_transition_sec=X) где X — "
+            "количество секунд до следующего перехода которое ТЫ выбираешь исходя из темпа сета: "
+            "быстрый энергичный → 30–40с, медленный амбиент → 60–90с. "
+            "Главное — непрерывный поток музыки и хорошее настроение публики."
+        )
 
     def _on_dj_mode_msg(self, msg: String) -> None:
         """Обработать команду включения/выключения DJ-режима от MCP-инструмента."""
@@ -1297,6 +1309,11 @@ class DialogueNode(Node):
 
         self._dj_mode_enabled = enabled
         if enabled:
+            # Сохраняем тему вечеринки если передана (только при явной передаче — не затирать)
+            theme = data.get("theme")
+            if theme and isinstance(theme, str) and theme.strip():
+                self._dj_theme = theme.strip()
+                self.get_logger().info(f"🎧 DJ Mode тема: {self._dj_theme!r}")
             # Интервал задаётся LLM через next_transition_sec; фолбэк 60с для первого включения
             next_sec = data.get("next_transition_sec")
             if next_sec:
@@ -1312,6 +1329,7 @@ class DialogueNode(Node):
         else:
             self._dj_next_transition_at = 0.0
             self._dj_transition_count = 0
+            self._dj_theme = ""  # сбрасываем тему при выключении
             self.get_logger().info("🎧 DJ Mode DISABLED")
 
     def _on_dj_tick_check(self) -> None:
@@ -1340,8 +1358,8 @@ class DialogueNode(Node):
         n = self._dj_transition_count
         self._dj_next_transition_at = now + 120.0  # фолбэк если LLM не вызвал set_dj_mode
 
-        prompt = self._DJ_TRANSITION_PROMPT_TEMPLATE.replace("{n}", str(n))
-        self.get_logger().info(f"🎧 DJ Auto-transition #{n}: запускаю агента")
+        prompt = self._build_dj_prompt(n)
+        self.get_logger().info(f"🎧 DJ Auto-transition #{n}: запускаю агента" + (f" [тема: {self._dj_theme!r}]" if self._dj_theme else ""))
         asyncio.run_coroutine_threadsafe(self._agent_run(prompt), self._loop)
 
     def _publish_state(self) -> None:
