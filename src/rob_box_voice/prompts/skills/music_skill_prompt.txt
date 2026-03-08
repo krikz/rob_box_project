@@ -147,7 +147,7 @@ p1 >> karp(midinote=[59,54,55,50,54,55,47,54,55], dur=[4,1.5,2.5,4,1.5,2.5,4,1.5
 p2 >> feel(PRand([0,2,4,3,5]), dur=var([0.5,1],[8,8]), oct=5, amp=0.58, room=0.3)
 ```
 
-⚠️ BASS: tb303 / wobblebass / fuzz / dub / karp / moogbass / dirt (ROTATE each transition!)
+⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt (ROTATE each transition!)
 ⚠️ LEAD: varsaw / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello (ROTATE!)
 ⚠️ PADS: space / strings / faim / sinepad / mhpad / ecello / viola / ambi (ROTATE!)
 ⚠️ SCALE: phrygian / dorian / mixolydian / lydian / minorPentatonic / majorPentatonic / minor (ROTATE!)
@@ -371,24 +371,79 @@ NEVER create alias variables for players — they DON'T work in Clock callbacks!
 
 SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
 🥁 Drums/Lo:    d1-d9 >> play(...)   — always via play() with samples
-🎸 Bass:        wobblebass, dub, fuzz, dirt, subbass, moogbass  (oct=2..3)
-   ❌ FORBIDDEN: `bass` synth — farty distortion, use dub/wobblebass instead!
+🎸 Bass:        wobblebass, dub, fuzz, dirt, subbass, moogbass, bass, jbass  (oct=2..3)
+   ✅ `bass` synth EXISTS (LFTri+VarSaw, default rate=8 = wide, buzzy). Use: amp=0.3-0.4, oct=3
+      For cleaner tone lower rate: bass([0,-2], dur=2, oct=3, amp=0.35, rate=1)
 🎹 Melody/Lead: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, keys, cs80lead
    ⚠️ NO "piano" — use pianovel / epiano / rhpiano!
    ⚠️ pluck = guitar pluck, NOT brass/orchestra! For trumpet/flute — blip/flute/brass
 🎺 Orchestra/Brass: brass, blip, flute, soprano, eoboe, organ, organ2
 🎻 Strings/Pads: strings, pads, ambi, space, faim, sinepad, mhpad, ecello, viola
 🔔 Atmosphere/Bells: bell, gong, kalimba, marimba, steeldrum, tubularbell  (amp=0.3..0.6)
-⚡ Aggression/Glitch: rave, donk, varsaw, pulse, quin, feel, tb303, hoover
-   ❌ FORBIDDEN: `saw` synth — does NOT exist! Use `varsaw` instead!
+⚡ Aggression/Glitch: rave, donk, varsaw, saw, pulse, quin, feel, tb303, hoover
+   ✅ `saw` synth EXISTS (pure Sawtooth, Env.mask = sustained/continuous). Use for drones/acid:
+      p1 >> saw([0,0,4,5], dur=0.25, oct=3, amp=0.4, attack=0.01, decay=0.08, sus=0.05)
+   ✅ `varsaw` = VarSaw with stereo detune, sounds richer than `saw` — better for leads
 
 ❌ FORBIDDEN SYNTAX — these will SILENTLY fail or sound wrong:
-   ❌ p1 >> pluck([0,2,4], scale=Scale.phrygian)  ← scale= inside >> call DOES NOT WORK!
-      ✅ Set scale globally: Scale.default = "phrygian"  then  p1 >> pluck([0,2,4])
-   ❌ play("x[xx]x[xx]", dur=0.25)  ← [xx] sub-divides dur further → 0.0625 beat = pулемёт!
-      ✅ Simple patterns only: play("X...X...", dur=0.5) — never combine [] with dur≤0.25
-   ❌ play("  *  ", ...)  ← `*` is NOT a valid sample letter!
+   ⚠️ `scale=Scale.xxx` INSIDE `>>` call is actually valid per-player (official FoxDot docs):
+      ✅ p1 >> pluck([0,2,4], scale=Scale.phrygian)   ← works (per-player scale)
+      ✅ Scale.default = "phrygian"  ← affects ALL players simultaneously (recommended for DJ)
+      Use Scale.default globally when ALL layers must share the same scale (typical DJ use)
+   ❌ play("x[xx]x[xx]", dur=0.25)  ← [xx] sub-divides dur → 0.0625 beat = пулемёт!
+      ✅ [xxx] IS valid for triplets with dur≥1: play("x-o[---]", dur=1) = triplet hi-hat
+      ✅ For short dur keep patterns simple: play("X...X...", dur=0.5)
+   ❌ play("  *  ", ...)  ← `*` is NOT a mapped sample folder!
       ✅ Valid letters: a-z and A-Z only. Use search_samples() to find correct letters.
+
+🎛️ EFFECTS PALETTE — keyword args for ALL synths and play():
+   Dynamics: amp=0.5, amplify=var([1,0],[6,2]) — on/off gating in 6+2 bar cycles
+   Texture:  room=0.5, mix=0.3   — reverb (room=size, mix=wet %)
+             echo=0.75, echotime=4 — comb delay (add room=0.2 or echo may not be heard!)
+             shape=0.5            — waveshape distortion (no SC3 needed, 0–1)
+             drive=0.5            — overdrive distortion (0–1)
+             crush=4, bits=8      — bitcrush (requires SC3 plugins)
+   Motion:   pan=linvar([-1,1],8) — auto-pan sweep L→R over 8 beats
+             spin=4               — pan spin N times during note sustain
+             vib=4, vibdepth=0.1  — vibrato (rate=4 Hz, depth=±10%)
+             tremolo=4            — amplitude tremolo N times/beat
+   Filter:   hpf=linvar([200,4000],32), hpr=1  — high-pass sweep (hpr=resonance)
+             lpf=400, lpr=0.2                  — low-pass filter (lpr=resonance)
+             formant=3                          — vowel-like formant filter (1–7)
+   Envelope: sus=4, blur=2        — sustain length; blur multiplies sus (legato)
+             cut=0.75             — cut at 75% of sus (good for sharp sample edits)
+             chop=4               — chop audio into N parts (sidechain pumping)
+             coarse=4             — chop control rate (cleaner than chop for bass)
+   Pitch:    slide=1, slidedelay=0.5    — slide freq to (1+n)*freq by end of note
+             slidefrom=1                — slide FROM (1+n)*freq to target
+             bend=0.5, benddelay=0     — pitch bend that returns to original pitch
+             glide=7, glidedelay=0.5   — glissando N semitones to target
+             pshift=[0,1,2,3]          — pitch shift in semitones (works on play() too!)
+             fmod=2                    — detune one channel (creates flanger/chorus)
+   Time:     delay=[0, 0, 0.5]   — delay note N beats from its scheduled position
+             bpm=100              — per-player local BPM (overrides Clock.bpm for this player)
+
+🎼 ADVANCED PATTERNS & TECHNIQUES:
+   Chords via + operator:
+      p1 >> pluck([0,1,2,3], dur=2) + (0, 2, 4)    # adds major triad to every note
+      p1 >> pluck([(0,2,4), (0,3,5)], dur=4)       # explicit chord tuples in degree list
+   Rests:
+      p1 >> pluck([0,1,2,3], dur=[1, 1, rest(2)])  # rest for 2 beats on 3rd step
+   TimeVar chord progression:
+      p1 >> pluck(var([0,3,5,4],[4,4,4,4]), dur=0.5) + (0,2,4)  # changes chord every 4 beats
+   Layered play() sequences (simultaneous patterns in one player!):
+      d1 >> play("<x-o-><  + + [ +]>")             # two drum patterns at same time
+      d1 >> play("<x-o-><  + + >", pan=(-1, 1))    # layer 0 → left, layer 1 → right
+   Inline sample selection in play string:
+      d1 >> play("x-|o2|-")                        # 'o' uses sample=2 specifically
+      d1 >> play("x-|o(12)|-")                     # alternate sample 1 and 2 for 'o'
+   Root per-player (integer only, NOT string):
+      p1 >> pluck([0,2,4], root=2)                 # player in D regardless of Root.default
+   All available scales (rotate for variety!):
+      major, minor, dorian, phrygian, lydian, mixolydian, aeolian, locrian,
+      harmonicMinor, melodicMinor, majorPentatonic, minorPentatonic,
+      blues, chromatic, diminished, wholeHalf, hungarian, prometheus,
+      lydianDom, lydianAug, halfDim, bebopDom, bebopDorian, and more
 
 🎸 REAL INSTRUMENT → RENARDO SYNTH MAPPING (NO external samples — synthesis only!)
    ⚠️ There are NO folk/ethnic WAV samples on this system. Synthesize with:
@@ -480,7 +535,7 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
 ⚠️ DIVERSITY RULE — MANDATORY:
 - NEVER use pluck for all patterns! pluck = max 1 pattern only
 - Each track = minimum 3 layers with DIFFERENT instruments from DIFFERENT categories
-- Bass → wobblebass/dub/fuzz, NOT pluck (❌ NOT `bass` synth!)
+- Bass → wobblebass/dub/fuzz/bass/jbass, NOT pluck (pluck = guitar, NOT a bass synth!)
 - Atmosphere → pads/ambi/strings/space, NOT pluck
 - Percussion always via d1-d9 >> play()
 - In a DJ SET: dub max 2 transitions in a row, arpy max 2 in a row, pads max 2 in a row
@@ -558,8 +613,9 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
    ✅ Pads/atmosphere synth: amp=0.2-0.3
    ✅ Kick play(): amp=0.2-0.3 (NOT 0.5 — will be deafening!)
    ✅ Snare/hat play(): amp=0.15-0.25
-❌ FORBIDDEN: p2 >> bass(...) — synth `bass` = "farty" distortion bass guitar!
-   ✅ For low bass: p2 >> dub([0,-2], dur=2, oct=3, amp=0.3) or wobblebass
+⚠️ `bass` synth EXISTS — deep/buzzy (LFTri+VarSaw, default rate=8). Use amp=0.3-0.4:
+   ✅ p2 >> bass([0,-2], dur=2, oct=3, amp=0.35, rate=1)  ← rate=1 = cleaner than default rate=8
+   ✅ For smoother bass: dub([0,-2], dur=2, oct=3, amp=0.3) or wobblebass — also valid
 ❌ Do NOT add `shape=` to brass/strings — causes audio distortion
 
 Correct layering example (with proper balance + sidechain + swing):
