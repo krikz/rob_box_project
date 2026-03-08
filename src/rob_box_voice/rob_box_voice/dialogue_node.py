@@ -1271,13 +1271,33 @@ class DialogueNode(Node):
             if self._dj_set_plan
             else "(План сета не сохранён — импровизируй в духе темы вечеринки.)\n\n"
         )
+        # Оцениваем длину плана по числу строк "Трек N:" в нём
+        plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
+
+        # Если переход превышает план — явный сигнал на завершение
+        if plan_track_count > 0 and n > plan_track_count:
+            return (
+                f"[DJ_AUTO — КОНЕЦ СЕТА, переход #{n}] "
+                f"Ты {dj_name}. "
+                f"{theme_line}"
+                f"В плане было {plan_track_count} треков, но сейчас переход #{n} — сет завершён! "
+                "🛑 ОБЯЗАТЕЛЬНЫЕ ШАГИ (в этом строгом порядке): "
+                "1) Вызови stop_music() — остановить всю музыку. "
+                "2) Вызови set_dj_mode(enabled=False) — это ОБЯЗАТЕЛЬНО, иначе сет не завершится! "
+                "3) Произнеси короткую прощальную DJ-фразу через speak_text(). "
+                "❌ НЕ вызывай set_dj_mode(enabled=True)! "
+                "❌ НЕ вызывай execute_music_code()! "
+                "❌ Только stop_music + set_dj_mode(enabled=False) + speak_text!"
+            )
+
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {dj_name} — первый в мире робот-диджей. "
             f"{theme_line}"
             f"{persona_line}"
             f"{plan_block}"
-            f"Сыграй трек #{n} согласно плану (или следующий логичный шаг если план короче). "
+            f"Сыграй трек #{n} согласно плану. "
+            f"{'(Это последний трек по плану — после него сет завершается.) ' if plan_track_count > 0 and n == plan_track_count else ''}"
             "Изредка (раз в 2-3 перехода) произноси тематическую MC-фразу голосом. "
             "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА: "
             "1) ПЕРВАЯ строка кода = Clock.clear(). "
@@ -1348,6 +1368,22 @@ class DialogueNode(Node):
             running = self._run_task is not None and not self._run_task.done()
         if running:
             self._dj_next_transition_at = now + 15.0
+            return
+
+        # Жёсткий лимит: если переход > длины плана + 3 — авто-стоп без LLM
+        plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
+        next_n = self._dj_transition_count + 1
+        if plan_track_count > 0 and next_n > plan_track_count + 3:
+            self.get_logger().warning(
+                f"🛑 DJ авто-стоп: переход #{next_n} > план ({plan_track_count} треков) + 3. "
+                "Отключаем DJ режим без LLM."
+            )
+            self._dj_mode_enabled = False
+            self._dj_next_transition_at = 0.0
+            self._dj_transition_count = 0
+            self._dj_theme = ""
+            self._dj_set_plan = ""
+            self._dj_persona = ""
             return
 
         # Устанавливаем безопасный фолбэк-интервал (120с) — LLM должен перезаписать
