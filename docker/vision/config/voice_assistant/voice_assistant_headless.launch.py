@@ -5,7 +5,7 @@ Headless Voice Assistant Launch для Vision Pi
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -13,7 +13,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     """Generate launch description для Voice Assistant (headless)"""
-    
+
     # Аргументы
     config_file_arg = DeclareLaunchArgument(
         'config_file',
@@ -24,17 +24,17 @@ def generate_launch_description():
         ]),
         description='Path to voice assistant config YAML'
     )
-    
+
     namespace_arg = DeclareLaunchArgument(
         'namespace',
         default_value='',
         description='Namespace для всех нод'
     )
-    
+
     # Конфигурация
     config_file = LaunchConfiguration('config_file')
     namespace = LaunchConfiguration('namespace')
-    
+
     # === Audio Node ===
     audio_node = Node(
         package='rob_box_voice',
@@ -47,7 +47,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === LED Node ===
     led_node = Node(
         package='rob_box_voice',
@@ -60,7 +60,7 @@ def generate_launch_description():
         respawn_delay=2.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === Animation Player Node ===
     # Интегрирован с голосовым ассистентом для LED анимаций
     animation_node = Node(
@@ -77,7 +77,7 @@ def generate_launch_description():
         respawn=True,
         respawn_delay=3.0
     )
-    
+
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     dialogue_node = Node(
         package='rob_box_voice',
@@ -90,7 +90,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === TTS Node (Phase 2: Silero TTS v4 с бурундуком) ===
     tts_node = Node(
         package='rob_box_voice',
@@ -103,7 +103,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === STT Node (Phase 3: Vosk offline recognition) ===
     stt_node = Node(
         package='rob_box_voice',
@@ -116,7 +116,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === Sound Node (Phase 4: Sound Effects) ===
     sound_node = Node(
         package='rob_box_voice',
@@ -129,7 +129,7 @@ def generate_launch_description():
         respawn_delay=3.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === Command Node (Phase 5: Command recognition + Nav2) ===
     command_node = Node(
         package='rob_box_voice',
@@ -142,7 +142,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === MCP Server (Model Context Protocol Tools) ===
     mcp_server = Node(
         package='rob_box_mcp_tools',
@@ -154,7 +154,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     return LaunchDescription([
         config_file_arg,
         namespace_arg,

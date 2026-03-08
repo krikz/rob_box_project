@@ -48,6 +48,6 @@ echo "=========================================="
 # Запуск ROS 2 ноды
 exec ros2 run rob_box_telegram telegram_node \
     --ros-args \
-    --params-file /config/telegram_bot.yaml \
+    --params-file /config/telegram_bot/telegram_bot.yaml \
     -r __ns:=/ \
     "$@"

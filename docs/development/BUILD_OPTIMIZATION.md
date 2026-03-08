@@ -83,6 +83,8 @@ docker/
     │   │   └── start_apriltag.sh
     │   ├── lslidar/               # → /scripts/
     │   │   └── start_lslidar.sh
+    │   ├── voice_assistant/       # → /scripts/
+    │   │   └── start_voice_assistant.sh
     │   └── oak-d/                 # → /scripts/
     │       └── start_oak_d.sh
     ├── apriltag/
@@ -167,13 +169,12 @@ RUN git clone --depth 1 https://github.com/repo.git && \
 !oak-d/
 !zenoh-router/
 
-# Исключаем мусор
-**/__pycache__
-**/*.pyc
+        └── Dockerfile
 **/.git
 **/.vscode
 **/node_modules
 ```
+- `config/audio/` - shared runtime-конфиги для нескольких сервисов одного стека
 
 Это ускоряет передачу контекста в Docker daemon.
 
@@ -314,8 +315,48 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
 - ✅ Не требует коммита больших файлов в Git
 
 **Где используется:**
-- `docker/vision/voice_base/Dockerfile` - Vosk + Silero модели
-- `docker/vision/voice_assistant/Dockerfile` - Vosk + Silero модели
+- `docker/vision/voice_base/Dockerfile` - тяжёлые apt/pip зависимости, Vosk + Silero модели, ReSpeaker drivers, `audio_common_msgs`
+- `docker/vision/voice_resources/Dockerfile` - большие Renardo/FoxDot sample packs для shared volume
+- `docker/vision/voice_assistant/Dockerfile` - только fast-changing app layer (`rob_box_voice`, `rob_box_animations`, `rob_box_mcp_tools`)
+
+### Рекомендуемая схема слоёв для voice stack
+
+Для сервисов voice на Vision Pi теперь используйте три уровня:
+
+1. **`voice-base`** — всё медленно меняющееся и тяжёлое:
+    - apt/pip зависимости;
+    - offline STT/TTS модели;
+    - ReSpeaker drivers;
+    - ROS message dependencies.
+2. **`voice-resources`** — большие immutable ресурсы, не нужные для пересборки app layer:
+    - Renardo/FoxDot sample packs;
+    - one-shot инициализация named volume.
+3. **`voice-assistant`** — только код и package metadata:
+    - Python/ROS пакеты проекта;
+    - launch/config/prompts, которые реально нужны при сборке пакета;
+    - без скачивания моделей и sample packs.
+
+### Правило для mutable ресурсов
+
+Если ресурс:
+- часто меняется,
+- текстовый,
+- не нужен во время `colcon build`,
+
+то его нужно монтировать через volume, а не запекать в образ. Примеры:
+- `sound_pack/`
+- runtime config из `docker/vision/config/`
+- startup scripts из `docker/vision/scripts/`
+
+### Правило для CI trigger paths
+
+Workflow должен следить не только за `docker/vision/**`, но и за реальными входами сборки:
+- `src/rob_box_voice/**`
+- `src/rob_box_animations/**`
+- `src/rob_box_perception_msgs/**`
+- `src/rob_box_mcp_tools/**`
+- `src/rob_box_telegram/**`
+- `src/ros2leds/**`
 
 **Важно:** 
 - Используйте `sharing=locked` для безопасности при параллельных сборках
@@ -332,6 +373,6 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
 ---
 
 **Создано**: 2025-10-10  
-**Обновлено**: 2025-11-01 (добавлена оптимизация кеширования моделей)  
+**Обновлено**: 2026-03-08 (добавлены `voice-base`/`voice-resources` layering rules)  
 **Автор**: КУКОРЕКЕН  
 **Проект**: rob_box_project

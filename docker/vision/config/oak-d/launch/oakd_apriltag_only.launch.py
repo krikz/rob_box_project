@@ -13,6 +13,6 @@ def generate_launch_description():
             executable='camera_node',
             name='camera',
             output='screen',
-            parameters=['/config/oak_d_config.yaml'],
+            parameters=['/config/oak-d/oak_d_config.yaml'],
         ),
     ])

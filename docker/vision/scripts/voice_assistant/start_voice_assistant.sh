@@ -23,31 +23,24 @@ fi
 echo "Проверка аудио устройств..."
 arecord -l | grep -i "respeaker" || echo "⚠ ReSpeaker audio не найден"
 
-# Инициализация shared volume renardo семплов (один раз, при первом запуске после пересборки)
-# Без этого scsynth не может читать WAV файлы из voice-assistant и выдаёт "Buffer UGen: no buffer data"
+# Проверка shared volume renardo семплов.
+# Инициализация теперь выполняется отдельным one-shot контейнером voice-resources-init.
 SAMPLES_VOLUME=/root/.config/renardo/samples
-SAMPLES_BUILTIN=/renardo_samples_builtin
-if [ ! -f "${SAMPLES_VOLUME}/.initialized" ]; then
-    if [ -d "${SAMPLES_BUILTIN}" ] && [ -n "$(ls -A ${SAMPLES_BUILTIN} 2>/dev/null)" ]; then
-        echo "Initializing renardo samples shared volume from builtin..."
-        mkdir -p "${SAMPLES_VOLUME}"
-        cp -rp "${SAMPLES_BUILTIN}/." "${SAMPLES_VOLUME}/"
-        touch "${SAMPLES_VOLUME}/.initialized"
-        echo "✓ Renardo samples initialized ($(find ${SAMPLES_VOLUME} -name '*.wav' | wc -l) WAV files)"
-    else
-        echo "⚠ Renardo builtin samples not found at ${SAMPLES_BUILTIN} — synth-only mode"
-    fi
+if [ -f "${SAMPLES_VOLUME}/.initialized" ]; then
+    echo "✓ Renardo samples volume initialized ($(find "${SAMPLES_VOLUME}" -name '*.wav' | wc -l) WAV files)"
+elif [ -d "${SAMPLES_VOLUME}" ] && [ -n "$(find "${SAMPLES_VOLUME}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "✓ Renardo samples volume present without marker ($(find "${SAMPLES_VOLUME}" -name '*.wav' | wc -l) WAV files)"
 else
-    echo "✓ Renardo samples volume already initialized"
+    echo "⚠ Renardo samples volume is empty — synth-only mode"
 fi
 
 # Создать директорию для ТТС кэша
 mkdir -p ${TTS_CACHE_DIR}
 
 # Настройка ALSA (если нужно)
-if [ -f /config/voice/asoundrc ]; then
+if [ -f /config/voice_assistant/asoundrc ]; then
     echo "Копирование ALSA конфигурации..."
-    cp /config/voice/asoundrc /root/.asoundrc
+    cp /config/voice_assistant/asoundrc /root/.asoundrc
 fi
 
 # Ожидание Zenoh router
@@ -98,12 +91,12 @@ echo "=========================================="
 
 # Запуск через headless launch file (без animation_player_node)
 # Animation player запускается отдельно на Main Pi
-if [ -f /config/voice/voice_assistant.yaml ]; then
-    echo "Используется конфигурация: /config/voice/voice_assistant.yaml"
+if [ -f /config/voice_assistant/voice_assistant.yaml ]; then
+    echo "Используется конфигурация: /config/voice_assistant/voice_assistant.yaml"
     echo "Используется headless launch (без animation_player_node)"
-    exec ros2 launch /config/voice/voice_assistant_headless.launch.py \
-        config_file:=/config/voice/voice_assistant.yaml
+    exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py \
+        config_file:=/config/voice_assistant/voice_assistant.yaml
 else
     echo "Используется конфигурация по умолчанию"
-    exec ros2 launch /config/voice/voice_assistant_headless.launch.py
+    exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py
 fi

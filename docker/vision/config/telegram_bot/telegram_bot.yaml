@@ -1,5 +1,5 @@
 # Rob Box Telegram Bot Configuration
-# Монтируется в контейнер как /config/telegram_bot.yaml
+# Монтируется в контейнер как /config/telegram_bot/telegram_bot.yaml
 telegram_node:
   ros__parameters:
     # Movement safety limits

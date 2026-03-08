@@ -143,7 +143,7 @@ docker-compose up -d
 
 ### Новые файлы
 
-- ✅ `docker/vision/oak-d/launch/oakd_with_apriltag.launch.py` - комбинированный launch
+- ✅ `docker/vision/config/oak-d/launch/oakd_with_apriltag.launch.py` - комбинированный launch
 
 ---
 

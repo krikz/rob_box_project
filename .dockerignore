@@ -56,3 +56,7 @@ assets/
 docker-compose*.yml
 Dockerfile*
 .dockerignore
+
+# Local build infrastructure artifacts
+docker/build/
+docker/build/**

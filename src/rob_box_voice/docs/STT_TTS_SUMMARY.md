@@ -313,7 +313,7 @@ Offline: ✅ (с smart fallback)
 
 - **Полный research:** `docs/development/STT_TTS_RESEARCH.md` (12+ страниц)
 - **Quick reference:** `docs/development/STT_TTS_QUICK_REFERENCE.md`
-- **Конфигурация:** `docker/vision/config/voice/voice_assistant.yaml`
+- **Конфигурация:** `docker/vision/config/voice_assistant/voice_assistant.yaml`
 - **Dockerfile:** `docker/vision/voice_assistant/Dockerfile`
 
 ### Ссылки

@@ -173,7 +173,7 @@ tts_node:
   silero_put_yo_homo: true
 ```
 
-#### docker/vision/config/voice/voice_assistant.yaml
+#### docker/vision/config/voice_assistant/voice_assistant.yaml
 
 Аналогичные изменения в секции `silero:`.
 

@@ -295,7 +295,7 @@ tail -f /path/to/logs | grep "✅ Инструмент.*выполнен усп�
 - `src/rob_box_mcp_tools/rob_box_mcp_tools/llm_adapter.py` - Использует BEST_EFFORT (правильно)
 - `src/rob_box_mcp_tools/rob_box_mcp_tools/deepseek_adapter.py` - **Исправлено на BEST_EFFORT**
 - `src/rob_box_voice/prompts/master_prompt_compact.txt` - **Лимит увеличен до 15**
-- `docker/vision/config/voice/voice_assistant.yaml` - Конфигурация ссылается на промпт
+- `docker/vision/config/voice_assistant/voice_assistant.yaml` - Конфигурация ссылается на промпт
 
 ---
 

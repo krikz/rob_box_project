@@ -35,6 +35,18 @@ docker/
 │   │   └── Dockerfile
 │   ├── rtabmap/                 # ✅ ТОЛЬКО Dockerfile
 │   │   └── Dockerfile
+│   ├── teleop/                  # ✅ ТОЛЬКО Dockerfile
+│   │   └── Dockerfile
+│   ├── twist_mux/               # ✅ ТОЛЬКО Dockerfile
+│   │   └── Dockerfile
+│   ├── micro_ros_agent/         # ✅ ТОЛЬКО Dockerfile
+│   │   └── Dockerfile
+│   ├── ros2_control/            # ✅ ТОЛЬКО Dockerfile
+│   │   └── Dockerfile
+│   ├── vesc_nexus/              # ✅ ТОЛЬКО Dockerfile
+│   │   └── Dockerfile
+│   ├── perception/              # ✅ ТОЛЬКО Dockerfile
+│   │   └── Dockerfile
 │   └── zenoh-router/            # ✅ ТОЛЬКО Dockerfile
 │       └── Dockerfile
 │
@@ -44,15 +56,27 @@ docker/
     │   ├── zenoh_router_config.json5        # Общий для всех
     │   ├── zenoh_session_config.json5       # Общий для всех
     │   ├── cyclonedds.xml                   # Общий для всех
+    │   ├── audio/                           # Shared audio config for voice stack
+    │   │   └── asound.conf
     │   ├── oak-d/                           # Специфичные для OAK-D
-    │   │   └── (будущие конфиги)
-    │   ├── lslidar/                         # Специфичные для LSLIDAR
-    │   │   ├── lsx10_custom.yaml
-    │   │   └── lslidar_headless_launch.py
+    │   │   ├── oak_d_config.yaml
+    │   │   └── launch/
+    │   │       ├── oakd_with_apriltag.launch.py
+    │   │       └── oakd_apriltag_only.launch.py
     │   ├── apriltag/                        # Специфичные для AprilTag
     │   │   └── apriltag_config.yaml
+    │   ├── ceiling-camera/                  # Специфичные для Ceiling Camera
+    │   │   ├── camera_params.yaml
+    │   │   └── ceiling_camera.yaml
     │   └── led_matrix/                      # Специфичные для LED Matrix
-    │       └── led_matrix_config.yaml
+    │       ├── led_matrix_compositor.yaml
+    │       └── led_matrix_driver.yaml
+    │   ├── telegram_bot/                    # Специфичные для Telegram Bot
+    │   │   └── telegram_bot.yaml
+    │   └── voice_assistant/                 # Специфичные для Voice Assistant
+    │       ├── secrets.yaml.example
+    │       ├── voice_assistant.yaml
+    │       └── voice_assistant_headless.launch.py
     ├── scripts/                 # ✅ Скрипты (утилиты в корне, запуск в подпапках)
     │   ├── update_and_restart.sh            # Утилитарный
     │   ├── diagnose.sh                      # Утилитарный
@@ -64,11 +88,37 @@ docker/
     │   ├── switch_version.sh                # Утилитарный
     │   ├── oak-d/                           # Скрипты запуска OAK-D
     │   │   └── start_oak_d.sh
+    │   ├── voice_assistant/                 # Скрипты запуска Voice Assistant
+    │   │   └── start_voice_assistant.sh
+    │   ├── zenoh-router/                    # Скрипты запуска Zenoh Router
+    │   │   └── start_zenoh_router.sh
+    │   ├── supercollider/                   # Скрипты запуска SuperCollider
+    │   │   └── start_supercollider.sh
+    │   ├── telegram_bot/                    # Скрипты запуска Telegram Bot
+    │   │   └── start_telegram_bot.sh
+    │   ├── led_matrix/                      # Скрипты запуска LED Matrix
+    │   │   └── start_led_matrix.sh
+    │   ├── ceiling-camera/                  # Скрипты запуска Ceiling Camera
+    │   │   └── start_ceiling_camera.sh
     │   ├── lslidar/                         # Скрипты запуска LSLIDAR
     │   │   └── start_lslidar.sh
     │   └── apriltag/                        # Скрипты запуска AprilTag
     │       └── start_apriltag.sh
     ├── oak-d/                   # ✅ ТОЛЬКО Dockerfile
+    │   └── Dockerfile
+    ├── ceiling-camera/          # ✅ ТОЛЬКО Dockerfile
+    │   └── Dockerfile
+    ├── supercollider/           # ✅ ТОЛЬКО Dockerfile
+    │   └── Dockerfile
+    ├── voice_assistant/         # ✅ ТОЛЬКО Dockerfile
+    │   └── Dockerfile
+    ├── voice_base/              # ✅ Base image, не compose-сервис
+    │   └── Dockerfile
+    ├── voice_resources/         # ✅ Resource image для one-shot инициализации volume
+    │   └── Dockerfile
+    ├── telegram_bot/            # ✅ ТОЛЬКО Dockerfile
+    │   └── Dockerfile
+    ├── led_matrix/              # ✅ ТОЛЬКО Dockerfile
     │   └── Dockerfile
     ├── lslidar/                 # ✅ ТОЛЬКО Dockerfile
     │   └── Dockerfile
@@ -176,7 +226,17 @@ docker/<env>/
 ```
 
 **Правила:**
-- Название папки сервиса = название сервиса в `docker-compose.yaml`
+- Для новых сервисов имя папки должно совпадать с именем сервиса в `docker-compose.yaml`
+- В текущем репозитории есть legacy-исключения, где compose использует kebab-case, а папка — snake_case:
+  - `voice-assistant` → `voice_assistant/`
+  - `telegram-bot` → `telegram_bot/`
+  - `led-matrix` → `led_matrix/`
+  - `micro-ros-agent` → `micro_ros_agent/`
+  - `robot-state-publisher` → `robot_state_publisher/`
+  - `twist-mux` → `twist_mux/`
+  - `ros2-control` → `ros2_control/`
+- Такие legacy-имена не переименовываем без отдельной задачи, потому что это затрагивает workflows, compose, docs и локальные скрипты
+- Для shared-конфигов, которые используют несколько сервисов, создаём отдельную подпапку по подсистеме, например `config/audio/`
 - В папке сервиса ТОЛЬКО `Dockerfile`
 - Все конфиги в `config/` (общие в корне, специфичные в `config/<service>/`)
 - Все скрипты в `scripts/` (утилиты в корне, запуска в `scripts/<service>/`)

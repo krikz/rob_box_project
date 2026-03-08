@@ -45,7 +45,7 @@ echo ""
 
 echo "9. Проверка конфигурации камеры:"
 echo "   Параметры из oak_d_config.yaml:"
-grep -E '(image_transport|i_fps|i_rgb_resolution|i_enabled)' ~/rob_box_project/docker/vision/config/oak_d_config.yaml | head -10
+grep -E '(image_transport|i_fps|i_rgb_resolution|i_enabled)' ~/rob_box_project/docker/vision/config/oak-d/oak_d_config.yaml | head -10
 echo ""
 
 echo "=========================================="

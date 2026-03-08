@@ -305,7 +305,7 @@ CMD ["/scripts/start_voice_assistant.sh"]
 **Команда запуска:**
 ```bash
 exec ros2 launch rob_box_voice voice_assistant.launch.py \
-    config_file:=/config/voice/voice_assistant.yaml
+    config_file:=/config/voice_assistant/voice_assistant.yaml
 ```
 ✅ Использует конфигурацию из volume
 
