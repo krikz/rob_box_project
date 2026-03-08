@@ -389,10 +389,11 @@ class ListWaypointsTool(MCPTool):
 class SaveWaypointTool(MCPTool):
     """Сохранить текущую позицию робота как именованную точку."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore", tf_buffer: "tf2_ros.Buffer"):
+    def __init__(self, node, waypoint_store: "WaypointStore", tf_buffer: "tf2_ros.Buffer", mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.tf_buffer = tf_buffer
+        self.mapping_state = mapping_state
 
     @property
     def name(self) -> str:
@@ -424,6 +425,13 @@ class SaveWaypointTool(MCPTool):
 
     def execute(self, name: str) -> MCPToolResult:
         self.log_info(f"Сохранение точки: {name}")
+
+        # Нельзя сохранять точки пока идёт картографирование
+        if self.mapping_state is not None and self.mapping_state.is_mapping():
+            return MCPToolResult(
+                success=False,
+                error="Сейчас идёт картографирование. Завершите картографирование командой 'завершить картографирование', потом сохраняйте точки.",
+            )
 
         pose = _lookup_pose(self.tf_buffer, self.node.get_logger())
         if pose is None:

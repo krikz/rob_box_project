@@ -345,16 +345,17 @@ class TestHealthStatusChange(unittest.TestCase):
         self.node.destroy_node()
 
     def test_health_status_change_to_healthy_first_start(self):
-        """Тест: первый запуск (None → HEALTHY)"""
+        """Тест: первый запуск (None → HEALTHY) — reflection_node молчит, приветствие на стороне startup_greeting_node"""
         with patch.object(self.node, '_publish_speech') as mock_speech:
             self.mock_ctx.system_health_status = 'HEALTHY'
             self.node.event_states['health_status'] = None
             
             self.node._check_health_status_change(self.mock_ctx)
             
-            mock_speech.assert_called_once()
-            args = mock_speech.call_args[0][0]
-            self.assertIn('готов к работе', args.lower())
+            # Не должно быть речи — startup_greeting_node уже говорит приветствие
+            mock_speech.assert_not_called()
+            # Состояние должно обновиться
+            self.assertEqual(self.node.event_states['health_status'], 'HEALTHY')
 
     def test_health_status_change_to_healthy_recovery(self):
         """Тест: восстановление (DEGRADED → HEALTHY)"""

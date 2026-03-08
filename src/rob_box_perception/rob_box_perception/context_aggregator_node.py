@@ -534,6 +534,18 @@ class ContextAggregatorNode(Node):
         
         # Equipment summary (placeholder for Stage 2)
         event.equipment_summary_json = "{}"
+
+        # Mapping mode — читаем /maps/mapping_state.json (volume :ro)
+        try:
+            _state_path = "/maps/mapping_state.json"
+            if os.path.exists(_state_path):
+                with open(_state_path, "r") as _f:
+                    _state = json.load(_f)
+                event.mapping_mode = _state.get("mode", "unknown")
+            else:
+                event.mapping_mode = "unknown"
+        except Exception:
+            event.mapping_mode = "unknown"
         
         # Memory
         event.memory_summary = self.get_memory_summary()
@@ -578,11 +590,11 @@ class ContextAggregatorNode(Node):
         
         # Определяем статус
         if len(issues) == 0:
-            status = "healthy"
+            status = "HEALTHY"
         elif len(issues) <= 2:
-            status = "degraded"
+            status = "DEGRADED"
         else:
-            status = "critical"
+            status = "UNHEALTHY"
         
         return status, issues
     

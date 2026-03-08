@@ -21,7 +21,8 @@ services:
       logging: "promtail"
 
   oak-d:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${OAK_D_TAG:-latest}
     container_name: oak-d
     network_mode: host
     privileged: true
@@ -54,8 +55,63 @@ services:
     labels:
       logging: "promtail"
 
+  # === RTAB-Map rgbd_sync ===
+  # Синхронизирует RGB и Depth с OAK-D в один топик /rgbd_image и пересылает через Zenoh на Main Pi.
+  # Это уменьшает Zenoh-трафик: 1 топик RGBDImage вместо 2 отдельных сырых изображений.
+  # Main Pi (rtabmap сервис) подписывается на /rgbd_image через subscribe_rgbd:=true.
+  rtabmap-sync:
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_SYNC_TAG:-latest}
+    container_name: rtabmap-sync
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+    # Подписывается на локальные OAK-D топики (не через Zenoh), публикует /rgbd_image через Zenoh
+    # depthai_ros_driver v2 топики (v2.12.2-humble, i_rs_compat:true → color/ prefix):
+    # rgb/image       ← /camera/camera/color/image_raw
+    # depth/image     ← /camera/camera/depth/image_rect_raw
+    # rgb/camera_info ← /camera/camera/color/camera_info
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - ros2
+      - run
+      - rtabmap_sync
+      - rgbd_sync
+      - --ros-args
+      - -r
+      - rgb/image:=camera/camera/color/image_raw
+      - -r
+      - depth/image:=camera/camera/depth/image_rect_raw
+      - -r
+      - rgb/camera_info:=camera/camera/color/camera_info
+      - -p
+      - approx_sync:=true
+      - -p
+      - approx_sync_max_interval:=0.1
+      - -p
+      - topic_queue_size:=10
+      - -p
+      - sync_queue_size:=10
+    depends_on:
+      - zenoh-router
+      - oak-d
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+
   led-matrix:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${LED_MATRIX_TAG:-latest}
     container_name: led-matrix
     network_mode: host
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
@@ -87,7 +143,8 @@ services:
       logging: "promtail"
 
   ceiling-camera:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${CEILING_CAMERA_TAG:-latest}
     container_name: ceiling-camera
     network_mode: host
     privileged: true  # Для доступа к USB camera
@@ -144,12 +201,9 @@ services:
       logging: "promtail"
 
   voice-assistant:
-    # Image tags automatically determined by IMAGE_TAG environment variable:
-    # - IMAGE_TAG=latest  → voice-assistant-humble-latest (main branch)
-    # - IMAGE_TAG=dev     → voice-assistant-humble-dev (develop branch)
-    # - IMAGE_TAG=test    → voice-assistant-humble-test (feature/* branches)
-    # Built via GitHub Actions: .github/workflows/build-vision-services.yml
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    # Format: VOICE_ASSISTANT_TAG=env-gitsha (e.g. test-abc1234) → immutable, pinned to specific build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-latest}
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
@@ -199,6 +253,8 @@ services:
       - renardo_samples:/root/.config/renardo/samples
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
+      # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
+      - ../../migrations:/migrations:ro
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
@@ -219,7 +275,8 @@ services:
   # Операторский интерфейс через Telegram
   # Управление роботом с телефона: фото, голос, движение, LLM чат
   telegram-bot:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-latest}
     container_name: telegram-bot
     network_mode: host
     environment:

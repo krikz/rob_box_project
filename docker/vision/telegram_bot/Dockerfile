@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir \
     python-telegram-bot[job-queue]==21.* \
     aiohttp>=3.9 \
+    Pillow>=10.0 \
+    numpy>=1.24 \
     && pip3 cache purge
 
 # Копируем ROS 2 пакет

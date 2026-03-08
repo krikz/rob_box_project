@@ -18,6 +18,9 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: write  # Required for git push of .image-versions files
+
 env:
   LOCAL_REGISTRY: localhost:5000
   GHCR_REGISTRY: ghcr.io
@@ -251,6 +254,66 @@ jobs:
             docker push "${LOCAL_TAG}"
           fi
           echo "✅ Built ${SERVICE}"
+
+  # Обновление .image-versions — SHA-тег после успешной сборки
+  update-image-versions:
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-assistant, build-telegram-bot, build-supercollider]
+    runs-on: self-hosted
+    if: success() && inputs.push_to_registry != false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Tag with SHA and update .image-versions
+        run: |
+          DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # Tag and push SHA-immutable images for each service
+          tag_and_push() {
+            local LOCAL_TAG="$1"
+            local SHA_TAG="${LOCAL_TAG}-${SHORT_SHA}"
+            docker tag "$LOCAL_TAG" "$SHA_TAG" && docker push "$SHA_TAG"
+            echo "✅ $SHA_TAG"
+          }
+
+          tag_and_push "${LOCAL_PREFIX}:oak-d-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:ceiling-camera-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${DOCKER_TAG}"
+          # supercollider excluded: tag naming is inconsistent (no ROS_DISTRO prefix)
+
+          # Update .image-versions file
+          VERSIONS_FILE="docker/vision/.image-versions.${DOCKER_TAG}"
+          if [ -f "$VERSIONS_FILE" ]; then
+            sed -i \
+              -e "s|^OAK_D_TAG=.*|OAK_D_TAG=${NEW_TAG}|" \
+              -e "s|^RTABMAP_SYNC_TAG=.*|RTABMAP_SYNC_TAG=${NEW_TAG}|" \
+              -e "s|^LED_MATRIX_TAG=.*|LED_MATRIX_TAG=${NEW_TAG}|" \
+              -e "s|^CEILING_CAMERA_TAG=.*|CEILING_CAMERA_TAG=${NEW_TAG}|" \
+              -e "s|^VOICE_ASSISTANT_TAG=.*|VOICE_ASSISTANT_TAG=${NEW_TAG}|" \
+              -e "s|^TELEGRAM_BOT_TAG=.*|TELEGRAM_BOT_TAG=${NEW_TAG}|" \
+              "$VERSIONS_FILE"
+
+            git config user.email "ci@rob-box.local"
+            git config user.name "Rob Box CI"
+            git add "$VERSIONS_FILE"
+            if ! git diff --cached --quiet; then
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
+              git pull --rebase origin "$BRANCH"
+              git push origin "$BRANCH"
+              echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG}"
+            fi
+          else
+            echo "⚠️  $VERSIONS_FILE not found"
+          fi
 
   # Итоговая сводка
   summary:

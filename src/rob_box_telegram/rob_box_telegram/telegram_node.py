@@ -9,8 +9,10 @@ Architecture:
     Telegram (async, python-telegram-bot)  <->  TelegramNode (ROS 2)  <->  ROS 2 topics
 
 Topics subscribed:
-    /camera/rgb/image_raw/compressed  (sensor_msgs/CompressedImage) — front camera
+    /camera/camera/color/image_raw/compressed  (sensor_msgs/CompressedImage) — front camera
+    /camera/camera/depth/image_rect_raw/compressedDepth (sensor_msgs/CompressedImage) — depth
     /ceiling_camera/image_raw/compressed (sensor_msgs/CompressedImage) — ceiling camera
+    /rtabmap/grid_prob_map (nav_msgs/OccupancyGrid) — 2D SLAM map
     /mcp/result (std_msgs/String) — MCP tool execution results
     /mcp/tools  (std_msgs/String) — available MCP tool definitions
 
@@ -32,8 +34,9 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
+from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 
 from telegram import Update
@@ -57,7 +60,9 @@ from .handlers.commands import (
     menu_handler,
     music_handler,
     myid_handler,
+    photo_depth_handler,
     photo_handler,
+    photo_map_handler,
     photo_up_handler,
     playvoice_handler,
     pose_handler,
@@ -89,7 +94,8 @@ class TelegramNode(Node):
         self.declare_parameter("max_linear_speed", 0.3)
         self.declare_parameter("max_angular_speed", 0.5)
         self.declare_parameter("move_duration", 0.5)
-        self.declare_parameter("camera_topic", "/camera/rgb/image_raw/compressed")
+        self.declare_parameter("camera_topic", "/camera/camera/color/image_raw/compressed")
+        self.declare_parameter("camera_depth_topic", "/camera/camera/depth/image_rect_raw/compressedDepth")
         self.declare_parameter("camera_up_topic", "/ceiling_camera/image_raw/compressed")
         self.declare_parameter("camera_cache_ttl", 5.0)
         self.declare_parameter("llm_provider", "deepseek")
@@ -103,6 +109,7 @@ class TelegramNode(Node):
         self.max_angular_speed: float = self.get_parameter("max_angular_speed").value
         self.move_duration: float = self.get_parameter("move_duration").value
         self.camera_topic: str = self.get_parameter("camera_topic").value
+        self.camera_depth_topic: str = self.get_parameter("camera_depth_topic").value
         self.camera_up_topic: str = self.get_parameter("camera_up_topic").value
         camera_cache_ttl: float = self.get_parameter("camera_cache_ttl").value
         llm_provider: str = self.get_parameter("llm_provider").value
@@ -113,8 +120,8 @@ class TelegramNode(Node):
         poll_timeout: int = self.get_parameter("telegram_poll_timeout").value
 
         # ── Camera cache ────────────────────────────────────────────
-        self.camera_cache = CameraCache(ttl=camera_cache_ttl)
-
+        self.camera_cache = CameraCache(ttl=camera_cache_ttl)        # Latest SLAM occupancy grid (stored raw for on-demand rendering)
+        self.latest_map_grid: Optional[OccupancyGrid] = None
         # ── QoS profiles ────────────────────────────────────────────
         reliable_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -125,6 +132,12 @@ class TelegramNode(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
+        )
+        transient_local_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
 
         cb_group = ReentrantCallbackGroup()
@@ -139,9 +152,23 @@ class TelegramNode(Node):
         )
         self.create_subscription(
             CompressedImage,
+            self.camera_depth_topic,
+            self._on_camera_depth,
+            best_effort_qos,
+            callback_group=cb_group,
+        )
+        self.create_subscription(
+            CompressedImage,
             self.camera_up_topic,
             self._on_camera_up,
             best_effort_qos,
+            callback_group=cb_group,
+        )
+        self.create_subscription(
+            OccupancyGrid,
+            "/rtabmap/grid_prob_map",
+            self._on_map,
+            transient_local_qos,
             callback_group=cb_group,
         )
         self.create_subscription(
@@ -194,9 +221,17 @@ class TelegramNode(Node):
         """Cache latest front camera frame."""
         self.camera_cache.update(self.camera_topic, bytes(msg.data))
 
+    def _on_camera_depth(self, msg: CompressedImage) -> None:
+        """Cache latest depth frame (compressedDepth format)."""
+        self.camera_cache.update(self.camera_depth_topic, bytes(msg.data))
+
     def _on_camera_up(self, msg: CompressedImage) -> None:
         """Cache latest ceiling camera frame."""
         self.camera_cache.update(self.camera_up_topic, bytes(msg.data))
+
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        """Store latest SLAM occupancy grid for /photo_map rendering."""
+        self.latest_map_grid = msg
 
     def _on_mcp_result(self, msg: String) -> None:
         """Forward MCP result to the bridge for request correlation."""
@@ -294,6 +329,8 @@ class TelegramNode(Node):
         app.add_handler(CommandHandler("menu", menu_handler))
         app.add_handler(CommandHandler("photo", photo_handler))
         app.add_handler(CommandHandler("photo_up", photo_up_handler))
+        app.add_handler(CommandHandler("photo_depth", photo_depth_handler))
+        app.add_handler(CommandHandler("photo_map", photo_map_handler))
         app.add_handler(CommandHandler("say", say_handler))
         app.add_handler(CommandHandler("playvoice", playvoice_handler))
         app.add_handler(CommandHandler("status", status_handler))

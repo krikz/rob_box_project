@@ -8,7 +8,9 @@ telegram_node:
     move_duration: 0.5         # seconds per button press
 
     # Camera topics
-    camera_topic: "/camera/rgb/image_raw/compressed"
+    # NOTE: with i_rs_compat: true, oak-d renames rgb→color
+    camera_topic: "/camera/camera/color/image_raw/compressed"
+    camera_depth_topic: "/camera/camera/depth/image_rect_raw/compressedDepth"
     camera_up_topic: "/ceiling_camera/image_raw/compressed"
     camera_cache_ttl: 5.0      # seconds — discard frames older than this
 

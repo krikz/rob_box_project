@@ -28,7 +28,7 @@ joystick_control_node:
 
     # Speed limits
     max_linear_speed: 1.0   # m/s
-    max_angular_speed: 15.0  # rad/s
+    max_angular_speed: 1.0  # rad/s
     
     # Deadzone to prevent drift
     deadzone: 0.1

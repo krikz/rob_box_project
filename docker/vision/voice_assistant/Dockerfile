@@ -70,6 +70,7 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
     ros-${ROS_DISTRO}-nav2-msgs \
+    ros-${ROS_DISTRO}-rtabmap-msgs \
     # ROS2 message generation
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \

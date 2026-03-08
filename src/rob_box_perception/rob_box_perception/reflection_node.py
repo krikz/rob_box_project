@@ -296,13 +296,12 @@ class ReflectionNode(Node):
             # React to state change
             if current_health == 'HEALTHY' and previous_health in ['DEGRADED', 'UNHEALTHY', None]:
                 # System recovered or first start
-                if previous_health:  # Not first start
+                if previous_health:  # Not first start — system was degraded/unhealthy before
                     speech = "Отлично! Системы восстановлены, всё работает нормально."
-                else:  # First start
-                    speech = "Всё хорошо! Батарея полная, системы в норме, готов к работе."
-                
-                self._publish_speech(speech)
-                self.get_logger().info(f'🗣️  Говорю (health recovery): "{speech}"')
+                    self._publish_speech(speech)
+                    self.get_logger().info(f'🗣️  Говорю (health recovery): "{speech}"')
+                else:  # First start — startup_greeting_node handles the greeting, skip
+                    self.get_logger().info('🔇 Первый старт — приветствие уже озвучит startup_greeting_node')
             
             elif current_health == 'DEGRADED':
                 speech = "Внимание! Обнаружены проблемы с системой."
@@ -677,8 +676,7 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150 if urgent else 200,
-                response_format={"type": "json_object"},
-                stream_options={"include_usage": True}
+                response_format={"type": "json_object"}
             )
             
             # Логируем токены
@@ -719,8 +717,7 @@ class ReflectionNode(Node):
                 ],
                 temperature=0.7,
                 max_tokens=150,
-                response_format={"type": "json_object"},
-                stream_options={"include_usage": True}
+                response_format={"type": "json_object"}
             )
             
             # Логируем токены

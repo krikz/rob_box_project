@@ -16,6 +16,9 @@ on:
         default: 'true'
         type: boolean
 
+permissions:
+  contents: write  # Required for git push of .image-versions files
+
 env:
   LOCAL_REGISTRY: localhost:5000
   LOCAL_PREFIX: localhost:5000/krikz/rob_box

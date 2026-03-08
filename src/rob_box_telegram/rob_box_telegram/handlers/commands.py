@@ -8,6 +8,10 @@ which provides access to ROS 2 publishers, MCP bridge, camera cache, and LLM cha
 
 import io
 import logging
+import struct
+
+import numpy as np
+from PIL import Image
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -73,7 +77,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📋 *Доступные команды:*\n\n"
         "*Камера:*\n"
         "/photo — фото с фронтальной камеры\n"
-        "/photo\\_up — фото с потолочной камеры\n\n"
+        "/photo\\_up — фото с потолочной камеры\n"
+        "/photo\\_depth — карта глубины (OAK-D)\n"
+        "/photo\\_map — 2D карта помещения (RTAB-Map)\n\n"
         "*Голос:*\n"
         "/say <текст> — произнести текст\n"
         "/playvoice — режим: следующее голосовое проиграть\n\n"
@@ -150,6 +156,144 @@ async def photo_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_photo(
         photo=io.BytesIO(jpeg_data),
         caption="📸 Потолочная камера",
+    )
+
+
+# ─── вспомогательные функции ──────────────────────────────────────────────────────────────────────────────
+
+
+def _depth_compressed_to_jpeg(data: bytes) -> bytes:
+    """Convert compressedDepth bytes to a colorized JPEG.
+
+    compressedDepth format (ROS 2 Humble): 12-byte header
+    (int32 format + float depthQuantA + float depthQuantB) + PNG (16-bit grayscale).
+    Result: colorized JPEG (blue=near, red=far).
+    """
+    # Find PNG magic bytes to skip the variable-length header robustly
+    PNG_SIG = b"\x89PNG\r\n\x1a\n"
+    offset = data.find(PNG_SIG)
+    if offset == -1:
+        raise ValueError(f"No PNG signature in compressedDepth data (len={len(data)})")
+    png_bytes = data[offset:]
+    img = Image.open(io.BytesIO(png_bytes))
+    arr = np.array(img, dtype=np.float32)
+
+    # Normalize valid (non-zero) pixels to 0–255
+    valid_mask = arr > 0
+    if valid_mask.any():
+        lo = float(np.percentile(arr[valid_mask], 2))
+        hi = float(np.percentile(arr[valid_mask], 98))
+        arr = np.clip(arr, lo, hi)
+        arr = (arr - lo) / (hi - lo + 1e-6) * 255.0
+    arr8 = arr.astype(np.uint8)
+
+    # Pseudo-colormap: синий (близко) → зелёный → красный (далеко)
+    r = np.clip(arr8.astype(np.int16) * 2 - 255, 0, 255).astype(np.uint8)
+    g = np.clip(255 - np.abs(arr8.astype(np.int16) * 2 - 255), 0, 255).astype(np.uint8)
+    b = np.clip(255 - arr8.astype(np.int16) * 2, 0, 255).astype(np.uint8)
+    rgb = np.stack([r, g, b], axis=-1)
+
+    out = Image.fromarray(rgb, mode="RGB")
+    buf = io.BytesIO()
+    out.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _occupancy_grid_to_png(grid) -> bytes:
+    """Render nav_msgs/OccupancyGrid as a PNG image.
+
+    Color scheme:
+        gray  — unknown (-1)
+        white — free (0)
+        black — occupied (100)
+    """
+    h = grid.info.height
+    w = grid.info.width
+    data = np.array(grid.data, dtype=np.int8).reshape(h, w)
+
+    rgb = np.full((h, w, 3), 128, dtype=np.uint8)   # unknown = gray
+    rgb[data == 0] = [235, 235, 235]                 # free = light
+    rgb[data == 100] = [20, 20, 20]                  # occupied = dark
+    # Partial occupancy gradient
+    mask = (data > 0) & (data < 100)
+    if mask.any():
+        vals = data[mask].astype(np.float32)
+        col = (235 - vals * 2.1).clip(0, 235).astype(np.uint8)
+        rgb[mask] = np.stack([col, col, col], axis=-1)
+
+    # ROS maps are y-up, flip for correct display
+    rgb = np.flipud(rgb)
+
+    img = Image.fromarray(rgb, mode="RGB")
+    # Scale: min 400px on the short side, max 1200px on the long side
+    min_dim, max_dim = 400, 1200
+    scale = max(min_dim / max(w, h, 1), 1.0)
+    scale = min(scale, max_dim / max(w, h, 1))
+    if abs(scale - 1.0) > 0.05:
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.NEAREST)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ─── /photo_depth ──────────────────────────────────────────────────────────────────────────────
+
+
+@authorized
+async def photo_depth_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /photo_depth — send colorized depth image from OAK-D."""
+    node = _node(context)
+    topic = node.camera_depth_topic
+
+    raw = node.camera_cache.get(topic)
+    if raw is None:
+        age = node.camera_cache.get_age(topic)
+        if age is not None:
+            await update.message.reply_text(f"⚠️ Кадр глубины устарел ({age:.0f}с).")
+        else:
+            await update.message.reply_text("⚠️ Нет кадров глубины. Проверьте OAK-D.")
+        return
+
+    try:
+        jpeg = _depth_compressed_to_jpeg(raw)
+    except Exception as e:
+        logger.exception("Depth decode error")
+        await update.message.reply_text(f"⚠️ Ошибка декодирования глубины: {e}")
+        return
+
+    await update.message.reply_photo(
+        photo=io.BytesIO(jpeg),
+        caption="🔵 Глубина (синий=близко, красный=далеко)",
+    )
+
+
+# ─── /photo_map ───────────────────────────────────────────────────────────────────────────────
+
+
+@authorized
+async def photo_map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /photo_map — send current 2D occupancy map from RTAB-Map."""
+    node = _node(context)
+    grid = getattr(node, "latest_map_grid", None)
+    if grid is None:
+        await update.message.reply_text(
+            "⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту."
+        )
+        return
+
+    try:
+        png = _occupancy_grid_to_png(grid)
+    except Exception as e:
+        logger.exception("Map render error")
+        await update.message.reply_text(f"⚠️ Ошибка рендеринга карты: {e}")
+        return
+
+    res = grid.info.resolution
+    size_m = f"{grid.info.width * res:.1f}×{grid.info.height * res:.1f}"
+    await update.message.reply_photo(
+        photo=io.BytesIO(png),
+        caption=f"🗺 Карта RTAB-Map ({grid.info.width}×{grid.info.height} пикс, {res:.2f}м/пикс, {size_m}м)",
     )
 
 

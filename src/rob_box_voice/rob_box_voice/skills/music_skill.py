@@ -30,7 +30,7 @@ _DEFAULT_RENARDO_REF_PATH = os.getenv(
 )
 _DEFAULT_SAMPLES_PATH = os.getenv(
     "RENARDO_SAMPLES_PATH",
-    "/renardo_samples",
+    "/root/.config/renardo/samples",
 )
 
 
@@ -96,8 +96,10 @@ class MusicSkill(BaseSkill):
         ) -> str:
             """Search for renardo samples by keyword in the filename.
 
-            ALWAYS call this before creating music patterns!  Filenames describe
-            the sonic character of the sample (e.g. "Kick1.wav", "Snare_rim.wav").
+            Call this when you need an UNKNOWN sample letter / index or want to
+            browse the sample library. Do NOT call it for known built-ins like
+            vocal `c` or standard kick/snare letters already covered by the prompt.
+            Filenames describe the sonic character of the sample (e.g. "Kick1.wav", "Snare_rim.wav").
 
             Args:
                 query: Keyword to search for (e.g. "kick", "snare", "hat", "bass",
@@ -242,4 +244,108 @@ class MusicSkill(BaseSkill):
             """Get current music state: SC availability, active patterns, preset."""
             return await _call("get_music_state", {})
 
-        return [search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state]
+        @function_tool
+        async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
+            """List saved tracks in the robot's music library.
+
+            ALWAYS call this when the user asks about saved tracks, melodies or
+            the music library — do NOT answer from memory!
+
+            Args:
+                tag: Filter by tag, e.g. 'full_track', 'robot_authored', 'minor'. Empty = all.
+                min_rating: Show only tracks rated this or higher (0-5).
+            """
+            params: dict = {}
+            if tag:
+                params["tag"] = tag
+            if min_rating:
+                params["min_rating"] = min_rating
+            return await _call("list_tracks", params)
+
+        @function_tool
+        async def save_track(name: str, title: str = "", description: str = "",
+                             tags: str = "", rating: int = 0, notes: str = "") -> str:
+            """Save the current or last played track to the persistent music library.
+
+            Use when the user says 'save this track', 'remember this melody', etc.
+
+            Args:
+                name: Unique slug identifier (e.g. 'chill_dnb_v1').
+                title: Human-readable title.
+                description: Mood, structure, notes about the track.
+                tags: Comma-separated tags (e.g. 'chill,minor,90bpm').
+                rating: Star rating 0-5.
+                notes: Personal notes.
+            """
+            params: dict = {"name": name}
+            if title:
+                params["title"] = title
+            if description:
+                params["description"] = description
+            if tags:
+                params["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+            if rating:
+                params["rating"] = rating
+            if notes:
+                params["notes"] = notes
+            return await _call("save_track", params)
+
+        @function_tool
+        async def load_track(name: str) -> str:
+            """Load a track from the library and play it.
+
+            Use when the user asks to play a saved track by name.
+            Call list_tracks() first to get the exact name.
+
+            Args:
+                name: Track slug (e.g. 'csm_132_full_track').
+            """
+            return await _call("load_track", {"name": name})
+
+        @function_tool
+        async def delete_track(name: str) -> str:
+            """Delete a track from the music library (irreversible).
+
+            Args:
+                name: Track slug to delete.
+            """
+            return await _call("delete_track", {"name": name})
+
+        @function_tool
+        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0, theme: str = "") -> str:
+            """Enable or disable autonomous DJ mode with optional party theme.
+
+            In DJ mode the robot automatically makes smooth music transitions
+            like a live DJ at a party, adapting to the given theme.
+
+            Workflow:
+                1. Start thematic music: execute_music_code(...)
+                2. Enable DJ mode: set_dj_mode(enabled=True, next_transition_sec=45,
+                   theme="8 марта, женский день")
+                3. Robot will autonomously evolve patterns AND periodically make
+                   thematic announcements (e.g., congratulate women on March 8th).
+                4. At the END of every DJ transition call this again with the chosen
+                   next_transition_sec (no need to re-send theme — it's remembered).
+                5. To stop: set_dj_mode(enabled=False), then stop_music() if needed.
+
+            Args:
+                enabled: True to enable, False to disable.
+                next_transition_sec: Seconds until next auto-transition (15–300).
+                    YOU decide based on the set: fast/energetic → 30–40s,
+                    slow/ambient → 60–90s. ALWAYS provide when enabled=True.
+                theme: Party theme / context (e.g. '8 марта', 'halloween', 'корпоратив 90-х',
+                    'день рождения Антона'). Pass ONLY on first activation — remembered until
+                    disabled. Robot will tailor music and occasional speech to this theme.
+            """
+            params: dict = {"enabled": enabled}
+            if next_transition_sec:
+                params["next_transition_sec"] = next_transition_sec
+            if theme:
+                params["theme"] = theme
+            return await _call("set_dj_mode", params)
+
+        return [
+            search_samples, execute_music_code, stop_music, set_vibe_preset,
+            get_music_state, list_tracks, save_track, load_track, delete_track,
+            set_dj_mode,
+        ]
