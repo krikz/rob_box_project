@@ -29,7 +29,8 @@ services:
 
   # twist_mux - мультиплексирование команд скорости с приоритизацией
   twist-mux:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:twist-mux-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:twist-mux-${ROS_DISTRO:-humble}-${TWIST_MUX_TAG:-latest}
     container_name: twist-mux
     network_mode: host
     environment:
@@ -60,7 +61,8 @@ services:
   # micro-ROS Agent - связь с ESP32 Sensor Hub по UART
   # Транслирует сообщения между ROS2 (DDS/Zenoh) и micro-ROS (XRCE-DDS)
   micro-ros-agent:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:micro-ros-agent-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:micro-ros-agent-${ROS_DISTRO:-humble}-${MICRO_ROS_AGENT_TAG:-latest}
     container_name: micro-ros-agent
     network_mode: host
     privileged: true  # Нужен для доступа к serial устройствам
@@ -96,7 +98,8 @@ services:
 
   # Robot State Publisher - публикует TF дерево робота из URDF
   robot-state-publisher:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:robot-state-publisher-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:robot-state-publisher-${ROS_DISTRO:-humble}-${ROBOT_STATE_PUBLISHER_TAG:-latest}
     container_name: robot-state-publisher
     network_mode: host
     environment:
@@ -120,7 +123,8 @@ services:
       logging: "promtail"
 
   rtabmap:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_TAG:-latest}
     container_name: rtabmap
     network_mode: host
     environment:
@@ -139,8 +143,8 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./maps:/maps
-    # === RTAB-Map конфигурация для 2D LiDAR SLAM ===
-    # Полная документация: docs/reference/RTABMAP_LIDAR_CONFIG.md
+    # === RTAB-Map конфигурация: 3D SLAM (LiDAR ICP + OAK-D RGB-D) ===
+    # Ветка: feature/rtabmap-rgbd-lidar-3d
     #
     # Источники:
     # 1. http://wiki.ros.org/rtabmap_ros/Tutorials/SetupOnYourRobot
@@ -148,27 +152,42 @@ services:
     # 3. Анализ rtabmap.launch.py (строки 45-46)
     #
     # КЛЮЧЕВЫЕ ПАРАМЕТРЫ:
-    # • depth:=false - КРИТИЧНО! Отключает RGB/Depth подписку
-    #   (По умолчанию depth=true → subscribe_rgb=true → камерные топики)
-    # • subscribe_scan:=true - включает LaserScan
-    # • icp_odometry:=true - ICP одометрия корректирует wheel odometry используя лидар
-    # • odom_guess_frame_id:=odom - wheel odometry как guess для ICP
-    # • vo_frame_id:=icp_odom - ICP публикует в свой frame
-    # • Reg/Strategy=1 - ICP регистрация для SLAM
-    # • Reg/Force3DoF=true - 2D SLAM (только x, y, yaw)
-    # • Icp/VoxelSize=0.05 - фильтрация сканов 5см вокселями
-    # • Grid/RangeMin=0.2 - игнорировать точки ближе 20см
-    # • Grid/Sensor=0 - сетка из лидара (не из depth камеры)
+    # • depth:=true              - использовать отдельные rgb/depth топики (НЕ subscribe_rgbd)
+    # • subscribe_rgbd:=false    - НЕ подписываться на /rgbd_image (переключились на compressed)
+    # • compressed:=true         - image_transport republish compressed→raw локально на Main Pi
+    # • rgb_image_transport:=compressed     - JPEG по Zenoh (~3-5 MB/s)
+    # • depth_image_transport:=compressedDepth - PNG depth по Zenoh (~5-8 MB/s)
+    # • subscribe_scan:=true - включает LaserScan (LiDAR для ICP одометрии и 2D grid)
+    # • icp_odometry:=true  - ICP одометрия: лидар → icp_odom (надёжнее visual в коридорах)
+    # • odom_guess_frame_id:=odom - wheel odometry как начальный guess для ICP
+    # • Grid/Sensor=2       - occupancy grid из ОБОИХ сенсоров: лидар + depth камера
+    #   Grid/Sensor=0 был только лидар (не видел низкие препятствия)
+    # • Grid/MaxObstacleHeight=1.5 - учитывать препятствия до 1.5м
+    # • Grid/MinGroundHeight=-0.1  - фильтровать пол (точки ниже -0.1м от base_footprint)
+    # • Reg/Force3DoF=true  - 2D движение (только x, y, yaw)
+    # • Reg/Strategy=1      - ICP регистрация для loop closure
     #
-    # ОЖИДАЕМЫЕ ПОДПИСКИ: /scan, /odom (wheel), /camera/imu/data
-    # ICP одометрия публикует: odom→icp_odom TF, RTABMAP использует icp_odom
+    # ТОПИК ПОТОК:
+    #   Vision Pi: OAK-D → /camera/.../color/image_raw/compressed (JPEG, ~3-5 MB/s)
+    #                     → /camera/.../depth/image_rect_raw/compressedDepth (PNG, ~5-8 MB/s)
+    #              Zenoh → Main Pi
+    #   Main Pi:   image_transport republish (compressed→raw, локально)
+    #              rtabmap ← raw RGB + raw Depth (синхр. approx_sync) + /scan (LiDAR)
     command:
       - /ros_scripts/ros_with_namespace.sh
+      - /ros_scripts/start_rtabmap.sh
       - ros2
       - launch
       - rtabmap_launch
       - rtabmap.launch.py
-      - depth:=false
+      - depth:=true
+      - subscribe_rgbd:=false
+      - rgb_topic:=/camera/camera/color/image_raw
+      - camera_info_topic:=/camera/camera/color/camera_info
+      - depth_topic:=/camera/camera/depth/image_rect_raw
+      - compressed:=true
+      - rgb_image_transport:=compressed
+      - depth_image_transport:=compressedDepth
       - subscribe_scan:=true
       - scan_topic:=/scan
       - icp_odometry:=true
@@ -185,10 +204,17 @@ services:
       - rtabmap_viz:=false
       - rviz:=false
       - visual_odometry:=false
+      # localization:= is injected by start_rtabmap.sh based on /maps/mapping_state.json
+      # Default: localization:=true. Only mapping:=false if state file says mode=mapping.
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false
-      - args:=--delete_db_on_start -p Reg/Strategy:1 -p Reg/Force3DoF:true -p Icp/VoxelSize:0.05 -p Icp/MaxCorrespondenceDistance:0.1 -p RGBD/NeighborLinkRefining:true -p RGBD/ProximityBySpace:true -p Grid/RangeMin:0.2 -p Grid/Sensor:0 -p Optimizer/GravitySigma:0 -p Odom/ResetCountdown:1 -p RGBD/OptimizeMaxError:5.0
+      - cfg:=/config/rtabmap/rtabmap.ini
+      # Вокселизация cloud_map: уменьшает размер сообщения в ~100-1000x.
+      # Предотвращает переполнение Zenoh TCP буфера при loop closure.
+      # 0.3 = 3x крупнее вокселей чем 0.1 → ~27x меньше точек → ~27x меньший publish.
+      # Для навигации 30cm вокселей достаточно — nav2 использует 2D costmap, не 3D облако.
+      - cloud_output_voxels:=0.3
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -198,7 +224,8 @@ services:
   # ROS2 Control Manager - управление моторами через VESC
   # VESC Nexus работает как hardware_interface плагин
   ros2-control:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ros2-control-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ros2-control-${ROS_DISTRO:-humble}-${ROS2_CONTROL_TAG:-latest}
     container_name: ros2-control
     network_mode: host
     privileged: true  # Для доступа к CAN интерфейсу
@@ -235,7 +262,8 @@ services:
 
   # LSLIDAR N10 - 2D LiDAR scanner
   lslidar:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:lslidar-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:lslidar-${ROS_DISTRO:-humble}-${LSLIDAR_TAG:-latest}
     container_name: lslidar
     network_mode: host
     privileged: true  # Для доступа к USB/Serial устройству
@@ -263,8 +291,8 @@ services:
 
   # Internal Dialogue Agent - система внутреннего диалога робота
   perception:
-    # Image tag automatically determined by IMAGE_TAG environment variable
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:perception-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:perception-${ROS_DISTRO:-humble}-${PERCEPTION_TAG:-latest}
     container_name: perception
     network_mode: host
     environment:
@@ -309,7 +337,8 @@ services:
 
   # Nav2 Navigation Stack - автономная навигация
   nav2:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:nav2-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:nav2-${ROS_DISTRO:-humble}-${NAV2_TAG:-latest}
     container_name: nav2
     network_mode: host
     environment:

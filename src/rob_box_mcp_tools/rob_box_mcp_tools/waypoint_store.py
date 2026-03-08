@@ -148,6 +148,37 @@ class WaypointStore:
             map_id = self.create_map(name="default")
         return map_id
 
+    def set_active_map_by_name(self, name: str) -> bool:
+        """Find a map by name (case-insensitive) and make it active.
+
+        Returns True if found and activated, False if no map with that name.
+        """
+        name_lower = name.strip().lower()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT map_id FROM maps WHERE lower(name) = ? ORDER BY created_at DESC LIMIT 1",
+                (name_lower,),
+            ).fetchone()
+            if row is None:
+                return False
+            map_id = row["map_id"]
+            cur = self._conn.cursor()
+            cur.execute("UPDATE maps SET is_active = 0 WHERE is_active = 1")
+            cur.execute("UPDATE maps SET is_active = 1 WHERE map_id = ?", (map_id,))
+            self._conn.commit()
+        return True
+
+    def list_maps(self) -> list:
+        """Return all maps ordered by creation time (newest first)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT map_id, name, created_at, is_active FROM maps ORDER BY created_at DESC"
+            ).fetchall()
+        return [
+            {"map_id": r["map_id"], "name": r["name"], "created_at": r["created_at"], "is_active": bool(r["is_active"])}
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------
     # Waypoint CRUD
     # ------------------------------------------------------------------

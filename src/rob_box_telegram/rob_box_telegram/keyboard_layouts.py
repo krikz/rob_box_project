@@ -44,7 +44,11 @@ MAIN_MENU_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton("📸 Потолок", callback_data="quick:photo_up"),
         ],
         [
-            InlineKeyboardButton("📊 Статус", callback_data="quick:status"),
+            InlineKeyboardButton("� Глубина", callback_data="quick:photo_depth"),
+            InlineKeyboardButton("🗺 Карта", callback_data="quick:photo_map"),
+        ],
+        [
+            InlineKeyboardButton("�📊 Статус", callback_data="quick:status"),
             InlineKeyboardButton("📍 Позиция", callback_data="quick:pose"),
         ],
         [

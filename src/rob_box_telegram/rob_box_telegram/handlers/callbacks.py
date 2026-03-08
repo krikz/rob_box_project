@@ -103,6 +103,37 @@ async def _handle_quick(query, context, action: str) -> None:
         else:
             await query.message.reply_text("⚠️ Нет кадров с потолочной камеры")
 
+    elif action == "photo_depth":
+        from .commands import _depth_compressed_to_jpeg
+
+        raw = node.camera_cache.get(node.camera_depth_topic)
+        if raw:
+            try:
+                jpeg = _depth_compressed_to_jpeg(raw)
+                await query.message.reply_photo(photo=io.BytesIO(jpeg), caption="🔵 Глубина")
+            except Exception as e:
+                await query.message.reply_text(f"⚠️ Ошибка: {e}")
+        else:
+            await query.message.reply_text("⚠️ Нет кадров глубины")
+
+    elif action == "photo_map":
+        from .commands import _occupancy_grid_to_png
+
+        grid = getattr(node, "latest_map_grid", None)
+        if grid:
+            try:
+                png = _occupancy_grid_to_png(grid)
+                res = grid.info.resolution
+                size_m = f"{grid.info.width * res:.1f}×{grid.info.height * res:.1f}"
+                await query.message.reply_photo(
+                    photo=io.BytesIO(png),
+                    caption=f"🗺 Карта ({grid.info.width}×{grid.info.height} пикс, {size_m}м)",
+                )
+            except Exception as e:
+                await query.message.reply_text(f"⚠️ Ошибка рендеринга: {e}")
+        else:
+            await query.message.reply_text("⚠️ Карта ещё не построена")
+
     elif action == "status":
         await query.message.reply_text("⏳ Запрашиваю статус...")
         result = await node.mcp_bridge.execute_simple("get_robot_status")

@@ -10,8 +10,12 @@ source /opt/ros/humble/setup.bash
 # Установка Zenoh middleware
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 
-# Путь к конфигурации Zenoh (подключение к роботу)
-export ZENOH_SESSION_CONFIG_URI="$(dirname "$0")/zenoh_client_config.json5"
+# Путь к конфигурации Zenoh (подключение через локальный роутер)
+export ZENOH_SESSION_CONFIG_URI="$(dirname "$0")/zenoh_local_session.json5"
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+
+# Фикс конфликта snap/GTK
+unset GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR
 
 echo "✓ ROS2 Humble sourced"
 echo "✓ RMW: $RMW_IMPLEMENTATION"
@@ -25,4 +29,9 @@ echo "Запуск RViz2..."
 echo "Доступные топики и TF будут от робота через Zenoh"
 echo ""
 
-rviz2
+RVIZ_CONFIG="$(dirname "$0")/rob_box.rviz"
+if [ -f "$RVIZ_CONFIG" ]; then
+  rviz2 -d "$RVIZ_CONFIG"
+else
+  rviz2
+fi

@@ -43,6 +43,8 @@ from .tools import (
     StartMappingTool,
     ContinueMappingTool,
     FinishMappingTool,
+    OptimizeMapTool,
+    LoadMapTool,
     PlayAnimationTool,
     PlaySoundTool,
     GetSoundInfoTool,
@@ -52,12 +54,19 @@ from .tools import (
     MemorySearchTool,
     MemoryContextTool,
     MusicManager,
+    TrackLibrary,
     ExecuteMusicCodeTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    SaveTrackTool,
+    ListTracksTool,
+    LoadTrackTool,
+    DeleteTrackTool,
+    SetDjModeTool,
 )
 from .waypoint_store import WaypointStore
+from .mapping_state import MappingState
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -87,6 +96,13 @@ class MCPServer(Node):
 
         # WaypointStore — SQLite CRUD для вейпоинтов (одна БД с VoiceMemory)
         self.waypoint_store = self._init_waypoint_store()
+
+        # MappingState — FSM персистентное состояние (localization / mapping)
+        self.mapping_state = MappingState()
+        _ms = self.mapping_state.get()
+        self.get_logger().info(
+            f"🗺️  MappingState: mode={_ms['mode']}, map='{_ms.get('map_name') or 'none'}'"
+        )
 
         # TF Buffer для определения текущей позиции робота
         self.tf_buffer = self._init_tf_buffer()
@@ -181,7 +197,7 @@ class MCPServer(Node):
         self.registry.register(MoveDirectionTool(self))
         self.registry.register(StopNavigationTool(self))
         self.registry.register(ListWaypointsTool(self, self.waypoint_store))
-        self.registry.register(SaveWaypointTool(self, self.waypoint_store, self.tf_buffer))
+        self.registry.register(SaveWaypointTool(self, self.waypoint_store, self.tf_buffer, self.mapping_state))
         self.registry.register(DeleteWaypointTool(self, self.waypoint_store))
         self.registry.register(ClearWaypointsTool(self, self.waypoint_store))
         self.registry.register(GetCurrentPoseTool(self, self.tf_buffer))
@@ -200,9 +216,11 @@ class MCPServer(Node):
         self.registry.register(self.battery_tool)
 
         # Mapping tools
-        self.registry.register(StartMappingTool(self, self.waypoint_store))
+        self.registry.register(StartMappingTool(self, self.waypoint_store, self.mapping_state))
         self.registry.register(ContinueMappingTool(self))
-        self.registry.register(FinishMappingTool(self, self.waypoint_store))
+        self.registry.register(FinishMappingTool(self, self.waypoint_store, self.mapping_state))
+        self.registry.register(OptimizeMapTool(self))
+        self.registry.register(LoadMapTool(self, self.waypoint_store, self.mapping_state))
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))
@@ -224,10 +242,17 @@ class MCPServer(Node):
         music_max_amp = self.get_parameter("music_max_amp").value
         self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
         music_manager = MusicManager(max_amp=music_max_amp)
+        track_library = TrackLibrary()
+        self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
+        self.registry.register(SaveTrackTool(self, track_library, music_manager))
+        self.registry.register(ListTracksTool(self, track_library))
+        self.registry.register(LoadTrackTool(self, track_library, music_manager))
+        self.registry.register(DeleteTrackTool(self, track_library))
+        self.registry.register(SetDjModeTool(self))
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
@@ -288,6 +313,25 @@ class MCPServer(Node):
                 self._publish_error("Не указано имя инструмента", request_id)
                 return
 
+            # ── FSM Guard: block disallowed tools during active mapping ──
+            if not self.mapping_state.is_tool_allowed(tool_name):
+                _ms = self.mapping_state.get()
+                _map_label = f" '{_ms.get('map_name')}'" if _ms.get("map_name") else ""
+                _block_msg = (
+                    f"Идёт картографирование{_map_label}. "
+                    "Сначала скажи 'завершить картографирование' — "
+                    "тогда смогу помочь с навигацией и другими командами."
+                )
+                self.get_logger().warning(f"🚫 FSM blocked '{tool_name}' during mapping")
+                from .base import MCPToolResult
+                _result = MCPToolResult(success=False, error=_block_msg)
+                _resp = {"tool_name": tool_name, "request_id": request_id, "result": _result.to_dict()}
+                _msg_out = String()
+                _msg_out.data = json.dumps(_resp, ensure_ascii=False)
+                self.result_pub.publish(_msg_out)
+                return
+            # ────────────────────────────────────────────────────────────
+
             # Выполнить инструмент
             result = self.registry.execute(tool_name, **parameters)
 
@@ -327,7 +371,7 @@ class MCPServer(Node):
                 "timestamp": msg.timestamp if hasattr(msg, "timestamp") else 0.0,
                 "internet_available": msg.internet_available if hasattr(msg, "internet_available") else False,
                 "battery_percentage": msg.battery_percentage if hasattr(msg, "battery_percentage") else 0.0,
-                # Добавьте другие поля по необходимости
+                "mapping_mode": msg.mapping_mode if hasattr(msg, "mapping_mode") else "unknown",
             }
             self.perception_context_tool.update_context(context)
 

@@ -69,7 +69,7 @@ env:
   ROS_DISTRO: humble
 
 permissions:
-  contents: read
+  contents: write  # Required for git push of .image-versions files
   issues: write
 
 jobs:
@@ -399,6 +399,66 @@ jobs:
             echo "📤 Pushing to local registry..."
             docker push "${{ needs.prepare.outputs.local_tag }}"
             echo "✅ Push complete!"
+          fi
+
+      - name: Tag with SHA and update .image-versions
+        if: inputs.push_to_registry == 'true' && needs.prepare.outputs.docker_tag != 'local'
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          LOCAL_TAG="${{ needs.prepare.outputs.local_tag }}"
+          DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
+          SERVICE_NAME="${{ needs.prepare.outputs.service_name }}"
+          PI_TYPE="${{ inputs.pi_type }}"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # Push SHA-tagged immutable image to local registry
+          SHA_TAG="${LOCAL_TAG}-${SHORT_SHA}"
+          docker tag "$LOCAL_TAG" "$SHA_TAG"
+          docker push "$SHA_TAG"
+          echo "✅ Immutable SHA tag pushed: $SHA_TAG"
+
+          # Map service_name to .image-versions env var name
+          case "$SERVICE_NAME" in
+            voice_assistant)       VERSION_VAR="VOICE_ASSISTANT_TAG" ;;
+            telegram_bot)          VERSION_VAR="TELEGRAM_BOT_TAG" ;;
+            oak-d)                 VERSION_VAR="OAK_D_TAG" ;;
+            led_matrix)            VERSION_VAR="LED_MATRIX_TAG" ;;
+            ceiling-camera)        VERSION_VAR="CEILING_CAMERA_TAG" ;;
+            rtabmap) [ "$PI_TYPE" = "vision" ] && VERSION_VAR="RTABMAP_SYNC_TAG" || VERSION_VAR="RTABMAP_TAG" ;;
+            twist_mux)             VERSION_VAR="TWIST_MUX_TAG" ;;
+            micro_ros_agent)       VERSION_VAR="MICRO_ROS_AGENT_TAG" ;;
+            robot_state_publisher) VERSION_VAR="ROBOT_STATE_PUBLISHER_TAG" ;;
+            ros2_control)          VERSION_VAR="ROS2_CONTROL_TAG" ;;
+            lslidar)               VERSION_VAR="LSLIDAR_TAG" ;;
+            perception)            VERSION_VAR="PERCEPTION_TAG" ;;
+            nav2)                  VERSION_VAR="NAV2_TAG" ;;
+            apriltag)              VERSION_VAR="APRILTAG_TAG" ;;
+            *)                     VERSION_VAR="" ;;
+          esac
+
+          if [ -z "$VERSION_VAR" ]; then
+            echo "⚠️  No .image-versions mapping for '$SERVICE_NAME' (base image / zenoh-router) — skipping"
+            exit 0
+          fi
+
+          VERSIONS_FILE="docker/${PI_TYPE}/.image-versions.${DOCKER_TAG}"
+          if [ ! -f "$VERSIONS_FILE" ]; then
+            echo "⚠️  $VERSIONS_FILE not found — skipping version update"
+            exit 0
+          fi
+
+          sed -i "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|" "$VERSIONS_FILE"
+          echo "✅ Updated: ${VERSION_VAR}=${NEW_TAG} in $VERSIONS_FILE"
+
+          # Commit and push the updated versions file back to the repo
+          git config user.email "ci@rob-box.local"
+          git config user.name "Rob Box CI"
+          git add "$VERSIONS_FILE"
+          if git diff --cached --quiet; then
+            echo "ℹ️  No changes to commit"
+          else
+            git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"              git pull --rebase origin ${{ inputs.branch }}            git push origin ${{ inputs.branch }}
+            echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG}"
           fi
 
   # Итоговая сводка

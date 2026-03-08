@@ -36,6 +36,26 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | Линтинг | `docs/development/LINTING_GUIDE.md` |
 | Деплой | `docs/deployment/DEPLOYMENT_WORKFLOW.md` |
 
+### 🦸 Superpowers Skills (`.agents/skills/`)
+
+| Скилл | Когда использовать |
+|-------|--------------------|
+| `brainstorming` | Перед любой разработкой фичи — рефайн идей через диалог |
+| `writing-plans` | После дизайна — детальный план реализации по шагам |
+| `executing-plans` | Выполнение плана в отдельной сессии с чекпоинтами |
+| `subagent-driven-development` | Выполнение плана в текущей сессии через сабагентов |
+| `test-driven-development` | При реализации любой фичи или исправлении бага |
+| `systematic-debugging` | При любом баге или неожиданном поведении |
+| `verification-before-completion` | Перед заявлением о завершении работы |
+| `requesting-code-review` | После выполнения задачи или перед мержем |
+| `receiving-code-review` | При получении фидбека на код-ревью |
+| `dispatching-parallel-agents` | При 2+ независимых задачах без shared state |
+| `using-git-worktrees` | При старте фичи требующей изоляции от текущего workspace |
+| `finishing-a-development-branch` | Когда реализация завершена — мерж/PR/дискард |
+| `writing-skills` | При создании или обновлении скиллов |
+| `using-superpowers` | В начале любого разговора — как найти и использовать скиллы |
+| `debugger` | При отладке ошибок, краш-анализе, разборе stack trace (shubhamsaboo/awesome-llm-apps) |
+
 ### ⚙️ Команды Claude (`.claude/commands/`)
 
 | Фаза | Команда | Когда использовать |
@@ -123,13 +143,19 @@ ros2 topic hz /scan        # Частота публикации
 ## 🚨 Критичные правила
 
 ### 🤖 Деплой на роботов
-- ❌ **НИКОГДА** самостоятельно не копировать файлы на робота (scp, rsync)
-- ❌ **НИКОГДА** не редактировать файлы напрямую на роботе
+- ❌ **НИКОГДА** самостоятельно не копировать файлы на робота (scp, rsync, base64 pipe, echo >)
+- ❌ **НИКОГДА** не редактировать файлы напрямую на роботе (nano, vi, sed -i в repo)
 - ❌ **НИКОГДА** не делать `git pull` на роботе без запроса пользователя
+- ❌ **НИКОГДА** не делать `git stash` / `git checkout --` на роботе без явного `git diff` сначала
 - ✅ **ВСЕГДА** деплой через GitHub Actions workflow (`docs/deployment/DEPLOYMENT_WORKFLOW.md`)
 - ✅ **ВСЕГДА** репозитории на роботах должны быть чистыми (`git status` = clean)
 - ✅ **ТОЛЬКО** по явной просьбе пользователя выполнять команды на роботе
-- ⚠️ Изменения делаем в dev-репозитории → commit → push → workflow деплоит на роботов
+- ⚠️ **ЕДИНСТВЕННЫЙ правильный путь изменений:** dev-машина → commit → push → workflow деплоит на роботов
+
+**Если робот dirty (`git status` показывает изменения):**
+1. Сначала `git diff` — понять что именно и откуда
+2. Если изменение уже есть в remote (commit pushed) → `git checkout -- <file>` безопасно
+3. Если изменения важные и не в remote → сохранить на dev-машину, commit, push, тогда reset
 
 ### Docker
 - ❌ **НИКОГДА** `COPY config/` в Dockerfile
@@ -152,6 +178,38 @@ fix(docker): add missing dependency
 docs(readme): update hardware specs
 ```
 
+## 🧠 Скилы агента (`.agents/skills/`)
+
+Перед выполнением задачи прочитай нужный скил через `read_file`.
+
+| Скил | Когда использовать |
+|------|--------------------|
+| `using-superpowers` | **НАЧАЛО любого разговора** — как находить и применять скилы |
+| `context-engineering` | Методология Research→Design→Plan→Implement |
+| `brainstorming` | **ПЕРЕД любой творческой работой** — фичи, компоненты, новая функциональность |
+| `writing-plans` | Есть спека/требования — пишем план перед кодом |
+| `executing-plans` | Есть готовый план — выполняем по шагам |
+| `subagent-driven-development` | Независимые задачи из плана — запускаем параллельно |
+| `dispatching-parallel-agents` | 2+ независимые задачи без общего состояния |
+| `test-driven-development` | При реализации любой фичи или багфикса |
+| `systematic-debugging` | При любом баге, ошибке теста или неожиданном поведении |
+| `debugger` | Отладка проблем |
+| `verification-before-completion` | Перед заявлением о готовности/фиксе/PR |
+| `requesting-code-review` | После завершения задачи, перед мержем |
+| `receiving-code-review` | При получении feedback на код |
+| `finishing-a-development-branch` | Реализация завершена — merge/PR/cleanup |
+| `using-git-worktrees` | Изоляция фичи или перед выполнением плана |
+| `docker-expert` | Docker: multi-stage builds, Compose, оптимизация, деплой |
+| `zenoh-dev-setup` | Настройка Zenoh DDS, подключение dev-машины к роботу |
+| `motor-testing` | Тестирование моторов, калибровка gear_ratio, одометрии |
+| `mcp-builder` | Создание MCP-серверов (Python/FastMCP, Node/TypeScript) |
+| `github-actions-runner` | GitHub Actions runner |
+| `agent-llm-stability` | Стабильность LLM-агентов |
+| `skill-creator` | Создание и обновление скилов |
+| `writing-skills` | Написание качественных скилов |
+| `senior-devops` | CI/CD pipelines, IaC (Terraform), контейнеры, облака (AWS/GCP/Azure), оптимизация деплоя |
+| `python-expert` | Senior Python: clean code, type hints, PEP 8, оптимизация, дебаггинг, алгоритмы |
+
 ## 📖 Расширенная документация
 
 Для подробностей используй `@docs/development/<файл>.md` в чате:
@@ -160,5 +218,6 @@ docs(readme): update hardware specs
 - `@docs/CI_CD_PIPELINE.md` - GitHub Actions workflows
 
 ---
-**Обновлено:** 27 февраля 2026  
-**Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`
+**Обновлено:** 4 марта 2026  
+**Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`  
+**Superpowers:** 14 скиллов из `obra/superpowers` в `.agents/skills/`

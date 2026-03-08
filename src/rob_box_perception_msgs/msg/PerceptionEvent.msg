@@ -39,6 +39,9 @@ string[] missing_nodes
 # Equipment health (cameras, LIDAR, motors, SLAM)
 string equipment_summary_json
 
+# Mapping lifecycle mode
+string mapping_mode   # "mapping" | "localization" | "unknown"
+
 # Memory context (recent events summary)
 string memory_summary
 

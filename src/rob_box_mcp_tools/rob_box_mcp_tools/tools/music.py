@@ -4,14 +4,24 @@ music.py - Инструменты для управления музыкой в 
 
 Модуль предоставляет:
 - MusicManager: Базовый класс управления Renardo (история паттернов, SC-проверка, пресеты, фильтрация кода)
+- TrackLibrary: Персистентная медиатека треков (JSON на диске)
 - ExecuteMusicCodeTool: Выполнить Renardo-код в безопасном контексте
 - StopMusicTool: Остановить паттерны или всю музыку
 - SetVibePresetTool: Применить вайб-пресет (скейл, темп, тоника)
 - GetMusicStateTool: Получить текущее состояние музыки и историю паттернов
+- SaveTrackTool: Сохранить трек в медиатеку
+- ListTracksTool: Просмотреть треки медиатеки
+- LoadTrackTool: Загрузить и воспроизвести сохранённый трек
+- DeleteTrackTool: Удалить трек из медиатеки
 """
 
+import json
+import os
 import re
 import socket
+import sqlite3
+import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -285,10 +295,47 @@ class MusicManager:
                 "error": "Renardo недоступен. Установите пакет renardo_lib.",
             }
 
+        # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем новые
+        # паттерны), ПОТОМ посылаем /g_freeAll чтобы убить старые SC-ноды.
+        #
+        # Порядок важен для бесшовного перехода:
+        # 1. exec(code): Clock.clear() + новые паттерны зарегистрированы (мгновенно)
+        # 2. /g_freeAll: убиваем старые SC-синтезаторы (они играли пока LLM думал)
+        # 3. /g_new: пересоздаём Group 1 для новых нот
+        # При таком порядке нет тишины — новые паттерны уже ждут следующего beat,
+        # а /g_freeAll только убивает СТАРЫЕ ноды, которые overlap не нужен.
+        #
+        # Почему нужен /g_freeAll: Clock.clear() останавливает планировщик Renardo,
+        # но НЕ посылает /g_freeAll в scsynth. Уже запущенные синтезаторы живут
+        # до конца sus-конверта. После многих переходов 1024-нодовая таблица SC
+        # забивается → "too many nodes" / "negative node IDs" → тишина.
+        has_clock_clear = "Clock.clear()" in code
+
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
+
+        if has_clock_clear:
+            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
+            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass  # если SC недоступен — не критично, старые ноды умрут сами
+            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
+            import struct as _struct
+            msg_gnew = bytearray()
+            for part in [b"/g_new\x00\x00", b",iii\x00\x00\x00\x00"]:
+                msg_gnew.extend(part)
+            for v in [1, 0, 0]:
+                msg_gnew.extend(_struct.pack(">i", v))
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(bytes(msg_gnew), (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass
 
         if pattern_name:
             self._pattern_history[pattern_name] = code
@@ -644,3 +691,602 @@ class GetMusicStateTool(MCPTool):
             data=state,
             message="\n".join(parts),
         )
+
+
+# ---------------------------------------------------------------------------
+# TrackLibrary — персистентная медиатека треков (SQLite)
+# ---------------------------------------------------------------------------
+
+from pathlib import Path as _Path
+
+# Migration file lookup: Docker mounts repo migrations/ at /migrations,
+# dev/build environments find it relative to the package root.
+_MIGRATION_FILE = _Path("/migrations/004_music_library.sql")
+if not _MIGRATION_FILE.exists():
+    _MIGRATION_FILE = _Path(__file__).resolve().parents[4] / "migrations" / "004_music_library.sql"
+
+
+class TrackLibrary:
+    """Персистентная SQLite медиатека треков.
+
+    Использует ту же БД что и VoiceMemory/WaypointStore (VOICE_MEMORY_DB_PATH).
+    Миграция ``004_music_library.sql`` применяется идемпотентно при инициализации
+    (CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE для bootstrap-трека).
+
+    Thread-safe: все публичные методы используют ``self._lock``.
+
+    Args:
+        db_path: Путь к SQLite-файлу. По умолчанию — из VOICE_MEMORY_DB_PATH
+                 или ``/data/voice_memory.db``.
+    """
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        self._lock = threading.Lock()
+
+        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.row_factory = sqlite3.Row
+        self._apply_migration()
+
+    # ------------------------------------------------------------------
+    # Migration
+    # ------------------------------------------------------------------
+
+    def _apply_migration(self) -> None:
+        """Применить 004_music_library.sql идемпотентно (IF NOT EXISTS + INSERT OR IGNORE)."""
+        if not _MIGRATION_FILE.exists():
+            raise FileNotFoundError(
+                f"Миграция не найдена: {_MIGRATION_FILE}. "
+                "Проверьте volume монтирование migrations/ в docker-compose."
+            )
+        ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
+        with self._lock:
+            self._conn.executescript(ddl)
+            self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _slug(name: str) -> str:
+        return re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row, include_code: bool = True) -> Dict[str, Any]:
+        d = dict(row)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        if not include_code:
+            d.pop("code", None)
+        return d
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def save_track(
+        self,
+        name: str,
+        code: str,
+        title: str = "",
+        description: str = "",
+        tags: Optional[List[str]] = None,
+        rating: int = 0,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        """Сохранить или обновить трек в медиатеке (INSERT OR REPLACE).
+
+        Args:
+            name: Уникальный идентификатор (slug, без пробелов).
+            code: Renardo-код трека.
+            title: Читаемое название.
+            description: Описание трека.
+            tags: Список тегов.
+            rating: Оценка 0-5.
+            notes: Личные заметки о треке.
+
+        Returns:
+            dict ``success``, ``message``, ``name``.
+        """
+        slug = self._slug(name)
+        if not slug:
+            return {"success": False, "error": "Некорректное имя трека"}
+
+        ts = datetime.now(timezone.utc).isoformat()
+        tags_json = json.dumps(tags or [], ensure_ascii=False)
+        rating = max(0, min(5, rating))
+
+        with self._lock:
+            # Сохраняем created_at существующей записи если она есть
+            row = self._conn.execute(
+                "SELECT created_at FROM music_tracks WHERE name = ?", (slug,)
+            ).fetchone()
+            created_at = row["created_at"] if row else ts
+            action = "обновлён" if row else "сохранён"
+
+            self._conn.execute(
+                """
+                INSERT INTO music_tracks
+                    (name, title, code, description, tags, rating, notes,
+                     play_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(
+                    (SELECT play_count FROM music_tracks WHERE name = ?), 0
+                ), ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    title       = excluded.title,
+                    code        = excluded.code,
+                    description = excluded.description,
+                    tags        = excluded.tags,
+                    rating      = excluded.rating,
+                    notes       = excluded.notes,
+                    updated_at  = excluded.updated_at
+                """,
+                (slug, title or name, code, description, tags_json,
+                 rating, notes, slug, created_at, ts),
+            )
+            self._conn.commit()
+
+        return {"success": True, "message": f"Трек '{slug}' {action}", "name": slug}
+
+    def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0) -> Dict[str, Any]:
+        """Вернуть список треков с фильтрацией (без поля code).
+
+        Args:
+            tag: Фильтр по тегу (опционально).
+            min_rating: Минимальный рейтинг (0-5).
+
+        Returns:
+            dict ``success``, ``tracks`` (list of dicts), ``total``.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT name, title, description, tags, rating, notes,
+                       play_count, created_at, updated_at
+                FROM music_tracks
+                WHERE rating >= ?
+                ORDER BY rating DESC, name ASC
+                """,
+                (min_rating,),
+            ).fetchall()
+
+        tracks = [self._row_to_dict(r, include_code=False) for r in rows]
+        if tag:
+            tracks = [t for t in tracks if tag in t.get("tags", [])]
+        return {"success": True, "tracks": tracks, "total": len(tracks)}
+
+    def load_track(self, name: str) -> Dict[str, Any]:
+        """Получить код трека и инкрементировать play_count.
+
+        Args:
+            name: Имя трека.
+
+        Returns:
+            dict ``success``, ``code``, ``track`` (метаданные без code) или ``error``.
+        """
+        slug = self._slug(name)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM music_tracks WHERE name = ?", (slug,)
+            ).fetchone()
+
+            if not row:
+                names = [r[0] for r in self._conn.execute(
+                    "SELECT name FROM music_tracks ORDER BY name"
+                ).fetchall()]
+                available = ", ".join(names) or "библиотека пуста"
+                return {"success": False, "error": f"Трек '{slug}' не найден. Доступны: {available}"}
+
+            self._conn.execute(
+                "UPDATE music_tracks SET play_count = play_count + 1 WHERE name = ?",
+                (slug,),
+            )
+            self._conn.commit()
+
+        full = self._row_to_dict(row, include_code=True)
+        code = full.pop("code")
+        full["play_count"] += 1  # reflect incremented value
+        return {"success": True, "code": code, "track": full}
+
+    def delete_track(self, name: str) -> Dict[str, Any]:
+        """Удалить трек из медиатеки.
+
+        Args:
+            name: Имя трека.
+
+        Returns:
+            dict ``success``, ``message`` или ``error``.
+        """
+        slug = self._slug(name)
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM music_tracks WHERE name = ? RETURNING name", (slug,)
+            )
+            deleted = cur.fetchone()
+            self._conn.commit()
+
+        if not deleted:
+            return {"success": False, "error": f"Трек '{slug}' не найден"}
+        return {"success": True, "message": f"Трек '{slug}' удалён из медиатеки"}
+
+
+# ---------------------------------------------------------------------------
+# MCP Tool wrappers для TrackLibrary
+# ---------------------------------------------------------------------------
+
+
+class SaveTrackTool(MCPTool):
+    """Сохранить Renardo-трек в персистентную медиатеку робота."""
+
+    def __init__(self, node, library: TrackLibrary, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._library = library
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "save_track"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Сохранить Renardo-трек в медиатеку робота для повторного воспроизведения. "
+            "Если code не передан — сохраняется код последнего выполненного паттерна из истории. "
+            "Медиатека хранится в /config/music_library.json (персистентно между перезапусками). "
+            "Используй для сохранения понравившихся треков, заготовок или процедурных шедевров."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description="Уникальное имя-идентификатор трека (slug, например: 'csm_chill_v2')",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="code",
+                type="string",
+                description=(
+                    "Renardo-код трека. Если не передан — берётся из истории паттернов "
+                    "по ключу pattern_name или последний выполненный код."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="title",
+                type="string",
+                description="Читаемое название трека (например: 'Night Drive в C minor')",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="description",
+                type="string",
+                description="Описание трека: настроение, структура, особенности",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="tags",
+                type="array",
+                description="Список тегов (например: ['chill', 'minor', '90bpm', 'full_track'])",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="rating",
+                type="integer",
+                description="Оценка трека от 0 до 5",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="notes",
+                type="string",
+                description="Личные заметки о треке",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self,
+        name: str,
+        code: Optional[str] = None,
+        title: str = "",
+        description: str = "",
+        tags: Optional[List[str]] = None,
+        rating: int = 0,
+        notes: str = "",
+    ) -> MCPToolResult:
+        """Сохранить трек."""
+        # Если код не передан — берём из истории MusicManager
+        if not code:
+            history = self._manager.get_state().get("pattern_history", {})
+            if history:
+                # Берём первый ключ (обычно 'full_track' или последнее сохранённое)
+                code = next(iter(history.values()))
+            else:
+                return MCPToolResult(success=False, error="Код не передан и история паттернов пуста")
+
+        result = self._library.save_track(
+            name=name,
+            code=code,
+            title=title,
+            description=description,
+            tags=tags,
+            rating=rating,
+            notes=notes,
+        )
+        if result["success"]:
+            return MCPToolResult(success=True, data=result, message=result["message"])
+        return MCPToolResult(success=False, error=result["error"])
+
+
+class ListTracksTool(MCPTool):
+    """Просмотреть медиатеку треков с опциональной фильтрацией по тегам и рейтингу."""
+
+    def __init__(self, node, library: TrackLibrary) -> None:
+        super().__init__(node)
+        self._library = library
+
+    @property
+    def name(self) -> str:
+        return "list_tracks"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Просмотреть все треки в медиатеке робота. "
+            "Можно фильтровать по тегу или минимальному рейтингу. "
+            "Показывает: название, теги, рейтинг, количество воспроизведений, заметки."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="tag",
+                type="string",
+                description="Фильтр по тегу (например: 'full_track', 'chill', 'robot_authored')",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="min_rating",
+                type="integer",
+                description="Показать только треки с рейтингом не ниже указанного (0-5)",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, tag: Optional[str] = None, min_rating: int = 0) -> MCPToolResult:
+        """Вернуть список треков."""
+        result = self._library.list_tracks(tag=tag, min_rating=min_rating)
+        tracks = result["tracks"]
+        if not tracks:
+            return MCPToolResult(success=True, data=result, message="Медиатека пуста (нет подходящих треков)")
+
+        lines = [f"Медиатека: {result['total']} трек(ов)\n"]
+        for t in tracks:
+            stars = "★" * t["rating"] + "☆" * (5 - t["rating"]) if t["rating"] else "☆☆☆☆☆"
+            tags_str = " ".join(f"[{tag}]" for tag in t["tags"]) if t["tags"] else ""
+            lines.append(f"• {t['name']} — {t['title']} {stars}")
+            if t["description"]:
+                lines.append(f"  {t['description']}")
+            if tags_str:
+                lines.append(f"  {tags_str}  ▶ сыграно: {t['play_count']}x")
+            if t["notes"]:
+                lines.append(f"  📝 {t['notes']}")
+        return MCPToolResult(success=True, data=result, message="\n".join(lines))
+
+
+class LoadTrackTool(MCPTool):
+    """Загрузить трек из медиатеки и воспроизвести его."""
+
+    def __init__(self, node, library: TrackLibrary, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._library = library
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "load_track"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Загрузить трек из медиатеки и воспроизвести его через Renardo. "
+            "Трек идентифицируется по имени (slug). "
+            "Используй list_tracks чтобы узнать доступные имена. "
+            "Счётчик воспроизведений обновляется автоматически."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description="Имя трека для загрузки (slug, например: 'csm_132_full_track')",
+                required=True,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, name: str) -> MCPToolResult:
+        """Загрузить и воспроизвести трек."""
+        load_result = self._library.load_track(name)
+        if not load_result["success"]:
+            return MCPToolResult(success=False, error=load_result["error"])
+
+        code = load_result["code"]
+        track_meta = load_result["track"]
+        self.log_info(f"Загрузка трека '{name}' из медиатеки")
+
+        play_result = self._manager.execute_code(code, pattern_name=name)
+        if not play_result["success"]:
+            return MCPToolResult(success=False, error=f"Трек загружен но не запущен: {play_result['error']}")
+
+        return MCPToolResult(
+            success=True,
+            data={"track": track_meta, "play_count": track_meta.get("play_count", 1)},
+            message=(
+                f"▶ Воспроизводится: {track_meta.get('title', name)} "
+                f"(сыграно {track_meta.get('play_count', 1)}x)"
+            ),
+        )
+
+
+class DeleteTrackTool(MCPTool):
+    """Удалить трек из медиатеки."""
+
+    def __init__(self, node, library: TrackLibrary) -> None:
+        super().__init__(node)
+        self._library = library
+
+    @property
+    def name(self) -> str:
+        return "delete_track"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Удалить трек из медиатеки робота. "
+            "Действие необратимо. "
+            "Используй list_tracks чтобы уточнить имя перед удалением."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description="Имя трека для удаления (slug)",
+                required=True,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return True
+
+    def execute(self, name: str) -> MCPToolResult:
+        """Удалить трек."""
+        result = self._library.delete_track(name)
+        if result["success"]:
+            return MCPToolResult(success=True, data=result, message=result["message"])
+        return MCPToolResult(success=False, error=result["error"])
+
+
+class SetDjModeTool(MCPTool):
+    """Включить или выключить режим DJ — автономные плавные переходы между треками."""
+
+    def __init__(self, node) -> None:
+        super().__init__(node)
+        from std_msgs.msg import String as _String
+        self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
+
+    @property
+    def name(self) -> str:
+        return "set_dj_mode"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Включить или выключить режим DJ. "
+            "В режиме DJ робот автономно делает плавные переходы между музыкальными треками "
+            "каждые 30–60 секунд, создавая атмосферу живой вечеринки. "
+            "Используй enabled=true чтобы включить, enabled=false чтобы выключить. "
+            "Перед включением убедись что музыка уже играет (запусти трек через execute_music_code)."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="enabled",
+                type="boolean",
+                description="true — включить DJ-режим (автопереходы), false — выключить",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="next_transition_sec",
+                type="integer",
+                description=(
+                    "Через сколько секунд сделать следующий автоматический переход (30–120). "
+                    "ЛЛМ выбирает сам исходя из темпа сета: "
+                    "быстрый энергичный сет → 30–40 сек, "
+                    "медленный амбиент → 60–90 сек. "
+                    "Обязательно передавай при enabled=true, в том числе при каждом DJ-переходе."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="theme",
+                type="string",
+                description=(
+                    "Тема вечеринки / контекст для DJ (например: '8 марта, женский день', "
+                    "'день рождения Антона', 'хэллоуин', 'корпоратив в стиле 90-х'). "
+                    "Передавай при первом включении DJ-режима — робот будет подстраивать музыку "
+                    "и иногда тематически обращаться к публике. При повторных вызовах set_dj_mode "
+                    "внутри DJ-переходов тему передавать не нужно — она запомнена."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.INSTANT
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None) -> MCPToolResult:
+        """Опубликовать команду включения/выключения DJ-режима."""
+        from std_msgs.msg import String as _String
+        payload: dict = {"enabled": enabled}
+        if next_transition_sec is not None:
+            payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
+        if theme and isinstance(theme, str) and theme.strip():
+            payload["theme"] = theme.strip()
+        msg = _String()
+        msg.data = json.dumps(payload)
+        self._dj_mode_pub.publish(msg)
+        action = "включён" if enabled else "выключен"
+        interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
+        self.log_info(f"🎧 DJ-режим {action}{interval_info}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}")

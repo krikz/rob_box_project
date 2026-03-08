@@ -29,6 +29,13 @@ class HealthMonitor(Node):
         self.errors = []
         self.warnings = []
         self.last_status = None  # Для отслеживания изменений статуса
+        self._start_time = time.time()  # Для startup grace period
+        self._startup_grace_sec = 90  # Первые 90с — не DEGRADED от icp-шума
+
+        # Известные шумные паттерны при старте (не реальные краши)
+        self._noise_patterns = [
+            'guess_from_tf',  # icp_odometry до инициализации TF
+        ]
         
         # Подписка на логи
         self.rosout_sub = self.create_subscription(
@@ -47,10 +54,17 @@ class HealthMonitor(Node):
         self.get_logger().info('🏥 Health Monitor запущен')
         self.get_logger().info('   Слушаем /rosout...')
     
+    def _is_noise(self, msg_text: str) -> bool:
+        """True если сообщение — известный стартап-шум, не реальный краш"""
+        return any(pattern in msg_text for pattern in self._noise_patterns)
+
     def on_log(self, msg: Log):
         """Получен лог"""
         # Log levels: DEBUG=10, INFO=20, WARN=30, ERROR=40, FATAL=50
         if msg.level >= 40:  # ERROR or FATAL
+            # Пропускаем известный стартап-шум
+            if self._is_noise(msg.msg):
+                return
             self.errors.append({
                 'node': msg.name,
                 'level': 'ERROR' if msg.level == 40 else 'FATAL',
@@ -78,12 +92,14 @@ class HealthMonitor(Node):
         print("="*70)
         
         # Статус
+        now = time.time()
+        in_grace = (now - self._start_time) < self._startup_grace_sec
         critical = sum(1 for e in self.errors if e['level'] == 'FATAL')
-        recent_errors = sum(1 for e in self.errors if time.time() - e['time'] < 60)
-        
+        recent_errors = sum(1 for e in self.errors if now - e['time'] < 60)
+
         if critical > 0:
             status = "🚨 CRITICAL"
-        elif recent_errors >= 5:
+        elif recent_errors >= 5 and not in_grace:
             status = "⚠️  DEGRADED"
         else:
             status = "✅ HEALTHY"
