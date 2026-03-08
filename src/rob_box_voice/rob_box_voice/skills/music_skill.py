@@ -30,7 +30,7 @@ _DEFAULT_RENARDO_REF_PATH = os.getenv(
 )
 _DEFAULT_SAMPLES_PATH = os.getenv(
     "RENARDO_SAMPLES_PATH",
-    "/renardo_samples",
+    "/root/.config/renardo/samples",
 )
 
 
