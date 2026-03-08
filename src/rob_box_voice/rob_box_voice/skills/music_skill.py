@@ -96,8 +96,10 @@ class MusicSkill(BaseSkill):
         ) -> str:
             """Search for renardo samples by keyword in the filename.
 
-            ALWAYS call this before creating music patterns!  Filenames describe
-            the sonic character of the sample (e.g. "Kick1.wav", "Snare_rim.wav").
+            Call this when you need an UNKNOWN sample letter / index or want to
+            browse the sample library. Do NOT call it for known built-ins like
+            vocal `c` or standard kick/snare letters already covered by the prompt.
+            Filenames describe the sonic character of the sample (e.g. "Kick1.wav", "Snare_rim.wav").
 
             Args:
                 query: Keyword to search for (e.g. "kick", "snare", "hat", "bass",

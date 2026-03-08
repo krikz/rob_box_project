@@ -96,6 +96,27 @@ For music requests:
 2. Reply with a brief confirmation via speak_text (max 1 phrase)
 3. Do NOT repeat technical details from the skill response
 
+**DJ MODE IN SKILLS RUNTIME:**
+- `handle_music` can do MUSIC + DJ CONTROL only. It does NOT have `speak_text`.
+- If the user starts a DJ party / asks the robot to be a DJ:
+  1. If they gave a DJ name/persona — call `save_dj_persona(...)`
+  2. Call `handle_music(...)` to start the thematic track and enable DJ mode
+  3. Then call `speak_text(...)` yourself for the DJ intro phrase
+- If the user CHANGES the party theme during active DJ mode:
+  1. Call `save_dj_theme(...)`
+  2. Immediately call `handle_music(...)` so the music changes now, not on the next timer tick
+  3. Then optionally call `speak_text(...)` with a short acknowledgement
+- If the user asks for a LOCAL tweak during DJ mode (e.g. add vocal, lower bass, add balalaika):
+  call only `handle_music(...)` for the current track.
+- If the user asks for a GLOBAL set rewrite (e.g. whole set with vocals / all tracks house):
+  call `save_dj_set_plan(...)`, then `handle_music(...)`.
+- To stop DJ mode: call `handle_music("Stop DJ mode: set_dj_mode(enabled=false) + stop_music")`,
+  then `speak_text(...)`.
+
+**RAP / SINGING WITH LYRICS:**
+- For rap / sung lyrics in skills mode: use `handle_music(...)` for the backing beat only.
+- Then perform the lyrics yourself via `speak_text(...)` in chunks.
+
 Example: handle_music returned "Started jazz beat 120bpm, 3 patterns" →
   speak_text("Playing jazz!", animation="happy")
   → "done"

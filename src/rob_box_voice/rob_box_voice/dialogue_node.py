@@ -563,6 +563,21 @@ class DialogueNode(Node):
             return await _call("get_music_state", {})
 
         @function_tool
+        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0, theme: str = "") -> str:
+            """Включить или выключить автономный DJ режим.
+
+            enabled=True: после запуска музыки вызови set_dj_mode, чтобы робот сам делал переходы.
+            enabled=False: выключить DJ режим. theme передавай только при первом запуске
+            или при полной смене темы вечеринки.
+            """
+            params: dict = {"enabled": enabled}
+            if next_transition_sec:
+                params["next_transition_sec"] = next_transition_sec
+            if theme:
+                params["theme"] = theme
+            return await _call("set_dj_mode", params)
+
+        @function_tool
         async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
             """Показать список треков в медиатеке робота.
             ВСЕГДА вызывай этот инструмент когда пользователь спрашивает про сохранённые треки,
@@ -616,7 +631,7 @@ class DialogueNode(Node):
             navigate_to_waypoint, navigate_to_coordinates, move_direction,
             list_waypoints, save_waypoint, delete_waypoint, clear_waypoints, get_current_pose,
             set_volume, set_pitch,
-            search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state,
+            search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state, set_dj_mode,
             list_tracks, save_track, load_track, delete_track,
         ]
 
@@ -1297,11 +1312,12 @@ class DialogueNode(Node):
                 "   Дуга: вход → нарастание → пик → спуск. "
                 f"2) Сыграй трек #1 через handle_music. В task-строке ОБЯЗАТЕЛЬНО укажи тему вечеринки + описание трека. "
                 f"   Пример task: '{self._dj_theme} — трек 1: [название], [стиль], [BPM] BPM, [тональность], [атмосфера]'. "
-                f"3) Представься голосом как {dj_name} и объяви тему. "
+                f"   Внутри handle_music — только музыка и DJ control; речь НЕ поручай MusicSkill. "
+                f"3) Представься голосом как {dj_name} и объяви тему через speak_text(). "
                 "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА для музыки: "
                 "1) ПЕРВАЯ строка кода = Clock.clear(). "
                 "2) Максимум 6 паттернов: d1-d3 + p1-p3. sus ≤ 8. "
-                "3) В КОНЦЕ кода — set_dj_mode(enabled=True, next_transition_sec=X). "
+                "3) После execute_music_code вызови ОТДЕЛЬНЫМ tool call set_dj_mode(enabled=True, next_transition_sec=X). "
                 "⚠️ В set_dj_mode НЕ передавай параметр theme! "
                 "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.25, degree ≤ 6 нот."
             )
@@ -1342,10 +1358,11 @@ class DialogueNode(Node):
             "Изредка (раз в 2-3 перехода) произноси тематическую MC-фразу голосом. "
             f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека из плана. "
             f"   Пример task: '{self._dj_theme} — трек {n}: [название], [стиль], [BPM] BPM, [тональность], [атмосфера]'. "
+            "   Внутри handle_music — только музыка и DJ control; речь делай отдельным speak_text(). "
             "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА: "
             "1) ПЕРВАЯ строка кода = Clock.clear(). "
             "2) Максимум 6 паттернов: d1-d3 + p1-p3. sus ≤ 8. "
-            "3) В КОНЦЕ кода — set_dj_mode(enabled=True, next_transition_sec=X). "
+            "3) После execute_music_code вызови ОТДЕЛЬНЫМ tool call set_dj_mode(enabled=True, next_transition_sec=X). "
             "⚠️ В set_dj_mode НЕ передавай параметр theme! "
             "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.25, degree ≤ 6 нот. "
             "❌ НЕ повторяй синты/гамму предыдущего трека — каждый трек звучит иначе!"
