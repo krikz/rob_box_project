@@ -205,8 +205,8 @@ services:
       - rtabmap_viz:=false
       - rviz:=false
       - visual_odometry:=false
-      # localization:= is injected by start_rtabmap.sh based on /maps/mapping_state.json
-      # Default: localization:=true. Only mapping:=false if state file says mode=mapping.
+      # start_rtabmap.sh always injects localization:=true as the safe default.
+      # Mapping mode is enabled later through an explicit ROS2 service call.
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false

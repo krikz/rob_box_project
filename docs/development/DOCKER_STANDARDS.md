@@ -202,7 +202,8 @@ docker/<env>/
 ```yaml
 volumes:
   - ./config:/config  # ВСЕГДА монтируем общую папку config
-  - ./scripts:/scripts  # Опционально, если нужны скрипты в runtime
+  - ./scripts:/ros_scripts  # Shared helper scripts для нескольких сервисов
+  - ./scripts/<service>:/scripts  # Service-local startup script, если нужен runtime script
 ```
 
 **НЕ дублируем** отдельные файлы из config:
@@ -261,7 +262,7 @@ environment:
   - RMW_IMPLEMENTATION=rmw_zenoh_cpp
   
   # Zenoh конфигурация
-  - ZENOH_CONFIG=/config/zenoh_session_config.json5
+  - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
   - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
   - ZENOH_ROUTER_CHECK_ATTEMPTS=10
   - RUST_LOG=zenoh=info
@@ -418,12 +419,13 @@ depends_on:
      environment:
        - ROS_DOMAIN_ID=0
        - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-       - ZENOH_CONFIG=/config/zenoh_session_config.json5
+       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
        - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
        - ZENOH_ROUTER_CHECK_ATTEMPTS=10
        - RUST_LOG=zenoh=info
      volumes:
        - ./config:/config:ro
+       - ./scripts:/ros_scripts:ro
        - ./scripts/my-service:/scripts:ro
        - /dev/shm:/dev/shm
      depends_on:
