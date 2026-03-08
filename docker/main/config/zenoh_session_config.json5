@@ -840,6 +840,16 @@
           congestion_control: "drop",
         },
       },
+      {
+        /// nav2 costmap topics can also be large/frequent and block transport.
+        key_exprs: [
+          "rt/local_costmap/**",
+          "rt/global_costmap/**",
+        ],
+        config: {
+          congestion_control: "drop",
+        },
+      },
     ],
   },
 }
