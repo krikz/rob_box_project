@@ -380,6 +380,60 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
 🔔 Atmosphere/Bells: bell, gong, kalimba, marimba, steeldrum, tubularbell  (amp=0.3..0.6)
 ⚡ Aggression/Glitch: rave, donk, varsaw, pulse, quin, feel, tb303, hoover
 
+🎸 REAL INSTRUMENT → RENARDO SYNTH MAPPING (NO external samples — synthesis only!)
+   ⚠️ There are NO folk/ethnic WAV samples on this system. Synthesize with:
+
+   Балалайка / Banjo / Уд:
+      → karp([0,2,4,2,3,1], dur=0.25, oct=6, amp=0.55, room=0.1)
+      ⚡ karp = Karplus-Strong plucked string. High oct (5-6), short dur, fast melody!
+      Характер: p1 >> karp([0,4,7,4,5,4,2,0], dur=0.25, oct=6, amp=0.5, room=0.1)
+
+   Гитара / Guitar / Лютня:
+      → pluck([0,2,4,7], dur=0.5, oct=5, amp=0.5, room=0.2)
+      ⚠️ pluck = guitar pluck, NOT balalaika! For balalaika use karp (higher/brighter)
+
+   Домра / Мандолина / Mandolin:
+      → karp([0,3,5,3,0,5], dur=0.125, oct=6, amp=0.5, room=0.05)
+      Tremolo эффект: dur=0.125-0.2, быстрые повторяющиеся ноты
+
+   Скрипка / Violin (pizzicato):
+      → ecello([0,2,4,5], dur=0.5, oct=5, amp=0.5, room=0.3)
+      Альтернатива: viola([0,4,7], dur=1, oct=4, amp=0.4, room=0.4)
+
+   Скрипка / Violin (arco/смычок):
+      → ecello([0,2,4,5], dur=2, sus=3, oct=4, amp=0.45, room=0.5)
+
+   Флейта / Flute / Свирель:
+      → flute([0,2,4,5,7], dur=0.5, oct=6, amp=0.45, room=0.3)
+      Альтернатива: soprano([0,2,4], dur=1, oct=5, amp=0.4)
+
+   Труба / Trumpet / Рожок:
+      → blip([0,4,7,9], dur=0.5, oct=5, amp=0.55, room=0.2)
+      Альтернатива: brass([0,4,7], dur=1, oct=4, amp=0.5)
+
+   Фортепиано / Piano:
+      → pianovel([0,2,4,3], dur=0.5, oct=5, amp=0.6)
+      ⚠️ НЕ "piano" — синта "piano" не существует! Только pianovel / epiano / rhpiano
+
+   Орган / Organ:
+      → organ([0,4,7], dur=4, sus=6, oct=4, amp=0.4, room=0.3)
+
+   Арфа / Harp / Цитра:
+      → karp([0,4,7,11,14,11,7,4], dur=0.25, oct=5, amp=0.5, room=0.4)
+      Глиссандо-эффект: быстрые восходящие ноты, room=0.3-0.5
+
+   Ситар / Sitar:
+      → sitar([0,4,2,7,5], dur=1, oct=5, amp=0.5, room=0.55)
+      Уже есть нативный синт sitar!
+
+   Колокола / Bells / Колокольчики:
+      → tubularbell([0,4,7], dur=2, oct=5, amp=0.5, room=0.6)
+      Хрустальная версия: bell([0,4,7,11], dur=1, oct=6, amp=0.4, room=0.5)
+
+   Синт-бас / 808 / Суббас:
+      → subbass([0,-2,0,3], dur=2, oct=2, amp=0.55)
+      Альтернатива: moogbass([0,0,-2,0], dur=1, oct=2, amp=0.5, sus=1)
+
 🚫 OVERUSED SYNTHS — LOG SHOWS THESE ARE USED 90%+ OF THE TIME. DIVERSIFY!
    dub (bass) → OVERUSED! Swap for: wobblebass, fuzz, dirt, karp (bass), moogbass
    arpy (lead) → OVERUSED! Swap for: blip, pianovel, karp, sitar, marimba, cs80lead, keys
