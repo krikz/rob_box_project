@@ -721,6 +721,8 @@ class DialogueNode(Node):
 
             Вызывать когда пользователь даёт роботу имя или образ диджея.
             Например: 'ты диджей Демогорган', 'твоё имя DJ Shadow', 'ты робо-шаман'.
+            При смене ВСЕЙ темы мероприятия (корпоратив, хэллоуин, детский праздник и т.п.)
+            дополнительно вызови save_dj_theme() с новой темой.
 
             Args:
                 persona: Имя или краткое описание персонажа. Например: 'DJ Демогорган'.
@@ -729,7 +731,37 @@ class DialogueNode(Node):
             self.get_logger().info(f"🎧 DJ персонаж: {self._dj_persona!r}")
             return f"✅ Принято — теперь я {self._dj_persona}!"
 
-        return [speak_text, play_sound, play_animation, save_dj_set_plan, save_dj_persona]
+        @function_tool
+        def save_dj_theme(theme: str) -> str:  # noqa: F811
+            """Обновить тему/контекст вечеринки и немедленно начать новый сет.
+
+            Вызывать когда пользователь меняет тип мероприятия или общую тему:
+            'теперь мы на корпоративе', 'это детский праздник', 'хэллоуин-вечеринка'.
+
+            ЧТО ДЕЛАЕТ: сбрасывает счётчик переходов, план сета, включает DJ режим
+            если он был выключен, запускает первый переход через 5 секунд.
+            ПОСЛЕ вызова — ОБЯЗАТЕЛЬНО немедленно запусти первый трек
+            через handle_music (новый стиль + новое настроение под новую тему).
+
+            Args:
+                theme: Краткое описание новой темы/контекста. Например: 'корпоратив', 'хэллоуин'.
+            """
+            old = self._dj_theme
+            self._dj_theme = theme.strip()
+            self._dj_transition_count = 0
+            self._dj_set_plan = ""
+            # Включаем DJ режим если был выключён, запускаем первый тик через 5с
+            self._dj_mode_enabled = True
+            self._dj_next_transition_at = time.time() + 5.0
+            self.get_logger().info(
+                f"🎧 DJ тема: {old!r} → {self._dj_theme!r} (счётчик сброшен, таймер через 5с)"
+            )
+            return (
+                f"✅ Тема обновлена: {self._dj_theme}. DJ режим включён. "
+                "Немедленно запусти первый трек через handle_music!"
+            )
+
+        return [speak_text, play_sound, play_animation, save_dj_set_plan, save_dj_persona, save_dj_theme]
 
     def _build_skills(self, model) -> list:
         """Instantiate skill sub-agents and return them as FunctionTools for the Compositor.
@@ -922,9 +954,13 @@ class DialogueNode(Node):
                 f'Тема: "{self._dj_theme}". '
                 f"{persona_line}"
                 f"{plan_line}"
-                "Если пользователь даёт тебе имя или образ — вызови save_dj_persona(). "
-                "Если просит изменить музыку или план — вызови save_dj_set_plan() с обновлённым планом "
-                "и handle_music для немедленного эффекта. Иначе просто ответь голосом.] "
+                "Если пользователь даёт тебе имя или образ диджея — вызови save_dj_persona(). "
+                "Если пользователь МЕНЯЕТ ТЕМУ или тип мероприятия (корпоратив, хэллоуин, другая "
+                "вечеринка и т.п.) — ОБЯЗАТЕЛЬНО: "
+                "1) вызови save_dj_theme(новая_тема) "
+                "2) сразу же запусти новый трек через handle_music (музыка должна смениться НЕМЕДЛЕННО, не ждать таймера). "
+                "Если просит изменить музыку или план без смены темы — вызови save_dj_set_plan() + handle_music. "
+                "Иначе просто ответь голосом.] "
             )
             clean = dj_ctx + clean
 
