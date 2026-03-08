@@ -947,7 +947,8 @@ class DialogueNode(Node):
 
         # Если DJ активен — инжектируем контекст чтобы агент мог скорректировать план
         if self._dj_mode_enabled:
-            persona_line = f'Твой DJ-образ: "{self._dj_persona}". ' if self._dj_persona else ""
+            _dj_name = self._dj_persona if self._dj_persona else "ДиДжей РОббокс"
+            persona_line = f'Твой DJ-образ: "{_dj_name}". '
             plan_line = f"Текущий план сета:\n{self._dj_set_plan}\n" if self._dj_set_plan else ""
             dj_ctx = (
                 f"[🎧 DJ-РЕЖИМ АКТИВЕН, переход #{self._dj_transition_count}. "
@@ -1277,8 +1278,8 @@ class DialogueNode(Node):
         Transitions #2+: agent follows its own saved plan.
         """
         theme_line = f'Тема вечеринки: "{self._dj_theme}". ' if self._dj_theme else ""
-        dj_name = self._dj_persona if self._dj_persona else "DJ ROB-BOX"
-        persona_line = f'Твой DJ-образ: "{self._dj_persona}". ' if self._dj_persona else ""
+        dj_name = self._dj_persona if self._dj_persona else "ДиДжей РОббокс"
+        persona_line = f'Твой DJ-образ: "{dj_name}". '
 
         if n == 1:
             # Первый переход — агент сам составляет план исходя из темы
