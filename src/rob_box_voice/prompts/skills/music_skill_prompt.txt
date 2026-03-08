@@ -630,6 +630,8 @@ Correct layering example (with proper balance + sidechain + swing):
 ⚠️ RECOGNISABLE MELODY RULE — for specific songs/marches:
 - Root.default IS CRITICAL! Imperial March = Root.default = "G", Scale.default = "minor"
 - For marches: drums dur=0.5 with pattern "X.X.X.X." or "X.oX.o", BPM 80-120
+- For famous themes in DJ mode, keep the recognisable motif audible in at least ONE layer
+   for 30-60 seconds — don't abandon it after the opening bar.
 
 🔇 SIMPLICITY RULE FOR KNOWN MELODIES:
 ❌ DON'T make 5-6 patterns — they drown out the melody!
@@ -640,12 +642,45 @@ Correct layering example (with proper balance + sidechain + swing):
 🎼 KNOWN MELODY LIBRARY (midinote= — Root/Scale have no effect!):
 
 🎵 IMPERIAL MARCH (Star Wars):
-   Clock.bpm = 102; Root.default = "G"; Scale.default = "minor"
-   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67,74,74,74,75,70,66,63,70,67],
-               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,1,1,1,0.75,0.25,1,0.75,0.25,2],
-               amp=0.7, sus=0.45, room=0.2)
-   d1 >> play("X.X.X.X.", sample=1, amp=0.25, room=0.1)
-   d2 >> play("..o...o.", sample=3, amp=0.15, room=0.1)
+   Core facts: G minor, march feel, 4/4, usually 100-116 BPM, hard accents on beat 1.
+   If user says "Star Wars", "штурмовики", "Дарт Вейдер", "имперский марш":
+   ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
+   ✅ Use recognisable FORM: A (opening motif) → A' (repeat / intensified repeat)
+      → chromatic bridge → B answer phrase.
+   ✅ In DJ mode, at least one layer MUST keep the Imperial March motif audible while drums / bass modernise around it.
+   ✅ For cinematic / extended versions: start arco, optional pizzicato middle, then return to arco.
+
+   Opening motif A (recognisable hook):
+   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67],
+               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2],
+               amp=0.68, sus=0.42, room=0.2)
+
+   Chromatic bridge (continue the tune instead of restarting A again):
+   p1 >> brass(midinote=[70,75,74,73,72,71,72,65],
+               dur=[0.5,1,1,0.25,0.25,0.25,1,1],
+               amp=0.66, sus=0.38, room=0.2)
+
+   B answer phrase (second idea / response):
+   p1 >> brass(midinote=[66,63,66,70,67,70,76,75,74,70,66,63,70,67],
+               dur=[1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
+               amp=0.68, sus=0.4, room=0.2)
+
+   DJ recognisable arrangement (30-60 sec):
+   Clock.bpm = 108; Root.default = "G"; Scale.default = "minor"
+   d1 >> play("X.X.X.X.", sample=1, amp=0.24, room=0.1)
+   d2 >> play("..o...o.", sample=3, amp=0.14, room=0.1)
+   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67],
+               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,2],
+               amp=0.7, sus=0.4, room=0.2)
+   p2 >> dub([0,0,-2,3], dur=2, oct=3, amp=0.32, chop=var([8,0],[0.5,0.5]))
+   ⚠️ Melody is the star — if you add bass/drums, keep them quieter than the march motif.
+
+   Extended / concert-like variant:
+   - Use 3 voices max: melody + lower harmony / bass + light march drums.
+   - Suggested form: A → A' → bridge → B → short pizzicato middle → arco return.
+   - For pizzicato middle, use `pluck` or `karp` on G minor chord tones with the SAME rhythmic contour.
+   - For arco return, switch back to `brass`, `strings`, or `saw` and restate A or B.
+   - If you don't know the exact continuation, stay inside this form — don't fall back to random generic synthwave.
 
 🎵 HAPPY BIRTHDAY:
    Clock.bpm = 100
