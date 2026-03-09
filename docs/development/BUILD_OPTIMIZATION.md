@@ -35,9 +35,8 @@ services:
   lslidar:
     image: ghcr.io/krikz/rob_box:lslidar-humble-latest
     volumes:
-      - ./config:/config/shared:ro              # Общие конфиги (zenoh, cyclonedds)
-      - ./config/lslidar:/config/lslidar:ro     # Конфиги lslidar
-      - ./scripts/lslidar:/scripts:ro           # Скрипты запуска
+            - ./config:/config:ro                  # Общие конфиги (zenoh, cyclonedds)
+            - ./scripts/lslidar:/scripts:ro        # Скрипты запуска
     command: ["/scripts/start_lslidar.sh"]
 ```
 
@@ -55,11 +54,13 @@ services:
 docker/
 ├── main/                          # Для Main Pi (10.1.1.20)
 │   ├── config/                    # Shared конфиги для всех контейнеров
-│   │   ├── cyclonedds.xml         # → /config/shared/cyclonedds.xml
-│   │   ├── zenoh_session_config.json5  # → /config/shared/zenoh_session_config.json5
+│   │   ├── cyclonedds.xml         # → /config/cyclonedds.xml
+│   │   ├── zenoh_session_config.json5  # → /config/zenoh_session_config.json5
 │   │   └── rtabmap/               # Конфиги специфичные для rtabmap
 │   │       └── rtabmap.yaml       # → /config/rtabmap/rtabmap.yaml
 │   ├── scripts/
+│   │   ├── rtabmap/
+│   │   │   └── start_rtabmap.sh   # → /scripts/start_rtabmap.sh
 │   │   └── robot_state_publisher/ # Скрипты запуска
 │   │       └── start_robot_state_publisher.sh  # → /scripts/start_robot_state_publisher.sh
 │   ├── rtabmap/
@@ -73,35 +74,31 @@ docker/
     │   ├── zenoh_session_config.json5
     │   ├── apriltag/              # → /config/apriltag/
     │   │   └── apriltag_config.yaml
-    │   ├── lslidar/               # → /config/lslidar/
-    │   │   ├── lslidar_headless_launch.py
-    │   │   └── lsx10_custom.yaml
     │   └── oak-d/                 # → /config/oak-d/
     │       └── oak_d_config.yaml
     ├── scripts/
     │   ├── apriltag/              # → /scripts/
     │   │   └── start_apriltag.sh
-    │   ├── lslidar/               # → /scripts/
-    │   │   └── start_lslidar.sh
     │   ├── voice_assistant/       # → /scripts/
     │   │   └── start_voice_assistant.sh
     │   └── oak-d/                 # → /scripts/
     │       └── start_oak_d.sh
     ├── apriltag/
     │   └── Dockerfile
-    ├── lslidar/
-    │   └── Dockerfile
     └── oak-d/
-        ├── Dockerfile
-        └── launch/                # → /oak-d/launch/
-            └── oakd_apriltag_only.launch.py
+        └── Dockerfile
 ```
 
 **Ключевые моменты:**
 - `config/` - shared конфиги (zenoh, cyclonedds)
 - `config/{service}/` - конфиги специфичные для сервиса
 - `scripts/{service}/` - скрипты запуска сервиса
-- `{service}/Dockerfile` - только Dockerfile и необходимые для сборки файлы
+- `config/{subsystem}/` - shared subsystem config, если один набор файлов используется несколькими сервисами
+- `{service}/Dockerfile` - только Dockerfile
+
+**Допустимые исключения:**
+- Source bind вроде `../../src/rob_box_description:/workspace/src/rob_box_description:ro` допустим, если контейнеру нужен runtime access к локальному ROS package, а это не config/script.
+- Shared helper scripts могут оставаться в корне `scripts/`, если их вызывают несколько сервисов.
 
 ## Правила для Dockerfiles
 
@@ -124,10 +121,8 @@ docker/
 ```dockerfile
 # ВАЖНО: Конфиги и скрипты НЕ копируются в образ!
 # Они монтируются через volumes в docker-compose.yaml:
-# - ./config:/config/shared:ro (общие конфиги: zenoh, cyclonedds)
-# - ./{service}/config:/config/{service}:ro (конфиги сервиса)
-# - ./{service}/scripts:/scripts:ro (скрипты запуска)
-# - ./{service}/launch:/launch:ro (launch файлы, если нужно)
+# - ./config:/config:ro (общие конфиги: zenoh, cyclonedds)
+# - ./scripts/{service}:/scripts:ro (скрипты запуска)
 
 CMD ["/scripts/start_{service}.sh"]
 ```
@@ -165,7 +160,6 @@ RUN git clone --depth 1 https://github.com/repo.git && \
 
 # Разрешаем только нужные папки
 !apriltag/
-!lslidar/
 !oak-d/
 !zenoh-router/
 
@@ -274,9 +268,8 @@ grep -r "COPY.*config\|COPY.*scripts" docker/*/*/Dockerfile
 grep -A 10 "volumes:" docker/*/docker-compose.yaml
 
 # Должны быть:
-# - ./config:/config/shared:ro
-# - ./{service}/config:/config/{service}:ro
-# - ./{service}/scripts:/scripts:ro
+# - ./config:/config:ro
+# - ./scripts/{service}:/scripts:ro
 ```
 
 ## Оптимизация загрузки моделей ML/AI
