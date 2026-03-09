@@ -10,6 +10,20 @@ source /opt/ros/humble/setup.bash
 
 PARAMS="/config/nav2/nav2_params.yaml"
 
+# Текущий фронтальный depth slice → LaserScan для local costmap.
+# Это безопаснее, чем использовать накопленное /rtabmap/cloud_obstacles,
+# потому что в obstacle avoidance участвуют только точки, видимые камерой
+# прямо сейчас. Узкий центральный срез depth image также сильно уменьшает
+# шум от пола/потолка без тяжёлых point cloud фильтров.
+ros2 run depthimage_to_laserscan depthimage_to_laserscan_node \
+    --ros-args \
+    -r depth:=/camera/camera/depth/image_rect_raw \
+    -r depth_camera_info:=/camera/camera/depth/camera_info \
+    -r scan:=/camera/depth/scan \
+    -p scan_height:=40 \
+    -p range_min:=0.25 \
+    -p range_max:=1.8 &
+
 # Запуск lifecycle manager в фоне
 ros2 run nav2_lifecycle_manager lifecycle_manager \
     --ros-args \
