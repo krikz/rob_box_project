@@ -66,11 +66,13 @@ from .handlers.commands import (
     photo_up_handler,
     playvoice_handler,
     pose_handler,
+    repl_handler,
     say_handler,
     sound_handler,
     start_handler,
     status_handler,
     stop_handler,
+    stopmusic_handler,
     volume_handler,
     waypoints_handler,
 )
@@ -344,6 +346,8 @@ class TelegramNode(Node):
         app.add_handler(CommandHandler("sound", sound_handler))
         app.add_handler(CommandHandler("map", map_handler))
         app.add_handler(CommandHandler("music", music_handler))
+        app.add_handler(CommandHandler("repl", repl_handler))
+        app.add_handler(CommandHandler("stopmusic", stopmusic_handler))
         app.add_handler(CommandHandler("clear", clear_handler))
 
         # ── Callback query handler (inline keyboards) ──────────────
