@@ -5,8 +5,8 @@
 # с frame_id=camera_color_optical_frame (RealSense naming), но URDF использует
 # camera_rgb_camera_optical_frame. rtabmap не может найти трансформацию.
 #
-# Решение: публикуем identity TF camera_rgb_camera_optical_frame → camera_color_optical_frame
-# прежде чем запустить rtabmap.
+# Решение: публикуем identity TF алиасы для legacy RealSense-style frame names
+# прежде чем запустить rtabmap и nav2.
 
 source /opt/ros/humble/setup.bash
 
@@ -38,8 +38,18 @@ ros2 run tf2_ros static_transform_publisher \
 TF_PID=$!
 echo "[start_rtabmap.sh] Static TF publisher PID: $TF_PID"
 
+echo "[start_rtabmap.sh] Starting static TF publisher: camera_stereo_camera_frame → camera_depth_frame"
+
+ros2 run tf2_ros static_transform_publisher \
+    0 0 0 0 0 0 1 \
+    camera_stereo_camera_frame \
+    camera_depth_frame &
+
+DEPTH_TF_PID=$!
+echo "[start_rtabmap.sh] Depth TF publisher PID: $DEPTH_TF_PID"
+
 # Trap to kill TF publisher when main process exits
-trap "kill $TF_PID 2>/dev/null" EXIT
+trap "kill $TF_PID $DEPTH_TF_PID 2>/dev/null" EXIT
 
 echo "[start_rtabmap.sh] Launching with localization:=true: $@"
 exec "$@" "localization:=true"
