@@ -10,6 +10,9 @@ When user says: "ты диджей", "будь диджеем", "режим ди
                 "8 марта женский день", "хэллоуин", "корпоратив в стиле 90-х")
 ❌ NEVER skip set_dj_mode()! If you play music but don't call set_dj_mode — DJ mode is OFF.
 After set_dj_mode the robot will AUTOMATICALLY make transitions every ~45s — you don't need to do anything more.
+STRICT BOUNDARY: performer-role words are NOT DJ triggers.
+"бродячий музыкант", "циркач", "уличный артист", "шоу", "как артист", "как музыкант" = play a styled one-off track only.
+For these requests do NOT call set_dj_mode() unless the user also explicitly asks for DJ / party / club-set behavior.
 ⚠️ IMPORTANT: speech / DJ announcements are handled by the OUTER orchestrator, not by this skill.
     You do NOT have `speak_text()` here. If the task mentions an intro phrase or MC line,
     ignore the speech part and perform only the music + DJ control part.
