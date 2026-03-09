@@ -13,5 +13,5 @@ def test_nav2_costmaps_use_reduced_inflation_radius():
     local_inflation = config["local_costmap"]["local_costmap"]["ros__parameters"]["inflation_layer"]
     global_inflation = config["global_costmap"]["global_costmap"]["ros__parameters"]["inflation_layer"]
 
-    assert local_inflation["inflation_radius"] == 0.50
-    assert global_inflation["inflation_radius"] == 0.50
+    assert local_inflation["inflation_radius"] == 0.55
+    assert global_inflation["inflation_radius"] == 0.55
