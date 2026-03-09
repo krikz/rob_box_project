@@ -16,13 +16,15 @@ WHITESPACE_RE = re.compile(r"\s+")
 SIGNATURE_MARKER_RE = re.compile(r"<!--\s*deploy-signature:\s*(.*?)\s*-->")
 
 CRITICAL_MATCH_RE = re.compile(
-    r"\b(critical|fatal|error|exception|traceback)\b|failed to|segmentation fault|core dumped",
+    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped",
     re.IGNORECASE,
 )
 WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
+    r"✓ error:",
+    r"^=== .*critical errors ===$",
     r"scouting delay elapsed",
     r"could not inspect container",
     r"could not fetch logs",
@@ -33,19 +35,24 @@ CRITICAL_EXCLUDE_COMMON = [
     r"dial tcp.*3100.*no route to host",
     r"undeclare unknown subscriber",
     r"undeclare unknown queryable",
+    r"zeroconf: failed to create client: daemon not running",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
         r"robot is out of bounds",
+        r"serial port /dev/ttyusb0 still not available after",
+        r"timed out waiting for transform from base_link to odom",
         r"cannot transform tag pose",
         r"sensor origin.*out of map bounds",
         r"can controller state: error-active",
+        r"subscriberplugin::subscribeimpl with five arguments has not been overridden",
         r"total errors:",
     ],
     "vision": [],
 }
 
 WARNING_EXCLUDE_COMMON = [
+    r"^=== .*warnings ===$",
     r"scouting delay elapsed",
     r"нода не найдена",
     r"unknown logical group",
@@ -56,6 +63,7 @@ WARNING_EXCLUDE_COMMON = [
     r"animation already playing",
     r"pyaudio status: 2",
     r"speech .* not found in pending_speeches",
+    r"speech .* не найден.*pending_speeches",
     r"did not receive data since 5 seconds",
     r"unable to connect to a zenoh router",
     r"could not fetch info from synthdefmanagement server\. using defaults",
@@ -63,8 +71,10 @@ WARNING_EXCLUDE_COMMON = [
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [
         r"could not find a connection.*tree",
+        r"это заглушка! используйте ai hat \+ yolo",
         r"root link.*inertia",
         r"no real-time kernel",
+        r"old-style arguments are deprecated; see --help for new-style arguments",
         r"total warnings:",
     ],
     "vision": [],

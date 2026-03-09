@@ -149,3 +149,84 @@ def test_extract_relevant_log_line_matches_real_critical_error() -> None:
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
 
     assert line == log_text
+
+
+def test_extract_relevant_log_line_ignores_optional_serial_critical_error() -> None:
+    log_text = "❌ ERROR: Serial port /dev/ttyUSB0 still not available after 30s"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_startup_tf_timeout() -> None:
+    log_text = (
+        '[INFO] [1773045972.826191868] [local_costmap.local_costmap]: Timed out waiting '
+        'for transform from base_link to odom to become available, tf error: '
+        'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_transport_noise() -> None:
+    log_text = (
+        "[republish-2] [ERROR] [1773045966.706932963] [rtabmap.republish_depth]: "
+        "SubscriberPlugin::subscribeImpl with five arguments has not been overridden"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_known_main_warnings() -> None:
+    vision_stub_log = (
+        "[vision_stub_node-5] [WARN] [1773045973.085219650] [vision_stub]: ⚠️  "
+        "Это ЗАГЛУШКА! Используйте AI HAT + YOLO для реальной обработки"
+    )
+    deprecated_log = "[WARN] [1773045964.662232589] []: Old-style arguments are deprecated; see --help for new-style arguments"
+
+    vision_stub_line = MODULE.extract_relevant_log_line(vision_stub_log, scope="main", severity="warning")
+    deprecated_line = MODULE.extract_relevant_log_line(deprecated_log, scope="main", severity="warning")
+
+    assert vision_stub_line is None
+    assert deprecated_line is None
+
+
+def test_extract_relevant_log_line_prefers_real_supercollider_error() -> None:
+    log_text = "\n".join(
+        [
+            "Zeroconf: failed to create client: Daemon not running",
+            "FAILURE IN SERVER /g_new negative node IDs are reserved",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
+
+
+def test_extract_relevant_log_line_ignores_sound_sample_named_error() -> None:
+    log_text = "[sound_node-7] [INFO] [1773045895.071714241] [sound_node]:   ✓ error: 769ms, 48000Hz"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_workflow_section_headers() -> None:
+    critical_log = "=== supercollider CRITICAL ERRORS ===\nFAILURE IN SERVER /g_new negative node IDs are reserved"
+    warning_log = (
+        "=== voice-assistant WARNINGS ===\n"
+        "[mcp_server-9] [WARN] [1773045897.770643160] [mcp_server]: [speak_text] "
+        "⚠️ Speech b6db84fd... не найден в pending_speeches (возможно уже удалён)"
+    )
+
+    critical_line = MODULE.extract_relevant_log_line(critical_log, scope="vision", severity="critical")
+    warning_line = MODULE.extract_relevant_log_line(warning_log, scope="vision", severity="warning")
+
+    assert critical_line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
+    assert warning_line is None
