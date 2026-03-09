@@ -502,17 +502,12 @@ jobs:
             # Объединяем логи для анализа
             LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
-            # Проверяем на критические ошибки (расширенные паттерны)
-            # Фильтруем известные false positives:
-            # - micro-ros-agent: Serial port /dev/ttyUSB0 - optional ESP32 sensor hub
-            # - promtail: Loki connection errors - monitoring system (non-critical)
-            # - Zenoh: "Scouting delay elapsed" - normal startup timing
-            CRITICAL=$(echo "$LOGS" | \
-              grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
-              grep -vE "$EXCLUDE_COMMON" || true)
+            # Проверяем на критические ошибки через helper c дедуп/false-positive правилами.
+            CRITICAL=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope vision --severity critical || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
-              CRITICAL_SAMPLE=$(echo "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
+              CRITICAL_SAMPLE=$(printf "%s\n" "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ❌ CRITICAL errors found in $container"
               echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
               echo "$CRITICAL" >> $LOGS_FILE
@@ -529,20 +524,15 @@ jobs:
                 >> "$VISION_FINDINGS_FILE"
             fi
 
-            # Проверяем на предупреждения
-            # Фильтруем известные operational warnings:
-            # - Zenoh: Scouting delay - normal startup timing
-            # - perception: Missing nodes during startup
-            # - LED: Unknown logical groups - expected for disabled hardware
-            WARNINGS=$(echo "$LOGS" | \
-              grep -iE "(WARN|WARNING)" | \
-              grep -vE "$EXCLUDE_WARN_COMMON" || true)
+            # Проверяем на предупреждения через helper c дедуп/false-positive правилами.
+            WARNINGS=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope vision --severity warning || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
-              WARNING_SAMPLE=$(echo "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
+              WARNING_SAMPLE=$(printf "%s\n" "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ⚠️  Warnings found in $container"
               echo "=== $container WARNINGS ===" >> $LOGS_FILE
-              echo "$WARNINGS" | head -30 >> $LOGS_FILE
+              printf "%s\n" "$WARNINGS" | head -30 >> $LOGS_FILE
               echo "" >> $LOGS_FILE
               jq -nc \
                 --arg environment "${{ inputs.environment }}" \
@@ -634,20 +624,12 @@ jobs:
             # Объединяем логи для анализа
             LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
 
-            # Проверяем на критические ошибки (расширенные паттерны)
-            # Фильтруем известные false positives:
-            # - micro-ros-agent: Serial port /dev/ttyUSB0 - optional ESP32 sensor hub
-            # - promtail: Loki connection errors - monitoring system (non-critical)
-            # - nav2: Robot out of bounds - initialization transient
-            # - rtabmap: TF transform errors - initialization timing
-            # - ros2-control: CAN ERROR-ACTIVE state - normal VESC state
-            # - Zenoh: "Scouting delay elapsed" - normal startup timing
-            CRITICAL=$(echo "$LOGS" | \
-              grep -iE "(CRITICAL|FATAL|ERROR|Exception|Traceback|failed to|unable to|cannot|segmentation fault|core dumped)" | \
-              grep -vE "$EXCLUDE_MAIN" || true)
+            # Проверяем на критические ошибки через helper c дедуп/false-positive правилами.
+            CRITICAL=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope main --severity critical || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
-              CRITICAL_SAMPLE=$(echo "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
+              CRITICAL_SAMPLE=$(printf "%s\n" "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ❌ CRITICAL errors found in $container"
               echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
               echo "$CRITICAL" >> $LOGS_FILE
@@ -664,23 +646,15 @@ jobs:
                 >> "$MAIN_FINDINGS_FILE"
             fi
 
-            # Проверяем на предупреждения
-            # Фильтруем известные operational warnings:
-            # - Zenoh: Scouting delay - normal startup timing
-            # - nav2/rtabmap: TF warnings during initialization
-            # - perception: Missing nodes during startup
-            # - LED: Unknown logical groups - expected for disabled hardware
-            # - kdl_parser: URDF root link inertia - known ROS2 limitation
-            # - controller_manager: No real-time kernel - expected on Raspberry Pi
-            WARNINGS=$(echo "$LOGS" | \
-              grep -iE "(WARN|WARNING)" | \
-              grep -vE "$EXCLUDE_WARN_MAIN" || true)
+            # Проверяем на предупреждения через helper c дедуп/false-positive правилами.
+            WARNINGS=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope main --severity warning || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
-              WARNING_SAMPLE=$(echo "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
+              WARNING_SAMPLE=$(printf "%s\n" "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ⚠️  Warnings found in $container"
               echo "=== $container WARNINGS ===" >> $LOGS_FILE
-              echo "$WARNINGS" | head -30 >> $LOGS_FILE
+              printf "%s\n" "$WARNINGS" | head -30 >> $LOGS_FILE
               echo "" >> $LOGS_FILE
               jq -nc \
                 --arg environment "${{ inputs.environment }}" \

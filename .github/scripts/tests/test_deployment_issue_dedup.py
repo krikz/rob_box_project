@@ -111,3 +111,41 @@ def test_filter_existing_issues_skips_matching_signature() -> None:
     new_candidates = MODULE.filter_new_candidates(candidates, existing_issues)
 
     assert new_candidates == []
+
+
+def test_extract_relevant_log_line_ignores_without_error_message() -> None:
+    log_text = (
+        "[lslidar_driver_node-1] [INFO] [1773019653.918945289] "
+        "[lslidar_driver_node]: Initialised lslidar without error"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_total_errors_summary() -> None:
+    log_text = "[health_monitor-1] Total Errors: 1 (последние 0 за минуту)"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_optional_serial_warning() -> None:
+    log_text = "⚠️  WARNING: Serial port /dev/ttyUSB0 not found!"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_matches_real_critical_error() -> None:
+    log_text = (
+        "[stt_node-6] ERROR (VoskAPI:Model():model.cc:122) Folder "
+        "'/models/vosk-model-small-ru-0.22' does not contain model files."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line == log_text

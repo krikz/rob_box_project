@@ -15,6 +15,61 @@ NUMBER_RE = re.compile(r"\b\d+\b")
 WHITESPACE_RE = re.compile(r"\s+")
 SIGNATURE_MARKER_RE = re.compile(r"<!--\s*deploy-signature:\s*(.*?)\s*-->")
 
+CRITICAL_MATCH_RE = re.compile(
+    r"\b(critical|fatal|error|exception|traceback)\b|failed to|segmentation fault|core dumped",
+    re.IGNORECASE,
+)
+WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
+
+CRITICAL_EXCLUDE_COMMON = [
+    r"without error",
+    r"scouting delay elapsed",
+    r"could not inspect container",
+    r"could not fetch logs",
+    r"no such container",
+    r"error sending batch.*loki.*push",
+    r"post.*loki.*push",
+    r"context deadline exceeded",
+    r"dial tcp.*3100.*no route to host",
+    r"undeclare unknown subscriber",
+    r"undeclare unknown queryable",
+]
+CRITICAL_EXCLUDE_BY_SCOPE = {
+    "main": [
+        r"robot is out of bounds",
+        r"cannot transform tag pose",
+        r"sensor origin.*out of map bounds",
+        r"can controller state: error-active",
+        r"total errors:",
+    ],
+    "vision": [],
+}
+
+WARNING_EXCLUDE_COMMON = [
+    r"scouting delay elapsed",
+    r"нода не найдена",
+    r"unknown logical group",
+    r"error sending batch.*loki",
+    r"enable watchconfig",
+    r"serial port /dev/ttyusb0 not found",
+    r"framerate:",
+    r"animation already playing",
+    r"pyaudio status: 2",
+    r"speech .* not found in pending_speeches",
+    r"did not receive data since 5 seconds",
+    r"unable to connect to a zenoh router",
+    r"could not fetch info from synthdefmanagement server\. using defaults",
+]
+WARNING_EXCLUDE_BY_SCOPE = {
+    "main": [
+        r"could not find a connection.*tree",
+        r"root link.*inertia",
+        r"no real-time kernel",
+        r"total warnings:",
+    ],
+    "vision": [],
+}
+
 
 def normalize_pattern(raw_text: str) -> str:
     text = raw_text.strip()
@@ -25,6 +80,35 @@ def normalize_pattern(raw_text: str) -> str:
     text = NUMBER_RE.sub("<num>", text)
     text = WHITESPACE_RE.sub(" ", text)
     return text.strip()
+
+
+def _matches_any(patterns: Iterable[str], text: str) -> bool:
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
+    if severity not in {"critical", "warning"}:
+        raise ValueError(f"Unsupported severity: {severity}")
+
+    lines = [line.strip() for line in log_text.splitlines() if line.strip()]
+    if severity == "critical":
+        patterns = CRITICAL_EXCLUDE_COMMON + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
+        for line in lines:
+            if not CRITICAL_MATCH_RE.search(line):
+                continue
+            if _matches_any(patterns, line):
+                continue
+            return line
+        return None
+
+    patterns = WARNING_EXCLUDE_COMMON + WARNING_EXCLUDE_BY_SCOPE.get(scope, [])
+    for line in lines:
+        if not WARNING_MATCH_RE.search(line):
+            continue
+        if _matches_any(patterns, line):
+            continue
+        return line
+    return None
 
 
 def build_signature(problem: Mapping[str, str]) -> str:
@@ -220,6 +304,14 @@ def _cmd_filter(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_extract_log(args: argparse.Namespace) -> int:
+    log_text = sys.stdin.read()
+    line = extract_relevant_log_line(log_text, scope=args.scope, severity=args.severity)
+    if line:
+        sys.stdout.write(line + "\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare and deduplicate deployment issue candidates.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -237,6 +329,11 @@ def build_parser() -> argparse.ArgumentParser:
     filter_parser.add_argument("--candidates-file", required=True)
     filter_parser.add_argument("--issues-file", required=True)
     filter_parser.set_defaults(func=_cmd_filter)
+
+    extract_parser = subparsers.add_parser("extract-log", help="Extract the first relevant log line for a scope and severity.")
+    extract_parser.add_argument("--scope", required=True, choices=["main", "vision"])
+    extract_parser.add_argument("--severity", required=True, choices=["critical", "warning"])
+    extract_parser.set_defaults(func=_cmd_extract_log)
 
     return parser
 
