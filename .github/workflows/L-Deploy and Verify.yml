@@ -240,6 +240,20 @@ jobs:
 
       # ==================== VISION PI DEPLOYMENT ====================
 
+      - name: "[Vision Pi] Cleanup Docker Artifacts"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Cleaning up unused Docker artifacts on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "docker system df && \
+             docker image prune -af && \
+             docker builder prune -af && \
+             docker system df" \
+            || echo "⚠️  Warning: Docker cleanup failed on Vision Pi"
+
       - name: "[Vision Pi] Stop Containers"
         if: '!inputs.dry_run'
         run: |
@@ -301,6 +315,20 @@ jobs:
              docker compose up -d --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
+
+      - name: "[Main Pi] Cleanup Docker Artifacts"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Cleaning up unused Docker artifacts on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "docker system df && \
+             docker image prune -af && \
+             docker builder prune -af && \
+             docker system df" \
+            || echo "⚠️  Warning: Docker cleanup failed on Main Pi"
 
       - name: "[Main Pi] Stop Containers"
         if: '!inputs.dry_run'
