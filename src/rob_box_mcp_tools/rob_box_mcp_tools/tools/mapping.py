@@ -11,6 +11,7 @@ mapping.py - Инструменты для управления картогра
 """
 
 from typing import List, Optional, TYPE_CHECKING
+import threading
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
@@ -19,6 +20,13 @@ if TYPE_CHECKING:
     from ..mapping_state import MappingState
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+
+def _wait_future(future, timeout_sec: float) -> bool:
+    """Wait for an rclpy Future without disturbing the active executor."""
+    event = threading.Event()
+    future.add_done_callback(lambda _: event.set())
+    return event.wait(timeout=timeout_sec)
 
 
 class StartMappingTool(MCPTool):
@@ -277,11 +285,39 @@ class OptimizeMapTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         from std_srvs.srv import Empty
+        try:
+            from rtabmap_msgs.srv import CleanupLocalGrids, DetectMoreLoopClosures, GlobalBundleAdjustment, PublishMap  # type: ignore
+        except ImportError:
+            CleanupLocalGrids = None
+            DetectMoreLoopClosures = None
+            GlobalBundleAdjustment = None
+            PublishMap = None
 
-        self.loop_closures_client = node.create_client(Empty, "/rtabmap/rtabmap/detect_more_loop_closures")
-        self.bundle_adjustment_client = node.create_client(Empty, "/rtabmap/rtabmap/global_bundle_adjustment")
-        self.cleanup_client = node.create_client(Empty, "/rtabmap/rtabmap/cleanup_local_grids")
+        self.loop_closures_client = (
+            node.create_client(DetectMoreLoopClosures, "/rtabmap/rtabmap/detect_more_loop_closures")
+            if DetectMoreLoopClosures is not None
+            else None
+        )
+        self.bundle_adjustment_client = (
+            node.create_client(GlobalBundleAdjustment, "/rtabmap/rtabmap/global_bundle_adjustment")
+            if GlobalBundleAdjustment is not None
+            else None
+        )
+        self.cleanup_client = (
+            node.create_client(CleanupLocalGrids, "/rtabmap/rtabmap/cleanup_local_grids")
+            if CleanupLocalGrids is not None
+            else None
+        )
         self.backup_client = node.create_client(Empty, "/rtabmap/rtabmap/backup")
+        self.publish_map_client = (
+            node.create_client(PublishMap, "/rtabmap/rtabmap/publish_map") if PublishMap is not None else None
+        )
+
+        self._detect_more_loop_closures_request = DetectMoreLoopClosures.Request() if DetectMoreLoopClosures is not None else None
+        self._global_bundle_adjustment_request = GlobalBundleAdjustment.Request() if GlobalBundleAdjustment is not None else None
+        self._cleanup_local_grids_request = CleanupLocalGrids.Request() if CleanupLocalGrids is not None else None
+        self._backup_request = Empty.Request()
+        self._publish_map_request = PublishMap.Request() if PublishMap is not None else None
 
     @property
     def name(self) -> str:
@@ -303,36 +339,80 @@ class OptimizeMapTool(MCPTool):
         return ToolExecutionType.LONG  # Может занять 30-120+s
 
     def execute(self) -> MCPToolResult:
-        """Запустить постобработку карты"""
-        from std_srvs.srv import Empty
-
-        request = Empty.Request()
-        steps = []
+        """Запустить постобработку карты и дождаться завершения сервисов."""
+        completed = []
         failed = []
 
-        for client, svc_name, ok_msg, step_label in [
-            (self.loop_closures_client,    "detect_more_loop_closures", "🔄 Поиск loop closures запущен",    "loop closures"),
-            (self.bundle_adjustment_client, "global_bundle_adjustment",  "📐 Bundle adjustment запущен",       "bundle adjustment"),
-            (self.cleanup_client,           "cleanup_local_grids",       "🧹 Очистка occupancy grid запущена", "cleanup grids"),
-            (self.backup_client,            "backup",                    "💾 Backup запущен",                  "backup"),
+        for client, request, svc_name, ok_msg, step_label, timeout_sec in [
+            (
+                self.loop_closures_client,
+                self._detect_more_loop_closures_request,
+                "detect_more_loop_closures",
+                "🔄 Поиск loop closures завершён",
+                "loop closures",
+                30.0,
+            ),
+            (
+                self.bundle_adjustment_client,
+                self._global_bundle_adjustment_request,
+                "global_bundle_adjustment",
+                "📐 Bundle adjustment завершён",
+                "bundle adjustment",
+                60.0,
+            ),
+            (
+                self.cleanup_client,
+                self._cleanup_local_grids_request,
+                "cleanup_local_grids",
+                "🧹 Очистка occupancy grid завершена",
+                "cleanup grids",
+                30.0,
+            ),
+            (
+                self.publish_map_client,
+                self._publish_map_request,
+                "publish_map",
+                "🗺️ Публикация карты завершена",
+                "publish map",
+                15.0,
+            ),
+            (
+                self.backup_client,
+                self._backup_request,
+                "backup",
+                "💾 Backup завершён",
+                "backup",
+                15.0,
+            ),
         ]:
-            if client.service_is_ready():
-                client.call_async(request)
-                self.log_info(ok_msg)
-                steps.append(step_label)
-            else:
+            if client is None or request is None:
+                self.log_warning(f"⚠️ {svc_name} service недоступен в текущей сборке")
+                failed.append(svc_name)
+                continue
+
+            if not client.service_is_ready():
                 self.log_warning(f"⚠️ {svc_name} service не готов")
                 failed.append(svc_name)
+                continue
 
-        if not steps:
+            future = client.call_async(request)
+            if not _wait_future(future, timeout_sec=timeout_sec) or future.result() is None:
+                self.log_warning(f"⚠️ {svc_name} не завершился успешно")
+                failed.append(svc_name)
+                continue
+
+            self.log_info(ok_msg)
+            completed.append(step_label)
+
+        if not completed:
             return MCPToolResult(
                 success=False,
-                error=f"RTABMap сервисы недоступны: {', '.join(failed)}. Убедись что RTABMap запущен."
+                error=f"RTABMap оптимизация не выполнена. Проблемные сервисы: {', '.join(failed)}."
             )
 
-        result_msg = f"Оптимизация карты запущена: {', '.join(steps)}."
+        result_msg = f"Оптимизация карты завершена: {', '.join(completed)}."
         if failed:
-            result_msg += f" Недоступны (пропущены): {', '.join(failed)}."
+            result_msg += f" Не удалось: {', '.join(failed)}."
         return MCPToolResult(success=True, message=result_msg)
 
 
