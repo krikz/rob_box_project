@@ -153,11 +153,8 @@ services:
     # 3. Анализ rtabmap.launch.py (строки 45-46)
     #
     # КЛЮЧЕВЫЕ ПАРАМЕТРЫ:
-    # • depth:=true              - использовать отдельные rgb/depth топики (НЕ subscribe_rgbd)
-    # • subscribe_rgbd:=false    - НЕ подписываться на /rgbd_image (переключились на compressed)
-    # • compressed:=true         - image_transport republish compressed→raw локально на Main Pi
-    # • rgb_image_transport:=compressed     - JPEG по Zenoh (~3-5 MB/s)
-    # • depth_image_transport:=compressedDepth - PNG depth по Zenoh (~5-8 MB/s)
+    # • subscribe_rgbd:=true - брать уже синхронизированный /rgbd_image с Vision Pi
+    # • rgbd_topic:=/rgbd_image - локальная sync RGB+Depth+CameraInfo выполняется в rtabmap-sync
     # • subscribe_scan:=true - включает LaserScan (LiDAR для ICP одометрии и 2D grid)
     # • icp_odometry:=true  - ICP одометрия: лидар → icp_odom (надёжнее visual в коридорах)
     # • odom_guess_frame_id:=odom - wheel odometry как начальный guess для ICP
@@ -169,11 +166,10 @@ services:
     # • Reg/Strategy=1      - ICP регистрация для loop closure
     #
     # ТОПИК ПОТОК:
-    #   Vision Pi: OAK-D → /camera/.../color/image_raw/compressed (JPEG, ~3-5 MB/s)
-    #                     → /camera/.../depth/image_rect_raw/compressedDepth (PNG, ~5-8 MB/s)
+    #   Vision Pi: OAK-D raw RGB + raw Depth + CameraInfo → rtabmap-sync
+    #              rtabmap-sync → /rgbd_image (локальная sync на Vision Pi)
     #              Zenoh → Main Pi
-    #   Main Pi:   image_transport republish (compressed→raw, локально)
-    #              rtabmap ← raw RGB + raw Depth (синхр. approx_sync) + /scan (LiDAR)
+    #   Main Pi:   rtabmap ← /rgbd_image + /scan (LiDAR)
     command:
       - /ros_scripts/ros_with_namespace.sh
       - /scripts/start_rtabmap.sh
@@ -182,13 +178,8 @@ services:
       - rtabmap_launch
       - rtabmap.launch.py
       - depth:=true
-      - subscribe_rgbd:=false
-      - rgb_topic:=/camera/camera/color/image_raw
-      - camera_info_topic:=/camera/camera/color/camera_info
-      - depth_topic:=/camera/camera/depth/image_rect_raw
-      - compressed:=true
-      - rgb_image_transport:=compressed
-      - depth_image_transport:=compressedDepth
+      - subscribe_rgbd:=true
+      - rgbd_topic:=/rgbd_image
       - subscribe_scan:=true
       - scan_topic:=/scan
       - icp_odometry:=true
