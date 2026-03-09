@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.venv/
 build/
 # Allow docker/build directory (build machine infrastructure)
 !docker/build/

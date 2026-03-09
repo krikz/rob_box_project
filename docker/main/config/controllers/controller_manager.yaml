@@ -83,8 +83,9 @@ diff_drive_controller:
     odom_frame_id: odom
     base_frame_id: base_footprint
 
-    # Использовать только реальные колеса (не виртуальные)
-    open_loop: false
+    # Для duty-cycle привода без position feedback одометрия должна идти от команд,
+    # иначе odom→base_footprint залипает на нуле и ломает guess для ICP.
+    open_loop: true
 
     # Публиковать одометрию
     publish_rate: 50.0  # Hz
@@ -122,7 +123,7 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
     # Advanced Settings
     # ───────────────────────────────────────────────────────────────
-    # Позиционный режим (используем velocity control для VESC)
+    # Энкодерный position feedback сейчас не используется.
     position_feedback: false
 
     # Опубликовывать limited velocity
