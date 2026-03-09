@@ -13,7 +13,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN pip install --no-cache-dir --break-system-packages renardo-lib
 
-COPY docker/vision/voice_assistant/download_samples.py /tmp/download_samples.py
+COPY voice_assistant/download_samples.py /tmp/download_samples.py
 RUN python3 /tmp/download_samples.py || echo "WARNING: Renardo sample download failed — music will run in synth-only mode" \
     && rm -f /tmp/download_samples.py
 
@@ -23,7 +23,7 @@ RUN if [ -d /root/.config/renardo/samples ]; then \
         mkdir -p /renardo_samples_bundle; \
     fi
 
-COPY docker/vision/voice_resources/init_resources.sh /usr/local/bin/init_voice_resources.sh
+COPY voice_resources/init_resources.sh /usr/local/bin/init_voice_resources.sh
 RUN chmod +x /usr/local/bin/init_voice_resources.sh
 
 ENTRYPOINT ["/usr/local/bin/init_voice_resources.sh"]
