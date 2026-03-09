@@ -98,6 +98,11 @@ jobs:
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
+          echo "VISION_FINDINGS_FILE=${RUNNER_TEMP}/vision_deployment_findings.jsonl" >> $GITHUB_ENV
+          echo "MAIN_FINDINGS_FILE=${RUNNER_TEMP}/main_deployment_findings.jsonl" >> $GITHUB_ENV
+          : > "${RUNNER_TEMP}/vision_deployment_findings.jsonl"
+          : > "${RUNNER_TEMP}/main_deployment_findings.jsonl"
+
           # SSH options: timeout protection against WiFi flakiness / Pi unresponsiveness
           # ConnectTimeout=10      — fail fast if Pi unreachable
           # ServerAliveInterval=5  — send keepalive every 5s to detect broken connections
@@ -390,6 +395,20 @@ jobs:
           if [ "$FAILED_COUNT" -gt 0 ]; then
             echo "❌ $FAILED_COUNT container(s) not running on Vision Pi"
             echo "vision_healthy=false" >> $GITHUB_OUTPUT
+            echo "$STATUS" | jq -c 'select(.State != "running") | {container: .Name, state: .State}' | while read -r item; do
+              CONTAINER_NAME=$(echo "$item" | jq -r '.container')
+              CONTAINER_STATE=$(echo "$item" | jq -r '.state')
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "$CONTAINER_NAME" \
+                --arg kind "container_status" \
+                --arg severity "critical" \
+                --arg summary "Container is not running" \
+                --arg raw_text "Container state: $CONTAINER_STATE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
+            done
           else
             echo "✅ All Vision Pi containers running"
             echo "vision_healthy=true" >> $GITHUB_OUTPUT
@@ -415,6 +434,20 @@ jobs:
           if [ "$FAILED_COUNT" -gt 0 ]; then
             echo "❌ $FAILED_COUNT container(s) not running on Main Pi"
             echo "main_healthy=false" >> $GITHUB_OUTPUT
+            echo "$STATUS" | jq -c 'select(.State != "running") | {container: .Name, state: .State}' | while read -r item; do
+              CONTAINER_NAME=$(echo "$item" | jq -r '.container')
+              CONTAINER_STATE=$(echo "$item" | jq -r '.state')
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "$CONTAINER_NAME" \
+                --arg kind "container_status" \
+                --arg severity "critical" \
+                --arg summary "Container is not running" \
+                --arg raw_text "Container state: $CONTAINER_STATE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
+            done
           else
             echo "✅ All Main Pi containers running"
             echo "main_healthy=true" >> $GITHUB_OUTPUT
@@ -479,10 +512,21 @@ jobs:
               grep -vE "$EXCLUDE_COMMON" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+              CRITICAL_SAMPLE=$(echo "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ❌ CRITICAL errors found in $container"
               echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
               echo "$CRITICAL" >> $LOGS_FILE
               echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "$container" \
+                --arg kind "critical_log" \
+                --arg severity "critical" \
+                --arg summary "Critical log pattern detected" \
+                --arg raw_text "$CRITICAL_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
             fi
 
             # Проверяем на предупреждения
@@ -495,10 +539,21 @@ jobs:
               grep -vE "$EXCLUDE_WARN_COMMON" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
+              WARNING_SAMPLE=$(echo "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ⚠️  Warnings found in $container"
               echo "=== $container WARNINGS ===" >> $LOGS_FILE
               echo "$WARNINGS" | head -30 >> $LOGS_FILE
               echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "$container" \
+                --arg kind "warning_log" \
+                --arg severity "warning" \
+                --arg summary "Warning log pattern detected" \
+                --arg raw_text "$WARNING_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
             fi
             
             # Если найдены критические ошибки, добавляем полный контекст инициализации
@@ -592,10 +647,21 @@ jobs:
               grep -vE "$EXCLUDE_MAIN" || true)
             if [ ! -z "$CRITICAL" ]; then
               CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+              CRITICAL_SAMPLE=$(echo "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ❌ CRITICAL errors found in $container"
               echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
               echo "$CRITICAL" >> $LOGS_FILE
               echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "$container" \
+                --arg kind "critical_log" \
+                --arg severity "critical" \
+                --arg summary "Critical log pattern detected" \
+                --arg raw_text "$CRITICAL_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
             fi
 
             # Проверяем на предупреждения
@@ -611,10 +677,21 @@ jobs:
               grep -vE "$EXCLUDE_WARN_MAIN" || true)
             if [ ! -z "$WARNINGS" ]; then
               WARNING_COUNT=$((WARNING_COUNT + 1))
+              WARNING_SAMPLE=$(echo "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
               echo "  ⚠️  Warnings found in $container"
               echo "=== $container WARNINGS ===" >> $LOGS_FILE
               echo "$WARNINGS" | head -30 >> $LOGS_FILE
               echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "$container" \
+                --arg kind "warning_log" \
+                --arg severity "warning" \
+                --arg summary "Warning log pattern detected" \
+                --arg raw_text "$WARNING_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
             fi
             
             # Если найдены критические ошибки, добавляем полный контекст инициализации
@@ -653,6 +730,16 @@ jobs:
           if [ -z "$TOPICS" ]; then
             echo "❌ No topics found (ROS2 may not be initialized yet)"
             echo "topics_healthy=false" >> $GITHUB_OUTPUT
+            jq -nc \
+              --arg environment "${{ inputs.environment }}" \
+              --arg scope "vision" \
+              --arg container "oak-d" \
+              --arg kind "topic_check" \
+              --arg severity "critical" \
+              --arg summary "No ROS2 topics found" \
+              --arg raw_text "No ROS2 topics found in oak-d container" \
+              '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+              >> "$VISION_FINDINGS_FILE"
           else
             echo "Topics found:"
             echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
@@ -671,6 +758,16 @@ jobs:
             if [ ! -z "$MISSING_TOPICS" ]; then
               echo "⚠️  Missing expected topics:$MISSING_TOPICS"
               echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "oak-d" \
+                --arg kind "topic_check" \
+                --arg severity "warning" \
+                --arg summary "Expected ROS2 topics missing" \
+                --arg raw_text "Missing expected topics:$MISSING_TOPICS" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
             else
               echo "✅ All expected topics present"
               echo "topics_healthy=true" >> $GITHUB_OUTPUT
@@ -693,6 +790,16 @@ jobs:
           if [ -z "$TOPICS" ]; then
             echo "❌ No topics found (ROS2 may not be initialized yet)"
             echo "topics_healthy=false" >> $GITHUB_OUTPUT
+            jq -nc \
+              --arg environment "${{ inputs.environment }}" \
+              --arg scope "main" \
+              --arg container "rtabmap" \
+              --arg kind "topic_check" \
+              --arg severity "critical" \
+              --arg summary "No ROS2 topics found" \
+              --arg raw_text "No ROS2 topics found in rtabmap container" \
+              '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+              >> "$MAIN_FINDINGS_FILE"
           else
             echo "Topics found:"
             echo "$TOPICS" | head -20
@@ -705,6 +812,16 @@ jobs:
             else
               echo "⚠️  Few topics found ($TOPIC_COUNT topics)"
               echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "rtabmap" \
+                --arg kind "topic_check" \
+                --arg severity "warning" \
+                --arg summary "Too few ROS2 topics found" \
+                --arg raw_text "Few topics found ($TOPIC_COUNT topics)" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
             fi
           fi
 
@@ -716,116 +833,77 @@ jobs:
           (steps.vision_logs.outputs.has_issues == 'true' ||
            steps.main_logs.outputs.has_issues == 'true' ||
            steps.vision_status.outputs.vision_healthy == 'false' ||
-           steps.main_status.outputs.main_healthy == 'false')
+           steps.main_status.outputs.main_healthy == 'false' ||
+           steps.vision_topics.outputs.topics_healthy != 'true' ||
+           steps.main_topics.outputs.topics_healthy != 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🚨 Issues detected, creating GitHub issue..."
+          echo "🚨 Issues detected, checking for new deployment problems..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Подсчет ошибок
-          VISION_CRITICAL=${{ steps.vision_logs.outputs.critical_count || 0 }}
-          VISION_WARNING=${{ steps.vision_logs.outputs.warning_count || 0 }}
-          MAIN_CRITICAL=${{ steps.main_logs.outputs.critical_count || 0 }}
-          MAIN_WARNING=${{ steps.main_logs.outputs.warning_count || 0 }}
+          CANDIDATES_FILE="${RUNNER_TEMP}/deployment_issue_candidates.json"
+          OPEN_ISSUES_FILE="${RUNNER_TEMP}/open_deployment_issues.json"
+          NEW_ISSUES_FILE="${RUNNER_TEMP}/new_deployment_issues.json"
 
-          TOTAL_CRITICAL=$((VISION_CRITICAL + MAIN_CRITICAL))
-          TOTAL_WARNING=$((VISION_WARNING + MAIN_WARNING))
+          python3 .github/scripts/deployment_issue_dedup.py prepare \
+            --findings-file "$VISION_FINDINGS_FILE" \
+            --findings-file "$MAIN_FINDINGS_FILE" \
+            --branch "${{ github.ref_name }}" \
+            --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --timestamp "${{ steps.setup.outputs.timestamp }}" \
+            --vision-pi-ip "${{ env.vision_pi_ip }}" \
+            --main-pi-ip "${{ env.main_pi_ip }}" \
+            > "$CANDIDATES_FILE"
 
-          # Определяем severity и assignee
-          if [ "$TOTAL_CRITICAL" -gt 0 ] || \
-             [ "${{ steps.vision_status.outputs.vision_healthy }}" == "false" ] || \
-             [ "${{ steps.main_status.outputs.main_healthy }}" == "false" ]; then
-            SEVERITY="critical"
-            ASSIGNEE="krikz"
-            LABEL="bug,critical,deployment"
-            TITLE="🚨 Critical Deployment Failure"
-          else
-            SEVERITY="warning"
-            ASSIGNEE="krikz"
-            LABEL="bug,deployment"
-            TITLE="⚠️  Deployment Warnings"
+          gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --label deployment \
+            --limit 200 \
+            --json number,title,body,url \
+            > "$OPEN_ISSUES_FILE"
+
+          python3 .github/scripts/deployment_issue_dedup.py filter \
+            --candidates-file "$CANDIDATES_FILE" \
+            --issues-file "$OPEN_ISSUES_FILE" \
+            > "$NEW_ISSUES_FILE"
+
+          TOTAL_FOUND=$(jq 'length' "$CANDIDATES_FILE")
+          TOTAL_NEW=$(jq 'length' "$NEW_ISSUES_FILE")
+          TOTAL_SKIPPED=$((TOTAL_FOUND - TOTAL_NEW))
+
+          echo "Found deployment problems: $TOTAL_FOUND"
+          echo "Skipped as existing duplicates: $TOTAL_SKIPPED"
+          echo "New issues to create: $TOTAL_NEW"
+
+          if [ "$TOTAL_NEW" -eq 0 ]; then
+            echo "✅ No new deployment issues found; all problems already tracked"
+            exit 0
           fi
 
-          # Формируем описание issue
-          ISSUE_BODY="## Deployment Issue Report
+          jq -c '.[]' "$NEW_ISSUES_FILE" | while read -r issue; do
+            TITLE=$(echo "$issue" | jq -r '.title')
+            ASSIGNEE=$(echo "$issue" | jq -r '.assignee')
+            BODY_FILE=$(mktemp)
+            echo "$issue" | jq -r '.body' > "$BODY_FILE"
 
-          **Branch:** \`${{ github.ref_name }}\`
-          **Environment:** \`${{ inputs.environment }}\`
-          **Timestamp:** ${{ steps.setup.outputs.timestamp }}
-          **Workflow Run:** [#${{ github.run_number }}](${{
-          github.server_url }}/${{ github.repository }}/actions/runs/${{
-          github.run_id }})
+            LABEL_ARGS=()
+            while IFS= read -r label; do
+              LABEL_ARGS+=(--label "$label")
+            done < <(echo "$issue" | jq -r '.labels[]')
 
-          ### Summary
-          - Vision Pi Critical Errors: $VISION_CRITICAL
-          - Vision Pi Warnings: $VISION_WARNING
-          - Main Pi Critical Errors: $MAIN_CRITICAL
-          - Main Pi Warnings: $MAIN_WARNING
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE" \
+              --assignee "$ASSIGNEE" \
+              "${LABEL_ARGS[@]}"
 
-          ### Container Status
-
-          **Vision Pi:**
-          - Healthy: ${{ steps.vision_status.outputs.vision_healthy }}
-          - Failed Containers: ${{ steps.vision_status.outputs.failed_count || 0 }}
-          - Topics Status: ${{ steps.vision_topics.outputs.topics_healthy || 'unknown' }}
-
-          **Main Pi:**
-          - Healthy: ${{ steps.main_status.outputs.main_healthy }}
-          - Failed Containers: ${{ steps.main_status.outputs.failed_count || 0 }}
-          - Topics Status: ${{ steps.main_topics.outputs.topics_healthy || 'unknown' }}
-
-          ### Logs
-
-          Check the workflow logs for detailed information about the errors:
-          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-          ### Recommended Actions
-          "
-
-          if [ "$SEVERITY" == "critical" ]; then
-            ISSUE_BODY="${ISSUE_BODY}
-          1. Check container logs immediately: \`docker logs <container_name>\`
-          2. Verify Docker images were pulled correctly
-          3. Check system resources (CPU, memory, disk)
-          4. Review recent code changes for breaking changes
-          5. Consider rolling back to previous stable version"
-          else
-            ISSUE_BODY="${ISSUE_BODY}
-          1. Review warnings in container logs
-          2. Check if warnings affect functionality
-          3. Monitor system for degraded performance
-          4. Plan fixes for next deployment"
-          fi
-
-          ISSUE_BODY="${ISSUE_BODY}
-
-          ### Quick Commands
-
-          \`\`\`bash
-          # Check Vision Pi status
-          sshpass -p 'open' ssh ros2@${{ env.vision_pi_ip }} 'cd ~/rob_box_project/docker/vision && docker compose ps'
-
-          # Check Main Pi status
-          sshpass -p 'open' ssh ros2@${{ env.main_pi_ip }} 'cd ~/rob_box_project/docker/main && docker compose ps'
-
-          # View logs
-          sshpass -p 'open' ssh ros2@${{ env.vision_pi_ip }} 'docker logs oak-d --tail 50'
-          sshpass -p 'open' ssh ros2@${{ env.main_pi_ip }} 'docker logs rtabmap --tail 50'
-          \`\`\`
-
-          ---
-          *Auto-generated by deployment workflow*"
-
-          # Создаем issue
-          gh issue create \
-            --title "$TITLE: ${{ github.ref_name }} → ${{ inputs.environment }}" \
-            --body "$ISSUE_BODY" \
-            --label "$LABEL" \
-            --assignee "$ASSIGNEE"
-
-          echo "✅ Issue created and assigned to @$ASSIGNEE"
+            rm -f "$BODY_FILE"
+            echo "✅ Created issue: $TITLE"
+          done
 
       # ==================== SUMMARY ====================
 
