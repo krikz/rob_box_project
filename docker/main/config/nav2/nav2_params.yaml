@@ -152,7 +152,9 @@ local_costmap:
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
-        observation_sources: scan
+        # LiDAR остаётся источником clearing, а RTAB-Map depth cloud добавляет
+        # высокие/мягкие препятствия вроде диванов, которые 2D LiDAR может пропускать.
+        observation_sources: scan cloud_obstacles
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -162,6 +164,14 @@ local_costmap:
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+        cloud_obstacles:
+          topic: /rtabmap/cloud_obstacles
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          data_type: "PointCloud2"
+          obstacle_max_range: 3.0
           obstacle_min_range: 0.0
       static_layer:
         map_subscribe_transient_local: true
