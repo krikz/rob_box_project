@@ -51,4 +51,4 @@
     # Loop closure для навигации
     Mem/LaserScanNormalK: "0"  # Отключено для 2D лидара
     RGBD/ProximityPathMaxNeighbors: "10"
-    RGBD/OptimizeFromGraphEnd: "true"
+    RGBD/OptimizeFromGraphEnd: "false"
