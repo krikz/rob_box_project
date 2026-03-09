@@ -39,7 +39,6 @@ INJECTED_PARAMS = """\
                 "Icp/CorrespondenceRatio": "0.05",
                 "Mem/IncrementalMemory": "false",  # Localization mode, don't grow WM online
                 "RGBD/NeighborLinkRefining": "true",
-                "RGBD/OptimizeFromGraphEnd": "true",
                 "RGBD/ProximityBySpace": "true",
                 "RGBD/OptimizeMaxError": "5.0",
                 "Optimizer/Strategy": "1",      # Force g2o, avoid GTSAM localization failures

@@ -11,7 +11,7 @@ def load_module():
     return module
 
 
-def test_patch_injects_optimizer_and_localization_params(tmp_path):
+def test_patch_injects_required_rtabmap_params_without_map_reanchoring(tmp_path):
     module = load_module()
     launch_file = tmp_path / "rtabmap.launch.py"
     launch_file.write_text(
@@ -27,5 +27,5 @@ def test_patch_injects_optimizer_and_localization_params(tmp_path):
 
     patched = launch_file.read_text(encoding="utf-8")
     assert '"Optimizer/Strategy": "1"' in patched
-    assert '"RGBD/OptimizeFromGraphEnd": "true"' in patched
     assert '"Mem/IncrementalMemory": "false"' in patched
+    assert '"RGBD/OptimizeFromGraphEnd": "true"' not in patched
