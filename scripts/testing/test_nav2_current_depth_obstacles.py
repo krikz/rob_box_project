@@ -9,20 +9,13 @@ NAV2_START = REPO_ROOT / "docker/main/scripts/nav2/start_nav2_direct.sh"
 NAV2_DOCKERFILE = REPO_ROOT / "docker/main/nav2/Dockerfile"
 
 
-def test_local_costmap_uses_current_depth_scan_not_rtabmap_cloud():
+def test_local_costmap_uses_scan_only_not_depth_scan_or_rtabmap_cloud():
     config = yaml.safe_load(NAV2_CONFIG.read_text(encoding="utf-8"))
     voxel_layer = config["local_costmap"]["local_costmap"]["ros__parameters"]["voxel_layer"]
 
-    assert voxel_layer["observation_sources"] == "scan depth_scan"
+    assert voxel_layer["observation_sources"] == "scan"
     assert "cloud_obstacles" not in voxel_layer
-
-    depth_scan = voxel_layer["depth_scan"]
-    assert depth_scan["topic"] == "/camera/depth/scan"
-    assert depth_scan["data_type"] == "LaserScan"
-    assert depth_scan["marking"] is True
-    assert depth_scan["clearing"] is False
-    assert depth_scan["obstacle_max_range"] == 1.8
-    assert depth_scan["observation_persistence"] == 0.0
+    assert "depth_scan" not in voxel_layer
 
 
 def test_nav2_start_script_launches_depthimage_to_laserscan():

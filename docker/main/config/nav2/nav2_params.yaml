@@ -142,7 +142,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55  # MUST be >= inscribed_radius (0.451). 0.55 = robot(0.45) + 0.10м запас
+        inflation_radius: 0.50  # MUST be >= inscribed_radius (0.451). 0.50 = robot(0.45) + 0.05м запас
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: true
@@ -152,10 +152,9 @@ local_costmap:
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
-        # Используем только ТЕКУЩИЙ фронтальный depth slice, а не накопленное
-        # облако RTAB-Map. Это даёт препятствия "здесь и сейчас" перед камерой
-        # и не заливает local costmap мусором из map-like cloud_obstacles.
-        observation_sources: scan depth_scan
+        # В local costmap оставляем только LiDAR scan, чтобы исключить stale depth
+        # наблюдения и проверить, исчезнут ли ложные obstacle hits и oscillation.
+        observation_sources: scan
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -166,16 +165,6 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
-        depth_scan:
-          topic: /camera/depth/scan
-          expected_update_rate: 0.3
-          observation_persistence: 0.0
-          max_obstacle_height: 0.8
-          clearing: false
-          marking: true
-          data_type: "LaserScan"
-          obstacle_max_range: 1.8
-          obstacle_min_range: 0.25
       static_layer:
         map_subscribe_transient_local: true
         enabled: false
@@ -218,7 +207,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55  # MUST be >= inscribed_radius (0.451). 0.55 = robot(0.45) + 0.10м запас
+        inflation_radius: 0.50  # MUST be >= inscribed_radius (0.451). 0.50 = robot(0.45) + 0.05м запас
       always_send_full_costmap: true
 
 planner_server:
