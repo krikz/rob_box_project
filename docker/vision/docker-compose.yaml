@@ -10,7 +10,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts/zenoh-router:/scripts:ro
-    entrypoint: ["/bin/bash", "/scripts/start_zenoh_router.sh"]
+    entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
