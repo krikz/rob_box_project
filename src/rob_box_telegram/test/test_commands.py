@@ -51,39 +51,67 @@ class TestTelegramMusicCommands(unittest.IsolatedAsyncioTestCase):
 
         auth_module._allowed_users = {42}
 
-    def _make_update_and_context(self, args):
+    def _make_update_and_context(self, message_text, args=None):
         node = MagicMock()
         node.mcp_bridge.execute_simple = AsyncMock(return_value="ok")
 
         update = MagicMock()
         update.effective_chat.id = 42
         update.message.reply_text = AsyncMock()
+        update.message.text = message_text
 
         context = MagicMock()
-        context.args = args
+        context.args = args or []
         context.bot_data = {"node": node}
         context.user_data = {}
         return update, context, node
 
     async def test_repl_handler_requires_code(self):
-        update, context, node = self._make_update_and_context([])
+        update, context, node = self._make_update_and_context("/repl")
 
         await self.commands.repl_handler(update, context)
 
         node.mcp_bridge.execute_simple.assert_not_called()
         update.message.reply_text.assert_awaited_once_with("Использование: /repl <Renardo/FoxDot код>")
 
-    async def test_repl_handler_sends_code_to_execute_music_code(self):
-        update, context, node = self._make_update_and_context(["p1", ">>", 'pluck([0,2,4])'])
+    async def test_repl_handler_sends_single_line_code(self):
+        update, context, node = self._make_update_and_context("/repl p1 >> pluck([0,2,4])")
         node.mcp_bridge.execute_simple = AsyncMock(return_value="Код выполнен успешно")
 
         await self.commands.repl_handler(update, context)
 
         node.mcp_bridge.execute_simple.assert_awaited_once_with(
             "execute_music_code",
-            {"code": 'p1 >> pluck([0,2,4])'},
+            {"code": "p1 >> pluck([0,2,4])"},
         )
         update.message.reply_text.assert_awaited_once_with("🎵 Код выполнен успешно")
+
+    async def test_repl_handler_preserves_newlines_in_multiline_code(self):
+        """Multiline code must reach the robot with real newlines, not spaces.
+
+        Bug: context.args joins with spaces, breaking # comments into one-liners.
+        Fix: read update.message.text directly to preserve \n.
+        """
+        multiline_code = "Clock.bpm = 83\np1 >> pads((2, 4, 6), amp=0.3)"
+        update, context, node = self._make_update_and_context(f"/repl\n{multiline_code}")
+        node.mcp_bridge.execute_simple = AsyncMock(return_value="Код выполнен успешно")
+
+        await self.commands.repl_handler(update, context)
+
+        node.mcp_bridge.execute_simple.assert_awaited_once_with(
+            "execute_music_code",
+            {"code": multiline_code},
+        )
+
+    async def test_repl_handler_strips_botname_suffix(self):
+        """Handle /repl@robotname format (group chats)."""
+        update, context, node = self._make_update_and_context("/repl@RoBBoxbot p1 >> blip([0,2])")
+        node.mcp_bridge.execute_simple = AsyncMock(return_value="ok")
+
+        await self.commands.repl_handler(update, context)
+
+        code_sent = node.mcp_bridge.execute_simple.call_args[0][1]["code"]
+        self.assertEqual(code_sent, "p1 >> blip([0,2])")
 
     async def test_stopmusic_handler_calls_stop_music(self):
         update, context, node = self._make_update_and_context([])

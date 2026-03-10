@@ -495,8 +495,16 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @authorized
 async def repl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /repl <code> — send Renardo/FoxDot code directly to the robot."""
-    args_text = " ".join(context.args) if context.args else ""
+    """Handle /repl <code> — send Renardo/FoxDot code directly to the robot.
+
+    Uses raw message text to preserve newlines, since context.args splits by whitespace
+    and would collapse multiline code into a single line, breaking Python comments (#).
+    """
+    import re
+
+    raw_text = update.message.text or ""
+    # Strip the command prefix (/repl or /repl@botname) preserving all newlines
+    args_text = re.sub(r"^/repl\S*\s*", "", raw_text, flags=re.IGNORECASE).strip()
     if not args_text:
         await update.message.reply_text("Использование: /repl <Renardo/FoxDot код>")
         return
