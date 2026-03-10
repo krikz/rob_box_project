@@ -18,17 +18,5 @@ echo "[start_rtabmap.sh] Starting in localization mode (always safe default)"
 # Patch rtabmap.launch.py to inject explicit LiDAR-only ROS2 parameters.
 python3 /ros_scripts/patch_rtabmap_launch.py || echo "[start_rtabmap.sh] WARN: patch_rtabmap_launch.py failed"
 
-# AprilTag detections still arrive in camera_color_optical_frame naming.
-# Keep only the RGB optical-frame alias so landmark localization can transform
-# detections into base_footprint, without re-enabling any depth/RGB mapping path.
-echo "[start_rtabmap.sh] Starting static TF publisher: camera_rgb_camera_optical_frame -> camera_color_optical_frame"
-ros2 run tf2_ros static_transform_publisher \
-	0 0 0 0 0 0 1 \
-	camera_rgb_camera_optical_frame \
-	camera_color_optical_frame &
-
-TF_PID=$!
-trap "kill $TF_PID 2>/dev/null" EXIT
-
 echo "[start_rtabmap.sh] Launching with localization:=true: $@"
 exec "$@" "localization:=true"
