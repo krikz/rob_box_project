@@ -98,26 +98,32 @@ class StartMappingTool(MCPTool):
         # 2. Переключить в режим mapping СНАЧАЛА (до LoadDatabase!)
         # LoadDatabase(clear=True) в localization режиме вызывает краш rtabmap
         # (pure virtual method called / SIGABRT)
-        if self.set_mode_mapping_client.service_is_ready():
-            from std_srvs.srv import Empty
-            request = Empty.Request()
-            self.set_mode_mapping_client.call_async(request)
-            self.log_info("Режим mapping активирован")
-        else:
-            self.log_warning("⚠️ RTABMap set_mode service не готов, пропускаем")
+        if not self.set_mode_mapping_client.service_is_ready():
+            return MCPToolResult(success=False, error="RTABMap set_mode_mapping service не готов")
+
+        from std_srvs.srv import Empty
+        request = Empty.Request()
+        future = self.set_mode_mapping_client.call_async(request)
+        if not _wait_future(future, timeout_sec=10.0):
+            return MCPToolResult(success=False, error="Таймаут ожидания set_mode_mapping")
+        self.log_info("Режим mapping активирован")
 
         # 3. Загрузить базу данных (clear=True если новая локация, иначе только reload)
         # Вызывается ПОСЛЕ set_mode_mapping чтобы избежать краша в localization mode
-        if self.load_database_client is not None and self.load_database_client.service_is_ready():
-            from rtabmap_msgs.srv import LoadDatabase  # type: ignore
-            req = LoadDatabase.Request()
-            req.database_path = "/maps/rtabmap.db"
-            req.clear = bool(new_location)
-            self.load_database_client.call_async(req)
-            action = "очищена и перезагружена" if new_location else "перезагружена"
-            self.log_info(f"База данных {action}")
-        else:
-            self.log_warning("⚠️ RTABMap load_database service не готов, пропускаем")
+        if self.load_database_client is None:
+            return MCPToolResult(success=False, error="RTABMap load_database service недоступен")
+        if not self.load_database_client.service_is_ready():
+            return MCPToolResult(success=False, error="RTABMap load_database service не готов")
+
+        from rtabmap_msgs.srv import LoadDatabase  # type: ignore
+        req = LoadDatabase.Request()
+        req.database_path = "/maps/rtabmap.db"
+        req.clear = bool(new_location)
+        future = self.load_database_client.call_async(req)
+        if not _wait_future(future, timeout_sec=20.0):
+            return MCPToolResult(success=False, error="Таймаут ожидания load_database")
+        action = "очищена и перезагружена" if new_location else "перезагружена"
+        self.log_info(f"База данных {action}")
 
         # 4. Создать новую карту в WaypointStore
         map_id = None
