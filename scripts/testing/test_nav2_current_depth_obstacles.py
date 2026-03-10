@@ -18,19 +18,15 @@ def test_local_costmap_uses_scan_only_not_depth_scan_or_rtabmap_cloud():
     assert "depth_scan" not in voxel_layer
 
 
-def test_nav2_start_script_launches_depthimage_to_laserscan():
+def test_nav2_start_script_has_no_camera_or_depth_obstacle_pipeline():
     script = NAV2_START.read_text(encoding="utf-8")
 
-    assert "depthimage_to_laserscan_node" in script
-    assert "depth:=/camera/camera/depth/image_rect_raw" in script
-    assert "depth_camera_info:=/camera/camera/depth/camera_info" in script
-    assert "scan:=/camera/depth/scan" in script
-    assert "scan_height:=40" in script
-    assert "range_min:=0.25" in script
-    assert "range_max:=1.8" in script
+    assert "depthimage_to_laserscan_node" not in script
+    assert "/camera/camera/depth/image_rect_raw" not in script
+    assert "/camera/depth/scan" not in script
 
 
-def test_nav2_image_has_depthimage_to_laserscan_package():
+def test_nav2_image_has_no_depthimage_to_laserscan_package():
     dockerfile = NAV2_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "ros-${ROS_DISTRO}-depthimage-to-laserscan" in dockerfile
+    assert "ros-${ROS_DISTRO}-depthimage-to-laserscan" not in dockerfile

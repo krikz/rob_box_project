@@ -26,6 +26,7 @@ def test_patch_injects_required_rtabmap_params_without_map_reanchoring(tmp_path)
     assert module.patch() is True
 
     patched = launch_file.read_text(encoding="utf-8")
+    assert '"Grid/Sensor": "0"' in patched
     assert '"Optimizer/Strategy": "1"' in patched
     assert '"Mem/IncrementalMemory": "false"' in patched
     assert '"RGBD/OptimizeFromGraphEnd": "true"' not in patched
