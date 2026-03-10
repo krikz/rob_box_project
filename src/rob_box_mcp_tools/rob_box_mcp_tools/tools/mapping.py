@@ -212,8 +212,16 @@ class FinishMappingTool(MCPTool):
         self.mapping_state = mapping_state
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
+        try:
+            from rtabmap_msgs.srv import PublishMap  # type: ignore
+        except ImportError:
+            PublishMap = None
         
         self.set_mode_localization_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_localization")
+        self.publish_map_client = (
+            node.create_client(PublishMap, "/rtabmap/rtabmap/publish_map") if PublishMap is not None else None
+        )
+        self._publish_map_request = PublishMap.Request() if PublishMap is not None else None
 
     @property
     def name(self) -> str:
@@ -259,10 +267,22 @@ class FinishMappingTool(MCPTool):
         if self.set_mode_localization_client.service_is_ready():
             from std_srvs.srv import Empty
             request = Empty.Request()
-            self.set_mode_localization_client.call_async(request)
-            self.log_info("Режим localization активирован")
+            future = self.set_mode_localization_client.call_async(request)
+            if _wait_future(future, timeout_sec=10.0):
+                self.log_info("Режим localization активирован")
+            else:
+                self.log_warning("⚠️ Таймаут ожидания переключения в localization mode")
         else:
             self.log_warning("⚠️ RTABMap localization service не готов")
+
+        if self.publish_map_client is not None and self.publish_map_client.service_is_ready():
+            future = self.publish_map_client.call_async(self._publish_map_request)
+            if _wait_future(future, timeout_sec=15.0):
+                self.log_info("Опубликована occupancy grid карта")
+            else:
+                self.log_warning("⚠️ Таймаут ожидания publish_map")
+        else:
+            self.log_warning("⚠️ RTABMap publish_map service не готов")
 
         # Обновить FSM состояние → localization
         if self.mapping_state is not None:
