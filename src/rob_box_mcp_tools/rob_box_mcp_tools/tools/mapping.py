@@ -13,6 +13,11 @@ mapping.py - Инструменты для управления картогра
 from typing import List, Optional, TYPE_CHECKING
 import threading
 
+try:
+    from rclpy.callback_groups import ReentrantCallbackGroup
+except ImportError:
+    ReentrantCallbackGroup = None  # type: ignore[assignment]
+
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
     from std_srvs.srv import Empty
@@ -29,6 +34,12 @@ def _wait_future(future, timeout_sec: float) -> bool:
     return event.wait(timeout=timeout_sec)
 
 
+def _create_service_client(node, srv_type, srv_name, callback_group):
+    if callback_group is not None:
+        return node.create_client(srv_type, srv_name, callback_group=callback_group)
+    return node.create_client(srv_type, srv_name)
+
+
 class StartMappingTool(MCPTool):
     """Инструмент для начала нового картографирования"""
 
@@ -36,18 +47,25 @@ class StartMappingTool(MCPTool):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.mapping_state = mapping_state
+        self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         
         # Service clients для RTABMap
-        self.backup_client = node.create_client(Empty, "/rtabmap/rtabmap/backup")
+        self.backup_client = _create_service_client(
+            node, Empty, "/rtabmap/rtabmap/backup", self._service_cb_group
+        )
         # LoadDatabase импортируется лениво в execute() — rtabmap_msgs может отсутствовать на Vision Pi
         try:
             from rtabmap_msgs.srv import LoadDatabase  # type: ignore
-            self.load_database_client = node.create_client(LoadDatabase, "/rtabmap/rtabmap/load_database")
+            self.load_database_client = _create_service_client(
+                node, LoadDatabase, "/rtabmap/rtabmap/load_database", self._service_cb_group
+            )
         except ImportError:
             self.load_database_client = None
-        self.set_mode_mapping_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_mapping")
+        self.set_mode_mapping_client = _create_service_client(
+            node, Empty, "/rtabmap/rtabmap/set_mode_mapping", self._service_cb_group
+        )
 
     @property
     def name(self) -> str:
@@ -172,10 +190,13 @@ class ContinueMappingTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         
-        self.set_mode_mapping_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_mapping")
+        self.set_mode_mapping_client = _create_service_client(
+            node, Empty, "/rtabmap/rtabmap/set_mode_mapping", self._service_cb_group
+        )
 
     @property
     def name(self) -> str:
@@ -216,6 +237,7 @@ class FinishMappingTool(MCPTool):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.mapping_state = mapping_state
+        self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
         try:
@@ -223,9 +245,13 @@ class FinishMappingTool(MCPTool):
         except ImportError:
             PublishMap = None
         
-        self.set_mode_localization_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_localization")
+        self.set_mode_localization_client = _create_service_client(
+            node, Empty, "/rtabmap/rtabmap/set_mode_localization", self._service_cb_group
+        )
         self.publish_map_client = (
-            node.create_client(PublishMap, "/rtabmap/rtabmap/publish_map") if PublishMap is not None else None
+            _create_service_client(node, PublishMap, "/rtabmap/rtabmap/publish_map", self._service_cb_group)
+            if PublishMap is not None
+            else None
         )
         self._publish_map_request = PublishMap.Request() if PublishMap is not None else None
 
@@ -310,6 +336,7 @@ class OptimizeMapTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         from std_srvs.srv import Empty
         try:
             from rtabmap_msgs.srv import CleanupLocalGrids, DetectMoreLoopClosures, GlobalBundleAdjustment, PublishMap  # type: ignore
@@ -320,23 +347,33 @@ class OptimizeMapTool(MCPTool):
             PublishMap = None
 
         self.loop_closures_client = (
-            node.create_client(DetectMoreLoopClosures, "/rtabmap/rtabmap/detect_more_loop_closures")
+            _create_service_client(
+                node, DetectMoreLoopClosures, "/rtabmap/rtabmap/detect_more_loop_closures", self._service_cb_group
+            )
             if DetectMoreLoopClosures is not None
             else None
         )
         self.bundle_adjustment_client = (
-            node.create_client(GlobalBundleAdjustment, "/rtabmap/rtabmap/global_bundle_adjustment")
+            _create_service_client(
+                node, GlobalBundleAdjustment, "/rtabmap/rtabmap/global_bundle_adjustment", self._service_cb_group
+            )
             if GlobalBundleAdjustment is not None
             else None
         )
         self.cleanup_client = (
-            node.create_client(CleanupLocalGrids, "/rtabmap/rtabmap/cleanup_local_grids")
+            _create_service_client(
+                node, CleanupLocalGrids, "/rtabmap/rtabmap/cleanup_local_grids", self._service_cb_group
+            )
             if CleanupLocalGrids is not None
             else None
         )
-        self.backup_client = node.create_client(Empty, "/rtabmap/rtabmap/backup")
+        self.backup_client = _create_service_client(
+            node, Empty, "/rtabmap/rtabmap/backup", self._service_cb_group
+        )
         self.publish_map_client = (
-            node.create_client(PublishMap, "/rtabmap/rtabmap/publish_map") if PublishMap is not None else None
+            _create_service_client(node, PublishMap, "/rtabmap/rtabmap/publish_map", self._service_cb_group)
+            if PublishMap is not None
+            else None
         )
 
         self._detect_more_loop_closures_request = DetectMoreLoopClosures.Request() if DetectMoreLoopClosures is not None else None
@@ -449,15 +486,20 @@ class LoadMapTool(MCPTool):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.mapping_state = mapping_state
+        self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         from std_srvs.srv import Empty
 
         # LoadDatabase импортируется лениво — rtabmap_msgs может отсутствовать на Vision Pi
         try:
             from rtabmap_msgs.srv import LoadDatabase  # type: ignore
-            self.load_database_client = node.create_client(LoadDatabase, "/rtabmap/rtabmap/load_database")
+            self.load_database_client = _create_service_client(
+                node, LoadDatabase, "/rtabmap/rtabmap/load_database", self._service_cb_group
+            )
         except ImportError:
             self.load_database_client = None
-        self.set_mode_localization_client = node.create_client(Empty, "/rtabmap/rtabmap/set_mode_localization")
+        self.set_mode_localization_client = _create_service_client(
+            node, Empty, "/rtabmap/rtabmap/set_mode_localization", self._service_cb_group
+        )
 
     @property
     def name(self) -> str:
