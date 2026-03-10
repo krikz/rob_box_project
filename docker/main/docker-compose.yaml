@@ -144,7 +144,7 @@ services:
       - ./scripts:/ros_scripts:ro
       - ./scripts/rtabmap:/scripts:ro
       - ./maps:/maps
-    # === RTAB-Map конфигурация: 3D SLAM (LiDAR ICP + OAK-D RGB-D) ===
+    # === RTAB-Map конфигурация: stable LiDAR SLAM on Main Pi ===
     # Ветка: feature/rtabmap-rgbd-lidar-3d
     #
     # Источники:
@@ -153,23 +153,18 @@ services:
     # 3. Анализ rtabmap.launch.py (строки 45-46)
     #
     # КЛЮЧЕВЫЕ ПАРАМЕТРЫ:
-    # • subscribe_rgbd:=true - брать уже синхронизированный /rgbd_image с Vision Pi
-    # • rgbd_topic:=/rgbd_image - локальная sync RGB+Depth+CameraInfo выполняется в rtabmap-sync
     # • subscribe_scan:=true - включает LaserScan (LiDAR для ICP одометрии и 2D grid)
     # • icp_odometry:=true  - ICP одометрия: лидар → icp_odom (надёжнее visual в коридорах)
     # • odom_guess_frame_id:=odom - wheel odometry как начальный guess для ICP
-    # • Grid/Sensor=2       - occupancy grid из ОБОИХ сенсоров: лидар + depth камера
-    #   Grid/Sensor=0 был только лидар (не видел низкие препятствия)
+    # • Grid/Sensor=0       - occupancy grid только из LiDAR для стабильной карты
     # • Grid/MaxObstacleHeight=1.5 - учитывать препятствия до 1.5м
     # • Grid/MinGroundHeight=-0.1  - фильтровать пол (точки ниже -0.1м от base_footprint)
     # • Reg/Force3DoF=true  - 2D движение (только x, y, yaw)
     # • Reg/Strategy=1      - ICP регистрация для loop closure
     #
     # ТОПИК ПОТОК:
-    #   Vision Pi: OAK-D raw RGB + raw Depth + CameraInfo → rtabmap-sync
-    #              rtabmap-sync → /rgbd_image (локальная sync на Vision Pi)
-    #              Zenoh → Main Pi
-    #   Main Pi:   rtabmap ← /rgbd_image + /scan (LiDAR)
+    #   Main Pi: rtabmap ← /scan (LiDAR)
+    #   OAK-D intentionally excluded from Main Pi mapping until TF/timestamp path is stable again.
     command:
       - /ros_scripts/ros_with_namespace.sh
       - /scripts/start_rtabmap.sh
@@ -177,9 +172,8 @@ services:
       - launch
       - rtabmap_launch
       - rtabmap.launch.py
-      - depth:=true
-      - subscribe_rgbd:=true
-      - rgbd_topic:=/rgbd_image
+      - depth:=false
+      - subscribe_rgbd:=false
       - subscribe_scan:=true
       - scan_topic:=/scan
       - icp_odometry:=true
