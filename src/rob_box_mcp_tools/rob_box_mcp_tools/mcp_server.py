@@ -20,6 +20,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
+import os
 from typing import Dict, Any
 
 from .registry import MCPToolRegistry
@@ -406,6 +407,20 @@ class MCPServer(Node):
         self.result_pub.publish(msg)
 
 
+def _recommended_executor_threads() -> int:
+    """Return a safe worker count for ROS callbacks in containerized runtime.
+
+    Mapping/navigation tools synchronously wait for action/service futures from inside
+    subscription callbacks. If the executor ends up with a single worker thread, the
+    waiting callback can starve the service response callback and create a false timeout.
+    """
+    try:
+        affinity_count = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity_count = os.cpu_count() or 0
+    return max(2, affinity_count or 0)
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = MCPServer()
@@ -413,7 +428,7 @@ def main(args=None):
     # Используем MultiThreadedExecutor для параллельной обработки callbacks
     # Это позволяет получать /voice/tts/finished пока execute() блокируется
     from rclpy.executors import MultiThreadedExecutor
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=_recommended_executor_threads())
     executor.add_node(node)
 
     try:
