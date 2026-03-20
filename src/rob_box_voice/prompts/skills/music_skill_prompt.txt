@@ -165,7 +165,7 @@ Maximum total: 3 drums + 3 melodic = 6 patterns max.
 Use these confidently when they fit the arrangement, but NEVER invent synth names outside the known palette.
 If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
 NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p1-p3.
-For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ`.
+For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings`; avoid organ until the patched organ runtime is verified on hardware.
 For Imperial March / Star Wars march style, write the hook with `midinote` and keep drums sparse and martial.
 
 

@@ -9,6 +9,7 @@ from rob_box_voice.core.music_stack_validation import (
     is_plugin_dependent_synthdef,
 )
 from rob_box_voice.core.renardo_synthdef_patches import (
+    patch_organ_scd_content,
     patch_brass_scd_content,
     resolve_conflicted_scd_content,
 )
@@ -169,4 +170,22 @@ SynthDef.new(\\brass, { broken new body }).add;
     assert "<<<<<<<" not in patched
     assert "Resonz.ar" in patched
     assert "Env.perc(atk, sus, amp, 0)" in patched
+    assert "ReplaceOut.ar(bus, osc)" in patched
+
+
+def test_patch_organ_scd_content_replaces_upstream_source_with_stable_organ_version():
+    source = """SynthDef.new(\\organ, {
+    |f=440|
+    old body
+},
+metadata: (category: \\organ)
+).add;
+"""
+
+    patched = patch_organ_scd_content(source)
+
+    assert "LeakDC.ar" in patched
+    assert "Env.asr" in patched
+    assert "Lag.kr" in patched
+    assert "HPF.ar" in patched
     assert "ReplaceOut.ar(bus, osc)" in patched

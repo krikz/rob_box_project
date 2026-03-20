@@ -169,7 +169,7 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 - ⚠️ For Stranger Things, use one execute_music_code pass for the core arrangement. Do not add a second atmospheric pass on top.
 - ⚠️ For Stranger Things, stay within d1 and p1-p3. Do not use p4 or d4 for this track.
 - ⚠️ For Stranger Things, keep the motoric hook at dur=0.25 for bass and arp; slower values lose the reference feel.
- - ⚠️ For Imperial March / Star Wars march style, prefer `brass + marchstrings + organ or strings` for the main playable arrangement; keep `imperialbrass` as an optional darker color, not the default lead.
+ - ⚠️ For Imperial March / Star Wars march style, prefer `brass + marchstrings + strings` for the main playable arrangement; prefer strings over organ until the patched organ runtime is verified, and keep `imperialbrass` as an optional darker color, not the default lead.
  - ⚠️ For Imperial March, the first phrase alone is incomplete. In the first `execute_music_code` call include at least the opening motif plus a bridge or B answer phrase.
  - ⚠️ For Imperial March, keep the recognisable form audible: opening motif -> bridge -> answer phrase. Do not stop after the first hook.
  - ⚠️ For Imperial March, use one execute_music_code pass for the canonical arrangement. Do not use Clock.future for staged continuation.
