@@ -628,7 +628,7 @@ Correct layering example (with proper balance + sidechain + swing):
 🎵 IMPERIAL MARCH (Star Wars):
    Core facts: G minor, march feel, 4/4, usually 100-116 BPM, hard accents on beat 1.
    If user says "Star Wars", "штурмовики", "Дарт Вейдер", "имперский марш":
-   ✅ Think SC-only palette first: `imperialbrass` for lead, `marchstrings` for low support, `strings` or `organ` for dark sustain.
+   ✅ Think SC-only palette first: `brass` for the main lead, `marchstrings` for low support, `organ` or `strings` for dark sustain. Use `imperialbrass` only as an optional darker color, not the default lead.
    ✅ Use `midinote` for the recognisable hook and response phrases. Random PRand melody is forbidden here.
    ✅ Keep drums sparse and martial, not club-oriented.
    ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
@@ -660,13 +660,14 @@ Correct layering example (with proper balance + sidechain + swing):
    Canonical playable arrangement (use this shape for normal play requests, 25-45 sec):
    Clock.bpm = 108; Root.default = "G"; Scale.default = "minor"
    d1 >> play("X...X..o", dur=0.5, sample=1, amp=0.2, room=0.08)
-   p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67],
-                       dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,2],
-                       amp=0.54, sus=0.5, room=0.12, lpf=1900)
+   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67,70,76,75,74,70,66,63,70,67],
+               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
+               amp=0.5, sus=0.46, room=0.1, lpf=1750)
    p2 >> marchstrings(midinote=[43,43,43,43,39,39,39,39,43,43,46,46],
                       dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.22, sus=1.1, lpf=1200)
    p3 >> organ(midinote=[43,46,50], dur=8, amp=0.09, sus=6, room=0.22)
    ⚠️ Melody is the star — if you add bass/drums, keep them quieter than the march motif.
+   ⚠️ The canonical phrase must include the B-answer tail `76,75,74,70,66,63,70,67`; stopping before that still sounds incomplete.
 
    Extended / concert-like variant:
    - Use 3 voices max: melody + lower harmony / bass + light march drums.

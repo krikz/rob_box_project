@@ -150,6 +150,8 @@ def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
     assert "do not use clock.future" in content.lower()
     assert "do not use p4 or d4" in content.lower() or "stay within d1 and p1-p3" in content.lower()
+    assert "76,75,74,70,66,63,70,67" in content.replace(" ", "")
+    assert "brass" in content.lower()
 
 
 def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
@@ -175,3 +177,5 @@ def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
     assert "do not use clock.future" in content.lower()
     assert "do not use p4 or d4" in content.lower() or "stay within d1 and p1-p3" in content.lower()
+    assert "76,75,74,70,66,63,70,67" in content.replace(" ", "")
+    assert "brass" in content.lower()
