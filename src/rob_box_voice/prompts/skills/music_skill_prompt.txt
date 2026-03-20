@@ -44,6 +44,9 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
   ✅ NEVER use `spack=1` with `PRand(range(22))` or large random ranges!
      Always use specific known sample indices: sample=P[0,1,2,3] (max 4 variants)
 
+  ✅ NEVER use `play("k", ...)` or any `spack=1` atmospheric layer unless the user explicitly asks for birds, animals, sea-gulls, frogs, nature FX, or weird samples.
+     For normal ambience use synth layers like `space`, `strings`, `pads`, `ambi`, `bell` instead of random sample-pack FX.
+
   ✅ NEVER use `harp` synth — it does NOT exist in Renardo!
      ✅ Use marimba, bell, kalimba for harp-like sounds.
 
@@ -161,6 +164,7 @@ Maximum total: 3 drums + 3 melodic = 6 patterns max.
 ✅ RUNTIME-VALIDATED synths for this deployment: wobblebass, strings, brass, organ.
 Use these confidently when they fit the arrangement, but NEVER invent synth names outside the known palette.
 If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
+NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p1-p3.
 
 
 🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):

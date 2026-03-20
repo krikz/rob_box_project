@@ -33,13 +33,9 @@ SystemClock.sched(3.0, {
     } {
         startupSynths.do({ |name|
             var path = renardoSynthDir ++ "/" ++ name ++ ".scd";
-            if(PathName.new(path).exists) {
-                ("Preloading SynthDef: " ++ name).postln;
-                path.load;
-                ("SynthDef preload ok: " ++ name).postln;
-            } {
-                ("SynthDef source missing: " ++ name).postln;
-            };
+            ("Preloading SynthDef: " ++ name).postln;
+            path.load;
+            ("SynthDef preload ok: " ++ name).postln;
         });
     };
     nil;
