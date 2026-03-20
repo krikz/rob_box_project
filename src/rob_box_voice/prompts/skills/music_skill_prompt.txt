@@ -712,17 +712,18 @@ Correct layering example (with proper balance + sidechain + swing):
                dur=[0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,2],
                amp=0.65, room=0.2)
 
-🎵 STRANGER THINGS (Intro Theme — Hawkins):
+🎵 Stranger Things (Intro Theme — Hawkins):
    Clock.bpm = 83; Root.default = "C"; Scale.default = "major"
-   d1 >> play("X-X---", dur=0.5, sample=2, amp=0.25)                      # сердцебиение: два удара + пауза
-   p1 >> supersawlead(midinote=[48,52,55,59,62,59,55,52], dur=0.5, amp=0.24,
-                      sus=0.45, lpf=linvar([280,1400],[16,0]), room=0.35)  # основной ретро-arp/lead
+   p1 >> strangerpulsepad(midinote=[52,55,59], dur=8, amp=0.18, sus=8, room=0.8,
+                          vib=0.1, lpf=1200)                                 # opening pad должен входить ПЕРВЫМ
+   d1 >> play("X-X---", dur=0.5, sample=2, amp=0.22)                       # delayed heartbeat, не превращай в dance groove
    p2 >> retrobass(midinote=[36,38,40,42,43,42,40,38], dur=1, amp=0.28,
-                   sus=0.8, lpf=linvar([150,900],[24,0]))                   # пульсирующий synth bass
-   p3 >> warmpad(midinote=[52,55,59], dur=8, amp=0.18, sus=8, room=0.75,
-                 vib=0.12, lpf=1600)                                        # тёплый opening pad
-   ⚠️ Для этого референса думай сначала `warmpad + retrobass + supersawlead`, а НЕ `space + dub`.
-   ⚠️ Сердцебиение "X-X---" dur=0.5 при BPM=83 — КРИТИЧНО для характера!
+                   sus=0.85, lpf=linvar([140,820],[24,0]))                   # fixed bass ostinato
+   p3 >> strangerarp(midinote=[48,52,55,59,62,59,55,52], dur=0.5, amp=0.23,
+                     sus=0.42, lpf=linvar([260,1500],[16,0]), room=0.3)      # reuse the same pitch sequence above the bass
+   ⚠️ Для этого референса думай сначала `strangerpulsepad + retrobass + strangerarp + strangerbrass`, а `warmpad + supersawlead` оставляй как fallback.
+   ⚠️ Структура обязательна: opening pad → heartbeat → fixed bass ostinato → arp hook → sparse strangerbrass/brass/flute accents.
+   ⚠️ Bass и arp должны использовать детерминированный паттерн, а не PRand. Сердцебиение `X-X---` при BPM=83 — КРИТИЧНО для характера!
 
 �🎤 VOCAL RULE:
 ✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!

@@ -41,6 +41,14 @@ def test_foxdot_init_preloads_imperial_march_sc_only_custom_synthdefs() -> None:
     assert '"marchstrings"' in content
 
 
+def test_foxdot_init_preloads_expanded_stranger_things_sc_only_custom_synthdefs() -> None:
+    content = FOXDOT_INIT_PATH.read_text(encoding="utf-8")
+
+    assert '"strangerpulsepad"' in content
+    assert '"strangerarp"' in content
+    assert '"strangerbrass"' in content
+
+
 def test_start_voice_assistant_validates_pianovel_startup_health() -> None:
     content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
 
@@ -62,12 +70,53 @@ def test_start_voice_assistant_validates_imperial_march_sc_only_custom_synthdefs
     assert "--critical-synth marchstrings" in content
 
 
+def test_start_voice_assistant_validates_expanded_stranger_things_sc_only_custom_synthdefs() -> None:
+    content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
+
+    assert "--critical-synth strangerpulsepad" in content
+    assert "--critical-synth strangerarp" in content
+    assert "--critical-synth strangerbrass" in content
+
+
 def test_sc_only_custom_synthdef_files_exist_for_repo_owned_palette() -> None:
-    for synth_name in ("warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings"):
+    for synth_name in (
+        "warmpad",
+        "retrobass",
+        "supersawlead",
+        "imperialbrass",
+        "marchstrings",
+        "strangerpulsepad",
+        "strangerarp",
+        "strangerbrass",
+    ):
         synth_path = CUSTOM_SYNTHDEF_DIR / f"{synth_name}.scd"
         assert synth_path.exists()
         content = synth_path.read_text(encoding="utf-8")
         assert f"SynthDef.new(\\{synth_name}" in content
+
+
+def test_master_prompt_contains_stranger_things_structure_guidance() -> None:
+    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "Stranger Things" in content
+    assert "strangerpulsepad" in content
+    assert "strangerarp" in content
+    assert "strangerbrass" in content
+    assert "heartbeat" in content.lower()
+    assert "fixed bass ostinato" in content.lower() or "deterministic bass ostinato" in content.lower()
+    assert "same pitch sequence" in content.lower() or "reuse the same pitch sequence" in content.lower()
+
+
+def test_music_skill_prompt_contains_stranger_things_structure_guidance() -> None:
+    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "Stranger Things" in content
+    assert "strangerpulsepad" in content
+    assert "strangerarp" in content
+    assert "strangerbrass" in content
+    assert "heartbeat" in content.lower()
+    assert "fixed bass ostinato" in content.lower() or "deterministic bass ostinato" in content.lower()
+    assert "same pitch sequence" in content.lower() or "reuse the same pitch sequence" in content.lower()
 
 
 def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:

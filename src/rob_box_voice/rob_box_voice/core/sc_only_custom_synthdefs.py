@@ -6,7 +6,16 @@ from importlib import import_module
 from typing import Any
 
 
-CUSTOM_SC_ONLY_SYNTH_NAMES = ("warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings")
+CUSTOM_SC_ONLY_SYNTH_NAMES = (
+    "warmpad",
+    "retrobass",
+    "supersawlead",
+    "imperialbrass",
+    "marchstrings",
+    "strangerpulsepad",
+    "strangerarp",
+    "strangerbrass",
+)
 
 
 def _resolve_synthdef_factory(runtime_module: Any, runtime_context: dict[str, Any]) -> Any:

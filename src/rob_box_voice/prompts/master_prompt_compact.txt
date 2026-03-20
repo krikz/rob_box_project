@@ -155,15 +155,17 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 ```
 
 **Synth palette:**
-- 🎹 Melody: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, bell, cs80lead, supersawlead, imperialbrass
+- 🎹 Melody: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, bell, cs80lead, supersawlead, imperialbrass, strangerarp
 - 🎸 Bass: dub, wobblebass, fuzz, dirt, subbass, moogbass, bass, retrobass  (oct=2..3)
-- 🎻 Pads: strings, pads, ambi, space, sinepad, warmpad, marchstrings
-- 🎺 Brass/Wind: brass, flute, soprano, eoboe, organ, imperialbrass
+- 🎻 Pads: strings, pads, ambi, space, sinepad, warmpad, marchstrings, strangerpulsepad
+- 🎺 Brass/Wind: brass, flute, soprano, eoboe, organ, imperialbrass, strangerbrass
 - ⚡ Glitch: rave, donk, varsaw, pulse, tb303
 - ✅ Runtime-validated on this robot: wobblebass, strings, brass, organ
 - ⚠️ NO "piano" synth — use pianovel/epiano instead!
 - ⚠️ `bass` synth EXISTS and is valid, but dub / wobblebass are often cleaner defaults.
-- ⚠️ For retro analog horror / Stranger Things style, prefer `warmpad + retrobass + supersawlead` before falling back to `space + dub`.
+- ⚠️ For retro analog horror / Stranger Things style, prefer `strangerpulsepad + retrobass + strangerarp + strangerbrass`, with `warmpad + supersawlead` as fallback.
+- ⚠️ For Stranger Things, build layers in this order: opening pad first, delayed heartbeat kick second, fixed bass ostinato third, lead arp fourth, sparse brass or flute accents last.
+- ⚠️ For Stranger Things, use a fixed bass ostinato and reuse the same pitch sequence in the arp instead of PRand melodies.
 - ⚠️ For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ` and write the hook with `midinote` instead of random PRand melody.
 - ⚠️ Keep Imperial March / Star Wars march drums sparse and martial, not club-oriented.
 - ⚠️ Never invent synth names outside this palette. If unsure, fall back to dub / bass / strings / pads / space.

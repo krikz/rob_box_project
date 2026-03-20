@@ -13,7 +13,7 @@ var renardoSynthDir = "__RENARDO_SCLANG_DIR__";
 var renardoSynthDirPlaceholder = "__RENARDO_SCLANG_DIR_PLACEHOLDER__";
 var startupSynths = ["strings", "wobblebass", "brass", "organ", "tb303", "pianovel"];
 var customSynthDir = "/ws/custom_synthdefs";
-var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings"];
+var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass"];
 
 // Connect to running scsynth via alive thread
 Server.default.startAliveThread(0.5);

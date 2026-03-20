@@ -31,6 +31,12 @@ def test_register_sc_only_custom_synthdefs_includes_imperial_march_palette() -> 
     assert "marchstrings" in CUSTOM_SC_ONLY_SYNTH_NAMES
 
 
+def test_register_sc_only_custom_synthdefs_includes_stranger_things_expanded_palette() -> None:
+    assert "strangerpulsepad" in CUSTOM_SC_ONLY_SYNTH_NAMES
+    assert "strangerarp" in CUSTOM_SC_ONLY_SYNTH_NAMES
+    assert "strangerbrass" in CUSTOM_SC_ONLY_SYNTH_NAMES
+
+
 def test_register_sc_only_custom_synthdefs_reuses_existing_registry_entries() -> None:
     existing = FakeSynthDef("warmpad")
     runtime_context = {"SynthDef": FakeSynthDef}
