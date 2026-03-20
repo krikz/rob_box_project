@@ -36,6 +36,8 @@ def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:
     assert "NEVER use d4, d5, p4, p5" in content
     assert 'NEVER use `play("k"' in content or 'NEVER use "k"' in content
     assert "spack=1" in content
+    assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
+    assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
 
 
 def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
@@ -44,3 +46,5 @@ def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> No
     assert "NEVER use d4, d5, p4, p5" in content
     assert 'NEVER use `play("k"' in content or 'NEVER use "k"' in content
     assert "spack=1" in content
+    assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
+    assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content

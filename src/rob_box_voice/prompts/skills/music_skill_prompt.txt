@@ -320,6 +320,8 @@ If search_samples("snare") returned:  d1 >> play("i", sample=2)
    For uppercase "X" (upper/ folder) use: search_samples("kick", case="upper")
    Lowercase "x" and uppercase "X" = DIFFERENT FOLDERS = different sounds!
    ✅ Recommended for kick: search_samples("kick", case="upper") → play("X.X.X.X.", ...)
+⚠️ NEVER invent sample letters like "A", "B", "Q" or any other folder name you did not get from search_samples().
+   If you want a safe drum groove without searching, stay with `X`, `o`, `-` only.
 
 🚫 RULE #2 — NO PLAYER ALIASES (NameError: name '...' is not defined):
 Allowed player names: d1-d9 (drums), p1-p9 (synth), s1-s9 (sample), l1-l9 (loop)
