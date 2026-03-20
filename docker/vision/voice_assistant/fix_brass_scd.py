@@ -1,43 +1,32 @@
 #!/usr/bin/env python3
-"""Patch brass.scd in renardo_lib: resolve git merge conflict markers.
+"""Patch broken Renardo SynthDef sources shipped in the published package."""
 
-The published renardo_lib pip package contains unresolved git merge conflict
-markers in brass.scd, which cause 'syntax error, unexpected BINOP' in sclang
-when compiling the SynthDef.
+from __future__ import annotations
 
-We keep the newer version (03b34654) with the 'atk' parameter, which only uses
-standard SuperCollider UGens (no sc3-plugins required for this specific synth).
-"""
+import sys
+from pathlib import Path
 
-import pathlib
 
-path = pathlib.Path(
-    "/usr/local/lib/python3.10/dist-packages/renardo_lib"
-    "/SynthDefManagement/sclang_code/scsynth/brass.scd"
-)
+def main() -> int:
+    workspace = Path("/ws")
+    if str(workspace / "src" / "rob_box_voice") not in sys.path:
+        sys.path.insert(0, str(workspace / "src" / "rob_box_voice"))
 
-content = path.read_text()
+    import renardo_lib
 
-if "<<<<<<<" not in content:
-    print("brass.scd: OK, no merge conflict markers found")
-else:
-    fixed = (
-        "SynthDef.new(\\brass, {\n"
-        "        |vib=0, rate=0.3, sus=1, fmod=0, bus=0, atk=0.01, amp=1, freq=0, pan=0|\n"
-        "        var osc, env;\n"
-        "        freq = In.kr(bus, 1);\n"
-        "        freq = [freq, freq + fmod];\n"
-        "        rate = Lag.kr(freq, rate);\n"
-        "        osc = (Saw.ar(rate, 0.4) + Saw.ar((rate + LFNoise2.ar(1).range(0.5, 1.1)), 0.4));\n"
-        "        osc = (osc + Resonz.ar(osc, (freq * XLine.ar(1, 5, 0.13)), 1));\n"
-        "        osc = BPF.ar(osc, (freq * 2.5), 0.3);\n"
-        "        osc = RLPF.ar(osc, 1300, 0.78);\n"
-        "        env = EnvGen.ar(Env.perc(atk, sus, amp, 0), doneAction: 0);\n"
-        "        osc = (osc * env);\n"
-        "        osc = Mix(osc) * 0.5;\n"
-        "        osc = Pan2.ar(osc, pan);\n"
-        "        ReplaceOut.ar(bus, osc)\n"
-        "}).add;\n"
-    )
-    path.write_text(fixed)
-    print("brass.scd: merge conflict markers removed, fixes applied")
+    from rob_box_voice.core.renardo_synthdef_patches import apply_renardo_synthdef_patches
+
+    sclang_dir = Path(renardo_lib.__file__).resolve().parent / "SynthDefManagement" / "sclang_code"
+    if not sclang_dir.exists():
+        raise FileNotFoundError(f"Renardo sclang_code dir not found: {sclang_dir}")
+
+    patched_files = apply_renardo_synthdef_patches(sclang_dir)
+    if patched_files:
+        print(f"patched SynthDefs: {', '.join(patched_files)}")
+    else:
+        print("no SynthDef patches required")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

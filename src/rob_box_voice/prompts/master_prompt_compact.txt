@@ -160,8 +160,10 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 - 🎻 Pads: strings, pads, ambi, space, sinepad
 - 🎺 Brass/Wind: brass, flute, soprano, eoboe, organ
 - ⚡ Glitch: rave, donk, varsaw, pulse, tb303
+- ✅ Runtime-validated on this robot: wobblebass, strings, brass, organ, tb303
 - ⚠️ NO "piano" synth — use pianovel/epiano instead!
 - ⚠️ `bass` synth EXISTS and is valid, but dub / wobblebass are often cleaner defaults.
+- ⚠️ Never invent synth names outside this palette. If unsure, fall back to dub / bass / strings / pads / space.
 
 **Volume balance:**
 - Melody synth: amp=0.5-0.7 | Bass synth: amp=0.3-0.4 | Pads: amp=0.2-0.3
