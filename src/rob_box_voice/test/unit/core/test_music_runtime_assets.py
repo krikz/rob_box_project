@@ -34,6 +34,13 @@ def test_foxdot_init_preloads_sc_only_custom_synthdefs_for_stranger_things_palet
     assert '/ws/custom_synthdefs' in content
 
 
+def test_foxdot_init_preloads_imperial_march_sc_only_custom_synthdefs() -> None:
+    content = FOXDOT_INIT_PATH.read_text(encoding="utf-8")
+
+    assert '"imperialbrass"' in content
+    assert '"marchstrings"' in content
+
+
 def test_start_voice_assistant_validates_pianovel_startup_health() -> None:
     content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
 
@@ -48,8 +55,15 @@ def test_start_voice_assistant_validates_sc_only_custom_synthdefs_startup_health
     assert "--critical-synth supersawlead" in content
 
 
+def test_start_voice_assistant_validates_imperial_march_sc_only_custom_synthdefs() -> None:
+    content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
+
+    assert "--critical-synth imperialbrass" in content
+    assert "--critical-synth marchstrings" in content
+
+
 def test_sc_only_custom_synthdef_files_exist_for_repo_owned_palette() -> None:
-    for synth_name in ("warmpad", "retrobass", "supersawlead"):
+    for synth_name in ("warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings"):
         synth_path = CUSTOM_SYNTHDEF_DIR / f"{synth_name}.scd"
         assert synth_path.exists()
         content = synth_path.read_text(encoding="utf-8")
@@ -66,6 +80,15 @@ def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:
     assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
 
 
+def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
+    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "Imperial March" in content or "Star Wars march" in content
+    assert "imperialbrass" in content
+    assert "marchstrings" in content
+    assert "midinote" in content
+
+
 def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
     content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -74,3 +97,12 @@ def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> No
     assert "spack=1" in content
     assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
     assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
+
+
+def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
+    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "Imperial March" in content or "Star Wars march" in content
+    assert "imperialbrass" in content
+    assert "marchstrings" in content
+    assert "midinote" in content

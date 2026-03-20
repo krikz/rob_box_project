@@ -25,6 +25,11 @@ def test_register_sc_only_custom_synthdefs_exposes_names_in_runtime_context() ->
         assert runtime_context[name].name == name
 
 
+def test_register_sc_only_custom_synthdefs_includes_imperial_march_palette() -> None:
+    assert "imperialbrass" in CUSTOM_SC_ONLY_SYNTH_NAMES
+    assert "marchstrings" in CUSTOM_SC_ONLY_SYNTH_NAMES
+
+
 def test_register_sc_only_custom_synthdefs_reuses_existing_registry_entries() -> None:
     existing = FakeSynthDef("warmpad")
     runtime_context = {"SynthDef": FakeSynthDef}

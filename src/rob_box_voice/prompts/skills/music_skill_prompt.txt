@@ -155,9 +155,9 @@ p1 >> karp(midinote=[59,54,55,50,54,55,47,54,55], dur=[4,1.5,2.5,4,1.5,2.5,4,1.5
 p2 >> feel(PRand([0,2,4,3,5]), dur=var([0.5,1],[8,8]), oct=5, amp=0.58, room=0.3)
 ```
 
-⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt (ROTATE each transition!)
-⚠️ LEAD: varsaw / supersawlead / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello (ROTATE!)
-⚠️ PADS: warmpad / space / strings / faim / sinepad / mhpad / ecello / viola / ambi (ROTATE!)
+⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt / retrobass (ROTATE each transition!)
+⚠️ LEAD: varsaw / supersawlead / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello / imperialbrass (ROTATE!)
+⚠️ PADS: warmpad / space / strings / faim / sinepad / mhpad / ecello / viola / ambi / marchstrings (ROTATE!)
 ⚠️ SCALE: phrygian / dorian / mixolydian / lydian / minorPentatonic / majorPentatonic / minor (ROTATE!)
 Maximum total: 3 drums + 3 melodic = 6 patterns max.
 
@@ -165,6 +165,8 @@ Maximum total: 3 drums + 3 melodic = 6 patterns max.
 Use these confidently when they fit the arrangement, but NEVER invent synth names outside the known palette.
 If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
 NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p1-p3.
+For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ`.
+For Imperial March / Star Wars march style, write the hook with `midinote` and keep drums sparse and martial.
 
 
 🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):
@@ -626,6 +628,9 @@ Correct layering example (with proper balance + sidechain + swing):
 🎵 IMPERIAL MARCH (Star Wars):
    Core facts: G minor, march feel, 4/4, usually 100-116 BPM, hard accents on beat 1.
    If user says "Star Wars", "штурмовики", "Дарт Вейдер", "имперский марш":
+   ✅ Think SC-only palette first: `imperialbrass` for lead, `marchstrings` for low support, `strings` or `organ` for dark sustain.
+   ✅ Use `midinote` for the recognisable hook and response phrases. Random PRand melody is forbidden here.
+   ✅ Keep drums sparse and martial, not club-oriented.
    ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
    ✅ Use recognisable FORM: A (opening motif) → A' (repeat / intensified repeat)
       → chromatic bridge → B answer phrase.
@@ -633,28 +638,29 @@ Correct layering example (with proper balance + sidechain + swing):
    ✅ For cinematic / extended versions: start arco, optional pizzicato middle, then return to arco.
 
    Opening motif A (recognisable hook):
-   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67],
-               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2],
-               amp=0.68, sus=0.42, room=0.2)
+   p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67],
+                       dur=[1,1,1,0.75,0.25,1,0.75,0.25,2],
+                       amp=0.64, sus=0.45, room=0.16, lpf=2200)
 
    Chromatic bridge (continue the tune instead of restarting A again):
-   p1 >> brass(midinote=[70,75,74,73,72,71,72,65],
-               dur=[0.5,1,1,0.25,0.25,0.25,1,1],
-               amp=0.66, sus=0.38, room=0.2)
+   p1 >> imperialbrass(midinote=[70,75,74,73,72,71,72,65],
+                       dur=[0.5,1,1,0.25,0.25,0.25,1,1],
+                       amp=0.62, sus=0.42, room=0.16, lpf=2300)
 
    B answer phrase (second idea / response):
-   p1 >> brass(midinote=[66,63,66,70,67,70,76,75,74,70,66,63,70,67],
-               dur=[1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
-               amp=0.68, sus=0.4, room=0.2)
+   p1 >> imperialbrass(midinote=[66,63,66,70,67,70,76,75,74,70,66,63,70,67],
+                       dur=[1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
+                       amp=0.64, sus=0.42, room=0.16, lpf=2250)
 
    DJ recognisable arrangement (30-60 sec):
    Clock.bpm = 108; Root.default = "G"; Scale.default = "minor"
-   d1 >> play("X.X.X.X.", sample=1, amp=0.24, room=0.1)
-   d2 >> play("..o...o.", sample=3, amp=0.14, room=0.1)
-   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67],
-               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,2],
-               amp=0.7, sus=0.4, room=0.2)
-   p2 >> dub([0,0,-2,3], dur=2, oct=3, amp=0.32, chop=var([8,0],[0.5,0.5]))
+   d1 >> play("X...X..o", dur=0.5, sample=1, amp=0.2, room=0.08)
+   p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67],
+                       dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,2],
+                       amp=0.65, sus=0.42, room=0.16, lpf=2300)
+   p2 >> marchstrings(midinote=[43,43,43,43,39,39,39,39,43,43,46,46],
+                      dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.3, sus=0.95, lpf=1350)
+   p3 >> organ(midinote=[43,46,50], dur=8, amp=0.12, sus=6, room=0.28)
    ⚠️ Melody is the star — if you add bass/drums, keep them quieter than the march motif.
 
    Extended / concert-like variant:

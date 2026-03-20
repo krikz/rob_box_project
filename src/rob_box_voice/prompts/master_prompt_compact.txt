@@ -155,15 +155,17 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 ```
 
 **Synth palette:**
-- 🎹 Melody: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, bell, cs80lead, supersawlead
+- 🎹 Melody: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, bell, cs80lead, supersawlead, imperialbrass
 - 🎸 Bass: dub, wobblebass, fuzz, dirt, subbass, moogbass, bass, retrobass  (oct=2..3)
-- 🎻 Pads: strings, pads, ambi, space, sinepad, warmpad
-- 🎺 Brass/Wind: brass, flute, soprano, eoboe, organ
+- 🎻 Pads: strings, pads, ambi, space, sinepad, warmpad, marchstrings
+- 🎺 Brass/Wind: brass, flute, soprano, eoboe, organ, imperialbrass
 - ⚡ Glitch: rave, donk, varsaw, pulse, tb303
 - ✅ Runtime-validated on this robot: wobblebass, strings, brass, organ
 - ⚠️ NO "piano" synth — use pianovel/epiano instead!
 - ⚠️ `bass` synth EXISTS and is valid, but dub / wobblebass are often cleaner defaults.
 - ⚠️ For retro analog horror / Stranger Things style, prefer `warmpad + retrobass + supersawlead` before falling back to `space + dub`.
+- ⚠️ For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ` and write the hook with `midinote` instead of random PRand melody.
+- ⚠️ Keep Imperial March / Star Wars march drums sparse and martial, not club-oriented.
 - ⚠️ Never invent synth names outside this palette. If unsure, fall back to dub / bass / strings / pads / space.
 - ⚠️ NEVER use d4, d5, p4, p5 for generated music on this robot. Stay within d1-d3 and p1-p3.
 - ⚠️ NEVER use `play("k", ...)` or random `spack=1` atmospheric samples unless the user explicitly asks for birds, frogs, sea-gulls, nature FX, or weird sample textures.

@@ -95,7 +95,9 @@ if command -v sclang > /dev/null 2>&1; then
             --critical-synth pianovel \
             --critical-synth warmpad \
             --critical-synth retrobass \
-            --critical-synth supersawlead; then
+            --critical-synth supersawlead \
+            --critical-synth imperialbrass \
+            --critical-synth marchstrings; then
             echo "✓ Music stack validation passed"
         else
             echo "⚠ Music stack validation reported degraded runtime; voice assistant continues in reduced music mode"

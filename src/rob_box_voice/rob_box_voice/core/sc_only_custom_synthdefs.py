@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-CUSTOM_SC_ONLY_SYNTH_NAMES = ("warmpad", "retrobass", "supersawlead")
+CUSTOM_SC_ONLY_SYNTH_NAMES = ("warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings")
 
 
 def register_sc_only_custom_synthdefs(runtime_module: Any, runtime_context: dict[str, Any]) -> tuple[str, ...]:
