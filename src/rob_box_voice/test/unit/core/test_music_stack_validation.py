@@ -11,6 +11,8 @@ from rob_box_voice.core.music_stack_validation import (
 from rob_box_voice.core.renardo_synthdef_patches import (
     patch_organ_scd_content,
     patch_brass_scd_content,
+    patch_tb303_scd_content,
+    apply_renardo_synthdef_patches,
     resolve_conflicted_scd_content,
 )
 
@@ -189,3 +191,40 @@ metadata: (category: \\organ)
     assert "Lag.kr" in patched
     assert "HPF.ar" in patched
     assert "ReplaceOut.ar(bus, osc)" in patched
+
+
+def test_patch_tb303_scd_content_replaces_upstream_source_with_stable_anti_click_version():
+    source = """SynthDef.new(\\tb303, {
+    |atk=0.1, sus=0, dec=1|
+    volEnv = EnvGen.ar(Env.new([10e-10, 1, 1, 10e-10], [0.01, sus, dec], 'exp'));
+    filEnv = EnvGen.ar(Env.new([10e-10, 1, 10e-10], [0.01, dec], 'exp'));
+}).add;
+"""
+
+    patched = patch_tb303_scd_content(source)
+
+    assert "LeakDC.ar" in patched
+    assert "HPF.ar" in patched
+    assert "atk.max(0.02)" in patched
+    assert "Lag.kr" in patched
+    assert "RLPF.ar" in patched
+    assert "0.01, sus, dec" not in patched
+
+
+def test_apply_renardo_synthdef_patches_patches_tb303_file_in_place(tmp_path):
+    tb303_file = tmp_path / "tb303.scd"
+    tb303_file.write_text(
+        """SynthDef.new(\\tb303, {
+    |atk=0.1, sus=0, dec=1|
+    volEnv = EnvGen.ar(Env.new([10e-10, 1, 1, 10e-10], [0.01, sus, dec], 'exp'));
+}).add;
+""",
+        encoding="utf-8",
+    )
+
+    patched_files = apply_renardo_synthdef_patches(tmp_path)
+    patched = tb303_file.read_text(encoding="utf-8")
+
+    assert patched_files == ["tb303.scd"]
+    assert "LeakDC.ar" in patched
+    assert "atk.max(0.02)" in patched

@@ -166,7 +166,13 @@ Use these confidently when they fit the arrangement, but NEVER invent synth name
 If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
 NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p1-p3.
 For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings`; avoid organ until the patched organ runtime is verified on hardware.
-For Imperial March / Star Wars march style, write the hook with `midinote` and keep drums sparse and martial.
+For Imperial March / Star Wars march style, write the hook with `midinote`, preserve the exact contour of the main melody, and keep drums sparse and martial.
+For Imperial March, keep the large-scale form explicit: A -> A' -> bridge -> answer phrase.
+For Imperial March, never use PRand for the main melody.
+If the user asks for folk instruments or another unusual timbral remix, change orchestration only; keep the recognisable melody, phrase lengths, and A -> A' -> bridge -> answer phrase form intact.
+`tb303` is click-prone and crack-prone when used with `attack=0.01`, very short `sus`, or layered acid patterns.
+Do not combine tb303 with another tb303 line, and do not combine tb303 with `crush`, `bits`, or long `echo` chains.
+For a safer acid bass, use one tb303 line only with `atk>=0.02` and `sus>=0.08`; if you need a denser low end, prefer `retrobass` or `wobblebass`.
 
 
 🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):
@@ -628,9 +634,10 @@ Correct layering example (with proper balance + sidechain + swing):
 🎵 IMPERIAL MARCH (Star Wars):
    Core facts: G minor, march feel, 4/4, usually 100-116 BPM, hard accents on beat 1.
    If user says "Star Wars", "штурмовики", "Дарт Вейдер", "имперский марш":
-   ✅ Think SC-only palette first: `brass` for the main lead, `marchstrings` for low support, `organ` or `strings` for dark sustain. Use `imperialbrass` only as an optional darker color, not the default lead.
-   ✅ Use `midinote` for the recognisable hook and response phrases. Random PRand melody is forbidden here.
+   ✅ Think SC-only palette first: `brass` for the main lead, `marchstrings` for low support, `strings` for dark sustain. Use `imperialbrass` only as an optional darker color, not the default lead.
+   ✅ Use `midinote` for the recognisable hook and response phrases. Preserve the exact midinote contour of the theme. Random PRand melody is forbidden here.
    ✅ Keep drums sparse and martial, not club-oriented.
+   ✅ If the user asks for folk instruments, village instruments, or another timbral remix, keep the same melody and phrase lengths; only swap the tone color around it.
    ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
    ❌ Do not use the opening motif alone as the full answer. The first phrase alone is incomplete.
    ❌ Do not use Clock.future for staged continuation in a normal play request.
@@ -665,9 +672,22 @@ Correct layering example (with proper balance + sidechain + swing):
                amp=0.5, sus=0.46, room=0.1, lpf=1750)
    p2 >> marchstrings(midinote=[43,43,43,43,39,39,39,39,43,43,46,46],
                       dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.22, sus=1.1, lpf=1200)
-   p3 >> organ(midinote=[43,46,50], dur=8, amp=0.09, sus=6, room=0.22)
+   p3 >> strings(midinote=[43,46,50], dur=8, amp=0.09, sus=6, room=0.22)
    ⚠️ Melody is the star — if you add bass/drums, keep them quieter than the march motif.
    ⚠️ The canonical phrase must include the B-answer tail `76,75,74,70,66,63,70,67`; stopping before that still sounds incomplete.
+   ⚠️ For folk-instrument versions, keep this same phrase layout and melody contour; reinterpret the timbre with pluck / karp / marimba layers, but do not rewrite the tune.
+
+   Folk-style remix example / timbral remix example (same melody contour, different color):
+   Clock.bpm = 104; Root.default = "G"; Scale.default = "minor"
+   d1 >> play("X...X..o", dur=0.5, sample=1, amp=0.16, room=0.06)
+   p1 >> marimba(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67,70,76,75,74,70,66,63,70,67],
+                 dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
+                 amp=0.44, sus=0.32, room=0.18)
+   p2 >> karp(midinote=[43,43,43,43,39,39,39,39,43,43,46,46],
+              dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.18, sus=0.7, room=0.14)
+   p3 >> strings(midinote=[43,46,50], dur=8, amp=0.08, sus=6, room=0.2)
+   ⚠️ This is a timbral remix example: same melody contour, same phrase lengths, same A -> A' -> bridge -> answer phrase form.
+   ⚠️ Do not rewrite the tune when the user asks for folk instruments; swap timbre, articulation, and accompaniment only.
 
    Extended / concert-like variant:
    - Use 3 voices max: melody + lower harmony / bass + light march drums.

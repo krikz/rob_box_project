@@ -171,11 +171,17 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 - ⚠️ For Stranger Things, keep the motoric hook at dur=0.25 for bass and arp; slower values lose the reference feel.
  - ⚠️ For Imperial March / Star Wars march style, prefer `brass + marchstrings + strings` for the main playable arrangement; prefer strings over organ until the patched organ runtime is verified, and keep `imperialbrass` as an optional darker color, not the default lead.
  - ⚠️ For Imperial March, the first phrase alone is incomplete. In the first `execute_music_code` call include at least the opening motif plus a bridge or B answer phrase.
+ - ⚠️ For Imperial March, keep the large-scale form explicit: A -> A' -> bridge -> answer phrase. Do not flatten it into one short loop.
  - ⚠️ For Imperial March, keep the recognisable form audible: opening motif -> bridge -> answer phrase. Do not stop after the first hook.
  - ⚠️ For Imperial March, use one execute_music_code pass for the canonical arrangement. Do not use Clock.future for staged continuation.
  - ⚠️ For Imperial March, stay within d1 and p1-p3. Do not use p4 or d4.
  - ⚠️ For Imperial March, the canonical phrase should include the B-answer tail `76,75,74,70,66,63,70,67`, not stop before it.
+ - ⚠️ For Imperial March, preserve the exact contour of the main melody with `midinote`; do not use PRand for the main melody.
+ - ⚠️ If the user asks for folk instruments or another unusual timbral remix, change the orchestration only; keep the recognisable melody, phrase lengths, and A -> A' -> bridge -> answer phrase form intact.
  - ⚠️ Keep Imperial March / Star Wars march drums sparse and martial, not club-oriented.
+- ⚠️ `tb303` is click-prone and crack-prone when generated with `attack=0.01`, ultra-short sustain, or stacked acid layers.
+- ⚠️ Do not combine tb303 with another tb303 layer, and do not combine tb303 with `crush`, `bits`, or long `echo` chains.
+- ⚠️ For `tb303`, use one line only with `atk>=0.02` / `sus>=0.08`; if you need a thicker or safer bass, prefer `retrobass` or `wobblebass`.
 - ⚠️ Never invent synth names outside this palette. If unsure, fall back to dub / bass / strings / pads / space.
 - ⚠️ NEVER use d4, d5, p4, p5 for generated music on this robot. Stay within d1-d3 and p1-p3.
 - ⚠️ NEVER use `play("k", ...)` or random `spack=1` atmospheric samples unless the user explicitly asks for birds, frogs, sea-gulls, nature FX, or weird sample textures.

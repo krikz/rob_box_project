@@ -137,6 +137,18 @@ def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:
     assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
 
 
+def test_master_prompt_contains_tb303_safety_guidance() -> None:
+    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "tb303" in content.lower()
+    assert "attack=0.01" in content.lower()
+    assert "crack-prone" in content.lower() or "click-prone" in content.lower()
+    assert "do not combine tb303" in content.lower() or "never combine tb303" in content.lower()
+    assert "crush" in content.lower()
+    assert "bits" in content.lower()
+    assert "echo" in content.lower()
+
+
 def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
     content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -153,6 +165,10 @@ def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "76,75,74,70,66,63,70,67" in content.replace(" ", "")
     assert "brass" in content.lower()
     assert "avoid organ" in content.lower() or "prefer strings over organ" in content.lower()
+    assert "a -> a' -> bridge -> answer phrase" in content.lower() or "a -> a' -> bridge -> b answer" in content.lower()
+    assert "exact midinote contour" in content.lower() or "preserve the exact contour" in content.lower()
+    assert "do not use prand for the main melody" in content.lower() or "never use prand for the main melody" in content.lower()
+    assert "folk instruments" in content.lower() or "народн" in content.lower()
 
 
 def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
@@ -163,6 +179,19 @@ def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> No
     assert "spack=1" in content
     assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
     assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
+
+
+def test_music_skill_prompt_contains_tb303_safety_guidance() -> None:
+    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "tb303" in content.lower()
+    assert "attack=0.01" in content.lower()
+    assert "crack-prone" in content.lower() or "click-prone" in content.lower()
+    assert "do not combine tb303" in content.lower() or "never combine tb303" in content.lower()
+    assert "crush" in content.lower()
+    assert "bits" in content.lower()
+    assert "echo" in content.lower()
+    assert "retrobass" in content.lower() or "wobblebass" in content.lower()
 
 
 def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
@@ -181,3 +210,11 @@ def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "76,75,74,70,66,63,70,67" in content.replace(" ", "")
     assert "brass" in content.lower()
     assert "avoid organ" in content.lower() or "prefer strings over organ" in content.lower()
+    assert "a -> a' -> bridge -> answer phrase" in content.lower() or "a -> a' -> bridge -> b answer" in content.lower()
+    assert "exact midinote contour" in content.lower() or "preserve the exact contour" in content.lower()
+    assert "do not use prand for the main melody" in content.lower() or "never use prand for the main melody" in content.lower()
+    assert "folk instruments" in content.lower() or "народн" in content.lower()
+    assert "timbral remix example" in content.lower() or "folk-style remix example" in content.lower()
+    assert "marimba" in content.lower()
+    assert "karp" in content.lower()
+    assert "same melody contour" in content.lower() or "do not rewrite the tune" in content.lower()

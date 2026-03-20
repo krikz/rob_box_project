@@ -47,6 +47,26 @@ ORGAN_SYNTHDEF = """SynthDef.new(\\organ, {
         ReplaceOut.ar(bus, osc)
 }).add;
 """
+TB303_SYNTHDEF = """SynthDef.new(\\tb303, {
+        |sus=0.08, dec=0.14, bus=0, atk=0.03, amp=1, freq=0, pan=0, cutoff=1400, rq=0.2, res=0.85, dist=0.18, wave=0|
+        var baseFreq, osc, ampEnv, filtEnv, filtStart, filtPeak, cutoffBase;
+        baseFreq = Lag.kr(In.kr(bus, 1).max(20), 0.01);
+        osc = SelectX.ar(wave.clip(0, 1), [
+            Pulse.ar(baseFreq, 0.5, 0.55),
+            Saw.ar(baseFreq, 0.5)
+        ]);
+        cutoffBase = cutoff.clip(90, 4200);
+        filtStart = Lag.kr((cutoffBase * 0.6).clip(90, 4200), 0.01);
+        filtPeak = Lag.kr((cutoffBase * (1 + (res.clip(0, 1.4) * 2.2))).clip(140, 7200), 0.01);
+        ampEnv = EnvGen.ar(Env.perc(atk.max(0.02), (sus + dec).max(0.08), amp, curve: -4), doneAction: 0);
+        filtEnv = EnvGen.kr(Env([filtStart, filtPeak, filtStart], [atk.max(0.02), dec.max(0.08)], curve: -4));
+        osc = RLPF.ar(osc, filtEnv, rq.clip(0.08, 0.92));
+        osc = tanh(osc * (1 + (dist.clip(0, 1) * 6)));
+        osc = HPF.ar(LeakDC.ar(osc), 35);
+        osc = Pan2.ar(osc * ampEnv * 0.45, pan);
+        ReplaceOut.ar(bus, osc)
+}).add;
+"""
 
 
 def resolve_conflicted_scd_content(content: str) -> str:
@@ -86,6 +106,18 @@ def patch_organ_scd_content(content: str) -> str:
     return ORGAN_SYNTHDEF
 
 
+def patch_tb303_scd_content(content: str) -> str:
+    """Replace tb303.scd content with a stable anti-click variant."""
+
+    if "\\tb303" not in content and "tb303" not in content:
+        return content
+
+    if content == TB303_SYNTHDEF:
+        return content
+
+    return TB303_SYNTHDEF
+
+
 def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
     """Patch broken Renardo .scd files in place and return modified file names."""
 
@@ -103,6 +135,9 @@ def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
 
         if scd_file.name == "organ.scd":
             updated = patch_organ_scd_content(updated)
+
+        if scd_file.name == "tb303.scd":
+            updated = patch_tb303_scd_content(updated)
 
         if updated != original:
             scd_file.write_text(updated, encoding="utf-8")
