@@ -91,7 +91,8 @@ if command -v sclang > /dev/null 2>&1; then
         if python3 /ws/src/rob_box_voice/scripts/validate_music_stack.py \
             /tmp/sclang.log \
             --critical-synth strings \
-            --critical-synth wobblebass; then
+            --critical-synth wobblebass \
+            --critical-synth pianovel; then
             echo "✓ Music stack validation passed"
         else
             echo "⚠ Music stack validation reported degraded runtime; voice assistant continues in reduced music mode"
