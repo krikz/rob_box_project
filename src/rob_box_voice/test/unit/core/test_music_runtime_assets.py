@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[5]
 FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
 START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "vision" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
+CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "custom_synthdefs"
 MASTER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
 MUSIC_SKILL_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "music_skill_prompt.txt"
 
@@ -24,10 +25,35 @@ def test_foxdot_init_preloads_pianovel_for_runtime_safe_piano_usage() -> None:
     assert '"pianovel"' in content
 
 
+def test_foxdot_init_preloads_sc_only_custom_synthdefs_for_stranger_things_palette() -> None:
+    content = FOXDOT_INIT_PATH.read_text(encoding="utf-8")
+
+    assert '"warmpad"' in content
+    assert '"retrobass"' in content
+    assert '"supersawlead"' in content
+    assert '/ws/custom_synthdefs' in content
+
+
 def test_start_voice_assistant_validates_pianovel_startup_health() -> None:
     content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
 
     assert "--critical-synth pianovel" in content
+
+
+def test_start_voice_assistant_validates_sc_only_custom_synthdefs_startup_health() -> None:
+    content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
+
+    assert "--critical-synth warmpad" in content
+    assert "--critical-synth retrobass" in content
+    assert "--critical-synth supersawlead" in content
+
+
+def test_sc_only_custom_synthdef_files_exist_for_repo_owned_palette() -> None:
+    for synth_name in ("warmpad", "retrobass", "supersawlead"):
+        synth_path = CUSTOM_SYNTHDEF_DIR / f"{synth_name}.scd"
+        assert synth_path.exists()
+        content = synth_path.read_text(encoding="utf-8")
+        assert f"SynthDef.new(\\{synth_name}" in content
 
 
 def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:

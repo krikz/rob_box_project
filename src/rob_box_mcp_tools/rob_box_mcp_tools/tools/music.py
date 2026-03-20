@@ -24,6 +24,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
+
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 # ---------------------------------------------------------------------------
@@ -184,6 +186,7 @@ class MusicManager:
             _time.sleep(5)
 
             self._renardo_context = vars(_rt).copy()
+            register_sc_only_custom_synthdefs(_rt, self._renardo_context)
             self._renardo_available = True
         except (ImportError, Exception):
             self._renardo_available = False

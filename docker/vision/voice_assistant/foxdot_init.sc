@@ -12,6 +12,8 @@
 var renardoSynthDir = "__RENARDO_SCLANG_DIR__";
 var renardoSynthDirPlaceholder = "__RENARDO_SCLANG_DIR_PLACEHOLDER__";
 var startupSynths = ["strings", "wobblebass", "brass", "organ", "tb303", "pianovel"];
+var customSynthDir = "/ws/custom_synthdefs";
+var customSynths = ["warmpad", "retrobass", "supersawlead"];
 
 // Connect to running scsynth via alive thread
 Server.default.startAliveThread(0.5);
@@ -38,6 +40,12 @@ SystemClock.sched(3.0, {
             ("SynthDef preload ok: " ++ name).postln;
         });
     };
+    customSynths.do({ |name|
+        var path = customSynthDir ++ "/" ++ name ++ ".scd";
+        ("Preloading custom SynthDef: " ++ name).postln;
+        path.load;
+        ("SynthDef preload ok: " ++ name).postln;
+    });
     nil;
 });
 

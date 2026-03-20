@@ -100,6 +100,7 @@ COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
 # sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
 # на порту 57120 для получения запросов на компиляцию SynthDef-ов от renardo.
 COPY docker/vision/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
+COPY docker/vision/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
