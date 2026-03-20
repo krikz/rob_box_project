@@ -1,5 +1,6 @@
 """Unit tests for SC-only custom synthdef registration helpers."""
 
+import sys
 from types import SimpleNamespace
 
 from rob_box_voice.core.sc_only_custom_synthdefs import (
@@ -39,6 +40,26 @@ def test_register_sc_only_custom_synthdefs_reuses_existing_registry_entries() ->
 
     assert runtime_context["warmpad"] is existing
     assert runtime_module.SynthDefs["warmpad"] is existing
+
+
+def test_register_sc_only_custom_synthdefs_falls_back_to_file_synthdef_factory() -> None:
+    runtime_context: dict[str, object] = {}
+    runtime_module = SimpleNamespace(SynthDefs={})
+    fake_module = SimpleNamespace(FileSynthDef=FakeSynthDef)
+
+    original_module = sys.modules.get("renardo_lib.SynthDefManagement.SimpleSynthDefs")
+    sys.modules["renardo_lib.SynthDefManagement.SimpleSynthDefs"] = fake_module
+    try:
+        registered = register_sc_only_custom_synthdefs(runtime_module, runtime_context)
+    finally:
+        if original_module is None:
+            del sys.modules["renardo_lib.SynthDefManagement.SimpleSynthDefs"]
+        else:
+            sys.modules["renardo_lib.SynthDefManagement.SimpleSynthDefs"] = original_module
+
+    assert registered == CUSTOM_SC_ONLY_SYNTH_NAMES
+    for name in CUSTOM_SC_ONLY_SYNTH_NAMES:
+        assert runtime_context[name].name == name
 
 
 def test_register_sc_only_custom_synthdefs_requires_synthdef_factory() -> None:
