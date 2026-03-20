@@ -166,10 +166,15 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 - ⚠️ For retro analog horror / Stranger Things style, prefer `strangerpulsepad + retrobass + strangerarp + strangerbrass`, with `warmpad + supersawlead` as fallback.
 - ⚠️ For Stranger Things, build layers in this order: opening pad first, delayed heartbeat kick second, fixed bass ostinato third, lead arp fourth, sparse brass or flute accents last.
 - ⚠️ For Stranger Things, use a fixed bass ostinato and reuse the same pitch sequence in the arp instead of PRand melodies.
-- ⚠️ For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ` and write the hook with `midinote` instead of random PRand melody.
-- ⚠️ For Imperial March, the first phrase alone is incomplete. In the first `execute_music_code` call include at least the opening motif plus a bridge or B answer phrase.
-- ⚠️ For Imperial March, keep the recognisable form audible: opening motif -> bridge -> answer phrase. Do not stop after the first hook.
-- ⚠️ Keep Imperial March / Star Wars march drums sparse and martial, not club-oriented.
+- ⚠️ For Stranger Things, use one execute_music_code pass for the core arrangement. Do not add a second atmospheric pass on top.
+- ⚠️ For Stranger Things, stay within d1 and p1-p3. Do not use p4 or d4 for this track.
+- ⚠️ For Stranger Things, keep the motoric hook at dur=0.25 for bass and arp; slower values lose the reference feel.
+ - ⚠️ For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ` and write the hook with `midinote` instead of random PRand melody.
+ - ⚠️ For Imperial March, the first phrase alone is incomplete. In the first `execute_music_code` call include at least the opening motif plus a bridge or B answer phrase.
+ - ⚠️ For Imperial March, keep the recognisable form audible: opening motif -> bridge -> answer phrase. Do not stop after the first hook.
+ - ⚠️ For Imperial March, use one execute_music_code pass for the canonical arrangement. Do not use Clock.future for staged continuation.
+ - ⚠️ For Imperial March, stay within d1 and p1-p3. Do not use p4 or d4.
+ - ⚠️ Keep Imperial March / Star Wars march drums sparse and martial, not club-oriented.
 - ⚠️ Never invent synth names outside this palette. If unsure, fall back to dub / bass / strings / pads / space.
 - ⚠️ NEVER use d4, d5, p4, p5 for generated music on this robot. Stay within d1-d3 and p1-p3.
 - ⚠️ NEVER use `play("k", ...)` or random `spack=1` atmospheric samples unless the user explicitly asks for birds, frogs, sea-gulls, nature FX, or weird sample textures.

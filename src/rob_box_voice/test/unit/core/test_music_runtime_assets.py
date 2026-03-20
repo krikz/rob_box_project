@@ -105,6 +105,10 @@ def test_master_prompt_contains_stranger_things_structure_guidance() -> None:
     assert "heartbeat" in content.lower()
     assert "fixed bass ostinato" in content.lower() or "deterministic bass ostinato" in content.lower()
     assert "same pitch sequence" in content.lower() or "reuse the same pitch sequence" in content.lower()
+    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
+    assert "do not add a second atmospheric pass" in content.lower() or "do not send a second atmospheric pass" in content.lower()
+    assert "stay within d1 and p1-p3" in content.lower() or "do not use p4 or d4" in content.lower()
+    assert "dur=0.25" in content.lower()
 
 
 def test_music_skill_prompt_contains_stranger_things_structure_guidance() -> None:
@@ -117,6 +121,10 @@ def test_music_skill_prompt_contains_stranger_things_structure_guidance() -> Non
     assert "heartbeat" in content.lower()
     assert "fixed bass ostinato" in content.lower() or "deterministic bass ostinato" in content.lower()
     assert "same pitch sequence" in content.lower() or "reuse the same pitch sequence" in content.lower()
+    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
+    assert "do not add a second atmospheric pass" in content.lower() or "do not send a second atmospheric pass" in content.lower()
+    assert "stay within d1 and p1-p3" in content.lower() or "do not use p4 or d4" in content.lower()
+    assert "dur=0.25" in content.lower()
 
 
 def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:
@@ -139,6 +147,9 @@ def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "first phrase alone is incomplete" in content.lower() or "first phrase alone" in content.lower()
     assert "bridge" in content.lower()
     assert "answer phrase" in content.lower() or "b answer phrase" in content.lower()
+    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
+    assert "do not use clock.future" in content.lower()
+    assert "do not use p4 or d4" in content.lower() or "stay within d1 and p1-p3" in content.lower()
 
 
 def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
@@ -161,3 +172,6 @@ def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "first phrase alone is incomplete" in content.lower() or "do not use the opening motif alone" in content.lower()
     assert "bridge" in content.lower()
     assert "answer phrase" in content.lower() or "b answer phrase" in content.lower()
+    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
+    assert "do not use clock.future" in content.lower()
+    assert "do not use p4 or d4" in content.lower() or "stay within d1 and p1-p3" in content.lower()

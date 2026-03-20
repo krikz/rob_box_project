@@ -633,9 +633,12 @@ Correct layering example (with proper balance + sidechain + swing):
    ✅ Keep drums sparse and martial, not club-oriented.
    ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
    ❌ Do not use the opening motif alone as the full answer. The first phrase alone is incomplete.
+   ❌ Do not use Clock.future for staged continuation in a normal play request.
    ✅ Use recognisable FORM: A (opening motif) → A' (repeat / intensified repeat)
       → chromatic bridge → B answer phrase.
    ✅ In the first `execute_music_code` call include at least A + bridge or A + B answer phrase.
+   ✅ Use one execute_music_code pass for the canonical arrangement.
+   ✅ Stay within d1 and p1-p3. Do not use p4 or d4.
    ✅ In DJ mode, at least one layer MUST keep the Imperial March motif audible while drums / bass modernise around it.
    ✅ For cinematic / extended versions: start arco, optional pizzicato middle, then return to arco.
 
@@ -716,16 +719,21 @@ Correct layering example (with proper balance + sidechain + swing):
 
 🎵 Stranger Things (Intro Theme — Hawkins):
    Clock.bpm = 83; Root.default = "C"; Scale.default = "major"
-   p1 >> strangerpulsepad(midinote=[52,55,59], dur=8, amp=0.18, sus=8, room=0.8,
-                          vib=0.1, lpf=1200)                                 # opening pad должен входить ПЕРВЫМ
-   d1 >> play("X-X---", dur=0.5, sample=2, amp=0.22)                       # delayed heartbeat, не превращай в dance groove
-   p2 >> retrobass(midinote=[36,38,40,42,43,42,40,38], dur=1, amp=0.28,
-                   sus=0.85, lpf=linvar([140,820],[24,0]))                   # fixed bass ostinato
-   p3 >> strangerarp(midinote=[48,52,55,59,62,59,55,52], dur=0.5, amp=0.23,
-                     sus=0.42, lpf=linvar([260,1500],[16,0]), room=0.3)      # reuse the same pitch sequence above the bass
-   ⚠️ Для этого референса думай сначала `strangerpulsepad + retrobass + strangerarp + strangerbrass`, а `warmpad + supersawlead` оставляй как fallback.
-   ⚠️ Структура обязательна: opening pad → heartbeat → fixed bass ostinato → arp hook → sparse strangerbrass/brass/flute accents.
-   ⚠️ Bass и arp должны использовать детерминированный паттерн, а не PRand. Сердцебиение `X-X---` при BPM=83 — КРИТИЧНО для характера!
+   d1 >> play("xx..", dur=0.25, sample=6, amp=0.32,
+              amplify=var([0,1,0],[4,40,4]))                                 # heartbeat pulse; enters after intro and exits before the end
+   p1 >> retrobass([0,2,4,6,7,6,4,2], oct=4, dur=0.25, amp=0.28,
+                   lpf=500, amplify=var([0,1,0],[4,38,6]))                   # fixed bass ostinato; motoric, not slow
+   p2 >> strangerarp([0,2,4,6,7,6,4,2], oct=3, dur=0.25, amp=0.24,
+                     lpf=linvar([100,1000],10), room=0.28,
+                     amplify=var([0,1,0],[4,38,6]))                          # same pitch sequence above the bass, supersaw-like motion
+   p3 >> strangerpulsepad([0,2,4], oct=5, dur=8, sus=8, amp=0.16, lpf=900,
+                          amplify=var([1,1,0],[4,38,6]))                     # opening pad; present from the start, then fade out
+   ⚠️ For this reference, use one execute_music_code pass for the core arrangement: `d1 + p1 + p2 + p3`. Do not add a second atmospheric pass. Не добавляй второй atmospheric pass поверх.
+   ⚠️ Stay within d1 and p1-p3. Do not use p4 or d4 for Stranger Things.
+   ⚠️ Не используй `follow()` здесь: он мажет hook и уводит от референса.
+   ⚠️ Bass и arp обязаны использовать один и тот же детерминированный паттерн `[0,2,4,6,7,6,4,2]` с dur=0.25.
+   ⚠️ Не подменяй heartbeat на произвольные sample letters вроде `A` или `i`; для этого трека держи простой pulse без лишних snare/hat слоев.
+   ⚠️ Если очень нужен редкий accent layer, используй только короткие вкрапления `strangerbrass` или `flute`, не отдельный постоянный player.
 
 �🎤 VOCAL RULE:
 ✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!
