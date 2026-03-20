@@ -632,35 +632,37 @@ Correct layering example (with proper balance + sidechain + swing):
    ✅ Use `midinote` for the recognisable hook and response phrases. Random PRand melody is forbidden here.
    ✅ Keep drums sparse and martial, not club-oriented.
    ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
+   ❌ Do not use the opening motif alone as the full answer. The first phrase alone is incomplete.
    ✅ Use recognisable FORM: A (opening motif) → A' (repeat / intensified repeat)
       → chromatic bridge → B answer phrase.
+   ✅ In the first `execute_music_code` call include at least A + bridge or A + B answer phrase.
    ✅ In DJ mode, at least one layer MUST keep the Imperial March motif audible while drums / bass modernise around it.
    ✅ For cinematic / extended versions: start arco, optional pizzicato middle, then return to arco.
 
-   Opening motif A (recognisable hook):
+   Reference fragment only — opening motif A (do not emit this fragment alone):
    p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67],
                        dur=[1,1,1,0.75,0.25,1,0.75,0.25,2],
-                       amp=0.64, sus=0.45, room=0.16, lpf=2200)
+                       amp=0.52, sus=0.52, room=0.12, lpf=1850)
 
-   Chromatic bridge (continue the tune instead of restarting A again):
+   Reference fragment only — chromatic bridge (continue the tune instead of restarting A again):
    p1 >> imperialbrass(midinote=[70,75,74,73,72,71,72,65],
                        dur=[0.5,1,1,0.25,0.25,0.25,1,1],
-                       amp=0.62, sus=0.42, room=0.16, lpf=2300)
+                       amp=0.5, sus=0.48, room=0.12, lpf=1900)
 
-   B answer phrase (second idea / response):
+   Reference fragment only — B answer phrase (second idea / response):
    p1 >> imperialbrass(midinote=[66,63,66,70,67,70,76,75,74,70,66,63,70,67],
                        dur=[1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
-                       amp=0.64, sus=0.42, room=0.16, lpf=2250)
+                       amp=0.5, sus=0.48, room=0.12, lpf=1900)
 
-   DJ recognisable arrangement (30-60 sec):
+   Canonical playable arrangement (use this shape for normal play requests, 25-45 sec):
    Clock.bpm = 108; Root.default = "G"; Scale.default = "minor"
    d1 >> play("X...X..o", dur=0.5, sample=1, amp=0.2, room=0.08)
    p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67],
                        dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,2],
-                       amp=0.65, sus=0.42, room=0.16, lpf=2300)
+                       amp=0.54, sus=0.5, room=0.12, lpf=1900)
    p2 >> marchstrings(midinote=[43,43,43,43,39,39,39,39,43,43,46,46],
-                      dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.3, sus=0.95, lpf=1350)
-   p3 >> organ(midinote=[43,46,50], dur=8, amp=0.12, sus=6, room=0.28)
+                      dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.22, sus=1.1, lpf=1200)
+   p3 >> organ(midinote=[43,46,50], dur=8, amp=0.09, sus=6, room=0.22)
    ⚠️ Melody is the star — if you add bass/drums, keep them quieter than the march motif.
 
    Extended / concert-like variant:

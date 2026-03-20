@@ -136,6 +136,9 @@ def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "imperialbrass" in content
     assert "marchstrings" in content
     assert "midinote" in content
+    assert "first phrase alone is incomplete" in content.lower() or "first phrase alone" in content.lower()
+    assert "bridge" in content.lower()
+    assert "answer phrase" in content.lower() or "b answer phrase" in content.lower()
 
 
 def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
@@ -155,3 +158,6 @@ def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "imperialbrass" in content
     assert "marchstrings" in content
     assert "midinote" in content
+    assert "first phrase alone is incomplete" in content.lower() or "do not use the opening motif alone" in content.lower()
+    assert "bridge" in content.lower()
+    assert "answer phrase" in content.lower() or "b answer phrase" in content.lower()
