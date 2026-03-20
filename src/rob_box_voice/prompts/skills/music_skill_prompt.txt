@@ -158,7 +158,7 @@ p2 >> feel(PRand([0,2,4,3,5]), dur=var([0.5,1],[8,8]), oct=5, amp=0.58, room=0.3
 ⚠️ SCALE: phrygian / dorian / mixolydian / lydian / minorPentatonic / majorPentatonic / minor (ROTATE!)
 Maximum total: 3 drums + 3 melodic = 6 patterns max.
 
-✅ RUNTIME-VALIDATED synths for this deployment: wobblebass, strings, brass, organ, tb303.
+✅ RUNTIME-VALIDATED synths for this deployment: wobblebass, strings, brass, organ.
 Use these confidently when they fit the arrangement, but NEVER invent synth names outside the known palette.
 If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
 

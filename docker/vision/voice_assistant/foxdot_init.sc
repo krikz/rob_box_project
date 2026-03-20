@@ -10,6 +10,7 @@
 // scsynth runs at localhost:57110 (network_mode: host).
 
 var renardoSynthDir = "__RENARDO_SCLANG_DIR__";
+var renardoSynthDirPlaceholder = "__RENARDO_SCLANG_DIR_PLACEHOLDER__";
 var startupSynths = ["strings", "wobblebass", "brass", "organ", "tb303"];
 
 // Connect to running scsynth via alive thread
@@ -27,7 +28,7 @@ SystemClock.sched(3.0, {
     );
     "FoxDot OSCdef registered. Ready to compile SynthDefs.".postln;
     ("Server running: " ++ Server.default.serverRunning).postln;
-    if(renardoSynthDir.isNil || { renardoSynthDir == "__RENARDO_SCLANG_DIR__" } || { renardoSynthDir.isEmpty }) {
+    if(renardoSynthDir.isNil || { renardoSynthDir == renardoSynthDirPlaceholder } || { renardoSynthDir.isEmpty }) {
         "RENARDO_SCLANG_DIR is not set; skipping startup SynthDef preload.".postln;
     } {
         startupSynths.do({ |name|
