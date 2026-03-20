@@ -90,6 +90,8 @@ class MusicManager:
         self._renardo_context: Dict[str, Any] = {}
         #: True если renardo доступен, False/None иначе
         self._renardo_available: Optional[bool] = None
+        #: Последняя ошибка инициализации renardo для диагностики
+        self._renardo_last_error: Optional[str] = None
         self._initialize_renardo()
 
     # ------------------------------------------------------------------
@@ -188,9 +190,24 @@ class MusicManager:
             self._renardo_context = vars(_rt).copy()
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
             self._renardo_available = True
-        except (ImportError, Exception):
+            self._renardo_last_error = None
+        except (ImportError, Exception) as exc:
             self._renardo_available = False
             self._renardo_context = {}
+            self._renardo_last_error = str(exc)
+
+    def _ensure_renardo_available(self) -> bool:
+        """Retry Renardo initialization when a previous startup attempt failed.
+
+        This avoids a permanent degraded state when container startup races cause
+        the first one-shot initialization to fail before scsynth/sclang are fully ready.
+        """
+
+        if self._renardo_available:
+            return True
+
+        self._initialize_renardo()
+        return bool(self._renardo_available)
 
     # ------------------------------------------------------------------
     # SuperCollider check
@@ -292,10 +309,14 @@ class MusicManager:
                 "error": "SuperCollider не запущен. Запустите SuperCollider перед воспроизведением музыки.",
             }
 
-        if not self._renardo_available:
+        if not self._ensure_renardo_available():
+            error = "Renardo недоступен."
+            renardo_last_error = getattr(self, "_renardo_last_error", None)
+            if renardo_last_error:
+                error = f"{error} Последняя ошибка инициализации: {renardo_last_error}"
             return {
                 "success": False,
-                "error": "Renardo недоступен. Установите пакет renardo_lib.",
+                "error": error,
             }
 
         # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем новые
@@ -462,12 +483,17 @@ class MusicManager:
             dict с полями renardo_available, supercollider_running,
             current_preset, pattern_history, active_patterns.
         """
+        supercollider_running = self._check_supercollider()
+        if not self._renardo_available and supercollider_running:
+            self._ensure_renardo_available()
+
         return {
             "renardo_available": self._renardo_available,
-            "supercollider_running": self._check_supercollider(),
+            "supercollider_running": supercollider_running,
             "current_preset": self._current_preset,
             "pattern_history": dict(self._pattern_history),
             "active_patterns": list(self._active_patterns),
+            "renardo_last_error": getattr(self, "_renardo_last_error", None),
         }
 
 
