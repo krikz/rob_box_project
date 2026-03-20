@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y debconf-utils \
     unzip \
     usbutils \
     supercollider-language \
+    sc3-plugins-language \
     ros-dev-tools \
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \

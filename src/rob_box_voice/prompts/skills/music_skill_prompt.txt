@@ -44,6 +44,9 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
   ✅ NEVER use `spack=1` with `PRand(range(22))` or large random ranges!
      Always use specific known sample indices: sample=P[0,1,2,3] (max 4 variants)
 
+  ✅ NEVER use `play("k", ...)` or any `spack=1` atmospheric layer unless the user explicitly asks for birds, animals, sea-gulls, frogs, nature FX, or weird samples.
+     For normal ambience use synth layers like `space`, `strings`, `pads`, `ambi`, `bell` instead of random sample-pack FX.
+
   ✅ NEVER use `harp` synth — it does NOT exist in Renardo!
      ✅ Use marimba, bell, kalimba for harp-like sounds.
 
@@ -152,11 +155,18 @@ p1 >> karp(midinote=[59,54,55,50,54,55,47,54,55], dur=[4,1.5,2.5,4,1.5,2.5,4,1.5
 p2 >> feel(PRand([0,2,4,3,5]), dur=var([0.5,1],[8,8]), oct=5, amp=0.58, room=0.3)
 ```
 
-⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt (ROTATE each transition!)
-⚠️ LEAD: varsaw / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello (ROTATE!)
-⚠️ PADS: space / strings / faim / sinepad / mhpad / ecello / viola / ambi (ROTATE!)
+⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt / retrobass (ROTATE each transition!)
+⚠️ LEAD: varsaw / supersawlead / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello / imperialbrass (ROTATE!)
+⚠️ PADS: warmpad / space / strings / faim / sinepad / mhpad / ecello / viola / ambi / marchstrings (ROTATE!)
 ⚠️ SCALE: phrygian / dorian / mixolydian / lydian / minorPentatonic / majorPentatonic / minor (ROTATE!)
 Maximum total: 3 drums + 3 melodic = 6 patterns max.
+
+✅ RUNTIME-VALIDATED synths for this deployment: wobblebass, strings, brass, organ.
+Use these confidently when they fit the arrangement, but NEVER invent synth names outside the known palette.
+If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
+NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p1-p3.
+For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings or organ`.
+For Imperial March / Star Wars march style, write the hook with `midinote` and keep drums sparse and martial.
 
 
 🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):
@@ -312,6 +322,8 @@ If search_samples("snare") returned:  d1 >> play("i", sample=2)
    For uppercase "X" (upper/ folder) use: search_samples("kick", case="upper")
    Lowercase "x" and uppercase "X" = DIFFERENT FOLDERS = different sounds!
    ✅ Recommended for kick: search_samples("kick", case="upper") → play("X.X.X.X.", ...)
+⚠️ NEVER invent sample letters like "A", "B", "Q" or any other folder name you did not get from search_samples().
+   If you want a safe drum groove without searching, stay with `X`, `o`, `-` only.
 
 🚫 RULE #2 — NO PLAYER ALIASES (NameError: name '...' is not defined):
 Allowed player names: d1-d9 (drums), p1-p9 (synth), s1-s9 (sample), l1-l9 (loop)
@@ -343,14 +355,14 @@ NEVER create alias variables for players — they DON'T work in Clock callbacks!
 
 SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
 🥁 Drums/Lo:    d1-d9 >> play(...)   — always via play() with samples
-🎸 Bass:        wobblebass, dub, fuzz, dirt, subbass, moogbass, bass, jbass  (oct=2..3)
+🎸 Bass:        wobblebass, dub, fuzz, dirt, subbass, moogbass, bass, jbass, retrobass  (oct=2..3)
    ✅ `bass` synth EXISTS (LFTri+VarSaw, default rate=8 = wide, buzzy). Use: amp=0.3-0.4, oct=3
       For cleaner tone lower rate: bass([0,-2], dur=2, oct=3, amp=0.35, rate=1)
-🎹 Melody/Lead: blip, arpy, pianovel, epiano, rhpiano, karp, sitar, marimba, keys, cs80lead
+🎹 Melody/Lead: blip, arpy, supersawlead, pianovel, epiano, rhpiano, karp, sitar, marimba, keys, cs80lead
    ⚠️ NO "piano" — use pianovel / epiano / rhpiano!
    ⚠️ pluck = guitar pluck, NOT brass/orchestra! For trumpet/flute — blip/flute/brass
 🎺 Orchestra/Brass: brass, blip, flute, soprano, eoboe, organ, organ2
-🎻 Strings/Pads: strings, pads, ambi, space, faim, sinepad, mhpad, ecello, viola
+🎻 Strings/Pads: strings, pads, ambi, space, warmpad, faim, sinepad, mhpad, ecello, viola
 🔔 Atmosphere/Bells: bell, gong, kalimba, marimba, steeldrum, tubularbell  (amp=0.3..0.6)
 ⚡ Aggression/Glitch: rave, donk, varsaw, saw, pulse, quin, feel, tb303, hoover
    ✅ `saw` synth EXISTS (pure Sawtooth, Env.mask = sustained/continuous). Use for drones/acid:
@@ -616,36 +628,46 @@ Correct layering example (with proper balance + sidechain + swing):
 🎵 IMPERIAL MARCH (Star Wars):
    Core facts: G minor, march feel, 4/4, usually 100-116 BPM, hard accents on beat 1.
    If user says "Star Wars", "штурмовики", "Дарт Вейдер", "имперский марш":
+   ✅ Think SC-only palette first: `brass` for the main lead, `marchstrings` for low support, `organ` or `strings` for dark sustain. Use `imperialbrass` only as an optional darker color, not the default lead.
+   ✅ Use `midinote` for the recognisable hook and response phrases. Random PRand melody is forbidden here.
+   ✅ Keep drums sparse and martial, not club-oriented.
    ❌ DO NOT loop only the first phrase forever, then switch to generic techno.
+   ❌ Do not use the opening motif alone as the full answer. The first phrase alone is incomplete.
+   ❌ Do not use Clock.future for staged continuation in a normal play request.
    ✅ Use recognisable FORM: A (opening motif) → A' (repeat / intensified repeat)
       → chromatic bridge → B answer phrase.
+   ✅ In the first `execute_music_code` call include at least A + bridge or A + B answer phrase.
+   ✅ Use one execute_music_code pass for the canonical arrangement.
+   ✅ Stay within d1 and p1-p3. Do not use p4 or d4.
    ✅ In DJ mode, at least one layer MUST keep the Imperial March motif audible while drums / bass modernise around it.
    ✅ For cinematic / extended versions: start arco, optional pizzicato middle, then return to arco.
 
-   Opening motif A (recognisable hook):
-   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67],
-               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2],
-               amp=0.68, sus=0.42, room=0.2)
+   Reference fragment only — opening motif A (do not emit this fragment alone):
+   p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67],
+                       dur=[1,1,1,0.75,0.25,1,0.75,0.25,2],
+                       amp=0.52, sus=0.52, room=0.12, lpf=1850)
 
-   Chromatic bridge (continue the tune instead of restarting A again):
-   p1 >> brass(midinote=[70,75,74,73,72,71,72,65],
-               dur=[0.5,1,1,0.25,0.25,0.25,1,1],
-               amp=0.66, sus=0.38, room=0.2)
+   Reference fragment only — chromatic bridge (continue the tune instead of restarting A again):
+   p1 >> imperialbrass(midinote=[70,75,74,73,72,71,72,65],
+                       dur=[0.5,1,1,0.25,0.25,0.25,1,1],
+                       amp=0.5, sus=0.48, room=0.12, lpf=1900)
 
-   B answer phrase (second idea / response):
-   p1 >> brass(midinote=[66,63,66,70,67,70,76,75,74,70,66,63,70,67],
-               dur=[1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
-               amp=0.68, sus=0.4, room=0.2)
+   Reference fragment only — B answer phrase (second idea / response):
+   p1 >> imperialbrass(midinote=[66,63,66,70,67,70,76,75,74,70,66,63,70,67],
+                       dur=[1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
+                       amp=0.5, sus=0.48, room=0.12, lpf=1900)
 
-   DJ recognisable arrangement (30-60 sec):
+   Canonical playable arrangement (use this shape for normal play requests, 25-45 sec):
    Clock.bpm = 108; Root.default = "G"; Scale.default = "minor"
-   d1 >> play("X.X.X.X.", sample=1, amp=0.24, room=0.1)
-   d2 >> play("..o...o.", sample=3, amp=0.14, room=0.1)
-   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67],
-               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,2],
-               amp=0.7, sus=0.4, room=0.2)
-   p2 >> dub([0,0,-2,3], dur=2, oct=3, amp=0.32, chop=var([8,0],[0.5,0.5]))
+   d1 >> play("X...X..o", dur=0.5, sample=1, amp=0.2, room=0.08)
+   p1 >> brass(midinote=[67,67,67,63,70,67,63,70,67,70,75,74,73,72,71,72,65,66,63,66,70,67,70,76,75,74,70,66,63,70,67],
+               dur=[1,1,1,0.75,0.25,1,0.75,0.25,2,0.5,1,1,0.25,0.25,0.25,1,1,1,1,0.25,1,1,0.25,2,1,1,1,0.75,0.25,1,2],
+               amp=0.5, sus=0.46, room=0.1, lpf=1750)
+   p2 >> marchstrings(midinote=[43,43,43,43,39,39,39,39,43,43,46,46],
+                      dur=[1,1,1,1,1,1,1,1,1,1,2,2], amp=0.22, sus=1.1, lpf=1200)
+   p3 >> organ(midinote=[43,46,50], dur=8, amp=0.09, sus=6, room=0.22)
    ⚠️ Melody is the star — if you add bass/drums, keep them quieter than the march motif.
+   ⚠️ The canonical phrase must include the B-answer tail `76,75,74,70,66,63,70,67`; stopping before that still sounds incomplete.
 
    Extended / concert-like variant:
    - Use 3 voices max: melody + lower harmony / bass + light march drums.
@@ -696,16 +718,23 @@ Correct layering example (with proper balance + sidechain + swing):
                dur=[0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,2],
                amp=0.65, room=0.2)
 
-🎵 STRANGER THINGS (Intro Theme — Hawkins):
+🎵 Stranger Things (Intro Theme — Hawkins):
    Clock.bpm = 83; Root.default = "C"; Scale.default = "major"
-   d1 >> play("X-X---", dur=0.5, sample=2, amp=0.25)                      # сердцебиение: два удара + пауза
-   p1 >> space(midinote=[48,52,55,59,62,59,55,52], dur=0.5, amp=0.3,      # lead ARP — C3 E3 G3 B3 D4 вверх/вниз
-               room=0.5, distort=0.3, hpf=200)
-   p2 >> dub(midinote=[36,40,43,47,50,47,43,40], dur=1, amp=0.25,          # бас — те же ступени, октавой ниже
-             room=0.3)
-   p3 >> strings(midinote=[52,55,59], dur=8, amp=0.15, sus=8, room=0.8)   # пэд E3-G3-B3 (жуткий аккорд)
-   ⚠️ Ужас-тембр: space + distort=0.3-0.5 + hpf=150-300 + room=0.6-0.9
-   ⚠️ Сердцебиение "X-X---" dur=0.5 при BPM=83 — КРИТИЧНО для характера!
+   d1 >> play("xx..", dur=0.25, sample=6, amp=0.32,
+              amplify=var([0,1,0],[4,40,4]))                                 # heartbeat pulse; enters after intro and exits before the end
+   p1 >> retrobass([0,2,4,6,7,6,4,2], oct=4, dur=0.25, amp=0.28,
+                   lpf=500, amplify=var([0,1,0],[4,38,6]))                   # fixed bass ostinato; motoric, not slow
+   p2 >> strangerarp([0,2,4,6,7,6,4,2], oct=3, dur=0.25, amp=0.24,
+                     lpf=linvar([100,1000],10), room=0.28,
+                     amplify=var([0,1,0],[4,38,6]))                          # same pitch sequence above the bass, supersaw-like motion
+   p3 >> strangerpulsepad([0,2,4], oct=5, dur=8, sus=8, amp=0.16, lpf=900,
+                          amplify=var([1,1,0],[4,38,6]))                     # opening pad; present from the start, then fade out
+   ⚠️ For this reference, use one execute_music_code pass for the core arrangement: `d1 + p1 + p2 + p3`. Do not add a second atmospheric pass. Не добавляй второй atmospheric pass поверх.
+   ⚠️ Stay within d1 and p1-p3. Do not use p4 or d4 for Stranger Things.
+   ⚠️ Не используй `follow()` здесь: он мажет hook и уводит от референса.
+   ⚠️ Bass и arp обязаны использовать один и тот же детерминированный паттерн `[0,2,4,6,7,6,4,2]` с dur=0.25.
+   ⚠️ Не подменяй heartbeat на произвольные sample letters вроде `A` или `i`; для этого трека держи простой pulse без лишних snare/hat слоев.
+   ⚠️ Если очень нужен редкий accent layer, используй только короткие вкрапления `strangerbrass` или `flute`, не отдельный постоянный player.
 
 �🎤 VOCAL RULE:
 ✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!

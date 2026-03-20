@@ -25,12 +25,6 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 # Тяжёлые зависимости, Python runtime, STT/TTS модели, ReSpeaker drivers и
 # audio_common_msgs уже собраны в voice-base. Здесь остаётся только app-layer.
 
-# Патч brass.scd в renardo_lib — опубликованный пакет содержит git merge conflict маркеры
-# которые вызывают "syntax error, unexpected BINOP" в sclang при компиляции SynthDef.
-# Оставляем версию 03b34654 (с параметром atk и metadata, использует только стандартный RLPF).
-COPY docker/vision/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
-RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
-
 # Renardo sample packs вынесены в отдельный voice-resources image.
 # Это не инвалидирует app-layer при изменениях исходников voice/animations.
 
@@ -93,6 +87,11 @@ COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
 COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
 COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
 
+# После копирования Python исходников можно переиспользовать patch helper для
+# ремонта broken Renardo SynthDef-ов в установленном пакете.
+COPY docker/vision/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
+RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
+
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
 COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
@@ -101,6 +100,7 @@ COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
 # sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
 # на порту 57120 для получения запросов на компиляцию SynthDef-ов от renardo.
 COPY docker/vision/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
+COPY docker/vision/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ

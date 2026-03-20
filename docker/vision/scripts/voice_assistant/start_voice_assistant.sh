@@ -72,13 +72,40 @@ echo "=========================================="
 # sclang слушает OSC /foxdot на порту 57120
 # Renardo посылает пути к .scd файлам → sclang компилирует → /d_recv → scsynth
 if command -v sclang > /dev/null 2>&1; then
+    if RENARDO_SCLANG_DIR=$(python3 -c 'import renardo_lib; from pathlib import Path; print(Path(renardo_lib.__file__).resolve().parent / "SynthDefManagement" / "sclang_code" / "scsynth")' 2>/dev/null); then
+        echo "Renardo SynthDef dir: ${RENARDO_SCLANG_DIR}"
+        sed "s|__RENARDO_SCLANG_DIR__|${RENARDO_SCLANG_DIR}|g" /ws/foxdot_init.sc > /tmp/foxdot_init_resolved.sc
+    else
+        echo "⚠ Не удалось определить путь к Renardo SynthDefs"
+        cp /ws/foxdot_init.sc /tmp/foxdot_init_resolved.sc
+    fi
     echo "Запуск sclang с FoxDot OSCdef..."
     QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox \
-        sclang -i none /ws/foxdot_init.sc > /tmp/sclang.log 2>&1 &
+        sclang -i none /tmp/foxdot_init_resolved.sc > /tmp/sclang.log 2>&1 &
     SCLANG_PID=$!
     echo "sclang запущен (PID: ${SCLANG_PID})"
     # Ждём 5с чтобы sclang подключился к scsynth и зарегистрировал OSCdef
     sleep 5
+    if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
+        echo "Проверка music stack readiness..."
+        if python3 /ws/src/rob_box_voice/scripts/validate_music_stack.py \
+            /tmp/sclang.log \
+            --critical-synth strings \
+            --critical-synth wobblebass \
+            --critical-synth pianovel \
+            --critical-synth warmpad \
+            --critical-synth retrobass \
+            --critical-synth supersawlead \
+            --critical-synth imperialbrass \
+            --critical-synth marchstrings \
+            --critical-synth strangerpulsepad \
+            --critical-synth strangerarp \
+            --critical-synth strangerbrass; then
+            echo "✓ Music stack validation passed"
+        else
+            echo "⚠ Music stack validation reported degraded runtime; voice assistant continues in reduced music mode"
+        fi
+    fi
     echo "sclang готов"
 else
     echo "⚠ sclang не найден — музыкальный синтез недоступен"
