@@ -176,7 +176,7 @@
       history_max_turns: 20  # Скользящее окно: 20 пар (user+assistant) = 40 сообщений
       dialogue_timeout: 300.0  # Таймаут сессии: 5 минут без wake word → IDLE
       llm_timeout_sec: 90.0    # Таймаут одного LLM-вызова (total = ×3 = 270s)
-      faq_mode_enabled: false
+      faq_mode_enabled: true
       faq_event_config_file: "/config/voice_assistant/event_mode.yaml"
 
       # Тайминги
