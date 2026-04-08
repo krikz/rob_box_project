@@ -142,6 +142,9 @@
         sample_rate: 16000
         use_for_important: true  # Использовать для важных сообщений
 
+      # Громкость
+      volume_db: -15.0
+
       # Кэш
       cache_enabled: true
       cache_dir: "/cache/tts"
