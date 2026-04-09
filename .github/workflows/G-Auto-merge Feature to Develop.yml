@@ -9,6 +9,9 @@ on:
       - 'feat/**'
       - 'copilot/**'
 
+permissions:
+  contents: read
+
 jobs:
   # Шаг 1: Определяем что менялось
   detect-changes:

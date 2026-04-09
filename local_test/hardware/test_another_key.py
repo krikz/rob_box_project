@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-import json, time
-from openai import OpenAI
+import json
+import os
+import time
 from pathlib import Path
 
-# НОВЫЙ ключ
-api_key = "sk-2d76437e8f89455291c268409669db02"
+from openai import OpenAI
+
+api_key = os.getenv("DEEPSEEK_API_KEY")
+if not api_key:
+    raise SystemExit("Set DEEPSEEK_API_KEY before running this script.")
 
 # Загружаем БОЛЬШОЙ prompt
 prompt_file = Path("src/rob_box_voice/prompts/master_prompt_simple.txt")
@@ -12,7 +16,7 @@ with open(prompt_file, "r", encoding="utf-8") as f:
     system_prompt = f.read()
 
 print(f"✅ Prompt: {len(system_prompt)} байт (~{len(system_prompt)//4} токенов)")
-print(f"🔑 API Key: {api_key[:15]}...\n")
+print("🔑 API Key loaded from DEEPSEEK_API_KEY\n")
 
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=30.0)
 

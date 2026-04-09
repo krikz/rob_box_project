@@ -20,6 +20,9 @@ on:
   workflow_dispatch:  # Ручной запуск (вкладка Actions -> Build Vision Pi Services -> Run workflow)
   workflow_call:      # Вызов из других workflow (например, build-all.yml)
 
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box

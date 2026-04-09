@@ -25,6 +25,8 @@ on:
         type: boolean
         default: false
 
+permissions: {}
+
 jobs:
   deprecation-notice:
     runs-on: ubuntu-latest
