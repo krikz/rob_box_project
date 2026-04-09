@@ -9,6 +9,8 @@ Execute plan by dispatching fresh subagent per task, with two-stage review after
 
 **Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration
 
+**RLM context rule:** The controller should PEEK at the plan once, create the task list, and load only the current task text plus minimal scene-setting context for each subagent.
+
 ## When to Use
 
 ```dot
@@ -56,12 +58,12 @@ digraph process {
         "Mark task complete in TodoWrite" [shape=box];
     }
 
-    "Read plan, extract all tasks with full text, note context, create TodoWrite" [shape=box];
+    "PEEK at plan, extract task list, load current task text + needed context, create TodoWrite" [shape=box];
     "More tasks remain?" [shape=diamond];
     "Dispatch final code reviewer subagent for entire implementation" [shape=box];
     "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
-    "Read plan, extract all tasks with full text, note context, create TodoWrite" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "PEEK at plan, extract task list, load current task text + needed context, create TodoWrite" -> "Dispatch implementer subagent (./implementer-prompt.md)";
     "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
     "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
@@ -93,14 +95,13 @@ digraph process {
 ```
 You: I'm using Subagent-Driven Development to execute this plan.
 
-[Read plan file once: docs/plans/feature-plan.md]
-[Extract all 5 tasks with full text and context]
-[Create TodoWrite with all tasks]
+[PEEK plan structure once: docs/plans/feature-plan.md]
+[Create TodoWrite from task titles and dependencies]
 
 Task 1: Hook installation script
 
-[Get Task 1 text and context (already extracted)]
-[Dispatch implementation subagent with full task text + context]
+[Load Task 1 section + minimal context]
+[Dispatch implementation subagent with current task section + context]
 
 Implementer: "Before I begin - should the hook be installed at user or system level?"
 
@@ -123,8 +124,8 @@ Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
 
 Task 2: Recovery modes
 
-[Get Task 2 text and context (already extracted)]
-[Dispatch implementation subagent with full task text + context]
+[Load Task 2 section + minimal context]
+[Dispatch implementation subagent with current task section + context]
 
 Implementer: [No questions, proceeds]
 Implementer:
@@ -178,9 +179,9 @@ Done!
 - Review checkpoints automatic
 
 **Efficiency gains:**
-- No file reading overhead (controller provides full text)
-- Controller curates exactly what context is needed
-- Subagent gets complete information upfront
+- No repeated plan-reading overhead
+- Controller curates exactly what current-task context is needed
+- Subagent gets complete information for the current task, not the whole plan upfront
 - Questions surfaced before work begins (not after)
 
 **Quality gates:**
@@ -192,7 +193,7 @@ Done!
 
 **Cost:**
 - More subagent invocations (implementer + 2 reviewers per task)
-- Controller does more prep work (extracting all tasks upfront)
+- Controller does more prep work (extracting task list and loading task text on demand)
 - Review loops add iterations
 - But catches issues early (cheaper than debugging later)
 
@@ -203,7 +204,7 @@ Done!
 - Skip reviews (spec compliance OR code quality)
 - Proceed with unfixed issues
 - Dispatch multiple implementation subagents in parallel (conflicts)
-- Make subagent read plan file (provide full text instead)
+- Make subagent reconstruct task context from the entire plan (provide current task section + minimal context instead)
 - Skip scene-setting context (subagent needs to understand where task fits)
 - Ignore subagent questions (answer before letting them proceed)
 - Accept "close enough" on spec compliance (spec reviewer found issues = not done)
