@@ -9,6 +9,8 @@ from .dialogue_manager import DialogueManager, DialogueState
 from .speech_formatter import SpeechFormatter
 from .command_parser import CommandParser, Command, IntentType
 from .conversation_history import ConversationHistory, Message
+from .faq_loader import load_faq_items
+from .faq_store import FAQStore
 
 __all__ = [
     'DialogueManager',
@@ -18,5 +20,7 @@ __all__ = [
     'Command',
     'IntentType',
     'ConversationHistory',
-    'Message'
+    'Message',
+    'load_faq_items',
+    'FAQStore',
 ]

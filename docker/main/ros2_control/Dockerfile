@@ -84,7 +84,7 @@ ENV ROS_DOMAIN_ID=0
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 ENV RUST_LOG=zenoh=info
 ENV ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-ENV ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+ENV ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
 
 # Healthcheck - проверяем что controller_manager запущен
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \

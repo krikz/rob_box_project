@@ -9,6 +9,15 @@ ROUTER_CONFIG="$SCRIPT_DIR/zenoh_local_router.json5"
 
 echo "=== Zenoh Local Router ==="
 
+cleanup() {
+    if [ -n "${ROUTER_PID:-}" ] && kill -0 "$ROUTER_PID" 2>/dev/null; then
+        kill "$ROUTER_PID" 2>/dev/null || true
+        wait "$ROUTER_PID" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT INT TERM
+
 # Убиваем старый роутер если есть
 if pgrep -fa zenohd > /dev/null 2>&1; then
     echo "Остановка старого роутера..."
@@ -65,8 +74,7 @@ else
 fi
 
 echo ""
-echo "=== Для работы в новом терминале выполни ==="
-echo "source /opt/ros/humble/setup.bash"
-echo "export RMW_IMPLEMENTATION=rmw_zenoh_cpp"
-echo "export ZENOH_SESSION_CONFIG_URI=$SCRIPT_DIR/zenoh_local_session.json5"
-echo "export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST"
+echo "Роутер работает. Оставь эту task запущенной, чтобы RViz и другие ноды видели топики."
+echo "Для остановки заверши task или нажми Ctrl+C."
+
+wait "$ROUTER_PID"

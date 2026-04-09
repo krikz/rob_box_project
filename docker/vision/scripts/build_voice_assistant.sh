@@ -31,11 +31,13 @@ fi
 echo "Building image: $IMAGE_NAME_LOCAL"
 echo "Dockerfile: $DOCKERFILE"
 echo "Context: $CONTEXT"
+echo "Base image: ghcr.io/krikz/rob_box:voice-base-humble-latest"
 echo ""
 
 docker build \
     --platform linux/arm64 \
     -t "$IMAGE_NAME_LOCAL" \
+    --build-arg BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest \
     -f "$DOCKERFILE" \
     "$CONTEXT"
 

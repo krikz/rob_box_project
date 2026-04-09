@@ -52,6 +52,7 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._active_patterns = set()
     mgr._current_preset = None
     mgr._renardo_available = renardo_available
+    mgr._renardo_last_error = None
     mgr._renardo_context = {}
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
@@ -232,6 +233,21 @@ class TestMusicManagerExecuteCode:
         assert result["success"] is False
         assert "Renardo" in result["error"]
 
+    def test_execute_retries_renardo_initialization_before_failing(self):
+        mgr = _make_manager(sc_running=True, renardo_available=False)
+
+        def _recover() -> None:
+            mgr._renardo_available = True
+            mgr._renardo_context = {}
+
+        mgr._initialize_renardo = Mock(side_effect=_recover)
+
+        with patch("builtins.exec"):
+            result = mgr.execute_code("Clock.bpm = 83")
+
+        assert result["success"] is True
+        mgr._initialize_renardo.assert_called_once()
+
     def test_execute_fails_if_code_is_dangerous(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
         result = mgr.execute_code("import os; os.system('ls')")
@@ -407,6 +423,20 @@ class TestMusicManagerGetState:
         assert state["current_preset"] is None
         assert state["pattern_history"] == {}
         assert state["active_patterns"] == []
+
+    def test_get_state_retries_renardo_initialization_when_sc_is_running(self):
+        mgr = _make_manager(sc_running=True, renardo_available=False)
+
+        def _recover() -> None:
+            mgr._renardo_available = True
+            mgr._renardo_context = {}
+
+        mgr._initialize_renardo = Mock(side_effect=_recover)
+
+        state = mgr.get_state()
+
+        assert state["renardo_available"] is True
+        mgr._initialize_renardo.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

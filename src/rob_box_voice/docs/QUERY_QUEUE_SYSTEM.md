@@ -248,7 +248,7 @@ _ask_deepseek_streaming()
 ## 📚 Связанные файлы
 
 - `src/rob_box_voice/rob_box_voice/dialogue_node.py` - основная реализация
-- `docker/vision/config/voice/voice_assistant.yaml` - конфигурация
+- `docker/vision/config/voice_assistant/voice_assistant.yaml` - конфигурация
 - `src/rob_box_voice/test/test_dialogue_node.py` - unit тесты
 - `src/rob_box_voice/docs/QUERY_QUEUE_SYSTEM.md` - эта документация
 

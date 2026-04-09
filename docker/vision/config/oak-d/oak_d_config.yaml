@@ -12,22 +12,19 @@
 #   i_enable_lazy_publisher: true — skip publishing when no subscriber
 #   i_max_q_size: 1               — minimal buffer = lower latency
 #
-# Resolution / FPS tradeoffs (2026-03-04):
-#   RGB compressed (JPEG) over Zenoh: ~0.5 MB/s at 640px 5fps (снижено с 10fps)
-#   RGB relay raw (local on Main Pi): 640*400*3*5fps = 3.8 MB/s
-#   5fps: снижена нагрузка на CPU rtabmap и Zenoh, достаточно для SLAM и навигации
-#   Visual SLAM works well at 640x400 — adequate for loop closure
-#   NOTE: i_width/i_height requires i_output_isp: false (video output, not ISP)
-#         For RGBD alignment: width + height MUST be divisible by 16! 640%16=0 ✓, 400%16=0 ✓
+# Resolution / FPS tradeoffs (2026-03-10):
+#   RGB stream now prioritizes AprilTag pose geometry over the old RTAB-Map RGBD bridge.
+#   Use ISP-based 1280x720 output to keep intrinsics consistent with a standard 16:9 path.
+#   Telegram still uses compressed transport from this topic, so 720p snapshots are acceptable.
+#   For RGBD alignment: width + height MUST be divisible by 16! 1280%16=0 ✓, 720%16=0 ✓
 
 /camera/camera:
   ros__parameters:
     camera:
       i_nn_type: none              # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
       i_pipeline_type: "RGBD"
-      i_rgb_resolution: "720p"     # Capture 720p, video output crop до 640x400
-      i_stereo_width: 640
-      i_stereo_height: 400          # Aligned to RGB video output size (must match)
+      i_stereo_width: 1280
+      i_stereo_height: 720          # Keep aligned depth geometry consistent with 1280x720 RGB output
       i_fps: 5.0                   # 5fps: снижена нагрузка на CPU/Zenoh, достаточно для SLAM (снижено с 10fps)
       i_enable_ir: false
       i_laser_dot_brightness: 0
@@ -51,11 +48,13 @@
       i_board_socket_id: 0
       i_enable_lazy_publisher: true    # не публиковать без подписчиков
       i_publish_topic: true
-      i_keep_preview_aspect_ratio: false
-      i_width: 640                     # Video output 640x400: relay 640*400*3*5fps = 3.8 MB/s
-      i_height: 400                    # 5fps: снижена нагрузка CPU rtabmap и сети
-      i_output_isp: false              # Must be false to use i_width/i_height (VIDEO output, not ISP)
-                                       # NOTE: width+height must be div by 16 for RGBD alignment!
+      i_keep_preview_aspect_ratio: true
+      i_resolution: "1080P"           # Explicit sensor mode for the ISP pipeline
+      i_width: 1280                    # ISP-scaled 1280x720 output for AprilTag pose estimation
+      i_height: 720
+      i_output_isp: true               # Use the recommended ISP path instead of custom video crop
+      i_isp_num: 2
+      i_isp_den: 3
     depth:    # rs_compat: stereo→depth (секция параметров)
       i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~1-2 MB/s compressed
       i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам

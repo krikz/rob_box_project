@@ -20,6 +20,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
+import os
 from typing import Dict, Any
 
 from .registry import MCPToolRegistry
@@ -238,21 +239,40 @@ class MCPServer(Node):
         self.registry.register(MemorySearchTool(self))
         self.registry.register(MemoryContextTool(self))
 
-        # Music tools (управление музыкой через Renardo)
+        self._register_music_tools()
+
+    def _register_music_tools(self) -> None:
+        """Регистрирует music tools, не роняя весь MCP server при частичной деградации."""
         music_max_amp = self.get_parameter("music_max_amp").value
         self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
-        music_manager = MusicManager(max_amp=music_max_amp)
-        track_library = TrackLibrary()
-        self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
+
+        try:
+            music_manager = MusicManager(max_amp=music_max_amp)
+        except Exception as exc:
+            self.get_logger().error(
+                f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
+            )
+            return
+
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
+        self.registry.register(SetDjModeTool(self))
+
+        try:
+            track_library = TrackLibrary()
+        except Exception as exc:
+            self.get_logger().error(
+                f"❌ Music library disabled: TrackLibrary init failed: {exc}"
+            )
+            return
+
+        self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
         self.registry.register(SaveTrackTool(self, track_library, music_manager))
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
-        self.registry.register(SetDjModeTool(self))
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
@@ -387,6 +407,20 @@ class MCPServer(Node):
         self.result_pub.publish(msg)
 
 
+def _recommended_executor_threads() -> int:
+    """Return a safe worker count for ROS callbacks in containerized runtime.
+
+    Mapping/navigation tools synchronously wait for action/service futures from inside
+    subscription callbacks. If the executor ends up with a single worker thread, the
+    waiting callback can starve the service response callback and create a false timeout.
+    """
+    try:
+        affinity_count = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity_count = os.cpu_count() or 0
+    return max(2, affinity_count or 0)
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = MCPServer()
@@ -394,7 +428,7 @@ def main(args=None):
     # Используем MultiThreadedExecutor для параллельной обработки callbacks
     # Это позволяет получать /voice/tts/finished пока execute() блокируется
     from rclpy.executors import MultiThreadedExecutor
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=_recommended_executor_threads())
     executor.add_node(node)
 
     try:

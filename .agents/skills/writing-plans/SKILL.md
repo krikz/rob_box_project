@@ -7,13 +7,15 @@ description: Use when you have a spec or requirements for a multi-step task, bef
 
 ## Overview
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Write focused implementation plans assuming the engineer starts with zero codebase context and questionable taste. Include exactly the context each task needs: which files to touch, what behavior to implement, what commands to run, and which docs or references to consult on demand. Break work into bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
 
 Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
 **Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
 
 **Context:** This should be run in a dedicated worktree (created by brainstorming skill).
+
+**RLM context rule:** Treat the codebase as an external environment. Plans should point to exact files, symbols, commands, and references. Do not tell the executor to load entire directories or documents up front unless a small document genuinely must be read completely.
 
 **Save plans to:** `docs/plans/YYYY-MM-DD-<feature-name>.md`
 

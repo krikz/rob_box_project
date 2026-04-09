@@ -33,7 +33,7 @@
 
 ### 2. Исправлены топики в AprilTag launch файле
 
-**docker/vision/oak-d/launch/oakd_with_apriltag.launch.py**
+**docker/vision/config/oak-d/launch/oakd_with_apriltag.launch.py**
 
 ```python
 # БЫЛО:

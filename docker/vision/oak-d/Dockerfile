@@ -17,10 +17,9 @@ RUN apt-get update && apt-get install -y \
 
 # ВАЖНО: Launch файлы и скрипты НЕ копируются в образ!
 # Они монтируются через volumes в docker-compose.yaml:
-# - ./config:/config/shared:ro (общие конфиги: zenoh, cyclonedds)
-# - ./oak-d/config:/config/oak-d:ro (конфиги oak-d)
-# - ./oak-d/launch:/oak-d/launch:ro (launch файлы)
-# - ./oak-d/scripts:/scripts:ro (скрипт запуска)
+# - ./config:/config:ro (общие конфиги: zenoh, cyclonedds)
+# - ./config/oak-d:/config/oak-d:ro (конфиги и launch файлы oak-d)
+# - ./scripts/oak-d:/scripts:ro (скрипт запуска)
 
 # CMD монтируется из volume: /scripts/start_oak_d.sh
 CMD ["/scripts/start_oak_d.sh"]

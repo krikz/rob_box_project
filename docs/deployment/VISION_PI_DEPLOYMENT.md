@@ -410,8 +410,8 @@ cd ~/rob_box_project
 
 # Backup configs + secrets
 tar -czf vision-backup-$(date +%Y%m%d).tar.gz \
-  docker/vision/config/voice/secrets.yaml \
-  docker/vision/config/voice/voice_assistant.yaml \
+   docker/vision/config/voice_assistant/secrets.yaml \
+   docker/vision/config/voice_assistant/voice_assistant.yaml \
   docker/vision/cache/tts/
 
 # Скопировать на другую машину
@@ -425,7 +425,7 @@ scp vision-backup-*.tar.gz user@backup-server:/backups/
 tar -xzf vision-backup-20251012.tar.gz
 
 # Или восстановить только secrets
-cp backup/secrets.yaml docker/vision/config/voice/
+cp backup/secrets.yaml docker/vision/config/voice_assistant/
 
 # Перезапустить сервисы
 cd docker/vision

@@ -8,8 +8,9 @@ services:
     environment:
       - RUST_LOG=zenoh=info
     volumes:
-      - ./config/zenoh_router_config.json5:/zenoh_config.json5
-    command: -c /zenoh_config.json5
+      - ./config:/config:ro
+      - ./scripts/zenoh-router:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
@@ -41,7 +42,7 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/oak-d:/scripts:ro
-      - ./oak-d/launch:/oak-d/launch:ro
+      - ./config/oak-d/launch:/config/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
       - /dev/shm:/dev/shm
     # Integrated AprilTag detection: OAK-D container now handles both camera and AprilTag detection
@@ -51,60 +52,6 @@ services:
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_oak_d.sh"]
     depends_on:
       - zenoh-router
-    restart: unless-stopped
-    labels:
-      logging: "promtail"
-
-  # === RTAB-Map rgbd_sync ===
-  # Синхронизирует RGB и Depth с OAK-D в один топик /rgbd_image и пересылает через Zenoh на Main Pi.
-  # Это уменьшает Zenoh-трафик: 1 топик RGBDImage вместо 2 отдельных сырых изображений.
-  # Main Pi (rtabmap сервис) подписывается на /rgbd_image через subscribe_rgbd:=true.
-  rtabmap-sync:
-    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_SYNC_TAG:-latest}
-    container_name: rtabmap-sync
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ROBOT_ID=${ROBOT_ID}
-      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
-      - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
-      - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
-    volumes:
-      - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
-    # Подписывается на локальные OAK-D топики (не через Zenoh), публикует /rgbd_image через Zenoh
-    # depthai_ros_driver v2 топики (v2.12.2-humble, i_rs_compat:true → color/ prefix):
-    # rgb/image       ← /camera/camera/color/image_raw
-    # depth/image     ← /camera/camera/depth/image_rect_raw
-    # rgb/camera_info ← /camera/camera/color/camera_info
-    command:
-      - /ros_scripts/ros_with_namespace.sh
-      - ros2
-      - run
-      - rtabmap_sync
-      - rgbd_sync
-      - --ros-args
-      - -r
-      - rgb/image:=camera/camera/color/image_raw
-      - -r
-      - depth/image:=camera/camera/depth/image_rect_raw
-      - -r
-      - rgb/camera_info:=camera/camera/color/camera_info
-      - -p
-      - approx_sync:=true
-      - -p
-      - approx_sync_max_interval:=0.1
-      - -p
-      - topic_queue_size:=10
-      - -p
-      - sync_queue_size:=10
-    depends_on:
-      - zenoh-router
-      - oak-d
     restart: unless-stopped
     labels:
       logging: "promtail"
@@ -186,10 +133,13 @@ services:
       rtprio: 99   # RT-приоритет для JACK
     volumes:
       - ./scripts/supercollider:/scripts:ro
-      - ./config/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
+      - ./config/audio/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
       # Shared renardo samples — supercollider должен читать WAV файлы по тому же пути что renardo
       - renardo_samples:/root/.config/renardo/samples:ro
     command: ["/scripts/start_supercollider.sh"]
+    depends_on:
+      voice-resources-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep scsynth || exit 1"]
@@ -197,6 +147,16 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+    labels:
+      logging: "promtail"
+
+  voice-resources-init:
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-resources-${ROS_DISTRO:-humble}-${VOICE_RESOURCES_TAG:-latest}
+    container_name: voice-resources-init
+    volumes:
+      - renardo_samples:/target
+    restart: "no"
     labels:
       logging: "promtail"
 
@@ -238,18 +198,17 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./scripts/voice:/scripts:ro
+      - ./scripts/voice_assistant:/scripts:ro
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
       - ./cache/tts:/cache/tts
       # ALSA dmix config (allows TTS + sound effects to play simultaneously)
-      - ./config/asound.conf:/etc/asound.conf:ro
+      - ./config/audio/asound.conf:/etc/asound.conf:ro
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
       # VoiceMemory persistent storage
       - ./data/voice:/data
-      # Shared renardo samples — должны быть доступны scsynth в supercollider контейнере
-      # start_voice_assistant.sh инициализирует этот volume из /renardo_samples_builtin/ при первом запуске
+      # Shared renardo samples — предварительно заполняются one-shot контейнером voice-resources-init
       - renardo_samples:/root/.config/renardo/samples
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
@@ -257,10 +216,14 @@ services:
       - ../../migrations:/migrations:ro
     mem_limit: 2g  # Voice Assistant + Animations
     memswap_limit: 2.5g
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_voice_assistant.sh"]
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:
-      - zenoh-router
-      - supercollider
+      zenoh-router:
+        condition: service_healthy
+      supercollider:
+        condition: service_healthy
+      voice-resources-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
@@ -376,5 +339,5 @@ services:
 volumes:
   # Shared renardo sample packs between voice-assistant (renardo) and supercollider (scsynth).
   # Without this, scsynth can't find WAV files by path → "Buffer UGen: no buffer data".
-  # Initialized on first start by start_voice_assistant.sh from /renardo_samples_builtin/.
+  # Initialized by one-shot voice-resources-init container from bundled sample image.
   renardo_samples:
