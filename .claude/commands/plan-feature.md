@@ -11,16 +11,34 @@
 
 $ARGUMENTS
 
-## Перед началом работы: прочитай ПОЛНОСТЬЮ
-1. Все файлы из указанной директории дизайна:
-   - `architecture.md`
-   - `dataflow-sequence.md`
-   - `adr.md`
-   - `testing-strategy.md`
-   - `api-contracts.md`
-2. `docs/development/PYTHON_STYLE_GUIDE.md` — стандарты кода
-3. `docs/development/DOCKER_STANDARDS.md` — стандарты Docker
-4. `.github/copilot-instructions.md` — правила проекта
+## Стратегия работы с контекстом (RLM-принцип)
+
+**Дизайн-документы — внешняя среда. Читай по необходимости, не всё сразу.**
+
+```
+THINK  → Что мне нужно знать для планирования ЭТОЙ части фичи?
+PEEK   → Первые 20-30 строк документа: понять структуру
+GREP   → Найти нужную секцию (API, тесты, архитектура)
+READ   → Прочитать только эту секцию
+ACT    → Написать соответствующую часть плана
+```
+
+✅ Начни с `README.md` дизайна → сформируй список фаз → затем читай детали по каждой  
+✅ `api-contracts.md` читай при планировании интерфейсных фаз  
+✅ `testing-strategy.md` читай при планировании тестовых фаз  
+❌ Не читай все 5 документов последовательно перед тем, как написать первую строку плана  
+
+## Перед началом работы
+1. `<дизайн-директория>/architecture.md` — прочитай **полностью** (основа для фаз)
+2. Остальные дизайн-документы — читай **по мере необходимости**:
+   - `dataflow-sequence.md` → при планировании фаз с data pipeline
+   - `adr.md` → при добавлении implementation_notes с ограничениями
+   - `testing-strategy.md` → при написании `tests_to_write` для каждой фазы
+   - `api-contracts.md` → при планировании фаз с ROS 2 топиками/Docker env vars
+3. Стандарты — читай **только нужные секции** (PEEK → GREP → READ):
+   - `docs/development/PYTHON_STYLE_GUIDE.md` → секция naming/structure
+   - `docs/development/DOCKER_STANDARDS.md` → секция volumes/network_mode
+   - `.github/copilot-instructions.md` → секция Git commits
 
 ## Принципы планирования
 

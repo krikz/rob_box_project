@@ -51,7 +51,7 @@
 
 **Обновлены файлы:**
 - `src/rob_box_voice/config/voice_assistant.yaml`
-- `docker/vision/config/voice/voice_assistant.yaml`
+- `docker/vision/config/voice_assistant/voice_assistant.yaml`
 
 **Изменения:**
 1. Sample rate: 24000 → 48000 Hz
@@ -100,7 +100,7 @@ docker/vision/voice_base/Dockerfile              | 19 ++++++---
 docker/vision/voice_assistant/Dockerfile         | 25 +++++++----
 src/rob_box_voice/rob_box_voice/tts_node.py      | 53 ++++++++++++++++------
 src/rob_box_voice/config/voice_assistant.yaml    | 10 ++++-
-docker/vision/config/voice/voice_assistant.yaml  | 10 ++++-
+docker/vision/config/voice_assistant/voice_assistant.yaml  | 10 ++++-
 docs/reports/SILERO_V5_ANALYSIS.md               | 872 новых строк
 docs/reports/SILERO_V5_MIGRATION_GUIDE.md        | 458 новых строк
 

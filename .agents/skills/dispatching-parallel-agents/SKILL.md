@@ -11,6 +11,8 @@ When you have multiple unrelated failures (different test files, different subsy
 
 **Core principle:** Dispatch one agent per independent problem domain. Let them work concurrently.
 
+**RLM context rule:** Partition work by independent domain and give each agent only the failing signals and minimal supporting context for that domain.
+
 ## When to Use
 
 ```dot
@@ -61,6 +63,13 @@ Each agent gets:
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
 
+Prefer providing:
+- exact failing test names or error messages
+- the relevant code symbols or file paths
+- only the needed test/code excerpts
+
+Avoid providing the whole suite or broad project context unless isolation is impossible.
+
 ### 3. Dispatch in Parallel
 
 ```typescript
@@ -95,7 +104,7 @@ Fix the 3 failing tests in src/agents/agent-tool-abort.test.ts:
 
 These are timing/race condition issues. Your task:
 
-1. Read the test file and understand what each test verifies
+1. Start from these failing tests and errors; read only the relevant test sections and production symbols
 2. Identify root cause - timing issues or actual bugs?
 3. Fix by:
    - Replacing arbitrary timeouts with event-based waiting
@@ -124,7 +133,7 @@ Return: Summary of what you found and what you fixed.
 ## When NOT to Use
 
 **Related failures:** Fixing one might fix others - investigate together first
-**Need full context:** Understanding requires seeing entire system
+**Need broad system context that cannot be isolated cheaply:** Understanding requires seeing the whole system
 **Exploratory debugging:** You don't know what's broken yet
 **Shared state:** Agents would interfere (editing same files, using same resources)
 

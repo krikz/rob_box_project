@@ -16,10 +16,12 @@ from .memory_skill import MemorySkill
 from .music_skill import MusicSkill
 from .navigation_skill import NavigationSkill
 from .status_skill import StatusSkill
+from .faq_skill import FAQSkill
 
 __all__ = [
     "MusicSkill",
     "NavigationSkill",
     "MemorySkill",
     "StatusSkill",
+    "FAQSkill",
 ]

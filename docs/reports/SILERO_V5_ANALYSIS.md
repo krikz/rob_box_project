@@ -490,7 +490,7 @@ tts_node:
   silero_put_yo_homo: true
 ```
 
-**Файл:** `docker/vision/config/voice/voice_assistant.yaml`
+**Файл:** `docker/vision/config/voice_assistant/voice_assistant.yaml`
 
 Аналогичные изменения для deployed конфигурации.
 
@@ -561,7 +561,7 @@ git add docker/vision/voice_base/Dockerfile
 git add docker/vision/voice_assistant/Dockerfile
 git add src/rob_box_voice/rob_box_voice/tts_node.py
 git add src/rob_box_voice/config/voice_assistant.yaml
-git add docker/vision/config/voice/voice_assistant.yaml
+git add docker/vision/config/voice_assistant/voice_assistant.yaml
 git add docs/reports/SILERO_V5_ANALYSIS.md
 git add docs/reports/SILERO_V5_UPGRADE.md
 

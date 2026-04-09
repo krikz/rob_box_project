@@ -403,7 +403,7 @@ docker/
 │   ├── lslidar/                 # Перемещён с Vision Pi (24.10.2025)
 │   ├── perception/              # Перемещён с Vision Pi (24.10.2025)
 │   ├── nav2/
-│   ├── vesc-driver/
+│   ├── ros2_control/
 │   ├── robot-state-publisher/
 │   └── micro-ros-agent/
 └── vision/                      # Vision Pi сервисы
@@ -429,7 +429,7 @@ Main Pi:
   ├─ lslidar ──────────────────┤  (перемещён с Vision Pi 24.10.2025)
   ├─ perception ───────────────┤  (перемещён с Vision Pi 24.10.2025)
   ├─ nav2 ─────────────────────┤
-  ├─ vesc-driver ──────────────┤
+    ├─ ros2-control ─────────────┤
   ├─ robot-state-publisher ────┤  (исправлен TF wrapper 24.10.2025)
   └─ micro-ros-agent ──────────┘
       └─ depends_on: zenoh-router
@@ -449,9 +449,10 @@ Vision Pi:
 | Тип данных | Размещение | Монтирование | Причина |
 |------------|------------|--------------|---------|
 | **Config files** | `docker/*/config/` | `./config:/config:ro` | Изменение без пересборки |
-| **Scripts** | `docker/*/scripts/` | `./scripts:/scripts:ro` | Быстрое обновление |
-| **Launch files** | `docker/*/*/launch/` | `./*/launch:/launch:ro` | Гибкость в настройке |
-| **Maps** | `docker/main/maps/` | `./maps:/root/.ros/rtabmap:rw` | Persistence данных |
+| **Shared helper scripts** | `docker/*/scripts/` | `./scripts:/ros_scripts:ro` | Общая runtime-логика для нескольких сервисов |
+| **Service startup scripts** | `docker/*/scripts/<service>/` | `./scripts/<service>:/scripts:ro` | Быстрое обновление service-local startup logic |
+| **Launch files** | `docker/*/config/<service>/launch/` | доступны через `./config:/config:ro` | Гибкость в настройке без пересборки |
+| **Maps** | `docker/main/maps/` | `./maps:/maps` | Persistence данных и RTAB-Map database |
 | **URDF** | `src/rob_box_description/` | Монтируется в контейнеры | Единственный источник правды |
 
 **⚠️ НЕ копируем в Dockerfile**:

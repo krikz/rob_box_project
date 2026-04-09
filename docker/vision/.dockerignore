@@ -5,6 +5,8 @@
 !apriltag/
 !lslidar/
 !oak-d/
+!voice_assistant/
+!voice_resources/
 !zenoh-router/
 
 # Исключаем ненужные файлы внутри директорий

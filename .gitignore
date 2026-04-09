@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.venv/
 build/
 # Allow docker/build directory (build machine infrastructure)
 !docker/build/
@@ -69,3 +70,6 @@ docker-compose.override.yml
 # System files
 .Trash-*/
 Thumbs.db
+
+.worktrees/
+docker/vision/config/voice_assistant/event_mode.yaml

@@ -120,7 +120,7 @@ AI агент не знает какие файлы открывать для к
 1. `docker/vision/voice_assistant/Dockerfile`
 2. `docker/vision/docker-compose.yaml` (секция voice-assistant)
 3. `src/rob_box_voice/rob_box_voice/*_node.py` (проблемная нода)
-4. `docker/vision/config/voice/voice_assistant.yaml`
+4. `docker/vision/config/voice_assistant/voice_assistant.yaml`
 
 ## Задача: CI/CD изменения
 

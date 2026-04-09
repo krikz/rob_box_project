@@ -14,9 +14,9 @@ RUN echo $(dpkg -s ros-humble-apriltag-ros | grep 'Version' | sed -r 's/Version:
 
 # ВАЖНО: Скрипты и конфиги НЕ копируются в образ!
 # Они монтируются через volumes в docker-compose.yaml:
-# - ./config:/config/shared:ro (общие конфиги: zenoh, cyclonedds)
-# - ./apriltag/config:/config/apriltag:ro (конфиг apriltag)
-# - ./apriltag/scripts:/scripts:ro (скрипт запуска)
+# - ./config:/config:ro (общие конфиги: zenoh, cyclonedds)
+# - ./config/apriltag:/config/apriltag:ro (конфиг apriltag)
+# - ./scripts/apriltag:/scripts:ro (скрипт запуска)
 
 # CMD монтируется из volume: /scripts/start_apriltag.sh
 CMD ["/scripts/start_apriltag.sh"]

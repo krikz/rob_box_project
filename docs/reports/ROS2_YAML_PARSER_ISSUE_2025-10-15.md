@@ -10,7 +10,7 @@ Voice assistant контейнер на Vision Pi (10.1.1.11) постоянно
 
 ```
 rclpy._rclpy_pybind11.RCLError: failed to initialize rcl: 
-Couldn't parse params file: '--params-file /config/voice/voice_assistant.yaml'. 
+Couldn't parse params file: '--params-file /config/voice_assistant/voice_assistant.yaml'. 
 Error: Sequence should be of same type. Value type 'double' do not belong at line_num 203
 ```
 
@@ -33,8 +33,8 @@ Error: Sequence should be of same type. Value type 'double' do not belong at lin
 
 Файл был восстановлен из чистого состояния:
 ```bash
-git show e70e3c9:docker/vision/config/voice/voice_assistant.yaml > /tmp/voice_yaml_clean.yaml
-cp /tmp/voice_yaml_clean.yaml docker/vision/config/voice/voice_assistant.yaml
+git show e70e3c9:docker/vision/config/voice_assistant/voice_assistant.yaml > /tmp/voice_yaml_clean.yaml
+cp /tmp/voice_yaml_clean.yaml docker/vision/config/voice_assistant/voice_assistant.yaml
 ```
 
 ## 🎯 Корневая причина
@@ -124,7 +124,7 @@ command_patterns:
 
 ### Файлы изменены:
 
-1. **`docker/vision/config/voice/voice_assistant.yaml`**:
+1. **`docker/vision/config/voice_assistant/voice_assistant.yaml`**:
    - RGB colors: inline arrays → proper YAML indentation
    - commands: nested dicts → plain string array
 

@@ -126,7 +126,7 @@ voice-assistant:
 
 ### Fix 3: Voice Assistant Headless Launch
 
-**Created:** `docker/vision/config/voice/voice_assistant_headless.launch.py`
+**Created:** `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
 
 Launch file **without** `animation_player_node` for Vision Pi:
 - audio_node ✅
@@ -141,7 +141,7 @@ Launch file **without** `animation_player_node` for Vision Pi:
 
 ```bash
 # Use headless launch on Vision Pi
-exec ros2 launch /config/voice/voice_assistant_headless.launch.py
+exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py
 ```
 
 ### Fix 4: Voice Assistant Dockerfile

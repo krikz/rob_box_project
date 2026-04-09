@@ -198,6 +198,101 @@ odom_frame_id:=icp_odom       # RTABMAP использует ICP odom
 | `Icp/MaxRotation` | 0.78 | Макс. поворот за итерацию (~45°) |
 | `Icp/CorrespondenceRatio` | 0.05 | Мин. доля точек с соответствием |
 
+## 📚 Официальные значения RTAB-Map
+
+Ниже собраны ключевые параметры из официальной документации RTAB-Map, которые важны для нашей текущей связки `LiDAR + ICP + landmarks`.
+
+### Reg/Strategy
+
+Официально:
+
+```text
+Reg/Strategy: 0=Vis, 1=Icp, 2=VisIcp
+```
+
+Что это значит у нас:
+- `0=Vis` — регистрация по визуальным признакам камеры
+- `1=Icp` — регистрация по scan/point cloud через ICP
+- `2=VisIcp` — комбинированная регистрация: visual + ICP
+
+В текущем стеке используется `Reg/Strategy=1`, то есть RTAB-Map делает регистрацию и loop closure через LiDAR/ICP, а AprilTag landmarks участвуют как дополнительные ограничения графа, а не как основной registration pipeline.
+
+### Icp/Strategy
+
+Официально:
+
+```text
+Icp/Strategy: 0=Point Cloud Library, 1=libpointmatcher, 2=CCCoreLib (CloudCompare)
+```
+
+Это внутренний выбор реализации самого ICP. Он не меняет архитектуру `Vis vs Icp`, а только backend ICP.
+
+### Grid/Sensor
+
+Официально:
+
+```text
+Grid/Sensor: 0=laser scan, 1=depth image(s), 2=both laser scan and depth image(s)
+```
+
+У нас используется `Grid/Sensor=0`, то есть occupancy grid строится только из LiDAR.
+
+### Optimizer/Strategy
+
+Официально:
+
+```text
+Optimizer/Strategy: 0=TORO, 1=g2o, 2=GTSAM, 3=Ceres
+```
+
+У нас зафиксирован `Optimizer/Strategy=1` (`g2o`) для более стабильной оптимизации графа в текущем режиме локализации.
+
+### RGBD/OptimizeMaxError
+
+Официально:
+
+```text
+Reject loop closures if optimization error ratio is greater than this value (0=disabled).
+Ratio is computed as absolute error over standard deviation of each link.
+```
+
+Практический смысл:
+- это не "вес AprilTag" и не "приоритет LiDAR"
+- это предохранитель, который отбрасывает слишком плохие loop closures / localization constraints
+- слишком маленькое значение делает локализацию чрезмерно консервативной
+
+### Marker-параметры для landmarks
+
+Официально важные для AprilTag/landmarks параметры:
+
+```text
+Marker/VarianceLinear
+Marker/VarianceAngular
+Marker/VarianceOrientationIgnored
+```
+
+Практический смысл:
+- `Marker/VarianceLinear` — насколько жёстко доверять линейной позиции landmark
+- `Marker/VarianceAngular` — насколько жёстко доверять ориентации landmark
+- `Marker/VarianceOrientationIgnored=true` — оптимизировать только позицию landmark без ориентации, если yaw/pitch/roll у тега шумные
+
+Для нашей задачи это ближе к "весу" AprilTag landmarks, чем `Reg/Strategy`.
+
+### Вывод для Rob Box
+
+С точки зрения RTAB-Map текущая архитектура уже жёстко LiDAR-first:
+- `Reg/Strategy=1`
+- `Grid/Sensor=0`
+- `subscribe_scan=true`
+- `icp_odometry=true`
+- `subscribe_rgbd=false`
+
+Поэтому вопрос "что сильнее, LiDAR или AprilTag?" в нашей конфигурации решается не одним параметром, а набором факторов:
+- выбором registration pipeline (`Reg/Strategy`)
+- параметрами ICP (`Icp/*`)
+- правилами принятия loop closures (`RGBD/OptimizeMaxError`)
+- дисперсиями landmark constraints (`Marker/*Variance*`)
+
 ## 🔄 Поток данных
 
 ```

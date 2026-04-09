@@ -404,7 +404,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
 **Изменения БЕЗ rebuild** (применяются мгновенно через volumes):
 - Конфиги: `docker/vision/config/**`
 - Скрипты: `docker/vision/scripts/**`
-- Launch файлы: `docker/vision/config/voice/voice_assistant_headless.launch.py`
+- Launch файлы: `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
 
 **Изменения С rebuild** (требуют GitHub Actions):
 - `Dockerfile` (установка пакетов, зависимостей)
@@ -465,7 +465,7 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
 
 # Внутри контейнера:
 apt-get update && apt-get install -y nano
-nano /config/oak_d_config.yaml
+nano /config/oak-d/oak_d_config.yaml
 exit
 
 # Перезапустить контейнер
