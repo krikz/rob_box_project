@@ -66,6 +66,72 @@ def test_render_event_instructions_includes_role_and_context() -> None:
     assert rendered.endswith("BASE PROMPT")
 
 
+def test_render_event_instructions_requires_faq_before_stylization() -> None:
+    node = _make_node()
+    node._faq_store = MagicMock()
+    node._event_profile = {
+        "name": "День открытых дверей 2026",
+        "organization": "Президентская академия",
+        "location": "Москва",
+        "date": "2026-04-12",
+        "description": "Презентация бакалавриата",
+        "robot_role": "РОББОКС — ровер-помощник",
+    }
+
+    rendered = node._render_event_instructions("BASE PROMPT")
+
+    assert "сначала подними факты из FAQ" in rendered
+    assert "рэп" in rendered
+    assert "handle_music" in rendered
+
+
+def test_build_event_faq_prefetch_context_uses_store_results() -> None:
+    node = _make_node()
+    node._event_profile = {
+        "event_id": "open-day-2026",
+        "name": "День открытых дверей 2026",
+        "robot_role": "РОББОКС — ровер-помощник",
+    }
+    node._faq_store = MagicMock()
+    node._faq_store.search.return_value = [
+        {
+            "question": "Что рассказывают про госслужбу?",
+            "answer": "На дне открытых дверей объясняют программы по госуправлению и карьерные треки.",
+            "category": "Программы",
+            "source": "faq.xlsx",
+            "score": 1.2,
+        }
+    ]
+
+    context = node._build_event_faq_prefetch_context(
+        "зачитай рэп про госслужбу в стиле синтвейв"
+    )
+
+    node._faq_store.search.assert_called_once_with(
+        query="зачитай рэп про госслужбу в стиле синтвейв",
+        event_id="open-day-2026",
+        limit=3,
+    )
+    assert "FAQ для текущего запроса уже проверен" in context
+    assert "Что рассказывают про госслужбу?" in context
+    assert "handle_music" in context
+
+
+def test_build_event_faq_prefetch_context_returns_none_without_store_matches() -> None:
+    node = _make_node()
+    node._event_profile = {
+        "event_id": "open-day-2026",
+        "name": "День открытых дверей 2026",
+        "robot_role": "РОББОКС — ровер-помощник",
+    }
+    node._faq_store = MagicMock()
+    node._faq_store.search.return_value = []
+
+    context = node._build_event_faq_prefetch_context("включи что-нибудь бодрое")
+
+    assert context is None
+
+
 def test_build_skills_adds_faq_tool_when_event_mode_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

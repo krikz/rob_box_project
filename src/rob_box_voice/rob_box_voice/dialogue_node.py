@@ -468,6 +468,14 @@ class DialogueNode(Node):
                 "Если вопрос касается мероприятия, FAQ, поступления, программы, локации или организационных деталей, "
                 "используй FAQ retrieval tool и говори по найденным данным."
             )
+            lines.append(
+                "Если пользователь просит рэп, стих, шутку, историю, песню или другой перформанс про тему мероприятия, "
+                "сначала подними факты из FAQ и только потом стилизуй ответ."
+            )
+            lines.append(
+                "Если после FAQ нужен бит или музыка, сначала получи факты, потом при необходимости вызови handle_music, "
+                "и только после этого озвучивай ответ."
+            )
         lines.append(
             "Даже если исходный ответ в FAQ длинный, озвучивай короткую, понятную, разговорную версию: 1-3 предложения."
         )
@@ -475,6 +483,53 @@ class DialogueNode(Node):
             "Если точного ответа в FAQ нет, честно скажи это и не выдумывай детали."
         )
         return "\n".join(lines) + "\n\n" + base_instructions
+
+    def _build_event_faq_prefetch_context(
+        self, user_input: str, limit: int = 3
+    ) -> Optional[str]:
+        """Prefetch relevant FAQ facts for the current event-mode user turn."""
+        if not self._faq_store or not self._event_profile:
+            return None
+
+        query = user_input.strip()
+        event_id = self._event_profile.get("event_id")
+        if not query or not event_id:
+            return None
+
+        try:
+            results = self._faq_store.search(
+                query=query,
+                event_id=event_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Event FAQ prefetch failed: {exc}")
+            return None
+
+        self.get_logger().info(
+            f"📚 Event FAQ prefetch: {len(results)} matches for '{query[:80]}'"
+        )
+        if not results:
+            return None
+
+        lines = [
+            "[EVENT FAQ PREFETCH]",
+            "FAQ для текущего запроса уже проверен. Для всех фактических утверждений о мероприятии опирайся сначала на данные ниже.",
+            "Если пользователь просит рэп, шутку, стих, историю, песню или другой стиль по теме мероприятия, сначала используй FAQ факты, а уже потом стилизуй ответ.",
+            "Если нужен бит или музыкальный фон, сначала используй факты ниже, затем при необходимости вызови handle_music, а потом озвучь ответ.",
+            "Если фактов ниже недостаточно, честно скажи, что точных деталей в FAQ не найдено, и не выдумывай их.",
+            "Найденные FAQ факты:",
+        ]
+        for index, item in enumerate(results, start=1):
+            lines.append(f"{index}. Вопрос: {item.get('question', '')}")
+            lines.append(f"   Ответ: {item.get('answer', '')}")
+            category = item.get("category")
+            if category:
+                lines.append(f"   Категория: {category}")
+            source = item.get("source")
+            if source:
+                lines.append(f"   Источник: {source}")
+        return "\n".join(lines)
 
     def _render_faq_skill_prompt(self, base_prompt: str) -> str:
         """Prepend event details to the FAQ sub-agent prompt."""
@@ -1493,14 +1548,18 @@ class DialogueNode(Node):
                 self.get_logger().warning(f"⚠️ memory save_turn(user) failed: {exc}")
 
         try:
+            faq_prefetch_context = self._build_event_faq_prefetch_context(user_input)
             with self._conv_lock:
                 # Build input: stored history (SDK to_input_list format) + current user message.
                 # History contains real function_call / function_call_output items, so the
                 # LLM sees actual tool invocations and cannot pattern-complete them as text.
                 # This eliminates the DeepSeek multi-turn FC pattern-completion bug.
-                input_list = list(self._conversation) + [
-                    {"role": "user", "content": user_input}
-                ]
+                input_list = list(self._conversation)
+                if faq_prefetch_context:
+                    input_list.append(
+                        {"role": "system", "content": faq_prefetch_context}
+                    )
+                input_list.append({"role": "user", "content": user_input})
 
             if self._agent is None:
                 self.get_logger().error("❌ Agent not initialised")
