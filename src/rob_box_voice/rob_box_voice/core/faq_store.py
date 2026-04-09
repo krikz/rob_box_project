@@ -45,7 +45,9 @@ class FAQStore:
         if migrations_dir:
             self.migrations_dir = migrations_dir
         else:
-            self.migrations_dir = os.path.normpath(
+            # Try Docker volume mount path first (/migrations), then fall back to repo-relative path
+            _docker_mount = "/migrations"
+            _repo_relative = os.path.normpath(
                 os.path.join(
                     os.path.dirname(__file__),
                     "..",
@@ -55,6 +57,7 @@ class FAQStore:
                     "migrations",
                 )
             )
+            self.migrations_dir = _docker_mount if os.path.isdir(_docker_mount) else _repo_relative
 
         self._run_migrations()
         self._vec_loaded = self._load_vec_extension()
@@ -75,6 +78,9 @@ class FAQStore:
     def _run_migrations(self) -> None:
         with self.lock:
             current = self.conn.execute("PRAGMA user_version").fetchone()[0]
+
+        if not os.path.isdir(self.migrations_dir):
+            return
 
         for filename in sorted(
             f for f in os.listdir(self.migrations_dir) if f.endswith(".sql")

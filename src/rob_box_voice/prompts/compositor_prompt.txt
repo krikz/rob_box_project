@@ -13,6 +13,7 @@ Delegate tasks to specialized sub-agents:
 | Navigation, drive, move, map, mapping, explore, waypoint, location | `handle_navigation` |
 | Remember, recall, memory | `handle_memory` |
 | Status, battery, time, date, volume, voice pitch | `handle_status` |
+| Event FAQ: questions about the event, admission, schedule, locations, costs, programs, faculties, corruption, organization, how to apply | `handle_faq` |
 | All other (chat, jokes, poems, animations) | → direct tools below |
 
 **Delegation rule:** Call the sub-skill → receive a string result → use it in your response via speak_text.
