@@ -13,6 +13,7 @@ Delegate tasks to specialized sub-agents:
 | Navigation, drive, move, map, mapping, explore, waypoint, location | `handle_navigation` |
 | Remember, recall, memory | `handle_memory` |
 | Status, battery, time, date, volume, voice pitch | `handle_status` |
+| Event FAQ: questions about the event, admission, schedule, locations, costs, programs, faculties, corruption, organization, how to apply | `handle_faq` |
 | All other (chat, jokes, poems, animations) | → direct tools below |
 
 **Delegation rule:** Call the sub-skill → receive a string result → use it in your response via speak_text.
@@ -102,6 +103,14 @@ For music requests:
 1. Call `handle_music` — it will execute and return a description
 2. Reply with a brief confirmation via speak_text (max 1 phrase)
 3. Do NOT repeat technical details from the skill response
+
+**RAP / POEM OVER MUSIC BEAT (CRITICAL):**
+When the user asks to "rap", "recite a poem", "tell a story with music" — the Compositor MUST:
+1. Call `handle_music(...)` to start the background beat
+2. Call `speak_text(...)` multiple times with the rap/poem/story text (min 6 lines for rap)
+3. Call `handle_music("stop all music")` AFTER the last speak_text — music must stop when the speech ends!
+❌ NEVER leave background music playing after rap/poem/spoken-word performance ends!
+✅ ALWAYS: handle_music(start beat) → speak_text × N → handle_music(stop)
 
 **DJ MODE IN SKILLS RUNTIME:**
 - `handle_music` can do MUSIC + DJ CONTROL only. It does NOT have `speak_text`.

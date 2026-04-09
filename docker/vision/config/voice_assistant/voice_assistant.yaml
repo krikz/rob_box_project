@@ -1,5 +1,16 @@
 /**:
   ros__parameters:
+    # ===== FLAT OVERRIDES (доходят до нод напрямую) =====
+    # NB: вложенные секции ниже (audio_node:, dialogue_node: и т.д.)
+    # создают DOTTED имена (напр. dialogue_node.faq_mode_enabled),
+    # которые ноды НЕ читают. Параметры, которые ДОЛЖНЫ дойти,
+    # указываем здесь flat.
+    faq_mode_enabled: true
+    faq_event_config_file: "/config/voice_assistant/event_mode.yaml"
+    history_excluded_tools:
+      - "handle_navigation"
+      - "handle_music"
+
     # ===== Audio Node =====
     audio_node:
       # Устройство
@@ -142,6 +153,9 @@
         sample_rate: 16000
         use_for_important: true  # Использовать для важных сообщений
 
+      # Громкость
+      volume_db: -15.0
+
       # Кэш
       cache_enabled: true
       cache_dir: "/cache/tts"
@@ -176,6 +190,8 @@
       history_max_turns: 20  # Скользящее окно: 20 пар (user+assistant) = 40 сообщений
       dialogue_timeout: 300.0  # Таймаут сессии: 5 минут без wake word → IDLE
       llm_timeout_sec: 90.0    # Таймаут одного LLM-вызова (total = ×3 = 270s)
+      faq_mode_enabled: true
+      faq_event_config_file: "/config/voice_assistant/event_mode.yaml"
 
       # Тайминги
       response_timeout_sec: 30.0

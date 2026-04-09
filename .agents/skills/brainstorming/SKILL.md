@@ -21,7 +21,7 @@ Every project goes through this process. A todo list, a single-function utility,
 
 ## Checklist
 
-You MUST create a task for each of these items and complete them in order:
+You MUST create a task for each applicable item below. Default order is 1 → 6, but do not force a step that is genuinely out of scope for the user's ask:
 
 1. **Explore project context** — check files, docs, recent commits
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria

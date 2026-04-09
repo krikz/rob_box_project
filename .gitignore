@@ -72,3 +72,4 @@ docker-compose.override.yml
 Thumbs.db
 
 .worktrees/
+docker/vision/config/voice_assistant/event_mode.yaml

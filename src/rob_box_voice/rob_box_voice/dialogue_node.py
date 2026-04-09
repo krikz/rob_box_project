@@ -18,14 +18,10 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool, String
-
+import yaml
 from agents import Agent, Runner, function_tool
 from agents.exceptions import MaxTurnsExceeded
 from agents.items import ToolCallItem
@@ -33,6 +29,10 @@ from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from httpx import Timeout as HttpxTimeout
 from openai import APIConnectionError, AsyncOpenAI
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, String
 
 from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
@@ -47,7 +47,18 @@ except ImportError:
     _VOICE_MEMORY_AVAILABLE = False
 
 try:
-    from .skills import MusicSkill, NavigationSkill, MemorySkill, StatusSkill
+    from .core.faq_loader import load_faq_items as _load_faq_items
+    from .core.faq_store import FAQStore as _FAQStore
+
+    _FAQ_MODE_AVAILABLE = True
+except ImportError:
+    _load_faq_items = None  # type: ignore[assignment]
+    _FAQStore = None  # type: ignore[assignment,misc]
+    _FAQ_MODE_AVAILABLE = False
+
+try:
+    from .skills import (FAQSkill, MemorySkill, MusicSkill, NavigationSkill,
+                         StatusSkill)
 
     _SKILLS_AVAILABLE = True
 except ImportError:
@@ -93,6 +104,8 @@ class DialogueNode(Node):
         self.declare_parameter("enable_fallback", False)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
+        self.declare_parameter("faq_mode_enabled", False)
+        self.declare_parameter("faq_event_config_file", "")
         # Tool names whose turns are excluded from conversation history.
         # Prevents DeepSeek V3 multi-turn FC pattern-completion bug where the
         # model sees e.g. save_waypoint(X)->"X saved!" in history and skips
@@ -179,9 +192,13 @@ class DialogueNode(Node):
             depth=10,
         )
 
-        self._response_pub = self.create_publisher(String, "/voice/dialogue/response", 10)
+        self._response_pub = self.create_publisher(
+            String, "/voice/dialogue/response", 10
+        )
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
-        self._sound_trigger_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+        self._sound_trigger_pub = self.create_publisher(
+            String, "/voice/sound/trigger", 10
+        )
         self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)
 
         self.create_subscription(
@@ -191,7 +208,11 @@ class DialogueNode(Node):
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg
         )
         self.create_subscription(
-            String, "/voice/tts/finished", self._on_tts_finished_dlg, 10, callback_group=cbg
+            String,
+            "/voice/tts/finished",
+            self._on_tts_finished_dlg,
+            10,
+            callback_group=cbg,
         )
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10, callback_group=cbg
@@ -212,6 +233,11 @@ class DialogueNode(Node):
         # ── Long-term memory (voice_turns DB) ─────────────────────────
         self._voice_memory = None
         self._init_voice_memory()
+
+        # ── Event FAQ mode ──────────────────────────────────────────────
+        self._event_profile: Optional[Dict[str, Any]] = self._load_event_profile()
+        self._faq_store = None
+        self._init_faq_store()
 
         # ── Build agent ──────────────────────────────────────────────
         self._agent: Optional[Agent] = None
@@ -245,7 +271,9 @@ class DialogueNode(Node):
             path = os.path.join(pkg, "prompts", prompt_file)
             with open(path, "r", encoding="utf-8") as fh:
                 prompt = fh.read()
-            self.get_logger().info(f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes)")
+            self.get_logger().info(
+                f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes)"
+            )
             return prompt
         except Exception as exc:
             self.get_logger().warning(f"⚠️ Prompt not found ({exc}) — using default")
@@ -268,7 +296,9 @@ class DialogueNode(Node):
             path = os.path.join(pkg, "prompts", filename)
             with open(path, "r", encoding="utf-8") as fh:
                 content = fh.read()
-            self.get_logger().info(f"✅ Prompt loaded: {filename} ({len(content)} bytes)")
+            self.get_logger().info(
+                f"✅ Prompt loaded: {filename} ({len(content)} bytes)"
+            )
             return content
         except Exception as exc:
             self.get_logger().warning(f"⚠️ Prompt '{filename}' not found: {exc}")
@@ -293,17 +323,23 @@ class DialogueNode(Node):
 
     def _resolve_model(self) -> str:
         val = self.get_parameter("model").value
-        return val or self.PROVIDERS.get(self._provider, {}).get("model", "deepseek-chat")
+        return val or self.PROVIDERS.get(self._provider, {}).get(
+            "model", "deepseek-chat"
+        )
 
     def _init_voice_memory(self) -> None:
         """Init VoiceMemory for persistent turn logging. Fails silently."""
         if not _VOICE_MEMORY_AVAILABLE:
-            self.get_logger().warning("⚠️ VoiceMemory unavailable — turn logging disabled")
+            self.get_logger().warning(
+                "⚠️ VoiceMemory unavailable — turn logging disabled"
+            )
             return
         db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         try:
-            self._voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            self._voice_memory = _VoiceMemory(
+                db_path=db_path, ollama_base_url=ollama_url
+            )
             stats = self._voice_memory.get_stats()
             self.get_logger().info(
                 f"🧠 DialogueNode VoiceMemory: {db_path} "
@@ -312,6 +348,208 @@ class DialogueNode(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ VoiceMemory init failed: {exc}")
             self._voice_memory = None
+
+    def _load_event_profile(self) -> Optional[Dict[str, Any]]:
+        """Load event FAQ mode configuration from YAML when enabled."""
+        if not self.get_parameter("faq_mode_enabled").value:
+            return None
+
+        config_file = self.get_parameter("faq_event_config_file").value
+        if not config_file:
+            self.get_logger().warning(
+                "⚠️ FAQ mode enabled but faq_event_config_file is empty"
+            )
+            return None
+
+        config_path = Path(config_file).expanduser()
+        if not config_path.is_absolute():
+            config_path = config_path.resolve()
+        if not config_path.exists():
+            self.get_logger().warning(f"⚠️ FAQ event config not found: {config_path}")
+            return None
+
+        try:
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            self.get_logger().error(f"❌ Failed to read FAQ event config: {exc}")
+            return None
+
+        event = payload.get("event", payload) if isinstance(payload, dict) else None
+        if not isinstance(event, dict):
+            self.get_logger().warning(
+                "⚠️ FAQ event config must be a mapping or contain 'event:' block"
+            )
+            return None
+
+        name = str(event.get("name", "")).strip()
+        faq_file = str(event.get("faq_file", "")).strip()
+        if not name or not faq_file:
+            self.get_logger().warning(
+                "⚠️ FAQ event config requires 'name' and 'faq_file'"
+            )
+            return None
+
+        faq_path = Path(faq_file).expanduser()
+        if not faq_path.is_absolute():
+            faq_path = (config_path.parent / faq_path).resolve()
+
+        date = str(event.get("date", "")).strip()
+        event_id = str(event.get("id", "")).strip() or self._slugify_event_id(
+            f"{name}-{date or faq_path.stem}"
+        )
+
+        return {
+            "event_id": event_id,
+            "name": name,
+            "organization": str(event.get("organization", "")).strip(),
+            "location": str(event.get("location", "")).strip(),
+            "date": date,
+            "description": str(event.get("description", "")).strip(),
+            "robot_role": str(
+                event.get("robot_role", "РОББОКС — ровер-помощник")
+            ).strip(),
+            "intro_identity": str(event.get("intro_identity", "")).strip(),
+            "faq_file": str(faq_path),
+        }
+
+    def _slugify_event_id(self, value: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
+        return slug or "faq-event"
+
+    def _init_faq_store(self) -> None:
+        """Load FAQ knowledge for the active event when FAQ mode is enabled."""
+        if not self._event_profile:
+            return
+        if not _FAQ_MODE_AVAILABLE:
+            self.get_logger().warning(
+                "⚠️ FAQ mode modules unavailable — FAQ retrieval disabled"
+            )
+            return
+
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        try:
+            self._faq_store = _FAQStore(db_path=db_path, ollama_base_url=ollama_url)
+            items = _load_faq_items(self._event_profile["faq_file"])
+            loaded_count = self._faq_store.replace_items(
+                event_id=self._event_profile["event_id"],
+                items=items,
+            )
+            self.get_logger().info(
+                f"📚 FAQ mode ready: event={self._event_profile['event_id']} rows={loaded_count}"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"❌ FAQ mode init failed: {exc}")
+            self._faq_store = None
+
+    def _render_event_instructions(self, base_instructions: str) -> str:
+        """Prepend active event context to agent instructions."""
+        if not self._event_profile:
+            return base_instructions
+
+        profile = self._event_profile
+        lines = [
+            "[EVENT MODE]",
+            f"Ты работаешь на мероприятии как {profile['robot_role']}.",
+            f"Мероприятие: {profile['name']}.",
+        ]
+        if profile.get("organization"):
+            lines.append(f"Организация: {profile['organization']}.")
+        if profile.get("location"):
+            lines.append(f"Локация: {profile['location']}.")
+        if profile.get("date"):
+            lines.append(f"Дата: {profile['date']}.")
+        if profile.get("description"):
+            lines.append(f"Описание: {profile['description']}")
+        if profile.get("intro_identity"):
+            lines.append(f"Самоидентификация: {profile['intro_identity']}")
+        if self._faq_store:
+            lines.append(
+                "Если вопрос касается мероприятия, FAQ, поступления, программы, локации или организационных деталей, "
+                "используй FAQ retrieval tool и говори по найденным данным."
+            )
+            lines.append(
+                "Если пользователь просит рэп, стих, шутку, историю, песню или другой перформанс про тему мероприятия, "
+                "сначала подними факты из FAQ и только потом стилизуй ответ."
+            )
+            lines.append(
+                "Если после FAQ нужен бит или музыка, сначала получи факты, потом при необходимости вызови handle_music, "
+                "и только после этого озвучивай ответ."
+            )
+        lines.append(
+            "Даже если исходный ответ в FAQ длинный, озвучивай короткую, понятную, разговорную версию: 1-3 предложения."
+        )
+        lines.append(
+            "Если точного ответа в FAQ нет, честно скажи это и не выдумывай детали."
+        )
+        return "\n".join(lines) + "\n\n" + base_instructions
+
+    def _build_event_faq_prefetch_context(
+        self, user_input: str, limit: int = 3
+    ) -> Optional[str]:
+        """Prefetch relevant FAQ facts for the current event-mode user turn."""
+        if not self._faq_store or not self._event_profile:
+            return None
+
+        query = user_input.strip()
+        event_id = self._event_profile.get("event_id")
+        if not query or not event_id:
+            return None
+
+        try:
+            results = self._faq_store.search(
+                query=query,
+                event_id=event_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Event FAQ prefetch failed: {exc}")
+            return None
+
+        self.get_logger().info(
+            f"📚 Event FAQ prefetch: {len(results)} matches for '{query[:80]}'"
+        )
+        if not results:
+            return None
+
+        lines = [
+            "[EVENT FAQ PREFETCH]",
+            "FAQ для текущего запроса уже проверен. Для всех фактических утверждений о мероприятии опирайся сначала на данные ниже.",
+            "Если пользователь просит рэп, шутку, стих, историю, песню или другой стиль по теме мероприятия, сначала используй FAQ факты, а уже потом стилизуй ответ.",
+            "Если нужен бит или музыкальный фон, сначала используй факты ниже, затем при необходимости вызови handle_music, а потом озвучь ответ.",
+            "Если фактов ниже недостаточно, честно скажи, что точных деталей в FAQ не найдено, и не выдумывай их.",
+            "Найденные FAQ факты:",
+        ]
+        for index, item in enumerate(results, start=1):
+            lines.append(f"{index}. Вопрос: {item.get('question', '')}")
+            lines.append(f"   Ответ: {item.get('answer', '')}")
+            category = item.get("category")
+            if category:
+                lines.append(f"   Категория: {category}")
+            source = item.get("source")
+            if source:
+                lines.append(f"   Источник: {source}")
+        return "\n".join(lines)
+
+    def _render_faq_skill_prompt(self, base_prompt: str) -> str:
+        """Prepend event details to the FAQ sub-agent prompt."""
+        if not self._event_profile:
+            return base_prompt
+
+        profile = self._event_profile
+        lines = [
+            f"Активное мероприятие: {profile['name']}",
+            f"Роль робота: {profile['robot_role']}",
+        ]
+        if profile.get("organization"):
+            lines.append(f"Организация: {profile['organization']}")
+        if profile.get("location"):
+            lines.append(f"Локация: {profile['location']}")
+        if profile.get("date"):
+            lines.append(f"Дата: {profile['date']}")
+        if profile.get("description"):
+            lines.append(f"Описание: {profile['description']}")
+        return "\n".join(lines) + "\n\n" + base_prompt
 
     def _build_agent(self) -> None:
         """(Re)build the Agent — also called after fallback provider switch."""
@@ -332,7 +570,11 @@ class DialogueNode(Node):
 
             if USE_SKILLS and _SKILLS_AVAILABLE and self._mcp:
                 # ── Compositor mode: Compositor + 4 skill sub-agents ────────
-                instructions = self._load_prompt_file("compositor_prompt.txt") or self._system_prompt
+                instructions = (
+                    self._load_prompt_file("compositor_prompt.txt")
+                    or self._system_prompt
+                )
+                instructions = self._render_event_instructions(instructions)
                 agent_name = "Compositor"
                 tools = self._make_output_tools() + self._build_skills(model)
                 self.get_logger().info(
@@ -342,8 +584,10 @@ class DialogueNode(Node):
             else:
                 # ── Flat mode: single agent with all 17 tools ────────────────
                 if USE_SKILLS and not _SKILLS_AVAILABLE:
-                    self.get_logger().warning("⚠️ USE_SKILLS=true but skills module unavailable — falling back to flat mode")
-                instructions = self._system_prompt
+                    self.get_logger().warning(
+                        "⚠️ USE_SKILLS=true but skills module unavailable — falling back to flat mode"
+                    )
+                instructions = self._render_event_instructions(self._system_prompt)
                 agent_name = "RobBox"
                 tools = self._make_tools() if self._mcp else []
 
@@ -370,6 +614,9 @@ class DialogueNode(Node):
     def _make_tools(self) -> list:
         """Create @function_tool wrappers around MCP ROS2 calls."""
         mcp = self._mcp
+        samples_root = Path(
+            os.getenv("RENARDO_SAMPLES_PATH", "/root/.config/renardo/samples")
+        )
         # Captured once per tool-set build; bound to self._loop on first await.
         lock = self._output_lock
 
@@ -387,11 +634,14 @@ class DialogueNode(Node):
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст голосом. ОБЯЗАТЕЛЬНЫЙ инструмент — весь ответ ТОЛЬКО через speak_text!
             НЕЛЬЗЯ просто напечатать текст — пользователь ничего не услышит без вызова этого инструмента.
-            Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'."""
+            Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'.
+            """
             if self._run_cancelled:
                 return "CANCELLED"
             # Strip history marker prefix — LLM sometimes copies [выполнено через: ...] from history
-            text = re.sub(r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text).strip()
+            text = re.sub(
+                r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
+            ).strip()
             # Collect ALL spoken texts immediately (before lock) so that when
             # multiple speak_text calls queue on the lock, _spoken_texts already
             # has all texts for proper history saving.
@@ -399,13 +649,17 @@ class DialogueNode(Node):
             async with lock:
                 if self._run_cancelled:
                     return "CANCELLED"
-                result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+                result_str = await _call(
+                    "speak_text", {"text": text, "animation": animation}, timeout=60.0
+                )
                 # ── Wait for TTS to actually finish playing ───────────────────
                 # MCP speak_text is async (returns immediately), but we hold
                 # the output lock until TTS finishes, so the next tool call
                 # (play_sound, play_animation, etc.) only starts afterwards.
                 try:
-                    speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+                    speech_id = (
+                        json.loads(result_str).get("data", {}).get("speech_id", "")
+                    )
                 except Exception:
                     speech_id = ""
                 if speech_id:
@@ -415,7 +669,9 @@ class DialogueNode(Node):
                     try:
                         await asyncio.wait_for(event.wait(), timeout=30.0)
                     except asyncio.TimeoutError:
-                        self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                        self.get_logger().warning(
+                            f"⚠️ speak_text TTS timeout for {speech_id[:8]}"
+                        )
                     finally:
                         with self._tts_events_lock:
                             self._tts_events.pop(speech_id, None)
@@ -434,13 +690,19 @@ class DialogueNode(Node):
                 # including cleanup_playback_noise 0.1s delay).
                 # Fallback timeout = catalog duration + 2s safety margin.
                 try:
-                    duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
+                    duration = (
+                        json.loads(result_str).get("data", {}).get("duration", 1.5)
+                    )
                 except Exception:
                     duration = 1.5
                 try:
-                    await asyncio.wait_for(done_event.wait(), timeout=float(duration) + 2.0)
+                    await asyncio.wait_for(
+                        done_event.wait(), timeout=float(duration) + 2.0
+                    )
                 except asyncio.TimeoutError:
-                    self.get_logger().warning(f"⚠️ play_sound timeout waiting for 'ready': {sound}")
+                    self.get_logger().warning(
+                        f"⚠️ play_sound timeout waiting for 'ready': {sound}"
+                    )
                 finally:
                     with self._sound_event_lock:
                         self._sound_done_event = None
@@ -470,6 +732,134 @@ class DialogueNode(Node):
             return await _call("memory_search", {"query": query, "limit": limit})
 
         @function_tool
+        async def faq_search(query: str, limit: int = 3) -> str:
+            """Найти точный ответ в FAQ активного мероприятия."""
+            if not self._faq_store or not self._event_profile:
+                return json.dumps([], ensure_ascii=False)
+            event_id = self._event_profile.get("event_id") or self._slugify_event_id(
+                self._event_profile.get("name", "faq-event")
+            )
+            results = self._faq_store.search(
+                query=query, event_id=event_id, limit=limit
+            )
+            return json.dumps(results, ensure_ascii=False)
+
+        @function_tool
+        def search_samples(
+            query: str,
+            pack: str = "0_foxdot_default",
+            case: str = "lower",
+        ) -> str:
+            """Search Renardo samples by filename and return play() hints."""
+            if not samples_root.exists():
+                return json.dumps(
+                    {
+                        "error": f"Samples dir not found: {samples_root}",
+                        "hint": "Mount RENARDO_SAMPLES_PATH volume in Docker",
+                    },
+                    ensure_ascii=False,
+                )
+
+            pack_path = samples_root / pack
+            if not pack_path.exists():
+                available = [
+                    item.name for item in samples_root.iterdir() if item.is_dir()
+                ]
+                return json.dumps(
+                    {
+                        "error": f"Pack '{pack}' not found",
+                        "available_packs": available,
+                    },
+                    ensure_ascii=False,
+                )
+
+            exts = {".wav", ".aif", ".aiff", ".mp3"}
+            all_packs = sorted(
+                item.name for item in samples_root.iterdir() if item.is_dir()
+            )
+            spack_num = all_packs.index(pack) if pack in all_packs else 0
+            spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
+
+            if query.strip() == "*":
+                overview = {}
+                for folder in sorted(pack_path.iterdir()):
+                    if not folder.is_dir() or folder.name.startswith("."):
+                        continue
+                    subfolder = folder / case
+                    if not subfolder.exists():
+                        subfolder = folder
+                    count = sum(
+                        1
+                        for file_path in subfolder.iterdir()
+                        if file_path.is_file() and file_path.suffix.lower() in exts
+                    )
+                    if count:
+                        overview[folder.name] = count
+                return json.dumps(
+                    {
+                        "pack": pack,
+                        "case": case,
+                        "letters": overview,
+                        "hint": 'Search by word: search_samples("kick") or search_samples("synth", pack="1_pitchglitch_samples")',
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+
+            normalized_query = query.lower().strip()
+            results = []
+            for folder in sorted(pack_path.iterdir()):
+                if not folder.is_dir() or folder.name.startswith("."):
+                    continue
+                subfolder = folder / case
+                if not subfolder.exists():
+                    subfolder = folder
+                files = sorted(
+                    file_path
+                    for file_path in subfolder.iterdir()
+                    if file_path.is_file() and file_path.suffix.lower() in exts
+                )
+                for sample_index, file_path in enumerate(files):
+                    if normalized_query not in file_path.name.lower():
+                        continue
+                    play_letter = (
+                        folder.name.upper() if case == "upper" else folder.name
+                    )
+                    results.append(
+                        {
+                            "letter": play_letter,
+                            "sample_index": sample_index,
+                            "spack": spack_num,
+                            "filename": file_path.name,
+                            "play_code": f'd1 >> play("{play_letter}", sample={sample_index}{spack_suffix})',
+                        }
+                    )
+                if len(results) >= 30:
+                    break
+
+            if not results:
+                return json.dumps(
+                    {
+                        "query": query,
+                        "pack": pack,
+                        "found": 0,
+                        "hint": 'Try: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*"',
+                    },
+                    ensure_ascii=False,
+                )
+
+            return json.dumps(
+                {
+                    "query": query,
+                    "pack": pack,
+                    "case": case,
+                    "found": len(results),
+                    "results": results,
+                },
+                ensure_ascii=False,
+            )
+
+        @function_tool
         async def get_current_time() -> str:
             """Получить текущее время и дату."""
             return await _call("get_current_time", {})
@@ -487,19 +877,30 @@ class DialogueNode(Node):
         @function_tool
         async def navigate_to_waypoint(waypoint: str) -> str:
             """Направить робота к сохранённой точке. БЛОКИРУЕТСЯ до прибытия. Сначала проверь list_waypoints()."""
-            return await _call("navigate_to_waypoint", {"waypoint": waypoint}, timeout=130.0)
+            return await _call(
+                "navigate_to_waypoint", {"waypoint": waypoint}, timeout=130.0
+            )
 
         @function_tool
-        async def navigate_to_coordinates(x: float, y: float, theta: float = 0.0) -> str:
+        async def navigate_to_coordinates(
+            x: float, y: float, theta: float = 0.0
+        ) -> str:
             """Навигация к произвольным координатам (x, y, theta) на карте. Используй после get_current_pose() для возврата."""
-            return await _call("navigate_to_coordinates", {"x": x, "y": y, "theta": theta}, timeout=130.0)
+            return await _call(
+                "navigate_to_coordinates",
+                {"x": x, "y": y, "theta": theta},
+                timeout=130.0,
+            )
 
         @function_tool
         async def move_direction(direction: str, distance: float = 0.5) -> str:
             """Передвинуть робота. direction: 'вперёд', 'назад', 'налево', 'направо'.
-            БЛОКИРУЕТСЯ до завершения движения — speak_text вызывать ТОЛЬКО после этого."""
+            БЛОКИРУЕТСЯ до завершения движения — speak_text вызывать ТОЛЬКО после этого.
+            """
             return await _call(
-                "move_direction", {"direction": direction, "distance": distance}, timeout=70.0
+                "move_direction",
+                {"direction": direction, "distance": distance},
+                timeout=70.0,
             )
 
         @function_tool
@@ -530,7 +931,8 @@ class DialogueNode(Node):
         @function_tool
         async def set_volume(action: str) -> str:
             """Изменить громкость голоса.
-            action: 'louder' — громче, 'quieter' — тише, 'max' — максимум, 'normal' — норма."""
+            action: 'louder' — громче, 'quieter' — тише, 'max' — максимум, 'normal' — норма.
+            """
             return await _call("set_volume", {"action": action})
 
         @function_tool
@@ -542,8 +944,13 @@ class DialogueNode(Node):
         async def execute_music_code(code: str, pattern_name: str = "p1") -> str:
             """Запустить музыкальный код на синтезаторе Renardo/SuperCollider.
             Использовать ВСЕГДА когда пользователь просит сыграть мелодию, музыку, ноты.
-            Пример: execute_music_code("p1 >> pluck([0,2,4,7], dur=0.5, amp=0.8)", pattern_name="p1")"""
-            return await _call("execute_music_code", {"code": code, "pattern_name": pattern_name}, timeout=15.0)
+            Пример: execute_music_code("p1 >> pluck([0,2,4,7], dur=0.5, amp=0.8)", pattern_name="p1")
+            """
+            return await _call(
+                "execute_music_code",
+                {"code": code, "pattern_name": pattern_name},
+                timeout=15.0,
+            )
 
         @function_tool
         async def stop_music(pattern_name: str = "") -> str:
@@ -563,7 +970,9 @@ class DialogueNode(Node):
             return await _call("get_music_state", {})
 
         @function_tool
-        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0, theme: str = "") -> str:
+        async def set_dj_mode(
+            enabled: bool, next_transition_sec: int = 0, theme: str = ""
+        ) -> str:
             """Включить или выключить автономный DJ режим.
 
             enabled=True: после запуска музыки вызови set_dj_mode, чтобы робот сам делал переходы.
@@ -592,8 +1001,14 @@ class DialogueNode(Node):
             return await _call("list_tracks", params)
 
         @function_tool
-        async def save_track(name: str, title: str = "", description: str = "",
-                             tags: str = "", rating: int = 0, notes: str = "") -> str:
+        async def save_track(
+            name: str,
+            title: str = "",
+            description: str = "",
+            tags: str = "",
+            rating: int = 0,
+            notes: str = "",
+        ) -> str:
             """Сохранить текущий или последний сыгранный трек в медиатеку.
             Используй когда пользователь говорит 'сохрани этот трек', 'запомни мелодию', 'сохрани'.
             name — уникальный slug (например: 'chill_dnb_v1').
@@ -625,14 +1040,36 @@ class DialogueNode(Node):
             return await _call("delete_track", {"name": name})
 
         return [
-            speak_text, play_sound, play_animation,
-            memory_context, memory_save, memory_search,
-            get_current_time, get_robot_status, get_battery_level,
-            navigate_to_waypoint, navigate_to_coordinates, move_direction,
-            list_waypoints, save_waypoint, delete_waypoint, clear_waypoints, get_current_pose,
-            set_volume, set_pitch,
-            search_samples, execute_music_code, stop_music, set_vibe_preset, get_music_state, set_dj_mode,
-            list_tracks, save_track, load_track, delete_track,
+            speak_text,
+            play_sound,
+            play_animation,
+            memory_context,
+            memory_save,
+            memory_search,
+            faq_search,
+            get_current_time,
+            get_robot_status,
+            get_battery_level,
+            navigate_to_waypoint,
+            navigate_to_coordinates,
+            move_direction,
+            list_waypoints,
+            save_waypoint,
+            delete_waypoint,
+            clear_waypoints,
+            get_current_pose,
+            set_volume,
+            set_pitch,
+            search_samples,
+            execute_music_code,
+            stop_music,
+            set_vibe_preset,
+            get_music_state,
+            set_dj_mode,
+            list_tracks,
+            save_track,
+            load_track,
+            delete_track,
         ]
 
     def _make_output_tools(self) -> list:
@@ -659,18 +1096,25 @@ class DialogueNode(Node):
         async def speak_text(text: str, animation: str = "neutral") -> str:
             """Произнести текст голосом. ОБЯЗАТЕЛЬНЫЙ инструмент — весь ответ ТОЛЬКО через speak_text!
             НЕЛЬЗЯ просто напечатать текст — пользователь ничего не услышит без вызова этого инструмента.
-            Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'."""
+            Возвращает TASK_COMPLETE. После ПОСЛЕДНЕГО speak_text верни строку 'done'.
+            """
             if self._run_cancelled:
                 return "CANCELLED"
             # Strip history marker prefix — LLM sometimes copies [выполнено через: ...] from history
-            text = re.sub(r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text).strip()
+            text = re.sub(
+                r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
+            ).strip()
             self._spoken_texts.append(text)
             async with lock:
                 if self._run_cancelled:
                     return "CANCELLED"
-                result_str = await _call("speak_text", {"text": text, "animation": animation}, timeout=60.0)
+                result_str = await _call(
+                    "speak_text", {"text": text, "animation": animation}, timeout=60.0
+                )
                 try:
-                    speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
+                    speech_id = (
+                        json.loads(result_str).get("data", {}).get("speech_id", "")
+                    )
                 except Exception:
                     speech_id = ""
                 if speech_id:
@@ -680,7 +1124,9 @@ class DialogueNode(Node):
                     try:
                         await asyncio.wait_for(event.wait(), timeout=30.0)
                     except asyncio.TimeoutError:
-                        self.get_logger().warning(f"⚠️ speak_text TTS timeout for {speech_id[:8]}")
+                        self.get_logger().warning(
+                            f"⚠️ speak_text TTS timeout for {speech_id[:8]}"
+                        )
                     finally:
                         with self._tts_events_lock:
                             self._tts_events.pop(speech_id, None)
@@ -695,13 +1141,19 @@ class DialogueNode(Node):
                     self._sound_done_event = done_event
                 result_str = await _call("play_sound", {"sound": sound})
                 try:
-                    duration = json.loads(result_str).get("data", {}).get("duration", 1.5)
+                    duration = (
+                        json.loads(result_str).get("data", {}).get("duration", 1.5)
+                    )
                 except Exception:
                     duration = 1.5
                 try:
-                    await asyncio.wait_for(done_event.wait(), timeout=float(duration) + 2.0)
+                    await asyncio.wait_for(
+                        done_event.wait(), timeout=float(duration) + 2.0
+                    )
                 except asyncio.TimeoutError:
-                    self.get_logger().warning(f"⚠️ play_sound timeout waiting for 'ready': {sound}")
+                    self.get_logger().warning(
+                        f"⚠️ play_sound timeout waiting for 'ready': {sound}"
+                    )
                 finally:
                     with self._sound_event_lock:
                         self._sound_done_event = None
@@ -727,7 +1179,9 @@ class DialogueNode(Node):
                       Например: 'Трек 1: медленный C minor ambient 70bpm pads+strings.\nТрек 2: ...'
             """
             self._dj_set_plan = plan.strip()
-            self.get_logger().info(f"🎧 DJ план сохранён ({len(self._dj_set_plan)} chars)")
+            self.get_logger().info(
+                f"🎧 DJ план сохранён ({len(self._dj_set_plan)} chars)"
+            )
             return "✅ План сета сохранён."
 
         @function_tool
@@ -776,7 +1230,14 @@ class DialogueNode(Node):
                 "Немедленно запусти первый трек через handle_music!"
             )
 
-        return [speak_text, play_sound, play_animation, save_dj_set_plan, save_dj_persona, save_dj_theme]
+        return [
+            speak_text,
+            play_sound,
+            play_animation,
+            save_dj_set_plan,
+            save_dj_persona,
+            save_dj_theme,
+        ]
 
     def _build_skills(self, model) -> list:
         """Instantiate skill sub-agents and return them as FunctionTools for the Compositor.
@@ -803,7 +1264,7 @@ class DialogueNode(Node):
                 model=model,
                 prompt_template=music_prompt,
                 agent_max_turns=10,
-                max_tokens=2000,   # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
+                max_tokens=2000,  # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
                 temperature=0.85,
             )
             skill_tools.append(
@@ -824,7 +1285,9 @@ class DialogueNode(Node):
         try:
             nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
             if not nav_prompt:
-                nav_prompt = "Ты — модуль навигации РОББОКСА. Управляй движением робота."
+                nav_prompt = (
+                    "Ты — модуль навигации РОББОКСА. Управляй движением робота."
+                )
             skill = NavigationSkill(
                 adapter=self._mcp,
                 model=model,
@@ -851,8 +1314,12 @@ class DialogueNode(Node):
         try:
             mem_prompt = self._load_prompt_file("skills/memory_skill_prompt.txt")
             if not mem_prompt:
-                mem_prompt = "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
-            skill = MemorySkill(adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill")
+                mem_prompt = (
+                    "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
+                )
+            skill = MemorySkill(
+                adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill"
+            )
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_memory",
@@ -871,7 +1338,9 @@ class DialogueNode(Node):
             status_prompt = self._load_prompt_file("skills/status_skill_prompt.txt")
             if not status_prompt:
                 status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
-            skill = StatusSkill(adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill")
+            skill = StatusSkill(
+                adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill"
+            )
             skill_tools.append(
                 skill.as_tool(
                     tool_name="handle_status",
@@ -885,14 +1354,54 @@ class DialogueNode(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ StatusSkill build failed: {exc}")
 
+        # ── FAQSkill ────────────────────────────────────────────────────────
+        if self._faq_store and self._event_profile:
+            try:
+                event_id = self._event_profile.get(
+                    "event_id"
+                ) or self._slugify_event_id(
+                    self._event_profile.get("name", "faq-event")
+                )
+                faq_prompt = self._load_prompt_file("skills/faq_skill_prompt.txt")
+                if not faq_prompt:
+                    faq_prompt = (
+                        "Ты — FAQ модуль РОББОКСА. Ищи точные ответы по мероприятию."
+                    )
+                skill = FAQSkill(
+                    store=self._faq_store,
+                    event_id=event_id,
+                    model=model,
+                    prompt=self._render_faq_skill_prompt(faq_prompt),
+                    name="FAQSkill",
+                    temperature=0.2,
+                    max_tokens=900,
+                    tool_choice="required",
+                )
+                skill_tools.append(
+                    skill.as_tool(
+                        tool_name="handle_faq",
+                        tool_description=(
+                            "FAQ мероприятия: поиск точных ответов по вопросам о событии, поступлении, "
+                            "локациях, расписании и других организационных деталях."
+                        ),
+                    )
+                )
+                self.get_logger().info("✅ FAQSkill loaded")
+            except Exception as exc:
+                self.get_logger().error(f"❌ FAQSkill build failed: {exc}")
+
         return skill_tools
 
     def _log_config(self) -> None:
         self.get_logger().info(f"  Provider : {self._provider}")
         self.get_logger().info(f"  Model    : {self._resolve_model()}")
         self.get_logger().info(f"  Wake     : {self.dialogue_manager.wake_words}")
-        self.get_logger().info(f"  History  : {self._max_turns} turns (SDK to_input_list format)")
-        self.get_logger().info(f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s (dialogue) / {self._llm_timeout * 3:.0f}s (LLM wait_for)")
+        self.get_logger().info(
+            f"  History  : {self._max_turns} turns (SDK to_input_list format)"
+        )
+        self.get_logger().info(
+            f"  Timeout  : {self.dialogue_manager.dialogue_timeout}s (dialogue) / {self._llm_timeout * 3:.0f}s (LLM wait_for)"
+        )
         self.get_logger().info(f"  VerboseLLM: {self._verbose_llm}")
 
     # ────────────────────────────────────────────────────────────────
@@ -964,7 +1473,11 @@ class DialogueNode(Node):
         if self._dj_mode_enabled:
             _dj_name = self._dj_persona if self._dj_persona else "ДиДжей РОббокс"
             persona_line = f'Твой DJ-образ: "{_dj_name}". '
-            plan_line = f"Текущий план сета:\n{self._dj_set_plan}\n" if self._dj_set_plan else ""
+            plan_line = (
+                f"Текущий план сета:\n{self._dj_set_plan}\n"
+                if self._dj_set_plan
+                else ""
+            )
             dj_ctx = (
                 f"[🎧 DJ-РЕЖИМ АКТИВЕН, переход #{self._dj_transition_count}. "
                 f'Тема: "{self._dj_theme}". '
@@ -1007,7 +1520,7 @@ class DialogueNode(Node):
             except APIConnectionError as exc:
                 last_exc = exc
                 if attempt < max_retries:
-                    delay = base_delay * (2 ** attempt)
+                    delay = base_delay * (2**attempt)
                     self.get_logger().warning(
                         f"⚠️ APIConnectionError (attempt {attempt + 1}/{1 + max_retries}), "
                         f"retrying in {delay:.0f}s: {exc}"
@@ -1035,14 +1548,18 @@ class DialogueNode(Node):
                 self.get_logger().warning(f"⚠️ memory save_turn(user) failed: {exc}")
 
         try:
+            faq_prefetch_context = self._build_event_faq_prefetch_context(user_input)
             with self._conv_lock:
                 # Build input: stored history (SDK to_input_list format) + current user message.
                 # History contains real function_call / function_call_output items, so the
                 # LLM sees actual tool invocations and cannot pattern-complete them as text.
                 # This eliminates the DeepSeek multi-turn FC pattern-completion bug.
-                input_list = list(self._conversation) + [
-                    {"role": "user", "content": user_input}
-                ]
+                input_list = list(self._conversation)
+                if faq_prefetch_context:
+                    input_list.append(
+                        {"role": "system", "content": faq_prefetch_context}
+                    )
+                input_list.append({"role": "user", "content": user_input})
 
             if self._agent is None:
                 self.get_logger().error("❌ Agent not initialised")
@@ -1059,12 +1576,18 @@ class DialogueNode(Node):
                 timeout=self._llm_timeout * 3,
             )
 
-            spoken = " ".join(self._spoken_texts) if self._spoken_texts else (result.final_output or "")
+            spoken = (
+                " ".join(self._spoken_texts)
+                if self._spoken_texts
+                else (result.final_output or "")
+            )
             # Collect tool names used — for logging and auto-speak fallback detection.
             tool_names_used = set()
             try:
                 for item in result.new_items:
-                    if isinstance(item, ToolCallItem) and hasattr(item.raw_item, "name"):
+                    if isinstance(item, ToolCallItem) and hasattr(
+                        item.raw_item, "name"
+                    ):
                         tool_names_used.add(item.raw_item.name)
             except Exception:
                 pass
@@ -1073,7 +1596,9 @@ class DialogueNode(Node):
             # Auto-speak fallback: if LLM returned text without calling
             # speak_text, speak the response directly so the robot is never silent.
             if not self._spoken_texts and spoken:
-                clean_spoken = re.sub(r"^\[выполнено через:[^\]]*\]\s*", "", spoken).strip()
+                clean_spoken = re.sub(
+                    r"^\[выполнено через:[^\]]*\]\s*", "", spoken
+                ).strip()
                 if clean_spoken and clean_spoken.lower() != "done":
                     self.get_logger().warning(
                         f"⚠️ Auto-speak fallback (LLM skipped speak_text): {clean_spoken[:80]}"
@@ -1091,7 +1616,9 @@ class DialogueNode(Node):
                 try:
                     self._voice_memory.save_turn("assistant", spoken)
                 except Exception as exc:
-                    self.get_logger().warning(f"⚠️ memory save_turn(assistant) failed: {exc}")
+                    self.get_logger().warning(
+                        f"⚠️ memory save_turn(assistant) failed: {exc}"
+                    )
 
             # Store full SDK transcript for next turn.
             # result.to_input_list() contains real function_call / function_call_output items.
@@ -1111,13 +1638,17 @@ class DialogueNode(Node):
             )
 
         except asyncio.TimeoutError:
-            self.get_logger().error(f"❌ Agent timed out ({self._llm_timeout * 3:.0f}s)")
+            self.get_logger().error(
+                f"❌ Agent timed out ({self._llm_timeout * 3:.0f}s)"
+            )
             self._speak_direct("Извините, не получилось ответить вовремя.")
 
         except Exception as exc:
             self.get_logger().error(f"❌ Agent error: {exc}")
             if "invalid_request_error" in str(exc) or "tool" in str(exc).lower():
-                self.get_logger().warning("🧹 Clearing conversation history due to malformed state")
+                self.get_logger().warning(
+                    "🧹 Clearing conversation history due to malformed state"
+                )
                 with self._conv_lock:
                     self._conversation = []
 
@@ -1182,7 +1713,8 @@ class DialogueNode(Node):
         intact, preserving all function_call / function_call_output pairs within.
         """
         user_positions = [
-            i for i, item in enumerate(items)
+            i
+            for i, item in enumerate(items)
             if isinstance(item, dict) and item.get("role") == "user"
         ]
         if len(user_positions) <= self._max_turns:
@@ -1221,7 +1753,7 @@ class DialogueNode(Node):
     @staticmethod
     def _split_into_chunks(text: str, max_len: int = 200) -> list:
         """Split text into sentence chunks ≤ max_len to avoid Yandex TTS 'Too long text'."""
-        raw = re.split(r'(?<=[.!?;])\s+', text.strip())
+        raw = re.split(r"(?<=[.!?;])\s+", text.strip())
         chunks: list = []
         buf = ""
         for part in raw:
@@ -1235,7 +1767,7 @@ class DialogueNode(Node):
                 if buf:
                     chunks.append(buf)
                 if len(part) > max_len:
-                    sub_parts = re.split(r'(?<=,)\s+', part)
+                    sub_parts = re.split(r"(?<=,)\s+", part)
                     sub_buf = ""
                     for sp in sub_parts:
                         sub_c = (sub_buf + " " + sp).strip() if sub_buf else sp
@@ -1260,6 +1792,7 @@ class DialogueNode(Node):
         and forced slow Silero synthesis.
         """
         import uuid
+
         chunks = self._split_into_chunks(text, max_len=200)
         for chunk in chunks:
             msg = String()
@@ -1286,7 +1819,9 @@ class DialogueNode(Node):
         if running:
             return  # Never timeout while agent is working (fixes the bug we had!)
         if self.dialogue_manager.check_timeout():
-            self.get_logger().info("⏰ Dialogue timeout → IDLE (history preserved, sliding window)")
+            self.get_logger().info(
+                "⏰ Dialogue timeout → IDLE (history preserved, sliding window)"
+            )
             self._publish_state()
 
     # ── DJ mode ─────────────────────────────────────────────────────
@@ -1378,7 +1913,9 @@ class DialogueNode(Node):
             data = json.loads(msg.data)
             enabled = bool(data.get("enabled", False))
         except (json.JSONDecodeError, KeyError):
-            self.get_logger().warning(f"⚠️ DJ mode: некорректное сообщение: {msg.data!r}")
+            self.get_logger().warning(
+                f"⚠️ DJ mode: некорректное сообщение: {msg.data!r}"
+            )
             return
 
         self._dj_mode_enabled = enabled
@@ -1401,9 +1938,7 @@ class DialogueNode(Node):
             else:
                 delay = 60.0  # дефолт при первом включении без явного интервала
             self._dj_next_transition_at = time.time() + delay
-            self.get_logger().info(
-                f"🎧 DJ Mode: следующий переход через {delay:.0f}с"
-            )
+            self.get_logger().info(f"🎧 DJ Mode: следующий переход через {delay:.0f}с")
             if self._dj_transition_count == 0:
                 self.get_logger().info("🎧 DJ Mode ENABLED")
         else:
@@ -1424,7 +1959,10 @@ class DialogueNode(Node):
             return
 
         # Не прерывать активный диалог — откладываем на 15 секунд
-        if self.dialogue_manager.state in (DialogueState.DIALOGUE, DialogueState.SILENCED):
+        if self.dialogue_manager.state in (
+            DialogueState.DIALOGUE,
+            DialogueState.SILENCED,
+        ):
             self._dj_next_transition_at = now + 15.0
             return
 
@@ -1454,10 +1992,15 @@ class DialogueNode(Node):
         # его через set_dj_mode(enabled=True, next_transition_sec=X) в конце перехода.
         self._dj_transition_count += 1
         n = self._dj_transition_count
-        self._dj_next_transition_at = now + 120.0  # фолбэк если LLM не вызвал set_dj_mode
+        self._dj_next_transition_at = (
+            now + 120.0
+        )  # фолбэк если LLM не вызвал set_dj_mode
 
         prompt = self._build_dj_prompt(n)
-        self.get_logger().info(f"🎧 DJ Auto-transition #{n}: запускаю агента" + (f" [тема: {self._dj_theme!r}]" if self._dj_theme else ""))
+        self.get_logger().info(
+            f"🎧 DJ Auto-transition #{n}: запускаю агента"
+            + (f" [тема: {self._dj_theme!r}]" if self._dj_theme else "")
+        )
         asyncio.run_coroutine_threadsafe(self._agent_run(prompt), self._loop)
 
     def _publish_state(self) -> None:

@@ -109,7 +109,8 @@ COPY docker/vision/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 # ИСПРАВЛЕНИЕ: Убираем проблемные CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH,
 # которые мешают правильному поиску библиотек через CMake package config.
 # Sourcing /opt/ros/humble/setup.sh достаточно для правильной настройки путей.
-# Используем --symlink-install для избежания копирования Python файлов.
+# В production image не используем --symlink-install: для ament_python это ведет
+# к setup.py develop --editable, а поведение editable-режима зависит от версии setuptools.
 # ДОПОЛНИТЕЛЬНО: очищаем CMake кеш перед сборкой для избежания проблем с base image
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
@@ -117,7 +118,6 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     ldconfig && \
     colcon build \
     --packages-select rob_box_perception_msgs rob_box_mcp_tools rob_box_voice rob_box_animations \
-    --symlink-install \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

@@ -7,7 +7,7 @@ description: Use when you have a written implementation plan to execute in a sep
 
 ## Overview
 
-Load plan, review critically, execute tasks in batches, report for review between batches.
+Peek at the plan structure, review critically, load only the current batch in full, execute tasks in batches, and report for review between batches.
 
 **Core principle:** Batch execution with checkpoints for architect review.
 
@@ -15,11 +15,12 @@ Load plan, review critically, execute tasks in batches, report for review betwee
 
 ## The Process
 
-### Step 1: Load and Review Plan
-1. Read plan file
-2. Review critically - identify any questions or concerns about the plan
-3. If concerns: Raise them with your human partner before starting
-4. If no concerns: Create TodoWrite and proceed
+### Step 1: Review Plan Structure
+1. PEEK at the plan structure - tasks, dependencies, and verification points
+2. Load only the first batch task sections needed for execution
+3. Review critically - identify any questions or concerns about the plan
+4. If concerns: Raise them with your human partner before starting
+5. If no concerns: Create TodoWrite and proceed
 
 ### Step 2: Execute Batch
 **Default: First 3 tasks**
@@ -69,6 +70,7 @@ After all tasks complete and verified:
 
 ## Remember
 - Review plan critically first
+- Keep only the current batch in active context; load later tasks on demand
 - Follow plan steps exactly
 - Don't skip verifications
 - Reference skills when plan says to
