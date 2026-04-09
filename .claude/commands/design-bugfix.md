@@ -10,11 +10,28 @@
 
 $ARGUMENTS
 
-## Перед началом работы: прочитай обязательно
-1. Указанный research файл (ПОЛНОСТЬЮ)
-2. `docs/development/PYTHON_STYLE_GUIDE.md`
-3. Если баг в voice/LLM: `docs/VOICE_AGENT_BEST_PRACTICES.md`
-4. Если баг в Docker: `docs/development/DOCKER_STANDARDS.md`
+## Стратегия работы с контекстом (RLM-принцип)
+
+**Код бага — внешняя среда. Не читай всё подряд — иди от бага к root cause.**
+
+```
+THINK  → Что знаю из research о симптоме? Какие ключевые слова искать?
+GREP   → Найти точное место: класс, функция, паттерн
+READ   → Функция ± 10 строк контекста (не весь файл!)
+ACT    → Диагноз: root cause, затронутые строки
+OBSERVE→ Есть ли смежные компоненты? PEEK ␸ GREP для установления области влияния
+```
+
+❌ Не читай весь PYTHON_STYLE_GUIDE / DOCKER_STANDARDS — только нужную секцию  
+❌ Не читай research файл целиком ещё раз — ты уже знаешь симптом, сразу иди на GREP  
+✅ Ищи точное место бага (файл + строка), не общие причины  
+
+## Перед началом работы
+1. Research файл — прочитай **полностью** (он компактный — только факты)
+2. Стандарты — читай **по необходимости** (PEEK → нужная секция):
+   - `docs/development/PYTHON_STYLE_GUIDE.md` → при вопросах о стиле fix
+   - `docs/VOICE_AGENT_BEST_PRACTICES.md` → если баг в voice/LLM
+   - `docs/development/DOCKER_STANDARDS.md` → если баг в Docker
 
 ## Стек и ограничения
 - Python / ROS 2 Humble / Docker Compose / Zenoh DDS
