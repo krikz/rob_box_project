@@ -80,11 +80,14 @@ jobs:
       # ── Определить тег ─────────────────────────────────────────────────────
       - name: Determine image tag
         id: tag
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
-          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
-            TAG="${{ github.event.inputs.image_tag }}"
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            TAG="$INPUT_IMAGE_TAG"
           else
-            BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+            BRANCH="$WORKFLOW_BRANCH"
             case "$BRANCH" in
               main)                 TAG="latest" ;;
               develop)              TAG="dev" ;;
