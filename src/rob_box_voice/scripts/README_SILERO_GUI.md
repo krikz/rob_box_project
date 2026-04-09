@@ -52,8 +52,8 @@
 ### Зависимости
 
 ```bash
-# Основные зависимости
-pip install torch torchaudio sounddevice numpy
+# Основные зависимости (включая совместимые torch/torchaudio)
+pip install -r src/rob_box_voice/scripts/requirements_gui.txt
 
 # Для Ubuntu/Debian (если нет tkinter)
 sudo apt-get install python3-tk

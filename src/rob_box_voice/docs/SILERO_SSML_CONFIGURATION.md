@@ -22,8 +22,8 @@
 ```dockerfile
 # TTS: Silero v4 (offline, fast, high quality, SSML support)
 pip3 install --no-cache-dir \
-    torch==2.1.0 \
-    torchaudio==2.1.0 \
+    torch==2.9.0 \
+    torchaudio==2.9.0 \
     omegaconf
 
 # Скачивание модели (100 MB)
@@ -268,8 +268,8 @@ ssml = '<speak><prosody pitch="high" rate="x-fast">Батарея разряжа
 - # TTS: Piper (offline, fast, high quality)
 - piper-tts \
 + # TTS: Silero v4 (offline, fast, high quality, SSML support)
-+ torch==2.1.0 \
-+ torchaudio==2.1.0 \
++ torch==2.9.0 \
++ torchaudio==2.9.0 \
 + omegaconf \
 ```
 
@@ -377,7 +377,7 @@ wget -O /models/silero_v4_ru.pt https://models.silero.ai/models/tts/ru/v4_ru.pt
 
 **Решение:**
 ```bash
-pip install --upgrade torch==2.1.0 torchaudio==2.1.0
+pip install --upgrade torch==2.9.0 torchaudio==2.9.0
 ```
 
 ### Медленный синтез (RTF > 1.0)

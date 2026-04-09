@@ -15,7 +15,7 @@
 - Экспорт в WAV
 
 Требования:
-    pip install torch torchaudio tkinter sounddevice numpy
+    pip install -r src/rob_box_voice/scripts/requirements_gui.txt  # from repo root
 """
 
 import os
@@ -35,9 +35,10 @@ try:
     import sounddevice as sd
     import numpy as np
 except ImportError as e:
+    requirements_path = Path(__file__).resolve().with_name("requirements_gui.txt")
     print(f"❌ Ошибка импорта: {e}")
     print("\nУстановите зависимости:")
-    print("  pip install torch torchaudio sounddevice numpy")
+    print(f"  pip install -r {requirements_path}")
     sys.exit(1)
 
 

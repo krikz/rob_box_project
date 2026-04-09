@@ -2,8 +2,10 @@
 # Графический настройщик голоса
 
 # Основные зависимости
-torch==2.1.0
-torchaudio==2.1.0
+# GUI пинует проверенную пару версий; держим ее синхронно с runtime floor в
+# voice_base/voice_assistant requirements.
+torch==2.9.0
+torchaudio==2.9.0
 sounddevice>=0.4.6
 numpy>=1.24.0
 
