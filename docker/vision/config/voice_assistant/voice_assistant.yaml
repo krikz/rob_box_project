@@ -1,5 +1,16 @@
 /**:
   ros__parameters:
+    # ===== FLAT OVERRIDES (доходят до нод напрямую) =====
+    # NB: вложенные секции ниже (audio_node:, dialogue_node: и т.д.)
+    # создают DOTTED имена (напр. dialogue_node.faq_mode_enabled),
+    # которые ноды НЕ читают. Параметры, которые ДОЛЖНЫ дойти,
+    # указываем здесь flat.
+    faq_mode_enabled: true
+    faq_event_config_file: "/config/voice_assistant/event_mode.yaml"
+    history_excluded_tools:
+      - "handle_navigation"
+      - "handle_music"
+
     # ===== Audio Node =====
     audio_node:
       # Устройство
