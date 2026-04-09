@@ -10,6 +10,8 @@ license: Complete terms in LICENSE.txt
 
 Create MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. The quality of an MCP server is measured by how well it enables LLMs to accomplish real-world tasks.
 
+**RLM context rule:** Treat protocol docs, SDK docs, and target API docs as external references. Start from the current implementation question, then fetch only the exact spec page, SDK guide, or API section needed for that step.
+
 ---
 
 # Process
@@ -40,9 +42,9 @@ Error messages should guide agents toward solutions with specific suggestions an
 
 Start with the sitemap to find relevant pages: `https://modelcontextprotocol.io/sitemap.xml`
 
-Then fetch specific pages with `.md` suffix for markdown format (e.g., `https://modelcontextprotocol.io/specification/draft.md`).
+Then fetch only the specific page needed for the current design question, using the `.md` suffix for markdown format (for example, `https://modelcontextprotocol.io/specification/draft.md`).
 
-Key pages to review:
+Typical first targets:
 - Specification overview and architecture
 - Transport mechanisms (streamable HTTP, stdio)
 - Tool, resource, and prompt definitions
@@ -53,17 +55,17 @@ Key pages to review:
 - **Language**: TypeScript (high-quality SDK support and good compatibility in many execution environments e.g. MCPB. Plus AI models are good at generating TypeScript code, benefiting from its broad usage, static typing and good linting tools)
 - **Transport**: Streamable HTTP for remote servers, using stateless JSON (simpler to scale and maintain, as opposed to stateful sessions and streaming responses). stdio for local servers.
 
-**Load framework documentation:**
+**Load framework documentation on demand:**
 
 - **MCP Best Practices**: [📋 View Best Practices](./reference/mcp_best_practices.md) - Core guidelines
 
 **For TypeScript (recommended):**
-- **TypeScript SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
-- [⚡ TypeScript Guide](./reference/node_mcp_server.md) - TypeScript patterns and examples
+- **TypeScript SDK**: Load only if you chose TypeScript
+- [⚡ TypeScript Guide](./reference/node_mcp_server.md) - Load when implementing TypeScript patterns
 
 **For Python:**
-- **Python SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
-- [🐍 Python Guide](./reference/python_mcp_server.md) - Python patterns and examples
+- **Python SDK**: Load only if you chose Python
+- [🐍 Python Guide](./reference/python_mcp_server.md) - Load when implementing Python patterns
 
 #### 1.4 Plan Your Implementation
 
@@ -195,42 +197,10 @@ Create an XML file with this structure:
 
 # Reference Files
 
-## 📚 Documentation Library
+Load these only when the current phase needs them:
 
-Load these resources as needed during development:
-
-### Core MCP Documentation (Load First)
-- **MCP Protocol**: Start with sitemap at `https://modelcontextprotocol.io/sitemap.xml`, then fetch specific pages with `.md` suffix
-- [📋 MCP Best Practices](./reference/mcp_best_practices.md) - Universal MCP guidelines including:
-  - Server and tool naming conventions
-  - Response format guidelines (JSON vs Markdown)
-  - Pagination best practices
-  - Transport selection (streamable HTTP vs stdio)
-  - Security and error handling standards
-
-### SDK Documentation (Load During Phase 1/2)
-- **Python SDK**: Fetch from `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
-- **TypeScript SDK**: Fetch from `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
-
-### Language-Specific Implementation Guides (Load During Phase 2)
-- [🐍 Python Implementation Guide](./reference/python_mcp_server.md) - Complete Python/FastMCP guide with:
-  - Server initialization patterns
-  - Pydantic model examples
-  - Tool registration with `@mcp.tool`
-  - Complete working examples
-  - Quality checklist
-
-- [⚡ TypeScript Implementation Guide](./reference/node_mcp_server.md) - Complete TypeScript guide with:
-  - Project structure
-  - Zod schema patterns
-  - Tool registration with `server.registerTool`
-  - Complete working examples
-  - Quality checklist
-
-### Evaluation Guide (Load During Phase 4)
-- [✅ Evaluation Guide](./reference/evaluation.md) - Complete evaluation creation guide with:
-  - Question creation guidelines
-  - Answer verification strategies
-  - XML format specifications
-  - Example questions and answers
-  - Running an evaluation with the provided scripts
+- **Core protocol questions** → MCP sitemap + exact spec page needed for that question
+- **General MCP guidance** → [📋 MCP Best Practices](./reference/mcp_best_practices.md)
+- **Python implementation** → [🐍 Python Guide](./reference/python_mcp_server.md) + Python SDK README if Python was chosen
+- **TypeScript implementation** → [⚡ TypeScript Guide](./reference/node_mcp_server.md) + TypeScript SDK README if TypeScript was chosen
+- **Evaluation creation** → [✅ Evaluation Guide](./reference/evaluation.md) only during Phase 4

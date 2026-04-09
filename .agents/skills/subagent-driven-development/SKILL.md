@@ -181,7 +181,7 @@ Done!
 **Efficiency gains:**
 - No repeated plan-reading overhead
 - Controller curates exactly what current-task context is needed
-- Subagent gets complete information for the current task, not the whole plan upfront
+- Subagent gets complete information for the current task without carrying unrelated plan sections
 - Questions surfaced before work begins (not after)
 
 **Quality gates:**

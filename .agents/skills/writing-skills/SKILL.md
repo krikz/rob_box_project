@@ -9,6 +9,8 @@ description: Use when creating new skills, editing existing skills, or verifying
 
 **Writing skills IS Test-Driven Development applied to process documentation.**
 
+**RLM context rule:** Keep `SKILL.md` short and decision-oriented. Move heavy reference, templates, and phase-specific details into supporting files, and tell future agents exactly when to load them.
+
 **Personal skills live in agent-specific directories (`~/.claude/skills` for Claude Code, `~/.agents/skills/` for Codex)** 
 
 You write test cases (pressure scenarios with subagents), watch them fail (baseline behavior), write the skill (documentation), watch tests pass (agents comply), and refactor (close loopholes).
@@ -84,6 +86,8 @@ skills/
 **Separate files for:**
 1. **Heavy reference** (100+ lines) - API docs, comprehensive syntax
 2. **Reusable tools** - Scripts, utilities, templates
+
+Prefer separate files whenever a section is large, phase-specific, or only needed in one branch of the workflow.
 
 **Keep inline:**
 - Principles and concepts
@@ -313,7 +317,7 @@ digraph when_flowchart {
 - Linear instructions → Numbered lists
 - Labels without semantic meaning (step1, helper2)
 
-See @graphviz-conventions.dot for graphviz style rules.
+See `graphviz-conventions.dot` in this directory for graphviz style rules. Load it only when editing or validating graphviz syntax.
 
 **Visualizing for your human partner:** Use `render-graphs.js` in this directory to render a skill's flowcharts to SVG:
 ```bash
@@ -553,7 +557,7 @@ Run same scenarios WITH skill. Agent should now comply.
 
 Agent found new rationalization? Add explicit counter. Re-test until bulletproof.
 
-**Testing methodology:** See @testing-skills-with-subagents.md for the complete testing methodology:
+**Testing methodology:** See `testing-skills-with-subagents.md` for the complete testing methodology. Load it only when designing or running subagent pressure scenarios:
 - How to write pressure scenarios
 - Pressure types (time, sunk cost, authority, exhaustion)
 - Plugging holes systematically
@@ -640,7 +644,7 @@ How future Claude finds your skill:
 3. **Finds SKILL** (description matches)
 4. **Scans overview** (is this relevant?)
 5. **Reads patterns** (quick reference table)
-6. **Loads example** (only when implementing)
+6. **Loads example or supporting file** (only when implementing that specific pattern)
 
 **Optimize for this flow** - put searchable terms early and often.
 
