@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch rtabmap.launch.py to inject Grid/Sensor=2 and other parameters
+"""Patch rtabmap.launch.py to inject Grid/Sensor=0 and other parameters
 that are otherwise auto-overridden by the rtabmap node constructor.
 
 Root cause:
@@ -26,7 +26,7 @@ SENTINEL = '"Mem/IncrementalMemory"'
 
 # Parameters to inject into the rtabmap Node parameters dict
 INJECTED_PARAMS = """\
-                "Grid/Sensor": "2",             # Lidar + depth camera for occupancy grid
+                "Grid/Sensor": "0",             # LiDAR only for occupancy grid stability
                 "Grid/MaxObstacleHeight": "1.5",  # Obstacles above 1.5m ignored
                 "Grid/MinGroundHeight": "-0.1",   # Filter floor points below -0.1m
                 "Grid/RangeMin": "0.2",
@@ -37,9 +37,9 @@ INJECTED_PARAMS = """\
                 "Icp/VoxelSize": "0.05",
                 "Icp/MaxCorrespondenceDistance": "0.1",
                 "Icp/CorrespondenceRatio": "0.05",
-                "RGBD/NeighborLinkRefining": "true",
-                "RGBD/ProximityBySpace": "true",
+                "Mem/IncrementalMemory": "false",  # Localization mode, don't grow WM online
                 "RGBD/OptimizeMaxError": "5.0",
+                "Optimizer/Strategy": "1",      # Force g2o, avoid GTSAM localization failures
                 "Optimizer/GravitySigma": "0",
                 "Odom/ResetCountdown": "1",
 """
@@ -73,7 +73,7 @@ def patch() -> bool:
 
     print(
         f"[patch_rtabmap_launch] ✅ Patched {LAUNCH_FILE}: "
-        "Grid/Sensor=2 and other params injected into Node parameters dict."
+        "Grid/Sensor=0 and other params injected into Node parameters dict."
     )
     return True
 

@@ -60,7 +60,7 @@ snd_hwdep              24576  1 snd_usb_audio
 ### Current Voice Assistant Settings
 
 ```yaml
-# From docker/vision/config/voice/voice_assistant.yaml
+# From docker/vision/config/voice_assistant/voice_assistant.yaml
 audio_node:
   respeaker_params:
     AGCONOFF: 3          # AGC Level 3 (high)
@@ -177,7 +177,7 @@ Same cleanup method integrated after TTS playback completion.
 
 ### Solution 2: ALSA Mixer Control (Supplementary)
 
-**Location:** `docker/vision/scripts/voice/fix_respeaker_noise.sh`
+**Location:** `docker/vision/scripts/voice_assistant/fix_respeaker_noise.sh`
 
 ```bash
 #!/bin/bash
@@ -289,7 +289,7 @@ Increase:           +17.9%
 **Objective:** Test if reduced AGC gain improves noise
 
 **Procedure:**
-1. Edit `docker/vision/config/voice/voice_assistant.yaml`
+1. Edit `docker/vision/config/voice_assistant/voice_assistant.yaml`
 2. Change `AGCMAXGAIN: 30` → `AGCMAXGAIN: 20`
 3. Restart voice-assistant
 4. Run Test 1 and Test 2
@@ -338,7 +338,7 @@ Increase:           +17.9%
 1. `src/rob_box_voice/scripts/diagnose_white_noise.py`
    - Diagnostic tool for noise measurement
 
-2. `docker/vision/scripts/voice/fix_respeaker_noise.sh`
+2. `docker/vision/scripts/voice_assistant/fix_respeaker_noise.sh`
    - Manual cleanup utility (ALSA mixer control)
 
 3. `docs/reports/RESPEAKER_WHITE_NOISE_INVESTIGATION.md`
@@ -346,7 +346,7 @@ Increase:           +17.9%
 
 ### No Changes Required
 - `docker/vision/voice_assistant/Dockerfile` - `alsa-utils` already installed ✅
-- `docker/vision/config/voice/voice_assistant.yaml` - AGC parameters remain optimal for now
+- `docker/vision/config/voice_assistant/voice_assistant.yaml` - AGC parameters remain optimal for now
 
 ---
 

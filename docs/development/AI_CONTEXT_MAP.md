@@ -60,8 +60,8 @@
 1. `src/rob_box_voice/rob_box_voice/<node_name>_node.py` (проблемная нода)
 2. `docker/vision/voice_assistant/Dockerfile`
 3. `docker/vision/docker-compose.yaml` (секция voice-assistant)
-4. `docker/vision/config/voice/voice_assistant.yaml`
-5. `docker/vision/config/voice/voice_assistant_headless.launch.py`
+4. `docker/vision/config/voice_assistant/voice_assistant.yaml`
+5. `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
 
 **Примеры задач:**
 - DialogueNode падает - проверить DEEPSEEK_API_KEY
@@ -73,7 +73,7 @@
 ### Добавление новой ноды в Voice Assistant
 
 **Файлы для контекста:**
-1. `docker/vision/config/voice/voice_assistant_headless.launch.py`
+1. `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
 2. Похожая нода (например, `src/rob_box_voice/rob_box_voice/audio_node.py`)
 3. `src/rob_box_voice/setup.py` (для entry points)
 4. `docker/vision/voice_assistant/Dockerfile` (для зависимостей)

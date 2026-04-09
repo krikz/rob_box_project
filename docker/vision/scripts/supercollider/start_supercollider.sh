@@ -25,6 +25,8 @@ export JACK_NO_AUDIO_RESERVATION=1
 echo "[SuperCollider] Cleaning up stale JACK SHM files..."
 rm -f /dev/shm/jack-0-0 /dev/shm/jack-0-1 /dev/shm/jack_default_0_0 2>/dev/null || true
 rm -f /dev/shm/jack_sem.0_default_* 2>/dev/null || true
+rm -f /dev/shm/jack-shm-registry 2>/dev/null || true
+rm -rf /dev/shm/jack_db-* 2>/dev/null || true
 
 echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000)..."
 

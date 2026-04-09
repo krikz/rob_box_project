@@ -143,7 +143,7 @@ python3 src/rob_box_voice/scripts/robbox_chat_streaming.py
 
 **Важно:** На роботе должны быть API ключи DeepSeek!
 
-**Файл:** `/home/ros2/rob_box_project/docker/vision/config/voice/secrets.yaml`
+**Файл:** `/home/ros2/rob_box_project/docker/vision/config/voice_assistant/secrets.yaml`
 
 ```yaml
 deepseek:

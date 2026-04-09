@@ -142,8 +142,9 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
+      - ./scripts/rtabmap:/scripts:ro
       - ./maps:/maps
-    # === RTAB-Map конфигурация: 3D SLAM (LiDAR ICP + OAK-D RGB-D) ===
+    # === RTAB-Map конфигурация: stable LiDAR SLAM on Main Pi ===
     # Ветка: feature/rtabmap-rgbd-lidar-3d
     #
     # Источники:
@@ -152,42 +153,27 @@ services:
     # 3. Анализ rtabmap.launch.py (строки 45-46)
     #
     # КЛЮЧЕВЫЕ ПАРАМЕТРЫ:
-    # • depth:=true              - использовать отдельные rgb/depth топики (НЕ subscribe_rgbd)
-    # • subscribe_rgbd:=false    - НЕ подписываться на /rgbd_image (переключились на compressed)
-    # • compressed:=true         - image_transport republish compressed→raw локально на Main Pi
-    # • rgb_image_transport:=compressed     - JPEG по Zenoh (~3-5 MB/s)
-    # • depth_image_transport:=compressedDepth - PNG depth по Zenoh (~5-8 MB/s)
     # • subscribe_scan:=true - включает LaserScan (LiDAR для ICP одометрии и 2D grid)
     # • icp_odometry:=true  - ICP одометрия: лидар → icp_odom (надёжнее visual в коридорах)
     # • odom_guess_frame_id:=odom - wheel odometry как начальный guess для ICP
-    # • Grid/Sensor=2       - occupancy grid из ОБОИХ сенсоров: лидар + depth камера
-    #   Grid/Sensor=0 был только лидар (не видел низкие препятствия)
+    # • Grid/Sensor=0       - occupancy grid только из LiDAR для стабильной карты
     # • Grid/MaxObstacleHeight=1.5 - учитывать препятствия до 1.5м
     # • Grid/MinGroundHeight=-0.1  - фильтровать пол (точки ниже -0.1м от base_footprint)
     # • Reg/Force3DoF=true  - 2D движение (только x, y, yaw)
     # • Reg/Strategy=1      - ICP регистрация для loop closure
     #
     # ТОПИК ПОТОК:
-    #   Vision Pi: OAK-D → /camera/.../color/image_raw/compressed (JPEG, ~3-5 MB/s)
-    #                     → /camera/.../depth/image_rect_raw/compressedDepth (PNG, ~5-8 MB/s)
-    #              Zenoh → Main Pi
-    #   Main Pi:   image_transport republish (compressed→raw, локально)
-    #              rtabmap ← raw RGB + raw Depth (синхр. approx_sync) + /scan (LiDAR)
+    #   Main Pi: rtabmap ← /scan (LiDAR)
+    #   OAK-D intentionally excluded from Main Pi mapping until TF/timestamp path is stable again.
     command:
       - /ros_scripts/ros_with_namespace.sh
-      - /ros_scripts/start_rtabmap.sh
+      - /scripts/start_rtabmap.sh
       - ros2
       - launch
       - rtabmap_launch
       - rtabmap.launch.py
-      - depth:=true
+      - depth:=false
       - subscribe_rgbd:=false
-      - rgb_topic:=/camera/camera/color/image_raw
-      - camera_info_topic:=/camera/camera/color/camera_info
-      - depth_topic:=/camera/camera/depth/image_rect_raw
-      - compressed:=true
-      - rgb_image_transport:=compressed
-      - depth_image_transport:=compressedDepth
       - subscribe_scan:=true
       - scan_topic:=/scan
       - icp_odometry:=true
@@ -204,8 +190,8 @@ services:
       - rtabmap_viz:=false
       - rviz:=false
       - visual_odometry:=false
-      # localization:= is injected by start_rtabmap.sh based on /maps/mapping_state.json
-      # Default: localization:=true. Only mapping:=false if state file says mode=mapping.
+      # start_rtabmap.sh always injects localization:=true as the safe default.
+      # Mapping mode is enabled later through an explicit ROS2 service call.
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false

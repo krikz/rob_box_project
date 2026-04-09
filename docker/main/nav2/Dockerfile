@@ -31,6 +31,8 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-nav2-map-server \
     # Waypoint следование
     ros-${ROS_DISTRO}-nav2-waypoint-follower \
+    # Текущий depth image -> LaserScan для obstacle avoidance перед камерой
+    ros-${ROS_DISTRO}-depthimage-to-laserscan \
     # Утилиты
     ros-${ROS_DISTRO}-nav2-util \
     ros-${ROS_DISTRO}-nav2-msgs \

@@ -1,21 +1,23 @@
-# Python зависимости для Voice Assistant
-# Версии зафиксированы для стабильности на ARM64 (Raspberry Pi)
+# Python dependencies for Voice Assistant (rob_box_voice)
+# Оптимизировано для ARM64 (Raspberry Pi 5)
+# Только реально используемые пакеты!
 
-# ============================================================================
-# Базовые библиотеки
-# ============================================================================
-pyyaml>=6.0
-requests>=2.31.0
-pyusb>=1.2.1
-omegaconf>=2.3.0
-numpy>=1.24.0,<2.0.0
+# =============================================================================
+# Base utilities
+# =============================================================================
+pyyaml
+requests
+omegaconf==2.2.3
+openpyxl
 
-# ============================================================================
-# Аудио обработка
-# ============================================================================
-pyaudio>=0.2.13
-sounddevice>=0.4.6
-soundfile>=0.12.1
+# =============================================================================
+# Audio processing
+# =============================================================================
+pyaudio
+sounddevice
+soundfile
+pydub
+numpy<2.0.0
 
 # ============================================================================
 # Machine Learning (PyTorch для ARM64)
@@ -24,55 +26,53 @@ soundfile>=0.12.1
 # Используем официальные wheel из PyPI
 torch==2.8.0
 torchaudio==2.1.0
+# =============================================================================
+# Image processing (for LED matrix animations)
+# =============================================================================
+pillow
 
-# ============================================================================
-# Speech-to-Text движки
-# ============================================================================
-# Vosk - легковесный offline STT (поддержка русского языка)
-vosk>=0.3.45
+# =============================================================================
+# USB interface for ReSpeaker (used in audio_node.py)
+# =============================================================================
+pyusb
 
-# OpenAI Whisper - high-quality STT (требует больше памяти)
-openai-whisper>=20231117
+# =============================================================================
+# Machine Learning (PyTorch for Silero TTS)
+# CRITICAL: PyTorch 2.9.0+ required for ARM64 compatibility!
+# PyTorch 2.1.0 has broken MKLDNN matmul primitives on aarch64
+# PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
+# scipy: Required by Silero v5 for audio resampling and processing
+# =============================================================================
+torch>=2.9.0
+torchaudio>=2.9.0
+scipy
 
-# Faster Whisper - оптимизированная версия (CTranslate2)
-faster-whisper>=1.0.0
+# =============================================================================
+# Speech-to-Text: Vosk (offline, lightweight Russian STT)
+# Used in: rob_box_voice/stt_node.py
+# =============================================================================
+vosk
 
-# ============================================================================
-# Text-to-Speech
-# ============================================================================
-# Silero TTS используется напрямую через загруженную модель
-# Дополнительные библиотеки не нужны (только torch)
+# =============================================================================
+# gRPC for Yandex Cloud API v3 (STT + TTS)
+# Used in: rob_box_voice/tts_node.py (TTS with anton voice)
+#          scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
+# =============================================================================
+grpcio
+grpcio-tools
+protobuf
+yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 
-# ============================================================================
-# gRPC для Yandex Cloud STT (опционально)
-# ============================================================================
-grpcio>=1.59.0
-grpcio-tools>=1.59.0
-protobuf>=4.25.0
-
-# ============================================================================
-# OpenAI API для диалогов
-# ============================================================================
-# HTTP библиотеки
-httpx>=0.25.0
-httpcore>=1.0.0
-h11>=0.14.0
-anyio>=4.0.0
-sniffio>=1.3.0
-
-# Pydantic для валидации (используем стабильную версию)
-# ВАЖНО: pydantic-core 2.41.3 имеет проблемы на ARM64
-# Используем проверенную версию 2.27.0
-pydantic-core==2.27.0
-pydantic>=2.5.0,<3.0.0
-
-# OpenAI SDK
-openai>=1.3.0
-
-# OpenAI Agents SDK (handles tool loop, history, cancellation natively)
+# =============================================================================
+# Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
+# Used in: rob_box_voice/dialogue_node.py
+# =============================================================================
+openai
 openai-agents
 
-# ============================================================================
-# Утилиты
-# ============================================================================
-typing-extensions>=4.8.0
+# =============================================================================
+# Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
+# Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)
+# SuperCollider runs in separate container; renardo connects via OSC localhost:57110
+# =============================================================================
+renardo-lib

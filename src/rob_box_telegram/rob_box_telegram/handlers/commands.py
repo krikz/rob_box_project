@@ -43,6 +43,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "Основные команды:\n"
             "/photo — фото с камеры\n"
             "/say <текст> — произнести текст\n"
+            "/repl <код> — запустить Renardo/FoxDot код\n"
+            "/stopmusic — остановить музыку\n"
             "/status — статус робота\n"
             "/control — пульт управления\n"
             "/menu — быстрое меню\n"
@@ -99,8 +101,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/map start — начать картографирование\n"
         "/map stop — завершить\n\n"
         "*Музыка:*\n"
-        "/music <код> — воспроизвести музыку\n"
-        "/music stop — остановить\n\n"
+        "/repl <код> — отправить Renardo/FoxDot код в робота\n"
+        "/stopmusic — остановить музыку\n"
+        "/music <код> — совместимый алиас для старого режима\n\n"
         "*Система:*\n"
         "/status — статус робота\n"
         "/clear — очистить историю чата\n"
@@ -488,6 +491,35 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         result = await node.mcp_bridge.execute_simple("execute_music_code", {"code": args_text})
     await update.message.reply_text(f"🎵 {result}")
+
+
+@authorized
+async def repl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /repl <code> — send Renardo/FoxDot code directly to the robot.
+
+    Uses raw message text to preserve newlines, since context.args splits by whitespace
+    and would collapse multiline code into a single line, breaking Python comments (#).
+    """
+    import re
+
+    raw_text = update.message.text or ""
+    # Strip the command prefix (/repl or /repl@botname) preserving all newlines
+    args_text = re.sub(r"^/repl\S*\s*", "", raw_text, flags=re.IGNORECASE).strip()
+    if not args_text:
+        await update.message.reply_text("Использование: /repl <Renardo/FoxDot код>")
+        return
+
+    node = _node(context)
+    result = await node.mcp_bridge.execute_simple("execute_music_code", {"code": args_text})
+    await update.message.reply_text(f"🎵 {result}")
+
+
+@authorized
+async def stopmusic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /stopmusic — stop all music on the robot."""
+    node = _node(context)
+    result = await node.mcp_bridge.execute_simple("stop_music")
+    await update.message.reply_text(f"⏹ {result}")
 
 
 # ─── /clear ──────────────────────────────────────────────────────────────────

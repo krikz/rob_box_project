@@ -237,7 +237,7 @@ ros2 topic echo /voice/audio/speech
 cd /home/ros2/rob_box_project/docker/vision
 
 # Обновить secrets
-nano config/voice/secrets.yaml
+nano config/voice_assistant/secrets.yaml
 # deepseek:
 #   api_key: "sk-..."
 

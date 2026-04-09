@@ -51,7 +51,7 @@ Vision Pi (Raspberry Pi 5)
 
 ### Конфигурация
 
-**Основной конфиг:** `config/voice/voice_assistant.yaml`
+**Основной конфиг:** `config/voice_assistant/voice_assistant.yaml`
 
 ```yaml
 audio_node:
@@ -72,7 +72,7 @@ tts_node:
     speed: 0.4
 ```
 
-**Секреты:** Скопировать `config/voice/secrets.yaml.example` → `secrets.yaml` и заполнить API ключи.
+**Секреты:** Скопировать `config/voice_assistant/secrets.yaml.example` → `secrets.yaml` и заполнить API ключи.
 
 ### Требования к железу
 

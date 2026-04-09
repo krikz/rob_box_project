@@ -21,6 +21,8 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 If you haven't run the verification command in this message, you cannot claim it passes.
 
+**RLM context rule:** Re-open the specific requirement or plan section you are verifying, not the whole document by default.
+
 ## The Gate Function
 
 ```
@@ -95,7 +97,7 @@ Skip any step = lying, not verifying
 
 **Requirements:**
 ```
-✅ Re-read plan → Create checklist → Verify each → Report gaps or completion
+✅ Re-open relevant plan/requirements sections → Create checklist → Verify each → Report gaps or completion
 ❌ "Tests pass, phase complete"
 ```
 

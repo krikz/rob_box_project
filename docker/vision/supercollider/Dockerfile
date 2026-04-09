@@ -18,6 +18,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 RUN apt-get update && apt-get install -y \
     supercollider-server \
+    sc3-plugins-server \
     jackd2 \
     alsa-utils \
     procps \

@@ -142,7 +142,7 @@ self._history_excluded_tools: set = set(
 | Файл | Изменение |
 |------|-----------|
 | `src/rob_box_voice/rob_box_voice/dialogue_node.py` | `declare_parameter("history_excluded_tools")`, логика исключения из истории, лог в `_log_config()` |
-| `docker/vision/config/voice/voice_assistant.yaml` | Новый параметр `history_excluded_tools: ["handle_navigation"]` |
+| `docker/vision/config/voice_assistant/voice_assistant.yaml` | Новый параметр `history_excluded_tools: ["handle_navigation"]` |
 
 **Коммиты:**
 - `f9110ce` — feat(voice): generic history exclusion per skill-tool via config

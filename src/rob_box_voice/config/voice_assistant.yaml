@@ -97,6 +97,10 @@
       history_max_turns: 20       # Скользящее окно: 20 пар user/assistant (40 сообщений)
       dialogue_timeout: 300.0     # Таймаут сессии: 5 минут без wake word → IDLE
 
+      # FAQ mode for events
+      faq_mode_enabled: false
+      faq_event_config_file: ""   # Например: /config/voice_assistant/event_mode.yaml
+
       # Streaming
       streaming: false             # Потоковый вывод LLM (false = один JSON ответ)
       sentence_split: true        # Разбивать на предложения для TTS

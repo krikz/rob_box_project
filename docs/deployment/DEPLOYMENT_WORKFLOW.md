@@ -256,9 +256,31 @@ Solutions:
 
 ### 6. Issue Creation (при ошибках)
 
-Если обнаружены проблемы, автоматически создается GitHub Issue:
+Если обнаружены проблемы, workflow формирует отдельные records проблем и проверяет, есть ли уже открытый deployment issue для каждой из них.
 
-#### Критические ошибки → @copilot
+#### Как работает дедупликация
+
+Для каждой проблемы строится стабильная сигнатура:
+
+`deploy-problem:<environment>:<scope>:<container>:<kind>:<hash>`
+
+Сигнатура добавляется в issue body как скрытый marker:
+
+`<!-- deploy-signature: ... -->`
+
+Перед созданием нового issue workflow:
+
+1. Нормализует текст проблемы, убирая run-specific шум
+  - timestamps
+  - workflow run URLs
+  - IP/числовые значения, если они не меняют тип проблемы
+2. Ищет открытые issues с label `deployment`
+3. Если marker уже существует — issue **не создается повторно**
+4. Если marker новый — создается **только один** новый issue для этой конкретной проблемы
+
+Это предотвращает спам одинаковыми auto-generated багами после каждого деплоя.
+
+#### Критические проблемы → `bug`, `critical`, `deployment`
 
 **Условия:**
 - CRITICAL/FATAL ошибки в логах
@@ -268,14 +290,16 @@ Solutions:
 **Labels:** `bug`, `critical`, `deployment`
 
 **Issue содержит:**
-- Полную информацию о деплое
-- Статус контейнеров на обоих Pi
-- Количество ошибок и предупреждений
-- Ссылку на workflow run с логами
-- Рекомендации по исправлению
-- Quick commands для диагностики
+- scope (`vision` / `main`)
+- container
+- kind (`container_status`, `critical_log`, `warning_log`, `topic_check`)
+- нормализованное summary
+- signature marker для дедупликации
+- ссылку на workflow run
+- краткий evidence excerpt
+- quick commands для диагностики
 
-#### Предупреждения → @krikz
+#### Warning-проблемы → `bug`, `deployment`
 
 **Условия:**
 - Только WARNING в логах
@@ -285,9 +309,16 @@ Solutions:
 **Labels:** `bug`, `deployment`
 
 **Issue содержит:**
-- Информацию о предупреждениях
-- Статус системы
-- Рекомендации по мониторингу
+- описание конкретной проблемы
+- signature marker для дедупликации
+- evidence excerpt
+- рекомендации по проверке
+
+#### Что происходит при повторном деплое
+
+- та же проблема снова найдена → workflow пишет в лог, что duplicate skipped
+- новая проблема того же контейнера, но с другой сигнатурой → создается новый issue
+- несколько разных проблем в одном деплое → может быть создано несколько разных issues
 
 ### 7. Summary
 
