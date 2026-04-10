@@ -1,7 +1,7 @@
 # Dockerfile for bundled voice resources
 # Contains heavy Renardo/FoxDot sample packs used at runtime by voice-assistant and supercollider.
 
-FROM python:3.11-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 ARG BUILD_VERSION=2026-03-08-v1
 
