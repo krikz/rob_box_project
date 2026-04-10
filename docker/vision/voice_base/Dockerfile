@@ -68,12 +68,16 @@ RUN apt-get update && apt-get install -y debconf-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
+# Python базовые инструменты (отдельный слой, не зависит от requirements.txt)
+# ============================================================================
+RUN pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel
+
+# ============================================================================
 # Python зависимости
 # ============================================================================
 COPY requirements.txt /tmp/requirements.txt
 
 RUN --mount=type=cache,target=/root/.cache,sharing=locked \
-    pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel && \
     pip3 install -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
