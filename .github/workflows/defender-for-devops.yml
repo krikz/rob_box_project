@@ -1,0 +1,84 @@
+# Microsoft Security DevOps (MSDO) — supplemental security scanning
+# Runs ALONGSIDE CodeQL (which covers Python + Actions).
+#
+# Active tools (narrowed to what's relevant for this project):
+#   trivy    — CVE scanning of Dockerfiles, filesystem, git repo
+#   checkov  — IaC misconfiguration checks: Dockerfiles, Docker Compose, YAML
+#   bandit   — Python security linter (alternative rule set vs CodeQL)
+#
+# Excluded tools: binskim (no Win/ELF binaries), eslint (no JS),
+#   templateanalyzer (no Azure ARM/Bicep), terrascan, container-mapping (needs Azure CSPM)
+#
+# NOTE: setup-dotnet below installs .NET as the MSDO CLI runtime only.
+# This project has no .NET/C# code.
+#
+# Results are uploaded to the GitHub Security tab (SARIF format).
+# Runs on windows-latest — ubuntu-latest support pending upstream.
+# Docs: https://github.com/microsoft/security-devops-action
+
+name: "Microsoft Defender For Devops"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '18 10 * * 5'
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  MSDO:
+    # currently only windows latest is supported
+    runs-on: windows-latest
+    env:
+      DEFENDER_CLI_VERSION: latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup .NET (MSDO CLI runtime — not project code)
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          5.0.x
+          6.0.x
+    - name: Resolve Defender CLI cache paths
+      shell: pwsh
+      run: |
+        $packagesDirectory = Join-Path $env:RUNNER_TOOL_CACHE '_defender\packages'
+        $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+
+        switch ($architecture) {
+          'x64' { $fileName = 'Defender_win-x64.exe' }
+          'arm64' { $fileName = 'Defender_win-arm64.exe' }
+          'x86' { $fileName = 'Defender_win-x86.exe' }
+          default { throw "Unsupported Windows architecture: $architecture" }
+        }
+
+        $defenderDirectory = Join-Path $packagesDirectory ("defender-cli.{0}" -f $env:DEFENDER_CLI_VERSION)
+        $defenderFilePath = Join-Path $defenderDirectory $fileName
+
+        "DEFENDER_VERSION=$env:DEFENDER_CLI_VERSION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "DEFENDER_PACKAGES_DIRECTORY=$packagesDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "DEFENDER_DIRECTORY=$defenderDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "DEFENDER_FILEPATH=$defenderFilePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    - name: Cache Defender CLI packages
+      uses: actions/cache@v5.0.4
+      with:
+        path: ${{ runner.tool_cache }}\_defender\packages
+        key: msdo-${{ runner.os }}-${{ runner.arch }}-${{ env.DEFENDER_CLI_VERSION }}-${{ hashFiles('.github/workflows/defender-for-devops.yml') }}
+        restore-keys: |
+          msdo-${{ runner.os }}-${{ runner.arch }}-${{ env.DEFENDER_CLI_VERSION }}-
+    - name: Run Microsoft Security DevOps (trivy + checkov + bandit)
+      uses: microsoft/security-devops-action@v1.6.0
+      id: msdo
+      with:
+        tools: trivy,checkov,bandit
+    - name: Upload results to Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.msdo.outputs.sarifFile }}
