@@ -19,6 +19,9 @@ on:
       - main
   workflow_dispatch:  # Ручной запуск
 
+permissions:
+  contents: read
+
 jobs:
   # ============================================================================
   # Python Linting

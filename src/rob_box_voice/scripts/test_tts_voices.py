@@ -363,16 +363,20 @@ def test_rhvoice_voice(voice_id: str, text: str, speed: float = 1.0):
         return
     
     print_info(f"Синтезирую речь (скорость: {speed})...")
-    
+
+    tmp_txt_path = None
+    tmp_wav_path = None
+
     try:
         # Создать временный файл для текста
         with tempfile.NamedTemporaryFile(mode='w', suffix=".txt", delete=False) as tmp_txt:
             tmp_txt.write(text)
             tmp_txt_path = tmp_txt.name
-        
+
         # Создать временный файл для аудио
-        tmp_wav_path = tempfile.mktemp(suffix=".wav")
-        
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+            tmp_wav_path = tmp_wav.name
+
         # Синтезировать
         rate = int(100 * speed)  # RHVoice использует rate 0-200
         subprocess.run([
@@ -388,13 +392,13 @@ def test_rhvoice_voice(voice_id: str, text: str, speed: float = 1.0):
         # Воспроизвести
         print_info("Воспроизвожу...")
         subprocess.run(["aplay", "-q", tmp_wav_path])
-        
-        # Удалить временные файлы
-        os.unlink(tmp_txt_path)
-        os.unlink(tmp_wav_path)
-        
+
     except Exception as e:
         print_error(f"Ошибка: {e}")
+    finally:
+        for temp_path in (tmp_txt_path, tmp_wav_path):
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
 
 # ============================================================================

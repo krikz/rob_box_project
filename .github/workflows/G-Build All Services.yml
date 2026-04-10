@@ -12,6 +12,9 @@ on:
     # Ночная сборка каждый день в 3:00 UTC (6:00 MSK)
     - cron: '0 3 * * *'
 
+permissions:
+  contents: read
+
 jobs:
   # Шаг 1: Собираем базовые образы
   build-base-images:

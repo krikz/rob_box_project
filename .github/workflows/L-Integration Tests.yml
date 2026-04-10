@@ -27,6 +27,9 @@ on:
         required: false
         default: "feature/agent"
 
+permissions:
+  contents: read
+
 env:
   LOCAL_REGISTRY: localhost:5000
   LOCAL_PREFIX: localhost:5000/krikz/rob_box

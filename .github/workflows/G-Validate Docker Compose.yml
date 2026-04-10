@@ -22,6 +22,9 @@ on:
       - 'docs/development/DOCKER_STANDARDS.md'
   workflow_dispatch:  # Ручной запуск
 
+permissions:
+  contents: read
+
 jobs:
   validate-main-compose:
     name: Validate Main Pi Docker Compose
