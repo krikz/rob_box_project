@@ -70,7 +70,7 @@ RUN apt-get update && apt-get install -y debconf-utils \
 # ============================================================================
 # Python базовые инструменты (отдельный слой, не зависит от requirements.txt)
 # ============================================================================
-RUN pip3 install --no-cache-dir --upgrade pip "setuptools>=59.6.0,<68" wheel
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 --upgrade pip "setuptools>=59.6.0,<68" wheel
 
 # ============================================================================
 # Python зависимости
