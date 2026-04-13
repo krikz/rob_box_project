@@ -1,6 +1,68 @@
 from pathlib import Path
 
-from rob_box_voice.core.faq_store import FAQStore
+import pytest
+
+from rob_box_voice.core.faq_store import FAQStore, _RU_STOPWORDS, _tokenize_fts
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _tokenize_fts
+# ---------------------------------------------------------------------------
+
+
+def test_tokenize_fts_strips_stopwords() -> None:
+    tokens = _tokenize_fts("расскажи про коррупцию")
+    # "расскажи" and "про" are stopwords — only "коррупцию" should remain
+    joined = " ".join(tokens)
+    assert '"расскажи"' not in joined
+    assert '"про"' not in joined
+    assert '"коррупцию"' in joined or '"коррупци"' in joined
+
+
+def test_tokenize_fts_adds_morphological_prefix() -> None:
+    tokens = _tokenize_fts("коррупцию")
+    # Full form preserved
+    assert '"коррупцию"*' in tokens
+    # Last 2 chars stripped: "коррупцию"[:-2] == "коррупц"
+    assert '"коррупц"*' in tokens
+
+
+def test_tokenize_fts_stem_matches_base_form_in_fts(tmp_path: Path) -> None:
+    """The stem prefix emitted by _tokenize_fts must match the base form stored in FAQ."""
+    store = FAQStore(db_path=str(tmp_path / "faq.db"))
+    store.replace_items(
+        event_id="test",
+        items=[
+            {
+                "question": "Есть ли у вас в Академии коррупция?",
+                "answer": "Академия придерживается принципов прозрачности.",
+                "category": "general",
+                "source": "faq.xlsx",
+            }
+        ],
+    )
+
+    # "расскажи про коррупцию" — all words are stopwords except "коррупцию"
+    # After stopword filtering + morphological prefix, "коррупци"* should match "коррупция"
+    results = store.search("расскажи про коррупцию", event_id="test", limit=3)
+
+    assert len(results) == 1
+    assert "коррупция" in results[0]["question"].lower()
+
+
+def test_tokenize_fts_returns_empty_for_all_stopwords() -> None:
+    """_tokenize_fts returns [] when every token is a stopword.
+    The caller (_fts_search) is responsible for the raw-split fallback.
+    """
+    tokens = _tokenize_fts("да нет ну")
+    assert tokens == []
+
+
+def test_tokenize_fts_no_duplicate_tokens() -> None:
+    tokens = _tokenize_fts("коррупция коррупция")
+    assert len(set(tokens)) == len(tokens)
+
+
 
 
 def test_replace_items_replaces_only_selected_event(tmp_path: Path) -> None:
