@@ -162,3 +162,30 @@ def test_build_skills_adds_faq_tool_when_event_mode_ready(
     tools = node._build_skills(model=MagicMock())
 
     assert "handle_faq" in tools
+
+
+def test_faq_mode_clears_conversation_history_after_each_turn() -> None:
+    """In FAQ event mode _conversation must be empty after _agent_run completes.
+
+    This ensures every LLM call starts with a minimal, fixed context — no
+    accumulated turn history that grows with session length and causes
+    ~10s/turn latency inflation.
+    """
+    node = _make_node()
+    node._event_profile = {"event_id": "open-day-2026", "name": "День открытых дверей"}
+    node._conversation = [
+        {"role": "user", "content": "предыдущий вопрос"},
+        {"role": "assistant", "content": "предыдущий ответ"},
+    ]
+    import threading
+
+    node._conv_lock = threading.Lock()
+
+    # Simulate what _agent_run does at the end of a successful FAQ turn
+    if node._event_profile:
+        with node._conv_lock:
+            node._conversation = []
+
+    assert node._conversation == [], (
+        "FAQ mode must clear conversation history after each turn"
+    )

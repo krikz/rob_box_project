@@ -1620,12 +1620,21 @@ class DialogueNode(Node):
                         f"⚠️ memory save_turn(assistant) failed: {exc}"
                     )
 
-            # Store full SDK transcript for next turn.
-            # result.to_input_list() contains real function_call / function_call_output items.
-            # On the next turn the LLM sees actual tool invocations in history — not text
-            # summaries it could pattern-complete. Robot naturally remembers what it did.
-            with self._conv_lock:
-                self._conversation = self._trim_history(result.to_input_list())
+            # In FAQ event mode history is intentionally NOT stored between turns.
+            # Each question is answered from scratch using only the FAQ prefetch context.
+            # This keeps every LLM call at a minimal, fixed context size regardless of
+            # how long the session has been running, eliminating the latency growth we
+            # observed: 10 msgs → ~9s, 34 msgs → ~44s, 68 msgs → ~57s.
+            if self._event_profile:
+                with self._conv_lock:
+                    self._conversation = []
+            else:
+                # Store full SDK transcript for next turn.
+                # result.to_input_list() contains real function_call / function_call_output items.
+                # On the next turn the LLM sees actual tool invocations in history — not text
+                # summaries it could pattern-complete. Robot naturally remembers what it did.
+                with self._conv_lock:
+                    self._conversation = self._trim_history(result.to_input_list())
 
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
