@@ -48,7 +48,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Тестовые файлы живут на feature/agent (или другой ветке из input)
           ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
@@ -189,7 +189,7 @@ jobs:
       # ── Артефакты ─────────────────────────────────────────────────────────
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-results-local-${{ steps.tag.outputs.full_tag }}
           path: ${{ env.TEST_DIR }}/results/test_results.json
