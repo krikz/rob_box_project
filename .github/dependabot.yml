@@ -56,6 +56,10 @@ updates:
       # Internal images are built by our CI — no public registry updates available
       - dependency-name: "ghcr.io/krikz/*"
       - dependency-name: "10.1.1.249:5000/*"
+      # Allow only patch updates for python image — minor/major jumps (e.g. 3.11 → 3.14)
+      # can break dependencies like renardo-lib that don't yet support newer Python releases.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       docker-base-images:
         patterns: ["*"]
