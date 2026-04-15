@@ -28,14 +28,14 @@ rm -f /dev/shm/jack_sem.0_default_* 2>/dev/null || true
 rm -f /dev/shm/jack-shm-registry 2>/dev/null || true
 rm -rf /dev/shm/jack_db-* 2>/dev/null || true
 
-echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000)..."
+echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000, nperiods=3)..."
 
 jackd --no-realtime \
     -d alsa \
     -d dmix_respeaker \
     -r 16000 \
     -p 1024 \
-    -n 2 \
+    -n 3 \
     -P \
     2>&1 | sed 's/^/[jackd] /' &
 
