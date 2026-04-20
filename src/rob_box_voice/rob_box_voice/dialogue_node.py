@@ -1620,12 +1620,21 @@ class DialogueNode(Node):
                         f"⚠️ memory save_turn(assistant) failed: {exc}"
                     )
 
-            # Store full SDK transcript for next turn.
-            # result.to_input_list() contains real function_call / function_call_output items.
-            # On the next turn the LLM sees actual tool invocations in history — not text
-            # summaries it could pattern-complete. Robot naturally remembers what it did.
-            with self._conv_lock:
-                self._conversation = self._trim_history(result.to_input_list())
+            # In FAQ event mode history is intentionally NOT stored between turns.
+            # Each question is answered from scratch using only the FAQ prefetch context.
+            # This keeps every LLM call at a minimal, fixed context size regardless of
+            # how long the session has been running, eliminating the latency growth we
+            # observed: 10 msgs → ~9s, 34 msgs → ~44s, 68 msgs → ~57s.
+            if self._event_profile:
+                with self._conv_lock:
+                    self._conversation = []
+            else:
+                # Store full SDK transcript for next turn.
+                # result.to_input_list() contains real function_call / function_call_output items.
+                # On the next turn the LLM sees actual tool invocations in history — not text
+                # summaries it could pattern-complete. Robot naturally remembers what it did.
+                with self._conv_lock:
+                    self._conversation = self._trim_history(result.to_input_list())
 
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Agent run cancelled (barge-in / new input)")
@@ -1857,7 +1866,10 @@ class DialogueNode(Node):
                 "3) После execute_music_code вызови ОТДЕЛЬНЫМ tool call set_dj_mode(enabled=True, next_transition_sec=X). "
                 "⚠️ В set_dj_mode НЕ передавай параметр theme! "
                 "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
-                "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.25, degree ≤ 6 нот."
+                "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.2, синты amp≤0.5, dur≥0.5, degree ≤ 5 нот. "
+                "🔊 HARDWARE: 16kHz DAC без лимитера — сумма amp ВСЕХ слоёв ≤ 0.8! "
+                "❌ НИКОГДА не используй chop= — на 16kHz даёт щелчки вместо sidechain! "
+                "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)!"
             )
 
         # Переходы #2+ — агент идёт по своему плану
@@ -1903,7 +1915,10 @@ class DialogueNode(Node):
             "3) После execute_music_code вызови ОТДЕЛЬНЫМ tool call set_dj_mode(enabled=True, next_transition_sec=X). "
             "⚠️ В set_dj_mode НЕ передавай параметр theme! "
             "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
-            "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.25, degree ≤ 6 нот. "
+            "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.2, синты amp≤0.5, dur≥0.5, degree ≤ 5 нот. "
+            "🔊 HARDWARE: 16kHz DAC без лимитера — сумма amp ВСЕХ слоёв ≤ 0.8! "
+            "❌ НИКОГДА не используй chop= — на 16kHz даёт щелчки вместо sidechain! "
+            "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
             "❌ НЕ повторяй синты/гамму предыдущего трека — каждый трек звучит иначе!"
         )
 

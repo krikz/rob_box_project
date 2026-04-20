@@ -11,6 +11,71 @@ from typing import Dict, List, Optional
 
 from .voice_memory import _SQLITE_VEC_AVAILABLE, OllamaEmbedder
 
+# Russian stopwords that carry no semantic meaning for FAQ lookup.
+# Filtering these prevents high-frequency filler words (e.g. "про", "расскажи")
+# from matching dozens of unrelated entries via the OR-based FTS query.
+_RU_STOPWORDS: frozenset[str] = frozenset(
+    {
+        # Prepositions
+        "в", "на", "за", "из", "от", "к", "с", "по", "до", "для", "через",
+        "без", "о", "об", "обо", "при", "под", "над", "у", "про", "между",
+        # Conjunctions / particles
+        "и", "а", "но", "или", "если", "что", "как", "когда", "где", "потому",
+        "хотя", "чтобы", "то", "же", "ли", "бы", "так", "даже", "ведь", "раз",
+        "не", "ни", "вот", "вон", "ну", "уже", "ещё", "еще", "тоже", "только",
+        "лишь", "вообще", "просто", "именно",
+        # Pronouns
+        "я", "ты", "он", "она", "оно", "мы", "вы", "они",
+        "мой", "моя", "мое", "моё", "моих", "мои",
+        "твой", "твоя", "твое", "твоё",
+        "его", "её", "ее", "их", "наш", "ваш", "свой",
+        "этот", "эта", "это", "эти", "тот", "та", "те",
+        "себя", "себе", "собой", "сам", "сама", "само", "сами",
+        # Spoken-query filler verbs
+        "расскажи", "скажи", "поищи", "найди", "покажи", "объясни",
+        "помоги", "хочу", "можешь", "можно", "нужно", "надо",
+        # Misc high-frequency with no discriminative value
+        "есть", "нет", "да", "там", "тут", "здесь", "сейчас",
+        "все", "всё", "всех", "всем",
+    }
+)
+
+# Minimum stem length kept when building a morphological prefix token.
+_MIN_STEM_LEN: int = 4
+
+
+def _tokenize_fts(query: str) -> List[str]:
+    """Build FTS5 token list from *query* with two improvements over a plain split.
+
+    1. Russian stopwords are removed so high-frequency filler words don't
+       inflate result counts and crowd out vector search.
+    2. For words longer than ``_MIN_STEM_LEN + 2`` characters a second, shorter
+       prefix token is added (last 2 chars stripped).  This compensates for
+       the lack of a Russian stemmer: e.g. "коррупцию" also emits "коррупци"*
+       which matches the base form "коррупция" stored in the FAQ.
+    """
+    seen: set[str] = set()
+    tokens: List[str] = []
+
+    for raw in query.lower().split():
+        word = raw.strip(".,!?;:\"'()[]{}—\u2014-")
+        if not word or word in _RU_STOPWORDS:
+            continue
+
+        full = f'"{word}"*'
+        if full not in seen:
+            seen.add(full)
+            tokens.append(full)
+
+        # Morphological stem prefix (handles Russian declensions/conjugations)
+        if len(word) > _MIN_STEM_LEN + 2:
+            stem = f'"{word[:-2]}"*'
+            if stem not in seen:
+                seen.add(stem)
+                tokens.append(stem)
+
+    return tokens
+
 try:
     import sqlite_vec
 except ImportError:
@@ -242,7 +307,11 @@ class FAQStore:
     def _fts_search(
         self, query: str, event_id: Optional[str], limit: int
     ) -> List[Dict]:
-        tokens = [f'"{word}"*' for word in query.split() if word]
+        tokens = _tokenize_fts(query)
+        if not tokens:
+            # All words were stopwords — fall back to plain split so we don't
+            # return an empty result when the query is very short.
+            tokens = [f'"{word}"*' for word in query.split() if word]
         if not tokens:
             return []
         fts_query = " OR ".join(tokens)

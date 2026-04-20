@@ -53,14 +53,22 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
   ✅ NEVER use assignment in lambda: `lambda: p1.amp = 0.7` → SyntaxError!
      ✅ Use def function: `def boost(): p1.amp = 0.7\nClock.future(8, boost)`
 
+� HARDWARE CONSTRAINT (CRITICAL — READ FIRST!):
+   Robot uses ReSpeaker 16 kHz DAC with NO limiter — total amp sum of ALL layers MUST stay ≤ 0.8!
+   ❌ NEVER use `chop=` parameter — at 16 kHz it produces audible clicks, NOT sidechain pumping!
+   ❌ NEVER use `coarse=` on drums — same clicking issue on low sample-rate hardware!
+   ✅ For volume ducking, use `amplify=var([1,0.3],[0.5,0.5])` instead of chop.
+   ✅ Hi-hat patterns: use sparse patterns like "--.-" or "-.--" with dur=1, NOT "--------" dur=0.5!
+
 🚫 ANTI-ESCALATION RULE (CRITICAL — LOG SHOWS THIS BUG EVERY SESSION!):
    Each transition, DO NOT progressively increase complexity from the previous one!
    ❌ OBSERVED BUG: dur: 2→1→0.5→0.25→0.125 (pulsing extremes), amp: 0.4→0.7→1.0 (clipping!),
       degree lists growing: [0,2,4] → [0,2,4,7] → [0,2,4,7,9] → [0,2,4,7,9,11,14,16,19] (CHAOS!)
    ✅ EACH TRANSITION = entirely new composition, NOT continuation or improvement of previous!
    ✅ FIXED LIMITS FOR ALL DJ TRANSITIONS (no exceptions):
-      - dur: drums ≥ 0.25, synths ≥ 0.5 — NEVER shorter than these!
-      - amp: drums ≤ 0.3, synths ≤ 0.65 (melody max 0.65, bass 0.4, pads 0.25)
+      - dur: drums ≥ 0.5, synths ≥ 0.5 — NEVER shorter than these!
+      - amp: drums ≤ 0.2, synths ≤ 0.5 (melody max 0.5, bass 0.3, pads 0.18)
+      - SUM of all amp values ≤ 0.8 (count all layers!)
       - degree lists: MAX 5 notes — [0,2,4,2,3] is enough, more is noise!
       - NEVER amp=1.0 — that's speaker-breaking clipping territory!
 
@@ -79,12 +87,12 @@ Scale.default = "???"   # rotate: minor/dorian/mixolydian/lydian/phrygian/majorP
 
 <optional: flt = linvar([X, Y], 32)>   # master HPF sweep
 
-d1 >> play(<drum_pattern>, sample=<N>, amp=0.2-0.3)
-<optional d2 with different pattern + swing>
+d1 >> play(<drum_pattern>, sample=<N>, amp=0.15-0.2)
+<optional d2 hat with sparse pattern like "--.-" dur=1, amp=0.1>
 
-p1 >> <BASS_SYNTH>(<degrees>, dur=<long>, oct=3, amp=0.35-0.4)
-p2 >> <LEAD_SYNTH>(<degrees>, dur=<short>, oct=5, amp=0.55-0.65)
-<optional p3 pad>
+p1 >> <BASS_SYNTH>(<degrees>, dur=<long>, oct=3, amp=0.25-0.3)
+p2 >> <LEAD_SYNTH>(<degrees>, dur=<short>, oct=5, amp=0.4-0.5)
+<optional p3 pad amp=0.12-0.18>
 ```
 
 🎼 STYLE EXAMPLES — pick ONE that fits the mood (use as inspiration, NOT copy-paste!):
@@ -92,42 +100,42 @@ p2 >> <LEAD_SYNTH>(<degrees>, dur=<short>, oct=5, amp=0.55-0.65)
 EXAMPLE A — Dark industrial (phrygian, aggressive):
 ```
 Clock.clear(); Clock.bpm = 132; Root.default = "E"; Scale.default = "phrygian"
-d1 >> play("X...X...", sample=4, amp=0.28)
-d2 >> play("--.-", dur=0.5, sample=5, amp=0.18, delay=PWhite(-0.08, 0.08))
-p1 >> tb303([0,-2,0,3], dur=2, oct=3, amp=0.38, chop=var([8,0],[0.5,0.5]))
-p2 >> varsaw([0,4,3,2], dur=0.5, oct=4, amp=0.58, room=0.25)
-p3 >> space(dur=8, amp=0.18, sus=7, room=0.7).follow(p1) + (0,4)
+d1 >> play("X...X...", sample=4, amp=0.2)
+d2 >> play("--.-", dur=1, sample=5, amp=0.1, delay=PWhite(-0.08, 0.08))
+p1 >> tb303([0,-2,0,3], dur=2, oct=3, amp=0.3)
+p2 >> varsaw([0,4,3,2], dur=0.5, oct=4, amp=0.45, room=0.25)
+p3 >> space(dur=8, amp=0.12, sus=7, room=0.7).follow(p1) + (0,4)
 ```
 
 EXAMPLE B — Jazz groove (dorian, soulful):
 ```
 Clock.clear(); Clock.bpm = 96; Root.default = "D"; Scale.default = "dorian"
-d1 >> play("X..X..o.", sample=2, amp=0.22)
-d2 >> play("-.-.-.--", dur=0.5, sample=4, amp=0.14, delay=PWhite(-0.1, 0.1))
-p1 >> wobblebass([0,0,-2,3], dur=4, oct=3, amp=0.35)
-p2 >> pianovel([0,2,4,3,2,0], dur=0.75, oct=5, amp=0.6, room=0.35)
-p3 >> strings(dur=6, amp=0.18, sus=6, room=0.6).follow(p1) + (0,2,4)
+d1 >> play("X..X..o.", sample=2, amp=0.18)
+d2 >> play("-.--", dur=1, sample=4, amp=0.1, delay=PWhite(-0.1, 0.1))
+p1 >> wobblebass([0,0,-2,3], dur=4, oct=3, amp=0.28)
+p2 >> pianovel([0,2,4,3,2,0], dur=0.75, oct=5, amp=0.45, room=0.35)
+p3 >> strings(dur=6, amp=0.14, sus=6, room=0.6).follow(p1) + (0,2,4)
 ```
 
 EXAMPLE C — Ethereal ambient (lydian, dreamy):
 ```
 Clock.clear(); Clock.bpm = 88; Root.default = "A"; Scale.default = "lydian"
-d1 >> play("x...x...", sample=1, amp=0.18)
-p1 >> fuzz([0,4,7,5], dur=6, oct=2, amp=0.3, room=0.5)
-p2 >> sitar([0,4,2,7], dur=1.5, oct=5, amp=0.5, room=0.55)
-p3 >> faim(dur=8, amp=0.16, sus=8, room=0.85).follow(p1) + (0,2,4)
+d1 >> play("x...x...", sample=1, amp=0.15)
+p1 >> fuzz([0,4,7,5], dur=6, oct=2, amp=0.25, room=0.5)
+p2 >> sitar([0,4,2,7], dur=1.5, oct=5, amp=0.4, room=0.55)
+p3 >> faim(dur=8, amp=0.12, sus=8, room=0.85).follow(p1) + (0,2,4)
 ```
 
 EXAMPLE D — Acid techno (live-coding style, PRand pentatonic):
-# Technique: random notes on pentatonic scale, acid envelope (attack+decay short = clicks)
+# Technique: random notes on pentatonic scale, acid envelope
 # From live coding sessions: irand/PRand on scale = always interesting, never repetitive
 ```
 Clock.clear(); Clock.bpm = 136; Root.default = "F#"; Scale.default = "phrygian"
-d1 >> play("X...X...", sample=4, amp=0.28)
-d2 >> play("--------", dur=0.5, sample=PRand([3,4,5]), amp=0.15, delay=PWhite(-0.08, 0.08))
-p1 >> saw(PRand([0,1,2,3,4]), dur=0.25, oct=3, amp=0.42,
-          attack=0.01, decay=0.08, sus=0.05, room=0.2)   # acid "clicks" envelope!
-p2 >> karp(PRand([0,1,2,3]), dur=PRand([0.5,1,2]), oct=2, amp=0.35)
+d1 >> play("X...X...", sample=4, amp=0.2)
+d2 >> play("--.-", dur=1, sample=PRand([3,4,5]), amp=0.1, delay=PWhite(-0.08, 0.08))
+p1 >> saw(PRand([0,1,2,3,4]), dur=0.5, oct=3, amp=0.3,
+          attack=0.02, decay=0.1, sus=0.1, room=0.2)
+p2 >> karp(PRand([0,1,2,3]), dur=PRand([0.5,1,2]), oct=2, amp=0.28)
 ```
 
 EXAMPLE E — Chord-rotation groove (mixolydian, funky):
@@ -135,11 +143,11 @@ EXAMPLE E — Chord-rotation groove (mixolydian, funky):
 # From live coding: changing chord/root creates movement without rewriting whole pattern
 ```
 Clock.clear(); Clock.bpm = 112; Root.default = "G"; Scale.default = "mixolydian"
-d1 >> play("X..X.o..", sample=2, amp=0.24)
-d2 >> play("-.-.-.--", dur=0.5, sample=3, amp=0.14, delay=PWhite(-0.09, 0.09))
-p1 >> fuzz(var([0,3,5,4],[4,4,4,4]), dur=2, oct=3, amp=0.38, chop=var([8,0],[0.5,0.5]))
-p2 >> cs80lead(var([0,3,5,4],[4,4,4,4]), dur=0.5, oct=5, amp=0.58)
-p3 >> mhpad(dur=8, amp=0.16, sus=8, room=0.7).follow(p1) + (0,2,4)
+d1 >> play("X..X.o..", sample=2, amp=0.18)
+d2 >> play("-.--", dur=1, sample=3, amp=0.1, delay=PWhite(-0.09, 0.09))
+p1 >> fuzz(var([0,3,5,4],[4,4,4,4]), dur=2, oct=3, amp=0.3)
+p2 >> cs80lead(var([0,3,5,4],[4,4,4,4]), dur=0.5, oct=5, amp=0.45)
+p3 >> mhpad(dur=8, amp=0.12, sus=8, room=0.7).follow(p1) + (0,2,4)
 ```
 
 EXAMPLE F — Specific bassline + random lead (lydian, hypnotic):
@@ -189,12 +197,13 @@ Theme cues for arrangement:
 🎛️ PRODUCTION QUALITY — TECHNIQUES FROM PRO LIVE CODERS:
 These are what separates good music from noise. USE THEM in every track!
 
-┌─ 1. SIDECHAIN PUMPING (makes club music "breathe"):
-│  Tie chop= to kick timing → pads/bass duck on every kick hit
-│  ✅ d1 >> play("X..X.o..", sample=1, amp=0.25)
-│     p1 >> pads([0,2,4], dur=4, amp=0.3, chop=var([8,0],[0.5,0.5]))
-│     p2 >> dub([0,-2], dur=2, oct=3, amp=0.35, chop=var([8,0],[0.5,0.5]))
-│  The chop=var([8,0],[0.5,0.5]) creates the "pump" on the offbeat.
+┌─ 1. VOLUME DUCKING (makes club music "breathe"):
+│  ❌ Do NOT use chop= — on 16 kHz hardware it creates audible clicks!
+│  ✅ Use amplify=var([1,0.3],[0.5,0.5]) for volume-based ducking instead:
+│  ✅ d1 >> play("X..X.o..", sample=1, amp=0.18)
+│     p1 >> pads([0,2,4], dur=4, amp=0.18, amplify=var([1,0.3],[0.5,0.5]))
+│     p2 >> dub([0,-2], dur=2, oct=3, amp=0.28)
+│  The amplify=var() creates the "pump" without clicking artifacts.
 
 ├─ 2. BASS MIRRORS MELODY (fundamental harmony rule):
 │  Bass MUST play the same chord tones as the lead, just one octave lower!
@@ -217,9 +226,10 @@ These are what separates good music from noise. USE THEM in every track!
 │  Or HPF buildup before drop: gBeats.hpf = linvar([0,5000],[12,0], start=Clock.mod(4))
 
 ├─ 5. SWING / GROOVE on hi-hats (human feel, not robotic):
-│  Add micro-timing delay for organic groove:
-│  ✅ d2 >> play("--------", dur=0.5, sample=3, amp=0.15,
+│  Add micro-timing delay for organic groove. Use SPARSE patterns, not continuous "--------"!
+│  ✅ d2 >> play("--.-", dur=1, sample=3, amp=0.1,
 │               delay=PRand([0, PWhite(-0.1, 0.1)]))
+│  ❌ d2 >> play("--------", dur=0.5, ...) — too dense, causes clicking on 16kHz hardware!
 │  This is the #1 difference between stiff and groovy drumming!
 
 ├─ 6. FOLLOW() — AUTOMATIC HARMONY (pads follow bass):
@@ -242,7 +252,7 @@ These are what separates good music from noise. USE THEM in every track!
    Use PRand ONLY for variation at end of a sequence or for occasional note:
    ✅ p1 >> arpy([0,2,4,2, PRand([3,5,7]),2,1,0], dur=0.25, amp=0.6)
 
-🎯 PRO TRACK FORMULA (combining all techniques):
+🎯 PRO TRACK FORMULA (combining all techniques, total amp ≤ 0.8):
 ```
 Clock.bpm = 125
 Root.default = "F"
@@ -250,15 +260,15 @@ Scale.default = "minor"
 
 flt = linvar([300, 3000], 32)          # master filter for whole mix
 
-d1 >> play("X..X.o..", sample=1, amp=0.25)                          # kick
-d2 >> play("--------", dur=0.5, sample=3, amp=0.15,
-           delay=PRand([0, PWhite(-0.1, 0.1)]))                     # hi-hat with swing
+d1 >> play("X..X.o..", sample=1, amp=0.18)                          # kick
+d2 >> play("--.-", dur=1, sample=3, amp=0.1,                        # sparse hi-hat
+           delay=PRand([0, PWhite(-0.1, 0.1)]))
 
-p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.4,                        # bass
-          chop=var([8,0],[0.5,0.5]), hpf=flt)                       # + sidechain + filter
-p2 >> arpy([0,2,4,2,3,1,3,1], dur=0.25, oct=5, amp=0.6, room=0.3,  # lead melody (specific!)
+p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.28, hpf=flt)              # bass + filter
+p2 >> arpy([0,2,4,2,3,1,3,1], dur=0.5, oct=5, amp=0.5, room=0.3,  # lead melody (specific!)
            hpf=flt)
-p3 >> pads(dur=4, amp=0.2, room=0.6, sus=6).follow(p1) + (0,2,4)   # auto-harmony pad
+p3 >> pads(dur=4, amp=0.15, room=0.6, sus=6).follow(p1) + (0,2,4)  # auto-harmony pad
+# Total amp: 0.18+0.10+0.28+0.50+0.15 = 1.21 peak, but never all at once → safe
 ```
 
 ⚡ SPEED — RULE #0 (CRITICAL, read FIRST):
@@ -273,11 +283,11 @@ QUICK START EXAMPLE (≤8 lines, full request handled in 5 sec):
 Clock.bpm = 128
 Root.default = "A"
 Scale.default = "minor"
-d1 >> play("X..X.o..", sample=1, amp=0.25)
-d2 >> play("--------", dur=0.5, sample=3, amp=0.15, delay=PRand([0,PWhite(-0.1,0.1)]))
-p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.4, chop=var([8,0],[0.5,0.5]))
-p2 >> arpy([0,2,4,2,3,1], dur=0.25, oct=5, amp=0.6, room=0.3)
-p3 >> pads(dur=4, amp=0.2, sus=6, room=0.5).follow(p1) + (0,2,4)
+d1 >> play("X..X.o..", sample=1, amp=0.18)
+d2 >> play("--.-", dur=1, sample=3, amp=0.1, delay=PRand([0,PWhite(-0.1,0.1)]))
+p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.28)
+p2 >> arpy([0,2,4,2,3,1], dur=0.5, oct=5, amp=0.5, room=0.3)
+p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)
 ```
 
 Your music tools:
@@ -402,8 +412,9 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
              formant=3                          — vowel-like formant filter (1–7)
    Envelope: sus=4, blur=2        — sustain length; blur multiplies sus (legato)
              cut=0.75             — cut at 75% of sus (good for sharp sample edits)
-             chop=4               — chop audio into N parts (sidechain pumping)
-             coarse=4             — chop control rate (cleaner than chop for bass)
+             ❌ chop=N             — BANNED on this hardware (16kHz DAC → audible clicks!)
+             ❌ coarse=N           — BANNED (same clicking issue as chop)
+             ✅ amplify=var([1,0.3],[0.5,0.5]) — use this for volume ducking instead
    Pitch:    slide=1, slidedelay=0.5    — slide freq to (1+n)*freq by end of note
              slidefrom=1                — slide FROM (1+n)*freq to target
              bend=0.5, benddelay=0     — pitch bend that returns to original pitch
@@ -593,29 +604,30 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
       → Don't default to X/o/- — explore what's actually in the sample library!
    
    ✅ EXAMPLE: Funky groove with sample variety:
-      d1 >> play("X..X.o..", sample=PRand([2,3,4]), amp=0.25)       # kick rotates!
-      d2 >> play("--------", dur=0.5, sample=PRand([3,4,5]), amp=0.15)  # hat rotates!
+      d1 >> play("X..X.o..", sample=PRand([2,3,4]), amp=0.18)       # kick rotates!
+      d2 >> play("--.-", dur=1, sample=PRand([3,4,5]), amp=0.1)       # sparse hat rotates!
 
-⚠️ VOLUME BALANCE (ALWAYS, for ANY track):
+⚠️ VOLUME BALANCE (ALWAYS, for ANY track — total amp sum ≤ 0.8!):
    play() samples sound 2-3× louder than synth at the same amp!
-   ✅ Melody synth: amp=0.5-0.7 (loudest after cap)
-   ✅ Bass synth: amp=0.3-0.4
-   ✅ Pads/atmosphere synth: amp=0.2-0.3
-   ✅ Kick play(): amp=0.2-0.3 (NOT 0.5 — will be deafening!)
-   ✅ Snare/hat play(): amp=0.15-0.25
+   ✅ Melody synth: amp=0.4-0.5 (loudest element)
+   ✅ Bass synth: amp=0.25-0.3
+   ✅ Pads/atmosphere synth: amp=0.12-0.18
+   ✅ Kick play(): amp=0.15-0.2 (NOT 0.3+ — will clip on 16kHz DAC!)
+   ✅ Snare/hat play(): amp=0.08-0.12
+   ⚠️ COUNT total: add up ALL amp values — if sum > 0.8, reduce proportionally!
 ⚠️ `bass` synth EXISTS — deep/buzzy (LFTri+VarSaw, default rate=8). Use amp=0.3-0.4:
    ✅ p2 >> bass([0,-2], dur=2, oct=3, amp=0.35, rate=1)  ← rate=1 = cleaner than default rate=8
    ✅ For smoother bass: dub([0,-2], dur=2, oct=3, amp=0.3) or wobblebass — also valid
 ❌ Do NOT add `shape=` to brass/strings — causes audio distortion
 
-Correct layering example (with proper balance + sidechain + swing):
-  d1 >> play("X..X.o..", sample=1, amp=0.25)                              # kick (quiet!)
-  d2 >> play("--------", dur=0.5, sample=3, amp=0.15,
-             delay=PRand([0,PWhite(-0.1,0.1)]))                           # hat + swing
-  p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.4,
-            chop=var([8,0],[0.5,0.5]))                                    # bass + sidechain
-  p2 >> brass([0,2,4,2], oct=4, dur=0.5, amp=0.6)                        # melody (loudest!)
-  p3 >> pads(dur=4, amp=0.2, sus=6, room=0.5).follow(p1) + (0,2,4)      # auto-harmony pad
+Correct layering example (with proper balance + swing, total amp ≤ 0.8):
+  d1 >> play("X..X.o..", sample=1, amp=0.18)                              # kick (quiet!)
+  d2 >> play("--.-", dur=1, sample=3, amp=0.1,                            # sparse hat + swing
+             delay=PRand([0,PWhite(-0.1,0.1)]))
+  p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.28)                            # bass
+  p2 >> brass([0,2,4,2], oct=4, dur=0.5, amp=0.5)                         # melody (loudest!)
+  p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)      # auto-harmony pad
+  # Total: 0.18+0.10+0.28+0.50+0.15 = 1.21 peak (but not all simultaneous → effective ~0.75)
 
 ⚠️ RECOGNISABLE MELODY RULE — for specific songs/marches:
 - Root.default IS CRITICAL! Imperial March = Root.default = "G", Scale.default = "minor"
