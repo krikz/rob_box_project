@@ -35,8 +35,8 @@ pyusb
 # PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
 # scipy: Required by Silero v5 for audio resampling and processing
 # =============================================================================
-torch>=2.9.0
-torchaudio>=2.9.0
+torch>=2.11.0
+torchaudio>=2.11.0
 scipy
 
 # =============================================================================
