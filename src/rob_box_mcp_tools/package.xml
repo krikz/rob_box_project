@@ -4,7 +4,7 @@
   <name>rob_box_mcp_tools</name>
   <version>0.1.0</version>
   <description>MCP-like tool system for LLM integration in Rob Box project</description>
-  <maintainer email="your_email@example.com">Rob Box Team</maintainer>
+  <maintainer email="ros2@rob-box.local">Rob Box Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>

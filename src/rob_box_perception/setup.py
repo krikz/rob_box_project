@@ -22,8 +22,8 @@ setup(
     zip_safe=True,
     maintainer='ros2',
     maintainer_email='kukoreken@rob-box.local',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Internal Dialogue Agent - Perception and Reflection for Rob Box',
+    license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
