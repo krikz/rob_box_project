@@ -433,6 +433,45 @@
       "dependencies": [],
       "status": "pending",
       "notes": "Источник: CONCERNS.md BG-6. Добавлено Phase 3 Code Quality Review. Связано с VESC PID параметрами. Рассмотреть: снижение acceleration limit в VESC Tool; проверить gear_ratio в конфигурации."
+    },
+    {
+      "id": "TASK-051",
+      "title": "Implement real get_robot_status via ROS topics",
+      "description": "Replace hardcoded position {x:0,y:0,theta:0} and battery_level:85 in rob_box_mcp_tools/tools/system.py with real data from /odom and /battery_state ROS topics. LLM currently gets false robot position.",
+      "status": "todo",
+      "priority": "high",
+      "category": "stub",
+      "milestone": "M2",
+      "package": "rob_box_mcp_tools",
+      "file": "rob_box_mcp_tools/tools/system.py",
+      "line": 440,
+      "acceptance_criteria": [
+        "get_robot_status reads from /odom topic for position data",
+        "get_robot_status reads from /battery_state topic for battery level",
+        "Returns real-time data instead of hardcoded values",
+        "Handles topic unavailability gracefully with clear error message"
+      ],
+      "created_at": "2026-05-15",
+      "source": "TECH_DEBT.md TD-2, STATIC_ANALYSIS_REPORT Phase 3"
+    },
+    {
+      "id": "TASK-052",
+      "title": "Implement navigation voice commands (detect_objects, follow_person, get_position)",
+      "description": "Three navigation/vision command handlers in command_node.py silently do nothing: get_current_position (stub), detect_objects (stub), follow_person (stub). Requires OAK-D vision integration and Nav2 integration.",
+      "status": "todo",
+      "priority": "medium",
+      "category": "stub",
+      "milestone": "M2",
+      "package": "rob_box_voice",
+      "file": "rob_box_voice/command_node.py",
+      "acceptance_criteria": [
+        "handle_status returns real position from /odom or /tf",
+        "handle_vision triggers object detection via OAK-D pipeline",
+        "handle_follow activates person-following mode via Nav2",
+        "All handlers publish real feedback, not placeholder messages"
+      ],
+      "created_at": "2026-05-15",
+      "source": "TECH_DEBT.md TD-2, STATIC_ANALYSIS_REPORT Phase 3"
     }
   ]
 }
