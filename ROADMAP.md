@@ -295,7 +295,7 @@
 **Стек:** DepthAI, depthai-ros  
 **Документация:** `docs/development/BUILD_OPTIMIZATION.md`
 
-#### 🔄 Context Aggregator (MPC Lite)
+#### ✅ Context Aggregator (MPC Lite)
 - **Централизованное хранилище контекста** робота (⚠️ в процессе доработки)
 - **События от всех систем:**
   - Vision события (object detection, person detection)
@@ -308,7 +308,7 @@
 **Пакет:** `rob_box_perception`  
 **Документация:** `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`
 
-#### 🔄 Health Monitor
+#### ✅ Health Monitor
 - **Мониторинг температуры** компонентов (8× AHT30 сенсоров) (⚠️ требует переработки)
 - **Контроль оборотов вентиляторов** (RPM monitoring)
 - **Измерение веса груза** (HX711 тензодатчик)
@@ -357,7 +357,7 @@
 
 ### 🤖 Взаимодействие с пользователем
 
-#### 🔄 Голосовой ассистент (Voice Assistant)
+#### ✅ Голосовой ассистент (Voice Assistant)
 - **Wake word detection:** робок, робот, роббокс, робокос (6 вариантов)
 - **Speech-to-Text (STT):** Vosk offline модель для русского языка
 - **Text-to-Speech (TTS):** Silero V4 (качественный русский голос)
@@ -375,7 +375,7 @@
 **Пакет:** `rob_box_voice`  
 **Документация:** `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`
 
-#### 🔄 Internal Dialogue (Внутренний диалог)
+#### ✅ Internal Dialogue (Внутренний диалог)
 - **Постоянное размышление** без wake word (⚠️ в процессе доработки)
 - **Context-aware:** получает события от Context Aggregator
 - **Может вмешаться** когда релевантно (даже без wake word)
@@ -405,6 +405,33 @@
 **Стек:** PulseAudio, Python  
 **Пакет:** `rob_box_voice`  
 **Документация:** `docs/packages/SOUND_EFFECTS_QUICKSTART.md`
+
+#### ✅ Telegram-бот оператора
+- **Управление роботом** через Telegram-чат
+- **LLM-интерфейс:** команды на естественном языке через LLM agent
+- **Голосовые сообщения:** поддержка voice-in через STT
+- **MCP bridge:** вызов rob_box_mcp_tools для навигации и управления
+- **Аутентификация:** доступ только для авторизованных операторов
+
+**Пакет:** `rob_box_telegram`  
+**Контейнер:** `telegram-bot` (Vision Pi)
+
+#### ✅ MCP Tools (инструменты управления роботом)
+- **MCP сервер** для LLM-агентов (Claude/GPT/Qwen)
+- **Инструменты:** навигация к точке, движение, смена режима, LED, статус
+- **Хранилище точек:** waypoint store для именованных позиций
+- **Состояние карты:** mapping state с текущей позицией
+
+**Пакет:** `rob_box_mcp_tools`  
+**Контейнер:** `perception` (Main Pi)
+
+#### ✅ Joystick Teleoperation
+- **SBUS/serial управление** через RC пульт
+- **Интеграция с twist_mux** (средний приоритет)
+- ⚠️ **BLE заблокирован**: kernel bug в Linux 6.14.0-raspi — BLE-джойстик не работает, использовать SBUS/serial
+
+**Пакет:** `rob_box_teleop`  
+**Контейнер:** `teleop` (Main Pi)
 
 ---
 
