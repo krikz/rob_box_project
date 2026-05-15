@@ -342,7 +342,7 @@ class CommandNode(Node):
         self.get_logger().info('📊 Запрос статуса')
         # STUB: get_current_position не реализован — позиция hardcoded.
         # Реальные данные придут из /odom или /tf после Nav2 интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, tasks.json TASK-052 (STUB-navigation-commands)
+        # Отслеживается: TECH_DEBT.md TD-2, GitHub #819 (STUB-navigation-commands)
         # TODO: Получить текущую позицию из /odom или /tf
         self.publish_feedback('Я нахожусь в стартовой позиции')
     
@@ -361,7 +361,7 @@ class CommandNode(Node):
         self.get_logger().info('👁️ Команда зрения')
         # STUB: detect_objects не реализован — команда зрения молча ничего не делает.
         # Реальный object detection через OAK-D (rob_box_perception) после Vision интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, tasks.json TASK-052 (STUB-navigation-commands)
+        # Отслеживается: TECH_DEBT.md TD-2, GitHub #819 (STUB-navigation-commands)
         # TODO: Object detection
         self.publish_feedback('Сканирую окружение')
     
@@ -375,7 +375,7 @@ class CommandNode(Node):
         self.get_logger().info('🚶 Режим следования')
         # STUB: follow_person не реализован — команда следования молча ничего не делает.
         # Реальное следование через OAK-D + Nav2 после Vision интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, tasks.json TASK-052 (STUB-navigation-commands)
+        # Отслеживается: TECH_DEBT.md TD-2, GitHub #819 (STUB-navigation-commands)
         # TODO: Person following
         self.publish_feedback('Включаю режим следования')
     
