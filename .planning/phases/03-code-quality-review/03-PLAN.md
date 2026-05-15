@@ -146,7 +146,7 @@ must_haves:
 
 | ID | Проблема | Файл | Severity | Disposition | Обоснование |
 |----|----------|------|----------|-------------|-------------|
-| TD-1 | dialogue_node.py монолит 2040 строк, 80+ методов | rob_box_voice/dialogue_node.py | high | defer:M3 | Задокументирована стратегия декомпозиции; не блокирует навигацию |
+| TD-1 | dialogue_node.py монолит 2040 строк, 74 метода | rob_box_voice/dialogue_node.py | high | defer:M3 | Задокументирована стратегия декомпозиции; не блокирует навигацию |
 | TD-2 | get_robot_status возвращает hardcoded stub (position 0,0; battery 85%) | rob_box_mcp_tools/tools/system.py:440 | high | defer:M2 | LLM получает ложные данные о положении; реальные данные появятся после Nav2 интеграции |
 | TD-3 | reflection_node.py silent fallback без предупреждения при старте | rob_box_perception/reflection_node.py:668,702,747 | medium | defer:M3 | Добавить WARN log; не блокирует функциональность |
 | TD-4 | command_node.py навигация/vision stubs с `pass` | rob_box_voice/command_node.py:343,359,370,394 | medium | defer:M2 | Голосовые команды навигации зависят от Nav2; помечены # STUB: |
@@ -268,7 +268,7 @@ must_haves:
 **BG-5 запись:**
 ```json
 {
-  "id": "TASK-048",
+  "id": "TASK-049",
   "category": "bug",
   "priority": "critical",
   "description": "BG-5: BLE joystick заблокирован регрессией ядра Linux 6.14.0-raspi. Джойстик не подключается / не распознаётся как HID-устройство после обновления ядра.",
@@ -288,7 +288,7 @@ must_haves:
 **BG-6 запись:**
 ```json
 {
-  "id": "TASK-049",
+  "id": "TASK-050",
   "category": "bug",
   "priority": "medium",
   "description": "BG-6: VESC wheel jitter при старте и резком торможении. Колёса вибрируют/дёргаются из-за нестабильности PID или рассинхронизации команд скорости. Частично исправлен, edge cases остаются.",
@@ -309,17 +309,17 @@ must_haves:
   </action>
 
   <verify>
-    <automated>python3 -c "import json; d=json.load(open('tasks.json')); ids=[t['id'] for t in d['tasks']]; print('Total:', len(d['tasks']), '| BG-5:', 'TASK-048' in ids, '| BG-6:', 'TASK-049' in ids)"</automated>
+    <automated>python3 -c "import json; d=json.load(open('tasks.json')); ids=[t['id'] for t in d['tasks']]; print('Total:', len(d['tasks']), '| BG-5:', 'TASK-049' in ids, '| BG-6:', 'TASK-050' in ids)"</automated>
   </verify>
 
   <acceptance_criteria>
     - `python3 -c "import json; json.load(open('tasks.json'))"` — не выдаёт ошибку (JSON валиден)
     - tasks.json содержит 18 задач (было 16 + 2 новых)
-    - TASK-048 присутствует с `"category": "bug"` и `"priority": "critical"`
-    - TASK-049 присутствует с `"category": "bug"` и `"priority": "medium"`
-    - `python3 -c "import json; d=json.load(open('tasks.json')); print([t['id'] for t in d['tasks'] if t['id'] in ['TASK-048','TASK-049']])"` выводит `['TASK-048', 'TASK-049']`
+    - TASK-049 присутствует с `"category": "bug"` и `"priority": "critical"`
+    - TASK-050 присутствует с `"category": "bug"` и `"priority": "medium"`
+    - `python3 -c "import json; d=json.load(open('tasks.json')); print([t['id'] for t in d['tasks'] if t['id'] in ['TASK-049','TASK-050']])"` выводит `['TASK-049', 'TASK-050']`
   </acceptance_criteria>
-  <done>tasks.json содержит BG-5 (TASK-048) и BG-6 (TASK-049); JSON валиден; итого 18 задач</done>
+  <done>tasks.json содержит BG-5 (TASK-049) и BG-6 (TASK-050); JSON валиден; итого 18 задач</done>
 </task>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -602,7 +602,7 @@ ROS 2 ноды вызывают `super().__init__()` в конструкторе
 
 ### 2. Монолитная структура dialogue_node.py (TD-1, FA-5)
 
-2040 строк в одном классе создают 80+ методов с взаимными зависимостями. 13+ тест-методов в `test_dialogue_node.py` содержат только `pass` — это создаёт ложное ощущение тест-покрытия без реального тестирования.
+2040 строк в одном классе создают 74 метода с взаимными зависимостями. 13+ тест-методов в `test_dialogue_node.py` содержат только `pass` — это создаёт ложное ощущение тест-покрытия без реального тестирования.
 
 **Путь к улучшению (Milestone 3):** Декомпозиция на 6 компонентов (AgentFactory, AgentRunner, ConversationHistory, DjModeManager, VoiceAssistantConfig, EventProfileLoader) — см. DIALOGUE_NODE_REFACTORING.md.
 
@@ -694,7 +694,7 @@ grep -n "def \|class " src/rob_box_voice/rob_box_voice/dialogue_node.py
 # Стратегия рефакторинга dialogue_node.py — Rob Box
 
 **Дата:** 2026-05-15
-**Текущее состояние:** 2040 строк, 1 класс DialogueNode, 80+ методов
+**Текущее состояние:** 2040 строк, 1 класс DialogueNode, 74 метода
 **Целевое состояние (Milestone 3):** ~300-строчный оркестратор + 6 специализированных компонентов
 **Приоритет:** MEDIUM (не блокирует Milestone 2 навигацию)
 **Планируемый milestone:** Milestone 3
@@ -988,18 +988,19 @@ grep -rn "# STUB:" src/rob_box_mcp_tools/ src/rob_box_voice/ --include="*.py"
   <files>tasks.json</files>
 
   <read_first>
-    1. `tasks.json` — текущее состояние после выполнения 03-01-02 (должно быть 18 задач: TASK-001..TASK-049)
+    ⚠️ Выполнять только после 03-01-02 (задача добавляет TASK-049 и TASK-050 в tasks.json — нужен актуальный файл).
+    1. `tasks.json` — текущее состояние после выполнения 03-01-02 (должно быть 18 задач: TASK-001..TASK-050)
     2. `src/rob_box_voice/rob_box_voice/command_node.py` — строки с только что добавленными # STUB: комментариями (для точных описаний)
     3. `src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py` — строка с # STUB: get_robot_status
   </read_first>
 
   <action>
-Добавить 3 новые записи в массив `tasks.tasks` в конец файла (после TASK-049). Одна задача на каждую самостоятельную stub-группу:
+Добавить 3 новые записи в массив `tasks.tasks` в конец файла (после TASK-050). Одна задача на каждую самостоятельную stub-группу:
 
 **STUB-1: get_robot_status**
 ```json
 {
-  "id": "TASK-050",
+  "id": "TASK-051",
   "category": "stub",
   "priority": "high",
   "description": "STUB-get-robot-status: Реализовать get_robot_status в rob_box_mcp_tools/tools/system.py через реальные ROS топики. Сейчас возвращает hardcoded данные: position {x:0,y:0,theta:0}, battery 85%. LLM получает ложные данные о состоянии робота.",
@@ -1018,7 +1019,7 @@ grep -rn "# STUB:" src/rob_box_mcp_tools/ src/rob_box_voice/ --include="*.py"
 **STUB-2: Навигационные команды (command_node.py)**
 ```json
 {
-  "id": "TASK-051",
+  "id": "TASK-052",
   "category": "stub",
   "priority": "medium",
   "description": "STUB-navigation-commands: Реализовать 3 голосовые команды в command_node.py: get_current_position (из /odom), detect_objects (OAK-D pipeline), follow_person (Nav2 + detection). Сейчас все 3 метода содержат только pass или TODO — голосовые команды молча ничего не делают.",
@@ -1037,7 +1038,7 @@ grep -rn "# STUB:" src/rob_box_mcp_tools/ src/rob_box_voice/ --include="*.py"
 **STUB-3: Обновить статус маркировки в TECH_DEBT.md**
 *(Эта запись — не новый stub, а трекер для самой задачи маркировки — пропустить)*
 
-Добавить только TASK-050 и TASK-051. Итого tasks.json должен содержать 20 задач.
+Добавить только TASK-051 и TASK-052. Итого tasks.json должен содержать 20 задач.
 
 **После добавления проверить валидность JSON:**
 ```bash
@@ -1046,17 +1047,17 @@ python3 -c "import json; d=json.load(open('tasks.json')); print('Valid JSON. Tas
   </action>
 
   <verify>
-    <automated>python3 -c "import json; d=json.load(open('tasks.json')); ids=[t['id'] for t in d['tasks']]; print('Total:', len(d['tasks']), '| TASK-050:', 'TASK-050' in ids, '| TASK-051:', 'TASK-051' in ids)"</automated>
+    <automated>python3 -c "import json; d=json.load(open('tasks.json')); ids=[t['id'] for t in d['tasks']]; print('Total:', len(d['tasks']), '| TASK-051:', 'TASK-051' in ids, '| TASK-052:', 'TASK-052' in ids)"</automated>
   </verify>
 
   <acceptance_criteria>
     - `python3 -c "import json; json.load(open('tasks.json'))"` — JSON валиден без ошибок
     - tasks.json содержит 20 задач (16 исходных + BG-5 + BG-6 + STUB-050 + STUB-051)
-    - TASK-050 присутствует с `"category": "stub"` и `"priority": "high"`
-    - TASK-051 присутствует с `"category": "stub"` и `"priority": "medium"`
+    - TASK-051 присутствует с `"category": "stub"` и `"priority": "high"`
+    - TASK-052 присутствует с `"category": "stub"` и `"priority": "medium"`
     - `python3 -c "import json; d=json.load(open('tasks.json')); stubs=[t for t in d['tasks'] if t['category']=='stub']; print(len(stubs))"` выводит 2
   </acceptance_criteria>
-  <done>tasks.json содержит TASK-050 и TASK-051 (stub-задачи); JSON валиден; итого 20 задач</done>
+  <done>tasks.json содержит TASK-051 и TASK-052 (stub-задачи); JSON валиден; итого 20 задач</done>
 </task>
 
 </tasks>
@@ -1087,7 +1088,7 @@ python3 -c "import json; d=json.load(open('tasks.json')); print('Valid JSON. Tas
 
 ```bash
 # CQ-01: BG-5 и BG-6 в трекере
-python3 -c "import json; d=json.load(open('tasks.json')); ids=[t['id'] for t in d['tasks']]; print('TASK-048 (BG-5):', 'TASK-048' in ids, '| TASK-049 (BG-6):', 'TASK-049' in ids)"
+python3 -c "import json; d=json.load(open('tasks.json')); ids=[t['id'] for t in d['tasks']]; print('TASK-049 (BG-5):', 'TASK-049' in ids, '| TASK-050 (BG-6):', 'TASK-050' in ids)"
 
 # CQ-02: TECH_DEBT.md создан с 30 пунктами
 test -f .planning/TECH_DEBT.md && echo "OK: TECH_DEBT.md exists" && grep -c "defer\|accept\|fix" .planning/TECH_DEBT.md | awk '{print "Disposition entries:", $1}'
@@ -1114,12 +1115,12 @@ python3 -c "import json; d=json.load(open('tasks.json')); print('Total tasks:', 
 
 <success_criteria>
 - [ ] `.planning/TECH_DEBT.md` создан: 30 пунктов, каждый имеет severity и disposition
-- [ ] `tasks.json` содержит TASK-048 (BG-5, critical) и TASK-049 (BG-6, medium)
+- [ ] `tasks.json` содержит TASK-049 (BG-5, critical) и TASK-050 (BG-6, medium)
 - [ ] `.planning/STATIC_ANALYSIS_REPORT.md` создан: flake8 (~4288 нарушений), black, isort
 - [ ] `.planning/COVERAGE_REPORT.md` создан: ≥14 модулей ниже 50%, объяснение причин
 - [ ] `.planning/DIALOGUE_NODE_REFACTORING.md` создан: 6 компонентов с интерфейсами, порядок реализации
 - [ ] `grep -rn "# STUB:" src/ --include="*.py" | wc -l` ≥ 4
-- [ ] `tasks.json` содержит TASK-050 (STUB get_robot_status) и TASK-051 (STUB navigation commands)
+- [ ] `tasks.json` содержит TASK-051 (STUB get_robot_status) и TASK-052 (STUB navigation commands)
 - [ ] `python3 -c "import json; json.load(open('tasks.json'))"` — без ошибок (JSON валиден)
 - [ ] `python3 -m black --version` — black установлен
 - [ ] `python3 -m isort --version` — isort установлен
@@ -1141,7 +1142,7 @@ commits: {список SHA}
 ## Что сделано
 
 - TECH_DEBT.md: 30 пунктов CONCERNS.md с severity и disposition
-- tasks.json: добавлены BG-5 (TASK-048), BG-6 (TASK-049), STUB-050, STUB-051
+- tasks.json: добавлены BG-5 (TASK-049), BG-6 (TASK-050), STUB-050, STUB-051
 - STATIC_ANALYSIS_REPORT.md: flake8 {N} нарушений, black {N} файлов, isort {N} файлов
 - COVERAGE_REPORT.md: 14 модулей ниже 50%, 6 с 0% покрытием
 - DIALOGUE_NODE_REFACTORING.md: стратегия декомпозиции 2040→350 строк (6 компонентов)
