@@ -437,6 +437,9 @@ class GetRobotStatusTool(MCPTool):
         """Получить статус робота"""
         self.log_info("Запрос статуса робота")
 
+        # STUB: get_robot_status возвращает hardcoded данные — реальная позиция и battery
+        # будут получены из /odom и /battery_state ROS topics после Nav2 интеграции (Milestone 2).
+        # Отслеживается: TECH_DEBT.md TD-2, tasks.json TASK-051 (STUB-get-robot-status)
         # TODO: Получить реальные данные из ROS топиков
         # Пока возвращаем заглушку
         status = {
