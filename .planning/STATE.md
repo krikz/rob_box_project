@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: 4
-status: planning
-last_updated: "2026-05-16T00:00:00.000Z"
+status: ready_to_execute
+last_updated: "2026-05-15T00:00:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 5
+  total_plans: 8
   completed_plans: 5
   percent: 75
 ---
@@ -17,14 +17,15 @@ progress:
 
 **Milestone:** 1 — Качество кодовой базы  
 **Current Phase:** 4
-**Status:** Planning Phase 4
+**Status:** Ready to Execute Phase 4
 
 ---
 
 ## Active Work
 
-**Phase 4 discuss-phase COMPLETE.** CONTEXT.md + DISCUSSION-LOG.md закоммичены (331715e).  
-**Next:** `gsd-plan-phase 4` — создать PLAN.md для Phase 4 (GitHub Issues Integration).
+**Phase 4 plan-phase COMPLETE.** 3 плана созданы и прошли проверку (commit d3c2d9c).  
+**Блокер исправлен** (SKIP_TASK_IDS + 3 warnings). Все требования GH-01..GH-05 покрыты.  
+**Next:** `gsd-execute-phase 4` — выполнить планы (3 волны: скиллы → labels → миграция).
 
 ---
 
@@ -43,6 +44,8 @@ progress:
 - [x] Phase 2: COMPLETE — 02-01 (2 tasks) + 02-02 (3 tasks) + 02-03 (2 tasks) = 7 tasks, 3 git commits
 - [x] Phase 3: COMPLETE — code quality review (Python/ROS patterns)
 - [x] Phase 4: discuss-phase COMPLETE — 04-CONTEXT.md + 04-DISCUSSION-LOG.md (commit 331715e)
+- [x] Phase 4: research COMPLETE — 04-RESEARCH.md (20 tasks, 17 TECH_DEBT, 37 Issues total)
+- [x] Phase 4: plan-phase COMPLETE — 04-01/02/03-PLAN.md; plan-checker PASS (1 blocker fixed); commits 643fcf3..d3c2d9c
 
 ---
 
