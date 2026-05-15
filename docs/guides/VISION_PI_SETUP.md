@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scrip
 2. Выбери OS: **Raspberry Pi OS Lite (64-bit)**
 3. Настрой:
    - Hostname: `vision-pi`
-   - Username: `pi`
+   - Username: `ros2`
    - Password: `<твой пароль>`
    - WiFi: SSID и пароль
    - SSH: Enable
@@ -58,12 +58,12 @@ xzcat 2024-07-04-raspios-bookworm-arm64-lite.img.xz | sudo dd of=/dev/sdX bs=4M 
 
 ```bash
 # Через WiFi (если настроил в Imager)
-ssh pi@vision-pi.local
+ssh ros2@vision-pi.local
 # или
-ssh pi@<WiFi IP адрес>
+ssh ros2@<WiFi IP адрес>
 
 # Через Ethernet (если Main Pi маршрутизирует)
-ssh pi@10.1.1.11
+ssh ros2@10.1.1.11
 ```
 
 ### Шаг 4: Настройка сети (если не через Imager)
@@ -109,7 +109,7 @@ curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scrip
 exit
 
 # Подключиться заново для применения группы docker
-ssh pi@vision-pi.local
+ssh ros2@vision-pi.local
 ```
 
 **Теперь при входе увидишь:**
@@ -289,7 +289,7 @@ sudo usermod -aG docker $USER
 
 # Перелогинься
 exit
-ssh pi@vision-pi
+ssh ros2@vision-pi
 ```
 
 ### Контейнеры не запускаются

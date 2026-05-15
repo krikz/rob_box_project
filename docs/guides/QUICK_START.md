@@ -14,7 +14,7 @@
 
 ```bash
 # Переход в папку проекта
-cd /opt/rob_box_project/docker/main
+cd ~/rob_box_project/docker/main
 
 # Запуск всех сервисов
 docker compose up -d
@@ -30,7 +30,7 @@ docker compose logs -f rtabmap
 
 ```bash
 # Переход в папку проекта
-cd /opt/rob_box_project/docker/vision
+cd ~/rob_box_project/docker/vision
 
 # Запуск всех сервисов
 docker compose up -d
@@ -54,8 +54,8 @@ docker compose logs -f oak-d
 
 **SSH подключение**:
 ```bash
-ssh ubuntu@10.1.1.20  # Main Pi
-ssh ubuntu@10.1.1.21  # Vision Pi
+ssh ros2@10.1.1.20  # Main Pi
+ssh ros2@10.1.1.21  # Vision Pi
 ```
 
 ---
@@ -120,17 +120,17 @@ docker exec -it twist-mux ros2 topic pub --once /cmd_vel geometry_msgs/Twist \
 
 ```bash
 # Список анимаций
-docker exec -it animation-player ros2 service call /animation_player/list_animations std_srvs/srv/Trigger
+docker exec -it led-matrix ros2 service call /animation_player/list_animations std_srvs/srv/Trigger
 
 # Загрузить анимацию
-docker exec -it animation-player ros2 service call /animation_player/load_animation std_msgs/srv/String \
+docker exec -it led-matrix ros2 service call /animation_player/load_animation std_msgs/srv/String \
   "data: 'police_lights'"
 
 # Запуск
-docker exec -it animation-player ros2 service call /animation_player/play std_srvs/srv/Trigger
+docker exec -it led-matrix ros2 service call /animation_player/play std_srvs/srv/Trigger
 
 # Стоп
-docker exec -it animation-player ros2 service call /animation_player/stop std_srvs/srv/Trigger
+docker exec -it led-matrix ros2 service call /animation_player/stop std_srvs/srv/Trigger
 ```
 
 ---
@@ -260,12 +260,12 @@ iftop -i eth0
 
 ```bash
 # Main Pi
-cd /opt/rob_box_project/docker/main
+cd ~/rob_box_project/docker/main
 docker compose pull
 docker compose up -d
 
 # Vision Pi
-cd /opt/rob_box_project/docker/vision
+cd ~/rob_box_project/docker/vision
 docker compose pull
 docker compose up -d
 ```
