@@ -14,7 +14,7 @@
 - [ ] **DOCS-03**: `docs/architecture/` отражает реальную Docker-топологию (Main Pi / Vision Pi сервисы)
 - [ ] **DOCS-04**: `ROADMAP.md` синхронизирован с фактическим состоянием реализованных фич
 - [ ] **DOCS-05**: Каждый ROS 2 пакет в `src/` имеет актуальный README с описанием нод, топиков, параметров
-- [ ] **DOCS-06**: `docs/development/` содержит актуальные гайды по запуску, деплою и разработке
+- [ ] **DOCS-06**: `docs/guides/` содержит актуальные гайды по запуску, деплою и разработке (QUICK_START, TROUBLESHOOTING, VISION_PI_SETUP, MONITORING_QUICK_REF)
 
 ### Структура проекта (STRUCT)
 
