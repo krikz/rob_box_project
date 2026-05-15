@@ -75,9 +75,9 @@ Plans:
   4. Скилл `.agents/skills/github-issues-workflow/SKILL.md` создан и описывает полный цикл старт→ветка→PR→close
   5. Все `# STUB:` комментарии в коде содержат `#N` (номер GitHub Issue) вместо `TASK-05X`
 **Plans**:
-- [ ] 04-01: Label taxonomy + GitHub Projects board + milestones
-- [ ] 04-02: Миграция tasks.json + TECH_DEBT.md → GitHub Issues (дедупликация)
-- [ ] 04-03: Обновить copilot-instructions.md + создать github-issues-workflow skill + удалить tasks.json
+- [ ] 04-01: Обновить скиллы + copilot-instructions (GitHub Issues вместо tasks.json)
+- [ ] 04-02: GitHub labels (17 шт.) + milestones (M1/M2/M3) через gh CLI
+- [ ] 04-03: Migrate tasks.json + TECH_DEBT → Issues; STUB → #N; удалить tasks.json
 
 ## Progress
 
