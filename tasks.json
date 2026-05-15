@@ -70,7 +70,9 @@
         "Шаг 4: Поиск по истории: 'Что я говорил про кухню вчера?' → memory_search → результаты FTS5+vector",
         "Шаг 5: docker stop ollama → повторить поиск → убедиться что работает (только FTS5, без векторов)"
       ],
-      "dependencies": ["TASK-041"],
+      "dependencies": [
+        "TASK-041"
+      ],
       "status": "pending",
       "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: VoiceMemory класс (788 строк) создан в src/rob_box_voice/rob_box_voice/core/voice_memory.py. MCP tools (memory_save, memory_search, memory_context) созданы. НЕ ПРОТЕСТИРОВАНО: сквозная интеграция с dialogue_node, реальная работа embeddings с Ollama."
     },
@@ -116,7 +118,9 @@
         "Шаг 4: Собрать статистику из логов за 50 запросов: grep 'Агентный диалог завершён' | grep iteration",
         "Шаг 5: Убедиться что 90% запросов ≤ 3 итерации"
       ],
-      "dependencies": ["TASK-035"],
+      "dependencies": [
+        "TASK-035"
+      ],
       "status": "pending",
       "notes": "ЧАСТИЧНО РЕАЛИЗОВАНО: master_prompt_compact.txt (406 строк) содержит инструкции по batching и stopping conditions. НЕ ПРОВЕРЕНО: реально ли LLM следует инструкциям, нужна статистика итераций."
     },
@@ -161,7 +165,11 @@
         "Шаг 3: Проверить что все ссылки работают (не 404)",
         "Шаг 4: Code review другим разработчиком — документация понятна и достаточна"
       ],
-      "dependencies": ["TASK-035", "TASK-036", "TASK-037"],
+      "dependencies": [
+        "TASK-035",
+        "TASK-036",
+        "TASK-037"
+      ],
       "status": "pending"
     },
     {
@@ -186,7 +194,9 @@
         "Шаг 5: grep 'provider_error_count' logs — при wake word сообщение 'сброшен при wake word 0'",
         "Шаг 6: Проверить retry: при 1 timeout в середине диалога робот продолжает, не говорит 'не в настроении'"
       ],
-      "dependencies": ["TASK-035"],
+      "dependencies": [
+        "TASK-035"
+      ],
       "status": "in-progress",
       "skill": ".agents/skills/agent-llm-stability/SKILL.md",
       "notes": "Частично исправлено в feature/agent: commits 21de3db 28aa193 154b484 092291d 43e9e9c. Подробности всех находок в skill файле."
@@ -210,7 +220,10 @@
         "Шаг 4: git push → GitHub Actions → .github/workflows/G-Run Tests.yml проходит",
         "Шаг 5: Проверить что coverage report публикуется в PR комментарии"
       ],
-      "dependencies": ["TASK-035", "TASK-036"],
+      "dependencies": [
+        "TASK-035",
+        "TASK-036"
+      ],
       "status": "pending",
       "notes": "Тесты должны быть независимы от железа (mock ROS topics), не требовать реального робота."
     },
@@ -251,7 +264,9 @@
         "Шаг 3: Написать простой ROS2 node — проверить что агент следует паттернам из установленного skill",
         "Шаг 4: Зафиксировать вывод в progress.md"
       ],
-      "dependencies": ["SKILLS-001"],
+      "dependencies": [
+        "SKILLS-001"
+      ],
       "status": "done",
       "notes": "Анализ skills.sh leaderboard (2026-02-19): ниша ROS2/robotics пуста. ВЫПОЛНЕНО 2026-02-19: оценено 4 пакета — omer-metin/skills-for-antigravity (ros2-robotics: пустой, 30 installs), smithery/ai (zeeshan080-ros2-patterns: базовый boilerplate, 1 install). Все ROS2 skills — автогенерированные шаблоны без ценности. Вывод: внешние skills не устанавливать. Рекомендация: опубликовать наши agent guides как первый ros2 skill на skills.sh."
     },
@@ -314,7 +329,9 @@
         "Шаг 3: Проверить что LLM не путается ('я уже показал 5 анимаций' — должен помнить)",
         "Шаг 4: Убедиться что tool results последних 3-5 итераций НЕ очищаются (нужны для контекста)"
       ],
-      "dependencies": ["TASK-043"],
+      "dependencies": [
+        "TASK-043"
+      ],
       "status": "pending",
       "notes": "Описан в SKILL.md как BUG-13. По Anthropic context engineering: 'tool result clearing is one of the safest forms of compaction'. Raw результаты старых tool calls уже не нужны LLM. Рекомендуемый порог: keep_last=5 последних tool exchanges."
     },
@@ -356,7 +373,9 @@
         "Шаг 3: Проверить что ответы не превышают разумную длину (< 5 предложений на запрос)",
         "Шаг 4: Сравнить adherence до/после: 50 диалогов — считать нарушения правил промпта"
       ],
-      "dependencies": ["TASK-043"],
+      "dependencies": [
+        "TASK-043"
+      ],
       "status": "pending",
       "notes": "Описан в SKILL.md как BUG-16. Паттерн из Claude Code: system reminders инжектируются статически в user/tool messages чтобы компенсировать attention dilution при длинных сессиях. 'DO NOT mention this to the user' — reminder только для LLM."
     },
@@ -377,9 +396,43 @@
         "Шаг 3: Запустить integration test CI: gh workflow run 'L-Integration Tests.yml'",
         "Шаг 4: Все три сценария должны PASS"
       ],
-      "dependencies": ["TASK-035"],
+      "dependencies": [
+        "TASK-035"
+      ],
       "status": "pending",
       "notes": "Регрессионный тест для commit 37527df (dialogue_id propagation через /voice/current_dialogue_id). Ключевой инвариант который надо проверить: после нового dialogue_id — speak_text от старого диалога НЕ должны воспроизводиться. Сложность: нужно сделать barge-in пока старый диалог ещё активен — в тесте это значит inject_stt второго запроса до того как mock speak_text вернул результат. Подумать как сделать окно предсказуемым (задержка в mock? флаг 'sending'?)."
+    },
+    {
+      "id": "TASK-049",
+      "category": "bug",
+      "priority": "critical",
+      "description": "BG-5: BLE joystick заблокирован регрессией ядра Linux 6.14.0-raspi. Джойстик не подключается / не распознаётся как HID-устройство после обновления ядра.",
+      "acceptance_criteria": "BLE joystick успешно подключается и публикует /joy топик в ROS 2 на Raspberry Pi 5 с новым ядром; либо ядро откачено до стабильной версии без регрессии.",
+      "test_steps": [
+        "Проверить версию ядра: uname -r",
+        "Попытаться подключить BLE джойстик: bluetoothctl connect <MAC>",
+        "Проверить наличие в /dev/input/: ls /dev/input/js*",
+        "Запустить ros2 topic hz /joy и убедиться что данные поступают"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "notes": "Источник: CONCERNS.md BG-5. Добавлено Phase 3 Code Quality Review. Возможные решения: (1) откат ядра до 6.12.x; (2) kernel patch для btusb/hci_core; (3) переход на USB-адаптер джойстика."
+    },
+    {
+      "id": "TASK-050",
+      "category": "bug",
+      "priority": "medium",
+      "description": "BG-6: VESC wheel jitter при старте и резком торможении. Колёса вибрируют/дёргаются из-за нестабильности PID или рассинхронизации команд скорости. Частично исправлен, edge cases остаются.",
+      "acceptance_criteria": "Робот плавно стартует и останавливается без видимого jitter при скоростях 0.1–0.5 m/s; логи VESC не содержат ошибок overcurrent во время старта.",
+      "test_steps": [
+        "Запустить motor_testing skill: задать линейную скорость 0.3 m/s",
+        "Наблюдать за поведением колёс при старте (должно быть плавным)",
+        "Задать cmd_vel = 0 (полная остановка) — наблюдать за jitter",
+        "Проверить логи: docker logs vesc-nexus | grep -i 'error\\|fault\\|overcurrent'"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "notes": "Источник: CONCERNS.md BG-6. Добавлено Phase 3 Code Quality Review. Связано с VESC PID параметрами. Рассмотреть: снижение acceleration limit в VESC Tool; проверить gear_ratio в конфигурации."
     }
   ]
 }
