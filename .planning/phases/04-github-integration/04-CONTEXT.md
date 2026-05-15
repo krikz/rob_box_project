@@ -1,114 +1,160 @@
----
-phase: 04-github-integration
-type: context
-created: 2026-05-15
----
+# Phase 4: GitHub Issues Integration — Context
 
-# Phase 4 Context — GitHub Issues Integration
+**Gathered:** 2026-05-15  
+**Status:** Ready for planning
 
-## Locked Decisions
+<domain>
+## Phase Boundary
 
-### GH-0: Правильный порядок выполнения фазы
-**Decision:** Сначала чиним ИНСТРУМЕНТ, потом используем его для миграции данных.
+Фаза 4 переводит систему трекинга задач с локального `tasks.json` на GitHub Issues и **обновляет AI-систему (скиллы, инструкции агента)**, чтобы GSD работал через GitHub Issues как единственный источник правды.
 
+**Правильный порядок выполнения:**
 ```
-04-01: Обновить скиллы + инструкции  ← учим GSD работать через GitHub
+04-01: Обновить скиллы + инструкции  ← учим GSD работать через GitHub (ПЕРВЫМ)
 04-02: Создать labels + milestones   ← инфраструктура GitHub
 04-03: Мигрировать данные + cleanup  ← используем уже настроенный инструмент
 ```
 
-**Обоснование:** Нельзя мигрировать данные пока система не знает как правильно работать с GitHub.  
-Агент должен с первого же действия использовать `gh issue`, а не `tasks.json`.  
-Скиллы и copilot-instructions — это "голова" системы, меняем их первыми.
+**Не входит в Phase 4:**
+- GitHub Actions для автосоздания Issues
+- GitHub Projects board (только labels)
+- Исправление самих задач/багов (только создание Issues)
+- Рефакторинг dialogue_node (Milestone 3)
 
-### GH-1: Issue body format
-**Decision:** Полный структурированный Markdown body — всё из tasks.json как структурированный body.  
-**Template:**
-```markdown
+</domain>
+
+<decisions>
+## Implementation Decisions
+
+### D-01: Scope обновления скиллов
+- **Full scan** всех `.agents/skills/` через grep на `tasks.json`
+- **Deep update** (переписать narrative, не хирургические замены) всех найденных файлов
+- Подтверждены: `.agents/skills/context-engineering/SKILL.md` (3 места) + `.github/copilot-instructions.md` (1 место)
+- Другие скиллы (writing-plans, brainstorming, etc.) не зависят от трекера → только если найдёт grep
+
+### D-02: Новый скилл github-issues-workflow
+- **Тип:** Lifecycle skill (~150 строк)
+- **Секции:** Когда использовать → Старт задачи → Ветка → Работа → PR → Close
+- **Включить:** Законченный пример полного цикла (от `gh issue view N` до merged PR)
+- **Включить:** Инструкции для создания новых Issues в процессе работы (нашёл баг → `gh issue create`)
+- **Файл:** `.agents/skills/github-issues-workflow/SKILL.md`
+
+### D-03: Автоматизация миграции
+- **Python-скрипт** с idempotency через `gh issue list --search "{TASK-ID} in:title"` перед созданием
+- **Файл:** `scripts/migrate_to_github.py` — удалить после выполнения (не засорять `scripts/`)
+- **Scope:** Все 20 задач из tasks.json (open + done), ~24 уникальных пункта из TECH_DEBT.md
+- done-задачи из tasks.json → закрытые Issues в GitHub (полная история)
+
+### D-04: TECH_DEBT дедупликация
+- **Критерий:** Только явное поле `task_ref` в TECH_DEBT.md определяет дубликат
+- **Пропустить:** Пункты с `task_ref` (BG-5=TASK-049, BG-6=TASK-050) — уже войдут из tasks.json
+- **Пропустить:** Все 6 пунктов с `disposition=accept` — остаются только в TECH_DEBT.md
+- **Создать Issues:** ~24 уникальных пункта (fix + defer:M2 + defer:M3 без task_ref)
+- Fuzzy matching по смыслу **не делаем** — слишком сложно, выше риск потери данных
+
+### D-05: Label taxonomy
+- **Не пересоздавать:** `bug`, `documentation`, `critical`, `deployment`, `python`, `docker`
+- **Создать новые:** `ai-generated`, `source:gsd`, `type:tech-debt`, `type:stub`, `type:security`, `type:performance`, `type:functional`, `type:infrastructure`, `type:testing`, `priority:high`, `priority:medium`, `priority:low`, `milestone:M1`, `milestone:M2`, `milestone:M3`, `status:in-progress`, `status:blocked`
+- Каждый Issue от ИИ: обязательно `ai-generated` + `source:gsd` + type + priority + milestone
+
+### D-06: GitHub Milestones
+- `Milestone 1: Code Quality` → state=closed
+- `Milestone 2: Navigation & Localization` → state=open
+- `Milestone 3: Refactoring & Voice` → state=open
+- Создавать через `gh api repos/krikz/rob_box_project/milestones`
+
+### D-07: Issue body format
+Body каждого Issue:
+```
 ## Description
-{description}
+{описание}
 
 ## Acceptance Criteria
-{acceptance_criteria as checklist}
+- [ ] {критерий 1}
+- [ ] {критерий 2}
 
-## File References
-{file/line if present}
-
-## Source
-Migrated from: {source} (tasks.json / TECH_DEBT.md)
-Original ID: {TASK-ID or TD-ID}
+## References
+- Original ID: {TASK-ID или TECH_DEBT-ID}
+- Priority: {priority}
 
 ---
-> ⚠️ _This issue was created by AI (GSD workflow). Label: `ai-generated`_
+> ⚠️ This issue was created by AI (GSD workflow). Original source: {tasks.json / TECH_DEBT.md}
 ```
 
-### GH-2: Migration scope
-**Decision:** Мигрируем два источника:
-1. `tasks.json` — все 20 задач → Issues
-2. `TECH_DEBT.md` — все пункты кроме `accept` disposition (≈24 пункта), с дедупликацией по уже существующим TASK-ID
+### D-08: Ветки для задач
+- `gh issue develop {N} --checkout` для автосоздания ветки
+- Шаблон: `feature/{N}-{slug}` для фичей, `fix/{N}-{slug}` для багов
+- PR закрывает Issue через `closes #{N}` в body
 
-**Дедупликация:** Если TECH_DEBT пункт уже покрыт задачей из tasks.json (BG-5=TASK-049, BG-6=TASK-050 и др.) — НЕ создавать отдельный Issue, указать cross-reference в теле существующего.
+### D-09: STUB комментарии в коде
+- После создания Issues для TASK-051 и TASK-052 — заменить `TASK-051`/`TASK-052` → `#{N}` в коде
+- Файлы: `src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py` + `src/rob_box_voice/rob_box_voice/command_node.py` (3 места)
 
-**После миграции:** `tasks.json` удаляется из репо.
+</decisions>
 
-### GH-3: Разделение bot vs GSD Issues
-**Decision:** Labels-only — фильтровать по `ai-generated` и `source:gsd`.  
-**Не создаём** отдельный GitHub Projects board.  
-**Команда просмотра:** `gh issue list --label "source:gsd"`
+<canonical_refs>
+## Canonical References
 
-### GH-4: GitHub Milestones
-**Decision:** Создать GitHub Milestones + labels (дублирование для удобства в UI):
-- `Milestone 1: Code Quality` — closed (завершён)
-- `Milestone 2: Navigation & Localization` — open
-- `Milestone 3: Refactoring & Voice` — open
+**Downstream agents MUST read these before planning or implementing.**
 
-Labels `milestone:M1`, `milestone:M2`, `milestone:M3` создаются дополнительно.
+### Phase scope и requirements
+- `.planning/ROADMAP.md` Phase 4 — цель, GH-01..05 requirements, success criteria
+- `.planning/REQUIREMENTS.md` — GH-требования
 
-### GH-5: Label taxonomy
-**Создать следующие labels** (пропустить если уже существует):
+### Данные для миграции
+- `tasks.json` — 20 задач (структура: id, title, description, category, priority, acceptance_criteria)
+- `.planning/TECH_DEBT.md` — 30 пунктов (структура: ID, title, severity, disposition, task_ref)
 
-| Label | Color | Категория |
-|-------|-------|-----------|
-| `ai-generated` | #7B61FF | AI origin |
-| `source:gsd` | #5319E7 | AI origin |
-| `type:bug` | существует `bug` | → использовать существующий |
-| `type:tech-debt` | #FFA500 | Type |
-| `type:stub` | #FF6B6B | Type |
-| `type:security` | #D93F0B | Type |
-| `type:performance` | #FBCA04 | Type |
-| `type:functional` | #0075CA | Type |
-| `type:infrastructure` | #E4E669 | Type |
-| `type:testing` | #C2E0C6 | Type |
-| `type:documentation` | существует `documentation` | → использовать существующий |
-| `priority:critical` | существует `critical` | → использовать существующий |
-| `priority:high` | #B60205 | Priority |
-| `priority:medium` | #E4A000 | Priority |
-| `priority:low` | #CFD3D7 | Priority |
-| `milestone:M1` | #BFD4F2 | Milestone |
-| `milestone:M2` | #D4C5F9 | Milestone |
-| `milestone:M3` | #C5DEF5 | Milestone |
-| `status:in-progress` | #0052CC | Status |
-| `status:blocked` | #E11D48 | Status |
+### Скиллы для обновления
+- `.agents/skills/context-engineering/SKILL.md` — главный workflow skill, 3 упоминания tasks.json
+- `.github/copilot-instructions.md` — инструкции агента, 1 упоминание tasks.json
 
-### GH-6: Автоматическое создание веток
-**Decision:** ИИ создаёт ветку `feature/{N}-{slug}` при начале работы над задачей.  
-**Команда:** `gh issue develop {N} --checkout`  
-(или вручную: `git checkout -b feature/{N}-{slug}`)
+### Код со STUB-ссылками
+- `src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py` — STUB: ... TASK-051
+- `src/rob_box_voice/rob_box_voice/command_node.py` — 3x STUB: ... TASK-052
 
-### GH-7: STUB комментарии в коде
-**После создания Issues для TASK-051 и TASK-052** — обновить `# STUB:` комментарии в коде заменив `TASK-051` / `TASK-052` на `#{issue_number}`.
+</canonical_refs>
 
-### GH-8: copilot-instructions.md обновление
-**Убрать:** все упоминания `tasks.json`  
-**Добавить секцию** "Трекер задач" с командами `gh issue list/create/view/develop`  
-**Scope:** только секция трекера, не переписывать весь файл
+<code_context>
+## Existing Code Insights
 
-### GH-9: github-issues-workflow skill
-**Создать:** `.agents/skills/github-issues-workflow/SKILL.md`  
-**Содержимое скилла:** полный цикл — старт задачи → ветка → реализация → PR → close  
+### Reusable Assets
+- `gh` CLI — авторизован как GOODWORKRINKZ, репо `krikz/rob_box_project` (branch: develop)
+- `.agents/skills/github-actions-runner/SKILL.md` — пример лаконичного skill (~40 строк)
+- `.agents/skills/context-engineering/SKILL.md` — пример детального workflow skill (~178 строк)
 
-## Out of Scope (не делаем в Phase 4)
-- GitHub Actions для автосоздания Issues (вручную через gh CLI)
-- Закрытие bot-issues (оставляем как есть)
-- CONCERNS.md → Issues (покрыто через TECH_DEBT.md chain)
-- Автосинхронизация Issues → локальные файлы
+### Established Patterns
+- Коммит-конвенция: `feat(04-01): ...`, `fix(04-02): ...`, `chore(04-03): ...`
+- Скиллы в формате: YAML frontmatter + narrative + code blocks
+- Docker/ROS принципы не затрагиваются в этой фазе
+
+### Integration Points
+- `scripts/migrate_to_github.py` вызывает `gh issue create` через subprocess
+- После миграции: `git rm tasks.json` + `git rm scripts/migrate_to_github.py` как часть финального коммита
+
+</code_context>
+
+<specifics>
+## Specific Ideas
+
+- Idempotency через `gh issue list --search "TASK-035 in:title"` — не через TASK_MAPPING.json
+- Скрипт `scripts/migrate_to_github.py` — удалить (`git rm`) после выполнения
+- github-issues-workflow skill: lifecycle + законченный пример от `gh issue view N` до merged PR
+- context-engineering/SKILL.md: deep update narrative (не просто замена 3 строк)
+
+</specifics>
+
+<deferred>
+## Deferred Ideas
+
+- GitHub Projects board — явно отклонён, не нужен
+- Fuzzy matching по title для дедупликации TECH_DEBT — слишком сложно, отклонён
+- Создание Issues через GitHub Actions (автоматически при коммите) — другая фаза
+- TASK_MAPPING.json как state-файл — отклонён, используем gh search для idempotency
+
+</deferred>
+
+---
+
+*Phase: 4-github-integration*
+*Context gathered: 2026-05-15*
