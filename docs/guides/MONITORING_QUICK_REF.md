@@ -1,5 +1,7 @@
 # Мониторинг робота - Краткая справка
 
+> **Архитектура мониторинга**: Prometheus, Loki и Grafana развёртываются на **отдельной машине** (не на Main Pi и не на Vision Pi). Конфигурация: `docker/monitoring/docker-compose.yaml`. Агенты `cAdvisor` и `Promtail` запущены на каждом Pi и отправляют метрики на мониторинговую машину. Все команды `docker compose` ниже выполняются на **мониторинговой машине**, если не указано иное.
+
 ## 🚀 Быстрый старт
 
 ### Включение мониторинга
@@ -19,10 +21,12 @@ cd ~/rob_box_project/docker/vision
 ### Доступ к Grafana
 
 ```
-http://<main-pi-ip>:3000
+http://<monitoring-machine-ip>:3000
 Логин: admin
 Пароль: robbox
 ```
+
+> **Примечание**: IP-адрес мониторинговой машины зависит от конфигурации вашей сети. По умолчанию — машина разработчика в том же VLAN что и Pi.
 
 ### Выключение мониторинга
 
@@ -55,22 +59,24 @@ cd ~/rob_box_project/docker/vision
 
 **Киоск-режим URL:**
 ```
-http://10.1.1.10:3000/d/rob_box_demo_1?kiosk
-http://10.1.1.10:3000/d/rob_box_demo_2?kiosk
-http://10.1.1.10:3000/d/rob_box_demo_3?kiosk
-http://10.1.1.10:3000/d/rob_box_demo_4?kiosk
+http://<monitoring-ip>:3000/d/rob_box_demo_1?kiosk
+http://<monitoring-ip>:3000/d/rob_box_demo_2?kiosk
+http://<monitoring-ip>:3000/d/rob_box_demo_3?kiosk
+http://<monitoring-ip>:3000/d/rob_box_demo_4?kiosk
 ```
 
 📖 **Документация:** [DEMO_DASHBOARDS.md](../docker/monitoring/DEMO_DASHBOARDS.md)
 
 ## 🔗 Доступ к сервисам
 
+> **Выполняется на мониторинговой машине** (не на Pi). Замените `<monitoring-ip>` на IP мониторинговой машины.
+
 | Сервис     | URL                    | Описание              |
 |------------|------------------------|-----------------------|
-| Grafana    | http://10.1.1.10:3000  | Дашборды и визуализация |
-| Prometheus | http://10.1.1.10:9090  | Метрики               |
-| cAdvisor   | http://10.1.1.10:8080  | Main Pi метрики       |
-| cAdvisor   | http://10.1.1.11:8080  | Vision Pi метрики     |
+| Grafana    | http://\<monitoring-ip\>:3000  | Дашборды и визуализация |
+| Prometheus | http://\<monitoring-ip\>:9090  | Метрики               |
+| cAdvisor   | http://10.1.1.10:8080  | Main Pi метрики (агент на Main Pi) |
+| cAdvisor   | http://10.1.1.11:8080  | Vision Pi метрики (агент на Vision Pi) |
 
 ## 📝 Просмотр логов в Grafana
 

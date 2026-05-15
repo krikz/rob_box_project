@@ -132,19 +132,21 @@
 - **CAN Shield:** установлен на Main Pi для связи с VESC
 
 ### Бортовые компьютеры
-- **Main Pi** (Raspberry Pi, 15GB RAM):
-  - RTAB-Map SLAM
+- **Main Pi** (Raspberry Pi 5, 16GB RAM):
+  - RTAB-Map SLAM (LiDAR-based 2D SLAM)
   - Robot State Publisher
   - CAN Shield для связи с VESC
-  - Навигация и планирование
-  - LSLIDAR N10 драйвер (перемещён с Vision Pi 24.10.2025)
+  - Навигация и планирование (Nav2)
+  - LSLIDAR N10 драйвер
   - Perception (health monitoring, context aggregator)
+  - MCP Tools сервер (управление роботом через LLM)
   
-- **Vision Pi** (Raspberry Pi, 8GB RAM):
-  - OAK-D-Lite драйвер
-  - AprilTag детектор
-  - Raspberry Pi Camera (направлена вверх для ceiling-based локализации)
+- **Vision Pi** (Raspberry Pi 5, 8GB RAM):
+  - OAK-D-Lite драйвер + AprilTag детектор
+  - MJPEG потолочная камера (ceiling-based локализация)
   - ReSpeaker Mic Array v2.0 (голосовой ассистент)
+  - LED Matrix Driver (381 NeoPixel)
+  - Telegram-бот оператора (`rob_box_telegram`)
 
 ### Сенсоры
 - **Камера:** OAK-D-Lite (RGB + Stereo Depth)
@@ -170,17 +172,19 @@
 ## 🚀 Функциональные возможности
 
 ### Реализовано
-- ✅ **SLAM и построение карты** (RTAB-Map с OAK-D + LSLIDAR)
+- ✅ **SLAM и построение карты** (RTAB-Map с LSLIDAR N10 2D LiDAR)
 - ✅ **Управление двигателями** через VESC Nexus (CAN-интерфейс)
-- ✅ **LED индикация** с композитором панелей
+- ✅ **LED индикация** с 381 NeoPixel (4 группы: фары + дисплей)
 - ✅ **Мониторинг здоровья** робота (температура, вентиляторы, вес)
-- ✅ **AprilTag детектор** для маркеров
-- ✅ **Распределённая архитектура** на двух Raspberry Pi с Zenoh
+- ✅ **AprilTag детектор** для маркеров (Vision Pi)
+- ✅ **Распределённая архитектура** на двух Raspberry Pi с Zenoh DDS
 - ✅ **Система мониторинга** с Grafana, Prometheus, Loki (октябрь 2025)
 - ✅ **Голосовой ассистент** с time awareness и синхронизацией TTS (октябрь 2025)
 - ✅ **LLM Fallback** автоматический Qwen ↔ DeepSeek (ноябрь 2025)
 - ✅ **ICP Одометрия** — fusion wheel + ICP для RTAB-Map (декабрь 2025)
 - ✅ **GUI управления роботом** — мониторинг и телеуправление (ноябрь 2025)
+- ✅ **Telegram-бот оператора** — управление роботом через Telegram + LLM (2026)
+- ✅ **MCP Tools сервер** — инструменты управления роботом для LLM агентов (2026)
 
 ### В разработке
 - 🔄 **Навигация** - автономное планирование и движение по карте (TASK-003/004)

@@ -55,7 +55,7 @@ LEDNode              CommandNode     Animations
 
 ```bash
 # ROS2 пакеты
-sudo apt install ros-jazzy-audio-common-msgs
+sudo apt install ros-humble-audio-common-msgs
 
 # Python зависимости
 pip install pyaudio sounddevice numpy pyusb grpcio openai pyyaml

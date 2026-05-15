@@ -28,6 +28,23 @@
 - Mapping commands (команды маппинга)
 - Sound effects integration (интеграция звуков)
 
+**Пакеты в `src/`:**
+| Пакет | Pi | Назначение |
+|-------|-----|-----------|
+| `rob_box_voice` | Vision | STT, TTS, диалог, голосовое управление |
+| `rob_box_telegram` | Vision | Telegram-бот, LLM-интерфейс оператора |
+| `rob_box_animations` | Vision | LED-анимации (381 NeoPixel) |
+| `led_matrix_driver` | Vision | Низкоуровневый драйвер LED-матрицы |
+| `rob_box_perception` | Main | Health monitor, context aggregator |
+| `rob_box_perception_msgs` | Main/Vision | Кастомные ROS 2 сообщения Perception |
+| `rob_box_mcp_tools` | Main | MCP-сервер управления роботом |
+| `rob_box_teleop` | Main | Управление (SBUS/joystick) |
+| `rob_box_bringup` | Main | Launch-файлы запуска системы |
+| `rob_box_description` | Main | URDF-модель робота |
+| `robot_sensor_hub_msg` | Main | Сообщения для ESP32-хаба |
+| `vesc_nexus` | Main | VESC драйвер (ROS 2 control) |
+| `ros2leds` | Vision | Утилиты LED |
+
 ### 🚀 [deployment/](deployment/)
 Развёртывание на роботе
 - Deployment Workflow (GitHub Actions)
@@ -150,5 +167,5 @@ README.md
 
 ---
 
-**Последнее обновление:** 2026-02-27
-**Статус:** ✅ Структура реорганизована и актуализирована
+**Последнее обновление:** 2026-05-01
+**Статус:** ✅ Структура актуализирована (фаза 1 — аудит документации)

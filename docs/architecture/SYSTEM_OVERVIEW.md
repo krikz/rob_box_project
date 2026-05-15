@@ -3,7 +3,7 @@
 <div align="center">
   <strong>Полное техническое описание архитектуры автономного робота</strong>
   <br>
-  <sub>Версия: 1.1.0 | Дата: 2025-10-24</sub>
+  <sub>Версия: 1.2.0 | Дата: 2026-05-15</sub>
 </div>
 
 > **📝 Последние обновления (24 октября 2025):**
@@ -392,31 +392,80 @@ docker/
 │   ├── config/                  # Общие конфиги (монтируются)
 │   │   ├── zenoh_router_config.json5
 │   │   ├── zenoh_session_config.json5
-│   │   ├── cyclonedds.xml
-│   │   ├── lslidar/            # LSLIDAR конфиги (перемещён 24.10.2025)
-│   │   └── monitoring/          # Monitoring конфиги (добавлено 24.10.2025)
+│   │   ├── lslidar/
+│   │   └── monitoring/
 │   ├── scripts/                 # Утилиты
 │   ├── maps/                    # Persistent RTAB-Map данные
 │   ├── zenoh-router/
 │   ├── twist-mux/
 │   ├── rtabmap/
-│   ├── lslidar/                 # Перемещён с Vision Pi (24.10.2025)
-│   ├── perception/              # Перемещён с Vision Pi (24.10.2025)
+│   ├── lslidar/
+│   ├── perception/
 │   ├── nav2/
 │   ├── ros2_control/
 │   ├── robot-state-publisher/
-│   └── micro-ros-agent/
+│   ├── micro-ros-agent/
+│   └── teleop/
 └── vision/                      # Vision Pi сервисы
     ├── docker-compose.yaml
     ├── config/                  # Общие конфиги
     │   ├── zenoh_router_config.json5
-    │   ├── oak_d_config.yaml
-    │   └── cyclonedds.xml
+    │   └── oak_d_config.yaml
     ├── scripts/
     ├── zenoh-router/
     ├── oak-d/                       # Includes integrated AprilTag detection
-    └── voice-assistant/             # Voice assistant (добавлено октябрь 2025)
+    ├── led-matrix/                  # 381 NeoPixel LEDs
+    ├── ceiling-camera/              # USB ceiling camera
+    ├── supercollider/               # Audio synthesis server
+    ├── voice-resources-init/        # One-shot sample loader
+    ├── voice-assistant/
+    └── telegram_bot/                # Telegram operator interface
 ```
+
+#### Main Pi — сервисы (12)
+
+| Контейнер | Назначение | Зависит от |
+|-----------|-----------|------------|
+| `zenoh-router` | Zenoh Router (peer mode), мост к облаку | — |
+| `twist-mux` | Мультиплексирование cmd_vel с приоритетами | `zenoh-router` |
+| `micro-ros-agent` | UART↔ROS2 bridge для ESP32 Sensor Hub | `zenoh-router` |
+| `robot-state-publisher` | TF дерево из URDF | `zenoh-router` |
+| `rtabmap` | LiDAR-only SLAM + ICP odometry | `zenoh-router`, `lslidar` |
+| `ros2-control` | ros2_control manager + VESC CAN драйвер | `zenoh-router` |
+| `lslidar` | LS LiDAR N10 driver | `zenoh-router` |
+| `perception` | reflection_node, context_aggregator, health_monitor | `zenoh-router` |
+| `nav2` | Nav2 navigation stack | `zenoh-router` |
+| `teleop` | Joystick teleoperation (SBUS/serial) | `zenoh-router` |
+| `cadvisor` *(profile: monitoring)* | Container metrics → Prometheus | — |
+| `promtail` *(profile: monitoring)* | Log shipping → Loki | — |
+
+#### Vision Pi — сервисы (11)
+
+| Контейнер | Назначение | Зависит от |
+|-----------|-----------|------------|
+| `zenoh-router-vision` | Zenoh Router (client mode), подключается к Main Pi | — |
+| `oak-d` | OAK-D Lite driver + встроенный AprilTag detector | `zenoh-router-vision` |
+| `led-matrix` | LED matrix controller (381 NeoPixel LEDs) | `zenoh-router-vision` |
+| `ceiling-camera` | USB потолочная камера 720p, локализация | `zenoh-router-vision` |
+| `supercollider` | Audio synthesis server (JACK/ALSA) | — |
+| `voice-resources-init` | One-shot: загрузка renardo samples в volume | — |
+| `voice-assistant` | Vosk STT, TTS, LLM dialogue | `zenoh-router-vision`, `supercollider` |
+| `telegram-bot` | Telegram operator interface с LLM и голосом | `zenoh-router-vision` |
+| `ollama` *(profile: ai)* | Local LLM inference | — |
+| `cadvisor-vision` *(profile: monitoring)* | Container metrics → Prometheus | — |
+| `promtail-vision` *(profile: monitoring)* | Log shipping → Loki | — |
+
+> **Примечание**: `docker/vision/apriltag/` — orphaned директория. AprilTag detection работает **внутри `oak-d` контейнера**. Отдельного `apriltag` сервиса нет.
+
+#### Monitoring Machine — отдельная машина
+
+> **Важно**: Grafana, Prometheus и Loki развёртываются на **отдельной машине** (не на Main Pi и не на Vision Pi). Конфигурация: `docker/monitoring/docker-compose.yaml`. Агенты `cAdvisor` и `Promtail` на каждом Pi отправляют данные на неё.
+
+| Сервис | Назначение |
+|--------|-----------|
+| `prometheus` | Сбор метрик с cAdvisor на обоих Pi |
+| `loki` | Агрегация логов от promtail |
+| `grafana` | Дашборды: CPU, RAM, container health, logs |
 
 ### 6.2. Зависимости контейнеров
 
@@ -424,22 +473,27 @@ docker/
 Main Pi:
   zenoh-router (base)
       ↓
-  ├─ twist-mux ────────────────┐
-  ├─ rtabmap ──────────────────┤
-  ├─ lslidar ──────────────────┤  (перемещён с Vision Pi 24.10.2025)
-  ├─ perception ───────────────┤  (перемещён с Vision Pi 24.10.2025)
-  ├─ nav2 ─────────────────────┤
-    ├─ ros2-control ─────────────┤
-  ├─ robot-state-publisher ────┤  (исправлен TF wrapper 24.10.2025)
-  └─ micro-ros-agent ──────────┘
-      └─ depends_on: zenoh-router
+  ├─ twist-mux
+  ├─ rtabmap ──── depends: lslidar
+  ├─ lslidar
+  ├─ perception
+  ├─ nav2
+  ├─ ros2-control
+  ├─ robot-state-publisher
+  ├─ micro-ros-agent
+  └─ teleop
 
 Vision Pi:
-  zenoh-router (base)
+  zenoh-router-vision (base)
       ↓
-  ├─ oak-d ────────────────────┤  (with integrated AprilTag detection, 25.10.2025)
-  └─ voice-assistant ──────────┘  (добавлен октябрь 2025)
-      └─ depends_on: zenoh-router
+  ├─ oak-d (with integrated AprilTag detection)
+  ├─ led-matrix
+  ├─ ceiling-camera
+  ├─ supercollider
+  ├─ voice-resources-init (one-shot)
+  ├─ voice-assistant ──── depends: supercollider, voice-resources-init
+  ├─ telegram-bot
+  └─ ollama [profile: ai]
 ```
 
 ### 6.3. Volume стратегия

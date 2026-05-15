@@ -518,7 +518,41 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 
 ---
 
-## 3. Docker сервисы
+### 2.7. rob_box_telegram
+
+**Описание**: Telegram operator interface — управление роботом через Telegram-бота с поддержкой LLM-диалога, голосовых сообщений и фото. Запускается на **Vision Pi**.
+
+**Ноды**:
+- `telegram_node` — основная нода: принимает команды от оператора, публикует в ROS 2
+
+**Основные топики**:
+- `/mcp/execute` (std_msgs/String) — отправка MCP-команд роботу
+- `/rob_box/voice/text_in` (std_msgs/String) — TTS-ответы оператору голосом
+- `/camera/ceiling/image_raw` (sensor_msgs/Image) — подписка на потолочную камеру для фото
+
+**Ключевые компоненты**:
+- `telegram_node.py` — ROS 2 нода
+- `llm_chat.py` — LLM диалог (OpenAI-совместимый API, default: Ollama)
+- `voice_processor.py` — транскрипция голосовых сообщений оператора
+- `mcp_bridge.py` — мост к MCP-инструментам
+- `auth.py` — whitelist авторизованных Telegram user_id
+
+---
+
+### 2.8. rob_box_mcp_tools
+
+**Описание**: MCP (Model Context Protocol) инструменты для управления роботом через LLM-агенты. Предоставляет структурированный API над ROS 2 топиками и сервисами. Запускается на **Main Pi**.
+
+**Основные компоненты**:
+- `mcp_server.py` — FastMCP сервер
+- `registry.py` — реестр зарегистрированных инструментов
+- `base.py` — базовые классы инструментов
+- `waypoint_store.py` — хранение и навигация к waypoints
+- `mapping_state.py` — состояние SLAM карты
+
+---
+
+
 
 ### 3.1. Main Pi сервисы
 

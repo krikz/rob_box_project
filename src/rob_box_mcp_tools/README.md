@@ -96,6 +96,26 @@ rob_box_mcp_tools/
 ### Sound (Звуковые эффекты)
 - `play_sound` - Воспроизвести звуковой эффект
 
+### Dialogue (Диалог)
+- `speak_text` - Произнести текст через TTS
+- `listen_for_response` - Ожидать голосовой ответ пользователя
+
+### Memory (Память)
+- `memory_save` - Сохранить факт в долгосрочную память
+- `memory_search` - Поиск в памяти по запросу
+- `memory_context` - Получить полный контекст памяти
+
+### Music (Музыка / SuperCollider)
+- `execute_music_code` - Выполнить SuperCollider код
+- `stop_music` - Остановить воспроизведение
+- `set_vibe_preset` - Установить пресет настроения
+- `get_music_state` - Получить текущее состояние плеера
+- `save_track` - Сохранить трек
+- `list_tracks` - Список сохранённых треков
+- `load_track` - Загрузить трек
+- `delete_track` - Удалить трек
+- `set_dj_mode` - Включить/выключить DJ режим
+
 ## 🚀 Использование
 
 ### Запуск MCP Server
