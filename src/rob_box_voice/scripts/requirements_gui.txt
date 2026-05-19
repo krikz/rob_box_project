@@ -4,10 +4,10 @@
 # Основные зависимости
 # GUI пинует проверенную пару версий; держим ее синхронно с runtime floor в
 # voice_base/voice_assistant requirements.
-torch==2.11.0
+torch==2.12.0
 torchaudio==2.11.0
-sounddevice>=0.4.6
-numpy>=1.24.0
+sounddevice>=0.5.5
+numpy>=2.4.6
 
 # GUI (обычно уже установлен с Python)
 # tkinter - встроен в Python, но на Linux может потребоваться:
