@@ -34,7 +34,7 @@ RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_dri
 WORKDIR /ws
 SHELL ["/bin/bash", "-c"]
 RUN source /opt/ros/humble/setup.bash && \
-    colcon build --symlink-install
+    colcon build --symlink-install --parallel-workers 1 --executor sequential
 
 # Entrypoint монтируется из volume: /scripts/start_lslidar.sh
 CMD ["/scripts/start_lslidar.sh"]

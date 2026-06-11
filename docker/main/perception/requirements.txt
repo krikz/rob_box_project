@@ -1,5 +1,5 @@
 # DeepSeek API (OpenAI-compatible SDK)
-openai>=1.0.0
+openai>=2.37.0
 
 # Timezone support for TimeAwarenessProvider
-pytz>=2023.3
+pytz>=2026.2

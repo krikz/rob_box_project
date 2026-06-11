@@ -35,10 +35,13 @@ RUN cd /uros_ws && \
     rosdep install --from-paths src --ignore-src -y && \
     rm -rf /var/lib/apt/lists/*
 
+# Глобально ограничиваем параллелизм make для экономии памяти при эмуляции ARM64
+ENV MAKEFLAGS="-j1"
+
 # Сборка micro_ros_setup (без параллелизма для экономии памяти)
 RUN cd /uros_ws && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --parallel-workers 1
+    colcon build --parallel-workers 1 --executor sequential
 
 # Создание workspace для agent
 RUN cd /uros_ws && \
