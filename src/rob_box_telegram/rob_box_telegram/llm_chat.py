@@ -299,7 +299,7 @@ class LLMChat:
                     f"{self.base_url}/chat/completions",
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(total=120),  # Reasoning model (v4-pro) needs ~60-90s
                 ) as resp:
                     if resp.status != 200:
                         body = await resp.text()
@@ -417,7 +417,7 @@ class LLMChat:
                         f"{self.base_url}/chat/completions",
                         json=payload,
                         headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=30),
+                        timeout=aiohttp.ClientTimeout(total=120),  # Reasoning model (v4-pro) needs ~60-90s
                     ) as resp:
                         if resp.status != 200:
                             body = await resp.text()
