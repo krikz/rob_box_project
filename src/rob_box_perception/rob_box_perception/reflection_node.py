@@ -102,7 +102,7 @@ class ReflectionNode(Node):
             self.llm_api_key = os.getenv('DEEPSEEK_API_KEY')
             if self.llm_api_key:
                 self.llm_base_url = "https://api.deepseek.com"
-                self.llm_model = "deepseek-chat"
+                self.llm_model = "deepseek-v4-flash"
                 self.llm_provider = "DeepSeek"
         
         self.deepseek_client = None

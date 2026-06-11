@@ -75,7 +75,7 @@ class DialogueNode(Node):
     PROVIDERS = {
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-flash",
             "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
         },
         "qwen": {
