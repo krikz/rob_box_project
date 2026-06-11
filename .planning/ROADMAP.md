@@ -6,9 +6,10 @@
 
 ## Phases
 
-- [ ] **Phase 1: Аудит документации** - Привести docs/ и README пакетов в соответствие с текущим состоянием проекта
-- [ ] **Phase 2: Ревью структуры** - Проверить Docker layout и пакеты на соответствие стандартам проекта
-- [ ] **Phase 3: Code Quality Review** - Разобрать tech debt, запустить статический анализ, задокументировать стратегию рефакторинга
+- [x] **Phase 1: Аудит документации** - Привести docs/ и README пакетов в соответствие с текущим состоянием проекта
+- [x] **Phase 2: Ревью структуры** - Проверить Docker layout и пакеты на соответствие стандартам проекта
+- [x] **Phase 3: Code Quality Review** - Разобрать tech debt, запустить статический анализ, задокументировать стратегию рефакторинга
+- [ ] **Phase 4: GitHub Issues Integration** - Мигрировать tasks.json → GitHub Issues, настроить label taxonomy, обновить workflow агента
 
 ## Phase Details
 
@@ -63,10 +64,26 @@ Plans:
 - [ ] 03-04: Задокументировать стратегию рефакторинга dialogue_node.py
 - [ ] 03-05: Пометить все stub-реализации # STUB:, добавить в трекер
 
+### Phase 4: GitHub Issues Integration
+**Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
+**Depends on**: Phase 3
+**Requirements**: GH-01, GH-02, GH-03, GH-04, GH-05
+**Success Criteria** (what must be TRUE):
+  1. `gh issue list --label ai-generated` возвращает ≥20 issues
+  2. `ls tasks.json` — файл не существует в репозитории
+  3. `copilot-instructions.md` содержит инструкции по работе с `gh issue` вместо `tasks.json`
+  4. Скилл `.agents/skills/github-issues-workflow/SKILL.md` создан и описывает полный цикл старт→ветка→PR→close
+  5. Все `# STUB:` комментарии в коде содержат `#N` (номер GitHub Issue) вместо `TASK-05X`
+**Plans**:
+- [ ] 04-01: Обновить скиллы + copilot-instructions (GitHub Issues вместо tasks.json)
+- [ ] 04-02: GitHub labels (17 шт.) + milestones (M1/M2/M3) через gh CLI
+- [ ] 04-03: Migrate tasks.json + TECH_DEBT → Issues; STUB → #N; удалить tasks.json
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Аудит документации | 0/3 | Not started | - |
-| 2. Ревью структуры | 0/3 | Not started | - |
-| 3. Code Quality Review | 0/5 | Not started | - |
+| 1. Аудит документации | 3/3 | ✅ Complete | 2026-05-15 |
+| 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
+| 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
+| 4. GitHub Issues Integration | 0/3 | Not started | - |

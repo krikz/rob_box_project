@@ -13,7 +13,7 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | Тема | Файл | Что внутри |
 |------|------|-----------|
 | **Процесс разработки (ГЛАВНОЕ)** | `.agents/skills/context-engineering/SKILL.md` | Research→Design→Plan→Implement, команды, правила |
-| **Бэклог задач** | `tasks.json` | Задачи, acceptance criteria, зависимости, agent_instructions |
+| **Бэклог задач** | GitHub Issues | `gh issue list/create/view/develop`; labels `source:gsd`; milestones M1/M2/M3 |
 | **Docker Rules** | `docs/development/DOCKER_STANDARDS.md` | ❌ COPY config/scripts, ✅ volumes, network_mode: host |
 | **Python Style** | `docs/development/PYTHON_STYLE_GUIDE.md` | black, isort, flake8, ROS 2 patterns, naming |
 
@@ -140,6 +140,24 @@ docker ps                  # Статус контейнеров
 docker logs <name> -f      # Логи в реальном времени
 ros2 topic list            # ROS 2 топики
 ros2 topic hz /scan        # Частота публикации
+```
+
+### 🗂️ Трекер задач (GitHub Issues)
+```bash
+# Просмотр бэклога
+gh issue list --label "source:gsd" --repo krikz/rob_box_project
+
+# Начать работу (создаёт ветку и переключается)
+gh issue develop {N} --checkout --repo krikz/rob_box_project
+
+# Прочитать задачу
+gh issue view {N} --repo krikz/rob_box_project
+
+# Создать задачу
+gh issue create --title "[ID] description" --label "type:functional,priority:high,ai-generated,source:gsd" --repo krikz/rob_box_project
+
+# Закрыть задачу после выполнения
+gh issue close {N} --repo krikz/rob_box_project
 ```
 
 ## 🚨 Критичные правила

@@ -363,6 +363,8 @@ services:
   # Отправляют метрики и логи на отдельную машину мониторинга
   # Можно отключить через: docker-compose --profile monitoring up -d
 
+  # non-ROS service: мониторинговый агент (profile: monitoring).
+  # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.52.1
@@ -422,6 +424,8 @@ services:
     labels:
       logging: "promtail"
 
+  # non-ROS service: Loki log shipper (profile: monitoring).
+  # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   promtail:
     image: grafana/promtail:2.9.2
     container_name: promtail

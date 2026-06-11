@@ -3,7 +3,7 @@
 name: context-engineering
 description: >
   Методология разработки для Rob Box: Research → Design → Plan → Implement.
-  Используй ВСЕГДА при начале работы над любой задачей из tasks.json.
+  Используй ВСЕГДА при начале работы над любой задачей из GitHub Issues. Прочитай задачу через `gh issue view {N} --repo krikz/rob_box_project` перед стартом.
   Заменяет «закинул задачу — написал код» на контролируемый многофазовый процесс.
 ---
 
@@ -19,8 +19,8 @@ description: >
 **RLM-принцип:** артефакты фазы (`research.md`, design docs, plan phases) существуют, чтобы следующая фаза читала сначала их, а исходники и большие документы открывала только точечно и по необходимости.
 
 ```
-tasks.json → Research → Design → Plan → Implement
-   (задача)    (факты)  (архит.)  (фазы)  (команда агентов)
+gh issue view {N} → Research → Design → Plan → Implement
+   (открыть: gh issue view {N})    (факты)  (архит.)  (фазы)  (команда агентов)
 ```
 
 Только на фазе Implement пишется код. Всё остальное — подготовка контекста.
@@ -40,7 +40,8 @@ tasks.json → Research → Design → Plan → Implement
 
 ## Фаза 1: Research
 
-**Команда:** `/research-codebase TASK-ID` или `/research-codebase <описание задачи>`
+**Команда:** `/research-codebase {N}` или `/research-codebase <описание задачи>`
+Перед запуском прочитать задачу: `gh issue view {N} --repo krikz/rob_box_project`
 
 **Что происходит:**
 - Lead агент запускает 4 параллельных субагента (архитектура / код / конфиги / тесты)
@@ -169,7 +170,7 @@ git commit (без push) → следующая фаза
 
 | Ресурс | Назначение |
 |--------|-----------|
-| `tasks.json` | Бэклог задач с acceptance_criteria и dependencies |
+| GitHub Issues | Бэклог задач: `gh issue list/view/create --repo krikz/rob_box_project` |
 | `PRD.md` | Продуктовые требования и архитектурный контекст |
 | `docs/development/PYTHON_STYLE_GUIDE.md` | Стандарты Python для всех фаз |
 | `docs/development/DOCKER_STANDARDS.md` | Стандарты Docker для Design/Plan/Implement |

@@ -1,6 +1,6 @@
 # voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
 #
-# LLM: DeepSeek API (api.deepseek.com, deepseek-chat)
+# LLM: DeepSeek API (api.deepseek.com, deepseek-v4-flash)
 # API key передаётся через env DEEPSEEK_API_KEY — не коммитить
 
 /dialogue_node:
@@ -8,7 +8,7 @@
     provider: "deepseek"
     api_key: ""   # берётся из env DEEPSEEK_API_KEY
     base_url: "https://api.deepseek.com"
-    model: "deepseek-chat"
+    model: "deepseek-v4-flash"
     temperature: 0.5
     max_tokens: 150       # короткие ответы = быстрые тесты
     streaming: true

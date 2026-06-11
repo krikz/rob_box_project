@@ -15,8 +15,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Your Name',
-    maintainer_email='your_email@example.com',
+    maintainer='Rob Box Team',
+    maintainer_email='ros2@rob-box.local',
     description=(
         'Meta-package for launching the entire rob_box system. '
         'This package is responsible for organizing and launching all components of the rob_box project.'

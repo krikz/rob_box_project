@@ -7,7 +7,7 @@
     Launch files for Rob Box robot system.
     Includes display, control, and full system launch configurations.
   </description>
-  <maintainer email="krikz@example.com">krikz</maintainer>
+  <maintainer email="ros2@rob-box.local">Rob Box Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

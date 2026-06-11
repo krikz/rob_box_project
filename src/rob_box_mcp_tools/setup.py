@@ -16,7 +16,7 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Rob Box Team',
-    maintainer_email='your_email@example.com',
+    maintainer_email='ros2@rob-box.local',
     description='MCP-like tool system for LLM integration',
     license='MIT',
     tests_require=['pytest'],
