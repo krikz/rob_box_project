@@ -11,6 +11,10 @@
       - "handle_navigation"
       - "handle_music"
 
+    # LLM model override — FLAT, доходит до dialogue_node напрямую
+    provider: "deepseek"
+    model: "deepseek-v4-pro"
+
     # ===== Audio Node =====
     audio_node:
       # Устройство
