@@ -279,7 +279,7 @@ class LLMChat:
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": 4096,
+            "max_tokens": 8192,  # Increased for reasoning models (v4-pro)
         }
 
         # Add tools if available
@@ -400,7 +400,7 @@ class LLMChat:
                 "model": self.model,
                 "messages": messages,
                 "temperature": self.temperature,
-                "max_tokens": 4096,
+                "max_tokens": 8192,  # Increased for reasoning models (v4-pro)
             }
             if self.tools:
                 payload["tools"] = self.tools
