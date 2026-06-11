@@ -21,6 +21,7 @@ on:
           - production
           - staging
           - test
+          - local
       registry_source:
         description: 'Источник Docker образов'
         required: true
@@ -64,18 +65,23 @@ jobs:
           case "${{ inputs.environment }}" in
             production)
               echo "IMAGE_TAG=latest" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.21" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.20" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             staging)
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.21" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.20" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             test)
               echo "IMAGE_TAG=test" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.21" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.20" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
+              ;;
+            local)
+              echo "IMAGE_TAG=local" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
           esac
 
