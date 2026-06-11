@@ -23,7 +23,7 @@ services:
 
   oak-d:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${OAK_D_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${OAK_D_TAG:-${IMAGE_TAG}}
     container_name: oak-d
     network_mode: host
     privileged: true
@@ -58,7 +58,7 @@ services:
 
   led-matrix:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${LED_MATRIX_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${LED_MATRIX_TAG:-${IMAGE_TAG}}
     container_name: led-matrix
     network_mode: host
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
@@ -91,7 +91,7 @@ services:
 
   ceiling-camera:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${CEILING_CAMERA_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${CEILING_CAMERA_TAG:-${IMAGE_TAG}}
     container_name: ceiling-camera
     network_mode: host
     privileged: true  # Для доступа к USB camera
@@ -122,7 +122,7 @@ services:
   # non-ROS service: аудиосервер SuperCollider (scsynth).
   # Не публикует/подписывается на ROS-топики, depends_on: zenoh-router не требуется.
   supercollider:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
     container_name: supercollider
     network_mode: host
     privileged: true  # Для доступа к ALSA audio
@@ -156,7 +156,7 @@ services:
   # Не использует ROS/Zenoh, network_mode не требуется.
   voice-resources-init:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-resources-${ROS_DISTRO:-humble}-${VOICE_RESOURCES_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-resources-${ROS_DISTRO:-humble}-${VOICE_RESOURCES_TAG:-${IMAGE_TAG}}
     container_name: voice-resources-init
     volumes:
       - renardo_samples:/target
@@ -167,7 +167,7 @@ services:
   voice-assistant:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     # Format: VOICE_ASSISTANT_TAG=env-gitsha (e.g. test-abc1234) → immutable, pinned to specific build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
     container_name: voice-assistant
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
@@ -243,7 +243,7 @@ services:
   # Управление роботом с телефона: фото, голос, движение, LLM чат
   telegram-bot:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-latest}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-${IMAGE_TAG}}
     container_name: telegram-bot
     network_mode: host
     environment:

@@ -64,6 +64,8 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep и сборка пакетов
+# Явно задаём ROS_DISTRO для rosidl_generator_rs (Rust IDL)
+ENV ROS_DISTRO=humble
 RUN . /opt/ros/humble/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
