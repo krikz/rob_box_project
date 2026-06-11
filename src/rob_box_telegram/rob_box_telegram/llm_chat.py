@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import traceback
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -341,8 +342,9 @@ class LLMChat:
             }
 
         except Exception as e:
-            logger.error("LLM chat error: %s", e)
-            return {"text": "", "tool_calls": [], "error": str(e)}
+            logger.error("LLM chat error [%s]: %s", type(e).__name__, e)
+            logger.error("Traceback:\n%s", traceback.format_exc())
+            return {"text": "", "tool_calls": [], "error": f"{type(e).__name__}: {e}"}
 
     async def chat_with_tools(
         self,
@@ -423,7 +425,8 @@ class LLMChat:
                             return "\n".join(all_tool_output)
                         data = await resp.json()
             except Exception as e:
-                logger.error("LLM follow-up error: %s", e)
+                logger.error("LLM follow-up error [%s]: %s", type(e).__name__, e)
+                logger.error("Traceback:\n%s", traceback.format_exc())
                 return "\n".join(all_tool_output)
 
             choice = data.get("choices", [{}])[0]
