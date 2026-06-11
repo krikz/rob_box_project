@@ -6,7 +6,7 @@
     # которые ноды НЕ читают. Параметры, которые ДОЛЖНЫ дойти,
     # указываем здесь flat.
     faq_mode_enabled: true
-    faq_event_config_file: "/config/voice_assistant/event_mode.yaml"
+    faq_event_config_file: ""   # Отключено
     history_excluded_tools:
       - "handle_navigation"
       - "handle_music"
@@ -191,7 +191,7 @@
       dialogue_timeout: 300.0  # Таймаут сессии: 5 минут без wake word → IDLE
       llm_timeout_sec: 90.0    # Таймаут одного LLM-вызова (total = ×3 = 270s)
       faq_mode_enabled: true
-      faq_event_config_file: "/config/voice_assistant/event_mode.yaml"
+      faq_event_config_file: ""   # Отключено
 
       # Тайминги
       response_timeout_sec: 30.0
