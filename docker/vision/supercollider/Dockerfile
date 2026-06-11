@@ -8,7 +8,7 @@
 #   - Renardo/FoxDot подключается к scsynth для синтеза звука
 #   - Общается через OSC (UDP, порт 57110)
 #   - Использует ALSA dmix для совместной работы с TTS/sound effects
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
