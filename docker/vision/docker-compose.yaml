@@ -120,7 +120,7 @@ services:
       logging: "promtail"
 
   supercollider:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-${IMAGE_TAG}}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
     container_name: supercollider
     network_mode: host
     privileged: true  # Для доступа к ALSA audio

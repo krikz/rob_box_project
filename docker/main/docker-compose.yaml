@@ -389,7 +389,7 @@ services:
   # Promtail - сбор логов из Docker контейнеров и отправка на машину мониторинга
   # Teleoperation - джойстик управление роботом через SBUS
   teleop:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-${IMAGE_TAG}}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
     container_name: teleop
     network_mode: host
     privileged: true  # Нужен для доступа к serial портам
