@@ -164,6 +164,7 @@
     # ===== Dialogue Node (LLM) =====
     dialogue_node:
       provider: "deepseek"  # qwen | deepseek | openai | ollama
+      model: "deepseek-v4-pro"  # Overrides PROVIDERS default
       enable_fallback: false  # ОТКЛЮЧЕНО: нет доступа к Qwen
       enable_mcp_tools: true  # ВНИМАНИЕ! Может включать reasoning mode в DeepSeek
 

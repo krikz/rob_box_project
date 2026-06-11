@@ -16,6 +16,7 @@ telegram_node:
 
     # LLM settings
     llm_provider: "deepseek"   # deepseek | qwen
+    llm_model: "deepseek-v4-pro"  # Overrides PROVIDERS default
     llm_max_history: 20        # messages per user session
     llm_temperature: 0.7
 

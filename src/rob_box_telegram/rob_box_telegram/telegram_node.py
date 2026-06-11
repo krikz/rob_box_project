@@ -101,6 +101,7 @@ class TelegramNode(Node):
         self.declare_parameter("camera_up_topic", "/ceiling_camera/image_raw/compressed")
         self.declare_parameter("camera_cache_ttl", 5.0)
         self.declare_parameter("llm_provider", "deepseek")
+        self.declare_parameter("llm_model", "")  # Empty = use PROVIDERS default
         self.declare_parameter("llm_max_history", 20)
         self.declare_parameter("llm_temperature", 0.7)
         self.declare_parameter("voice_stt_method", "yandex")
@@ -115,6 +116,7 @@ class TelegramNode(Node):
         self.camera_up_topic: str = self.get_parameter("camera_up_topic").value
         camera_cache_ttl: float = self.get_parameter("camera_cache_ttl").value
         llm_provider: str = self.get_parameter("llm_provider").value
+        llm_model: str = self.get_parameter("llm_model").value
         llm_max_history: int = self.get_parameter("llm_max_history").value
         llm_temperature: float = self.get_parameter("llm_temperature").value
         self.voice_stt_method: str = self.get_parameter("voice_stt_method").value
@@ -199,6 +201,7 @@ class TelegramNode(Node):
         # ── LLM Chat ────────────────────────────────────────────────
         self.llm_chat = LLMChat(
             provider=llm_provider,
+            model=llm_model or None,
             max_history=llm_max_history,
             temperature=llm_temperature,
         )

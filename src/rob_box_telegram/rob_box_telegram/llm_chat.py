@@ -89,7 +89,7 @@ class LLMChat:
     PROVIDERS = {
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-flash",
             "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
         },
         "qwen": {
@@ -102,6 +102,7 @@ class LLMChat:
     def __init__(
         self,
         provider: str = "deepseek",
+        model: Optional[str] = None,
         max_history: int = 20,
         temperature: float = 0.7,
         tools: Optional[List[Dict]] = None,
@@ -115,7 +116,7 @@ class LLMChat:
         # Resolve API key
         config = self.PROVIDERS.get(provider, self.PROVIDERS["deepseek"])
         self.base_url = config["base_url"]
-        self.model = config["model"]
+        self.model = model or config["model"]
         self.api_key = ""
         for env_var in config["env_vars"]:
             self.api_key = os.getenv(env_var, "")
