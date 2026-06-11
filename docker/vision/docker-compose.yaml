@@ -122,7 +122,7 @@ services:
   # non-ROS service: аудиосервер SuperCollider (scsynth).
   # Не публикует/подписывается на ROS-топики, depends_on: zenoh-router не требуется.
   supercollider:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-local}
     container_name: supercollider
     network_mode: host
     privileged: true  # Для доступа к ALSA audio
