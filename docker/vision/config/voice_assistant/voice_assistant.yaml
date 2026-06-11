@@ -180,7 +180,7 @@
       deepseek:
         api_key: ""  # Используется DEEPSEEK_API_KEY из переменных окружения
         base_url: "https://api.deepseek.com"
-        model: "deepseek-chat"
+        model: "deepseek-v4-flash"
         temperature: 0.7
         max_tokens: 500  # Увеличено для творческих задач (рэп, стихи)
         stream: true

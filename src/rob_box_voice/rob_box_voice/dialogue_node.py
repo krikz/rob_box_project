@@ -324,7 +324,7 @@ class DialogueNode(Node):
     def _resolve_model(self) -> str:
         val = self.get_parameter("model").value
         return val or self.PROVIDERS.get(self._provider, {}).get(
-            "model", "deepseek-chat"
+            "model", "deepseek-v4-flash"
         )
 
     def _init_voice_memory(self) -> None:
