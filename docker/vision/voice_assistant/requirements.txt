@@ -59,8 +59,8 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
 # Used in: rob_box_voice/dialogue_node.py
 # =============================================================================
-openai
-openai-agents
+openai>=2.37.0,<3.0.0
+openai-agents>=0.17.0,<1.0.0
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
 # Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)

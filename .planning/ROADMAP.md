@@ -77,7 +77,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 03.1-01-PLAN.md — Validate research, pin versions, document decision
+- [x] 03.1-01-PLAN.md — Validate research, pin versions, document decision
 
 ### Phase 4: GitHub Issues Integration
 **Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
@@ -101,5 +101,5 @@ Plans:
 | 1. Аудит документации | 3/3 | ✅ Complete | 2026-05-15 |
 | 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
-| 03.1. OpenAI vs Anthropic SDK Research | 0/1 | Not started | - |
+| 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
