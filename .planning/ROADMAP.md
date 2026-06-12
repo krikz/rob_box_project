@@ -79,6 +79,16 @@ Plans:
 Plans:
 - [x] 03.1-01-PLAN.md — Validate research, pin versions, document decision
 
+### Phase 03.1.1: Apply research findings: P0 error handling (APITimeoutError/RateLimitError/APIStatusError) + OPENAI_LOG debug in dialogue_node (INSERTED)
+
+**Goal:** dialogue_node catches APITimeoutError, RateLimitError, APIStatusError with request_id logging; OPENAI_LOG=info enabled in voice-assistant container
+**Requirements**: D-P0-1, D-P0-2, D-P0-3, D-P0-4, D-P1-1
+**Depends on:** Phase 03.1
+**Plans:** 1 plan
+
+Plans:
+- [ ] 03.1.1-01-PLAN.md — Add P0 error handling to _run_agent_with_retry() + OPENAI_LOG env var
+
 ### Phase 4: GitHub Issues Integration
 **Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
 **Depends on**: Phase 3
