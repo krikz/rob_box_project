@@ -42,11 +42,11 @@ class TestLLMChatProviders(unittest.TestCase):
         self.assertEqual(chat.api_key, "sk-test123")
         self.assertIn("deepseek", chat.base_url)
 
-    @patch.dict(os.environ, {"QWEN_API_KEY": "sk-qwen456"})
-    def test_qwen_api_key(self):
-        chat = LLMChat(provider="qwen")
-        self.assertEqual(chat.api_key, "sk-qwen456")
-        self.assertIn("dashscope", chat.base_url)
+    @patch.dict(os.environ, {"MIMO_API_KEY": "sk-mimo456"})
+    def test_mimo_api_key(self):
+        chat = LLMChat(provider="mimo")
+        self.assertEqual(chat.api_key, "sk-mimo456")
+        self.assertIn("xiaomimimo", chat.base_url)
 
     @patch.dict(os.environ, {"LLM_API_KEY": "sk-unified"}, clear=True)
     def test_fallback_to_llm_api_key(self):

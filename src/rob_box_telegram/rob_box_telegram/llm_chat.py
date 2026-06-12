@@ -2,7 +2,7 @@
 """
 llm_chat.py — Independent LLM chat sessions for Telegram operators.
 
-Each user gets a separate conversation history. Uses the same DeepSeek/Qwen
+Each user gets a separate conversation history. Uses the same DeepSeek/MiMo
 API as the voice dialogue system but with an "operator" role context.
 Supports MCP tool calling through the same tool definitions.
 """
@@ -93,10 +93,10 @@ class LLMChat:
             "model": "deepseek-v4-flash",
             "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
         },
-        "qwen": {
-            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen-max",
-            "env_vars": ["QWEN_API_KEY", "LLM_API_KEY"],
+        "mimo": {
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "model": "mimo-v2.5-pro",
+            "env_vars": ["MIMO_API_KEY", "LLM_API_KEY"],
         },
     }
 

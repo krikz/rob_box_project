@@ -1,15 +1,15 @@
 """
 test_llm_integration.py - Интеграционные тесты с реальными LLM API
 
-Эти тесты делают РЕАЛЬНЫЕ запросы к LLM API (DeepSeek, Qwen, OpenAI).
+Эти тесты делают РЕАЛЬНЫЕ запросы к LLM API (DeepSeek, MiMo, OpenAI).
 Требуют API ключ в переменных окружения.
 
 Запуск:
     export DEEPSEEK_API_KEY="your-key"
     pytest test/test_llm_integration.py -m llm_api -v -s
 
-Или для Qwen:
-    export QWEN_API_KEY="your-key"
+Или для MiMo:
+    export MIMO_API_KEY="your-key"
     pytest test/test_llm_integration.py -m llm_api -v -s
 """
 
@@ -49,17 +49,17 @@ def get_llm_client_and_model():
     # Проверяем DeepSeek
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
     if deepseek_key:
-        client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
-        return client, "deepseek-chat", "DeepSeek"
+        client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com/v1")
+        return client, "deepseek-v4-flash", "DeepSeek"
     
-    # Проверяем Qwen
-    qwen_key = os.getenv("QWEN_API_KEY")
-    if qwen_key:
+    # Проверяем MiMo
+    mimo_key = os.getenv("MIMO_API_KEY")
+    if mimo_key:
         client = OpenAI(
-            api_key=qwen_key,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            api_key=mimo_key,
+            base_url="https://api.xiaomimimo.com/v1"
         )
-        return client, "qwen-max", "Qwen"
+        return client, "mimo-v2.5-pro", "MiMo"
     
     # Проверяем OpenAI
     openai_key = os.getenv("OPENAI_API_KEY")
@@ -71,8 +71,8 @@ def get_llm_client_and_model():
     llm_key = os.getenv("LLM_API_KEY")
     if llm_key:
         # По умолчанию DeepSeek
-        client = OpenAI(api_key=llm_key, base_url="https://api.deepseek.com")
-        return client, "deepseek-chat", "Generic"
+        client = OpenAI(api_key=llm_key, base_url="https://api.deepseek.com/v1")
+        return client, "deepseek-v4-flash", "Generic"
     
     pytest.skip("No LLM API key found")
 

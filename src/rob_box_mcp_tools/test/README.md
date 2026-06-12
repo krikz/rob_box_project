@@ -82,7 +82,7 @@ pytest -m integration
 ### 3. LLM API тесты (`@pytest.mark.llm_api`)
 
 **Характеристики:**
-- Требуют API ключ (DEEPSEEK_API_KEY, QWEN_API_KEY, или LLM_API_KEY)
+- Требуют API ключ (DEEPSEEK_API_KEY, MIMO_API_KEY, или LLM_API_KEY)
 - Делают реальные запросы к LLM
 - Тестируют tool_calls в реальных условиях
 - Самые медленные (сетевые запросы)

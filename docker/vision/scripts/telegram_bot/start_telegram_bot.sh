@@ -35,8 +35,8 @@ fi
 # Проверка LLM API
 if [ -n "${DEEPSEEK_API_KEY}" ]; then
     echo "✓ DEEPSEEK_API_KEY задан (LLM chat)"
-elif [ -n "${QWEN_API_KEY}" ]; then
-    echo "✓ QWEN_API_KEY задан (LLM chat fallback)"
+elif [ -n "${MIMO_API_KEY}" ]; then
+    echo "✓ MIMO_API_KEY задан (LLM chat fallback)"
 else
     echo "⚠ LLM API ключ не задан — чат будет недоступен"
 fi

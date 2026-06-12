@@ -90,25 +90,25 @@ class ReflectionNode(Node):
         self.last_speech_time: Optional[float] = None  # Когда последний раз говорили
         self.speech_debounce_interval = 30.0  # Не говорить чаще чем раз в 30 секунд
         
-        # ============ LLM API (Qwen/DeepSeek) ============
+        # ============ LLM API (MiMo/DeepSeek) ============
         # Проверяем API ключи (приоритет: специфичные → унифицированный)
-        self.llm_api_key = os.getenv('QWEN_API_KEY') or os.getenv('LLM_API_KEY')
-        self.llm_base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        self.llm_model = "qwen-max"
-        self.llm_provider = "Qwen"
+        self.llm_api_key = os.getenv('MIMO_API_KEY') or os.getenv('LLM_API_KEY')
+        self.llm_base_url = "https://api.xiaomimimo.com/v1"
+        self.llm_model = "mimo-v2.5-pro"
+        self.llm_provider = "MiMo"
         
-        # Fallback на DeepSeek если Qwen недоступен
+        # Fallback на DeepSeek если MiMo недоступен
         if not self.llm_api_key:
             self.llm_api_key = os.getenv('DEEPSEEK_API_KEY')
             if self.llm_api_key:
-                self.llm_base_url = "https://api.deepseek.com"
+                self.llm_base_url = "https://api.deepseek.com/v1"
                 self.llm_model = "deepseek-v4-flash"
                 self.llm_provider = "DeepSeek"
         
         self.deepseek_client = None
         
         if not self.llm_api_key:
-            self.get_logger().warn('⚠️  QWEN_API_KEY или DEEPSEEK_API_KEY не найдены! Используется заглушка.')
+            self.get_logger().warn('⚠️  MIMO_API_KEY или DEEPSEEK_API_KEY не найдены! Используется заглушка.')
         elif not OPENAI_AVAILABLE:
             self.get_logger().warn('⚠️  OpenAI библиотека не установлена!')
         else:

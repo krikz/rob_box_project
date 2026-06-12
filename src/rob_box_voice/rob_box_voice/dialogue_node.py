@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dialogue_node.py — Voice dialogue agent (OpenAI Agents SDK + DeepSeek/Qwen)
+dialogue_node.py — Voice dialogue agent (OpenAI Agents SDK + DeepSeek/MiMo)
 
 Subscribes:
     /voice/stt/result (String) — recognised speech
@@ -85,11 +85,11 @@ class DialogueNode(Node):
             "fallback_model": "deepseek-v4-flash",  # lighter model on timeout/errors
             "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
         },
-        "qwen": {
-            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen-max",
-            "fallback_model": "qwen-turbo",  # not currently used (qwen unavailable)
-            "env_vars": ["QWEN_API_KEY", "LLM_API_KEY"],
+        "mimo": {
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "model": "mimo-v2.5-pro",
+            "fallback_model": "mimo-v2.5",  # lighter model on timeout/errors
+            "env_vars": ["MIMO_API_KEY", "LLM_API_KEY"],
         },
     }
 

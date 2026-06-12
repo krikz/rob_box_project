@@ -89,7 +89,7 @@
       max_question_time: 20.0     # максимальное время накопления вопроса
 
       # LLM
-      llm_provider: "deepseek"    # "deepseek" или "local" (Ollama)
+      llm_provider: "deepseek"    # "deepseek", "mimo" или "local" (Ollama)
       model: "deepseek-v4-flash"      # Или "llama3" для local
       system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 

@@ -21,9 +21,9 @@
 export DEEPSEEK_API_KEY="sk-your-key-here"
 ```
 
-**Qwen:**
+**MiMo (Xiaomi):**
 ```bash
-export QWEN_API_KEY="sk-your-key-here"
+export MIMO_API_KEY="sk-your-key-here"
 ```
 
 **OpenAI:**

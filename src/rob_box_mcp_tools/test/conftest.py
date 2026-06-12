@@ -235,7 +235,7 @@ def sample_tool_calls():
 @pytest.fixture
 def llm_api_key():
     """Фикстура для получения API ключа из переменных окружения"""
-    return os.getenv("DEEPSEEK_API_KEY") or os.getenv("QWEN_API_KEY") or os.getenv("LLM_API_KEY")
+    return os.getenv("DEEPSEEK_API_KEY") or os.getenv("MIMO_API_KEY") or os.getenv("LLM_API_KEY")
 
 
 @pytest.fixture

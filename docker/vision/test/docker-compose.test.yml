@@ -76,7 +76,7 @@ services:
       ROS_DISTRO: humble
       PYTHONUNBUFFERED: "1"
       # Ollama — не нужен реальный API key
-      QWEN_API_KEY: ollama-no-key
+      MIMO_API_KEY: ollama-no-key
       DEEPSEEK_API_KEY: ollama-no-key
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
       # Путь к тестовой конфигурации
