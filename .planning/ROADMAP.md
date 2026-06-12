@@ -64,6 +64,21 @@ Plans:
 - [ ] 03-04: Задокументировать стратегию рефакторинга dialogue_node.py
 - [ ] 03-05: Пометить все stub-реализации # STUB:, добавить в трекер
 
+### Phase 03.1: Research: OpenAI Agent SDK vs Anthropic Claude SDK - agentic features comparison (INSERTED)
+
+**Goal:** Determine whether OpenAI Agents SDK or Anthropic Claude SDK better serves Rob Box agentic features, with DeepSeek API compatibility verification
+**Requirements**: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-12
+**Depends on:** Phase 3
+**Decision:** Stay with OpenAI Agents SDK. Anthropic SDK skipped — Managed Agents is cloud-only, DeepSeek Anthropic API has critical gaps (no MCP, no images, no code execution). See 03.1-RESEARCH.md Section 7 for full decision matrix.
+**Success Criteria** (what must be TRUE):
+  1. RESEARCH.md covers all 12 D-XX decisions with DeepSeek compatibility verified for each
+  2. All requirements.txt files have pinned openai>=2.37.0 and openai-agents>=0.17.0
+  3. Decision recorded: stay with OpenAI Agents SDK, Anthropic SDK adds zero value for DeepSeek-only setup
+**Plans:** 1 plan
+
+Plans:
+- [ ] 03.1-01-PLAN.md — Validate research, pin versions, document decision
+
 ### Phase 4: GitHub Issues Integration
 **Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
 **Depends on**: Phase 3
@@ -86,4 +101,5 @@ Plans:
 | 1. Аудит документации | 3/3 | ✅ Complete | 2026-05-15 |
 | 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
+| 03.1. OpenAI vs Anthropic SDK Research | 0/1 | Not started | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
