@@ -1685,6 +1685,14 @@ class DialogueNode(Node):
                     )
                     self._speak_direct(clean_spoken)
 
+            # Empty response fallback: MiMo sometimes returns nothing (no text, no
+            # tool_calls).  Speak a short prompt so the user isn't left confused.
+            if not self._spoken_texts and not spoken:
+                self.get_logger().warning(
+                    "⚠️ LLM returned empty response — speaking fallback"
+                )
+                self._speak_direct("Что-то я задумался, повтори пожалуйста")
+
             if self._verbose_llm:
                 self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
             else:
