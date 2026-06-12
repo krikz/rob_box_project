@@ -92,11 +92,13 @@ class LLMChat:
             "base_url": "https://api.deepseek.com/v1",
             "model": "deepseek-v4-flash",
             "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
+            "tool_choice": "auto",
         },
         "mimo": {
             "base_url": "https://api.xiaomimimo.com/v1",
             "model": "mimo-v2.5-pro",
             "env_vars": ["MIMO_API_KEY", "LLM_API_KEY"],
+            "tool_choice": "required",  # MiMo ignores tools unless forced
         },
     }
 
@@ -118,6 +120,7 @@ class LLMChat:
         config = self.PROVIDERS.get(provider, self.PROVIDERS["deepseek"])
         self.base_url = config["base_url"]
         self.model = model or config["model"]
+        self.tool_choice = config.get("tool_choice", "auto")
         self.api_key = ""
         for env_var in config["env_vars"]:
             self.api_key = os.getenv(env_var, "")
@@ -286,7 +289,7 @@ class LLMChat:
         # Add tools if available
         if self.tools:
             payload["tools"] = self.tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = self.tool_choice
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -312,7 +315,7 @@ class LLMChat:
             message = choice.get("message", {})
 
             assistant_text = message.get("content", "") or ""
-            tool_calls = message.get("tool_calls", [])
+            tool_calls = message.get("tool_calls") or []  # MiMo returns null, not []
 
             # Store assistant response in history (with tool_calls for proper follow-up format)
             if tool_calls:
@@ -406,7 +409,7 @@ class LLMChat:
             }
             if self.tools:
                 payload["tools"] = self.tools
-                payload["tool_choice"] = "auto"
+                payload["tool_choice"] = self.tool_choice
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
@@ -432,7 +435,7 @@ class LLMChat:
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
             followup_text = message.get("content", "") or ""
-            followup_tool_calls_raw = message.get("tool_calls", [])
+            followup_tool_calls_raw = message.get("tool_calls") or []  # MiMo returns null, not []
 
             # Store in history
             if followup_tool_calls_raw:

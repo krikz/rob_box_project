@@ -4,8 +4,13 @@ handlers/messages.py — Handlers for text messages (LLM chat) and voice message
 
 Text messages without "/" are routed to the LLM chat.
 Voice messages are transcribed and then processed as text or spoken by the robot.
+
+Features:
+- 👀 reaction on message receive (processing indicator)
+- Message debouncing: split messages are merged before LLM processing
 """
 
+import asyncio
 import logging
 
 from telegram import Update
@@ -17,10 +22,21 @@ from ..voice_processor import transcribe_voice
 
 logger = logging.getLogger(__name__)
 
+# Delay (seconds) to wait for additional message parts before processing
+_DEBOUNCE_DELAY = 2.0
+
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
     """Shortcut to get TelegramNode from bot_data."""
     return context.bot_data["node"]
+
+
+async def _react_eyes(update: Update) -> None:
+    """Add 👀 reaction to message (best-effort, ignore failures)."""
+    try:
+        await update.message.react("👀")
+    except Exception as e:
+        logger.debug("react(👀) not available or failed: %s", e)
 
 
 # ─── Text messages → LLM Chat ───────────────────────────────────────────────
@@ -28,15 +44,70 @@ def _node(context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle plain text messages — route to LLM chat with tool support."""
-    node = _node(context)
+    """Handle plain text messages — route to LLM chat with tool support.
+
+    Implements message debouncing: if user sends multiple messages quickly
+    (e.g. Telegram splits a long message), they are merged into one request.
+    """
     chat_id = update.effective_chat.id
     user_text = update.message.text.strip()
 
     if not user_text:
         return
 
-    # Show typing indicator (best-effort — ignore network errors)
+    # React with 👀 to indicate we received the message
+    await _react_eyes(update)
+
+    # ── Debounce: buffer split messages ──
+    buf = context.user_data.get("msg_buffer")
+    if buf is not None:
+        # Already buffering — append text and reset timer
+        buf["texts"].append(user_text)
+        buf["last_update"] = update  # keep most recent update for reply
+        # Cancel previous scheduled task
+        if buf.get("task") and not buf["task"].done():
+            buf["task"].cancel()
+        # Schedule processing after delay
+        loop = asyncio.get_event_loop()
+        buf["task"] = loop.call_later(
+            _DEBOUNCE_DELAY,
+            lambda: asyncio.ensure_future(
+                _process_buffered(chat_id, context)
+            ),
+        )
+        logger.debug("Buffered message part %d for chat %d", len(buf["texts"]), chat_id)
+        return
+
+    # First message — start buffering
+    context.user_data["msg_buffer"] = {
+        "texts": [user_text],
+        "last_update": update,
+        "task": None,
+    }
+    loop = asyncio.get_event_loop()
+    context.user_data["msg_buffer"]["task"] = loop.call_later(
+        _DEBOUNCE_DELAY,
+        lambda: asyncio.ensure_future(
+            _process_buffered(chat_id, context)
+        ),
+    )
+    logger.debug("Started message buffer for chat %d", chat_id)
+
+
+async def _process_buffered(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Process buffered messages after debounce delay."""
+    buf = context.user_data.pop("msg_buffer", None)
+    if not buf or not buf["texts"]:
+        return
+
+    node = _node(context)
+    update = buf["last_update"]
+    combined_text = "\n".join(buf["texts"])
+
+    if len(buf["texts"]) > 1:
+        logger.info("Merged %d message parts for chat %d", len(buf["texts"]), chat_id)
+
+    # Show typing indicator
     try:
         await update.message.chat.send_action("typing")
     except (TimedOut, NetworkError) as e:
@@ -46,7 +117,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     async def tool_executor(tool_name: str, args: dict) -> str:
         return await node.mcp_bridge.execute_simple(tool_name, args)
 
-    response = await node.llm_chat.chat_with_tools(chat_id, user_text, tool_executor)
+    response = await node.llm_chat.chat_with_tools(chat_id, combined_text, tool_executor)
 
     # Send response (split if too long for Telegram's 4096 char limit)
     if len(response) <= 4096:
@@ -73,6 +144,9 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not voice:
         return
+
+    # React with 👀 to indicate we received the message
+    await _react_eyes(update)
 
     # Show typing indicator (best-effort — ignore network errors)
     try:
