@@ -34,9 +34,9 @@ def _node(context: ContextTypes.DEFAULT_TYPE):
 async def _react_eyes(update: Update) -> None:
     """Add 👀 reaction to message (best-effort, ignore failures)."""
     try:
-        await update.message.react("👀")
+        await update.message.set_reaction("👀")
     except Exception as e:
-        logger.debug("react(👀) not available or failed: %s", e)
+        logger.debug("set_reaction(👀) not available or failed: %s", e)
 
 
 # ─── Text messages → LLM Chat ───────────────────────────────────────────────
