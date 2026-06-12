@@ -14,6 +14,8 @@
     # LLM model override — FLAT, доходит до dialogue_node напрямую
     provider: "deepseek"
     model: "deepseek-v4-pro"
+    fallback_model: "deepseek-v4-flash"  # lighter model on timeout/errors
+    enable_fallback: false  # set to true to auto-switch to fallback_model on timeout
 
     # ===== Audio Node =====
     audio_node:

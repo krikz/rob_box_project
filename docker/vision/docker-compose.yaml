@@ -194,6 +194,8 @@ services:
       - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
       # Agent skills feature flag (set to false to revert to flat tool mode)
       - USE_SKILLS=true
+      # OpenAI SDK logging (set to debug for HTTP traffic dump, info for request-level, off for silent)
+      - OPENAI_LOG=info
       # Renardo paths (MusicSkill uses these to load reference docs and search samples)
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples

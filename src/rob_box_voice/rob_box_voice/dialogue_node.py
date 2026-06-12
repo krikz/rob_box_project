@@ -28,7 +28,13 @@ from agents.items import ToolCallItem
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from httpx import Timeout as HttpxTimeout
-from openai import APIConnectionError, AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    RateLimitError,
+    AsyncOpenAI,
+)
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -76,11 +82,13 @@ class DialogueNode(Node):
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
             "model": "deepseek-v4-flash",
+            "fallback_model": "deepseek-v4-flash",  # lighter model on timeout/errors
             "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
         },
         "qwen": {
             "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             "model": "qwen-max",
+            "fallback_model": "qwen-turbo",  # not currently used (qwen unavailable)
             "env_vars": ["QWEN_API_KEY", "LLM_API_KEY"],
         },
     }
@@ -102,6 +110,7 @@ class DialogueNode(Node):
         self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("enable_fallback", False)
+        self.declare_parameter("fallback_model", "")  # empty = use PROVIDERS default
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
         self.declare_parameter("faq_mode_enabled", False)
@@ -325,6 +334,13 @@ class DialogueNode(Node):
         val = self.get_parameter("model").value
         return val or self.PROVIDERS.get(self._provider, {}).get(
             "model", "deepseek-v4-flash"
+        )
+
+    def _resolve_fallback_model(self) -> str:
+        """Resolve fallback model (lighter/faster) for timeout/error recovery."""
+        val = self.get_parameter("fallback_model").value
+        return val or self.PROVIDERS.get(self._provider, {}).get(
+            "fallback_model", "deepseek-v4-flash"
         )
 
     def _init_voice_memory(self) -> None:
@@ -551,12 +567,17 @@ class DialogueNode(Node):
             lines.append(f"Описание: {profile['description']}")
         return "\n".join(lines) + "\n\n" + base_prompt
 
-    def _build_agent(self) -> None:
-        """(Re)build the Agent — also called after fallback provider switch."""
+    def _build_agent(self, model_override: str = "") -> None:
+        """(Re)build the Agent — also called after fallback provider switch.
+
+        Args:
+            model_override: If set, use this model instead of the configured one.
+                            Used for fallback on timeout (e.g. deepseek-v4-pro → flash).
+        """
         try:
             api_key = self._resolve_api_key()
             base_url = self._resolve_base_url()
-            model_name = self._resolve_model()
+            model_name = model_override or self._resolve_model()
 
             openai_client = AsyncOpenAI(
                 api_key=api_key,
@@ -1510,13 +1531,69 @@ class DialogueNode(Node):
         max_retries: int = 2,
         base_delay: float = 2.0,
     ):
-        """Run Agent with retry on APIConnectionError (WiFi flakiness)."""
+        """Run Agent with classification-aware retry + fallback model on timeout.
+
+        Error taxonomy (v2.x):
+        - APITimeoutError  → fallback to lighter model, no retry (timeout = model overload)
+        - RateLimitError   → honor retry-after header, retry
+        - APIStatusError   → retry on 5xx only
+        - APIConnectionError → WiFi flakiness, exponential backoff
+        """
         last_exc = None
+        fallback_used = False
+
         for attempt in range(1 + max_retries):
             try:
                 return await Runner.run(
                     self._agent, input_list, max_turns=self._agent_max_turns
                 )
+            except APITimeoutError as exc:
+                fb_model = self._resolve_fallback_model()
+                current_model = self._resolve_model()
+                self.get_logger().error(
+                    f"⏰ LLM timeout after {self._llm_timeout}s "
+                    f"(model={current_model}, request_id={exc.request_id}, "
+                    f"cause={exc.__cause__})"
+                )
+                if (
+                    not fallback_used
+                    and fb_model
+                    and fb_model != current_model
+                    and self.get_parameter("enable_fallback").value
+                ):
+                    self.get_logger().warning(
+                        f"🔄 Switching to fallback model: {fb_model}"
+                    )
+                    self._build_agent(model_override=fb_model)
+                    fallback_used = True
+                    continue  # retry with fallback model
+                raise
+
+            except RateLimitError as exc:
+                retry_after = exc.response.headers.get("retry-after", "5")
+                self.get_logger().warn(
+                    f"🔄 Rate limited (429), retry-after={retry_after}s "
+                    f"(request_id={exc.request_id})"
+                )
+                # Honor retry-after, clamp to 2..30s
+                try:
+                    delay = max(2.0, min(float(retry_after), 30.0))
+                except (ValueError, TypeError):
+                    delay = 5.0
+                await asyncio.sleep(delay)
+                continue
+
+            except APIStatusError as exc:
+                self.get_logger().error(
+                    f"🌩️ API error {exc.status_code}: {str(exc.response.text)[:200]} "
+                    f"(request_id={exc.request_id})"
+                )
+                if exc.status_code >= 500 and attempt < max_retries:
+                    delay = base_delay * (2**attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
             except APIConnectionError as exc:
                 last_exc = exc
                 if attempt < max_retries:
