@@ -115,8 +115,21 @@ class BaseSkill(ABC):
             last_exc = None
             for attempt in range(3):  # 1 + 2 retries
                 try:
+                    logger.info(f"🎵 {skill_name} run started (attempt {attempt + 1}/3, max_turns={max_turns})")
                     result = await Runner.run(agent, input=task, max_turns=max_turns)
-                    return result.final_output or ""
+                    out = result.final_output or ""
+                    if not out:
+                        # Log what the sub-agent actually did so we can debug empty results
+                        raw = []
+                        for item in getattr(result, "new_items", []):
+                            raw.append(f"  {type(item).__name__}: {getattr(item, 'raw_item', item)}")
+                        logger.warning(
+                            f"⚠️ {skill_name} returned EMPTY output! "
+                            f"new_items={len(getattr(result, 'new_items', []))}:\n" + "\n".join(raw[:10])
+                        )
+                    else:
+                        logger.info(f"🎵 {skill_name} returned {len(out)} chars")
+                    return out
                 except APIConnectionError as exc:
                     last_exc = exc
                     if attempt < 2:
@@ -129,6 +142,9 @@ class BaseSkill(ABC):
                     else:
                         logger.error(f"❌ {skill_name} APIConnectionError after 3 attempts: {exc}")
                         raise
+                except Exception as exc:
+                    logger.error(f"❌ {skill_name} unexpected error: {type(exc).__name__}: {exc}", exc_info=True)
+                    raise
             raise last_exc  # unreachable
 
         _run_skill.__name__ = tool_name

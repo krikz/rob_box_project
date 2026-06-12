@@ -1287,6 +1287,7 @@ class DialogueNode(Node):
                 agent_max_turns=10,
                 max_tokens=2000,  # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
                 temperature=0.85,
+                tool_choice="required",  # MiMo needs forced tool_choice — without it, returns text instead of tool calls
             )
             skill_tools.append(
                 skill.as_tool(
@@ -1339,7 +1340,8 @@ class DialogueNode(Node):
                     "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
                 )
             skill = MemorySkill(
-                adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill"
+                adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill",
+                tool_choice="required",  # MiMo needs forced tool_choice
             )
             skill_tools.append(
                 skill.as_tool(
@@ -1360,7 +1362,8 @@ class DialogueNode(Node):
             if not status_prompt:
                 status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
             skill = StatusSkill(
-                adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill"
+                adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill",
+                tool_choice="required",  # MiMo needs forced tool_choice
             )
             skill_tools.append(
                 skill.as_tool(
