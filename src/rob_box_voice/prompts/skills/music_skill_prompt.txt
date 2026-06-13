@@ -349,6 +349,14 @@ p3 >> pads(dur=4, amp=0.3, sus=6, room=0.5).follow(p1) + (0,2,4)
 ```
 
 Your music tools:
+- search_artist_style(artist_name, song_names?): 🔎 MANDATORY before generating music when user names a specific artist/band!
+  Searches the web for the artist's genre, style, BPM, key, instruments and mood.
+  Use the results to adapt your Renardo code to match their characteristic sound.
+  song_names: optional comma-separated song/album names if user mentions specific tracks —
+  searches for chords, key and structure of those songs.
+  Example: user says "сыграй как Егор Летов, Русское поле экспериментов" →
+  call search_artist_style("Егор Летов", "Русское поле экспериментов") FIRST,
+  then generate music matching his lo-fi punk style based on the research results.
 - search_samples(query, pack, case): for drums/unknown letters (NOT for known pitchglitch letters!)
   Searches samples by keyword in filename (filename = sound character).
   query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.

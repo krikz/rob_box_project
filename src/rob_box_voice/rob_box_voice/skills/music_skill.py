@@ -23,6 +23,17 @@ from agents import function_tool
 
 from .base_skill import BaseSkill
 
+# ── DuckDuckGo search (free, no API key) ──────────────────────────────────────
+try:
+    from ddgs import DDGS
+    _DDGS_AVAILABLE = True
+except ImportError:
+    try:
+        from duckduckgo_search import DDGS  # legacy name
+        _DDGS_AVAILABLE = True
+    except ImportError:
+        _DDGS_AVAILABLE = False
+
 # ── Default paths ─────────────────────────────────────────────────────────────
 _DEFAULT_RENARDO_REF_PATH = os.getenv(
     "RENARDO_REF_PATH",
@@ -243,6 +254,87 @@ class MusicSkill(BaseSkill):
         async def get_music_state() -> str:
             """Get current music state: SC availability, active patterns, preset."""
             return await _call("get_music_state", {})
+
+        # ── search_artist_style (DuckDuckGo, free) ──────────────────────────
+        @function_tool
+        def search_artist_style(artist_name: str, song_names: str = "") -> str:
+            """Search for an artist's music style, genre, BPM, key, instruments and mood.
+
+            MANDATORY: Call this BEFORE generating music when the user mentions
+            a specific artist, band, or musician (e.g. "Егор Летов", "Radiohead",
+            "Kraftwerk", "Daft Punk"). Use the results to adapt your Renardo code
+            to match the artist's characteristic sound.
+
+            Args:
+                artist_name: Name of the artist or band to research.
+                song_names: Optional comma-separated song/album names if user
+                    mentioned specific tracks (e.g. "Русское поле экспериментов,
+                    Гражданская оборона"). Searches for chords and structure.
+            """
+            if not _DDGS_AVAILABLE:
+                return json.dumps(
+                    {"error": "duckduckgo-search not installed", "artist": artist_name},
+                    ensure_ascii=False,
+                )
+
+            # Core queries for artist style
+            queries = [
+                f"{artist_name} жанр стиль музыки",
+                f"{artist_name} звучание инструменты темп",
+                f"{artist_name} music genre BPM key instruments",
+            ]
+
+            # If user mentioned specific songs/albums — search for chords and structure
+            if song_names and song_names.strip():
+                for song in song_names.split(","):
+                    song = song.strip()
+                    if song:
+                        queries.append(f"{song} {artist_name} аккорды тональность")
+                        queries.append(f"{song} {artist_name} song structure tempo")
+
+            snippets = []
+            try:
+                with DDGS() as ddgs:
+                    for q in queries:
+                        for r in ddgs.text(q, max_results=3, region="wt-wt"):
+                            title = r.get("title", "")
+                            body = r.get("body", "")
+                            if body:
+                                snippets.append(f"**{title}**: {body}")
+            except Exception as e:
+                return json.dumps(
+                    {"error": str(e), "artist": artist_name},
+                    ensure_ascii=False,
+                )
+
+            if not snippets:
+                return json.dumps(
+                    {"artist": artist_name, "found": False,
+                     "hint": "Try spelling the name differently or use the original language name."},
+                    ensure_ascii=False,
+                )
+
+            # Trim to keep token usage reasonable
+            combined = "\n\n".join(snippets[:10])
+            # ~2500 chars max to avoid bloating the context
+            if len(combined) > 2500:
+                combined = combined[:2500] + "..."
+
+            return json.dumps(
+                {
+                    "artist": artist_name,
+                    "found": True,
+                    "research": combined,
+                    "instruction": (
+                        "Based on the above, adapt your Renardo code: "
+                        "match the genre (BPM, scale, rhythm pattern), "
+                        "use appropriate instruments/sounds, "
+                        "recreate the characteristic mood and energy."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
 
         @function_tool
         async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
