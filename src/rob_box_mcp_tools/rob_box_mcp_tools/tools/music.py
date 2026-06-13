@@ -16,6 +16,7 @@ music.py - Инструменты для управления музыкой в 
 """
 
 import json
+import logging
 import os
 import re
 import socket
@@ -728,11 +729,11 @@ class GetMusicStateTool(MCPTool):
 
 from pathlib import Path as _Path
 
-# Migration file lookup: Docker mounts repo migrations/ at /migrations,
+# Migration directory lookup: Docker mounts repo migrations/ at /migrations,
 # dev/build environments find it relative to the package root.
-_MIGRATION_FILE = _Path("/migrations/004_music_library.sql")
-if not _MIGRATION_FILE.exists():
-    _MIGRATION_FILE = _Path(__file__).resolve().parents[4] / "migrations" / "004_music_library.sql"
+_MIGRATION_DIR = _Path("/migrations")
+if not _MIGRATION_DIR.is_dir():
+    _MIGRATION_DIR = _Path(__file__).resolve().parents[4] / "migrations"
 
 
 class TrackLibrary:
@@ -765,15 +766,40 @@ class TrackLibrary:
     # ------------------------------------------------------------------
 
     def _apply_migration(self) -> None:
-        """Применить 004_music_library.sql идемпотентно (IF NOT EXISTS + INSERT OR IGNORE)."""
-        if not _MIGRATION_FILE.exists():
+        """Применить все миграции из migrations/ идемпотентно.
+
+        1. CREATE TABLE IF NOT EXISTS (004) — создаёт music_tracks если нет
+        2. ALTER TABLE ADD COLUMN type — гарантируем наличие колонки
+        3. Применяем остальные миграции (005, 008, 009) — INSERT OR IGNORE / DELETE
+        """
+        if not _MIGRATION_DIR.is_dir():
             raise FileNotFoundError(
-                f"Миграция не найдена: {_MIGRATION_FILE}. "
+                f"Директория миграций не найдена: {_MIGRATION_DIR}. "
                 "Проверьте volume монтирование migrations/ в docker-compose."
             )
-        ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
+        migration_files = sorted(_MIGRATION_DIR.glob("*.sql"))
+        _log = logging.getLogger(__name__)
         with self._lock:
-            self._conn.executescript(ddl)
+            # Phase 1: apply all SQL migrations (idempotent DDL + data)
+            for mf in migration_files:
+                ddl = mf.read_text(encoding="utf-8")
+                try:
+                    self._conn.executescript(ddl)
+                except sqlite3.OperationalError as e:
+                    _log.warning(f"Миграция {mf.name}: {e}")
+            # Phase 2: guarantee 'type' column exists for older DBs
+            # (008 inserts with type=, but old DBs lack the column)
+            try:
+                self._conn.execute(
+                    "ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'user'"
+                )
+                _log.info("ALTER TABLE: добавлена колонка type в music_tracks")
+                # Re-run 008 now that column exists (INSERT OR IGNORE is safe)
+                m008 = _MIGRATION_DIR / "008_github_presets.sql"
+                if m008.exists():
+                    self._conn.executescript(m008.read_text(encoding="utf-8"))
+            except sqlite3.OperationalError:
+                pass  # колонка уже есть — ок
             self._conn.commit()
 
     # ------------------------------------------------------------------
