@@ -26,8 +26,8 @@ Root.default = "G"; Scale.default = "minor"
 d1 >> play("X..X..o.", sample=2, amp=0.18)
 d2 >> play("--.-", dur=1, sample=4, amp=0.1, delay=PWhite(-0.08, 0.08))
 p1 >> moogbass([0,0,0,-1,-2,0,-1,-2,0], dur=[1,0.5,0.5,1,1,0.5,0.5,1,2], oct=3, amp=0.32)
-p2 >> imperialbrass([0,0,0,-1,-2,0,-1,-2,0], dur=[1,0.5,0.5,1,1,0.5,0.5,1,2], oct=4, amp=0.38, sus=1.2)
-p3 >> marchstrings(dur=4, amp=0.14, sus=4, room=0.5).follow(p1) + (0,2,4)',
+p2 >> brass([0,0,0,-1,-2,0,-1,-2,0], dur=[1,0.5,0.5,1,1,0.5,0.5,1,2], oct=4, amp=0.38, sus=1.2)
+p3 >> strings(dur=4, amp=0.14, sus=4, room=0.5).follow(p1) + (0,2,4)',
 'G minor march, brass+strings, 108 BPM, Star Wars theme', '["preset","march","cinematic","star-wars"]', 5, 'preset', datetime('now'), datetime('now')),
 
 -- 2. Jazz Groove (D dorian, 96 BPM, pianovel+strings)
@@ -81,7 +81,7 @@ p3 >> strings(dur=4, amp=0.12, sus=4, room=0.4).follow(p1) + (0,2,4)',
 Root.default = "E"; Scale.default = "minor"
 d1 >> play("X..X.o..", sample=3, amp=0.2)
 d2 >> play("-.--", dur=1, sample=5, amp=0.12, delay=PWhite(-0.06, 0.06))
-p1 >> retrobass([0,3,5,7,5,3], dur=0.5, oct=3, amp=0.3)
+p1 >> moogbass([0,3,5,7,5,3], dur=0.5, oct=3, amp=0.3)
 p2 >> varsaw([0,2,4,7,4,2], dur=0.5, oct=5, amp=0.42, room=0.25)
-p3 >> warmpad(dur=6, amp=0.1, sus=6, room=0.5).follow(p1) + (0,2,4)',
+p3 >> pads(dur=6, amp=0.1, sus=6, room=0.5).follow(p1) + (0,2,4)',
 'Electro funk, retrobass+varsaw, minor, 115 BPM', '["preset","funk","electro","groove"]', 5, 'preset', datetime('now'), datetime('now'));

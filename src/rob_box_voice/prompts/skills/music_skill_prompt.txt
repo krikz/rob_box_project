@@ -185,9 +185,9 @@ p2 >> feel(PRand([0,2,4,3,5]), dur=var([0.5,1],[8,8]), oct=5, amp=0.58, room=0.3
 ❌ If BPM=125 + F dorian + wobblebass + blip appeared in LAST transition → pick DIFFERENT!
 ✅ Check the last 2-3 transitions in history before choosing — avoid repeating any combo!
 
-⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt / retrobass (ROTATE each transition!)
-⚠️ LEAD: varsaw / supersawlead / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello / imperialbrass (ROTATE!)
-⚠️ PADS: warmpad / space / strings / faim / sinepad / mhpad / ecello / viola / ambi / marchstrings (ROTATE!)
+⚠️ BASS: tb303 / wobblebass / fuzz / dub / bass / jbass / karp / moogbass / dirt (ROTATE each transition!)
+⚠️ LEAD: varsaw / supersawlead / pianovel / sitar / cs80lead / rave / karp / marimba / blip / ecello / brass (ROTATE!)
+⚠️ PADS: pads / space / strings / faim / sinepad / mhpad / ecello / viola / ambi (ROTATE!)
 ⚠️ SCALE: phrygian / dorian / mixolydian / lydian / minorPentatonic / majorPentatonic / minor (ROTATE!)
 Maximum total: 3 drums + 3 melodic = 6 patterns max.
 
@@ -198,7 +198,7 @@ NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p
 If the user asks for folk instruments or another unusual timbral remix, change orchestration only; keep the recognisable melody, phrase lengths, and form intact.
 `tb303` is click-prone and crack-prone when used with `attack=0.01`, very short `sus`, or layered acid patterns.
 Do not combine tb303 with another tb303 line, and do not combine tb303 with `crush`, `bits`, or long `echo` chains.
-For a safer acid bass, use one tb303 line only with `atk>=0.02` and `sus>=0.08`; if you need a denser low end, prefer `retrobass` or `wobblebass`.
+For a safer acid bass, use one tb303 line only with `atk>=0.02` and `sus>=0.08`; if you need a denser low end, prefer `moogbass` or `wobblebass`.
 
 
 🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):
@@ -402,14 +402,14 @@ NEVER create alias variables for players — they DON'T work in Clock callbacks!
 
 SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
 🥁 Drums/Lo:    d1-d9 >> play(...)   — always via play() with samples
-🎸 Bass:        wobblebass, dub, fuzz, dirt, subbass, moogbass, bass, jbass, retrobass  (oct=2..3)
+🎸 Bass:        wobblebass, dub, fuzz, dirt, subbass, moogbass, bass, jbass  (oct=2..3)
    ✅ `bass` synth EXISTS (LFTri+VarSaw, default rate=8 = wide, buzzy). Use: amp=0.3-0.4, oct=3
       For cleaner tone lower rate: bass([0,-2], dur=2, oct=3, amp=0.35, rate=1)
 🎹 Melody/Lead: blip, arpy, supersawlead, pianovel, epiano, rhpiano, karp, sitar, marimba, keys, cs80lead
    ⚠️ NO "piano" — use pianovel / epiano / rhpiano!
    ⚠️ pluck = guitar pluck, NOT brass/orchestra! For trumpet/flute — blip/flute/brass
 🎺 Orchestra/Brass: brass, blip, flute, soprano, eoboe, organ, organ2
-🎻 Strings/Pads: strings, pads, ambi, space, warmpad, faim, sinepad, mhpad, ecello, viola
+🎻 Strings/Pads: strings, pads, ambi, space, faim, sinepad, mhpad, ecello, viola
 🔔 Atmosphere/Bells: bell, gong, kalimba, marimba, steeldrum, tubularbell  (amp=0.3..0.6)
 ⚡ Aggression/Glitch: rave, donk, varsaw, saw, pulse, quin, feel, tb303, hoover
    ✅ `saw` synth EXISTS (pure Sawtooth, Env.mask = sustained/continuous). Use for drones/acid:
@@ -681,67 +681,9 @@ For specific songs (Star Wars, Happy Birthday, Katyusha, Nokia Tune, etc.):
 ✅ Star Wars / Imperial March = one preset among many, NOT the default style!
 ✅ For ANY known melody: check list_tracks FIRST, only write code if no preset exists
 
-⚡ QUICK REFERENCE ONLY — prefer list_tracks() for full arrangements:
-
-🎵 HAPPY BIRTHDAY:
-   Clock.bpm = 100
-   p1 >> pianovel(midinote=[60,60,62,60,65,64,60,60,62,60,67,65,60,60,72,69,65,64,62,70,70,69,65,67,65],
-                  dur=[0.75,0.25,1,1,1,2,0.75,0.25,1,1,1,2,0.75,0.25,1,1,1,1,1,0.75,0.25,1,1,1,2],
-                  amp=0.6, room=0.3)
-
-🎵 JINGLE BELLS (chorus):
-   Clock.bpm = 120
-   p1 >> bell(midinote=[64,64,64,64,64,64,64,67,60,62,64,65,65,65,65,65,64,64,64,64,62,62,64,62,67],
-              dur=[0.5,0.5,1,0.5,0.5,1,0.5,0.5,1,0.5,2,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.25,0.25,0.5,0.5,0.5,0.5,2],
-              amp=0.6, room=0.3)
-
-🎵 SMOKE ON THE WATER (riff):
-   Clock.bpm = 112
-   p1 >> rave(midinote=[55,58,60,55,58,61,60,55,58,60,58,55],
-              dur=[1,1,1.5,1,1,0.5,1.5,1,1,1.5,1,2],
-              amp=0.6, sus=0.9)
-
-🎵 FÜR ELISE (intro):
-   Clock.bpm = 80
-   p1 >> pianovel(midinote=[76,75,76,75,76,71,74,72,69,60,64,69,71,64,68,71,72,64,76,75,76,75,76,71,74,72,69],
-                  dur=[0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,1,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1],
-                  amp=0.5, room=0.4, sus=0.8)
-
-🎵 KATYUSHA (verse):
-   Clock.bpm = 116
-   p1 >> brass(midinote=[67,71,74,72,71,67,71,74,72,71,69,67,66,67,69,71,72,71,69,67,66,62,67],
-               dur=[1,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,1,1,2],
-               amp=0.6, room=0.2)
-
-🎵 NOKIA TUNE (ringtone):
-   Clock.bpm = 120
-   p1 >> blip(midinote=[76,74,66,68,73,71,64,66,71,69,62,64,69],
-              dur=[0.5,0.5,1,1,0.5,0.5,1,1,0.5,0.5,1,1,2],
-              amp=0.55, room=0.2)
-
-🎵 KALINKA (chorus):
-   Clock.bpm = 130
-   p1 >> brass(midinote=[64,64,65,67,69,67,65,64,64,65,67,69,67,65,64,62,64,65,67,69,71,69,67,65,64],
-               dur=[0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,0.5,2],
-               amp=0.65, room=0.2)
-
-🎵 Stranger Things (Intro Theme — Hawkins):
-   Clock.bpm = 83; Root.default = "C"; Scale.default = "major"
-   d1 >> play("xx..", dur=0.25, sample=6, amp=0.32,
-              amplify=var([0,1,0],[4,40,4]))                                 # heartbeat pulse; enters after intro and exits before the end
-   p1 >> retrobass([0,2,4,6,7,6,4,2], oct=4, dur=0.25, amp=0.28,
-                   lpf=500, amplify=var([0,1,0],[4,38,6]))                   # fixed bass ostinato; motoric, not slow
-   p2 >> strangerarp([0,2,4,6,7,6,4,2], oct=3, dur=0.25, amp=0.24,
-                     lpf=linvar([100,1000],10), room=0.28,
-                     amplify=var([0,1,0],[4,38,6]))                          # same pitch sequence above the bass, supersaw-like motion
-   p3 >> strangerpulsepad([0,2,4], oct=5, dur=8, sus=8, amp=0.16, lpf=900,
-                          amplify=var([1,1,0],[4,38,6]))                     # opening pad; present from the start, then fade out
-   ⚠️ For this reference, use one execute_music_code pass for the core arrangement: `d1 + p1 + p2 + p3`. Do not add a second atmospheric pass. Не добавляй второй atmospheric pass поверх.
-   ⚠️ Stay within d1 and p1-p3. Do not use p4 or d4 for Stranger Things.
-   ⚠️ Не используй `follow()` здесь: он мажет hook и уводит от референса.
-   ⚠️ Bass и arp обязаны использовать один и тот же детерминированный паттерн `[0,2,4,6,7,6,4,2]` с dur=0.25.
-   ⚠️ Не подменяй heartbeat на произвольные sample letters вроде `A` или `i`; для этого трека держи простой pulse без лишних snare/hat слоев.
-   ⚠️ Если очень нужен редкий accent layer, используй только короткие вкрапления `strangerbrass` или `flute`, не отдельный постоянный player.
+⚡ ALL known melodies live in TrackLibrary — use list_tracks()/load_track() to play them!
+✅ Available presets: star_wars_march, jazz_groove, acid_techno, ambient_dreams, hiphop_boom_bap, folk_fiddle, electro_funk, happy_birthday, jingle_bells, fur_elise, katyusha, nokia_tune, kalinka, stranger_things, smoke_on_water, pump_up_the_jam, rhythm_of_the_night, tarantella
+❌ NEVER write inline midinote arrays — always load from TrackLibrary!
 
 �🎤 VOCAL RULE:
 ✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!
