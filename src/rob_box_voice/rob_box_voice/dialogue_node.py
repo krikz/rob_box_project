@@ -180,6 +180,12 @@ class DialogueNode(Node):
         # Collects all speak_text calls for building clean history.
         self._spoken_texts: List[str] = []
 
+        # ── speak_text dedup ─────────────────────────────────────────
+        # LLM sometimes retries the same speak_text call multiple times.
+        # Track recent texts with timestamps; skip duplicates within 5s.
+        self._recent_speak: deque = deque(maxlen=10)
+        self._recent_speak_lock = threading.Lock()
+
         # ── Tool call tracker ─────────────────────────────────────────
         # Tracks which MCP tools were called during an agent turn.
         # Used to add [tools: X] markers to conversation history so that
@@ -670,6 +676,16 @@ class DialogueNode(Node):
             text = re.sub(
                 r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
             ).strip()
+            # ── Dedup: skip if same text was spoken within last 5 seconds ──
+            now = time.time()
+            with self._recent_speak_lock:
+                for ts, recent_text in self._recent_speak:
+                    if recent_text == text and (now - ts) < 5.0:
+                        self.get_logger().debug(
+                            f"🔇 speak_text dedup: skipping duplicate ({text[:40]}...)"
+                        )
+                        return "TASK_COMPLETE"
+                self._recent_speak.append((now, text))
             # Collect ALL spoken texts immediately (before lock) so that when
             # multiple speak_text calls queue on the lock, _spoken_texts already
             # has all texts for proper history saving.
@@ -1132,6 +1148,16 @@ class DialogueNode(Node):
             text = re.sub(
                 r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
             ).strip()
+            # ── Dedup: skip if same text was spoken within last 5 seconds ──
+            now = time.time()
+            with self._recent_speak_lock:
+                for ts, recent_text in self._recent_speak:
+                    if recent_text == text and (now - ts) < 5.0:
+                        self.get_logger().debug(
+                            f"🔇 speak_text dedup: skipping duplicate ({text[:40]}...)"
+                        )
+                        return "TASK_COMPLETE"
+                self._recent_speak.append((now, text))
             self._spoken_texts.append(text)
             async with lock:
                 if self._run_cancelled:

@@ -438,6 +438,6 @@ class MusicSkill(BaseSkill):
 
         return [
             search_samples, execute_music_code, stop_music, set_vibe_preset,
-            get_music_state, list_tracks, save_track, load_track, delete_track,
-            set_dj_mode,
+            get_music_state, search_artist_style, list_tracks, save_track,
+            load_track, delete_track, set_dj_mode,
         ]
