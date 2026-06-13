@@ -682,7 +682,7 @@ For specific songs (Star Wars, Happy Birthday, Katyusha, Nokia Tune, etc.):
 ✅ For ANY known melody: check list_tracks FIRST, only write code if no preset exists
 
 ⚡ Curated presets in TrackLibrary — use list_tracks()/load_track() to play them!
-✅ Available presets: star_wars_march, jazz_groove, acid_techno, ambient_dreams, hiphop_boom_bap, folk_fiddle, electro_funk
+✅ Available presets: csm_132_full_track, club_energy_128bpm, rypop_120bpm, algorave_150bpm, rool_120bpm, bargewave_105bpm, kine_112bpm, bestbanger_100bpm, wamorning_93bpm, owio_108bpm, darwinscouch_109bpm, madness_110bpm, illing_95bpm, g_karp_84bpm, proof_80bpm, together_96bpm, celk_118bpm, quoo_122bpm, w1_100bpm, bh19wow_134bpm, chilled_vibes_100bpm, alien_techno_140bpm, crazytown, dark_trance, glow, luvly_nais, multiply, glass_house, synth_lofi_beat, downtempo_chinese_scale, ambient_glitch, gentle_sounds
 ❌ NEVER write inline midinote arrays — always load from TrackLibrary!
 
 �🎤 VOCAL RULE:
