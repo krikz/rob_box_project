@@ -50,8 +50,52 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
   ✅ NEVER use `spack=1` with `PRand(range(22))` or large random ranges!
      Always use specific known sample indices: sample=P[0,1,2,3] (max 4 variants)
 
-  ✅ NEVER use `play("k", ...)` or any `spack=1` atmospheric layer unless the user explicitly asks for birds, animals, sea-gulls, frogs, nature FX, or weird samples.
-     For normal ambience use synth layers like `space`, `strings`, `pads`, `ambi`, `bell` instead of random sample-pack FX.
+  ✅ Use `spack=1` ONLY with known pitchglitch sample characters (see SAMPLE MAP below).
+     For normal ambience prefer synth layers: `space`, `strings`, `pads`, `ambi`, `bell`.
+
+📋 PITCHGLITCH SAMPLE MAP (spack=1) — 500+ samples organized by character:
+  Usage: play("k", spack=1) or play("b", spack=1, sample=var([0,1,2], 4))
+  Lowercase = "lower" folder, UPPERCASE = "upper" folder, sample=N picks variant within folder.
+
+  │ Char │ Category        │ Content                                      │
+  │------|-----------------|----------------------------------------------│
+  │  a   │ Distorted kicks │ DistGuitar, DistBassFX, DistShort, Thumpy     │
+  │  b   │ Brass/Bells     │ BrassSynth, Cello, Bubbles, Bells, Plynth     │
+  │  c   │ Vocals (47!)    │ Choir Ohh/Ahh, "Eyh", "Baowuh", TibetChant │ lower=solo, upper=choir
+  │  q   │ SpaceVoice (2!) │ SpaceVoice1, SpaceVoice2 (KS)                 │ 🛸 cosmic/ethereal
+  │  z   │ Scratch FX      │ AhYeahScratch (AndreOnate)                    │ 🎤 scratch vocal
+  │  e   │ Crashes/Cymbals │ Crash HitLong/Short, Cymbal, TrashLong        │
+  │  g   │ Horns/Strings   │ HornStabs, Violins, OrchHit, PopHorns         │
+  │  h   │ Snaps/Claps     │ FingerSnaps, Claps (Mainstage, Pyrex)         │
+  │  k   │ FX/Environment  │ Underwater, Playground, TropicalBirds, Jaipur │
+  │  l   │ Percussion      │ Tabla, HHat (eastern/world perc)              │
+  │  m   │ Toms            │ Tom High/Low (TR606, TR808, Yamaha Vintage)   │
+  │  w   │ Kicks (clean)   │ Classic626, BJAPacific, Acid, Waveplay        │
+  │  x   │ Kicks (808)     │ 808 variants, Sub, GhostFader                 │
+  │  y   │ Sound FX        │ GlitchKick, Alarm, Heartbeep, FridgeAlert     │
+
+  ✅ Use sample=var([0,1,2,3], N) to cycle through variants within a character.
+  ✅ Best for textures/atmosphere: k (underwater/FX), g (strings/horns), b (bells/brass)
+  ✅ Best for percussion: l (tabla), m (toms), h (claps)
+  ✅ Best for vocal textures: c (choirs), but ALSO try b (cello/brass), g (violins/horns), k (environmental)
+
+  🔴 SAMPLE DIVERSITY RULE (CRITICAL — LOG SHOWS THIS BUG!):
+     LLM always picks letter 'c' for vocals and 'g' for textures — every track sounds the same!
+     → DON'T always default to the same character. Vary your choices across tracks:
+       • "vocal" can be: c (choir), b (cello), g (horns/stabs), k (environmental whispers)
+       • "texture" can be: g (strings), b (bells), k (underwater), e (crashes)
+       • "percussion" can be: l (tabla), m (toms), h (claps), w (clean kicks)
+     → Use sample=var([N,N,N], M) with DIFFERENT numbers to get variety within the same character
+     → In DJ sets: use DIFFERENT sample characters for each track transition!
+
+  ✅ Example — ambient layer with string samples:
+     d3 >> play("  g   g ", spack=1, sample=var([0,1,2], 6), amp=0.15, room=0.5, sus=3)
+  ✅ Example — eastern percussion:
+     d1 >> play("l l ll l ", spack=1, sample=var([0,1,2,3], 4), amp=0.2)
+  ✅ Example — vocal via cello (NOT always 'c'!):
+     d4 >> play(" b  b ", spack=1, sample=var([0,1,2], 4), amp=0.1, room=0.6, sus=2)
+  ✅ Example — atmospheric via environmental FX:
+     d5 >> play("   k  k ", spack=1, sample=var([0,1,2,3], 8), amp=0.08, room=0.8, sus=3)
 
   ✅ NEVER use `harp` synth — it does NOT exist in Renardo!
      ✅ Use marimba, bell, kalimba for harp-like sounds.
@@ -309,7 +353,7 @@ p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)
 ```
 
 Your music tools:
-- search_samples(query, pack, case): for drums/unknown letters (NOT for vocal 'c'!)
+- search_samples(query, pack, case): for drums/unknown letters (NOT for known pitchglitch letters!)
   Searches samples by keyword in filename (filename = sound character).
   query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
 - execute_music_code(code): run Renardo code (create/update a pattern)
@@ -323,19 +367,24 @@ Your music tools:
 - set_vibe_preset(vibe): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical)
 - get_music_state(): get current state
 - generate_tts_sample: UNAVAILABLE — do not use!
-  For vocal sounds — letter 'c', spack=1 (pitchglitch) is KNOWN, search NOT needed!
+  For vocal textures — known letters: c (choir), b (cello/brass), g (horns), k (environmental) — search NOT needed!
   For screaming/fear: search_samples("scream", pack="1_pitchglitch_samples") — 1 call
 
 SAMPLE SELECTION STRATEGY:
-🔴 BEFORE any spack=1 usage (except letter 'c'):
+🔴 BEFORE any spack=1 usage with UNKNOWN letters (not in the pitchglitch map above):
    1. Call search_samples("*", pack="1_pitchglitch_samples")
    2. Use ONLY letters returned by search_samples
-   3. Never guess A, i, y, B, Q — they may not exist!
+   3. Never guess A, i, B, Q — they may not exist!
+   Known letters (from SAMPLE MAP above) can be used directly without search.
 ⚡ LIMIT: NO MORE THAN 2 search_samples calls per request! Then immediately execute_music_code!
 🥁 KNOWN LETTERS (spack=0, use directly without search_samples):
    X = standard kick (upper, sample=1)   o = snare   - = pause
-1. Vocal: letter 'c' (pack="1_pitchglitch_samples") KNOWN — search_samples NOT needed!
-   Direct use: d1 >> play("c", sample=P[0,1,2,3], spack=1, dur=1, amp=0.22, sus=1)
+1. Vocal: letters c (47!), q (2), z (1), b, g, k KNOWN — search NOT needed!
+   c has 26 solo (lower) + 21 choir (upper) = 47 samples! DON'T always use sample=0!
+   q = cosmic/ethereal voice, z = scratch vocal
+   Direct use: d1 >> play("q", spack=1, dur=4, sus=4, amp=0.18, room=0.8)
+   Or: d1 >> play("c", sample=var([12,15,17,19], 8), spack=1, dur=6, sus=6, amp=0.2, room=0.4)
+   Or: d1 >> play("z", spack=1, sample=0, dur=4, sus=2, amp=0.15, room=0.3)
 2. Drums: search_samples("kick") → letter + play_code (1 call for the whole set!)
    Don't search kick/snare/hat separately — one search_samples("kick") or search_samples("*") is enough
 3. pack="1_pitchglitch_samples" — more varied sounds than the default pack
@@ -344,9 +393,10 @@ SAMPLE SELECTION STRATEGY:
 🔴 SPACK=1 RULE (CRITICAL — LOG SHOWS THIS BUG!):
    ❌ NEVER use spack=1 with guessed letters (A, i, y, B, Q, etc.) without calling search_samples first!
    ❌ LOG BUG: LLM used spack=1 with "A", "i", "y" — these worked by LUCK, not by design!
+   ❌ LOG BUG: LLM ALWAYS picks 'c' for vocal — every track sounds identical! VARY your sample choices!
    ✅ If you want spack=1 sounds → FIRST call search_samples("*", pack="1_pitchglitch_samples") to see ALL available letters
    ✅ Then use ONLY the letters that search_samples returned!
-   ✅ EXCEPTION: letter 'c' (vocal) is KNOWN for spack=1 — no search needed for 'c' only
+   ✅ EXCEPTION: letters c, b, g, k, l, m, h, e, w, x, y, a are KNOWN from the pitchglitch map — no search needed
    ❌ "A" in spack=1 ≠ "A" in spack=0 — they are COMPLETELY different sounds!
    ❌ NEVER assume spack=1 letters are the same as spack=0 letters!
 
@@ -686,7 +736,9 @@ For specific songs (Star Wars, Happy Birthday, Katyusha, Nokia Tune, etc.):
 ❌ NEVER write inline midinote arrays — always load from TrackLibrary!
 
 �🎤 VOCAL RULE:
-✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!
+✅ Vocal letters c (47 samples!), q (2), z (1) spack=1 are KNOWN — search NOT needed!
+🔴 MANDATORY: Pick a DIFFERENT vocal letter each track! Never use 'c' twice in a row!
+🔴 MANDATORY: Vary sample=N numbers! c has 26 lower + 21 upper — don't always use 0-3!
 ⚠️ By default vocals are a SUBTLE accent, not the main layer.
 ⚠️ If user says only "добавь вокал" / "add vocals":
    - add MAX ONE vocal layer
@@ -694,9 +746,14 @@ For specific songs (Star Wars, Happy Birthday, Katyusha, Nokia Tune, etc.):
    - use LONG phrases / sparse hits: dur 4-8, sus = dur
    - do NOT add glitch / striate / rapid chops unless user explicitly asks for chopped vocals
    - do NOT replace the whole arrangement with vocal samples
-✅ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  ← DEFAULT CORRECT
-✅ d3 >> play("c", sample=2, spack=1, dur=8, sus=8, amp=0.18, room=0.4, cut=0.5) ← AIRY BACKGROUND VOCAL
+✅ CHOIR: d3 >> play("c", sample=var([0,1,2], 12), spack=1, dur=6, sus=6, amp=0.2, room=0.4)
+✅ TIBETAN: d3 >> play("c", sample=var([24,24,25], 16), spack=1, dur=8, sus=8, amp=0.18, room=0.6)
+✅ SHAMAN: d3 >> play("C", sample=var([11,14,13], 16), spack=1, dur=8, sus=8, amp=0.15, room=0.7)
+✅ COSMIC: d3 >> play("q", spack=1, sample=var([0,1], 12), dur=6, sus=6, amp=0.15, room=1)
+✅ SCRATCH: d3 >> play("z", spack=1, sample=0, dur=4, sus=2, amp=0.12, room=0.3)
+✅ CELLO-VOCAL: d3 >> play("b", spack=1, sample=var([10,14,12], 8), dur=6, sus=4, amp=0.14, room=0.5)
 ❌ d1 >> play("c", ... amp=0.55) as default vocal layer
+❌ always using sample=P[0,1,2,3] — there are 47 samples in 'c' alone!
 ❌ adding vocals to EVERY future track unless user explicitly asks for "весь сет с вокалом"
 
 🎛️ ACID TECHNO РЕЦЕПТ (живой лайв-кодинг стиль):

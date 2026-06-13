@@ -184,17 +184,30 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 - ⚠️ For `tb303`, use one line only with `atk>=0.02` / `sus>=0.08`; if you need a thicker or safer bass, prefer `retrobass` or `wobblebass`.
 - ⚠️ Never invent synth names outside this palette. If unsure, fall back to dub / bass / strings / pads / space.
 - ⚠️ NEVER use d4, d5, p4, p5 for generated music on this robot. Stay within d1-d3 and p1-p3.
-- ⚠️ NEVER use `play("k", ...)` or random `spack=1` atmospheric samples unless the user explicitly asks for birds, frogs, sea-gulls, nature FX, or weird sample textures.
-- ⚠️ NEVER invent sample letters like "A", "B", "Q", or other uppercase/lowercase folders you did not verify.
+- 📋 PITCHGLITCH SAMPLES (spack=1) — known character map:
+  `a`=distorted kicks, `b`=brass/bells/cello, `c`=vocals(47! choir/solo/tibetan), `e`=crashes/cymbals,
+  `g`=horns/strings/violins, `h`=snaps/claps, `k`=FX/environment(underwater/birds),
+  `l`=percussion(tabla), `m`=toms, `q`=spacevoice(cosmic!), `w`=clean kicks, `x`=808 kicks,
+  `y`=sound FX, `z`=scratch vocal
+  Usage: `play("g", spack=1, sample=var([0,1,2], 6))` — cycle variants with sample=N
+  ✅ Best textures: k(underwater), g(strings), b(bells) | Best perc: l(tabla), m(toms)
+  🔴 NEVER always pick the same character! Vary across tracks: vocal→c OR q OR z OR b
+  🔴 c has 47 samples (26 solo lower + 21 choir upper) — DON'T always use sample=0-3!
+- ⚠️ NEVER invent sample letters outside the map above.
 - ⚠️ For drums, use safe defaults `X`, `o`, `-` or first call `search_samples("kick", case="upper")` / `search_samples("snare")` and use the returned letter exactly.
 
 **Volume balance:**
 - Melody synth: amp=0.5-0.7 | Bass synth: amp=0.3-0.4 | Pads: amp=0.2-0.3
 - Kick play(): amp=0.2-0.3 (NOT 0.5!) | Snare/hat: amp=0.15-0.25
 
-**Vocal samples:**
+**Vocal samples (c has 47! vary letter AND sample numbers!):**
 ```python
-d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  # subtle vocal accent
+d3 >> play("c", sample=var([0,1,2], 12), spack=1, dur=6, sus=6, amp=0.2, room=0.4)   # choir (ohh/ahh)
+d3 >> play("c", sample=var([24,25], 16), spack=1, dur=8, sus=8, amp=0.18, room=0.6)  # tibetan chant!
+d3 >> play("C", sample=var([11,14,13], 16), spack=1, dur=8, sus=8, amp=0.15, room=0.7) # shaman choir
+d3 >> play("q", spack=1, sample=var([0,1], 12), dur=6, sus=6, amp=0.15, room=1)      # cosmic voice!
+d3 >> play("z", spack=1, sample=0, dur=4, sus=2, amp=0.12, room=0.3)                # scratch vocal
+d3 >> play("b", spack=1, sample=var([10,14,12], 8), dur=6, sus=4, amp=0.14, room=0.5) # cello-vocal
 ```
 
 **Vibe presets:** `chill` (85bpm) | `energetic` (140bpm) | `ambient` (70bpm) | `jazz` (120bpm) | `dark` (100bpm)
