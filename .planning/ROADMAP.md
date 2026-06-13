@@ -89,6 +89,71 @@ Plans:
 Plans:
 - [ ] 03.1.1-01-PLAN.md — Add P0 error handling to _run_agent_with_retry() + OPENAI_LOG env var
 
+### Phase 03.2: Music Quality Testing & Evaluation (INSERTED)
+
+**Goal:** Fix prompt issues found in MiMo DJ log analysis, deploy to robot, test music generation quality (DJ set + gangster rap + non-DJ music), evaluate and iterate
+**Requirements**: MUS-01, MUS-02, MUS-03, MUS-04, MUS-05
+**Depends on:** Phase 03.1.1
+**Issue:** #860
+**Branch:** `feature/phase-3.2-music-testing`
+**Success Criteria** (what must be TRUE):
+  1. `search_samples` called at least once per DJ set when spack=1 used
+  2. MC phrases ≤ 2 per track transition
+  3. `set_dj_mode(enabled=True)` called after first `execute_music_code` in DJ mode
+  4. spack=1 letters always verified via search_samples (no guessing)
+  5. RENARDO_REFERENCE.md has sample packs section with spack=0/spack=1 letters
+  6. 3 live tests completed on robot (DJ set, rap, freestyle)
+  7. User Acceptance Testing scored ≥ 70% weighted average
+  8. Testing report written with before/after scores and lessons learned
+  9. ✅ "done" не произносится голосом после DJ set (только как plain text terminator)
+  10. ✅ Ганкстер рэп не читается дважды (музыка + речь → стоп, без повтора)
+
+**Plans:**
+- [ ] 03.2-01: Update RENARDO_REFERENCE.md — add spack=1/sample packs section
+- [ ] 03.2-02: Fix music_skill_prompt.txt — 4 prompt fixes from log analysis
+- [ ] 03.2-03: Fix compositor_prompt.txt — MC phrase limit + MiMo "done" bug + rap double-speak
+- [ ] 03.2-03a: **MiMo agent behavior fixes** — отладка специфичных проблем MiMo v2.5 Pro:
+  - **Bug: "done" произносится голосом** — MiMo возвращает "done" как speak_text() вместо plain text.
+    После DJ set робот говорит "done" вслух несколько раз. Фикс: в compositor_prompt добавить
+    "❌ NEVER call speak_text('done') — 'done' is PLAIN TEXT ONLY, no tool calls!"
+    + в dialogue_node.py расширить фильтр auto-speak (ловить "done", "Done!", "done.", "выполнено")
+  - **Bug: рэп читается дважды** — compositor вызывает handle_music → beat стартует → compositor
+    читает рэп через speak_text → MiMo видит текст рэпа в history → читает его СНОВА без музыки.
+    Фикс: в compositor_prompt добавить "❌ After rap/poem via speak_text — do NOT repeat the text!
+    The lyrics are ALREADY spoken. Return 'done' immediately."
+    + явная инструкция что текст рэпа = speak_text контент, НЕ handle_music output
+  - **Bug: MiMo игнорирует tool_choice** — MiMo поддерживает только tool_choice="auto",
+    остальные silently downgraded. Уже учтено в коде, но нужна проверка что compositor
+    корректно вызывает handle_music первым tool call (а не speak_text сначала)
+  - **Bug: пустой ответ MiMo** — уже есть fallback "Что-то я задумался",
+    но при DJ переходе пустой ответ = пропущенный трек. Нужна retry логика для DJ_AUTO
+  - Деплой + smoke test: "привет" (не-музыка), "сыграй что-нибудь" (музыка), "стоп" (стоп)
+- [ ] 03.2-05: Live Track Analysis — 3 test scenarios on robot:
+  - **Test A: DJ Set** — "ты диджей, играй сет 3 трека" → log all tool calls, evaluate:
+    - search_samples called when spack=1? (baseline: 0/5)
+    - set_dj_mode called? (baseline: 0/5)
+    - MC phrases ≤ 2 per transition? (baseline: 5-6)
+    - BPM/Scale/Root variety across tracks? (baseline: good)
+    - Constraint compliance (no guessed letters, no dur<0.5, amp≤0.2 drums)?
+  - **Test B: Gangster Rap** — "спой ганкста рэп" → evaluate:
+    - Does it generate a beat + vocal?
+    - Quality of rap flow (timing, rhythm)
+    - Does it use known samples or guess?
+  - **Test C: Freestyle Music** — "сыграй что-нибудь своё" (non-DJ, creative) → evaluate:
+    - Musical coherence (key, scale, rhythm)
+    - Use of production techniques (filter sweep, follow(), ducking)
+    - Hardware constraints respected (amp≤0.8 total, no chop, no coarse)
+- [ ] 03.2-06: User Acceptance Testing — user listens to all 3 test results, scores each:
+  | Criteria | Weight | Description |
+  |----------|--------|-------------|
+  | Musical Quality | 30% | Does it sound like music? Coherent harmony/rhythm? |
+  | Variety | 20% | Different styles, no copy-paste transitions |
+  | Constraint Compliance | 20% | search_samples, set_dj_mode, MC limits, amp limits |
+  | Sample Usage | 15% | Correct letters, no guessing, proper spack usage |
+  | Production Techniques | 15% | Filter sweeps, follow(), ducking, specific melodies |
+- [ ] 03.2-07: Iterate — based on UAT feedback, fix prompts again → re-deploy → re-test (max 2 iterations)
+- [ ] 03.2-08: Final Report — before/after scores, lessons learned, remaining issues for next milestone
+
 ### Phase 4: GitHub Issues Integration
 **Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
 **Depends on**: Phase 3
@@ -112,4 +177,5 @@ Plans:
 | 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
+| 03.2. Music Quality Testing & Evaluation | 0/9 | 🔄 In Progress | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
