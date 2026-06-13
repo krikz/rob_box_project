@@ -342,15 +342,35 @@ class MusicManager:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
         if has_clock_clear:
-            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
+            # ПЛАВНЫЙ ПЕРЕХОД: сначала gate=0 (release envelope), потом freeAll.
+            # Без gate=0 → /g_freeAll обрезает синты mid-waveform → щелчки!
+            import struct as _struct
+            import time as _time
+
+            # 1. gate=0 на ВСЕ ноды → запуск release-фазы ADSR
+            msg_gate = b"/n_set\x00\x00"
+            msg_gate += b",isf\x00\x00"  # int, string, float
+            msg_gate += _struct.pack(">i", -1)  # node ID -1 = all nodes
+            msg_gate += b"gate\x00\x00\x00\x00"  # parameter name "gate"
+            msg_gate += _struct.pack(">f", 0.0)  # value = 0
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(msg_gate, (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass
+
+            # 2. Ждём 50ms — release envelope начался, синты затухают
+            _time.sleep(0.05)
+
+            # 3. Убиваем старые SC-ноды (сейчас они уже в release, не кликают)
             osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
                     _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
             except Exception:
-                pass  # если SC недоступен — не критично, старые ноды умрут сами
-            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
-            import struct as _struct
+                pass
+
+            # 4. Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
             msg_gnew = bytearray()
             for part in [b"/g_new\x00\x00", b",iii\x00\x00\x00\x00"]:
                 msg_gnew.extend(part)
