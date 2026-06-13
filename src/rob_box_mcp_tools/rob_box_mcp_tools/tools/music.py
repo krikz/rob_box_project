@@ -254,14 +254,18 @@ class MusicManager:
         return True, ""
 
     def _cap_amp(self, code: str) -> str:
-        """Ограничить все amp= значения в коде до self._max_amp.
+        """Ограничить amp=, amplify= и oct= для безопасности громкости.
 
         Обрабатывает:
         - ``amp=0.9``          → ``amp=0.7`` (если max_amp=0.7)
         - ``amp=P[0.5, 1.0]``  → ``amp=P[0.5, 0.7]``
         - ``amp=1``            → ``amp=0.7``
+        - ``amplify=var([1,0.3])`` → ``amplify=var([0.7,0.3])``
+        - ``amplify=0.8``      → ``amplify=0.7``
+        - ``oct=5``            → ``oct=4`` (макс 4 — oct=5 очень резкое)
         """
         max_amp = self._max_amp
+        max_oct = 4  # oct=5 и выше слишком резкое/громкое
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -271,11 +275,34 @@ class MusicManager:
 
         code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
 
-        # 2. Затем простые числа
+        # 2. amp= простые числа
         def _cap_n(m: re.Match) -> str:
             return f"amp={min(float(m.group(1)), max_amp):.3g}"
 
         code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
+
+        # 3. amplify=var([...]) — ограничиваем числа внутри var()
+        def _cap_amplify_var(m: re.Match) -> str:
+            inner = m.group(1)
+            def _cap_num(n: re.Match) -> str:
+                return f"{min(float(n.group()), max_amp):.3g}"
+            inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
+            return f"amplify=var({inner})"
+
+        code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
+
+        # 4. amplify= простые числа
+        def _cap_amplify_n(m: re.Match) -> str:
+            return f"amplify={min(float(m.group(1)), max_amp):.3g}"
+
+        code = re.sub(r"amplify\s*=\s*(\d+(?:\.\d*)?)", _cap_amplify_n, code)
+
+        # 5. oct= — ограничиваем до max_oct
+        def _cap_oct(m: re.Match) -> str:
+            return f"oct={min(int(m.group(1)), max_oct)}"
+
+        code = re.sub(r"oct\s*=\s*(\d+)", _cap_oct, code)
+
         return code
 
     # ------------------------------------------------------------------
