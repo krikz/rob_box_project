@@ -622,7 +622,12 @@ class DialogueNode(Node):
                     max_tokens=self._max_tokens,
                     parallel_tool_calls=False,
                     # MiMo: disable thinking mode so tool_choice works correctly
-                    extra_body={"thinking": {"type": "disabled"}},
+                    # frequency_penalty/presence_penalty reduce verbatim repetition
+                    extra_body={
+                        "thinking": {"type": "disabled"},
+                        "frequency_penalty": 0.3,
+                        "presence_penalty": 0.2,
+                    },
                 ),
             )
             prompt_preview = instructions[:200].replace("\n", "↵")
@@ -1683,7 +1688,9 @@ class DialogueNode(Node):
                 clean_spoken = re.sub(
                     r"^\[выполнено через:[^\]]*\]\s*", "", spoken
                 ).strip()
-                if clean_spoken and clean_spoken.lower() != "done":
+                # Expand done filter to catch variants MiMo produces
+                DONE_VARIANTS = {"done", "done!", "done.", "done,", "выполнено", "выполнено!", "готово"}
+                if clean_spoken and clean_spoken.lower().rstrip("!.,").strip() not in DONE_VARIANTS:
                     self.get_logger().warning(
                         f"⚠️ Auto-speak fallback (LLM skipped speak_text): {clean_spoken[:80]}"
                     )
@@ -1692,10 +1699,34 @@ class DialogueNode(Node):
             # Empty response fallback: MiMo sometimes returns nothing (no text, no
             # tool_calls).  Speak a short prompt so the user isn't left confused.
             if not self._spoken_texts and not spoken:
-                self.get_logger().warning(
-                    "⚠️ LLM returned empty response — speaking fallback"
-                )
-                self._speak_direct("Что-то я задумался, повтори пожалуйста")
+                # Check if this was a DJ transition call (music tool was used in recent history)
+                is_dj_context = any("handle_music" in str(t) or "execute_music_code" in str(t)
+                                    for t in (self._last_tool_calls or []))
+                if is_dj_context:
+                    self.get_logger().warning(
+                        "⚠️ Empty MiMo response during DJ context — retrying once"
+                    )
+                    try:
+                        retry_result = await Runner.run(
+                            self._agent, input_list, max_turns=self._agent_max_turns
+                        )
+                        # Extract spoken from retry result
+                        retry_spoken = ""
+                        for item in retry_result.new_items:
+                            if hasattr(item, 'raw_item') and hasattr(item.raw_item, 'content'):
+                                if item.raw_item.content:
+                                    retry_spoken = item.raw_item.content
+                        if retry_spoken:
+                            spoken = retry_spoken
+                        else:
+                            self.get_logger().warning("DJ retry also empty — continuing current track")
+                    except Exception as retry_exc:
+                        self.get_logger().error(f"DJ retry failed: {retry_exc}")
+                else:
+                    self.get_logger().warning(
+                        "⚠️ LLM returned empty response — speaking fallback"
+                    )
+                    self._speak_direct("Что-то я задумался, повтори пожалуйста")
 
             if self._verbose_llm:
                 self.get_logger().info(f"📤 LLM OUTPUT:\n{spoken}")
