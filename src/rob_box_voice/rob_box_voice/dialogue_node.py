@@ -2002,32 +2002,16 @@ class DialogueNode(Node):
         # Оцениваем длину плана по числу строк "Трек N:" в нём
         plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
 
-        # Если переход превышает план — явный сигнал на завершение
-        if plan_track_count > 0 and n > plan_track_count:
-            return (
-                f"[DJ_AUTO — КОНЕЦ СЕТА, переход #{n}] "
-                f"Ты {dj_name}. "
-                f"{theme_line}"
-                f"В плане было {plan_track_count} треков, но сейчас переход #{n} — сет завершён! "
-                "🛑 ОБЯЗАТЕЛЬНЫЕ ШАГИ (в этом строгом порядке): "
-                "1) Вызови stop_music() — остановить всю музыку. "
-                "2) Вызови set_dj_mode(enabled=False) — это ОБЯЗАТЕЛЬНО, иначе сет не завершится! "
-                "3) Произнеси короткую прощальную DJ-фразу через speak_text(). "
-                "❌ НЕ вызывай set_dj_mode(enabled=True)! "
-                "❌ НЕ вызывай execute_music_code()! "
-                "❌ Только stop_music + set_dj_mode(enabled=False) + speak_text!"
-            )
-
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {dj_name} — первый в мире робот-диджей. "
             f"{theme_line}"
             f"{persona_line}"
             f"{plan_block}"
-            f"Сыграй трек #{n} согласно плану. "
-            f"{'(Это последний трек по плану — после него сет завершается.) ' if plan_track_count > 0 and n == plan_track_count else ''}"
+            f"Сыграй трек #{n} через handle_music. "
+            f"{'(Последний трек по плану — продолжай импровизировать в духе темы!) ' if plan_track_count > 0 and n == plan_track_count else ''}"
             "Изредка (раз в 3-4 перехода) короткая MC-фраза (до 12 слов) через speak_text(). Не говори на каждом переходе! "
-            f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека из плана. "
+            f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека. "
             f"   Пример task: '{self._dj_theme} — трек {n}: [название], [стиль], [BPM] BPM, [тональность], [атмосфера]'. "
             "   Внутри handle_music — только музыка и DJ control; речь делай отдельным speak_text(). "
             "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА: "
@@ -2037,6 +2021,7 @@ class DialogueNode(Node):
             "⚠️ В set_dj_mode НЕ передавай параметр theme! "
             "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
             "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.5, degree ≤ 5 нот. "
+            "❌ НЕПРЕМЕННО вызови set_dj_mode(enabled=True) после музыки! Никогда НЕ вызывай set_dj_mode(enabled=False) — только пользователь может остановить DJ! "
             "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
             "❌ НЕ повторяй синты/гамму предыдущего трека — каждый трек звучит иначе!"
         )
@@ -2076,6 +2061,21 @@ class DialogueNode(Node):
             if self._dj_transition_count == 0:
                 self.get_logger().info("🎧 DJ Mode ENABLED")
         else:
+            # Guard: не даём LLM случайно выключить DJ если план не исчерпан
+            plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
+            if plan_track_count > 0 and self._dj_transition_count <= plan_track_count:
+                self.get_logger().warning(
+                    f"🎧 DJ Mode: LLM попытался выключить DJ на переходе #{self._dj_transition_count}, "
+                    f"но план ещё не исчерпан ({plan_track_count} треков). ИГНОРИРУЕМ!"
+                )
+                return
+            # Для импровизированных сетов — максимум 8 переходов
+            if plan_track_count == 0 and self._dj_transition_count < 8:
+                self.get_logger().warning(
+                    f"🎧 DJ Mode: LLM попытался выключить DJ на переходе #{self._dj_transition_count} "
+                    f"(импровизация, план не сохранён). ИГНОРИРУЕМ! (макс 8 переходов)"
+                )
+                return
             self._dj_next_transition_at = 0.0
             self._dj_transition_count = 0
             self._dj_theme = ""  # сбрасываем тему при выключении
@@ -2106,13 +2106,11 @@ class DialogueNode(Node):
             self._dj_next_transition_at = now + 15.0
             return
 
-        # Жёсткий лимит: если переход > длины плана + 3 — авто-стоп без LLM
-        plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
+        # Жёсткий лимит безопасности: 50 переходов (защита от бесконечного цикла)
         next_n = self._dj_transition_count + 1
-        if plan_track_count > 0 and next_n > plan_track_count + 3:
+        if next_n > 50:
             self.get_logger().warning(
-                f"🛑 DJ авто-стоп: переход #{next_n} > план ({plan_track_count} треков) + 3. "
-                "Отключаем DJ режим без LLM."
+                f"🛑 DJ авто-стоп: переход #{next_n} > 50 (безопасный лимит). Отключаем DJ."
             )
             self._dj_mode_enabled = False
             self._dj_next_transition_at = 0.0
