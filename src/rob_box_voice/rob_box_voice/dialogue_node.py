@@ -621,6 +621,8 @@ class DialogueNode(Node):
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     parallel_tool_calls=False,
+                    # MiMo: disable thinking mode so tool_choice works correctly
+                    extra_body={"thinking": {"type": "disabled"}},
                 ),
             )
             prompt_preview = instructions[:200].replace("\n", "↵")
@@ -1287,8 +1289,8 @@ class DialogueNode(Node):
                 agent_max_turns=10,
                 max_tokens=2000,  # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
                 temperature=0.85,
-                # MiMo thinking mode does not support tool_choice="required" (400 error).
-                # With "auto" MiMo still calls tools when it sees them in context.
+                # MiMo only supports tool_choice="auto" (others silently downgraded to auto).
+                # Thinking mode disabled via extra_body to ensure reliable tool calls.
                 tool_choice="auto",
             )
             skill_tools.append(

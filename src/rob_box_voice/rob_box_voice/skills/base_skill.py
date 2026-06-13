@@ -86,6 +86,8 @@ class BaseSkill(ABC):
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             parallel_tool_calls=False,
+            # MiMo: disable thinking mode so tool_choice works correctly
+            extra_body={"thinking": {"type": "disabled"}},
         )
         if self._tool_choice is not None:
             model_settings_kwargs["tool_choice"] = self._tool_choice

@@ -98,7 +98,7 @@ class LLMChat:
             "base_url": "https://api.xiaomimimo.com/v1",
             "model": "mimo-v2.5-pro",
             "env_vars": ["MIMO_API_KEY", "LLM_API_KEY"],
-            "tool_choice": "required",  # MiMo ignores tools unless forced
+            "tool_choice": "auto",  # MiMo only supports "auto"; others silently downgraded
         },
     }
 
@@ -291,6 +291,10 @@ class LLMChat:
             payload["tools"] = self.tools
             payload["tool_choice"] = self.tool_choice
 
+        # MiMo: disable thinking mode for reliable tool calls
+        if self.provider == "mimo":
+            payload["thinking"] = {"type": "disabled"}
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -410,6 +414,9 @@ class LLMChat:
             if self.tools:
                 payload["tools"] = self.tools
                 payload["tool_choice"] = self.tool_choice
+            # MiMo: disable thinking mode for reliable tool calls
+            if self.provider == "mimo":
+                payload["thinking"] = {"type": "disabled"}
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
