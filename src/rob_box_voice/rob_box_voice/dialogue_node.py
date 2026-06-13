@@ -2009,7 +2009,7 @@ class DialogueNode(Node):
             f"{persona_line}"
             f"{plan_block}"
             f"Сыграй трек #{n} через handle_music. "
-            f"{'(Последний трек по плану — продолжай импровизировать в духе темы!) ' if plan_track_count > 0 and n == plan_track_count else ''}"
+            f"{'(Это последний трек по плану — после него коротко попрощайся с аудиторией и вызови set_dj_mode(enabled=False) чтобы завершить сет!) ' if plan_track_count > 0 and n == plan_track_count else ''}"
             "Изредка (раз в 3-4 перехода) короткая MC-фраза (до 12 слов) через speak_text(). Не говори на каждом переходе! "
             f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека. "
             f"   Пример task: '{self._dj_theme} — трек {n}: [название], [стиль], [BPM] BPM, [тональность], [атмосфера]'. "
@@ -2021,7 +2021,8 @@ class DialogueNode(Node):
             "⚠️ В set_dj_mode НЕ передавай параметр theme! "
             "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
             "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.5, degree ≤ 5 нот. "
-            "❌ НЕПРЕМЕННО вызови set_dj_mode(enabled=True) после музыки! Никогда НЕ вызывай set_dj_mode(enabled=False) — только пользователь может остановить DJ! "
+            "❌ После КАЖДОГО трека вызови set_dj_mode(enabled=True, next_transition_sec=X) для следующего перехода! "
+            "❌ Если это ПОСЛЕДНИЙ трек по плану — попрощайся и вызови set_dj_mode(enabled=False) для завершения сета! "
             "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
             "❌ НЕ повторяй синты/гамму предыдущего трека — каждый трек звучит иначе!"
         )
@@ -2063,7 +2064,7 @@ class DialogueNode(Node):
         else:
             # Guard: не даём LLM случайно выключить DJ если план не исчерпан
             plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
-            if plan_track_count > 0 and self._dj_transition_count <= plan_track_count:
+            if plan_track_count > 0 and self._dj_transition_count < plan_track_count:
                 self.get_logger().warning(
                     f"🎧 DJ Mode: LLM попытался выключить DJ на переходе #{self._dj_transition_count}, "
                     f"но план ещё не исчерпан ({plan_track_count} треков). ИГНОРИРУЕМ!"
