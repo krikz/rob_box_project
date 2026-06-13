@@ -681,8 +681,8 @@ For specific songs (Star Wars, Happy Birthday, Katyusha, Nokia Tune, etc.):
 ✅ Star Wars / Imperial March = one preset among many, NOT the default style!
 ✅ For ANY known melody: check list_tracks FIRST, only write code if no preset exists
 
-⚡ ALL known melodies live in TrackLibrary — use list_tracks()/load_track() to play them!
-✅ Available presets: star_wars_march, jazz_groove, acid_techno, ambient_dreams, hiphop_boom_bap, folk_fiddle, electro_funk, happy_birthday, jingle_bells, fur_elise, katyusha, nokia_tune, kalinka, stranger_things, smoke_on_water, pump_up_the_jam, rhythm_of_the_night, tarantella
+⚡ Curated presets in TrackLibrary — use list_tracks()/load_track() to play them!
+✅ Available presets: star_wars_march, jazz_groove, acid_techno, ambient_dreams, hiphop_boom_bap, folk_fiddle, electro_funk
 ❌ NEVER write inline midinote arrays — always load from TrackLibrary!
 
 �🎤 VOCAL RULE:
