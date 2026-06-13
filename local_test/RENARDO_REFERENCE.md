@@ -183,6 +183,48 @@ Noise:    @ %
 Shaker:   s S
 ```
 
+### Sample Packs (spack)
+
+Renardo поддерживает несколько пакетов семплов. По умолчанию используется `spack=0` (папка `0_foxdot_default`).
+
+```python
+# spack=0 — стандартный пакет (0_foxdot_default)
+# Буквы по умолчанию: x/X=kick, o=snare, -=hihat, etc. (см. таблицу выше)
+d1 >> play("x-o-", spack=0)    # то же что просто play("x-o-")
+
+# spack=1 — расширенный пакет (1_pitchglitch_samples)
+# ⚠️ БУКВЫ ДРУГИЕ! Не совпадают с spack=0!
+# НЕЛЬЗЯ использовать буквы из spack=0 в spack=1 без проверки!
+# ✅ ОБЯЗАТЕЛЬНО вызови search_samples("*", pack="1_pitchglitch_samples") для получения букв!
+# Известные буквы spack=1 (проверены):
+#   c = голос/вокал (используй напрямую, search НЕ нужен для 'c')
+#   A = ambient pad
+#   i = rimshot/percussion
+#   y = vocal chop
+# ⚠️ Это НЕ полный список! Всегда проверяй через search_samples!
+
+# Пример правильного использования spack=1:
+search_samples("*", pack="1_pitchglitch_samples")  # → получишь буквы и описания
+d1 >> play("A...A..A", spack=1, sample=0, amp=0.2)  # только ПОСЛЕ проверки букв!
+
+# ❌ НЕПРАВИЛЬНО — guessing letters without search_samples:
+d1 >> play("A...A..A", spack=1)  # ← если 'A' не существует в spack=1 → ошибка!
+```
+
+**Правила spack:**
+1. `spack=0` (default) — стандартные буквы из таблицы выше
+2. `spack=1` — **ОБЯЗАТЕЛЬНО** вызови `search_samples` перед использованием любых букв кроме 'c'
+3. `search_samples(query, pack="1_pitchglitch_samples")` — ищет по имени файла
+4. Одна буква = одна папка с семплами. Буква 'A' в spack=0 ≠ 'A' в spack=1!
+5. `sample=N` выбирает конкретный файл из папки буквы
+
+**Quick Reference Table:**
+
+| spack | Pack Name | Known Letters | search_samples Required? |
+|-------|-----------|---------------|--------------------------|
+| 0 | 0_foxdot_default | X=kick, o=snare, -=hihat, c=vocal | No (use table above) |
+| 1 | 1_pitchglitch_samples | c=vocal ONLY | Yes (for all other letters) |
+
 ---
 
 ## LOOP PLAYER
