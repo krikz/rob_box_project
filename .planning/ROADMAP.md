@@ -108,51 +108,17 @@ Plans:
   9. ✅ "done" не произносится голосом после DJ set (только как plain text terminator)
   10. ✅ Ганкстер рэп не читается дважды (музыка + речь → стоп, без повтора)
 
-**Plans:**
-- [ ] 03.2-01: Update RENARDO_REFERENCE.md — add spack=1/sample packs section
-- [ ] 03.2-02: Fix music_skill_prompt.txt — 4 prompt fixes from log analysis
-- [ ] 03.2-03: Fix compositor_prompt.txt — MC phrase limit + MiMo "done" bug + rap double-speak
-- [ ] 03.2-03a: **MiMo agent behavior fixes** — отладка специфичных проблем MiMo v2.5 Pro:
-  - **Bug: "done" произносится голосом** — MiMo возвращает "done" как speak_text() вместо plain text.
-    После DJ set робот говорит "done" вслух несколько раз. Фикс: в compositor_prompt добавить
-    "❌ NEVER call speak_text('done') — 'done' is PLAIN TEXT ONLY, no tool calls!"
-    + в dialogue_node.py расширить фильтр auto-speak (ловить "done", "Done!", "done.", "выполнено")
-  - **Bug: рэп читается дважды** — compositor вызывает handle_music → beat стартует → compositor
-    читает рэп через speak_text → MiMo видит текст рэпа в history → читает его СНОВА без музыки.
-    Фикс: в compositor_prompt добавить "❌ After rap/poem via speak_text — do NOT repeat the text!
-    The lyrics are ALREADY spoken. Return 'done' immediately."
-    + явная инструкция что текст рэпа = speak_text контент, НЕ handle_music output
-  - **Bug: MiMo игнорирует tool_choice** — MiMo поддерживает только tool_choice="auto",
-    остальные silently downgraded. Уже учтено в коде, но нужна проверка что compositor
-    корректно вызывает handle_music первым tool call (а не speak_text сначала)
-  - **Bug: пустой ответ MiMo** — уже есть fallback "Что-то я задумался",
-    но при DJ переходе пустой ответ = пропущенный трек. Нужна retry логика для DJ_AUTO
-  - Деплой + smoke test: "привет" (не-музыка), "сыграй что-нибудь" (музыка), "стоп" (стоп)
-- [ ] 03.2-05: Live Track Analysis — 3 test scenarios on robot:
-  - **Test A: DJ Set** — "ты диджей, играй сет 3 трека" → log all tool calls, evaluate:
-    - search_samples called when spack=1? (baseline: 0/5)
-    - set_dj_mode called? (baseline: 0/5)
-    - MC phrases ≤ 2 per transition? (baseline: 5-6)
-    - BPM/Scale/Root variety across tracks? (baseline: good)
-    - Constraint compliance (no guessed letters, no dur<0.5, amp≤0.2 drums)?
-  - **Test B: Gangster Rap** — "спой ганкста рэп" → evaluate:
-    - Does it generate a beat + vocal?
-    - Quality of rap flow (timing, rhythm)
-    - Does it use known samples or guess?
-  - **Test C: Freestyle Music** — "сыграй что-нибудь своё" (non-DJ, creative) → evaluate:
-    - Musical coherence (key, scale, rhythm)
-    - Use of production techniques (filter sweep, follow(), ducking)
-    - Hardware constraints respected (amp≤0.8 total, no chop, no coarse)
-- [ ] 03.2-06: User Acceptance Testing — user listens to all 3 test results, scores each:
-  | Criteria | Weight | Description |
-  |----------|--------|-------------|
-  | Musical Quality | 30% | Does it sound like music? Coherent harmony/rhythm? |
-  | Variety | 20% | Different styles, no copy-paste transitions |
-  | Constraint Compliance | 20% | search_samples, set_dj_mode, MC limits, amp limits |
-  | Sample Usage | 15% | Correct letters, no guessing, proper spack usage |
-  | Production Techniques | 15% | Filter sweeps, follow(), ducking, specific melodies |
-- [ ] 03.2-07: Iterate — based on UAT feedback, fix prompts again → re-deploy → re-test (max 2 iterations)
-- [ ] 03.2-08: Final Report — before/after scores, lessons learned, remaining issues for next milestone
+**Plans:** 7 plans in 4 waves
+
+Plans:
+- [x] 03.2-01: RENARDO_REFERENCE.md — add spack=1/sample packs section (ALREADY DONE)
+- [ ] 03.2-01-PLAN.md — Remove Star Wars bias, restructure melody references + strengthen search_samples/set_dj_mode rules (Wave 1)
+- [ ] 03.2-02-PLAN.md — Fix compositor_prompt.txt (MC limits, "done" fix, rap double-speak) + dialogue_node.py (done filter, retry, frequency_penalty) (Wave 1)
+- [ ] 03.2-03-PLAN.md — Melody Library: 6+ presets in TrackLibrary, type column, sample packs docs (Wave 2)
+- [ ] 03.2-04-PLAN.md — Deploy to Vision Pi + Live Test A (DJ set) + Test B (gangster rap) (Wave 3)
+- [ ] 03.2-05-PLAN.md — Live Test C (freestyle) + UAT scoring table (Wave 3)
+- [ ] 03.2-06-PLAN.md — Iterate: fix top 3 UAT issues, re-deploy, re-test (Wave 4, conditional)
+- [ ] 03.2-07-PLAN.md — Final Report: before/after scores, lessons learned (Wave 4)
 
 ### Phase 4: GitHub Issues Integration
 **Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
@@ -177,5 +143,5 @@ Plans:
 | 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
-| 03.2. Music Quality Testing & Evaluation | 0/9 | 🔄 In Progress | - |
+| 03.2. Music Quality Testing & Evaluation | 0/7 | 🔄 In Progress | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
