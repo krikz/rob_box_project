@@ -860,27 +860,32 @@ class TrackLibrary:
 
         return {"success": True, "message": f"Трек '{slug}' {action}", "name": slug}
 
-    def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0) -> Dict[str, Any]:
+    def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0,
+                    track_type: Optional[str] = None) -> Dict[str, Any]:
         """Вернуть список треков с фильтрацией (без поля code).
 
         Args:
             tag: Фильтр по тегу (опционально).
             min_rating: Минимальный рейтинг (0-5).
+            track_type: Фильтр по типу ('preset' или 'user'). None = все.
 
         Returns:
             dict ``success``, ``tracks`` (list of dicts), ``total``.
         """
         with self._lock:
-            rows = self._conn.execute(
-                """
+            query = """
                 SELECT name, title, description, tags, rating, notes,
-                       play_count, created_at, updated_at
+                       play_count, created_at, updated_at, type
                 FROM music_tracks
                 WHERE rating >= ?
-                ORDER BY rating DESC, name ASC
-                """,
-                (min_rating,),
-            ).fetchall()
+            """
+            params: list = [min_rating]
+            if track_type:
+                query += " AND type = ?"
+                params.append(track_type)
+            query += " ORDER BY rating DESC, name ASC"
+
+            rows = self._conn.execute(query, params).fetchall()
 
         tracks = [self._row_to_dict(r, include_code=False) for r in rows]
         if tag:
