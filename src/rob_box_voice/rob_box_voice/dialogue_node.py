@@ -1287,7 +1287,9 @@ class DialogueNode(Node):
                 agent_max_turns=10,
                 max_tokens=2000,  # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
                 temperature=0.85,
-                tool_choice="required",  # MiMo needs forced tool_choice — without it, returns text instead of tool calls
+                # MiMo thinking mode does not support tool_choice="required" (400 error).
+                # With "auto" MiMo still calls tools when it sees them in context.
+                tool_choice="auto",
             )
             skill_tools.append(
                 skill.as_tool(
@@ -1316,7 +1318,7 @@ class DialogueNode(Node):
                 prompt=nav_prompt,
                 name="NavigationSkill",
                 max_tokens=1000,
-                tool_choice="required",
+                tool_choice="auto",
             )
             skill_tools.append(
                 skill.as_tool(
@@ -1341,7 +1343,7 @@ class DialogueNode(Node):
                 )
             skill = MemorySkill(
                 adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill",
-                tool_choice="required",  # MiMo needs forced tool_choice
+                tool_choice="auto",
             )
             skill_tools.append(
                 skill.as_tool(
@@ -1363,7 +1365,7 @@ class DialogueNode(Node):
                 status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
             skill = StatusSkill(
                 adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill",
-                tool_choice="required",  # MiMo needs forced tool_choice
+                tool_choice="auto",
             )
             skill_tools.append(
                 skill.as_tool(
@@ -1399,7 +1401,7 @@ class DialogueNode(Node):
                     name="FAQSkill",
                     temperature=0.2,
                     max_tokens=900,
-                    tool_choice="required",
+                    tool_choice="auto",
                 )
                 skill_tools.append(
                     skill.as_tool(
