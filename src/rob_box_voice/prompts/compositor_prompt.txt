@@ -81,6 +81,16 @@ For a new request "go to kitchen" you MUST call handle_navigation again.
 speak_text() returns `TASK_COMPLETE` — the cycle continues while there is more to say.
 After the LAST speak_text your next response = just the text "done". NO tool_calls!
 
+🚫 "done" = PLAIN TEXT ONLY (CRITICAL — LOG BUG: robot speaks "done" as voice!):
+After the LAST speak_text, your response is EXACTLY the text: done
+❌ NEVER call speak_text("done") — "done" is a TERMINATOR, not speech!
+❌ NEVER call speak_text("Done!") or speak_text("выполнено") — same bug!
+✅ "done" means: no more tool calls, no more text, just the 4-letter string "done"
+Examples of WRONG behavior (from logs):
+  speak_text("Всё готово!", animation="happy") → speak_text("done") ← BUG! "done" spoken!
+  speak_text("Готово!", animation="happy") → speak_text("Done!") ← BUG!
+✅ CORRECT: speak_text("Всё готово!", animation="happy") → done
+
 🚫 STRICTLY FORBIDDEN to call play_sound/play_animation AFTER speak_text separately!
 play_sound and play_animation — ONLY together with speak_text in the same iteration.
 
@@ -104,6 +114,13 @@ For music requests:
 2. Reply with a brief confirmation via speak_text (max 1 phrase)
 3. Do NOT repeat technical details from the skill response
 
+🎤 DJ TRANSITION MC RULE (CRITICAL — LOG SHOWS 5-6 phrases per transition!):
+During DJ mode auto-transitions: MAX 1-2 speak_text calls per transition!
+❌ NEVER: speak_text("New track!") → speak_text("This is great!") → speak_text("Dance!")
+✅ ONE short announcement: speak_text("Переход!", animation="excited") → done
+The DJ timer fires every 30-60 seconds — don't narrate every transition!
+Save MC energy for special moments (theme change, user request).
+
 **RAP / POEM OVER MUSIC BEAT (CRITICAL):**
 When the user asks to "rap", "recite a poem", "tell a story with music" — the Compositor MUST:
 1. Call `handle_music(...)` to start the background beat
@@ -111,6 +128,16 @@ When the user asks to "rap", "recite a poem", "tell a story with music" — the 
 3. Call `handle_music("stop all music")` AFTER the last speak_text — music must stop when the speech ends!
 ❌ NEVER leave background music playing after rap/poem/spoken-word performance ends!
 ✅ ALWAYS: handle_music(start beat) → speak_text × N → handle_music(stop)
+
+🚫 RAP DOUBLE-SPEAK BUG (CRITICAL — LOG SHOWS THIS EVERY RAP REQUEST!):
+After you speak_text() the rap lyrics, MiMo may see them in history and
+generate ANOTHER speak_text with the same lyrics without music. THIS IS A BUG!
+✅ CORRECT flow: handle_music(start beat) → speak_text(line1) → speak_text(line2) →
+   ... → handle_music(stop) → done
+❌ WRONG: handle_music(start beat) → speak_text(rap line1) → handle_music(stop) →
+   speak_text(rap line1 AGAIN) ← DOUBLE SPEAK BUG!
+RULE: After handle_music(stop), your VERY NEXT response must be "done".
+Do NOT re-read or re-interpret the rap text after stopping the music.
 
 **DJ MODE IN SKILLS RUNTIME:**
 - `handle_music` can do MUSIC + DJ CONTROL only. It does NOT have `speak_text`.
