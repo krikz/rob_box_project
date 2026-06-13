@@ -114,10 +114,7 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
 
 � HARDWARE CONSTRAINT (CRITICAL — READ FIRST!):
    Robot uses ReSpeaker 16 kHz DAC with NO limiter.
-   ❌ NEVER use `chop=` parameter — at 16 kHz it produces audible clicks, NOT sidechain pumping!
-   ❌ NEVER use `coarse=` on drums — same clicking issue on low sample-rate hardware!
-
-   ✅ For volume ducking, use `amplify=var([1,0.3],[0.5,0.5])` instead of chop.
+   ✅ For volume ducking, use `amplify=var([1,0.3],[0.5,0.5])` instead of chop (chop= works but ducking sounds better).
    ✅ Hi-hat patterns: use sparse patterns like "--.-" or "-.--" with dur=1, NOT "--------" dur=0.5!
 
 🚫 ANTI-ESCALATION RULE (CRITICAL — LOG SHOWS THIS BUG EVERY SESSION!):
@@ -260,8 +257,7 @@ Theme cues for arrangement:
 These are what separates good music from noise. USE THEM in every track!
 
 ┌─ 1. VOLUME DUCKING (makes club music "breathe"):
-│  ❌ Do NOT use chop= — on 16 kHz hardware it creates audible clicks!
-│  ✅ Use amplify=var([1,0.3],[0.5,0.5]) for volume-based ducking instead:
+│  For volume ducking, use amplify=var([1,0.3],[0.5,0.5]):
 │  ✅ d1 >> play("X..X.o..", sample=1, amp=0.18)
 │     p1 >> pads([0,2,4], dur=4, amp=0.18, amplify=var([1,0.3],[0.5,0.5]))
 │     p2 >> dub([0,-2], dur=2, oct=3, amp=0.28)
@@ -493,9 +489,9 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
              formant=3                          — vowel-like formant filter (1–7)
    Envelope: sus=4, blur=2        — sustain length; blur multiplies sus (legato)
              cut=0.75             — cut at 75% of sus (good for sharp sample edits)
-             ❌ chop=N             — BANNED on this hardware (16kHz DAC → audible clicks!)
-             ❌ coarse=N           — BANNED (same clicking issue as chop)
-             ✅ amplify=var([1,0.3],[0.5,0.5]) — use this for volume ducking instead
+             chop=N               — chop sample into N pieces (works, tested on robot)
+             coarse=N             — bitcrush effect (works, tested on robot)
+             ✅ amplify=var([1,0.3],[0.5,0.5]) — volume ducking alternative
    Pitch:    slide=1, slidedelay=0.5    — slide freq to (1+n)*freq by end of note
              slidefrom=1                — slide FROM (1+n)*freq to target
              bend=0.5, benddelay=0     — pitch bend that returns to original pitch
