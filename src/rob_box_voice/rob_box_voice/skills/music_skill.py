@@ -76,15 +76,6 @@ class MusicSkill(BaseSkill):
             **kwargs,
         )
         self._samples_path = samples_path
-        self._dj_research_done: bool = False  # True after successful search_artist_style
-
-    def _pre_run(self) -> None:
-        """Reset per-run state before each MusicSkill invocation.
-
-        This ensures the hard gate on execute_music_code is active for every
-        new handle_music call — not just the first one after container restart.
-        """
-        self._dj_research_done = False
 
     @staticmethod
     def _load_renardo_ref(path: str) -> str:
@@ -232,14 +223,6 @@ class MusicSkill(BaseSkill):
                 code:         Valid Renardo Python code string.
                 pattern_name: Pattern name for history tracking (e.g. "p1", "drums").
             """
-            # HARD GATE: require search_artist_style before generating music
-            if not self._dj_research_done:
-                logger.warning("🚫 execute_music_code BLOCKED — search_artist_style not called yet!")
-                return json.dumps({
-                    "error": "BLOCKED: You MUST call search_artist_style() FIRST! "
-                             "Call search_artist_style('<theme or artist name>') before "
-                             "execute_music_code. This is MANDATORY — research = better music.",
-                }, ensure_ascii=False)
             return await _call(
                 "execute_music_code",
                 {"code": code, "pattern_name": pattern_name},
@@ -276,10 +259,6 @@ class MusicSkill(BaseSkill):
         @function_tool
         def search_artist_style(artist_name: str, song_names: str = "") -> str:
             """Search for music style, genre, BPM, key, instruments and mood by artist name OR concept.
-
-            🔴 MANDATORY FIRST STEP: ALWAYS call this BEFORE execute_music_code!
-            Even if you think you know the style — call it anyway. Research = better music.
-            If you skip this, execute_music_code() will be BLOCKED.
 
             Use this for:
             - Artists/bands: "Егор Летов", "Radiohead", "Kraftwerk", "Daft Punk"
@@ -337,9 +316,6 @@ class MusicSkill(BaseSkill):
                      "hint": "Try spelling the name differently or use the original language name."},
                     ensure_ascii=False,
                 )
-
-            # Mark research as done — unlocks execute_music_code
-            self._dj_research_done = True
 
             # Trim to keep token usage reasonable
             combined = "\n\n".join(snippets[:10])
@@ -461,9 +437,6 @@ class MusicSkill(BaseSkill):
                 params["next_transition_sec"] = next_transition_sec
             if theme:
                 params["theme"] = theme
-            # Reset research flag when DJ mode is (re)enabled with new theme
-            if enabled:
-                self._dj_research_done = False
             return await _call("set_dj_mode", params)
 
         return [

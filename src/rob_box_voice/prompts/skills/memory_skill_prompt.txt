@@ -21,3 +21,5 @@ Return format:
 - save: "Remembered: [what exactly]"
 - search: found facts as a list
 - context: brief summary of recent entries
+
+⚠️ Every memory operation = tool call. Never fabricate results.

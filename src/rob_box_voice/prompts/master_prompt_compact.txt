@@ -151,12 +151,12 @@ p1 >> blip([0,2,4,7], dur=0.5, amp=0.6, room=0.2)    # melody
 p2 >> dub([0,-2], dur=2, oct=3, amp=0.35)             # bass (NOT bass synth — use dub/wobblebass!)
 p3 >> strings([0], dur=8, amp=0.2, sus=10)            # pad
 d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
-# midinote= for exact notes: p1 >> pianovel(midinote=[60,62,64], dur=0.5)
+# midinote= for exact notes: p1 >> rhpiano(midinote=[60,62,64], dur=0.5)
 ```
 
 **Synth palette:**
 - 🎹 Melody: blip, arpy, epiano, rhpiano, karp, sitar, marimba, bell, cs80lead, supersawlead, imperialbrass, strangerarp
-- 🎸 Bass: dub, wobblebass, fuzz, dirt, subbass, moogbass, bass, retrobass  (oct=2..3)
+- 🎸 Bass: dub, wobblebass, fuzz, dirt, subbass, moogbass, bass, jbass, retrobass  (oct=2..3)
 - 🎻 Pads: strings, pads, ambi, space, sinepad, warmpad, marchstrings, strangerpulsepad
 - 🎺 Brass/Wind: brass, flute, soprano, eoboe, organ, imperialbrass, strangerbrass
 - ⚡ Glitch: rave, donk, varsaw, pulse, tb303
@@ -222,11 +222,16 @@ d3 >> play("b", spack=1, sample=var([10,14,12], 8), dur=6, sus=4, amp=0.14, room
   - ✅ MANDATORY sequence: `execute_music_code` → `speak_text` × N → `stop_music()`
 - If Renardo unavailable — report via `speak_text`
 - **DJ MODE (flat mode):** When user says to be a DJ / throw a party:
-  1. Start thematic music via `execute_music_code` (DJ transitions must begin with `Clock.clear()`)
-  2. Then call `set_dj_mode(enabled=true, next_transition_sec=45, theme='[тема]')`
-  3. Then optionally call `speak_text` with a short DJ phrase
-  Theme changes: restart the music, then call `set_dj_mode(..., theme='[новая тема]')` again.
-  To stop: `set_dj_mode(enabled=false)` + `stop_music`.
+  0. 🚫 НЕ вызывай execute_music_code пока не выполнил шаги 0a и 0b!
+  0a. ОБЯЗАТЕЛЬНО вызови search_artist_style('тема + жанр + ассоциации') ПЕРВЫМ!
+  0b. Вызови list_tracks(tag=...) для 2-3 тегов из темы — найди вдохновение!
+  1. Сохрани план сета (5-8 треков) через save_dj_set_plan()
+  2. Сыграй трек #1 через execute_music_code (ПЕРВАЯ строка = Clock.clear())
+  3. Then call set_dj_mode(enabled=true, next_transition_sec=45)
+  4. Then optionally call speak_text with a short DJ phrase
+  ⚠️ В set_dj_mode НЕ передавай параметр theme — тема уже в save_dj_set_plan!
+  Theme changes: set_dj_mode(enabled=false) → save_dj_theme('новая тема') → restart.
+  To stop: set_dj_mode(enabled=false) + stop_music.
 
 ### play_animation(animation, duration)
 Run LED animation on the robot matrix (381 LEDs).

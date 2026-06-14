@@ -18,3 +18,5 @@ Voice settings:
 
 Return a concise 1–2 sentence result.
 Example: "Battery 73%, navigation active, 14:35, Tuesday 24 February 2026."
+
+⚠️ Every status query = tool call. Never fabricate data.

@@ -1496,7 +1496,7 @@ class DialogueNode(Node):
                     "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
                 ),
             )
-            skill_tools.append(self._wrap_tool_with_doom_loop(self._wrap_music_with_research_gate(_music_tool)))
+            skill_tools.append(self._wrap_tool_with_doom_loop(_music_tool))
             self.get_logger().info("✅ MusicSkill loaded")
         except Exception as exc:
             self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
