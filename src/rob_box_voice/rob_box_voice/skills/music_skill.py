@@ -258,15 +258,22 @@ class MusicSkill(BaseSkill):
         # ── search_artist_style (DuckDuckGo, free) ──────────────────────────
         @function_tool
         def search_artist_style(artist_name: str, song_names: str = "") -> str:
-            """Search for an artist's music style, genre, BPM, key, instruments and mood.
+            """Search for music style, genre, BPM, key, instruments and mood by artist name OR concept.
 
             MANDATORY: Call this BEFORE generating music when the user mentions
             a specific artist, band, or musician (e.g. "Егор Летов", "Radiohead",
             "Kraftwerk", "Daft Punk"). Use the results to adapt your Renardo code
             to match the artist's characteristic sound.
 
+            ALSO use this to research DJ personas/concepts — not just artists!
+            Examples: "Пастырь культа" → search_artist_style("ритуальная музыка хоралы"),
+            "робот-диджей" → search_artist_style("робот электронная музыка"),
+            "ведьма" → search_artist_style("оккультная музыка doom witch house").
+
             Args:
-                artist_name: Name of the artist or band to research.
+                artist_name: Name of the artist, band, OR concept/persona to research.
+                    For concepts: describe the style/mood/associations (e.g. "ритуальная
+                    музыка культ хоралы" for a cult preacher persona).
                 song_names: Optional comma-separated song/album names if user
                     mentioned specific tracks (e.g. "Русское поле экспериментов,
                     Гражданская оборона"). Searches for chords and structure.
