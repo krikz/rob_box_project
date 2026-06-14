@@ -1113,6 +1113,17 @@ class DialogueNode(Node):
             Использовать ВСЕГДА когда пользователь просит сыграть мелодию, музыку, ноты.
             Пример: execute_music_code("p1 >> pluck([0,2,4,7], dur=0.5, amp=0.8)", pattern_name="p1")
             """
+            # ── DJ research gate: block execute_music_code until search_artist_style called ──
+            if self._dj_mode_enabled and not self._dj_research_done:
+                self.get_logger().warning(
+                    "🚫 execute_music_code BLOCKED: search_artist_style not called yet!"
+                )
+                return (
+                    "🚫 СТОП! Ты не вызвал search_artist_style() — это ОБЯЗАТЕЛЬНЫЙ шаг 0! "
+                    "Немедленно вызови search_artist_style('тема + жанр + ассоциации') "
+                    "и затем list_tracks(tag=...), ПОСЛЕ ЧЕГО можно играть музыку. "
+                    "БЕЗ research шагов музыка будет скучной и generic!"
+                )
             return await _call(
                 "execute_music_code",
                 {"code": code, "pattern_name": pattern_name},
