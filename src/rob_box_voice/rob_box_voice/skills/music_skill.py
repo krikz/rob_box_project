@@ -76,6 +76,7 @@ class MusicSkill(BaseSkill):
             **kwargs,
         )
         self._samples_path = samples_path
+        self._dj_research_done: bool = False  # True after successful search_artist_style
 
     @staticmethod
     def _load_renardo_ref(path: str) -> str:
@@ -223,6 +224,13 @@ class MusicSkill(BaseSkill):
                 code:         Valid Renardo Python code string.
                 pattern_name: Pattern name for history tracking (e.g. "p1", "drums").
             """
+            # HARD GATE: require search_artist_style before generating music
+            if not self._dj_research_done:
+                return json.dumps({
+                    "error": "BLOCKED: You MUST call search_artist_style() FIRST! "
+                             "Call search_artist_style('<theme or artist name>') before "
+                             "execute_music_code. This is MANDATORY — research = better music.",
+                }, ensure_ascii=False)
             return await _call(
                 "execute_music_code",
                 {"code": code, "pattern_name": pattern_name},
@@ -260,15 +268,15 @@ class MusicSkill(BaseSkill):
         def search_artist_style(artist_name: str, song_names: str = "") -> str:
             """Search for music style, genre, BPM, key, instruments and mood by artist name OR concept.
 
-            MANDATORY: Call this BEFORE generating music when the user mentions
-            a specific artist, band, or musician (e.g. "Егор Летов", "Radiohead",
-            "Kraftwerk", "Daft Punk"). Use the results to adapt your Renardo code
-            to match the artist's characteristic sound.
+            🔴 MANDATORY FIRST STEP: ALWAYS call this BEFORE execute_music_code!
+            Even if you think you know the style — call it anyway. Research = better music.
+            If you skip this, execute_music_code() will be BLOCKED.
 
-            ALSO use this to research DJ personas/concepts — not just artists!
-            Examples: "Пастырь культа" → search_artist_style("ритуальная музыка хоралы"),
-            "робот-диджей" → search_artist_style("робот электронная музыка"),
-            "ведьма" → search_artist_style("оккультная музыка doom witch house").
+            Use this for:
+            - Artists/bands: "Егор Летов", "Radiohead", "Kraftwerk", "Daft Punk"
+            - DJ themes/concepts: "летняя дискотека хаус", "робот-диджей"
+            - Performer roles: "Пастырь культа" → "ритуальная музыка хоралы"
+            - Any music request: always research the style first!
 
             Args:
                 artist_name: Name of the artist, band, OR concept/persona to research.
@@ -320,6 +328,9 @@ class MusicSkill(BaseSkill):
                      "hint": "Try spelling the name differently or use the original language name."},
                     ensure_ascii=False,
                 )
+
+            # Mark research as done — unlocks execute_music_code
+            self._dj_research_done = True
 
             # Trim to keep token usage reasonable
             combined = "\n\n".join(snippets[:10])
@@ -441,6 +452,9 @@ class MusicSkill(BaseSkill):
                 params["next_transition_sec"] = next_transition_sec
             if theme:
                 params["theme"] = theme
+            # Reset research flag when DJ mode is (re)enabled with new theme
+            if enabled:
+                self._dj_research_done = False
             return await _call("set_dj_mode", params)
 
         return [
