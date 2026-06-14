@@ -2134,7 +2134,8 @@ class DialogueNode(Node):
                 "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА для музыки: "
                 "1) ПЕРВАЯ строка кода = Clock.clear(). "
                 "2) Максимум 6 паттернов: d1-d3 + p1-p3. sus ≤ 8. "
-                "3) После execute_music_code вызови ОТДЕЛЬНЫМ tool call set_dj_mode(enabled=True, next_transition_sec=X). "
+                "🎛️ ПОСЛЕ КАЖДОГО ТРЕКА (критично!): вызови set_dj_mode(enabled=True, next_transition_sec=X) ОТДЕЛЬНЫМ tool call! "
+                "   X = длина трека в секундах (30-90). БЕЗ этого вызова — тишина между треками! "
                 "⚠️ В set_dj_mode НЕ передавай параметр theme! "
                 "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
                 "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.5, degree ≤ 5 нот. "
@@ -2185,7 +2186,8 @@ class DialogueNode(Node):
             "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА: "
             "1) ПЕРВАЯ строка кода = Clock.clear(). "
             "2) Максимум 6 паттернов: d1-d3 + p1-p3. sus ≤ 8. "
-            "3) После execute_music_code вызови ОТДЕЛЬНЫМ tool call set_dj_mode(enabled=True, next_transition_sec=X). "
+            "🎛️ ПОСЛЕ КАЖДОГО ТРЕКА (критично!): вызови set_dj_mode(enabled=True, next_transition_sec=X) ОТДЕЛЬНЫМ tool call! "
+            "   X = длина текущего трека в секундах (30-90). БЕЗ этого вызова — тишина между треками! "
             "⚠️ В set_dj_mode НЕ передавай параметр theme! "
             "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
             "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.5, degree ≤ 5 нот. "
@@ -2293,12 +2295,14 @@ class DialogueNode(Node):
                 self.get_logger().warning(f"🎧 DJ auto-stop: ошибка stop_music: {e}")
             return
 
-        # Устанавливаем безопасный фолбэк-интервал (120с) — LLM должен перезаписать
+        # Устанавливаем безопасный фолбэк-интервал (45с) — LLM должен перезаписать
         # его через set_dj_mode(enabled=True, next_transition_sec=X) в конце перехода.
+        # 120с было слишком много: если LLM забывал set_dj_mode, трек заканчивался
+        # и наступала долгая тишина (20-40+ сек). 45с — разумный компромисс.
         self._dj_transition_count += 1
         n = self._dj_transition_count
         self._dj_next_transition_at = (
-            now + 120.0
+            now + 45.0
         )  # фолбэк если LLM не вызвал set_dj_mode
 
         prompt = self._build_dj_prompt(n)
