@@ -689,15 +689,22 @@ class DialogueNode(Node):
             text = re.sub(
                 r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
             ).strip()
-            # ── Dedup: skip if same text was spoken within last 5 seconds ──
+            # ── Dedup: skip if same text was spoken within last 30 seconds ──
             now = time.time()
             with self._recent_speak_lock:
                 for ts, recent_text in self._recent_speak:
-                    if recent_text == text and (now - ts) < 5.0:
-                        self.get_logger().debug(
-                            f"🔇 speak_text dedup: skipping duplicate ({text[:40]}...)"
+                    if recent_text == text and (now - ts) < 30.0:
+                        self.get_logger().info(
+                            f"🔇 speak_text dedup: skipping duplicate ({text[:50]}...)"
                         )
                         return "TASK_COMPLETE"
+                # ── Cap: max 3 speak_text per agent run (LLM sometimes repeats) ──
+                recent_count = sum(1 for ts, _ in self._recent_speak if (now - ts) < 30.0)
+                if recent_count >= 3:
+                    self.get_logger().warning(
+                        f"🔇 speak_text cap: {recent_count} calls in 30s — skipping ({text[:50]}...)"
+                    )
+                    return "TASK_COMPLETE"
                 self._recent_speak.append((now, text))
             # Collect ALL spoken texts immediately (before lock) so that when
             # multiple speak_text calls queue on the lock, _spoken_texts already
@@ -1239,15 +1246,22 @@ class DialogueNode(Node):
             text = re.sub(
                 r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
             ).strip()
-            # ── Dedup: skip if same text was spoken within last 5 seconds ──
+            # ── Dedup: skip if same text was spoken within last 30 seconds ──
             now = time.time()
             with self._recent_speak_lock:
                 for ts, recent_text in self._recent_speak:
-                    if recent_text == text and (now - ts) < 5.0:
-                        self.get_logger().debug(
-                            f"🔇 speak_text dedup: skipping duplicate ({text[:40]}...)"
+                    if recent_text == text and (now - ts) < 30.0:
+                        self.get_logger().info(
+                            f"🔇 speak_text dedup: skipping duplicate ({text[:50]}...)"
                         )
                         return "TASK_COMPLETE"
+                # ── Cap: max 3 speak_text per agent run (LLM sometimes repeats) ──
+                recent_count = sum(1 for ts, _ in self._recent_speak if (now - ts) < 30.0)
+                if recent_count >= 3:
+                    self.get_logger().warning(
+                        f"🔇 speak_text cap: {recent_count} calls in 30s — skipping ({text[:50]}...)"
+                    )
+                    return "TASK_COMPLETE"
                 self._recent_speak.append((now, text))
             self._spoken_texts.append(text)
             async with lock:
