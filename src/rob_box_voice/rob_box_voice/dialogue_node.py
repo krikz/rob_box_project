@@ -1361,7 +1361,8 @@ class DialogueNode(Node):
                 theme: Краткое описание новой темы/контекста. Например: 'корпоратив', 'хэллоуин'.
             """
             # Guard: не даём LLM сбросить активный сет!
-            if self._dj_transition_count > 0 and self._dj_set_plan:
+            # Но РАЗРЕШАЕМ если DJ-режим выключен (пользователь сменил тему после остановки)
+            if self._dj_mode_enabled and self._dj_transition_count > 0 and self._dj_set_plan:
                 self.get_logger().warning(
                     f"🎧 save_dj_theme: ИГНОРИРУЕМ — сет уже идёт (переход #{self._dj_transition_count}). "
                     f"Сначала set_dj_mode(enabled=False), потом save_dj_theme()."
@@ -2122,7 +2123,9 @@ class DialogueNode(Node):
                 "⚠️ В set_dj_mode НЕ передавай параметр theme! "
                 "4) Для drum play() используй только безопасные буквы X/o/- или буквы, явно найденные через search_samples; НЕ выдумывай A/B/Q и другие sample folders. "
                 "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.5, degree ≤ 5 нот. "
-                "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)!"
+                "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
+                "❌ НЕ используй pianovel и piano — оба цокают (MdaPiano физмодель). Вместо них rhpiano (FM Rhodes, чистый звук). "
+                "✅ Доступные синты: rhpiano, karp, pads, strings, bass, dub, space, pluck, saw, sin, pulse."
             )
 
         # Переходы #2+ — агент идёт по своему плану
@@ -2156,7 +2159,8 @@ class DialogueNode(Node):
             "❌ После КАЖДОГО трека вызови set_dj_mode(enabled=True, next_transition_sec=X) для следующего перехода! "
             "❌ Если это ПОСЛЕДНИЙ трек по плану — попрощайся и вызови set_dj_mode(enabled=False) для завершения сета! "
             "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
-            "❌ НЕ повторяй синты/гамму предыдущего трека — каждый трек звучит иначе!"
+            "❌ НЕ используй pianovel и piano — оба цокают (MdaPiano физмодель). Вместо них rhpiano (FM Rhodes, чистый звук). "
+            "✅ Доступные синты: rhpiano, karp, pads, strings, bass, dub, space, pluck, saw, sin, pulse. "
         )
 
     def _on_dj_mode_msg(self, msg: String) -> None:
@@ -2194,21 +2198,7 @@ class DialogueNode(Node):
             if self._dj_transition_count == 0:
                 self.get_logger().info("🎧 DJ Mode ENABLED")
         else:
-            # Guard: не даём LLM случайно выключить DJ если план не исчерпан
-            plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
-            if plan_track_count > 0 and self._dj_transition_count < plan_track_count:
-                self.get_logger().warning(
-                    f"🎧 DJ Mode: LLM попытался выключить DJ на переходе #{self._dj_transition_count}, "
-                    f"но план ещё не исчерпан ({plan_track_count} треков). ИГНОРИРУЕМ!"
-                )
-                return
-            # Для импровизированных сетов — максимум 8 переходов
-            if plan_track_count == 0 and self._dj_transition_count < 8:
-                self.get_logger().warning(
-                    f"🎧 DJ Mode: LLM попытался выключить DJ на переходе #{self._dj_transition_count} "
-                    f"(импровизация, план не сохранён). ИГНОРИРУЕМ! (макс 8 переходов)"
-                )
-                return
+            # Выключаем DJ — сбрасываем ВСЕ состояние
             self._dj_next_transition_at = 0.0
             self._dj_transition_count = 0
             self._dj_theme = ""  # сбрасываем тему при выключении
