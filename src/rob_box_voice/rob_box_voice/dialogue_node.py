@@ -2142,13 +2142,24 @@ class DialogueNode(Node):
             )
 
         # Переходы #2+ — агент идёт по своему плану
+        # Показываем ТОЛЬКО текущий трек, а не весь план — иначе LLM болтает обо всех
+        plan_track_count = 0
+        current_track_line = ""
+        if self._dj_set_plan:
+            plan_track_count = self._dj_set_plan.count("Трек ") or self._dj_set_plan.count("ТРЕК ")
+            # Извлекаем строку текущего трека из плана
+            m = re.search(
+                rf"(?:Трек|ТРЕК)\s*{n}\s*[:\.].*",
+                self._dj_set_plan,
+                re.IGNORECASE,
+            )
+            if m:
+                current_track_line = m.group(0).strip()
         plan_block = (
-            f"Текущий план сета:\n{self._dj_set_plan}\n\n"
-            if self._dj_set_plan
+            f"Текущий трек: {current_track_line}\n\n"
+            if current_track_line
             else "(План сета не сохранён — импровизируй в духе темы вечеринки.)\n\n"
         )
-        # Оцениваем длину плана по числу строк "Трек N:" в нём
-        plan_track_count = self._dj_set_plan.count("Трек ") if self._dj_set_plan else 0
 
         return (
             f"[DJ_AUTO переход #{n}] "
@@ -2159,6 +2170,7 @@ class DialogueNode(Node):
             f"Сыграй трек #{n} через handle_music. "
             f"{'(Это последний трек по плану — после него коротко попрощайся с аудиторией и вызови set_dj_mode(enabled=False) чтобы завершить сет!) ' if plan_track_count > 0 and n == plan_track_count else ''}"
             "Изредка (раз в 3-4 перехода) короткая MC-фраза (до 12 слов) через speak_text(). Не говори на каждом переходе! "
+            "⚠️ Говори ТОЛЬКО про текущий трек — НЕ упоминай другие треки плана, не читай весь список! "
             f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека. "
             f"   Пример task: '{self._dj_theme} — трек {n}: [название], [стиль], [BPM] BPM, [тональность], [атмосфера]'. "
             "   Внутри handle_music — только музыка и DJ control; речь делай отдельным speak_text(). "
