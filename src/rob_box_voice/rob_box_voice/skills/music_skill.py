@@ -78,6 +78,14 @@ class MusicSkill(BaseSkill):
         self._samples_path = samples_path
         self._dj_research_done: bool = False  # True after successful search_artist_style
 
+    def _pre_run(self) -> None:
+        """Reset per-run state before each MusicSkill invocation.
+
+        This ensures the hard gate on execute_music_code is active for every
+        new handle_music call — not just the first one after container restart.
+        """
+        self._dj_research_done = False
+
     @staticmethod
     def _load_renardo_ref(path: str) -> str:
         """Load RENARDO_REFERENCE.md from the given path, or return empty string."""
@@ -226,6 +234,7 @@ class MusicSkill(BaseSkill):
             """
             # HARD GATE: require search_artist_style before generating music
             if not self._dj_research_done:
+                logger.warning("🚫 execute_music_code BLOCKED — search_artist_style not called yet!")
                 return json.dumps({
                     "error": "BLOCKED: You MUST call search_artist_style() FIRST! "
                              "Call search_artist_style('<theme or artist name>') before "

@@ -114,6 +114,10 @@ class BaseSkill(ABC):
         skill_name = self._name
 
         async def _run_skill(task: str) -> str:
+            # Pre-run hook: reset per-run state (e.g. research flags)
+            pre_run = getattr(self, '_pre_run', None)
+            if pre_run:
+                pre_run()
             last_exc = None
             for attempt in range(3):  # 1 + 2 retries
                 try:
