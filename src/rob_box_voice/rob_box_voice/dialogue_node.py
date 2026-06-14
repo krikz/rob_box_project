@@ -2109,6 +2109,8 @@ class DialogueNode(Node):
                 f"{theme_line}"
                 f"{persona_line}"
                 "ПОРЯДОК ДЕЙСТВИЙ (строго по шагам): "
+                "0) Сначала вызови list_tracks() — проверь, нет ли в библиотеке готовых треков под тему вечеринки. "
+                "   Если есть подходящие — используй их код как основу/вдохновение для своих треков! "
                 "1) Сохрани план сета (5-8 треков) через save_dj_set_plan(). "
                 "   В плане каждый трек: стиль, BPM, тональность, синты, атмосфера — всё в духе ТЕМЫ вечеринки. "
                 "   Дуга: вход → нарастание → пик → спуск. "
@@ -2125,7 +2127,13 @@ class DialogueNode(Node):
                 "🚫 АНТИ-ЭСКАЛАЦИЯ: барабаны amp≤0.3, синты amp≤0.7, dur≥0.5, degree ≤ 5 нот. "
                 "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
                 "❌ НЕ используй pianovel и piano — оба цокают (MdaPiano физмодель). Вместо них rhpiano (FM Rhodes, чистый звук). "
-                "✅ Доступные синты: rhpiano, karp, pads, strings, bass, dub, space, pluck, saw, sin, pulse."
+                "✅ Доступные синты: "
+                "Melody: rhpiano, blip, arpy, epiano, karp, sitar, marimba, bell, cs80lead, supersawlead, imperialbrass, strangerarp. "
+                "Bass: dub, wobblebass, fuzz, dirt, subbass, moogbass, bass, retrobass (oct=2..3). "
+                "Pads: strings, pads, ambi, space, sinepad, warmpad, marchstrings, strangerpulsepad. "
+                "Brass: brass, flute, soprano, eoboe, organ, strangerbrass. "
+                "Glitch: rave, donk, varsaw, pulse, tb303. "
+                "⚠️ Для Stranger Things/stil: strangerpulsepad + retrobass + strangerarp + strangerbrass."
             )
 
         # Переходы #2+ — агент идёт по своему плану
@@ -2160,7 +2168,12 @@ class DialogueNode(Node):
             "❌ Если это ПОСЛЕДНИЙ трек по плану — попрощайся и вызови set_dj_mode(enabled=False) для завершения сета! "
             "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
             "❌ НЕ используй pianovel и piano — оба цокают (MdaPiano физмодель). Вместо них rhpiano (FM Rhodes, чистый звук). "
-            "✅ Доступные синты: rhpiano, karp, pads, strings, bass, dub, space, pluck, saw, sin, pulse. "
+            "✅ Доступные синты: "
+            "Melody: rhpiano, blip, arpy, epiano, karp, sitar, marimba, bell, cs80lead, supersawlead, imperialbrass, strangerarp. "
+            "Bass: dub, wobblebass, fuzz, dirt, subbass, moogbass, bass, retrobass (oct=2..3). "
+            "Pads: strings, pads, ambi, space, sinepad, warmpad, marchstrings, strangerpulsepad. "
+            "Brass: brass, flute, soprano, eoboe, organ, strangerbrass. "
+            "Glitch: rave, donk, varsaw, pulse, tb303. "
         )
 
     def _on_dj_mode_msg(self, msg: String) -> None:
