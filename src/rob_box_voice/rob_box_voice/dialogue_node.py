@@ -2379,10 +2379,23 @@ class DialogueNode(Node):
 
     def _on_dj_tick_check(self) -> None:
         """Every-5s timer: fire autonomous DJ transition when it's time."""
+        now = time.time()
+
+        # Auto-stop music if DJ was disabled and cooldown expired.
+        # MUST be BEFORE the _dj_mode_enabled check — otherwise it never runs
+        # when DJ is off (the function returns immediately).
+        if self._dj_stop_at and now >= self._dj_stop_at:
+            self._dj_stop_at = 0.0
+            try:
+                self._mcp.execute_tool_call_sync("stop_music", {}, timeout=10.0)
+                self.get_logger().info("🎧 DJ auto-stop: музыка остановлена")
+            except Exception as e:
+                self.get_logger().warning(f"🎧 DJ auto-stop: ошибка stop_music: {e}")
+            return
+
         if not self._dj_mode_enabled:
             return
 
-        now = time.time()
         if now < self._dj_next_transition_at:
             return
 
@@ -2412,16 +2425,6 @@ class DialogueNode(Node):
             self._dj_theme = ""
             self._dj_set_plan = ""
             self._dj_persona = ""
-            return
-
-        # Auto-stop music if DJ was disabled and cooldown expired
-        if self._dj_stop_at and now >= self._dj_stop_at:
-            self._dj_stop_at = 0.0
-            try:
-                self._mcp.execute_tool_call_sync("stop_music", {}, timeout=10.0)
-                self.get_logger().info("🎧 DJ auto-stop: музыка остановлена")
-            except Exception as e:
-                self.get_logger().warning(f"🎧 DJ auto-stop: ошибка stop_music: {e}")
             return
 
         # Устанавливаем безопасный фолбэк-интервал (45с) — LLM должен перезаписать
