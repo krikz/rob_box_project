@@ -211,6 +211,15 @@ class DialogueNode(Node):
         # it until the action is fully complete (TTS finished / sound done).
         self._output_lock = asyncio.Lock()
 
+        # ── Doom-loop protection (MiMo duplicate tool calls) ───────
+        # MiMo v2.5 Pro has a known bug: generates duplicate identical tool calls.
+        # Xiaomi's own MiMo-Code repo (processor.ts) has explicit doom-loop detection.
+        # We track recent tool calls by (name, args_hash) and block consecutive
+        # identical calls that exceed the threshold.
+        self._doom_loop_tracker: deque = deque(maxlen=30)
+        self._doom_loop_lock = threading.Lock()
+        self._doom_loop_threshold: int = 2  # block on Nth consecutive identical call
+
         # ── ROS2 pub/sub ─────────────────────────────────────────────
         cbg = ReentrantCallbackGroup()
         qos_r = QoSProfile(
@@ -668,6 +677,15 @@ class DialogueNode(Node):
         lock = self._output_lock
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            # ── Doom-loop: block consecutive identical MCP tool calls ──
+            if self._check_doom_loop(tool_name, params):
+                self.get_logger().warning(
+                    f"🔄 DOOM LOOP BLOCKED (MCP): {tool_name}"
+                )
+                return (
+                    f"⚠️ DUPLICATE BLOCKED: {tool_name} уже был вызван с такими же аргументами. "
+                    f"НЕ повторяй! Перейди к следующему шагу."
+                )
             self._tools_called.append(tool_name)
             result = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -1225,6 +1243,15 @@ class DialogueNode(Node):
         lock = self._output_lock
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
+            # ── Doom-loop: block consecutive identical MCP tool calls ──
+            if self._check_doom_loop(tool_name, params):
+                self.get_logger().warning(
+                    f"🔄 DOOM LOOP BLOCKED (output-MCP): {tool_name}"
+                )
+                return (
+                    f"⚠️ DUPLICATE BLOCKED: {tool_name} уже был вызван с такими же аргументами. "
+                    f"НЕ повторяй! Перейди к следующему шагу."
+                )
             self._tools_called.append(tool_name)
             result = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -1441,16 +1468,15 @@ class DialogueNode(Node):
                 # Thinking mode disabled via extra_body to ensure reliable tool calls.
                 tool_choice="auto",
             )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_music",
-                    tool_description=(
-                        "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
-                        "остановку музыки или изменение музыкального состояния. "
-                        "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
-                    ),
-                )
+            _music_tool = skill.as_tool(
+                tool_name="handle_music",
+                tool_description=(
+                    "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
+                    "остановку музыки или изменение музыкального состояния. "
+                    "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
+                ),
             )
+            skill_tools.append(self._wrap_tool_with_doom_loop(_music_tool))
             self.get_logger().info("✅ MusicSkill loaded")
         except Exception as exc:
             self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
@@ -1470,16 +1496,15 @@ class DialogueNode(Node):
                 max_tokens=1000,
                 tool_choice="auto",
             )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_navigation",
-                    tool_description=(
-                        "Навигационный скилл: переместить робота в именованную точку, "
-                        "сохранить/удалить/список точек (вейпоинтов), "
-                        "картографирование (маппинг), направление движения."
-                    ),
-                )
+            _nav_tool = skill.as_tool(
+                tool_name="handle_navigation",
+                tool_description=(
+                    "Навигационный скилл: переместить робота в именованную точку, "
+                    "сохранить/удалить/список точек (вейпоинтов), "
+                    "картографирование (маппинг), направление движения."
+                ),
             )
+            skill_tools.append(self._wrap_tool_with_doom_loop(_nav_tool))
             self.get_logger().info("✅ NavigationSkill loaded")
         except Exception as exc:
             self.get_logger().error(f"❌ NavigationSkill build failed: {exc}")
@@ -1495,15 +1520,14 @@ class DialogueNode(Node):
                 adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill",
                 tool_choice="auto",
             )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_memory",
-                    tool_description=(
-                        "Модуль памяти: сохранить новую информацию или найти "
-                        "ранее сохранённые факты в долгосрочной памяти."
-                    ),
-                )
+            _mem_tool = skill.as_tool(
+                tool_name="handle_memory",
+                tool_description=(
+                    "Модуль памяти: сохранить новую информацию или найти "
+                    "ранее сохранённые факты в долгосрочной памяти."
+                ),
             )
+            skill_tools.append(self._wrap_tool_with_doom_loop(_mem_tool))
             self.get_logger().info("✅ MemorySkill loaded")
         except Exception as exc:
             self.get_logger().error(f"❌ MemorySkill build failed: {exc}")
@@ -1517,15 +1541,14 @@ class DialogueNode(Node):
                 adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill",
                 tool_choice="auto",
             )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_status",
-                    tool_description=(
-                        "Модуль статуса: батарея, текущее время, статус робота, "
-                        "изменение громкости или высоты голоса."
-                    ),
-                )
+            _status_tool = skill.as_tool(
+                tool_name="handle_status",
+                tool_description=(
+                    "Модуль статуса: батарея, текущее время, статус робота, "
+                    "изменение громкости или высоты голоса."
+                ),
             )
+            skill_tools.append(self._wrap_tool_with_doom_loop(_status_tool))
             self.get_logger().info("✅ StatusSkill loaded")
         except Exception as exc:
             self.get_logger().error(f"❌ StatusSkill build failed: {exc}")
@@ -1553,15 +1576,14 @@ class DialogueNode(Node):
                     max_tokens=900,
                     tool_choice="auto",
                 )
-                skill_tools.append(
-                    skill.as_tool(
-                        tool_name="handle_faq",
-                        tool_description=(
-                            "FAQ мероприятия: поиск точных ответов по вопросам о событии, поступлении, "
-                            "локациях, расписании и других организационных деталях."
-                        ),
-                    )
+                _faq_tool = skill.as_tool(
+                    tool_name="handle_faq",
+                    tool_description=(
+                        "FAQ мероприятия: поиск точных ответов по вопросам о событии, поступлении, "
+                        "локациях, расписании и других организационных деталях."
+                    ),
                 )
+                skill_tools.append(self._wrap_tool_with_doom_loop(_faq_tool))
                 self.get_logger().info("✅ FAQSkill loaded")
             except Exception as exc:
                 self.get_logger().error(f"❌ FAQSkill build failed: {exc}")
@@ -1773,6 +1795,8 @@ class DialogueNode(Node):
         self._spoken_texts = []
         with self._recent_speak_lock:
             self._recent_speak.clear()
+        with self._doom_loop_lock:
+            self._doom_loop_tracker.clear()
         self._tools_called = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
         if self._voice_memory is not None:
@@ -2028,6 +2052,73 @@ class DialogueNode(Node):
                 item["output"] = item["output"][:max_len] + "…[truncated]"
             result.append(item)
         return result
+
+    # ────────────────────────────────────────────────────────────────
+    # Doom-loop protection
+    # ────────────────────────────────────────────────────────────────
+
+    def _check_doom_loop(self, tool_name: str, args_dict: dict) -> bool:
+        """Check if this tool call is a doom-loop duplicate (MiMo bug).
+
+        MiMo v2.5 Pro sometimes generates the same tool_call multiple times
+        in a single agent turn.  This tracks recent calls by (tool_name,
+        args_hash) and returns True when the Nth consecutive identical call
+        is detected (N = self._doom_loop_threshold).
+
+        Pattern from Xiaomi MiMo-Code repo (processor.ts):
+          recentParts.slice(-THRESHOLD).every(part =>
+            part.tool === toolName &&
+            JSON.stringify(part.input) === JSON.stringify(input))
+        """
+        try:
+            args_hash = hash(json.dumps(args_dict, sort_keys=True, ensure_ascii=False))
+        except (TypeError, ValueError):
+            args_hash = hash(str(args_dict))
+        now = time.time()
+        with self._doom_loop_lock:
+            # Count consecutive identical calls from the end of the tracker
+            consecutive = 0
+            for name, ahash, ts in reversed(self._doom_loop_tracker):
+                if name == tool_name and ahash == args_hash and (now - ts) < 60.0:
+                    consecutive += 1
+                else:
+                    break
+            if consecutive >= self._doom_loop_threshold:
+                self.get_logger().warning(
+                    f"🔄 DOOM LOOP: {tool_name} called {consecutive + 1}x with same args — BLOCKING"
+                )
+                return True
+            self._doom_loop_tracker.append((tool_name, args_hash, now))
+            return False
+
+    def _wrap_tool_with_doom_loop(self, tool):
+        """Wrap a FunctionTool's invoke with doom-loop protection.
+
+        Used for skill sub-agent tools (handle_music, handle_navigation, etc.)
+        that don't go through the _call() MCP helper.
+        """
+        original_invoke = tool.on_invoke_tool
+        tool_name = tool.name
+        checker = self._check_doom_loop
+        logger = self.get_logger
+
+        async def _wrapped_invoke(ctx, args_json):
+            try:
+                args = json.loads(args_json) if isinstance(args_json, str) else args_json
+            except Exception:
+                args = {}
+            if checker(tool_name, args):
+                logger().warning(
+                    f"🔄 DOOM LOOP BLOCKED (skill): {tool_name}"
+                )
+                return (
+                    f"⚠️ DUPLICATE BLOCKED: {tool_name} уже был вызван с такими же аргументами. "
+                    f"НЕ повторяй этот вызов! Перейди к следующему шагу."
+                )
+            return await original_invoke(ctx, args_json)
+
+        tool.on_invoke_tool = _wrapped_invoke
+        return tool
 
     # ────────────────────────────────────────────────────────────────
     # Helpers
