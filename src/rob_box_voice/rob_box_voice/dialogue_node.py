@@ -1815,7 +1815,11 @@ class DialogueNode(Node):
 
             # Auto-speak fallback: if LLM returned text without calling
             # speak_text, speak the response directly so the robot is never silent.
-            if not self._spoken_texts and spoken:
+            # BUT: suppress for DJ planning tools — they produce internal state,
+            # not user-facing speech. LLM should call speak_text explicitly.
+            _DJ_PLANNING_TOOLS = {"save_dj_set_plan", "save_dj_persona", "save_dj_theme", "set_dj_mode"}
+            _is_dj_planning = bool(tool_names_used & _DJ_PLANNING_TOOLS)
+            if not self._spoken_texts and spoken and not _is_dj_planning:
                 clean_spoken = re.sub(
                     r"^\[выполнено через:[^\]]*\]\s*", "", spoken
                 ).strip()
