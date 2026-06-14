@@ -120,6 +120,29 @@ Plans:
 - [ ] 03.2-06-PLAN.md — Iterate: fix top 3 UAT issues, re-deploy, re-test (Wave 4, conditional)
 - [ ] 03.2-07-PLAN.md — Final Report: before/after scores, lessons learned (Wave 4)
 
+### Phase 03.3: MiMo-Code Patterns Adoption: LLM Resilience Layer
+
+**Goal:** Port 4 battle-tested patterns from Xiaomi MiMo-Code repo into dialogue_node.py to make the voice assistant resilient to LLM failures: empty responses, context overflow, repeated steps, and aggressive history truncation
+**Requirements**: LLM-01, LLM-02, LLM-03, LLM-04
+**Depends on:** Phase 03.2
+**Branch:** `feature/phase-3.3-llm-resilience`
+**Success Criteria** (what must be TRUE):
+  1. `_classify_response()` correctly identifies: final, continue, think-only, invalid, failed — tested with 5+ mock scenarios
+  2. Context pressure level (0-3) calculated before each LLM call; level ≥ 2 triggers memory-flush system-reminder injection
+  3. Repeated-step detection: when LLM calls same tool+args ≥ 3 times, a `<system-reminder>` nudge is injected BEFORE doom-loop hard block
+  4. `_truncate_history_outputs()` uses head+tail preservation (1500+1500 chars) instead of flat 200-char truncation
+  5. Empty response recovery: think-only/invalid responses get one retry with nudge before fallback speech
+  6. All changes work for ANY LLM provider (not MiMo-specific) — no provider-specific branches
+  7. No regression: existing doom-loop protection, speak_text dedup, DJ mode all still work
+  8. Log output clearly shows pressure level and classification for debugging
+**Plans:** 4 plans in 2 waves
+
+Plans:
+- [ ] 03.3-01-PLAN.md — Port `_classify_response()` from classify.ts + integrate into `_agent_run()` result handling (Wave 1)
+- [ ] 03.3-02-PLAN.md — Add `pressureLevel()` from overflow.ts + system-reminder injection for memory flush and repeated steps (Wave 1)
+- [ ] 03.3-03-PLAN.md — Upgrade `_truncate_history_outputs()` to head+tail preservation (1500+1500) from prune.ts pattern (Wave 2)
+- [ ] 03.3-04-PLAN.md — Integration test: deploy to robot, verify all 4 patterns work in live DJ + voice session (Wave 2)
+
 ### Phase 4: GitHub Issues Integration
 **Goal**: GitHub Issues = единственный источник правды для задач/багов/tech-debt; tasks.json удалён; ИИ-агент работает через `gh` CLI
 **Depends on**: Phase 3
@@ -144,4 +167,5 @@ Plans:
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
 | 03.2. Music Quality Testing & Evaluation | 0/7 | 🔄 In Progress | - |
+| 03.3. MiMo-Code LLM Resilience Layer | 0/4 | Not started | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
