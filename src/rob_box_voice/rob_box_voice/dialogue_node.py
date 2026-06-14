@@ -1485,7 +1485,7 @@ class DialogueNode(Node):
                     "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
                 ),
             )
-            skill_tools.append(self._wrap_tool_with_doom_loop(_music_tool))
+            skill_tools.append(self._wrap_tool_with_doom_loop(self._wrap_music_with_research_gate(_music_tool)))
             self.get_logger().info("✅ MusicSkill loaded")
         except Exception as exc:
             self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
@@ -2099,6 +2099,35 @@ class DialogueNode(Node):
                 return True
             self._doom_loop_tracker.append((tool_name, args_hash, now))
             return False
+
+    def _wrap_music_with_research_gate(self, tool):
+        """Block handle_music in DJ mode unless search_artist_style was called first.
+
+        LLM often skips the mandatory research steps (search_artist_style + list_tracks)
+        and goes straight to handle_music, producing generic music.
+        This wrapper programmatically enforces the research-first flow.
+        """
+        original_invoke = tool.on_invoke_tool
+        research_done = lambda: self._dj_research_done
+        dj_active = lambda: self._dj_mode_enabled
+        logger = self.get_logger
+
+        async def _gated_invoke(ctx, args_json):
+            if dj_active() and not research_done():
+                logger().warning(
+                    "🚫 handle_music BLOCKED: search_artist_style not called yet! "
+                    "DJ research gate enforced."
+                )
+                return (
+                    "🚫 СТОП! Ты не вызвал search_artist_style() — это ОБЯЗАТЕЛЬНЫЙ шаг 0! "
+                    "Немедленно вызови search_artist_style('тема + жанр + ассоциации') "
+                    "и затем list_tracks(tag=...), ПОСЛЕ ЧЕГО можно вызывать handle_music. "
+                    "БЕЗ research шагов музыка будет скучной и generic!"
+                )
+            return await original_invoke(ctx, args_json)
+
+        tool.on_invoke_tool = _gated_invoke
+        return tool
 
     def _wrap_tool_with_doom_loop(self, tool):
         """Wrap a FunctionTool's invoke with doom-loop protection.
