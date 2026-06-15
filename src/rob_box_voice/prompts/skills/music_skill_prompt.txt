@@ -141,7 +141,7 @@ p3 >> pads(dur=4, amp=0.3, sus=6, room=0.5).follow(p1) + (0,2,4)
    p3 >> arpy(dur=1, amp=0.25, oct=6).follow(p1)     # lead auto-follows
 
 ⚡ TRACK STRUCTURE (only if user asks for "трек", "полноценный трек", "с секциями"):
-   MAX 25 lines total. Always end with Clock.future(N, lambda: Clock.clear()) in outro!
+   MAX 25 lines total. End with a final pattern that loops naturally - the system auto-handles cleanup.
    Intro 8-16 bars → Verse 16-32 bars → Chorus 16-32 bars → Bridge 8-16 → Outro 8-16
    Development: gradual layers, drum pattern changes, var() chords, linvar() filters
 
