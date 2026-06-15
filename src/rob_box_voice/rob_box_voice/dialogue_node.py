@@ -709,6 +709,12 @@ class DialogueNode(Node):
             text = re.sub(
                 r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
             ).strip()
+            # ── DJ mode filter: block track descriptions, allow only MC phrases ──
+            if self._dj_mode_enabled and self._is_track_description(text):
+                self.get_logger().warning(
+                    f"🔇 DJ speak_text FILTERED: track description blocked ({text[:80]}...)"
+                )
+                return "TASK_COMPLETE"
             # ── Dedup: skip if same text was spoken within last 30 seconds ──
             now = time.time()
             with self._recent_speak_lock:
@@ -1310,6 +1316,12 @@ class DialogueNode(Node):
             text = re.sub(
                 r"^\[(?:выполнено через|executed via):[^\]]*\]\s*", "", text
             ).strip()
+            # ── DJ mode filter: block track descriptions, allow only MC phrases ──
+            if self._dj_mode_enabled and self._is_track_description(text):
+                self.get_logger().warning(
+                    f"🔇 DJ speak_text FILTERED: track description blocked ({text[:80]}...)"
+                )
+                return "TASK_COMPLETE"
             # ── Dedup: skip if same text was spoken within last 30 seconds ──
             now = time.time()
             with self._recent_speak_lock:
@@ -2398,6 +2410,45 @@ class DialogueNode(Node):
 
     # ── DJ mode ─────────────────────────────────────────────────────
 
+    # Keywords that indicate a track description rather than an MC phrase.
+    _DJ_TRACK_DESC_KEYWORDS = re.compile(
+        r"(?i)"
+        r"(длительность|инструменты|тональность|атмосфера|характер|описание"
+        r"|BPM|bpm|amp=|dur=|sus=|degree="
+        r"|C minor|C major|G minor|G major|D minor|D major|A minor|A major"
+        r"|E minor|E major|F minor|F major|B minor|B major"
+        r"|mixolydian|dorian|phrygian|lydian|aeolian|locrian"
+        r"|sitar hook|synth pad|bass line|drum pattern|kick drum"
+        r"|heavy bass|eerie synth|mechanical|сердцебиение"
+        r"|rave|strangerpulse|moogb|dubstep|synthwave|industrial)"
+    )
+
+    def _is_track_description(self, text: str) -> bool:
+        """Detect if speak_text content is a technical track description (not an MC phrase).
+
+        During DJ mode the LLM sometimes ignores the prompt and speaks track
+        metadata (key, BPM, instruments, descriptions).  This guard blocks such
+        texts from being spoken.
+
+        Returns True if text looks like a track description that should be blocked.
+        """
+        # Single word or very short phrase with no punctuation — likely a track element
+        if len(text.split()) <= 2 and not re.search(r"[!?.]", text):
+            return True
+        # Contains technical keywords
+        if self._DJ_TRACK_DESC_KEYWORDS.search(text):
+            return True
+        # Multi-line text with technical structure (e.g. "сердцебиение\nДлительность: 60 сек")
+        if "\n" in text and any(
+            kw in text.lower()
+            for kw in ["длительность", "инструменты", "атмосфера", "bpm", "amp"]
+        ):
+            return True
+        # Text looks like a code description (contains "=" or code-like patterns)
+        if re.search(r"\w+=\d", text) and len(text) < 100:
+            return True
+        return False
+
     def _build_dj_prompt(self, n: int) -> str:
         """Build DJ auto-transition prompt.
 
@@ -2443,6 +2494,8 @@ class DialogueNode(Node):
                 f"   Внутри handle_music — только музыка и DJ control; речь НЕ поручай MusicSkill. "
                 f"3) Одна короткая фраза через speak_text() (до 15 слов) — поздоровайся и объяви тему. НЕ рассказывай план сета! "
                 "🚫 speak_text = ТОЛЬКО живая MC-фраза! НЕ озвучивай: названия треков, тональности, BPM, инструменты, заголовки плана! "
+                "❌ ПЛОХО: 'сердцебиение', 'C minor', 'Длительность: 60 сек', 'инструменты: rave' "
+                "✅ ХОРОШО: 'Добро пожаловать в тёмный мир!', 'Приготовьтесь к удару!', 'Робот-диджей на связи!' "
                 "🔊 Доступные play_sound: robot_happy, robot_confirm, robot_affirm, robot_surprise, robot_thinking, robot_cute, ui_confirm, ui_chime, ui_roger. НЕ выдумывай другие!" 
                 "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА для музыки: "
                 "1) ПЕРВАЯ строка кода = Clock.clear(). "
@@ -2494,8 +2547,11 @@ class DialogueNode(Node):
             f"Сыграй трек #{n} через handle_music. "
             f"{'(Это последний трек по плану — после него коротко попрощайся с аудиторией и вызови set_dj_mode(enabled=False) чтобы завершить сет!) ' if plan_track_count > 0 and n == plan_track_count else ''}"
             "Изредка (раз в 3-4 перехода) короткая MC-фраза (до 12 слов) через speak_text(). Не говори на каждом переходе! "
-            "⚠️ Говори ТОЛЬКО про текущий трек — НЕ упоминай другие треки плана, не читай весь список! "
-            "🚫 НИКОГДА НЕ ОЗВУЧИВАЙ: тональность (G mixolydian), BPM, инструменты (sitar hook), описание трека! speak_text = ТОЛЬКО короткая энергичная MC-фраза (1-2 предложения)! "
+            "⚠️ Говори ТОЛЬКО про настроение/энергию — НЕ упоминай другие треки плана, не читай весь список! "
+            "🚫 ЗАПРЕЩЕНО в speak_text: тональность, BPM, инструменты, описание трека, технические детали! "
+            "❌ ПЛОХО: 'сердцебиение', 'industrial kick', 'C minor', 'Длительность: 60 сек', 'инструменты: rave, moogbass' "
+            "✅ ХОРОШО: 'Танцуй, пока можешь!', 'Тьма поглощает!', 'Ощущаешь этот бас?', 'Роботы захватывают танцпол!' "
+            "speak_text = ТОЛЬКО короткая энергичная MC-фраза (1-2 предложения, до 15 слов)! "
             "🚫 НИКОГДА НЕ ПОВТОРЯЙ одну и ту же фразу на разных переходах — каждая фраза уникальна! "
             "🔊 Доступные play_sound: robot_happy, robot_confirm, robot_affirm, robot_surprise, robot_thinking, robot_cute, ui_confirm, ui_chime, ui_roger. НЕ выдумывай другие!" 
             f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека. "
