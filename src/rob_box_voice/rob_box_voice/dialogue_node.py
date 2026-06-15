@@ -2263,15 +2263,10 @@ class DialogueNode(Node):
         async def _gated_invoke(ctx, args_json):
             if dj_active() and not research_done():
                 logger().warning(
-                    "🚫 handle_music BLOCKED: search_artist_style not called yet! "
-                    "DJ research gate enforced."
+                    "⚠️ handle_music: search_artist_style not called yet — "
+                    "auto-allowing (soft gate)."
                 )
-                return (
-                    "🚫 СТОП! Ты не вызвал search_artist_style() — это ОБЯЗАТЕЛЬНЫЙ шаг 0! "
-                    "Немедленно вызови search_artist_style('тема + жанр + ассоциации') "
-                    "и затем list_tracks(tag=...), ПОСЛЕ ЧЕГО можно вызывать handle_music. "
-                    "БЕЗ research шагов музыка будет скучной и generic!"
-                )
+                self._dj_research_done = True  # auto-unlock for next calls
             return await original_invoke(ctx, args_json)
 
         tool.on_invoke_tool = _gated_invoke
