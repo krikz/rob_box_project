@@ -258,7 +258,7 @@ class MCPServer(Node):
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
-        self.registry.register(SetDjModeTool(self))
+        self.registry.register(SetDjModeTool(self, music_manager))
 
         try:
             track_library = TrackLibrary()

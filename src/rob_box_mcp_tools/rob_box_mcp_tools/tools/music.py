@@ -93,7 +93,22 @@ class MusicManager:
         self._renardo_available: Optional[bool] = None
         #: Последняя ошибка инициализации renardo для диагностики
         self._renardo_last_error: Optional[str] = None
+        #: DJ mode flag — when True, strip Clock.future(outro/Clock.clear()) from code
+        self._dj_mode_enabled: bool = False
         self._initialize_renardo()
+
+    # ------------------------------------------------------------------
+    # DJ Mode
+    # ------------------------------------------------------------------
+
+    @property
+    def dj_mode_enabled(self) -> bool:
+        """True when DJ mode is active — Clock.future(outro) will be stripped."""
+        return self._dj_mode_enabled
+
+    def set_dj_mode(self, enabled: bool) -> None:
+        """Set DJ mode flag. Called by SetDjModeTool."""
+        self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -608,6 +623,36 @@ class ExecuteMusicCodeTool(MCPTool):
 
     def execute(self, code: str, pattern_name: Optional[str] = None) -> MCPToolResult:
         """Выполнить Renardo-код."""
+        # ── DJ mode: strip Clock.future(outro/Clock.clear()) patterns ──
+        # MusicSkill sub-agent bypasses dialogue_node filter, so we need it here too.
+        if self._manager.dj_mode_enabled:
+            import re as _re
+            original_len = len(code)
+            # Pattern 1: Clock.future(N, lambda: Clock.clear()) — inline lambda
+            code = _re.sub(
+                r"Clock\.future\(\s*\d+\s*,\s*lambda\s*:\s*Clock\.clear\(\)\s*\)\s*\n?",
+                "",
+                code,
+            )
+            # Pattern 2: def outro(): ... Clock.clear() ... Clock.future(N, outro)
+            code = _re.sub(
+                r"def\s+\w+\s*\(\s*\)\s*:\s*\n(?:\s+[^\n]*\n)*?\s+Clock\.clear\(\)\s*\n"
+                r"(?:\s+[^\n]*\n)*?\s*Clock\.future\(\s*\d+\s*,\s*\w+\s*\)\s*\n?",
+                "",
+                code,
+                flags=_re.MULTILINE,
+            )
+            # Pattern 3: def outro(): Clock.clear(); Clock.future(N, outro) — single line
+            code = _re.sub(
+                r"def\s+\w+\s*\(\s*\)\s*:\s*Clock\.clear\(\)\s*;?\s*Clock\.future\(\s*\d+\s*,\s*\w+\s*\)\s*\n?",
+                "",
+                code,
+            )
+            if len(code) != original_len:
+                self.log_info(
+                    f"🔇 DJ execute_music_code: stripped Clock.future(outro) "
+                    f"({original_len}→{len(code)} chars)"
+                )
         self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
         result = self._manager.execute_code(code, pattern_name)
         if result["success"]:
@@ -1326,8 +1371,9 @@ class DeleteTrackTool(MCPTool):
 class SetDjModeTool(MCPTool):
     """Включить или выключить режим DJ — автономные плавные переходы между треками."""
 
-    def __init__(self, node) -> None:
+    def __init__(self, node, manager: MusicManager) -> None:
         super().__init__(node)
+        self._manager = manager
         from std_msgs.msg import String as _String
         self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
 
@@ -1391,6 +1437,8 @@ class SetDjModeTool(MCPTool):
     def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
+        # Update MusicManager DJ flag so execute_music_code strips Clock.future(outro)
+        self._manager.set_dj_mode(enabled)
         payload: dict = {"enabled": enabled}
         if next_transition_sec is not None:
             payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
