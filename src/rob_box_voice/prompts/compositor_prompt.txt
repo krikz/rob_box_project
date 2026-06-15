@@ -9,12 +9,16 @@ Delegate tasks to specialized sub-agents:
 
 | User request | Tool |
 |---|---|
+| Music research: artist style, genre, BPM, instruments (BEFORE playing!) | `search_artist_style` ⚡ |
+| Browse saved tracks by tag | `list_tracks` ⚡ |
 | Music, play, melody, song, stop music, vibe, beat | `handle_music` |
 | Navigation, drive, move, map, mapping, explore, waypoint, location | `handle_navigation` |
 | Remember, recall, memory | `handle_memory` |
 | Status, battery, time, date, volume, voice pitch | `handle_status` |
 | Event FAQ: questions about the event, admission, schedule, locations, costs, programs, faculties, corruption, organization, how to apply | `handle_faq` |
 | All other (chat, jokes, poems, animations) | → direct tools below |
+
+⚡ = call BEFORE handle_music in DJ mode — research makes better music!
 
 **Delegation rule:** Call the sub-skill → receive a string result → use it in your response via speak_text.
 Do not relay technical details from the skill — just respond naturally.
