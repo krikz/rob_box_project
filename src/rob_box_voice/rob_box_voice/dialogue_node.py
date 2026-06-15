@@ -291,6 +291,7 @@ class DialogueNode(Node):
         self._dj_persona: str = ""  # DJ persona/name set by user (e.g. 'Демогорган')
         self._dj_research_done: bool = False  # True after search_artist_style called in DJ session
         self._dj_stop_at: float = 0.0  # timestamp to auto-stop music after DJ disabled
+        self._dj_enabled_at: float = 0.0  # timestamp when DJ was enabled (premature disable guard)
         self.create_timer(5.0, self._on_dj_tick_check)
 
         self._log_config()
@@ -717,9 +718,10 @@ class DialogueNode(Node):
                             f"🔇 speak_text dedup: skipping duplicate ({text[:50]}...)"
                         )
                         return "TASK_COMPLETE"
-                # ── Cap: max 3 speak_text per agent run (LLM sometimes repeats) ──
+                # ── Cap: 6 calls/30s in DJ mode, 3 calls/30s otherwise ──
+                speak_cap = 6 if self._dj_mode_enabled else 3
                 recent_count = sum(1 for ts, _ in self._recent_speak if (now - ts) < 30.0)
-                if recent_count >= 3:
+                if recent_count >= speak_cap:
                     self.get_logger().warning(
                         f"🔇 speak_text cap: {recent_count} calls in 30s — skipping ({text[:50]}...)"
                     )
@@ -1157,6 +1159,23 @@ class DialogueNode(Node):
             enabled=False: выключить DJ режим. theme передавай только при первом запуске
             или при полной смене темы вечеринки.
             """
+            # ── Premature disable guard: block set_dj_mode(false) within 60s of enabling ──
+            if not enabled and self._dj_mode_enabled:
+                if self._dj_enabled_at and (time.time() - self._dj_enabled_at) < 60.0:
+                    elapsed = time.time() - self._dj_enabled_at
+                    self.get_logger().warning(
+                        f"🎧 set_dj_mode(false) BLOCKED — DJ включён всего {elapsed:.0f}с назад (мин 60с). "
+                        f"Дай вечеринке поработать!"
+                    )
+                    return (
+                        "❌ Нельзя выключать DJ mode так быстро! Вечеринка только началась. "
+                        "Дай хотя бы 60 секунд поработать. Если хочешь остановить — подожди."
+                    )
+            # ── Set flag SYNCHRONOUSLY (race condition fix) ──
+            # ROS callback sets it too, but too late for execute_music_code gate.
+            if enabled:
+                self._dj_mode_enabled = True
+                self._dj_enabled_at = time.time()
             params: dict = {"enabled": enabled}
             if next_transition_sec:
                 params["next_transition_sec"] = next_transition_sec
@@ -1301,9 +1320,10 @@ class DialogueNode(Node):
                             f"🔇 speak_text dedup: skipping duplicate ({text[:50]}...)"
                         )
                         return "TASK_COMPLETE"
-                # ── Cap: max 3 speak_text per agent run (LLM sometimes repeats) ──
+                # ── Cap: 6 calls/30s in DJ mode, 3 calls/30s otherwise ──
+                speak_cap = 6 if self._dj_mode_enabled else 3
                 recent_count = sum(1 for ts, _ in self._recent_speak if (now - ts) < 30.0)
-                if recent_count >= 3:
+                if recent_count >= speak_cap:
                     self.get_logger().warning(
                         f"🔇 speak_text cap: {recent_count} calls in 30s — skipping ({text[:50]}...)"
                     )
@@ -2519,6 +2539,7 @@ class DialogueNode(Node):
             self._dj_next_transition_at = time.time() + delay
             self.get_logger().info(f"🎧 DJ Mode: следующий переход через {delay:.0f}с")
             if self._dj_transition_count == 0:
+                self._dj_enabled_at = time.time()
                 self.get_logger().info("🎧 DJ Mode ENABLED")
         else:
             # Выключаем DJ — сбрасываем ВСЕ состояние
@@ -2527,6 +2548,7 @@ class DialogueNode(Node):
             self._dj_theme = ""  # сбрасываем тему при выключении
             self._dj_set_plan = ""  # сбрасываем план при выключении
             self._dj_persona = ""  # сбрасываем персонажа при выключении
+            self._dj_enabled_at = 0.0  # сбрасываем таймер premature guard
             # Auto-stop music after 45s (let last track fade out)
             self._dj_stop_at = time.time() + 45.0
             self.get_logger().info("🎧 DJ Mode DISABLED — автостоп музыки через 45с")
