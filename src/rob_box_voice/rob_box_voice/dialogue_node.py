@@ -1500,6 +1500,42 @@ class DialogueNode(Node):
                 "Немедленно запусти первый трек через handle_music!"
             )
 
+        @function_tool
+        async def set_dj_mode(
+            enabled: bool, next_transition_sec: int = 0, theme: str = ""
+        ) -> str:
+            """Включить или выключить автономный DJ режим.
+
+            enabled=True: после запуска музыки вызови set_dj_mode, чтобы робот сам делал переходы.
+            enabled=False: выключить DJ режим. theme передавай только при первом запуске
+            или при полной смене темы вечеринки.
+            """
+            # ── Premature disable guard: block set_dj_mode(false) within 120s OR < 3 transitions ──
+            if not enabled and self._dj_mode_enabled:
+                too_soon = self._dj_enabled_at and (time.time() - self._dj_enabled_at) < 120.0
+                too_few = self._dj_transition_count < 3
+                if too_soon or too_few:
+                    elapsed = time.time() - self._dj_enabled_at if self._dj_enabled_at else 0
+                    self.get_logger().warning(
+                        f"🎧 set_dj_mode(false) BLOCKED — DJ включён {elapsed:.0f}с назад, "
+                        f"переходов: {self._dj_transition_count} (нужно ≥3 и ≥120с). "
+                        f"Дай вечеринке поработать!"
+                    )
+                    return (
+                        f"❌ Нельзя выключать DJ mode! Вечеринка только началась (переходов: {self._dj_transition_count}, "
+                        f"время: {elapsed:.0f}с). Нужно минимум 3 перехода и 120 секунд. Продолжай играть!"
+                    )
+            # ── Set flag SYNCHRONOUSLY (race condition fix) ──
+            if enabled:
+                self._dj_mode_enabled = True
+                self._dj_enabled_at = time.time()
+            params: dict = {"enabled": enabled}
+            if next_transition_sec:
+                params["next_transition_sec"] = next_transition_sec
+            if theme:
+                params["theme"] = theme
+            return await _call("set_dj_mode", params)
+
         return [
             speak_text,
             play_sound,
@@ -1507,6 +1543,7 @@ class DialogueNode(Node):
             save_dj_set_plan,
             save_dj_persona,
             save_dj_theme,
+            set_dj_mode,
         ]
 
     def _build_skills(self, model) -> list:

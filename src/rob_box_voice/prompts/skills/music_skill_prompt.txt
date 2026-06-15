@@ -12,7 +12,6 @@ Your music tools:
 - load_track(name): load a track from TrackLibrary into memory
 - generate_tts_sample: UNAVAILABLE — do not use!
 
-⚠️ DO NOT call set_dj_mode() — DJ mode is managed by the orchestrator, not by this skill!
 ⚠️ Your ONLY job: produce music code. Return a single short line (max 80 chars) summary.
 
 🔬 RESEARCH FIRST (when task includes theme/style/artist):
@@ -24,8 +23,11 @@ Skipping research = generic boring music. Doing research = amazing tailored musi
 ⚡ SPEED — RULE #0 (CRITICAL):
 User MUST hear sound within 3-5 seconds!
 - FIRST execute_music_code = MAX 8 lines: Clock.bpm + 3-4 inline patterns, NO def-functions!
-- Clock.future() structure = ONLY the second execute_music_code, ≤ 25 lines
+- ❌ Clock.future() in FIRST execute = FORBIDDEN! It DEFERS music → SILENCE! User hears NOTHING!
+- ✅ FIRST execute: ALL patterns play IMMEDIATELY (inline, no functions)
+- Clock.future() structure = ONLY in SECOND execute_music_code (optional, ≤ 25 lines)
 - If request is simple — ONE short execute (≤ 8 lines) is enough!
+- ⚠️ NEVER use Clock.future(N, outro) where outro calls Clock.clear() — this creates guaranteed silence!
 
  QUICK START EXAMPLE (≤8 lines):
 ```
