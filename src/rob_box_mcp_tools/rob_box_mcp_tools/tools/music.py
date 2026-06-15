@@ -36,7 +36,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 _BLOCKED_TOKENS = re.compile(
     r"\b("
     r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
-    r"importlib|builtins|__import__|__builtins__|__class__|__subclasses__|"
+    r"importlib|builtins|__import__|__builtins__|__subclasses__|"
     r"open|exec|eval|compile|globals|locals|vars|delattr"
     r")\b"
 )

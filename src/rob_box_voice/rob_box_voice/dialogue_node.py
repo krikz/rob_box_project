@@ -1159,17 +1159,20 @@ class DialogueNode(Node):
             enabled=False: выключить DJ режим. theme передавай только при первом запуске
             или при полной смене темы вечеринки.
             """
-            # ── Premature disable guard: block set_dj_mode(false) within 60s of enabling ──
+            # ── Premature disable guard: block set_dj_mode(false) within 120s OR < 3 transitions ──
             if not enabled and self._dj_mode_enabled:
-                if self._dj_enabled_at and (time.time() - self._dj_enabled_at) < 60.0:
-                    elapsed = time.time() - self._dj_enabled_at
+                too_soon = self._dj_enabled_at and (time.time() - self._dj_enabled_at) < 120.0
+                too_few = self._dj_transition_count < 3
+                if too_soon or too_few:
+                    elapsed = time.time() - self._dj_enabled_at if self._dj_enabled_at else 0
                     self.get_logger().warning(
-                        f"🎧 set_dj_mode(false) BLOCKED — DJ включён всего {elapsed:.0f}с назад (мин 60с). "
+                        f"🎧 set_dj_mode(false) BLOCKED — DJ включён {elapsed:.0f}с назад, "
+                        f"переходов: {self._dj_transition_count} (нужно ≥3 и ≥120с). "
                         f"Дай вечеринке поработать!"
                     )
                     return (
-                        "❌ Нельзя выключать DJ mode так быстро! Вечеринка только началась. "
-                        "Дай хотя бы 60 секунд поработать. Если хочешь остановить — подожди."
+                        f"❌ Нельзя выключать DJ mode! Вечеринка только началась (переходов: {self._dj_transition_count}, "
+                        f"время: {elapsed:.0f}с). Нужно минимум 3 перехода и 120 секунд. Продолжай играть!"
                     )
             # ── Set flag SYNCHRONOUSLY (race condition fix) ──
             # ROS callback sets it too, but too late for execute_music_code gate.
@@ -2428,6 +2431,7 @@ class DialogueNode(Node):
                 f"   Внутри handle_music — только музыка и DJ control; речь НЕ поручай MusicSkill. "
                 f"3) Одна короткая фраза через speak_text() (до 15 слов) — поздоровайся и объяви тему. НЕ рассказывай план сета! "
                 "🚫 speak_text = ТОЛЬКО живая MC-фраза! НЕ озвучивай: названия треков, тональности, BPM, инструменты, заголовки плана! "
+                "🔊 Доступные play_sound: robot_happy, robot_confirm, robot_affirm, robot_surprise, robot_thinking, robot_cute, ui_confirm, ui_chime, ui_roger. НЕ выдумывай другие!" 
                 "⚠️ ТЕХНИЧЕСКИЕ ПРАВИЛА для музыки: "
                 "1) ПЕРВАЯ строка кода = Clock.clear(). "
                 "2) Максимум 6 паттернов: d1-d3 + p1-p3. sus ≤ 8. "
@@ -2481,6 +2485,7 @@ class DialogueNode(Node):
             "⚠️ Говори ТОЛЬКО про текущий трек — НЕ упоминай другие треки плана, не читай весь список! "
             "🚫 НИКОГДА НЕ ОЗВУЧИВАЙ: тональность (G mixolydian), BPM, инструменты (sitar hook), описание трека! speak_text = ТОЛЬКО короткая энергичная MC-фраза (1-2 предложения)! "
             "🚫 НИКОГДА НЕ ПОВТОРЯЙ одну и ту же фразу на разных переходах — каждая фраза уникальна! "
+            "🔊 Доступные play_sound: robot_happy, robot_confirm, robot_affirm, robot_surprise, robot_thinking, robot_cute, ui_confirm, ui_chime, ui_roger. НЕ выдумывай другие!" 
             f"⚠️ При вызове handle_music в task-строке ОБЯЗАТЕЛЬНО укази тему вечеринки + описание трека. "
             f"   Пример task: '{self._dj_theme} — трек {n}: [название], [стиль], [BPM] BPM, [тональность], [атмосфера]'. "
             "   Внутри handle_music — только музыка и DJ control; речь делай отдельным speak_text(). "
@@ -2495,7 +2500,6 @@ class DialogueNode(Node):
             "🔊 МИНИМАЛЬНАЯ ГРОМКОСТЬ: сумма amp всех паттернов ≥ 0.8 (барабаны ≥ 0.12, синты ≥ 0.15 каждый). "
             "   Хотя бы один ведущий синт с amp ≥ 0.35 — иначе трек будет слишком тихим! "
             "❌ После КАЖДОГО трека вызови set_dj_mode(enabled=True, next_transition_sec=X) для следующего перехода! "
-            "❌ Если это ПОСЛЕДНИЙ трек по плану — попрощайся и вызови set_dj_mode(enabled=False) для завершения сета! "
             "❌ Hi-hat: НЕ '--------' dur=0.5 — используй '--.-' dur=1 (иначе цоканье)! "
             "❌ НЕ используй pianovel и piano — оба цокают (MdaPiano физмодель). Вместо них rhpiano (FM Rhodes, чистый звук). "
             "✅ Доступные синты: "
