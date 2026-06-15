@@ -1128,6 +1128,36 @@ class DialogueNode(Node):
                     "auto-allowing (soft gate)."
                 )
                 self._dj_research_done = True
+            # ── DJ mode: strip Clock.future(outro/Clock.clear()) patterns ──
+            # LLM generates "Clock.future(N, lambda: Clock.clear())" which kills music
+            # after N beats → guaranteed silence before next transition.
+            if self._dj_mode_enabled:
+                original_len = len(code)
+                # Pattern 1: Clock.future(N, lambda: Clock.clear()) — inline lambda
+                code = re.sub(
+                    r"Clock\.future\(\s*\d+\s*,\s*lambda\s*:\s*Clock\.clear\(\)\s*\)\s*\n?",
+                    "",
+                    code,
+                )
+                # Pattern 2: def outro(): ... Clock.clear() ... Clock.future(N, outro)
+                code = re.sub(
+                    r"def\s+\w+\s*\(\s*\)\s*:\s*\n(?:\s+[^\n]*\n)*?\s+Clock\.clear\(\)\s*\n"
+                    r"(?:\s+[^\n]*\n)*?\s*Clock\.future\(\s*\d+\s*,\s*\w+\s*\)\s*\n?",
+                    "",
+                    code,
+                    flags=re.MULTILINE,
+                )
+                # Pattern 3: def outro(): Clock.clear(); Clock.future(N, outro) — single line
+                code = re.sub(
+                    r"def\s+\w+\s*\(\s*\)\s*:\s*Clock\.clear\(\)\s*;?\s*Clock\.future\(\s*\d+\s*,\s*\w+\s*\)\s*\n?",
+                    "",
+                    code,
+                )
+                if len(code) != original_len:
+                    self.get_logger().warning(
+                        f"🔇 DJ execute_music_code: stripped Clock.future(outro) "
+                        f"({original_len}→{len(code)} chars)"
+                    )
             return await _call(
                 "execute_music_code",
                 {"code": code, "pattern_name": pattern_name},
