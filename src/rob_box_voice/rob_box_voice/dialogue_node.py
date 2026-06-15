@@ -1115,17 +1115,13 @@ class DialogueNode(Node):
             Использовать ВСЕГДА когда пользователь просит сыграть мелодию, музыку, ноты.
             Пример: execute_music_code("p1 >> pluck([0,2,4,7], dur=0.5, amp=0.8)", pattern_name="p1")
             """
-            # ── DJ research gate: block execute_music_code until search_artist_style called ──
+            # ── DJ research gate: soft block on execute_music_code until search_artist_style called ──
             if self._dj_mode_enabled and not self._dj_research_done:
                 self.get_logger().warning(
-                    "🚫 execute_music_code BLOCKED: search_artist_style not called yet!"
+                    "⚠️ execute_music_code: search_artist_style not called yet — "
+                    "auto-allowing (soft gate)."
                 )
-                return (
-                    "🚫 СТОП! Ты не вызвал search_artist_style() — это ОБЯЗАТЕЛЬНЫЙ шаг 0! "
-                    "Немедленно вызови search_artist_style('тема + жанр + ассоциации') "
-                    "и затем list_tracks(tag=...), ПОСЛЕ ЧЕГО можно играть музыку. "
-                    "БЕЗ research шагов музыка будет скучной и generic!"
-                )
+                self._dj_research_done = True
             return await _call(
                 "execute_music_code",
                 {"code": code, "pattern_name": pattern_name},
@@ -1429,7 +1425,7 @@ class DialogueNode(Node):
             return f"✅ Принято — теперь я {self._dj_persona}!"
 
         @function_tool
-        def save_dj_theme(theme: str) -> str:  # noqa: F811
+        async def save_dj_theme(theme: str) -> str:  # noqa: F811
             """Обновить тему/контекст вечеринки и немедленно начать новый сет.
 
             Вызывать когда пользователь меняет тип мероприятия или общую тему:
@@ -1466,6 +1462,27 @@ class DialogueNode(Node):
             self.get_logger().info(
                 f"🎧 DJ тема: {old!r} → {self._dj_theme!r} (счётчик сброшен, таймер через 5с)"
             )
+            # ── Immediate feedback: quiet ambient pad + TTS confirmation ──
+            # Fills silence while LLM researches and composes the first real track.
+            try:
+                await _call("execute_music_code", {
+                    "code": (
+                        "Clock.clear()\n"
+                        "Clock.bpm = 80\n"
+                        "p1 >> pads([0, 4, 2, 5], dur=4, oct=4, amp=0.12, room=0.7, mix=0.5, sus=8)"
+                    ),
+                    "pattern_name": "dj_warmup"
+                }, timeout=8.0)
+                self.get_logger().info("🎧 DJ warmup ambient started")
+            except Exception as e:
+                self.get_logger().warning(f"⚠️ DJ warmup ambient failed: {e}")
+            try:
+                await _call("speak_text", {
+                    "text": f"Принято! Составляю сет: {self._dj_theme}...",
+                    "animation": "thinking"
+                }, timeout=10.0)
+            except Exception as e:
+                self.get_logger().warning(f"⚠️ DJ warmup TTS failed: {e}")
             return (
                 f"✅ Тема обновлена: {self._dj_theme}. DJ режим включён. "
                 "Немедленно запусти первый трек через handle_music!"
