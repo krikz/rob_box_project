@@ -32,7 +32,6 @@ from rob_box_llm.providers.deepseek import DeepSeekProvider, _OpenAICompatiblePr
 from rob_box_llm.providers.mimo import MiMoProvider
 from rob_box_llm.provider import LLMMessage, LLMResponse
 
-
 # ---------------------------------------------------------------------------
 # Fake SDK objects
 # ---------------------------------------------------------------------------
@@ -89,9 +88,7 @@ def _ok_response(content: str = "hi", tool_calls=None, finish_reason: str = "sto
 
 
 def _stream_chunk(content: str = "", finish_reason: str | None = None) -> _ResponseObj:
-    return _ResponseObj(
-        choices=[_ChoiceObj(delta=_MessageObj(content=content), finish_reason=finish_reason)]
-    )
+    return _ResponseObj(choices=[_ChoiceObj(delta=_MessageObj(content=content), finish_reason=finish_reason)])
 
 
 class _FakeCompletions:
@@ -243,9 +240,18 @@ def test_stream_yields_chunks_and_stops_on_finish_reason():
 
 
 def test_stream_propagates_tools_to_sdk():
-    p, c = _make_deepseek()
-    c.chat.completions.next_stream = [_stream_chunk("ok", finish_reason="stop")]
+    """Streaming + tools is gated behind ``streaming_tools`` capability.
 
+    The current OpenAI-compatible adapter does not aggregate streaming tool-call
+    deltas, so this combination MUST raise ``CapabilityUnavailableError``
+    before touching the network. Callers that need tools + streaming should
+    fall back to ``complete()``.
+    """
+    from rob_box_llm.errors import CapabilityUnavailableError
+
+    p, c = _make_deepseek()
+
+    # No SDK call should happen — we expect an early capability refusal.
     async def drain():
         async for _ in p.stream(
             [LLMMessage(role="user", content="hi")],
@@ -253,10 +259,23 @@ def test_stream_propagates_tools_to_sdk():
         ):
             pass
 
+    with pytest.raises(CapabilityUnavailableError):
+        asyncio.run(drain())
+    assert c.chat.completions.calls == []
+
+
+def test_stream_without_tools_works():
+    p, c = _make_deepseek()
+    c.chat.completions.next_stream = [_stream_chunk("ok", finish_reason="stop")]
+
+    async def drain():
+        async for _ in p.stream([LLMMessage(role="user", content="hi")]):
+            pass
+
     asyncio.run(drain())
     kwargs = c.chat.completions.calls[0]
     assert kwargs.get("stream") is True
-    assert kwargs.get("tools") and kwargs["tools"][0]["function"]["name"] == "play_sound"
+    assert "tools" not in kwargs
 
 
 def test_complete_swallows_bad_tool_json():

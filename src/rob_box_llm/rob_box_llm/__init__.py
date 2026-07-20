@@ -7,8 +7,11 @@ rob_box_telegram.mcp_bridge and rob_box_mcp_tools.llm_adapter.
 LLM public surface:
     LLMProvider        — ABC; complete() and stream()
     LLMMessage, LLMResponse, LLMChunk, ToolCall, ToolResult — value objects
-    DeepSeekProvider, MiMoProvider, FakeLLMProvider — concrete impls
-    errors             — RateLimitError, TimeoutError, ContentFilterError, AuthError
+    TextPart, ImagePart, MessageContent — multimodal content (P1 / M0)
+    ProviderCapabilities                 — capability introspection (P1 / M0)
+    DeepSeekProvider, MiMoProvider, MiniMaxProvider, FakeLLMProvider — concrete impls
+    errors             — RateLimitError, TimeoutError, ContentFilterError,
+                         AuthError, ProviderError
 
 TTS public surface (added in P0.5 — see ADR-0002):
     TTSProvider        — ABC; synthesize() and stream()
@@ -19,51 +22,91 @@ TTS public surface (added in P0.5 — see ADR-0002):
                          TTSAuthError, TTSBadRequestError
 """
 
+from __future__ import annotations
+
+from rob_box_llm.errors import (
+    AuthError,
+    ContentFilterError,
+    ProviderError,
+    RateLimitError,
+    TimeoutError,
+    TTSAuthError,
+    TTSBadRequestError,
+    TTSError,
+    TTSRateLimitError,
+    TTSTimeoutError,
+)
 from rob_box_llm.provider import (
-    LLMProvider,
-    LLMMessage,
-    LLMResponse,
+    ImagePart,
     LLMChunk,
-    LLMSettings,
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    MessageContent,
+    ProviderCapabilities,
+    TextPart,
     ToolCall,
     ToolResult,
 )
+from rob_box_llm.providers.deepseek import DeepSeekProvider
+from rob_box_llm.providers.fake import FakeCall, FakeLLMProvider
+from rob_box_llm.providers.mimo import MiMoProvider
+from rob_box_llm.providers.minimax import (
+    DEFAULT_THINKING_POLICY,
+    MINIMAX_MAX_IMAGE_BYTES,
+    MiniMaxProvider,
+    MiniMaxRedactedLogFilter,
+)
+from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider
 from rob_box_llm.tts import (
-    TTSProvider,
     TTSAudio,
     TTSChunk,
-    TTSSettings,
     TTSFormat,
-    FakeTTSProvider,
+    TTSProvider,
+    TTSSettings,
 )
-from rob_box_llm import errors
-from rob_box_llm.providers.deepseek import DeepSeekProvider
-from rob_box_llm.providers.mimo import MiMoProvider
-from rob_box_llm.providers.fake import FakeLLMProvider
-from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider
+from rob_box_llm.tts import FakeTTSProvider
 
 __all__ = [
-    # LLM
+    # LLM ABC + value objects
     "LLMProvider",
     "LLMMessage",
     "LLMResponse",
     "LLMChunk",
-    "LLMSettings",
     "ToolCall",
     "ToolResult",
+    "TextPart",
+    "ImagePart",
+    "MessageContent",
+    "ProviderCapabilities",
+    # LLM providers
     "DeepSeekProvider",
     "MiMoProvider",
+    "MiniMaxProvider",
+    "MiniMaxRedactedLogFilter",
+    "MINIMAX_MAX_IMAGE_BYTES",
+    "DEFAULT_THINKING_POLICY",
     "FakeLLMProvider",
-    # TTS
+    "FakeCall",
+    # LLM errors
+    "ProviderError",
+    "RateLimitError",
+    "TimeoutError",
+    "ContentFilterError",
+    "AuthError",
+    # TTS ABC + value objects
     "TTSProvider",
     "TTSAudio",
     "TTSChunk",
     "TTSSettings",
     "TTSFormat",
+    # TTS providers
     "MiniMaxTTSProvider",
     "FakeTTSProvider",
-    # Errors module (re-export for convenience)
-    "errors",
+    # TTS errors
+    "TTSError",
+    "TTSRateLimitError",
+    "TTSTimeoutError",
+    "TTSAuthError",
+    "TTSBadRequestError",
 ]
-
-__version__ = "0.2.1"

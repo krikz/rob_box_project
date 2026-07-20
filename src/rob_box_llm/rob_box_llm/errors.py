@@ -25,12 +25,12 @@ class RateLimitError(ProviderError):
     """429 / quota exhausted. Caller should back off + retry."""
 
 
-class TimeoutError(ProviderError):
+class TimeoutError(ProviderError):  # noqa: A001 — intentional shadowing
     """Network or read timeout. Safe to retry with the same prompt."""
 
 
 class ContentFilterError(ProviderError):
-    """Provider refused the request (safety / content filter). NOT retryable."""
+    """Provider-side refusal (safety filter / output validation)."""
 
 
 class AuthError(ProviderError):
