@@ -43,9 +43,26 @@ print(resp.content)
 cd src/rob_box_llm
 PYTHONPATH=. python3 -m pytest test/ -v
 PYTHONPATH=. python3 -m pytest test/ -k minimax        # just the MiniMax TTS provider
+PYTHONPATH=. python3 -m pytest test/ -k minimax \
+    --cov=rob_box_llm.providers.minimax_tts \
+    --cov-report=term-missing \
+    --cov-fail-under=85        # coverage gate (mirrors CI)
 PYTHONPATH=. python3 -m coverage run --source=rob_box_llm -m pytest test/
 python3 -m coverage report --include='rob_box_llm/*'
 ```
+
+Or from the repo root via the bundled `Makefile`:
+
+```bash
+make test-tts           # full suite + 85% coverage gate (CI parity)
+make test-tts-fast      # skip the coverage gate for faster local feedback
+make test-tts-verbose   # -vv + stdout-captured logs for debugging
+```
+
+The CI job `.github/workflows/G-TTS-Provider-Tests.yml` runs the same
+`pytest -k minimax … --cov-fail-under=85` invocation on every push and PR,
+and uploads the coverage report (`coverage.xml` + `htmlcov/`) as a
+build artifact.
 
 All tests are offline — the OpenAI SDK client is replaced with a fake,
 and `MiniMaxTTSProvider` is exercised against `httpx.MockTransport`.
@@ -55,3 +72,14 @@ parameter mapping (voice / language / speed / volume / pitch / emotion /
 `extra` allow-list), every typed error (`TTSAuthError` / `TTSRateLimitError` /
 `TTSBadRequestError` / `TTSTimeoutError`), SSE streaming, and a guard that
 the API key and group id never appear in any log sink.
+
+### Conformance suite
+
+`test/test_tts_conformance.py` is the cross-provider contract check. It
+parametrises the `TTSProvider` ABC contract (signature shape, return
+types, `finish_reason` semantics, `aclose()` idempotency, pre-flight
+empty-text guard) over every concrete provider — currently
+`FakeTTSProvider` and `MiniMaxTTSProvider`. Adding a new provider to
+`rob_box_llm.providers` is a one-line edit to `CONFORMANCE_PROVIDERS`
+in that file; the entire conformance matrix then runs against the new
+implementation.
