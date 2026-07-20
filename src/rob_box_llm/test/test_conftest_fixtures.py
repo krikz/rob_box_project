@@ -70,29 +70,14 @@ class TestConftestFixturesImport:
         assert minimax_provider._client is not None
 
     def test_mock_minimax_http_yields_active_respx_router(self, mock_minimax_http):
-        """The fixture hands back a respx router that's currently intercepting.
+        """The fixture starts an isolated router with no pass-through routes.
 
-        Inside the fixture body (this test body), ``respx`` is in mock
-        mode and the two pre-registered routes (POST + GET to
-        ``/v1/t2a_v2``) should be visible.
-
-        respx 0.23+ does not expose ``.method`` on ``Route`` — the
-        HTTP verb is embedded in ``route.pattern`` as ``<Method eq
-        'POST'>``. We inspect the pattern's repr string for the verb
-        rather than reaching into ``pattern._patterns`` (private API).
+        Individual tests add an exact mock for the request they exercise.  The
+        empty starting state is a network-safety guarantee: no test can
+        accidentally reach the live MiniMax endpoint through a broad route.
         """
         assert isinstance(mock_minimax_http, respx.Router)
-        # Two routes pre-registered in conftest.py; we verify both via
-        # the documented pattern string. If ``respx.mock()`` were not
-        # active, the ``router.post(...)`` / ``router.get(...)`` calls
-        # in conftest.py would have raised — so reaching this line
-        # implies the router is active. No additional public API
-        # (``is_active`` is not exposed in respx 0.23) is needed.
-        patterns = [str(r.pattern) for r in mock_minimax_http.routes]
-        joined = " | ".join(patterns)
-        assert "/v1/t2a_v2" in joined
-        assert "POST" in joined
-        assert "GET" in joined
+        assert not mock_minimax_http.routes
 
     def test_sample_text_is_non_empty(self, sample_text):
         assert isinstance(sample_text, str)

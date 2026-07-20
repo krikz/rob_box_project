@@ -11,12 +11,9 @@ The fixtures requested by the task brief:
   stray ``os.getenv`` cannot accidentally pick up a real secret. Tests
   that need to assert behaviour around missing credentials build their
   own provider explicitly.
-* ``mock_minimax_http`` — a ``respx`` router with both
-  ``POST /v1/t2a_v2`` (synthesis) and ``GET`` (streaming) routes
-  pre-registered. Tests populate the routes' responses; the fixture
-  activates the router on entry and exits the respx context on teardown
-  so global router state is left clean for the next test (avoids
-  "respx routes leak across tests" flakes).
+* ``mock_minimax_http`` — an isolated, empty ``respx`` router. Tests add
+  an exact route with a canned response for the request they exercise;
+  no broad pass-through route can leak a call to the live MiniMax API.
 * ``sample_text`` — a short, recognisable phrase. Length is fixed so
   snapshot-style tests can assert on a deterministic response size.
 * ``valid_tts_params`` — a dict of valid ``voice``/``language``/``speed``
@@ -62,7 +59,7 @@ from rob_box_llm.tts import TTSSettings
 #   2. Any log line that contains them fails the credential-leak guard
 #      in test_minimax_tts_logging.py with a loud message rather than
 #      silently shipping a real secret.
-FAKE_API_KEY = "«fake-key:conftest:do-not-use-outside-tests»"
+FAKE_API_KEY = "fake-key-conftest-do-not-use-outside-tests"
 FAKE_GROUP_ID = "g-FAKE-CONFTEST-00000000-0000-0000-0000-000000000000"
 
 # Documented MiniMax T2A v2 endpoint path. Centralising it here keeps
@@ -168,7 +165,9 @@ def minimax_provider() -> MiniMaxTTSProvider:
     setup, no DNS resolution, no "what happens if I run 5000 tests
     in parallel" socket exhaustion.
     """
-    placeholder_client = httpx.AsyncClient()
+    placeholder_client = httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(retries=0),
+    )
     return MiniMaxTTSProvider(
         api_key=FAKE_API_KEY,
         group_id=FAKE_GROUP_ID,
@@ -186,30 +185,12 @@ def minimax_provider() -> MiniMaxTTSProvider:
 
 @pytest.fixture
 def mock_minimax_http() -> Iterator[respx.Router]:
-    """Yield an active ``respx`` router pre-loaded with MiniMax routes.
+    """Yield an active, empty ``respx`` router for MiniMax HTTP tests.
 
-    Usage::
-
-        def test_x(mock_minimax_http, minimax_provider):
-            route = mock_minimax_http.post("/v1/t2a_v2").mock(
-                return_value=httpx.Response(200, json={"data": {"audio": "00"}, "base_resp": {"status_code": 0}})
-            )
-            out = await minimax_provider.synthesize("hi")
-            assert route.called
-
-    The router intercepts only while this fixture is active — entering
-    ``respx.mock`` on setup and exiting on teardown means global state
-    cannot leak across tests, which is the usual cause of "passes in
-    isolation, fails in the full suite" respx flakes.
-
-    Both ``POST`` (synthesis) and ``GET`` (server-side events / future
-    streaming transports) are pre-registered so a test only needs to
-    attach a response to the route it cares about.
+    Tests register the exact route and response they need.  An empty router is
+    intentional: pre-registering a pass-through route would take precedence
+    over a later exact mock for the same endpoint and could leak a request to
+    the live MiniMax API.
     """
     with respx.mock(assert_all_called=False) as router:
-        # Pre-register the two documented MiniMax HTTP routes so tests
-        # don't have to know the URL. Each starts with no response —
-        # tests attach one with .mock(return_value=...) or .mock(side_effect=...).
-        router.post(MINIMAX_T2A_PATH).pass_through()
-        router.get(MINIMAX_T2A_PATH).pass_through()
         yield router
