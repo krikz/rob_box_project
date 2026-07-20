@@ -197,6 +197,26 @@ cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -v
 | Потеря OGG-формата (хотелка Telegram voice)       | Явный fallback в `_build_payload` (`OGG → mp3`), `TTSAudio.format` сообщает что пришло |
 | `rob_box_llm` не собран в Docker-образе           | ImportError-fallback в `tts_node.py`: `MINIMAX_AVAILABLE=False` |
 
+## 9.1 TTS-специфичные детали (см. ADR-0003)
+
+Этот документ покрывает MiniMax **в целом** (LLM/TTS/image-gen).
+TTS-специфичные вопросы — маппинг `TTSSettings` ↔ MiniMax T2A v2 body,
+контракт выходных данных `/voice/audio/speech`, retry-стратегия
+на стороне `tts_node`, sync vs streaming решение (sync) и raw-bytes
+vs base64 (raw hex-decode) — вынесены в отдельные документы:
+
+- [`../adr/0003-minimax-tts-architecture.md`](../adr/0003-minimax-tts-architecture.md) — ADR с обоснованием решений и trade-offs.
+- [`minimax-tts-architecture.md`](minimax-tts-architecture.md) — реализационный справочник: полные таблицы маппинга, цепочки преобразований, схема конфигурации.
+- [`../diagrams/minimax-tts-sequence.mmd`](../diagrams/minimax-tts-sequence.mmd) — sequence-диаграмма end-to-end потока.
+
+**Ключевые решения, зафиксированные в ADR-0003:**
+
+1. Retry-loop реализуется **в tts_node, не в провайдере** (провайдер остаётся чистой raise-on-fail функцией).
+2. Контракт топика `/voice/audio/speech` **не меняется** — `int16 LE PCM` через `audio_common_msgs/AudioData`, как у Yandex-пути.
+3. Автоматический fallback MiniMax → Yandex → Silero **не делается** — пользователь явно выбрал MiniMax через `provider=minimax`, ошибка пробрасывается наверх.
+4. Streaming v1 возвращает **один терминальный `TTSChunk`** (буферизует SSE); true chunk-per-frame через WebSocket — отложен в фазу M5/M6.
+5. MiniMax отдаёт hex-encoded PCM — декодируется в `bytes.fromhex()`; альтернативы (base64/multipart) отклонены.
+
 ## 10. Acceptance criteria
 
 - [x] `MiniMaxTTSProvider` имплементирует `TTSProvider` ABC
@@ -204,6 +224,6 @@ cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -v
 - [x] Конфигурация через ENV (`MINIMAX_API_KEY`, `MINIMAX_GROUP_ID`) **и** через ROS-параметры
 - [x] Выход конвертируется в формат, ожидаемый `tts_node` (float32 PCM numpy)
 - [x] 50 unit-тестов с моками HTTP проходят за < 3 секунд
-- [x] Документация: ADR-0002 + этот файл
+- [x] Документация: ADR-0002 (MiniMax в целом) + ADR-0003 (TTS-специфика) + `minimax-provider.md` (обзор) + `minimax-tts-architecture.md` (реализационный справочник) + sequence-диаграмма
 - [x] Wire в `tts_node.py` — additive change, default behavior (`provider=yandex`) не сломан
 - [x] `MINIMAX_AVAILABLE=False` если `rob_box_llm` не собран — graceful degradation
