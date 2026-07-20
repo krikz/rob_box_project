@@ -95,7 +95,7 @@ PCM-байты MiniMax (int16 LE) декодируются в `numpy.float32 [-1
 
 | Поле                | Где                                | Значение                                          |
 |---------------------|------------------------------------|---------------------------------------------------|
-| Endpoint            | `https://api.MiniMax.io/v1/t2a_v2` | синхронный HTTP POST                              |
+| Endpoint            | `https://api.minimax.io/v1/t2a_v2` | синхронный HTTP POST                              |
 | Auth header         | `Authorization: Bearer <API_KEY>` | не OpenAI-стиль — обычный Bearer                  |
 | Query param         | `GroupId=<GROUP_ID>`               | обязателен, идентификатор аккаунта                |
 | Body `model`        | `"speech-02-hd"` \| `"speech-02-turbo"` | качество vs скорость                       |

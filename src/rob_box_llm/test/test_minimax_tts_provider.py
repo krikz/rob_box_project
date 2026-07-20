@@ -53,7 +53,7 @@ def _mock_client(handler) -> httpx.AsyncClient:
     ``handler`` is a callable ``(httpx.Request) -> httpx.Response``.
     """
     transport = httpx.MockTransport(handler)
-    return httpx.AsyncClient(transport=transport, base_url="https://api.MiniMax.io")
+    return httpx.AsyncClient(transport=transport, base_url="https://api.minimax.io")
 
 
 def _ok_response(audio_bytes: bytes, sample_rate: int = 32_000) -> dict[str, Any]:
@@ -79,6 +79,35 @@ def _error_response(status_code: int, status_msg: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Payload / language mapping (pure functions, no I/O)
 # ---------------------------------------------------------------------------
+
+# Regression guard: the official MiniMax T2A v2 endpoint is lowercase
+# ``https://api.minimax.io``. A previous revision of this provider accidentally
+# shipped ``api.MiniMax.io`` (capitalised M) — httpx lowercases the host on the
+# wire, so naive tests passed while production was hitting the wrong domain.
+# If you change DEFAULT_BASE_URL, this test forces you to update the constant
+# in two places and notice.
+EXPECTED_BASE_URL = "https://api.minimax.io"
+
+
+class TestBaseURLRegression:
+    """Pin DEFAULT_BASE_URL to the official lowercase MiniMax endpoint.
+
+    Without this assertion the rest of the suite would still pass if someone
+    ``rstrip``'d the trailing slash, added a typo'd subdomain, or — as
+    happened once already — capitalised the wrong letter of the host. httpx
+    normalises hosts to lowercase on the wire, so the only place a casing
+    bug shows up is the constant itself.
+    """
+
+    def test_default_constant_is_lowercase_official_endpoint(self):
+        assert MiniMaxTTSProvider.DEFAULT_BASE_URL == EXPECTED_BASE_URL
+
+    def test_default_constant_is_lowercase(self):
+        assert MiniMaxTTSProvider.DEFAULT_BASE_URL == MiniMaxTTSProvider.DEFAULT_BASE_URL.lower()
+
+    def test_constructed_base_url_matches_constant(self):
+        p = MiniMaxTTSProvider(api_key="k", group_id="g")
+        assert p._base_url == EXPECTED_BASE_URL
 
 
 class TestBuildPayload:
@@ -106,7 +135,7 @@ class TestBuildPayload:
             sample_rate=24_000,
             format=TTSFormat.MP3,
             text_normalization=True,
-            extra={"custom": "value"},
+            extra={"subtitle_timestamp": "word"},
         )
         payload = _build_payload("privet", s, stream=True, default_voice="X", default_model="Y")
         assert payload["model"] == "speech-02-turbo"
@@ -121,7 +150,45 @@ class TestBuildPayload:
         assert payload["audio_setting"]["sample_rate"] == 24_000
         assert payload["audio_setting"]["format"] == "mp3"
         assert payload["text_normalization"] is True
-        assert payload["custom"] == "value"
+        # Allow-listed extra key flows through.
+        assert payload["subtitle_timestamp"] == "word"
+
+    def test_extra_unknown_key_dropped_with_warning(self, caplog):
+        """Unknown extra keys are logged and dropped — not surfaced to API.
+
+        This guards against two failure modes:
+        1. Silently sending garbage that the API rejects with 400.
+        2. Letting untrusted input sneak privileged fields into the body.
+        """
+        s = TTSSettings(
+            voice="V",
+            extra={"__proto__": "evil", "made_up_field": 1},
+        )
+        with caplog.at_level("WARNING", logger="rob_box_llm.providers.minimax_tts"):
+            payload = _build_payload(
+                "hi", s, stream=False, default_voice="v", default_model="m"
+            )
+        assert "__proto__" not in payload
+        assert "made_up_field" not in payload
+        # At least one WARNING emitted per dropped key.
+        assert any(
+            "dropping unknown extra key '__proto__'" in r.getMessage()
+            for r in caplog.records
+        )
+        assert any(
+            "dropping unknown extra key 'made_up_field'" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_extra_reserved_key_raises(self):
+        """``voice_setting`` and friends in ``extra`` would silently override
+        our typed fields — refuse loudly with TTSBadRequestError.
+        """
+        s = TTSSettings(extra={"voice_setting": {"voice_id": "attacker"}})
+        with pytest.raises(TTSBadRequestError):
+            _build_payload(
+                "hi", s, stream=False, default_voice="v", default_model="m"
+            )
 
     def test_ogg_format_falls_back_to_mp3(self):
         # MiniMax doesn't support OGG in audio_setting; we degrade to MP3
@@ -129,6 +196,25 @@ class TestBuildPayload:
         s = TTSSettings(format=TTSFormat.OGG)
         payload = _build_payload("x", s, stream=False, default_voice="v", default_model="m")
         assert payload["audio_setting"]["format"] == "mp3"
+
+    def test_volume_in_range_accepted(self):
+        s = TTSSettings(volume=0.0)
+        assert _build_payload("x", s, stream=False, default_voice="v", default_model="m")["voice_setting"]["vol"] == 0.0
+        s = TTSSettings(volume=10.0)
+        assert _build_payload("x", s, stream=False, default_voice="v", default_model="m")["voice_setting"]["vol"] == 10.0
+        s = TTSSettings(volume=5.5)
+        assert _build_payload("x", s, stream=False, default_voice="v", default_model="m")["voice_setting"]["vol"] == 5.5
+
+    @pytest.mark.parametrize("bad_volume", [-0.1, -1.0, 10.0001, 1000.0])
+    def test_volume_out_of_range_rejected(self, bad_volume):
+        """MiniMax T2A v2 documents vol ∈ [0.0, 10.0] — fail-fast with a
+        typed TTSBadRequestError instead of bouncing off the API's 400."""
+        s = TTSSettings(volume=bad_volume)
+        with pytest.raises(TTSBadRequestError) as exc:
+            _build_payload(
+                "x", s, stream=False, default_voice="v", default_model="m"
+            )
+        assert "out of range" in str(exc.value)
 
 
 class TestMapLanguage:
@@ -166,7 +252,7 @@ class TestConstructor:
         assert p.name == "minimax"
         assert p._api_key == "k"
         assert p._group_id == "g"
-        assert p._base_url == "https://api.MiniMax.io"
+        assert p._base_url == "https://api.minimax.io"
         assert p._default_voice == "male-qn-qingse"
         assert p._default_model == "speech-02-hd"
 
@@ -388,6 +474,38 @@ class TestStream:
             async for _ in p.stream("hi"):
                 pass
 
+    @pytest.mark.asyncio
+    async def test_stream_api_error_after_first_chunk_yields_error_chunk(self):
+        """Mid-stream API-level error: contract says emit a terminal
+        TTSChunk(finish_reason='error') rather than raising, because the
+        SSE response shape makes the error equivalent to a network
+        hiccup mid-stream rather than an initial-request failure.
+
+        Concretely: first event is a success with audio, second event has
+        base_resp.status_code != 0 → provider should yield an error chunk
+        instead of raising.
+        """
+        chunk1 = b"\x00\x01" * 20
+        body = (
+            f"data:{json.dumps(_ok_response(chunk1, sample_rate=24_000))}\n\n"
+            f"data:{json.dumps(_error_response(1002, 'invalid voice'))}\n\n"
+            "data:[DONE]\n\n"
+        )
+
+        async def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=body)
+
+        client = _mock_client(handler)
+        p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
+        chunks = [c async for c in p.stream("hi")]
+        # Exactly one chunk, finish_reason="error" — caller can detect via
+        # this signal that the stream ended badly.
+        assert len(chunks) == 1
+        assert chunks[0].finish_reason == "error"
+        # No partial audio leaked into the error chunk — provider dropped
+        # buffered bytes because the API-level error warrants a clean signal.
+        assert chunks[0].samples == b""
+
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -414,3 +532,17 @@ class TestAclose:
         await p.aclose()
         assert not client.is_closed
         await client.aclose()  # cleanup
+
+    @pytest.mark.asyncio
+    async def test_aclose_is_idempotent(self):
+        """``aclose()`` must be safe to call multiple times — callers
+        typically use ``await provider.aclose()`` in a ``finally`` block
+        without knowing whether the provider was already cleaned up.
+        """
+        p = MiniMaxTTSProvider(api_key="k", group_id="g")
+        await p.aclose()
+        # Second call: must NOT raise. httpx.AsyncClient.aclose() on an
+        # already-closed client raises RuntimeError historically; we
+        # guard against that here.
+        await p.aclose()
+        await p.aclose()  # third call for good measure

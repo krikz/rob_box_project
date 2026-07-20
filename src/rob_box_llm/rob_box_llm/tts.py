@@ -60,7 +60,9 @@ class TTSSettings:
 
     model: Optional[str] = None  # e.g. "speech-02-hd", "speech-02-turbo"
     voice: Optional[str] = None  # provider-specific voice id (e.g. "Calm_Woman")
-    language: Optional[str] = None  # BCP-47 ("ru", "en") — MiniMax uses "Russian", "English", …
+    language: Optional[str] = (
+        None  # BCP-47 ("ru", "en") — MiniMax uses "Russian", "English", …
+    )
     speed: Optional[float] = None  # 0.5 – 2.0 typical, 1.0 = normal
     volume: Optional[float] = None  # 0.0 – 10.0 (provider-specific scale)
     pitch: Optional[int] = None  # semitone offset (provider-specific range)
@@ -144,16 +146,101 @@ class TTSProvider(abc.ABC):
     ) -> AsyncIterator[TTSChunk]:
         """Run a streaming synthesis.
 
-        Implementations MUST raise `TTSError` BEFORE yielding anything if the
-        initial request fails — once the first chunk is yielded, mid-stream
-        failures become `TTSChunk(finish_reason="error")` instead.
+        Implementation contract:
+
+        * Providers MUST raise :class:`TTSError` BEFORE yielding anything if
+          the initial request fails — once the first chunk is yielded,
+          mid-stream failures become ``TTSChunk(finish_reason="error")``
+          instead, mirroring the LLM contract.
+        * Providers MUST always emit at least one final chunk with
+          ``finish_reason`` set (``"stop"`` on success, ``"error"`` on
+          mid-stream failure) so callers can detect end-of-stream
+          deterministically.
+
+        .. note::
+
+           The current MiniMax implementation returns 0 or 1 chunks
+           (it buffers the full SSE stream and yields one terminal chunk
+           with ``finish_reason="stop"``). Code that needs true
+           chunk-per-frame streaming should plan for this — the contract
+           accepts a single terminal chunk as a valid v1 implementation.
         """
-        # AsyncIterator declared via return type; concrete impl uses `yield`.
         raise NotImplementedError
-        yield  # pragma: no cover — keeps type checkers happy on ABC stub
 
     async def aclose(self) -> None:  # noqa: D401 — async context-manager hook
-        """Release resources. Default impl is no-op for stateless providers."""
+        """Release resources. Default impl is no-op for stateless providers.
+
+        Implementations SHOULD make ``aclose()`` idempotent so callers can
+        use it in ``finally`` blocks without a separate guard.
+        """
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Built-in fakes for tests + local development
+# ---------------------------------------------------------------------------
+
+
+class FakeTTSProvider(TTSProvider):
+    """Deterministic in-memory TTS provider for tests and offline dev.
+
+    Echoes ``text`` as a synthetic PCM buffer (the text repeated, encoded
+    as 16-bit mono samples). Always emits ``finish_reason="stop"`` for
+    streaming. ``aclose()`` is a no-op and idempotent.
+
+    Use this wherever a unit test needs a ``TTSProvider`` instance but the
+    test is not about TTS itself (e.g. exercising downstream consumers in
+    ``tts_node`` or ``dialogue_node``).
+    """
+
+    name = "fake"
+
+    def __init__(self, *, sample_rate: int = 32_000) -> None:
+        self._sample_rate = sample_rate
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        settings: TTSSettings | None = None,
+    ) -> TTSAudio:
+        if not text or not text.strip():
+            # Lazy import — keep `tts.py` import-cheap so downstream
+            # packages that only need the dataclasses don't pay for the
+            # full errors module on import time.
+            from rob_box_llm.errors import TTSBadRequestError
+
+            raise TTSBadRequestError("text is empty", provider=self.name)
+        s = settings or TTSSettings()
+        sample_rate = s.sample_rate or self._sample_rate
+        # Deterministic fake: encode len(text) 16-bit samples with
+        # constant value 1. Same input → same bytes → stable assertions.
+        import struct as _struct
+
+        n_samples = max(len(text.encode("utf-8")), 1)
+        samples = _struct.pack(f"<{n_samples}h", *([1] * n_samples))
+        return TTSAudio(
+            samples=samples,
+            sample_rate=sample_rate,
+            format=s.format,
+            raw={"fake": True, "text": text},
+        )
+
+    async def stream(
+        self,
+        text: str,
+        *,
+        settings: TTSSettings | None = None,
+    ) -> AsyncIterator[TTSChunk]:
+        audio = await self.synthesize(text, settings=settings)
+        yield TTSChunk(
+            samples=audio.samples,
+            sample_rate=audio.sample_rate,
+            format=audio.format,
+            finish_reason="stop",
+        )
+
+    async def aclose(self) -> None:
         return None
 
 
@@ -163,4 +250,5 @@ __all__ = [
     "TTSChunk",
     "TTSSettings",
     "TTSFormat",
+    "FakeTTSProvider",
 ]
