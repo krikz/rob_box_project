@@ -15,8 +15,9 @@ Endpoint reference (from MiniMax T2A v2 HTTP docs):
           status_code != 0  → error.
 
 PCM payload is little-endian 16-bit mono. We decode the hex string to raw
-bytes and wrap it in a ``TTSAudio`` with the configured sample rate so the
-ROS playback sink can consume it directly without re-decoding.
+bytes and wrap it in a ``TTSAudio`` with the reported sample rate. When OGG
+is requested, MiniMax's documented MP3 fallback is surfaced as ``MP3`` in
+the returned value so downstream decoders never dispatch on a false marker.
 """
 
 from __future__ import annotations
@@ -457,16 +458,17 @@ class MiniMaxTTSProvider(TTSProvider):
         )
         data = await self._post(payload)
         samples, sample_rate = self._decode_audio(data, s.format)
+        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
         _log.info(
             "minimax TTS: %d samples @ %d Hz (model=%s, voice=%s, fmt=%s)",
             len(samples) // 2,
             sample_rate,
             payload["model"],
             payload["voice_setting"]["voice_id"],
-            s.format.value,
+            actual_format.value,
         )
         return TTSAudio(
-            samples=samples, sample_rate=sample_rate, format=s.format, raw=data
+            samples=samples, sample_rate=sample_rate, format=actual_format, raw=data
         )
 
     async def stream(
@@ -479,14 +481,12 @@ class MiniMaxTTSProvider(TTSProvider):
 
         .. note::
 
-           **v1 implementation returns a single terminal chunk.** MiniMax's
-           HTTP streaming endpoint delivers SSE events that we buffer in
-           full and emit as one final ``TTSChunk(finish_reason="stop")`` —
-           this matches the contract (which requires at least one final
-           chunk with ``finish_reason`` set) but is NOT chunk-per-frame
-           streaming. True frame-level streaming would require switching to
-           MiniMax's T2A WebSocket endpoint (out of scope here; tracked in
-           the parent ADR "Future work").
+           The provider emits each SSE audio event as a ``TTSChunk`` as soon
+           as it arrives, followed by an empty terminal chunk with
+           ``finish_reason="stop"``. This is HTTP/SSE event streaming; true
+           fixed-size PCM frame streaming would require switching to
+           MiniMax's T2A WebSocket endpoint (out of scope here; tracked in the
+           parent ADR "Future work").
 
         Mid-stream errors (events delivered after the first audio chunk
         would have been yielded) are converted to a terminal
@@ -499,8 +499,8 @@ class MiniMaxTTSProvider(TTSProvider):
         s = settings or TTSSettings()
         # MiniMax supports SSE streaming under stream=true — same payload
         # shape, but the response is a series of JSON objects rather than a
-        # single one. We collect them all and emit as a single chunk so the
-        # contract is "TTS provider returns at least one TTSChunk".
+        # single one. Emit each audio event as soon as it arrives so callers
+        # can begin playback before the complete utterance is buffered.
         payload = _build_payload(
             text,
             s,
@@ -508,13 +508,7 @@ class MiniMaxTTSProvider(TTSProvider):
             default_voice=self._default_voice,
             default_model=self._default_model,
         )
-        # Errors raised before any chunk is yielded: raise cleanly (per
-        # contract). Errors that arrive MID-stream — after we have already
-        # buffered audio — get stashed here and emitted at the end as a
-        # terminal TTSChunk(finish_reason="error") because raising at this
-        # point would violate the "no raise after first yield" contract.
-        _stream_error: TTSError | None = None
-        collected: list[bytes] = []
+        yielded_audio = False
         collected_sr = 0
         try:
             url = f"{self._base_url}/v1/t2a_v2"
@@ -546,44 +540,67 @@ class MiniMaxTTSProvider(TTSProvider):
                         continue
                     base_resp = evt.get("base_resp") or {}
                     if base_resp.get("status_code", 0) != 0:
-                        # Mid-stream API-level error: stash so we can emit
-                        # as a final error chunk (NOT raise) — even though
-                        # we haven't yielded yet, the contract only allows
-                        # this when the cause is post-initial-response
-                        # payload data, which this is.
-                        _stream_error = TTSError(
-                            f"minimax stream error: {base_resp.get('status_msg')}",
-                            provider=self.name,
-                        )
-                        break
+                        status_msg = str(base_resp.get("status_msg", "unknown"))
+                        message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
+                        msg_lower = status_msg.lower()
+                        if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
+                            api_error: TTSError = TTSAuthError(message, provider=self.name)
+                        elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
+                            api_error = TTSRateLimitError(message, provider=self.name)
+                        elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
+                            api_error = TTSBadRequestError(message, provider=self.name)
+                        else:
+                            api_error = TTSError(message, provider=self.name)
+                        if yielded_audio:
+                            yield TTSChunk(finish_reason="error")
+                            return
+                        raise api_error
                     payload_data = evt.get("data") or {}
                     chunk_hex = payload_data.get("audio")
                     if chunk_hex:
-                        collected.append(bytes.fromhex(chunk_hex))
+                        try:
+                            chunk_samples = bytes.fromhex(chunk_hex)
+                        except ValueError as exc:
+                            raise TTSError(
+                                f"minimax returned non-hex audio payload: {exc}",
+                                provider=self.name,
+                            ) from exc
                         collected_sr = int(
                             payload_data.get("audio_sample_rate", collected_sr or 32000)
                         )
+                        yielded_audio = True
+                        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
+                        yield TTSChunk(
+                            samples=chunk_samples,
+                            sample_rate=collected_sr,
+                            format=actual_format,
+                        )
         except Exception as exc:  # noqa: BLE001
+            # Transport/decoder failures after the first audio frame are
+            # represented in-band; before that point they must raise.
             if isinstance(exc, TTSError):
+                if yielded_audio:
+                    yield TTSChunk(finish_reason="error")
+                    return
                 raise
-            raise _map_exception(exc, provider=self.name) from exc
+            mapped_error = _map_exception(exc, provider=self.name)
+            if yielded_audio:
+                yield TTSChunk(finish_reason="error")
+                return
+            raise mapped_error from exc
 
-        # Mid-stream API error → emit a terminal error chunk. See comment
-        # above for why we don't raise at the SSE-line handler.
-        if _stream_error is not None:
-            yield TTSChunk(finish_reason="error")
-            return
-
-        if not collected:
+        if not yielded_audio:
             # No audio delivered → pre-yield "no data" failure: raise.
             raise TTSError(
                 "minimax stream returned no audio chunks", provider=self.name
             )
 
+        # Empty terminal chunk makes end-of-stream unambiguous without adding
+        # latency to the audio frames above.
         yield TTSChunk(
-            samples=b"".join(collected),
+            samples=b"",
             sample_rate=collected_sr,
-            format=s.format,
+            format=TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format,
             finish_reason="stop",
         )
 

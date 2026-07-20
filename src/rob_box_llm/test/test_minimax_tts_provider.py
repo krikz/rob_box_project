@@ -320,6 +320,24 @@ class TestSynthesize:
         assert body["stream"] is False
 
     @pytest.mark.asyncio
+    async def test_ogg_request_reports_actual_mp3_fallback_format(self):
+        """OGG is mapped to MP3 by the MiniMax API and must not lie to callers.
+
+        The ROS transcoder dispatches on ``TTSAudio.format``. Returning OGG
+        here for an MP3 payload makes the bridge invoke the wrong decoder.
+        """
+        fake_mp3 = b"not-a-real-mp3-but-provider-does-not-decode"
+        client = _mock_client(
+            lambda req: httpx.Response(200, json=_ok_response(fake_mp3))
+        )
+        p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
+
+        out = await p.synthesize("hello", settings=TTSSettings(format=TTSFormat.OGG))
+
+        assert out.samples == fake_mp3
+        assert out.format == TTSFormat.MP3
+
+    @pytest.mark.asyncio
     async def test_empty_text_raises_bad_request(self):
         client = _mock_client(lambda req: httpx.Response(200, json=_ok_response(b"")))
         p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
@@ -423,7 +441,7 @@ class TestSynthesize:
 
 class TestStream:
     @pytest.mark.asyncio
-    async def test_sse_chunks_collected_into_single_chunk(self):
+    async def test_sse_audio_is_yielded_incrementally_then_terminal_chunk(self):
         chunk1 = b"\x00\x01" * 50
         chunk2 = b"\x02\x03" * 50
         body = (
@@ -439,10 +457,44 @@ class TestStream:
         p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
 
         chunks = [c async for c in p.stream("hello", settings=TTSSettings(sample_rate=24_000))]
-        assert len(chunks) == 1
-        assert chunks[0].samples == chunk1 + chunk2
+        assert len(chunks) == 3
+        assert chunks[0].samples == chunk1
         assert chunks[0].sample_rate == 24_000
-        assert chunks[0].finish_reason == "stop"
+        assert chunks[0].finish_reason is None
+        assert chunks[1].samples == chunk2
+        assert chunks[1].finish_reason is None
+        assert chunks[2].samples == b""
+        assert chunks[2].finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_stream_api_error_before_audio_raises_before_yield(self):
+        body = f"data:{json.dumps(_error_response(1002, 'invalid voice'))}\n\n"
+
+        async def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=body)
+
+        client = _mock_client(handler)
+        p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
+
+        with pytest.raises(TTSBadRequestError):
+            async for _ in p.stream("hi"):
+                raise AssertionError("provider yielded before initial error")
+
+    @pytest.mark.asyncio
+    async def test_ogg_stream_reports_actual_mp3_fallback_format(self):
+        """The stream path must expose the server's MP3 fallback too."""
+        payload = _ok_response(b"fake-mp3", sample_rate=24_000)
+        body = f"data:{json.dumps(payload)}\n\ndata:[DONE]\n\n"
+
+        async def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=body)
+
+        client = _mock_client(handler)
+        p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
+
+        chunks = [c async for c in p.stream("hello", settings=TTSSettings(format=TTSFormat.OGG))]
+
+        assert chunks[0].format == TTSFormat.MP3
 
     @pytest.mark.asyncio
     async def test_stream_empty_text(self):
@@ -498,13 +550,12 @@ class TestStream:
         client = _mock_client(handler)
         p = MiniMaxTTSProvider(api_key="k", group_id="g", client=client)
         chunks = [c async for c in p.stream("hi")]
-        # Exactly one chunk, finish_reason="error" — caller can detect via
-        # this signal that the stream ended badly.
-        assert len(chunks) == 1
-        assert chunks[0].finish_reason == "error"
-        # No partial audio leaked into the error chunk — provider dropped
-        # buffered bytes because the API-level error warrants a clean signal.
-        assert chunks[0].samples == b""
+        # Audio is emitted first; the API error is a terminal error chunk.
+        assert len(chunks) == 2
+        assert chunks[0].samples == chunk1
+        assert chunks[0].finish_reason is None
+        assert chunks[1].finish_reason == "error"
+        assert chunks[1].samples == b""
 
 
 # ---------------------------------------------------------------------------

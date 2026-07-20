@@ -166,11 +166,11 @@ class TestFormatSynthesis:
         assert body["audio_setting"]["format"] == "mp3"
 
     @pytest.mark.asyncio
-    async def test_ogg_format_falls_back_to_mp3_on_wire_but_preserves_requested_format(self):
+    async def test_ogg_format_falls_back_to_mp3_on_wire_and_reports_actual_format(self):
         """MiniMax does not support OGG; the provider degrades audio_setting
-        to ``mp3`` for the API call but the returned TTSAudio.format reflects
-        what the CALLER asked for. Downstream transcode is responsible for
-        surfacing the mismatch — see :class:`TestOggFallback`.
+        to ``mp3`` for the API call and the returned TTSAudio.format reports
+        the actual container so downstream transcode selects the right
+        decoder.
         """
         captured: list[httpx.Request] = []
 
@@ -188,10 +188,8 @@ class TestFormatSynthesis:
         body = json.loads(captured[0].content)
         assert body["audio_setting"]["format"] == "mp3"
 
-        # Caller contract: OGG. We don't lie about what the user wanted
-        # even though the API gave us MP3 — that lets the downstream
-        # transcode layer decide whether to warn, fail, or transcode.
-        assert out.format == TTSFormat.OGG
+        # Actual payload contract: the API returned MP3, so expose MP3.
+        assert out.format == TTSFormat.MP3
         assert out.samples == _MP3_BYTES
 
     @pytest.mark.asyncio
@@ -287,19 +285,15 @@ class TestStreamingSampleRate:
         )
 
         chunks = [c async for c in p.stream("hi")]
-        assert len(chunks) == 1
+        assert len(chunks) == 3
         assert chunks[0].sample_rate == 32_000
-        # Order preserved — chunk_a before chunk_b.
-        assert chunks[0].samples == chunk_a + chunk_b
-        assert chunks[0].finish_reason == "stop"
+        assert chunks[0].samples == chunk_a
+        assert chunks[1].samples == chunk_b
+        assert chunks[2].finish_reason == "stop"
 
     @pytest.mark.asyncio
-    async def test_streaming_collects_many_chunks_into_one_terminal_chunk(self):
-        """Stress: 5 SSE events → 1 terminal chunk (MiniMax v1 contract).
-
-        Confirms byte order survives the buffering. If the provider ever
-        regresses to emitting per-event TTSChunk, this test fires.
-        """
+    async def test_streaming_yields_many_chunks_before_terminal_chunk(self):
+        """Stress: 5 SSE events → 5 audio chunks + a terminal chunk."""
         chunks_hex = [b"\x00\x01", b"\x02\x03", b"\x04\x05", b"\x06\x07", b"\x08\x09"]
         events = (
             "data:"
@@ -330,12 +324,11 @@ class TestStreamingSampleRate:
         )
 
         chunks = [c async for c in p.stream("hi")]
-        # Always exactly one final chunk (v1 contract).
-        assert len(chunks) == 1
-        final = chunks[0]
+        assert len(chunks) == 6
+        assert [chunk.samples for chunk in chunks[:5]] == chunks_hex
+        final = chunks[-1]
         assert final.finish_reason == "stop"
-        # Bytes concatenated in event order.
-        assert final.samples == b"".join(chunks_hex)
+        assert final.samples == b""
 
 
 # ---------------------------------------------------------------------------
