@@ -37,10 +37,23 @@ class AuthError(ProviderError):
     """401 / 403. Indicates bad API key or revoked token."""
 
 
+class CapabilityUnavailableError(ProviderError):
+    """The provider / model cannot fulfil the requested capability.
+
+    Examples: ``image_input=True`` on a text-only model, ``tools=True`` on a
+    model that doesn't support function calling, or a request that mixes a
+    capability the adapter doesn't expose.
+
+    Callers should branch on this error type to skip the provider during
+    fallback selection instead of treating it as transient.
+    """
+
+
 __all__ = [
     "ProviderError",
     "RateLimitError",
     "TimeoutError",
     "ContentFilterError",
     "AuthError",
+    "CapabilityUnavailableError",
 ]

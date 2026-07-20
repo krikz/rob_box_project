@@ -13,6 +13,7 @@ P0 plan ("Что НЕ делаем: не трогаем существующих
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any, AsyncIterator, Iterable, Mapping, Optional
 
@@ -26,20 +27,23 @@ from openai import (
 
 from rob_box_llm.errors import (
     AuthError,
+    CapabilityUnavailableError,
     ContentFilterError,
     ProviderError,
     RateLimitError,
     TimeoutError,
 )
 from rob_box_llm.provider import (
+    ImagePart,
     LLMChunk,
     LLMMessage,
     LLMProvider,
     LLMResponse,
     LLMSettings,
+    ProviderCapabilities,
+    TextPart,
     ToolCall,
 )
-
 
 _log = logging.getLogger(__name__)
 
@@ -47,6 +51,47 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _image_part_to_openai(part: ImagePart) -> dict[str, Any]:
+    """Render an ``ImagePart`` as an OpenAI ``image_url`` content block.
+
+    Bytes are base64-encoded into a ``data:`` URL. String sources are passed
+    through unchanged (assumed to already be ``http(s)://`` or ``data:...``).
+    ``detail`` is forwarded only when it is not the default — this keeps the
+    wire format minimal for callers that don't care.
+    """
+    if isinstance(part.source, bytes):
+        b64 = base64.b64encode(part.source).decode("ascii")
+        url = f"data:{part.media_type};base64,{b64}"
+    else:
+        url = part.source
+
+    image_url: dict[str, Any] = {"url": url}
+    if part.detail != "default":
+        image_url["detail"] = part.detail
+    return {"type": "image_url", "image_url": image_url}
+
+
+def _content_to_openai(content: Any) -> Any:
+    """Translate our ``MessageContent`` into the OpenAI wire format.
+
+    Plain strings pass through. Tuples of ``TextPart``/``ImagePart`` become
+    the OpenAI content-parts list. ``tool`` messages that go through this
+    function still arrive as plain strings (their payload lives in
+    ``tool_result.content``), so this branch is not exercised for them.
+    """
+    if isinstance(content, str):
+        return content
+    out: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            out.append({"type": "text", "text": part.text})
+        elif isinstance(part, ImagePart):
+            out.append(_image_part_to_openai(part))
+        else:  # pragma: no cover — guarded by the type alias
+            raise TypeError(f"Unsupported message part: {part!r}")
+    return out
 
 
 def _to_openai_messages(messages: Iterable[LLMMessage]) -> list[dict[str, Any]]:
@@ -63,7 +108,10 @@ def _to_openai_messages(messages: Iterable[LLMMessage]) -> list[dict[str, Any]]:
             )
             continue
 
-        m: dict[str, Any] = {"role": msg.role, "content": msg.content}
+        m: dict[str, Any] = {
+            "role": msg.role,
+            "content": _content_to_openai(msg.content),
+        }
         if msg.name:
             m["name"] = msg.name
         if msg.tool_calls:
@@ -121,6 +169,15 @@ def _map_exception(exc: Exception, *, provider: str) -> ProviderError:
 class _OpenAICompatibleProvider(LLMProvider):
     """Shared implementation for any OpenAI Chat-Completions compatible API."""
 
+    # Subclasses set ``_CAPABILITIES`` to advertise what they support.
+    _CAPABILITIES: ProviderCapabilities = ProviderCapabilities(
+        text=True,
+        streaming_text=True,
+        tools=True,
+        streaming_tools=False,
+        image_input=False,
+    )
+
     def __init__(
         self,
         *,
@@ -143,7 +200,58 @@ class _OpenAICompatibleProvider(LLMProvider):
                 timeout=timeout,
             )
 
+    # -- capability introspection -----------------------------------------
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return self._CAPABILITIES
+
     # -- helpers -----------------------------------------------------------
+
+    def _require_capability_for_messages(
+        self,
+        messages: Iterable[LLMMessage],
+        settings: LLMSettings | None,
+        tools: Iterable[Mapping[str, Any]],
+        *,
+        stream: bool,
+    ) -> None:
+        """Refuse the request early if the provider / model can't fulfil it.
+
+        Image input is checked against ``capabilities_for(model)``. Tool-call
+        support is checked at the adapter level (always True today, kept here
+        so a future text-only cheap model can opt out). Streaming tool calls
+        are not yet implemented in the wire-format adapter and are gated
+        explicitly so callers don't silently lose tool calls mid-stream.
+        """
+        caps = self.capabilities_for(settings.model if settings is not None else None)
+        # Image input.
+        needs_image = any(
+            isinstance(part, ImagePart) for msg in messages if not isinstance(msg.content, str) for part in msg.content
+        )
+        if needs_image and not caps.image_input:
+            raise CapabilityUnavailableError(
+                f"{self.name}: image input not supported for "
+                f"model={settings.model if settings else self._default_model!r}",
+                provider=self.name,
+            )
+        # Tools.
+        if tools and not caps.tools:
+            raise CapabilityUnavailableError(
+                f"{self.name}: tool calling not supported by this adapter",
+                provider=self.name,
+            )
+        # Streaming.
+        if stream and not caps.streaming_text:
+            raise CapabilityUnavailableError(
+                f"{self.name}: streaming text not supported by this adapter",
+                provider=self.name,
+            )
+        if stream and tools and not caps.streaming_tools:
+            raise CapabilityUnavailableError(
+                f"{self.name}: streaming tool calls not supported yet — " "use complete() for tool requests",
+                provider=self.name,
+            )
 
     def _build_kwargs(
         self,
@@ -185,6 +293,16 @@ class _OpenAICompatibleProvider(LLMProvider):
                 out[attr] = v
         return out
 
+    def _post_process_response(self, resp: Any) -> Any:
+        """Hook for provider-specific response-level error mapping.
+
+        Default: identity. MiniMax uses this to surface the in-body
+        ``base_resp.status_code`` envelope; other providers can override.
+        MUST raise a typed ``ProviderError`` subclass when the call should be
+        considered failed, even though the HTTP layer returned 200.
+        """
+        return resp
+
     # -- complete ----------------------------------------------------------
 
     async def complete(
@@ -194,11 +312,13 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools: Iterable[Mapping[str, Any]] = (),
         settings: LLMSettings | None = None,
     ) -> LLMResponse:
+        self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — convert to our domain errors
             raise _map_exception(exc, provider=self.name) from exc
+        self._post_process_response(resp)
 
         choice = resp.choices[0] if resp.choices else None
         content = choice.message.content if choice and choice.message else ""
@@ -231,13 +351,14 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools: Iterable[Mapping[str, Any]] = (),
         settings: LLMSettings | None = None,
     ) -> AsyncIterator[LLMChunk]:
+        self._require_capability_for_messages(messages, settings, tools, stream=True)
         kwargs = self._build_kwargs(messages, tools, settings, stream=True)
         try:
             stream_obj = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
             raise _map_exception(exc, provider=self.name) from exc
-
         async for event in stream_obj:
+            self._post_process_response(event)
             choice = event.choices[0] if event.choices else None
             delta = choice.delta if choice else None
             chunk = LLMChunk(

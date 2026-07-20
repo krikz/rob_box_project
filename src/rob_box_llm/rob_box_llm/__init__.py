@@ -7,8 +7,11 @@ rob_box_telegram.mcp_bridge and rob_box_mcp_tools.llm_adapter.
 Public surface:
     LLMProvider        — ABC; complete() and stream()
     LLMMessage, LLMResponse, LLMChunk, ToolCall, ToolResult — value objects
-    DeepSeekProvider, MiMoProvider, FakeLLMProvider — concrete impls
-    errors             — RateLimitError, TimeoutError, ContentFilterError, ProviderError
+    TextPart, ImagePart, MessageContent — multimodal content (P1 / M0)
+    ProviderCapabilities                 — capability introspection (P1 / M0)
+    DeepSeekProvider, MiMoProvider, MiniMaxProvider, FakeLLMProvider — concrete impls
+    errors             — RateLimitError, TimeoutError, ContentFilterError,
+                         AuthError, CapabilityUnavailableError, ProviderError
 """
 
 from rob_box_llm.provider import (
@@ -19,10 +22,16 @@ from rob_box_llm.provider import (
     LLMSettings,
     ToolCall,
     ToolResult,
+    TextPart,
+    ImagePart,
+    MessagePart,
+    MessageContent,
+    ProviderCapabilities,
 )
 from rob_box_llm import errors
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.mimo import MiMoProvider
+from rob_box_llm.providers.minimax import MiniMaxProvider
 from rob_box_llm.providers.fake import FakeLLMProvider
 
 __all__ = [
@@ -33,10 +42,16 @@ __all__ = [
     "LLMSettings",
     "ToolCall",
     "ToolResult",
+    "TextPart",
+    "ImagePart",
+    "MessagePart",
+    "MessageContent",
+    "ProviderCapabilities",
     "errors",
     "DeepSeekProvider",
     "MiMoProvider",
+    "MiniMaxProvider",
     "FakeLLMProvider",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
