@@ -10,6 +10,13 @@ classes that compose a `LLMProvider` (e.g. a fallback wrapper in P1, or
 `ProviderManager` in `rob_box_voice.llm`).
 
 Value objects are plain dataclasses — easy to serialise, mock and assert on.
+
+Content can be either a plain string (text-only) or an ordered tuple of parts
+for multimodal requests (text + image). Providers MUST accept both shapes;
+existing text-only calls keep working unchanged.
+
+Each provider exposes a ``capabilities`` property so that fallback / factory
+code can pick a compatible adapter without making a network call.
 """
 
 from __future__ import annotations
@@ -17,7 +24,72 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Iterable, Mapping
+from typing import Any, AsyncIterator, Iterable, Mapping, Union
+
+# ---------------------------------------------------------------------------
+# Content parts (multimodal)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TextPart:
+    """A text fragment inside a multimodal message."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class ImagePart:
+    """An image fragment inside a multimodal message.
+
+    ``source`` is either an HTTP(S) URL or raw image bytes (e.g. from a
+    ROS ``sensor_msgs/CompressedImage``). The adapter is responsible for
+    encoding bytes as a ``data:`` URL when the underlying API requires it
+    and for not fetching URLs that the API can fetch itself.
+
+    ``media_type`` follows OpenAI's image MIME types: ``image/jpeg``,
+    ``image/png``, ``image/webp``, ``image/gif``. ``detail`` controls the
+    vision resolution hint (``low`` | ``default`` | ``high``) and only
+    applies when the provider supports it.
+    """
+
+    source: Union[str, bytes]
+    media_type: str = "image/jpeg"
+    detail: str = "default"
+
+    def __post_init__(self) -> None:
+        if not self.media_type.startswith("image/"):
+            raise ValueError(f"ImagePart.media_type must start with 'image/', got {self.media_type!r}")
+        if self.detail not in ("low", "default", "high"):
+            raise ValueError(f"ImagePart.detail must be 'low', 'default' or 'high', got {self.detail!r}")
+
+
+# An ordered composition of text + image parts. Plain strings remain valid for
+# text-only messages — see ``MessageContent``.
+MessagePart = Union[TextPart, ImagePart]
+MessageContent = Union[str, tuple[MessagePart, ...]]
+
+
+# ---------------------------------------------------------------------------
+# Capability introspection
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """What a given provider / model can do.
+
+    Defaults are conservative — every flag is ``False`` except plain text.
+    Providers / models override the relevant flags in their ``capabilities``
+    property. Fallback code uses this object to pick an adapter that
+    supports the request before issuing a network call.
+    """
+
+    text: bool = True
+    streaming_text: bool = False
+    tools: bool = False
+    streaming_tools: bool = False
+    image_input: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +119,7 @@ class ToolCall:
         # Equality uses the full payload so {tc1, tc2} still works in tests.
         if not isinstance(other, ToolCall):
             return NotImplemented
-        return (
-            self.id == other.id
-            and self.name == other.name
-            and dict(self.arguments) == dict(other.arguments)
-        )
+        return self.id == other.id and self.name == other.name and dict(self.arguments) == dict(other.arguments)
 
 
 @dataclass(frozen=True)
@@ -70,10 +138,14 @@ class LLMMessage:
     `role` ∈ {"system", "user", "assistant", "tool"}. For "tool" messages the
     caller SHOULD use the dedicated `tool_result` field rather than packing the
     payload into `content`.
+
+    ``content`` is either a plain ``str`` (text-only) or an ordered tuple of
+    ``TextPart``/``ImagePart`` for multimodal messages. Existing callers that
+    pass a string keep working unchanged.
     """
 
     role: str
-    content: str
+    content: MessageContent
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
@@ -134,12 +206,33 @@ class LLMProvider(abc.ABC):
         - DeepSeekProvider (P0.1)
         - MiMoProvider     (P0.1)
         - FakeLLMProvider  (P0.1, tests)
+        - MiniMaxProvider  (P1, text + image_input)
 
     P1 will add:
         - FallbackProvider (wraps two providers, retries on RateLimitError)
     """
 
     name: str = "abstract"
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        """What this provider / default model can do.
+
+        Conservative default — only plain text is guaranteed. Providers
+        override this with their actual support matrix. For model-specific
+        capabilities (e.g. ``MiniMax-M3`` supports image input but ``MiniMax-M2.x``
+        doesn't), prefer the ``capabilities_for(model)`` helper below.
+        """
+        return ProviderCapabilities()
+
+    def capabilities_for(self, model: str | None) -> ProviderCapabilities:
+        """Capabilities narrowed to a specific model name.
+
+        Default behaviour: return ``self.capabilities`` unchanged. Providers
+        with model-specific support override this (e.g. MiniMax returns a
+        capability set without ``image_input`` for non-vision models).
+        """
+        return self.capabilities
 
     @abc.abstractmethod
     async def complete(
@@ -183,4 +276,9 @@ __all__ = [
     "LLMSettings",
     "ToolCall",
     "ToolResult",
+    "TextPart",
+    "ImagePart",
+    "MessagePart",
+    "MessageContent",
+    "ProviderCapabilities",
 ]
