@@ -10,7 +10,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools", "openai>=1.0"],
+    install_requires=["setuptools", "openai>=1.0", "httpx>=0.27"],
     zip_safe=True,
     maintainer="krikz",
     maintainer_email="kukoreken@rob-box.local",

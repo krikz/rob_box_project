@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback
+TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + MiniMax (HTTP)
 
 Подписывается на: /voice/dialogue/response (JSON chunks)
 Публикует: /voice/audio/speech (AudioData)
 Использует:
   - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
+  - MiniMax T2A v2 (HTTP, opt-in через provider=minimax)
 """
 
 import io
@@ -29,6 +30,21 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
+
+# MiniMax TTS provider is opt-in via provider="minimax". Import is lazy so a
+# minimal ros_box_voice install (no httpx configured) doesn't break the
+# default yandex/silero path.
+try:
+    from rob_box_llm import MiniMaxTTSProvider, TTSSettings, TTSFormat
+    from rob_box_llm.errors import TTSError as MiniMaxTTSError
+
+    MINIMAX_AVAILABLE = True
+except ImportError:  # pragma: no cover — only triggered if rob_box_llm not built
+    MINIMAX_AVAILABLE = False
+    MiniMaxTTSProvider = None  # type: ignore[assignment]
+    TTSSettings = None  # type: ignore[assignment]
+    TTSFormat = None  # type: ignore[assignment]
+    MiniMaxTTSError = Exception  # type: ignore[assignment, misc]
 
 
 @contextmanager
@@ -56,36 +72,36 @@ def ignore_stderr(enable=True):
 def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
     """
     Resample audio from original sample rate to target sample rate using linear interpolation.
-    
+
     This is a lightweight resampling implementation suitable for TTS audio where:
     - Low latency is important (no heavy dependencies like scipy/librosa)
     - Audio quality is acceptable for voice synthesis
     - Minimal artifacts for pitch shifting within reasonable range (1.0-3.0x)
-    
+
     For higher quality resampling, consider using scipy.signal.resample or librosa.resample.
-    
+
     Args:
         audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
         orig_sr: Original sample rate (e.g., 22050 or 10022.7 for fractional rates)
         target_sr: Target sample rate (e.g., 16000)
-    
+
     Returns:
         Resampled audio at target sample rate
     """
     if abs(orig_sr - target_sr) < 0.01:  # Use epsilon comparison for floats
         return audio
-    
+
     # Calculate the resampling ratio
     duration = len(audio) / orig_sr
     target_length = int(duration * target_sr)
-    
+
     # Create new time indices for interpolation
     orig_indices = np.linspace(0, len(audio) - 1, len(audio))
     target_indices = np.linspace(0, len(audio) - 1, target_length)
-    
+
     # Linear interpolation
     resampled = np.interp(target_indices, orig_indices, audio)
-    
+
     return resampled
 
 
@@ -113,13 +129,14 @@ except ImportError:
 
 
 class TTSNode(Node):
-    """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback"""
+    """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback + MiniMax (opt-in)"""
 
     def __init__(self):
         super().__init__("tts_node")
 
         # Параметры
-        self.declare_parameter("provider", "yandex")  # yandex (primary) | silero (fallback)
+        # yandex (primary) | silero (fallback) | minimax (HTTP, opt-in)
+        self.declare_parameter("provider", "yandex")
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
@@ -127,14 +144,27 @@ class TTSNode(Node):
         self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
 
         # Silero TTS (fallback)
-        self.declare_parameter("silero_speaker", "baya")  # aidar (male) | baya (female) | kseniya | xenia | eugene (NEW in v5!)
+        self.declare_parameter(
+            "silero_speaker", "baya"
+        )  # aidar (male) | baya (female) | kseniya | xenia | eugene (NEW in v5!)
         self.declare_parameter("silero_sample_rate", 48000)  # v5: можно повысить до 48000 для лучшего качества
-        
+
         # Silero v5: новые флаги для расстановки ударений
         self.declare_parameter("silero_put_accent", True)  # Ударения в обычных словах
         self.declare_parameter("silero_put_yo", True)  # Автоматическая буква ё
         self.declare_parameter("silero_put_stress_homo", True)  # Ударения в омографах (замОк/зАмок)
         self.declare_parameter("silero_put_yo_homo", True)  # Ударения в омографах с ё
+
+        # MiniMax TTS (HTTP, T2A v2). Активируется когда provider="minimax".
+        # Параметры берутся из ROS-параметров или из ENV (MINIMAX_API_KEY / MINIMAX_GROUP_ID).
+        self.declare_parameter("minimax_api_key", "")  # пусто → fallback на os.getenv("MINIMAX_API_KEY")
+        self.declare_parameter("minimax_group_id", "")  # пусто → fallback на os.getenv("MINIMAX_GROUP_ID")
+        self.declare_parameter("minimax_voice", "male-qn-qingse")  # MiniMax voice id
+        self.declare_parameter("minimax_model", "speech-02-hd")  # speech-02-hd | speech-02-turbo
+        self.declare_parameter("minimax_language", "ru")  # ru / en / zh — маппится в human-readable на API
+        self.declare_parameter("minimax_speed", 1.0)  # 0.5 – 2.0
+        self.declare_parameter("minimax_sample_rate", 32000)  # Hz — MiniMax возвращает PCM @ 32 kHz
+        self.declare_parameter("minimax_timeout", 30.0)  # секунды httpx timeout
 
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
@@ -153,12 +183,23 @@ class TTSNode(Node):
         # Silero
         self.silero_speaker = self.get_parameter("silero_speaker").value
         self.silero_sample_rate = self.get_parameter("silero_sample_rate").value
-        
+
         # Silero v5: новые флаги
         self.silero_put_accent = self.get_parameter("silero_put_accent").value
         self.silero_put_yo = self.get_parameter("silero_put_yo").value
         self.silero_put_stress_homo = self.get_parameter("silero_put_stress_homo").value
         self.silero_put_yo_homo = self.get_parameter("silero_put_yo_homo").value
+
+        # MiniMax (lazy init — только при provider="minimax")
+        self.minimax_api_key = self.get_parameter("minimax_api_key").value or os.getenv("MINIMAX_API_KEY", "")
+        self.minimax_group_id = self.get_parameter("minimax_group_id").value or os.getenv("MINIMAX_GROUP_ID", "")
+        self.minimax_voice = self.get_parameter("minimax_voice").value
+        self.minimax_model = self.get_parameter("minimax_model").value
+        self.minimax_language = self.get_parameter("minimax_language").value
+        self.minimax_speed = float(self.get_parameter("minimax_speed").value)
+        self.minimax_sample_rate = int(self.get_parameter("minimax_sample_rate").value)
+        self.minimax_timeout = float(self.get_parameter("minimax_timeout").value)
+        self.minimax_provider = None  # lazy: создаётся в _synthesize_minimax()
 
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
@@ -198,7 +239,7 @@ class TTSNode(Node):
         # Инициализация аудио устройства для воспроизведения
         self.device_index = None
         self.initialize_audio_device()
-        
+
         # Менеджер воспроизведения (предотвращает ALSA конфликты)
         self.playback_manager = AudioPlaybackManager.get_instance()
 
@@ -222,7 +263,9 @@ class TTSNode(Node):
         # Публикация аудио и состояния
         self.audio_pub = self.create_publisher(AudioData, "/voice/audio/speech", 10)
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
-        self.finished_pub = self.create_publisher(String, "/voice/tts/finished", 10)  # Публикация завершения произношения
+        self.finished_pub = self.create_publisher(
+            String, "/voice/tts/finished", 10
+        )  # Публикация завершения произношения
 
         # Флаг для остановки воспроизведения
         self.stop_requested = False
@@ -237,7 +280,9 @@ class TTSNode(Node):
         self.publish_state("ready")
 
         self.get_logger().info("✅ TTSNode инициализирован")
-        self.get_logger().info("  Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero v5 (fallback)")
+        self.get_logger().info(
+            "  Provider: Yandex Cloud TTS gRPC v3 (primary) + Silero v5 (fallback) + MiniMax (opt-in)"
+        )
         self.get_logger().info(
             f"  Yandex gRPC v3: voice={self.yandex_voice} (ROBBOX original!), speed={self.yandex_speed} (медленный синтез)"
         )
@@ -245,6 +290,19 @@ class TTSNode(Node):
             f"  Silero v5: speaker={self.silero_speaker}, rate={self.silero_sample_rate} Hz, "
             f"homograph_stress={self.silero_put_stress_homo}"
         )
+        if self.provider == "minimax":
+            if not MINIMAX_AVAILABLE:
+                self.get_logger().warn("⚠️  provider=minimax но rob_box_llm недоступен — MiniMax не будет работать")
+            elif not self.minimax_api_key or not self.minimax_group_id:
+                self.get_logger().warn(
+                    "⚠️  provider=minimax но MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы — MiniMax не будет работать"
+                )
+            else:
+                self.get_logger().info(
+                    f"  MiniMax T2A v2 (opt-in): model={self.minimax_model}, "
+                    f"voice={self.minimax_voice}, lang={self.minimax_language}, "
+                    f"sr={self.minimax_sample_rate} Hz, timeout={self.minimax_timeout}s"
+                )
         self.get_logger().info(f"  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)")
         self.get_logger().info(f"  Chipmunk mode: {self.chipmunk_mode}")
         if self.chipmunk_mode:
@@ -253,7 +311,7 @@ class TTSNode(Node):
                 f"(эмуляция оригинального ROBBOX: медленный синтез + быстрое воспроизведение)"
             )
 
-        if not self.yandex_stub:
+        if not self.yandex_stub and self.provider == "yandex":
             self.get_logger().warn("⚠️  Yandex gRPC не подключен - будет использован только Silero fallback")
 
     def initialize_audio_device(self):
@@ -268,8 +326,8 @@ class TTSNode(Node):
         self.device_index = None  # ALSA default → dmix_respeaker (через asound.conf)
         try:
             # Логируем что именно sounddevice считает default-устройством
-            default_out = sd.query_devices(kind='output')
-            device_name = default_out.get('name', '?') if isinstance(default_out, dict) else str(default_out)
+            default_out = sd.query_devices(kind="output")
+            device_name = default_out.get("name", "?") if isinstance(default_out, dict) else str(default_out)
             self.get_logger().info(f"✅ TTS playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
         except Exception as e:
             self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
@@ -299,7 +357,7 @@ class TTSNode(Node):
                 "/models/silero/v5_ru.pt",  # Основной путь в Docker образе
                 "/cache/tts/silero_v5_ru.pt",  # Legacy путь (volume)
             ]
-            
+
             model_loaded = False
             for model_path in model_paths:
                 if os.path.exists(model_path):
@@ -311,7 +369,7 @@ class TTSNode(Node):
                     self.get_logger().info("✅ Silero TTS v5 загружен (ARM64 оптимизация)")
                     model_loaded = True
                     break
-            
+
             if not model_loaded:
                 # Fallback на онлайн загрузку через torch.hub
                 self.get_logger().warn(f"⚠️ Модель не найдена в {model_paths}, загружаем через torch.hub")
@@ -375,6 +433,7 @@ class TTSNode(Node):
 
             # Генерируем speech_id для отслеживания
             import uuid
+
             speech_id = chunk_data.get("speech_id", str(uuid.uuid4()))
             self.current_speech_id = speech_id
 
@@ -391,10 +450,11 @@ class TTSNode(Node):
                 speech_id_to_drop = chunk_data.get("speech_id")
                 if speech_id_to_drop:
                     import json as _json
+
                     _drop_msg = String()
                     _drop_msg.data = _json.dumps(
                         {"speech_id": speech_id_to_drop, "success": False, "error": "stale_dialogue"},
-                        ensure_ascii=False
+                        ensure_ascii=False,
                     )
                     self.finished_pub.publish(_drop_msg)
                 return
@@ -457,74 +517,76 @@ class TTSNode(Node):
     def _parse_ssml_attributes(self, ssml: str) -> dict:
         """
         Извлекает атрибуты из SSML тегов (pitch, rate/speed)
-        
+
         Returns:
             dict: {'pitch': float, 'rate': float} или пустой dict
         """
         attributes = {}
-        
+
         # Ищем <prosody> теги с атрибутами
         # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow">
-        prosody_pattern = r'<prosody\s+([^>]+)>'
+        prosody_pattern = r"<prosody\s+([^>]+)>"
         matches = re.finditer(prosody_pattern, ssml, re.IGNORECASE)
-        
+
         for match in matches:
             attrs_str = match.group(1)
-            
+
             # Парсим pitch
             pitch_match = re.search(r'pitch\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
             if pitch_match:
                 pitch_value = pitch_match.group(1)
                 # Конвертируем в множитель для Yandex
                 # "+10%" -> 1.1, "-10%" -> 0.9, "high" -> 1.2, "low" -> 0.8
-                if '%' in pitch_value:
+                if "%" in pitch_value:
                     try:
-                        percent = float(pitch_value.replace('%', ''))
-                        attributes['pitch'] = 1.0 + (percent / 100.0)
+                        percent = float(pitch_value.replace("%", ""))
+                        attributes["pitch"] = 1.0 + (percent / 100.0)
                     except ValueError:
                         pass
-                elif pitch_value == 'high':
-                    attributes['pitch'] = 1.2
-                elif pitch_value == 'low':
-                    attributes['pitch'] = 0.8
-                elif pitch_value == 'medium':
-                    attributes['pitch'] = 1.0
+                elif pitch_value == "high":
+                    attributes["pitch"] = 1.2
+                elif pitch_value == "low":
+                    attributes["pitch"] = 0.8
+                elif pitch_value == "medium":
+                    attributes["pitch"] = 1.0
                 else:
                     try:
-                        attributes['pitch'] = float(pitch_value)
+                        attributes["pitch"] = float(pitch_value)
                     except ValueError:
                         pass
-            
+
             # Парсим rate (скорость речи)
             rate_match = re.search(r'rate\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
             if rate_match:
                 rate_value = rate_match.group(1)
                 # "1.5" -> 1.5, "fast" -> 1.5, "slow" -> 0.7
-                if '%' in rate_value:
+                if "%" in rate_value:
                     try:
-                        percent = float(rate_value.replace('%', ''))
-                        attributes['rate'] = percent / 100.0
+                        percent = float(rate_value.replace("%", ""))
+                        attributes["rate"] = percent / 100.0
                     except ValueError:
                         pass
-                elif rate_value == 'fast':
-                    attributes['rate'] = 1.5
-                elif rate_value == 'slow':
-                    attributes['rate'] = 0.7
-                elif rate_value == 'medium':
-                    attributes['rate'] = 1.0
+                elif rate_value == "fast":
+                    attributes["rate"] = 1.5
+                elif rate_value == "slow":
+                    attributes["rate"] = 0.7
+                elif rate_value == "medium":
+                    attributes["rate"] = 1.0
                 else:
                     try:
-                        attributes['rate'] = float(rate_value)
+                        attributes["rate"] = float(rate_value)
                     except ValueError:
                         pass
-        
+
         return attributes
 
-    def _synthesize_and_play(self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None):
+    def _synthesize_and_play(
+        self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None
+    ):
         """Синтез речи и воспроизведение"""
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
-        
+
         # Устанавливаем processing_dialogue_id для этого синтеза
         if dialogue_id:
             self.processing_dialogue_id = dialogue_id
@@ -543,7 +605,23 @@ class TTSNode(Node):
             audio_np = None
             sample_rate = 16000  # Yandex возвращает 16kHz
 
-            if self.yandex_stub:  # Проверяем что gRPC канал инициализирован
+            # MiniMax (HTTP) — opt-in через provider="minimax".
+            # Это первичный синтез, без fallback (если упадёт — TTS ошибка,
+            # caller может переключить provider обратно на yandex).
+            if self.provider == "minimax":
+                self.publish_state("synthesizing")
+                self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
+                # Любая ошибка MiniMax пробрасывается наверх — НЕ падаем в Silero,
+                # потому что пользователь явно выбрал MiniMax (provider=minimax).
+                result = self._synthesize_minimax(text, ssml_attributes)
+                audio_np = result["audio_np"]
+                sample_rate = result["sample_rate"]
+                self.get_logger().info(
+                    f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
+                    f"(model={self.minimax_model}, voice={self.minimax_voice})"
+                )
+
+            elif self.yandex_stub:  # Проверяем что gRPC канал инициализирован
                 try:
                     self.publish_state("synthesizing")
                     self.get_logger().info("🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...")
@@ -581,19 +659,19 @@ class TTSNode(Node):
                 if _pitch_m:
                     _prosody_attrs = f' pitch="{_pitch_m.group(1)}"'
                 if _prosody_attrs:
-                    ssml_text = f'<speak><prosody{_prosody_attrs}>{text}</prosody></speak>'
+                    ssml_text = f"<speak><prosody{_prosody_attrs}>{text}</prosody></speak>"
                 else:
                     ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
 
                 # Используем новые флаги v5 для расстановки ударений
                 audio = self.silero_model.apply_tts(
-                    ssml_text=ssml_text, 
-                    speaker=self.silero_speaker, 
+                    ssml_text=ssml_text,
+                    speaker=self.silero_speaker,
                     sample_rate=self.silero_sample_rate,
                     put_accent=self.silero_put_accent,
                     put_yo=self.silero_put_yo,
                     put_stress_homo=self.silero_put_stress_homo,
-                    put_yo_homo=self.silero_put_yo_homo
+                    put_yo_homo=self.silero_put_yo_homo,
                 )
                 audio_np = audio.numpy()
                 sample_rate = self.silero_sample_rate  # 48000 Hz (v5)
@@ -624,7 +702,7 @@ class TTSNode(Node):
             # Эффект "бурундука" ROBBOX:
             # В оригинале: Yandex возвращает ~22050 Hz (speed=0.4), читаем сырые PCM, воспроизводим на 44100 Hz
             # Результат: 44100/22050 = 2x pitch shift (голос выше и быстрее)
-            # 
+            #
             # Новая реализация (правильная):
             # - chipmunk_mode=False: правильный resample для корректного воспроизведения
             # - chipmunk_mode=True: эмуляция оригинала через изменение эффективной частоты
@@ -634,25 +712,25 @@ class TTSNode(Node):
             # Yandex с speed=0.4 → ~22050 Hz → воспроизведение как 44100 Hz = 2x эффект
             # Но ReSpeaker работает на 16000 Hz, поэтому эмулируем через:
             # 22050 Hz → 11025 Hz (эффективно, делим на 2) → 16000 Hz
-            
+
             if self.chipmunk_mode:
                 # Эффект бурундука через изменение эффективной частоты
                 # Оригинальный ROBBOX: соотношение 44100/22050 = 2.0
                 # С учётом ReSpeaker 16kHz: применяем базовый множитель 2.0 * pitch_shift
                 base_multiplier = 2.0  # Оригинальное соотношение частот в ROBBOX
                 effective_multiplier = base_multiplier * self.pitch_shift
-                
+
                 # Вычисляем эффективную частоту после "ускорения"
                 # Например: 22050 / (2.0 * 1.0) = 11025 Hz
                 effective_rate = sample_rate / effective_multiplier
-                
+
                 # Сначала ресэмплим до эффективной частоты (ускорение)
                 audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
-                
+
                 # Затем ресэмплим до target_rate для ReSpeaker
                 if abs(effective_rate - target_rate) > 0.01:
                     audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
-                
+
                 self.get_logger().info(
                     f"🐿️  Эффект бурундука ROBBOX: {len(audio_np)} → {len(audio_processed)} samples "
                     f"({effective_multiplier:.1f}x ускорение, {sample_rate}Hz → {effective_rate:.1f}Hz → {target_rate}Hz)"
@@ -662,8 +740,7 @@ class TTSNode(Node):
                 # Resample audio to target rate для правильной скорости
                 if sample_rate != target_rate:
                     self.get_logger().info(
-                        f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz "
-                        f"({len(audio_np)} samples)"
+                        f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz " f"({len(audio_np)} samples)"
                     )
                     audio_processed = resample_audio(audio_np, sample_rate, target_rate)
                     self.get_logger().info(f"✅ Resampled to {len(audio_processed)} samples @ {target_rate} Hz")
@@ -687,7 +764,7 @@ class TTSNode(Node):
             # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
             with ignore_stderr(enable=True):
                 self.current_stream = True  # Маркер что воспроизведение идёт
-                
+
                 # Используем AudioPlaybackManager для синхронизированного доступа
                 success = self.playback_manager.play_audio(
                     audio_data=audio_stereo,
@@ -695,31 +772,31 @@ class TTSNode(Node):
                     device_index=self.device_index,
                     blocking=True,  # Блокирующее воспроизведение для TTS
                     timeout=5.0,
-                    node_name="tts_node"
+                    node_name="tts_node",
                 )
-                
+
                 if not success:
                     self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
                     self.current_stream = None
                     # КРИТИЧНО: публикуем события завершения даже при ошибке!
                     self.publish_state("ready")
-                    
+
                     # Публикуем ошибку для MCP tools и animation_player
                     if speech_id:
                         finished_msg = String()
                         finished_msg.data = json.dumps(
-                            {"speech_id": speech_id, "success": False, "error": "Device unavailable"}, 
-                            ensure_ascii=False
+                            {"speech_id": speech_id, "success": False, "error": "Device unavailable"},
+                            ensure_ascii=False,
                         )
                         self.finished_pub.publish(finished_msg)
                         self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
-                    
+
                     # Очищаем processing_dialogue_id
                     if dialogue_id and self.processing_dialogue_id == dialogue_id:
                         self.processing_dialogue_id = None
-                    
+
                     return
-                
+
                 self.current_stream = None
 
             # Cleanup для устранения белого шума после воспроизведения
@@ -732,7 +809,9 @@ class TTSNode(Node):
                 # Публикуем ошибку для MCP tools
                 if speech_id:
                     finished_msg = String()
-                    finished_msg.data = json.dumps({"speech_id": speech_id, "success": False, "error": "stopped"}, ensure_ascii=False)
+                    finished_msg.data = json.dumps(
+                        {"speech_id": speech_id, "success": False, "error": "stopped"}, ensure_ascii=False
+                    )
                     self.finished_pub.publish(finished_msg)
             else:
                 self.publish_state("ready")
@@ -741,7 +820,9 @@ class TTSNode(Node):
                 if speech_id:
                     finished_msg = String()
                     finished_msg.data = json.dumps({"speech_id": speech_id, "success": True}, ensure_ascii=False)
-                    self.get_logger().info(f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., success=True")
+                    self.get_logger().info(
+                        f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., success=True"
+                    )
                     self.finished_pub.publish(finished_msg)
                     self.get_logger().info(f"✅ TTS finished event опубликован на /voice/tts/finished")
 
@@ -755,7 +836,9 @@ class TTSNode(Node):
             # Публикуем ошибку для MCP tools
             if speech_id:
                 finished_msg = String()
-                finished_msg.data = json.dumps({"speech_id": speech_id, "success": False, "error": str(e)}, ensure_ascii=False)
+                finished_msg.data = json.dumps(
+                    {"speech_id": speech_id, "success": False, "error": str(e)}, ensure_ascii=False
+                )
                 self.finished_pub.publish(finished_msg)
             # Очищаем processing_dialogue_id при ошибке
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -763,7 +846,7 @@ class TTSNode(Node):
 
     def _synthesize_yandex(self, text: str, ssml_attributes: dict = None) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!)
-        
+
         Args:
             text: Текст для синтеза
             ssml_attributes: Словарь с атрибутами SSML (pitch, rate)
@@ -774,13 +857,13 @@ class TTSNode(Node):
         # Применяем SSML атрибуты если есть
         if ssml_attributes is None:
             ssml_attributes = {}
-        
+
         # Скорость речи: берем из SSML или используем параметр ноды
-        speech_rate = ssml_attributes.get('rate', self.yandex_speed)
-        
+        speech_rate = ssml_attributes.get("rate", self.yandex_speed)
+
         # Pitch для Yandex не поддерживается напрямую через hints,
         # но мы можем логировать для будущей реализации
-        if 'pitch' in ssml_attributes:
+        if "pitch" in ssml_attributes:
             self.get_logger().info(f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)")
 
         # Создаём запрос как в оригинальном ROBBOX коде
@@ -837,6 +920,86 @@ class TTSNode(Node):
             raise Exception(f"Yandex gRPC error: {e.code()} - {e.details()}")
         except Exception as e:
             raise Exception(f"Yandex synthesis error: {e}")
+
+    async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None) -> dict:
+        """Асинхронный синтез через MiniMax T2A v2 HTTP API.
+
+        Returns:
+            dict с ключами:
+                * ``audio_np`` — float32 numpy array, mono, range -1..1
+                * ``sample_rate`` — Hz (e.g. 32_000)
+
+        Raises:
+            Exception с человекочитаемым сообщением при любой ошибке MiniMax.
+        """
+        if not MINIMAX_AVAILABLE:
+            raise Exception(
+                "rob_box_llm недоступен — MiniMaxTTSProvider не импортирован. "
+                "Соберите rob_box_llm или вернитесь к provider=yandex."
+            )
+        if not self.minimax_api_key or not self.minimax_group_id:
+            raise Exception(
+                "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы. " "Установите их через ROS-параметры или env-переменные."
+            )
+
+        # Lazy init провайдера (один раз на ноду).
+        if self.minimax_provider is None:
+            self.minimax_provider = MiniMaxTTSProvider(
+                api_key=self.minimax_api_key,
+                group_id=self.minimax_group_id,
+                default_voice=self.minimax_voice,
+                default_model=self.minimax_model,
+                timeout=self.minimax_timeout,
+            )
+
+        # Скорость речи: берём из SSML или параметр ноды.
+        speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
+
+        settings = TTSSettings(
+            voice=self.minimax_voice,
+            model=self.minimax_model,
+            language=self.minimax_language,
+            speed=speed,
+            sample_rate=self.minimax_sample_rate,
+            format=TTSFormat.PCM,
+        )
+
+        try:
+            tts_audio = await self.minimax_provider.synthesize(text, settings=settings)
+        except MiniMaxTTSError as exc:
+            raise Exception(f"MiniMax TTS error: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise Exception(f"MiniMax synthesis unexpected error: {exc}") from exc
+
+        # PCM int16 → float32. MiniMax всегда возвращает int16 little-endian PCM
+        # (audio_setting.format=pcm → 16-bit LE).
+        audio_np = np.frombuffer(tts_audio.samples, dtype=np.int16).astype(np.float32) / 32768.0
+        return {"audio_np": audio_np, "sample_rate": tts_audio.sample_rate}
+
+    def _synthesize_minimax(self, text: str, ssml_attributes: dict = None) -> dict:
+        """Sync-обёртка над _synthesize_minimax_async.
+
+        Синхронная ROS-нода не может просто await-нуть — оборачиваем через
+        ``asyncio.run`` если loop ещё не запущен, или планируем в существующем.
+        """
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        coro = self._synthesize_minimax_async(text, ssml_attributes)
+        if loop is not None:
+            # Если уже внутри event loop (например, в тестах) — создаём task.
+            # Но в ROS-ноде _synthesize_and_play синхронный, так что эта ветка
+            # в проде не срабатывает. Оставляем fallback на всякий случай.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(lambda: asyncio.run(coro)).result()
+        # Нет активного loop (типичный кейс ROS callback) → asyncio.run.
+        return asyncio.run(coro)
 
     def _publish_audio(self, audio_np: np.ndarray):
         """Публикует аудио в ROS topic"""
