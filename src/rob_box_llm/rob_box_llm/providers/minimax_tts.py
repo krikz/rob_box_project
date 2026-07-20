@@ -7,7 +7,7 @@ async SDK — it uses :mod:`httpx.AsyncClient` directly so we can mock it with
 
 Endpoint reference (from MiniMax T2A v2 HTTP docs):
 
-* URL:    ``https://api.MiniMax.io/v1/t2a_v2``
+* URL:    ``https://api.minimax.io/v1/t2a_v2``
 * Auth:   ``Authorization: Bearer <MINIMAX_API_KEY>``  (NOT OpenAI-compatible)
 * Group:  ``MINIMAX_GROUP_ID`` query parameter
 * Body:   ``{"model": "speech-02-hd", "text": "...", "voice_setting": {...}, "audio_setting": {...}, "stream": false}``
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator, Iterable, Mapping, Optional
+from typing import Any, AsyncIterator, Mapping, Optional
 
 import httpx
 
@@ -131,7 +131,18 @@ def _build_payload(
     if settings.speed is not None:
         voice_setting["speed"] = float(settings.speed)
     if settings.volume is not None:
-        voice_setting["vol"] = float(settings.volume)
+        # MiniMax T2A v2 documents vol as a number in [0.0, 10.0]. We
+        # reject out-of-range values here so the API doesn't return
+        # 400 — fail-fast with a typed error instead.
+        vol = float(settings.volume)
+        if not (0.0 <= vol <= 10.0):
+            from rob_box_llm.errors import TTSBadRequestError  # local import
+
+            raise TTSBadRequestError(
+                f"volume={vol} out of range [0.0, 10.0] (MiniMax T2A v2 spec)",
+                provider="minimax",
+            )
+        voice_setting["vol"] = vol
     if settings.pitch is not None:
         voice_setting["pitch"] = int(settings.pitch)
     if settings.emotion is not None:
@@ -146,7 +157,9 @@ def _build_payload(
     audio_setting: dict[str, Any] = {
         "sample_rate": sample_rate,
         "bitrate": 128000,
-        "format": fmt.value if fmt != TTSFormat.OGG else "mp3",  # OGG unsupported, fall back
+        "format": (
+            fmt.value if fmt != TTSFormat.OGG else "mp3"
+        ),  # OGG unsupported, fall back
         "channel": 1,
     }
 
@@ -159,9 +172,75 @@ def _build_payload(
     }
     if settings.text_normalization is not None:
         payload["text_normalization"] = bool(settings.text_normalization)
+
+    # Whitelist `extra` to the documented top-level keys so a caller (e.g.
+    # dialogue_node pulling user-supplied JSON) can't silently overwrite the
+    # nested ``voice_setting`` / ``audio_setting`` objects above and inject
+    # arbitrary fields like ``__proto__``-style payloads.
+    #
+    # Anything not on this allowlist is logged at WARNING and dropped — we
+    # choose "drop + log" over "raise" because ``extra`` is meant for
+    # forward-compat with MiniMax API additions, and raising would force
+    # every caller to audit keys against this list.
     if settings.extra:
-        payload.update(settings.extra)
+        from rob_box_llm.errors import TTSBadRequestError  # local import — see tts.py
+
+        for key, value in settings.extra.items():
+            if key in _ALLOWED_EXTRA_KEYS:
+                payload[key] = value
+            else:
+                _log.warning(
+                    "minimax_tts: dropping unknown extra key %r "
+                    "(not in allowlist %s)",
+                    key,
+                    sorted(_ALLOWED_EXTRA_KEYS),
+                )
+        # Validate against reserved keys defensively — if the user somehow
+        # passes one of our top-level field names we'd silently overwrite
+        # it. Show the error loudly.
+        overlap = set(settings.extra.keys()) & _RESERVED_PAYLOAD_KEYS
+        if overlap:
+            raise TTSBadRequestError(
+                f"settings.extra contains reserved top-level payload keys: "
+                f"{sorted(overlap)}",
+                provider="minimax",
+            )
     return payload
+
+
+# Top-level payload keys we always build ourselves; ``extra`` MUST NOT
+# touch these — exceptions raise TTSBadRequestError because allowing them
+# would let callers either silently overwrite a typed field (security
+# hazard: e.g. re-pointing ``voice_setting`` at an attacker-controlled
+# dict) or set a contradictory top-level field like ``model``.
+_RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "text",
+        "stream",
+        "voice_setting",
+        "audio_setting",
+        "text_normalization",
+    }
+)
+
+# Allow-list for ``settings.extra``. Only documented top-level MiniMax T2A v2
+# fields we don't model ourselves go here. Overlap with the reserved set
+# triggers an exception above; the lists are kept separate so future
+# reserved additions don't accidentally widen the allow-list.
+_ALLOWED_EXTRA_KEYS: frozenset[str] = frozenset(
+    {
+        "voice_id",  # top-level shortcut, equivalent to voice_setting.voice_id
+        "speed",  # top-level shortcut
+        "pitch",  # top-level shortcut
+        "vol",  # top-level shortcut (note: we build voice_setting.vol ourselves)
+        "emotion",  # top-level shortcut
+        "subtitle_timestamp",  # request word-level timing
+        "pronunciation_dict",  # custom pronunciation overrides
+        "timbre_weights",  # custom voice timbre mix
+        "audio_output_format",  # alt name for output container
+    }
+)
 
 
 class MiniMaxTTSProvider(TTSProvider):
@@ -192,7 +271,7 @@ class MiniMaxTTSProvider(TTSProvider):
         ``aclose()`` — caller owns it.
     """
 
-    DEFAULT_BASE_URL = "https://api.MiniMax.io"
+    DEFAULT_BASE_URL = "https://api.minimax.io"
     DEFAULT_VOICE = "male-qn-qingse"
     DEFAULT_MODEL = "speech-02-hd"
     DEFAULT_TIMEOUT = 30.0
@@ -265,7 +344,9 @@ class MiniMaxTTSProvider(TTSProvider):
         try:
             data = resp.json()
         except json.JSONDecodeError as exc:
-            raise TTSError(f"Non-JSON response: {resp.text[:200]}", provider=self.name) from exc
+            raise TTSError(
+                f"Non-JSON response: {resp.text[:200]}", provider=self.name
+            ) from exc
 
         # MiniMax's error envelope: base_resp.status_code != 0 → API-level error.
         base_resp = data.get("base_resp") or {}
@@ -298,9 +379,13 @@ class MiniMaxTTSProvider(TTSProvider):
         if not audio_hex:
             raise TTSError("minimax response missing 'data.audio'", provider=self.name)
         try:
-            return bytes.fromhex(audio_hex), int(payload.get("audio_sample_rate", 32000))
+            return bytes.fromhex(audio_hex), int(
+                payload.get("audio_sample_rate", 32000)
+            )
         except ValueError as exc:
-            raise TTSError(f"minimax returned non-hex audio payload: {exc}", provider=self.name) from exc
+            raise TTSError(
+                f"minimax returned non-hex audio payload: {exc}", provider=self.name
+            ) from exc
 
     # ------------------------------------------------------------------
     # Public API
@@ -335,7 +420,9 @@ class MiniMaxTTSProvider(TTSProvider):
             payload["voice_setting"]["voice_id"],
             s.format.value,
         )
-        return TTSAudio(samples=samples, sample_rate=sample_rate, format=s.format, raw=data)
+        return TTSAudio(
+            samples=samples, sample_rate=sample_rate, format=s.format, raw=data
+        )
 
     async def stream(
         self,
@@ -343,6 +430,24 @@ class MiniMaxTTSProvider(TTSProvider):
         *,
         settings: TTSSettings | None = None,
     ) -> AsyncIterator[TTSChunk]:
+        """Stream the MiniMax TTS response as :class:`TTSChunk` frames.
+
+        .. note::
+
+           **v1 implementation returns a single terminal chunk.** MiniMax's
+           HTTP streaming endpoint delivers SSE events that we buffer in
+           full and emit as one final ``TTSChunk(finish_reason="stop")`` —
+           this matches the contract (which requires at least one final
+           chunk with ``finish_reason`` set) but is NOT chunk-per-frame
+           streaming. True frame-level streaming would require switching to
+           MiniMax's T2A WebSocket endpoint (out of scope here; tracked in
+           the parent ADR "Future work").
+
+        Mid-stream errors (events delivered after the first audio chunk
+        would have been yielded) are converted to a terminal
+        ``TTSChunk(finish_reason="error")`` per the contract; pre-yield
+        errors raise :class:`TTSError` directly.
+        """
         if not text or not text.strip():
             raise TTSBadRequestError("text is empty", provider=self.name)
 
@@ -350,10 +455,7 @@ class MiniMaxTTSProvider(TTSProvider):
         # MiniMax supports SSE streaming under stream=true — same payload
         # shape, but the response is a series of JSON objects rather than a
         # single one. We collect them all and emit as a single chunk so the
-        # contract is "TTS provider returns one TTSAudio-equivalent chunk".
-        # Streaming individual frames would require SSE parsing and is out of
-        # scope for the v1 integration — callers wanting fine-grained frames
-        # can switch to the WebSocket T2A endpoint later.
+        # contract is "TTS provider returns at least one TTSChunk".
         payload = _build_payload(
             text,
             s,
@@ -361,6 +463,14 @@ class MiniMaxTTSProvider(TTSProvider):
             default_voice=self._default_voice,
             default_model=self._default_model,
         )
+        # Errors raised before any chunk is yielded: raise cleanly (per
+        # contract). Errors that arrive MID-stream — after we have already
+        # buffered audio — get stashed here and emitted at the end as a
+        # terminal TTSChunk(finish_reason="error") because raising at this
+        # point would violate the "no raise after first yield" contract.
+        _stream_error: TTSError | None = None
+        collected: list[bytes] = []
+        collected_sr = 0
         try:
             url = f"{self._base_url}/v1/t2a_v2"
             async with self._client.stream(
@@ -376,8 +486,6 @@ class MiniMaxTTSProvider(TTSProvider):
                         resp.raise_for_status()
                     except httpx.HTTPStatusError as exc:
                         raise _map_exception(exc, provider=self.name) from exc
-                collected: list[bytes] = []
-                collected_sr = 0
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
@@ -393,22 +501,39 @@ class MiniMaxTTSProvider(TTSProvider):
                         continue
                     base_resp = evt.get("base_resp") or {}
                     if base_resp.get("status_code", 0) != 0:
-                        raise TTSError(
+                        # Mid-stream API-level error: stash so we can emit
+                        # as a final error chunk (NOT raise) — even though
+                        # we haven't yielded yet, the contract only allows
+                        # this when the cause is post-initial-response
+                        # payload data, which this is.
+                        _stream_error = TTSError(
                             f"minimax stream error: {base_resp.get('status_msg')}",
                             provider=self.name,
                         )
+                        break
                     payload_data = evt.get("data") or {}
                     chunk_hex = payload_data.get("audio")
                     if chunk_hex:
                         collected.append(bytes.fromhex(chunk_hex))
-                        collected_sr = int(payload_data.get("audio_sample_rate", collected_sr or 32000))
+                        collected_sr = int(
+                            payload_data.get("audio_sample_rate", collected_sr or 32000)
+                        )
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, TTSError):
                 raise
             raise _map_exception(exc, provider=self.name) from exc
 
+        # Mid-stream API error → emit a terminal error chunk. See comment
+        # above for why we don't raise at the SSE-line handler.
+        if _stream_error is not None:
+            yield TTSChunk(finish_reason="error")
+            return
+
         if not collected:
-            raise TTSError("minimax stream returned no audio chunks", provider=self.name)
+            # No audio delivered → pre-yield "no data" failure: raise.
+            raise TTSError(
+                "minimax stream returned no audio chunks", provider=self.name
+            )
 
         yield TTSChunk(
             samples=b"".join(collected),
@@ -418,7 +543,12 @@ class MiniMaxTTSProvider(TTSProvider):
         )
 
     async def aclose(self) -> None:
-        if self._owns_client:
+        # Idempotent — safe to call multiple times from ``finally`` blocks.
+        # We only ever close a client we ourselves created (caller owns
+        # injected clients and is responsible for closing them). The
+        # ``is_closed`` guard handles the case where someone closed a
+        # previously-injected client out from under us.
+        if self._owns_client and not self._client.is_closed:
             await self._client.aclose()
 
 

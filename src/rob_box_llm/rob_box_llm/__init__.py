@@ -17,6 +17,7 @@ TTS public surface (added in P0.5 — see ADR-0003):
     TTSProvider        — ABC; synthesize() and stream()
     TTSAudio, TTSChunk, TTSSettings, TTSFormat — value objects
     MiniMaxTTSProvider — concrete impl over MiniMax T2A v2 HTTP
+    FakeTTSProvider    — deterministic in-memory impl, for tests
     errors             — TTSError, TTSRateLimitError, TTSTimeoutError,
                          TTSAuthError, TTSBadRequestError
 """
@@ -41,6 +42,7 @@ from rob_box_llm.tts import (
     TTSChunk,
     TTSSettings,
     TTSFormat,
+    FakeTTSProvider,
 )
 from rob_box_llm import errors
 from rob_box_llm.providers.deepseek import DeepSeekProvider
@@ -74,8 +76,9 @@ __all__ = [
     "TTSSettings",
     "TTSFormat",
     "MiniMaxTTSProvider",
+    "FakeTTSProvider",
     # Errors module (re-export for convenience)
     "errors",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
