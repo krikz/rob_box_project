@@ -42,8 +42,16 @@ print(resp.content)
 ```bash
 cd src/rob_box_llm
 PYTHONPATH=. python3 -m pytest test/ -v
+PYTHONPATH=. python3 -m pytest test/ -k minimax        # just the MiniMax TTS provider
 PYTHONPATH=. python3 -m coverage run --source=rob_box_llm -m pytest test/
 python3 -m coverage report --include='rob_box_llm/*'
 ```
 
-All tests are offline — the OpenAI SDK client is replaced with a fake.
+All tests are offline — the OpenAI SDK client is replaced with a fake,
+and `MiniMaxTTSProvider` is exercised against `httpx.MockTransport`.
+
+The MiniMax-specific suite covers the format round-trip (`pcm`/`wav`/`mp3`/`ogg`),
+parameter mapping (voice / language / speed / volume / pitch / emotion /
+`extra` allow-list), every typed error (`TTSAuthError` / `TTSRateLimitError` /
+`TTSBadRequestError` / `TTSTimeoutError`), SSE streaming, and a guard that
+the API key and group id never appear in any log sink.

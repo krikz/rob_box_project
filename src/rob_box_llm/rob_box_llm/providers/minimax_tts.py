@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator, Mapping, Optional
+from typing import Any, AsyncIterator, Mapping, Optional, cast
 
 import httpx
 
@@ -298,6 +298,22 @@ class MiniMaxTTSProvider(TTSProvider):
         self._timeout = timeout
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
+        # httpx's default INFO-level access log echoes the full URL —
+        # including the ``GroupId`` query parameter — to the ``httpx``
+        # logger every request. That leaks the MiniMax account id into
+        # any log sink that captures at INFO+. We turn the access log
+        # down to WARNING so only network-level failures surface; the
+        # provider's own structured logging (``_log.info`` here) still
+        # emits at INFO without echoing the URL.
+        #
+        # Touching the global ``httpx`` logger is intentional and scoped
+        # to module import: other libraries using httpx keep their own
+        # logger config unless they propagate the same way. The check
+        # guards against running this twice — we don't want to drop the
+        # level further on every provider instance.
+        _httpx_logger = logging.getLogger("httpx")
+        if _httpx_logger.level == logging.NOTSET or _httpx_logger.level < logging.WARNING:
+            _httpx_logger.setLevel(logging.WARNING)
 
     # ------------------------------------------------------------------
     # HTTP plumbing
@@ -365,7 +381,11 @@ class MiniMaxTTSProvider(TTSProvider):
                 raise TTSBadRequestError(message, provider=self.name)
             raise TTSError(message, provider=self.name)
 
-        return data
+        # `resp.json()` is typed `Any` by httpx; the documented MiniMax
+        # envelope is always a JSON object so narrowing here is safe.
+        # `cast` keeps ``mypy --strict --no-any-return`` quiet — same
+        # idiom used in ``rob_box_llm/providers/deepseek.py``.
+        return cast("dict[str, Any]", data)
 
     def _decode_audio(self, data: dict[str, Any], fmt: TTSFormat) -> tuple[bytes, int]:
         """Extract raw audio bytes from the MiniMax response.
