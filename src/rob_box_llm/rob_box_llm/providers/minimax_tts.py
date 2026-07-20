@@ -243,6 +243,34 @@ _ALLOWED_EXTRA_KEYS: frozenset[str] = frozenset(
 )
 
 
+class _RedactGroupIdFilter(logging.Filter):
+    """Redact MiniMax's credential-like GroupId from httpx access records.
+
+    httpx defers interpolation of ``record.args`` until handlers format the
+    record.  Replacing URL arguments here protects every downstream handler,
+    even if another component re-enables the global ``httpx`` logger at INFO.
+    """
+
+    _REDACTED = "<redacted>"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple):
+            record.args = tuple(self._redact(value) for value in args)
+        elif isinstance(args, dict):
+            record.args = {key: self._redact(value) for key, value in args.items()}
+        return True
+
+    @classmethod
+    def _redact(cls, value: Any) -> Any:
+        if isinstance(value, httpx.URL) and "GroupId" in value.params:
+            return value.copy_set_param("GroupId", cls._REDACTED)
+        return value
+
+
+_HTTPX_GROUP_ID_FILTER = _RedactGroupIdFilter()
+
+
 class MiniMaxTTSProvider(TTSProvider):
     """MiniMax TTS via the T2A v2 HTTP endpoint.
 
@@ -300,20 +328,17 @@ class MiniMaxTTSProvider(TTSProvider):
         self._client = client or httpx.AsyncClient(timeout=timeout)
         # httpx's default INFO-level access log echoes the full URL —
         # including the ``GroupId`` query parameter — to the ``httpx``
-        # logger every request. That leaks the MiniMax account id into
-        # any log sink that captures at INFO+. We turn the access log
-        # down to WARNING so only network-level failures surface; the
-        # provider's own structured logging (``_log.info`` here) still
-        # emits at INFO without echoing the URL.
-        #
-        # Touching the global ``httpx`` logger is intentional and scoped
-        # to module import: other libraries using httpx keep their own
-        # logger config unless they propagate the same way. The check
-        # guards against running this twice — we don't want to drop the
-        # level further on every provider instance.
+        # logger every request. Attach a filter to the originating logger so
+        # the URL argument is redacted before current or future handlers format
+        # it. This remains safe if another library later re-enables the global
+        # logger at INFO; relying on logger level alone would be undone by
+        # normal application logging configuration.
         _httpx_logger = logging.getLogger("httpx")
-        if _httpx_logger.level == logging.NOTSET or _httpx_logger.level < logging.WARNING:
-            _httpx_logger.setLevel(logging.WARNING)
+        if not any(
+            isinstance(item, _RedactGroupIdFilter)
+            for item in _httpx_logger.filters
+        ):
+            _httpx_logger.addFilter(_HTTPX_GROUP_ID_FILTER)
 
     # ------------------------------------------------------------------
     # HTTP plumbing
