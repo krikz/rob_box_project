@@ -78,20 +78,40 @@ def _map_language(lang: str | None) -> str | None:
     return lang
 
 
-def _map_exception(exc: Exception, *, provider: str) -> TTSError:
+def _redact_sensitive_text(text: str, *, secrets: tuple[str, ...]) -> str:
+    """Remove configured credentials from untrusted transport diagnostics."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    return text
+
+
+def _map_exception(
+    exc: Exception,
+    *,
+    provider: str,
+    secrets: tuple[str, ...] = (),
+) -> TTSError:
     """Map httpx / MiniMax-shaped errors onto our domain errors.
 
     If ``exc`` is already a :class:`TTSError` subclass, return it unchanged —
     we don't want to lose specificity (e.g. ``TTSAuthError`` raised by
     ``_headers()`` should not be downgraded to a generic ``TTSError``).
+
+    HTTP response bodies and transport messages are untrusted. Some upstream
+    proxies echo the Authorization header in an error body, so credentials
+    known to this provider are redacted before an exception reaches callers or
+    their exception loggers.
     """
     if isinstance(exc, TTSError):
         return exc
     if isinstance(exc, httpx.TimeoutException):
-        return TTSTimeoutError(str(exc), provider=provider)
+        return TTSTimeoutError(
+            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
+        )
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        body = exc.response.text
+        body = _redact_sensitive_text(exc.response.text, secrets=secrets)
         if status in (401, 403):
             return TTSAuthError(f"{status}: {body}", provider=provider)
         if status == 429:
@@ -100,8 +120,12 @@ def _map_exception(exc: Exception, *, provider: str) -> TTSError:
             return TTSBadRequestError(f"{status}: {body}", provider=provider)
         return TTSError(f"{status}: {body}", provider=provider)
     if isinstance(exc, httpx.HTTPError):
-        return TTSTimeoutError(str(exc), provider=provider)
-    return TTSError(str(exc), provider=provider)
+        return TTSTimeoutError(
+            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
+        )
+    return TTSError(
+        _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
+    )
 
 
 def _build_payload(
@@ -374,14 +398,22 @@ class MiniMaxTTSProvider(TTSProvider):
                 content=json.dumps(payload),
             )
         except Exception as exc:  # noqa: BLE001 — map to domain errors
-            raise _map_exception(exc, provider=self.name) from exc
+            raise _map_exception(
+                exc,
+                provider=self.name,
+                secrets=(self._api_key, self._group_id),
+            ) from exc
 
         if resp.status_code >= 400:
             # Use raise_for_status to get the HTTPStatusError path.
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise _map_exception(exc, provider=self.name) from exc
+                raise _map_exception(
+                    exc,
+                    provider=self.name,
+                    secrets=(self._api_key, self._group_id),
+                ) from exc
 
         try:
             data = resp.json()
