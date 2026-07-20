@@ -1,4 +1,4 @@
-"""Typed errors raised by LLMProvider implementations.
+"""Typed errors raised by LLMProvider and TTSProvider implementations.
 
 All providers MUST wrap the underlying SDK errors into one of these so that
 callers (AgentSession, harnesses) can match on a stable type instead of
@@ -6,6 +6,11 @@ callers (AgentSession, harnesses) can match on a stable type instead of
 """
 
 from __future__ import annotations
+
+
+# ---------------------------------------------------------------------------
+# LLM errors
+# ---------------------------------------------------------------------------
 
 
 class ProviderError(Exception):
@@ -49,11 +54,53 @@ class CapabilityUnavailableError(ProviderError):
     """
 
 
+# ---------------------------------------------------------------------------
+# TTS errors — same shape, separate hierarchy so callers can `except TTSError`
+# without accidentally swallowing LLM errors (and vice versa).
+# ---------------------------------------------------------------------------
+
+
+class TTSError(Exception):
+    """Base class for every error a :class:`TTSProvider` may raise.
+
+    ``provider`` is the canonical provider name (e.g. ``"minimax"``).
+    Subclasses exist for the small handful of categories worth branching on;
+    anything else surfaces as bare ``TTSError``.
+    """
+
+    def __init__(self, message: str, *, provider: str | None = None) -> None:
+        super().__init__(message)
+        self.provider = provider
+
+
+class TTSRateLimitError(TTSError):
+    """429 / quota exhausted. Caller should back off + retry."""
+
+
+class TTSTimeoutError(TTSError):
+    """Network or read timeout. Safe to retry with the same prompt."""
+
+
+class TTSAuthError(TTSError):
+    """401 / 403. Indicates bad API key or revoked token."""
+
+
+class TTSBadRequestError(TTSError):
+    """400-class errors: unsupported voice / model / parameter combination."""
+
+
 __all__ = [
+    # LLM
     "ProviderError",
     "RateLimitError",
     "TimeoutError",
     "ContentFilterError",
     "AuthError",
     "CapabilityUnavailableError",
+    # TTS
+    "TTSError",
+    "TTSRateLimitError",
+    "TTSTimeoutError",
+    "TTSAuthError",
+    "TTSBadRequestError",
 ]
