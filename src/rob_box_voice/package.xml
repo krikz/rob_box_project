@@ -23,11 +23,13 @@
   <!-- Note: python3-pyaudio not available in ARM64 repos, installed via pip -->
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-httpx</exec_depend>
+  <!-- Decoder used by audio_transcode.py for MiniMax MP3/OGG payloads. -->
+  <exec_depend>ffmpeg</exec_depend>
 
-  <!-- rob_box_llm is OPTIONAL: tts_node uses MiniMaxTTSProvider only when
-       provider="minimax". The ImportError fallback in tts_node.py keeps the
-       yandex/silero path working on a build without rob_box_llm. -->
-  <exec_depend optional="true">rob_box_llm</exec_depend>
+  <!-- tts_node imports the shared TTS contract/provider for MiniMax; the
+       runtime ImportError fallback still keeps yandex/silero importable in
+       minimal developer environments. -->
+  <exec_depend>rob_box_llm</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

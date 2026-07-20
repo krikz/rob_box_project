@@ -215,17 +215,16 @@ MiniMax hex PCM
 
 ### 4.5 Чанкинг для стриминга
 
-`TTSProvider.stream()` (см. `minimax_tts.py:427-543`) — **v1
-реализация возвращает один терминальный `TTSChunk(finish_reason="stop")`**,
-буферизуя полный SSE-stream MiniMax. Это намеренное упрощение: для
-нашего use-case (робот говорит реплики ≤ 30 сек) true chunk-per-frame
-стриминг через WebSocket — overkill, и contract в `tts.py:140-168`
-документирует это явно.
+`TTSProvider.stream()` (см. `minimax_tts.py`) выдаёт каждый SSE-аудиочанк
+сразу по мере получения, затем пустой терминальный
+`TTSChunk(finish_reason="stop")`. Это снижает latency до первого аудио
+события; true fixed-size PCM frame streaming через WebSocket остаётся
+отложенным, поскольку требует отдельного persistent connection.
 
-> **Implication для ROS:** `/voice/audio/speech` публикует **один
-> `AudioData` msg на весь синтез** в MiniMax-пути. Это совпадает с
-> поведением Yandex-пути. Контракт топика не меняется (ADR-0001
-> invariant).
+> **Implication для ROS:** при `minimax_streaming=true` каждый
+> `TTSChunk` с аудио публикуется отдельным `AudioData` msg до получения
+> следующего события; при `false` публикуется один msg на весь синтез.
+> Контракт топика не меняется (ADR-0001 invariant).
 
 ---
 

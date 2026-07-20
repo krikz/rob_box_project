@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 Главный launch file для запуска Voice Assistant системы
+
+Поддерживает opt-in MiniMax TTS (см. ADR-0003) через launch-аргумент
+``provider:=minimax``. При включении секреты берутся из ENV
+``MINIMAX_API_KEY`` / ``MINIMAX_GROUP_ID`` (docker-compose mount). Они
+читаются нодой из ENV и не копируются в YAML или launch-логи.
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -29,7 +34,16 @@ def generate_launch_description():
         default_value='',
         description='Namespace для всех нод'
     )
-    
+
+    # MiniMax TTS opt-in. The launch override selects the provider; credentials
+    # stay in ENV and are read lazily by TTSNode, never copied into YAML/logs.
+    provider_arg = DeclareLaunchArgument(
+        'provider',
+        default_value='yandex',
+        choices=['yandex', 'silero', 'minimax'],
+        description='TTS provider override for tts_node'
+    )
+
     # Конфигурация
     config_file = LaunchConfiguration('config_file')
     namespace = LaunchConfiguration('namespace')
@@ -89,13 +103,13 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
     
-    # === TTS Node (Phase 2: Silero TTS v4 с бурундуком) ===
+    # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
     tts_node = Node(
         package='rob_box_voice',
         executable='tts_node',
         name='tts_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[config_file, {'provider': LaunchConfiguration('provider')}],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -178,11 +192,12 @@ def generate_launch_description():
     return LaunchDescription([
         config_file_arg,
         namespace_arg,
+        provider_arg,
         audio_node,
         led_node,
         animation_node,
         dialogue_node,  # ✅ Phase 2: DeepSeek streaming
-        tts_node,       # ✅ Phase 2: Silero TTS
+        tts_node,       # ✅ Phase 2: Silero TTS (MiniMax opt-in via provider=minimax)
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition

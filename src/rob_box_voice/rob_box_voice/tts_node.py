@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import wave
 from contextlib import contextmanager
@@ -27,16 +28,41 @@ import sounddevice as sd
 import torch
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from std_msgs.msg import String
-from .utils.audio_utils import find_respeaker_device_sounddevice
+
 from .audio_playback_manager import AudioPlaybackManager
+
+# Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
+# into ROS-ready int16 LE PCM. Imported independently from the optional MiniMax
+# provider so conversion utilities remain available even when rob_box_llm is not.
+try:
+    from .utils.audio_transcode import (
+        AudioTranscodeError,
+        DecodedAudio,
+        to_pcm_int16,
+    )
+except ImportError:  # pragma: no cover - only a malformed minimal installation
+    AudioTranscodeError = RuntimeError  # type: ignore[assignment, misc]
+    DecodedAudio = object  # type: ignore[assignment, misc]
+    to_pcm_int16 = None  # type: ignore[assignment]
 
 # MiniMax TTS provider is opt-in via provider="minimax". Import is lazy so a
 # minimal ros_box_voice install (no httpx configured) doesn't break the
 # default yandex/silero path.
 try:
     from rob_box_llm import MiniMaxTTSProvider, TTSSettings, TTSFormat
-    from rob_box_llm.errors import TTSError as MiniMaxTTSError
+    from rob_box_llm.errors import (
+        TTSError as MiniMaxTTSError,
+        TTSAuthError as MiniMaxTTSAuthError,
+        TTSBadRequestError as MiniMaxTTSBadRequestError,
+        TTSRateLimitError as MiniMaxTTSRateLimitError,
+    )
 
     MINIMAX_AVAILABLE = True
 except ImportError:  # pragma: no cover — only triggered if rob_box_llm not built
@@ -45,6 +71,9 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
     TTSSettings = None  # type: ignore[assignment]
     TTSFormat = None  # type: ignore[assignment]
     MiniMaxTTSError = Exception  # type: ignore[assignment, misc]
+    MiniMaxTTSAuthError = Exception  # type: ignore[assignment,misc]
+    MiniMaxTTSBadRequestError = Exception  # type: ignore[assignment,misc]
+    MiniMaxTTSRateLimitError = Exception  # type: ignore[assignment,misc]
 
 
 @contextmanager
@@ -165,6 +194,29 @@ class TTSNode(Node):
         self.declare_parameter("minimax_speed", 1.0)  # 0.5 – 2.0
         self.declare_parameter("minimax_sample_rate", 32000)  # Hz — MiniMax возвращает PCM @ 32 kHz
         self.declare_parameter("minimax_timeout", 30.0)  # секунды httpx timeout
+        # Формат контейнера, который ожидается от MiniMax. Default PCM, как
+        # задокументировано в ADR-0003 §2.3. WAV/MP3/OGG тоже валидны —
+        # провайдер вернёт выбранный контейнер, а _synthesize_minimax_async
+        # транскодирует его в int16 LE PCM через utils.audio_transcode.
+        self.declare_parameter("minimax_format", "pcm")  # pcm | wav | mp3 | ogg
+        # Retry policy — соответствует ADR-0003 §2.6.
+        self.declare_parameter("minimax_max_retries", 2)  # 0..3
+        self.declare_parameter("minimax_retry_backoff_ms", 500)  # ms начальный backoff (удваивается)
+        # Streaming mode: использовать ли provider.stream() вместо synthesize().
+        # Текущий MiniMax провайдер возвращает один буферизованный чанк,
+        # поэтому chunk-per-frame latency win появится только с WebSocket
+        # (M5/M6). Эта настройка сейчас полезна для тестов и как
+        # forward-compat hook. См. ADR-0003 §2.4.
+        self.declare_parameter("minimax_streaming", False)
+
+        # ROS audio bridge. AudioData carries raw int16 LE PCM without
+        # sample-rate metadata, so publishers and sinks must share the configured
+        # rate out of band. Best-effort/volatile avoids replaying stale speech and
+        # prevents a slow subscriber from back-pressuring TTS playback.
+        self.declare_parameter("audio_topic", "/voice/audio/speech")
+        self.declare_parameter("audio_output_sample_rate", 16000)
+        self.declare_parameter("audio_qos_reliability", "best_effort")
+        self.declare_parameter("audio_qos_depth", 10)
 
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
@@ -174,6 +226,11 @@ class TTSNode(Node):
 
         # Читаем параметры
         self.provider = self.get_parameter("provider").value
+        if self.provider not in {"yandex", "silero", "minimax"}:
+            raise ValueError(
+                "provider must be one of: yandex, silero, minimax; "
+                f"got {self.provider!r}"
+            )
 
         # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv("YANDEX_API_KEY", "")
@@ -199,7 +256,25 @@ class TTSNode(Node):
         self.minimax_speed = float(self.get_parameter("minimax_speed").value)
         self.minimax_sample_rate = int(self.get_parameter("minimax_sample_rate").value)
         self.minimax_timeout = float(self.get_parameter("minimax_timeout").value)
+        self.minimax_format = self._parse_format(self.get_parameter("minimax_format").value)
+        self.minimax_max_retries = min(
+            3, max(0, int(self.get_parameter("minimax_max_retries").value))
+        )
+        self.minimax_retry_backoff_ms = max(0, int(self.get_parameter("minimax_retry_backoff_ms").value))
+        self.minimax_streaming = bool(self.get_parameter("minimax_streaming").value)
         self.minimax_provider = None  # lazy: создаётся в _synthesize_minimax()
+
+        self.audio_topic = str(self.get_parameter("audio_topic").value)
+        self.audio_output_sample_rate = int(
+            self.get_parameter("audio_output_sample_rate").value
+        )
+        if self.audio_output_sample_rate <= 0:
+            raise ValueError("audio_output_sample_rate must be > 0")
+        self.audio_qos_reliability = str(
+            self.get_parameter("audio_qos_reliability").value
+        ).lower()
+        self.audio_qos_depth = max(1, int(self.get_parameter("audio_qos_depth").value))
+        self.audio_channels = 1
 
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
@@ -261,7 +336,22 @@ class TTSNode(Node):
         )
 
         # Публикация аудио и состояния
-        self.audio_pub = self.create_publisher(AudioData, "/voice/audio/speech", 10)
+        if self.audio_qos_reliability == "best_effort":
+            audio_reliability = ReliabilityPolicy.BEST_EFFORT
+        elif self.audio_qos_reliability == "reliable":
+            audio_reliability = ReliabilityPolicy.RELIABLE
+        else:
+            raise ValueError(
+                "audio_qos_reliability must be 'best_effort' or 'reliable', "
+                f"got {self.audio_qos_reliability!r}"
+            )
+        audio_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=self.audio_qos_depth,
+            reliability=audio_reliability,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.audio_pub = self.create_publisher(AudioData, self.audio_topic, audio_qos)
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
         self.finished_pub = self.create_publisher(
             String, "/voice/tts/finished", 10
@@ -270,6 +360,9 @@ class TTSNode(Node):
         # Флаг для остановки воспроизведения
         self.stop_requested = False
         self.current_stream = None  # Текущий sounddevice stream
+        # Serialize synth/play workers; callbacks stay non-blocking while queued
+        # requests are dropped by dialogue-id checks after barge-in.
+        self._synthesis_lock = threading.Lock()
 
         # Dialogue session tracking (для синхронизации с dialogue_node)
         self.current_dialogue_id = None
@@ -301,7 +394,13 @@ class TTSNode(Node):
                 self.get_logger().info(
                     f"  MiniMax T2A v2 (opt-in): model={self.minimax_model}, "
                     f"voice={self.minimax_voice}, lang={self.minimax_language}, "
+                    f"format={getattr(self.minimax_format, 'value', self.minimax_format)}, "
                     f"sr={self.minimax_sample_rate} Hz, timeout={self.minimax_timeout}s"
+                )
+                self.get_logger().info(
+                    f"  MiniMax retry: max_retries={self.minimax_max_retries}, "
+                    f"backoff_ms={self.minimax_retry_backoff_ms}, "
+                    f"streaming={self.minimax_streaming}"
                 )
         self.get_logger().info(f"  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)")
         self.get_logger().info(f"  Chipmunk mode: {self.chipmunk_mode}")
@@ -498,8 +597,15 @@ class TTSNode(Node):
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
 
-            # Синтез и воспроизведение
-            self._synthesize_and_play(ssml, text, dialogue_id, ssml_attributes, speech_id)
+            # Синтез/воспроизведение блокируют сетью и ALSA. Не держим ROS
+            # executor callback: control/new-dialogue callbacks должны оставаться
+            # отзывчивыми для STOP/barge-in.
+            threading.Thread(
+                target=self._run_synthesis_worker,
+                args=(ssml, text, dialogue_id, ssml_attributes, speech_id),
+                name=f"tts-{speech_id[:8]}",
+                daemon=True,
+            ).start()
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ JSON parse error: {e}")
@@ -580,6 +686,29 @@ class TTSNode(Node):
 
         return attributes
 
+    def _run_synthesis_worker(
+        self,
+        ssml: str,
+        text: str,
+        dialogue_id: str = None,
+        ssml_attributes: dict = None,
+        speech_id: str = None,
+    ):
+        """Serialize blocking synth/play work outside the ROS callback thread."""
+        with self._synthesis_lock:
+            if dialogue_id and self.current_dialogue_id != dialogue_id:
+                self.get_logger().warning(
+                    f"Dropping queued TTS for stale dialogue {dialogue_id[:8]}"
+                )
+                return
+            self._synthesize_and_play(
+                ssml,
+                text,
+                dialogue_id,
+                ssml_attributes,
+                speech_id,
+            )
+
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None
     ):
@@ -608,12 +737,17 @@ class TTSNode(Node):
             # MiniMax (HTTP) — opt-in через provider="minimax".
             # Это первичный синтез, без fallback (если упадёт — TTS ошибка,
             # caller может переключить provider обратно на yandex).
+            result = {}
             if self.provider == "minimax":
                 self.publish_state("synthesizing")
-                self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
-                # Любая ошибка MiniMax пробрасывается наверх — НЕ падаем в Silero,
-                # потому что пользователь явно выбрал MiniMax (provider=minimax).
-                result = self._synthesize_minimax(text, ssml_attributes)
+                if self.minimax_streaming:
+                    self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
+                    result = self._synthesize_minimax_streaming_publish(text, ssml_attributes)
+                else:
+                    self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
+                    # Любая ошибка MiniMax пробрасывается наверх — НЕ падаем в Silero,
+                    # потому что пользователь явно выбрал MiniMax (provider=minimax).
+                    result = self._synthesize_minimax(text, ssml_attributes)
                 audio_np = result["audio_np"]
                 sample_rate = result["sample_rate"]
                 self.get_logger().info(
@@ -680,8 +814,12 @@ class TTSNode(Node):
                     f"(homograph_stress={self.silero_put_stress_homo})"
                 )
 
-            # Публикуем в ROS topic
-            self._publish_audio(audio_np)
+            # Публикуем в ROS topic. В streaming-режиме каждый чанк уже
+            # опубликован до чтения следующего, поэтому полный буфер повторно
+            # не отправляем.
+            if not (self.provider == "minimax" and result.get("already_published", False)):
+                topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
+                self._publish_audio(topic_audio)
 
             # КРИТИЧЕСКАЯ ПРОВЕРКА: dialogue_id не изменился во время синтеза?
             if dialogue_id and self.current_dialogue_id != dialogue_id:
@@ -824,7 +962,7 @@ class TTSNode(Node):
                         f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., success=True"
                     )
                     self.finished_pub.publish(finished_msg)
-                    self.get_logger().info(f"✅ TTS finished event опубликован на /voice/tts/finished")
+                    self.get_logger().info("✅ TTS finished event опубликован на /voice/tts/finished")
 
             # Очищаем processing_dialogue_id после завершения
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -921,8 +1059,70 @@ class TTSNode(Node):
         except Exception as e:
             raise Exception(f"Yandex synthesis error: {e}")
 
+    @staticmethod
+    def _decoded_audio_to_float32(decoded: DecodedAudio) -> np.ndarray:
+        """Convert decoded int16 PCM to mono float32, validating frame alignment."""
+        samples_int16 = np.frombuffer(decoded.pcm, dtype="<i2")
+        if decoded.channels > 1:
+            if samples_int16.size % decoded.channels != 0:
+                raise AudioTranscodeError(
+                    "PCM sample count is not aligned to the channel count",
+                    fmt=decoded.source_format.value,
+                    reason="unaligned_channels",
+                )
+            samples_int16 = (
+                samples_int16.reshape(-1, decoded.channels)
+                .astype(np.int32)
+                .mean(axis=1)
+                .astype(np.int16)
+            )
+        return samples_int16.astype(np.float32) / 32768.0
+
+    def _decode_minimax_audio(
+        self,
+        samples: bytes,
+        fmt: "TTSFormat",
+        sample_rate: int,
+    ) -> tuple[np.ndarray, int]:
+        """Transcode one provider payload and return mono float32 + actual rate."""
+        try:
+            decoded = to_pcm_int16(
+                samples,
+                fmt,
+                default_sample_rate=sample_rate or self.minimax_sample_rate,
+            )
+            return self._decoded_audio_to_float32(decoded), decoded.sample_rate
+        except AudioTranscodeError as exc:
+            raise Exception(
+                f"MiniMax TTS transcode failed ({exc.fmt}, {exc.reason}): {exc}"
+            ) from exc
+
+    @staticmethod
+    def _parse_format(value: str) -> "TTSFormat":
+        """Map ROS-параметр ``minimax_format`` к :class:`TTSFormat`.
+
+        Не делает strict import-check на ``TTSFormat`` — если rob_box_llm
+        недоступен, вернёт ``"pcm"`` строкой, и проверка формата
+        произойдёт в ``_synthesize_minimax_async`` уже после инициализации
+        провайдера. Это отказоустойчиво — ROS-параметр может быть задан
+        даже когда MiniMax opt-in ещё не подключён.
+        """
+        if not MINIMAX_AVAILABLE or TTSFormat is None:
+            return "pcm"  # type: ignore[return-value]
+        try:
+            return TTSFormat(value.lower().strip())
+        except ValueError:
+            valid = ", ".join(fmt.value for fmt in TTSFormat)
+            raise ValueError(f"minimax_format={value!r} недопустим; разрешено: {valid}")
+
     async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None) -> dict:
         """Асинхронный синтез через MiniMax T2A v2 HTTP API.
+
+        Поддерживает все 4 контейнера (``PCM``/``WAV``/``MP3``/``OGG``) —
+        после получения ответа аудио декодируется в int16 LE PCM через
+        :mod:`rob_box_voice.utils.audio_transcode`, чтобы downstream-код
+        (resample → mono→stereo → publish /voice/audio/speech) мог работать
+        с одним форматом (см. ADR-0003 §2.3).
 
         Returns:
             dict с ключами:
@@ -938,8 +1138,10 @@ class TTSNode(Node):
                 "Соберите rob_box_llm или вернитесь к provider=yandex."
             )
         if not self.minimax_api_key or not self.minimax_group_id:
-            raise Exception(
-                "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы. " "Установите их через ROS-параметры или env-переменные."
+            raise MiniMaxTTSAuthError(
+                "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы. "
+                "Установите их через ROS-параметры или env-переменные.",
+                provider="minimax",
             )
 
         # Lazy init провайдера (один раз на ноду).
@@ -955,29 +1157,177 @@ class TTSNode(Node):
         # Скорость речи: берём из SSML или параметр ноды.
         speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
 
+        # Контейнер MiniMax-ответа. PCM — default (как в ADR-0003 §2.3),
+        # но WAV/MP3 тоже поддерживаются через transcode.
+        fmt = self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM
         settings = TTSSettings(
             voice=self.minimax_voice,
             model=self.minimax_model,
             language=self.minimax_language,
             speed=speed,
             sample_rate=self.minimax_sample_rate,
-            format=TTSFormat.PCM,
+            format=fmt,
         )
 
         try:
             tts_audio = await self.minimax_provider.synthesize(text, settings=settings)
-        except MiniMaxTTSError as exc:
-            raise Exception(f"MiniMax TTS error: {exc}") from exc
+        except MiniMaxTTSError:
+            raise
         except Exception as exc:  # noqa: BLE001
-            raise Exception(f"MiniMax synthesis unexpected error: {exc}") from exc
+            raise MiniMaxTTSError(
+                f"MiniMax synthesis unexpected error: {exc}",
+                provider="minimax",
+            ) from exc
 
-        # PCM int16 → float32. MiniMax всегда возвращает int16 little-endian PCM
-        # (audio_setting.format=pcm → 16-bit LE).
-        audio_np = np.frombuffer(tts_audio.samples, dtype=np.int16).astype(np.float32) / 32768.0
-        return {"audio_np": audio_np, "sample_rate": tts_audio.sample_rate}
+        # Транскодируем в mono float32. Поддерживаются PCM/WAV/MP3/OGG —
+        # см. utils/audio_transcode.py.
+        audio_np, decoded_sample_rate = self._decode_minimax_audio(
+            tts_audio.samples,
+            tts_audio.format,
+            tts_audio.sample_rate,
+        )
+
+        if decoded_sample_rate != tts_audio.sample_rate:
+            # Контейнер (WAV header) дал sample_rate отличный от запрошенного.
+            # Это редкий случай (MiniMax должен вернуть то, что попросили),
+            # но logging помогает при отладке.
+            self.get_logger().debug(
+                f"minimax: контейнер SR ({decoded_sample_rate}) != запрошенный SR "
+                f"({tts_audio.sample_rate}); используем контейнерный"
+            )
+
+        return {"audio_np": audio_np, "sample_rate": decoded_sample_rate}
+
+    async def _synthesize_minimax_with_retry(self, text: str, ssml_attributes: dict = None) -> dict:
+        """Обёртка с retry-loop над :meth:`_synthesize_minimax_async`.
+
+        Реализует политику retry из ADR-0003 §2.6:
+
+        * ``MiniMaxTTSAuthError`` / ``MiniMaxTTSBadRequestError`` — без ретрая.
+        * ``MiniMaxTTSTimeoutError`` / ``MiniMaxTTSRateLimitError`` /
+          ``MiniMaxTTSError`` (5xx обёртка) — ретрай с exp backoff.
+        * Любая другая ошибка — ретрай как ``MiniMaxTTSError`` (conservative).
+
+        Args:
+            text: текст для синтеза.
+            ssml_attributes: словарь с SSML-атрибутами (rate/pitch).
+
+        Returns:
+            см. ``_synthesize_minimax_async``.
+
+        Raises:
+            Последнее исключение после исчерпания retry budget.
+        """
+        configured_retries = min(max(0, int(self.minimax_max_retries)), 3)
+        max_attempts = configured_retries + 1  # 0 retries → 1 attempt
+        backoff_ms = self.minimax_retry_backoff_ms
+        last_exc: Exception | None = None
+
+        for attempt in range(max_attempts):
+            try:
+                return await self._synthesize_minimax_async(text, ssml_attributes)
+            except Exception as exc:
+                # Классифицируем — некоторые ошибки ретраить нельзя.
+                if isinstance(exc, MiniMaxTTSAuthError):
+                    self.get_logger().error(f"MiniMax auth error, NO retry: {exc}")
+                    raise
+                if isinstance(exc, MiniMaxTTSBadRequestError):
+                    self.get_logger().error(f"MiniMax bad-request, NO retry: {exc}")
+                    raise
+
+                # ADR-0003 permits only one retry for 429. Timeout/network/5xx
+                # consume the full configured retry budget.
+                retry_budget = 1 if isinstance(exc, MiniMaxTTSRateLimitError) else configured_retries
+                last_exc = exc
+                if attempt >= retry_budget:
+                    self.get_logger().error(
+                        f"MiniMax exhausted {attempt + 1}/{retry_budget + 1} attempts: {exc}"
+                    )
+                    raise
+                delay = (backoff_ms / 1000.0) * (2**attempt)
+                self.get_logger().warn(
+                    f"⏳ MiniMax retry {attempt + 1}/{retry_budget} after {delay:.2f}s "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                import asyncio as _asyncio
+
+                await _asyncio.sleep(delay)
+
+        # Unreachable, но mypy требует
+        assert last_exc is not None
+        raise last_exc
+
+    def _synthesize_minimax_streaming_publish(self, text: str, ssml_attributes: dict = None) -> dict:
+        """Sync-обёртка над :meth:`_stream_minimax_chunks` для streaming-режима MiniMax.
+
+        Публикует каждый :class:`TTSChunk` как отдельный ``AudioData`` msg
+        в ``/voice/audio/speech`` и возвращает объединённый буфер downstream
+        для воспроизведения (chunk-per-frame latency win появится с
+        WebSocket; пока провайдер возвращает один чанк — поведение
+        эквивалентно ``_synthesize_minimax``).
+
+        Returns:
+            dict с ключами ``audio_np``, ``sample_rate``.
+        """
+        import asyncio as _asyncio
+
+        chunks = []
+        sample_rate = 0
+
+        async def _consume_and_publish():
+            nonlocal sample_rate
+            async for chunk in self._stream_minimax_chunks(text, ssml_attributes):
+                if chunk.finish_reason == "error":
+                    raise Exception("MiniMax stream reported error: finish_reason=error")
+
+                if chunk.samples:
+                    audio_np, chunk_sample_rate = self._decode_minimax_audio(
+                        chunk.samples,
+                        chunk.format,
+                        chunk.sample_rate,
+                    )
+                    if sample_rate and chunk_sample_rate != sample_rate:
+                        raise Exception(
+                            "MiniMax stream changed sample_rate from "
+                            f"{sample_rate} to {chunk_sample_rate}"
+                        )
+                    sample_rate = sample_rate or chunk_sample_rate
+                    chunks.append(audio_np)
+                    # Publish before requesting the next provider chunk. This is
+                    # the latency-critical invariant of the ROS streaming bridge.
+                    topic_audio = self._prepare_audio_for_topic(
+                        audio_np,
+                        chunk_sample_rate,
+                    )
+                    self._publish_audio(topic_audio)
+
+                if chunk.finish_reason == "stop":
+                    break
+
+            if not chunks:
+                raise Exception("MiniMax stream yielded no audio chunks")
+
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                ex.submit(lambda: _asyncio.run(_consume_and_publish())).result()
+        else:
+            _asyncio.run(_consume_and_publish())
+
+        return {
+            "audio_np": np.concatenate(chunks),
+            "sample_rate": sample_rate,
+            "already_published": True,
+        }
 
     def _synthesize_minimax(self, text: str, ssml_attributes: dict = None) -> dict:
-        """Sync-обёртка над _synthesize_minimax_async.
+        """Sync-обёртка над :meth:`_synthesize_minimax_with_retry`.
 
         Синхронная ROS-нода не может просто await-нуть — оборачиваем через
         ``asyncio.run`` если loop ещё не запущен, или планируем в существующем.
@@ -989,7 +1339,7 @@ class TTSNode(Node):
         except RuntimeError:
             loop = None
 
-        coro = self._synthesize_minimax_async(text, ssml_attributes)
+        coro = self._synthesize_minimax_with_retry(text, ssml_attributes)
         if loop is not None:
             # Если уже внутри event loop (например, в тестах) — создаём task.
             # Но в ROS-ноде _synthesize_and_play синхронный, так что эта ветка
@@ -1001,15 +1351,100 @@ class TTSNode(Node):
         # Нет активного loop (типичный кейс ROS callback) → asyncio.run.
         return asyncio.run(coro)
 
+    async def _stream_minimax_chunks(self, text: str, ssml_attributes: dict = None):
+        """Стриминг MiniMax через ``provider.stream()`` для chunk-per-frame.
+
+        Провайдер сейчас возвращает один ``TTSChunk(finish_reason="stop")``
+        (MiniMax SSE буферизуется в провайдере — chunk-per-frame WebSocket
+        отложен в M5/M6, см. ADR-0003 §2.4). Эта обёртка сохраняет контракт
+        ``stream()`` от ``rob_box_llm/tts.py`` — и когда WebSocket появится,
+        переключение будет toggled-флагом, без переписывания вызывающего
+        кода в ``tts_node``.
+
+        Raises:
+            Exception с человекочитаемым сообщением при любой ошибке MiniMax
+            (вызывающий код решает — retry, fallback, или проброс наверх).
+        """
+        if not MINIMAX_AVAILABLE or self.minimax_provider is None:
+            # Lazy init (если ещё не сделали).
+            if not MINIMAX_AVAILABLE:
+                raise Exception("rob_box_llm недоступен — MiniMax не подключён")
+            if not self.minimax_api_key or not self.minimax_group_id:
+                raise MiniMaxTTSAuthError(
+                    "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы",
+                    provider="minimax",
+                )
+            self.minimax_provider = MiniMaxTTSProvider(
+                api_key=self.minimax_api_key,
+                group_id=self.minimax_group_id,
+                default_voice=self.minimax_voice,
+                default_model=self.minimax_model,
+                timeout=self.minimax_timeout,
+            )
+
+        speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
+        settings = TTSSettings(
+            voice=self.minimax_voice,
+            model=self.minimax_model,
+            language=self.minimax_language,
+            speed=speed,
+            sample_rate=self.minimax_sample_rate,
+            format=self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM,
+        )
+        try:
+            async for chunk in self.minimax_provider.stream(text, settings=settings):
+                yield chunk
+        except MiniMaxTTSError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise MiniMaxTTSError(
+                f"MiniMax stream unexpected error: {exc}",
+                provider="minimax",
+            ) from exc
+
+    def _prepare_audio_for_topic(
+        self,
+        audio_np: np.ndarray,
+        sample_rate: int,
+    ) -> np.ndarray:
+        """Normalize mono audio to the fixed sample rate of AudioData topic."""
+        if sample_rate <= 0:
+            raise ValueError(f"invalid audio sample_rate: {sample_rate}")
+        if sample_rate == self.audio_output_sample_rate:
+            return audio_np
+        return resample_audio(
+            audio_np,
+            sample_rate,
+            self.audio_output_sample_rate,
+        )
+
     def _publish_audio(self, audio_np: np.ndarray):
         """Публикует аудио в ROS topic"""
         # Конвертируем в int16 для AudioData
-        audio_int16 = (audio_np * 32767).astype(np.int16)
+        audio_int16 = (
+            np.clip(audio_np, -1.0, 1.0) * 32767
+        ).astype("<i2", copy=False)
 
         msg = AudioData()
-        msg.data = audio_int16.tobytes()
+        # ROS uint8[] assignment is portable as a sequence of octets. Assigning
+        # bytes works in some generated bindings but not all ROS2 distros.
+        msg.data = list(audio_int16.tobytes())
 
         self.audio_pub.publish(msg)
+
+    def close_minimax_provider(self):
+        """Close the lazy MiniMax HTTP client before ROS node shutdown."""
+        if self.minimax_provider is None:
+            return
+
+        import asyncio
+
+        try:
+            asyncio.run(self.minimax_provider.aclose())
+        except Exception as exc:  # shutdown must continue even on cleanup failure
+            self.get_logger().warn(f"MiniMax provider cleanup failed: {exc}")
+        finally:
+            self.minimax_provider = None
 
     def cleanup_playback_noise(self):
         """
@@ -1063,6 +1498,12 @@ class TTSNode(Node):
             elif param.name == "yandex_speed":
                 self.yandex_speed = param.value
                 self.get_logger().info(f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}")
+            elif param.name == "minimax_max_retries":
+                self.minimax_max_retries = min(3, max(0, int(param.value)))
+                self.get_logger().info(f"🔁 MiniMax max_retries → {self.minimax_max_retries}")
+            elif param.name == "minimax_streaming":
+                self.minimax_streaming = bool(param.value)
+                self.get_logger().info(f"📡 MiniMax streaming → {self.minimax_streaming}")
 
         return SetParametersResult(successful=True)
 
@@ -1076,6 +1517,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.close_minimax_provider()
         node.destroy_node()
         rclpy.shutdown()
 
