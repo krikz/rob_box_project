@@ -1,0 +1,256 @@
+%% TTS Provider — структура классов и точки расширения (t_8d714ff0)
+%% Отображает:
+%%   1) Frozen в P0.5 value-объекты и TTSProvider ABC из tts.py (НЕ модифицируются).
+%%   2) НОВУЮ абстракцию BaseTTSProvider(TTSProvider) + 5 точек расширения.
+%%   3) Конкретный адаптер MiniMaxTTSProvider (status: миграция отложена до P0.6).
+%%   4) Три stub-провайдера (ElevenLabs / Google / LocalPiper) — design-only.
+%%   5) Composition-root: registry + factory + builder callback.
+%%
+%% Комментарии к статусу каждого класса (<<…>>) делают явным, что уже
+%% реализовано (frozen), что только задизайнено (proposed) и что не
+%% импортируется production-кодом (stub).
+
+classDiagram
+    direction LR
+
+    %% ============================================================
+    %% Frozen domain value-objects (tts.py, P0.5)
+    %% ============================================================
+
+    class TTSSettings {
+        <<value-object, frozen P0.5>>
+        +voice: str
+        +model: str
+        +language: str
+        +speed: float
+        +sample_rate: int
+        +format: TTSFormat
+        +extra: Mapping
+    }
+
+    class TTSAudio {
+        <<value-object, frozen P0.5>>
+        +samples: bytes
+        +sample_rate: int
+        +format: TTSFormat
+        +raw: Any
+    }
+
+    class TTSChunk {
+        <<value-object, frozen P0.5>>
+        +samples: bytes
+        +sample_rate: int
+        +format: TTSFormat
+        +finish_reason: Literal~stop|error~
+    }
+
+    class TTSFormat {
+        <<enum, frozen P0.5>>
+        PCM
+        WAV
+        MP3
+        OGG
+    }
+
+    class TTSError {
+        <<exception hierarchy, frozen P0.5>>
+        +provider: str
+    }
+
+    class TTSAuthError {
+        <<frozen P0.5>>
+    }
+    class TTSBadRequestError {
+        <<frozen P0.5>>
+    }
+    class TTSRateLimitError {
+        <<frozen P0.5>>
+    }
+    class TTSTimeoutError {
+        <<frozen P0.5>>
+    }
+
+    TTSAuthError --|> TTSError
+    TTSBadRequestError --|> TTSError
+    TTSRateLimitError --|> TTSError
+    TTSTimeoutError --|> TTSError
+
+    %% ============================================================
+    %% Frozen ABC (tts.py, P0.5) — НЕ модифицируется в этом PR
+    %% ============================================================
+
+    class TTSProvider {
+        <<ABC, frozen P0.5>>
+        +name: str
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +aclose() void
+    }
+
+    class FakeTTSProvider {
+        <<test/dummy, frozen P0.5>>
+    }
+
+    FakeTTSProvider --|> TTSProvider
+
+    TTSProvider ..> TTSAudio : returns
+    TTSProvider ..> TTSChunk : yields
+    TTSProvider ..> TTSSettings : takes
+    TTSProvider ..> TTSFormat : uses
+    TTSProvider ..> TTSError : raises
+
+    %% ============================================================
+    %% НОВОЕ (t_8d714ff0) — extension surface, design-only
+    %% ============================================================
+
+    class BaseTTSProvider {
+        <<NEW abstract, proposed P0.5>>
+        +capabilities() TTSCapabilities
+        +list_voices() AsyncIterator~TTSVoice~
+        +healthcheck() TTSHealth
+        #_build_request_payload(text, settings, voice_meta) dict
+        #_http_client_factory() httpx~AsyncClient
+    }
+
+    BaseTTSProvider --|> TTSProvider : inherits frozen contract
+
+    class TTSCapabilities {
+        <<NEW value-object, proposed>>
+        +streaming: bool
+        +voice_cloning: bool
+        +ssml: bool
+        +pronunciation_dict: bool
+        +audio_format_pcm: bool
+        +audio_format_mp3: bool
+        +audio_format_ogg: bool
+        +custom_endpoint: bool
+    }
+
+    class TTSVoice {
+        <<NEW value-object, proposed>>
+        +id: str
+        +name: str
+        +language: str
+        +gender: str
+        +preview_url: str
+        +supports_cloning: bool
+        +extra: Mapping
+    }
+
+    class TTSHealth {
+        <<NEW value-object, proposed>>
+        +ok: bool
+        +provider: str
+        +latency_ms: float
+        +reason: str
+    }
+
+    BaseTTSProvider ..> TTSCapabilities : returns
+    BaseTTSProvider ..> TTSVoice : yields
+    BaseTTSProvider ..> TTSHealth : returns
+
+    %% ============================================================
+    %% Текущий MiniMax-адаптер — НЕ мигрирует на BaseTTSProvider в P0.5
+    %% ============================================================
+
+    class MiniMaxTTSProvider {
+        <<concrete adapter, frozen P0.5>>
+        +DEFAULT_BASE_URL: str
+        +DEFAULT_VOICE: str
+        +DEFAULT_MODEL: str
+        +DEFAULT_TIMEOUT: float
+        -_api_key: str
+        -_group_id: str
+        -_base_url: str
+        -_timeout: float
+        -_client: httpx~AsyncClient
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +aclose() void
+    }
+
+    MiniMaxTTSProvider --|> TTSProvider : direct subclass (P0.5)
+    note for MiniMaxTTSProvider "P0.6: миграция на BaseTTSProvider\nчерез 1 строку — class ... (BaseTTSProvider)"
+
+    %% ============================================================
+    %% Stub-провайдеры — design-only, НЕ импортируются production-кодом
+    %% ============================================================
+
+    class ElevenLabsTTSProvider {
+        <<STUB, proposed P0.6+>>
+        +capabilities streaming=True, voice_cloning=True, mp3=True
+        +list_voices GET /v1/voices
+        +healthcheck GET /v1/user
+    }
+
+    class GoogleTTSProvider {
+        <<STUB, proposed P0.6+>>
+        +capabilities streaming=True, ssml=True, pcm/mp3/ogg=True
+        +list_voices voices.list (OAuth2)
+        +healthcheck OAuth token introspection
+    }
+
+    class LocalPiperTTSProvider {
+        <<STUB, proposed P0.6+>>
+        +capabilities custom_endpoint=True; всё False
+        +list_voices glob /usr/share/piper/voices/*.onnx
+        +healthcheck subprocess piper --version
+    }
+
+    ElevenLabsTTSProvider --|> BaseTTSProvider : extends
+    GoogleTTSProvider --|> BaseTTSProvider : extends
+    LocalPiperTTSProvider --|> BaseTTSProvider : extends
+
+    %% ============================================================
+    %% Composition root — registry / factory / builder callback
+    %% ============================================================
+
+    class TTSProviderRegistry {
+        <<NEW composition root, proposed>>
+        -_builders: dict~str, ProviderBuilder~
+        +register(name, builder) void
+        +resolve(name) ProviderBuilder
+        +names() list~str~
+    }
+
+    class TTSProviderFactory {
+        <<NEW composition root, proposed>>
+        -_cache: dict~tuple, BaseTTSProvider~
+        +create(name, config, registry) BaseTTSProvider
+    }
+
+    class ProviderBuilder {
+        <<NEW callback type, proposed>>
+        +__call__(config) BaseTTSProvider
+    }
+
+    class register_builtin_tts_providers {
+        <<NEW composition root, proposed>>
+        +register() TTSProviderRegistry
+    }
+
+    TTSProviderRegistry --> ProviderBuilder : holds
+    TTSProviderFactory --> TTSProviderRegistry : queries
+    TTSProviderFactory ..> BaseTTSProvider : returns
+    register_builtin_tts_providers --> TTSProviderRegistry : populates
+
+    %% ============================================================
+    %% Consumers (existing + future) — use the factory, NOT direct imports
+    %% ============================================================
+
+    class TTSNode {
+        <<consumer, ROS path>>
+        -_provider: BaseTTSProvider
+        +_synthesize_and_play(text) AudioData
+    }
+
+    class TTSCLI {
+        <<consumer, future CLI>>
+        -_provider: BaseTTSProvider
+        +run(args) int
+    }
+
+    TTSNode --> TTSProviderFactory : uses
+    TTSCLI --> TTSProviderFactory : uses
+    TTSNode ..> BaseTTSProvider : holds reference
+    TTSCLI ..> BaseTTSProvider : holds reference
