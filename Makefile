@@ -12,6 +12,11 @@
 
 .PHONY: test-tts test-tts-fast test-tts-verbose help
 
+# Include the cross-provider conformance module explicitly: ``-k minimax``
+# selects only the MiniMax parametrisations and silently drops the
+# FakeTTSProvider half of the matrix.
+TTS_TEST_FILTER := minimax or tts_conformance
+
 # Common pytest flags — kept short so a typing dev can paste them.
 TTS_COV_ARGS := --cov=rob_box_llm.providers.minimax_tts \
                 --cov-report=term-missing \
@@ -28,10 +33,10 @@ help:
 # legacy way to make the in-tree rob_box_llm package importable; ``pip
 # install -e .[dev]`` is the cleaner alternative if the dev has done that.
 test-tts:
-	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k minimax $(TTS_COV_ARGS)
+	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k '$(TTS_TEST_FILTER)' $(TTS_COV_ARGS)
 
 test-tts-fast:
-	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k minimax
+	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k '$(TTS_TEST_FILTER)'
 
 test-tts-verbose:
-	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k minimax $(TTS_COV_ARGS) -vv -s
+	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k '$(TTS_TEST_FILTER)' $(TTS_COV_ARGS) -vv -s

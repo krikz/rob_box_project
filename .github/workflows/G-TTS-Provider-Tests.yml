@@ -20,7 +20,7 @@ name: "G: TTS Provider Tests + Coverage"
 # Local equivalent (run from the repo root):
 #
 #     cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest \
-#         -k minimax \
+#         -k 'minimax or tts_conformance' \
 #         --cov=rob_box_llm.providers.minimax_tts \
 #         --cov-report=term-missing \
 #         --cov-fail-under=85
@@ -92,7 +92,7 @@ jobs:
           MINIMAX_GROUP_ID: ""
         run: |
           PYTHONPATH=. python3 -m pytest \
-            -k minimax \
+            -k 'minimax or tts_conformance' \
             --cov=rob_box_llm.providers.minimax_tts \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \

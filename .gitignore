@@ -67,6 +67,13 @@ docker-compose.override.yml
 /frames_*.pdf
 /clog
 
+# TTS audio bench: artifacts and runtime logs are regenerable; fixtures and
+# scripts commit normally.
+tts_audio_bench/artifacts/
+tts_audio_bench/logs/
+tts_audio_bench/__pycache__/
+tts_audio_bench/**/__pycache__/
+
 # AI Agent Skills
 # .agents/github-copilot/ — Rob Box кастомные скилы, КОММИТИМ
 # .continue/ .qwen/ — авто-установка сторонних тулов, игнорируем

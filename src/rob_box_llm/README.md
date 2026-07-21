@@ -37,13 +37,49 @@ resp = await provider.complete(
 print(resp.content)
 ```
 
+## TTS providers
+
+* **`MiniMaxTTSProvider`** — concrete impl over MiniMax T2A v2 HTTP
+  (`https://api.minimax.io/v1/t2a_v2`). See
+  [`docs/guides/MINIMAX_TTS.md`](../../docs/guides/MINIMAX_TTS.md) for the
+  end-to-end user guide (API key, env vars, yaml config, supported voices
+  and languages, troubleshooting, code samples), and
+  [`docs/architecture/minimax-tts-architecture.md`](../../docs/architecture/minimax-tts-architecture.md)
+  for the implementation contract.
+* **`FakeTTSProvider`** — deterministic in-memory impl, for tests and
+  offline dev (echoes text as a synthetic PCM buffer; `aclose()` is a
+  no-op).
+
+Quick start:
+
+```python
+import asyncio, os
+from rob_box_llm import MiniMaxTTSProvider, TTSSettings
+
+async def main():
+    provider = MiniMaxTTSProvider()  # reads MINIMAX_API_KEY / MINIMAX_GROUP_ID from env
+    try:
+        audio = await provider.synthesize(
+            "Привет!", settings=TTSSettings(voice="male-qn-qingse", language="ru")
+        )
+        print(f"{len(audio.samples)} samples @ {audio.sample_rate} Hz")
+    finally:
+        await provider.aclose()
+
+asyncio.run(main())
+```
+
+ROS2 wiring lives in `rob_box_voice/tts_node.py` (opt-in via
+`tts_node.provider = "minimax"`); see the user guide for launch args
+and a copy-pasteable `voice_assistant.yaml` snippet.
+
 ## Testing
 
 ```bash
 cd src/rob_box_llm
 PYTHONPATH=. python3 -m pytest test/ -v
 PYTHONPATH=. python3 -m pytest test/ -k minimax        # just the MiniMax TTS provider
-PYTHONPATH=. python3 -m pytest test/ -k minimax \
+PYTHONPATH=. python3 -m pytest test/ -k 'minimax or tts_conformance' \
     --cov=rob_box_llm.providers.minimax_tts \
     --cov-report=term-missing \
     --cov-fail-under=85        # coverage gate (mirrors CI)
@@ -60,9 +96,9 @@ make test-tts-verbose   # -vv + stdout-captured logs for debugging
 ```
 
 The CI job `.github/workflows/G-TTS-Provider-Tests.yml` runs the same
-`pytest -k minimax … --cov-fail-under=85` invocation on every push and PR,
-and uploads the coverage report (`coverage.xml` + `htmlcov/`) as a
-build artifact.
+`pytest -k 'minimax or tts_conformance' … --cov-fail-under=85` invocation
+on every push and PR, and uploads the coverage report
+(`coverage.xml` + `htmlcov/`) as a build artifact.
 
 All tests are offline — the OpenAI SDK client is replaced with a fake,
 and `MiniMaxTTSProvider` is exercised against `httpx.MockTransport`.

@@ -75,6 +75,7 @@
 
 - [**README.md**](guides/README.md) - Навигация по руководствам
 - [**QUICK_START.md**](guides/QUICK_START.md) - Быстрый старт
+- [**MINIMAX_TTS.md**](guides/MINIMAX_TTS.md) - 🆕 MiniMax TTS: API key, конфиг, голоса, troubleshooting
 - [**NAV2_SETUP.md**](guides/NAV2_SETUP.md) - Настройка навигации Nav2
 - [**CAN_SETUP.md**](guides/CAN_SETUP.md) - Настройка CAN шины
 - [**LSLIDAR_SETUP.md**](guides/LSLIDAR_SETUP.md) - Настройка LSLIDAR
