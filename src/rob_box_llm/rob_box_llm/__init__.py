@@ -82,6 +82,7 @@ __all__ = [
     "MessagePart",
     "MessageContent",
     "ProviderCapabilities",
+    "errors",
     "DeepSeekProvider",
     "MiMoProvider",
     "MiniMaxProvider",
