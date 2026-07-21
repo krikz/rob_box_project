@@ -1,4 +1,4 @@
-"""Typed errors raised by LLMProvider implementations.
+"""Typed errors raised by LLMProvider and TTSProvider implementations.
 
 All providers MUST wrap the underlying SDK errors into one of these so that
 callers (AgentSession, harnesses) can match on a stable type instead of
@@ -6,6 +6,11 @@ callers (AgentSession, harnesses) can match on a stable type instead of
 """
 
 from __future__ import annotations
+
+
+# ---------------------------------------------------------------------------
+# LLM errors
+# ---------------------------------------------------------------------------
 
 
 class ProviderError(Exception):
@@ -35,6 +40,18 @@ class ContentFilterError(ProviderError):
 
 class AuthError(ProviderError):
     """401 / 403. Indicates bad API key or revoked token."""
+
+
+class CapabilityUnavailableError(ProviderError):
+    """The provider / model cannot fulfil the requested capability.
+
+    Examples: ``image_input=True`` on a text-only model, ``tools=True`` on a
+    model that doesn't support function calling, or a request that mixes a
+    capability the adapter doesn't expose.
+
+    Callers should branch on this error type to skip the provider during
+    fallback selection instead of treating it as transient.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -73,11 +90,14 @@ class TTSBadRequestError(TTSError):
 
 
 __all__ = [
+    # LLM
     "ProviderError",
     "RateLimitError",
     "TimeoutError",
     "ContentFilterError",
     "AuthError",
+    "CapabilityUnavailableError",
+    # TTS
     "TTSError",
     "TTSRateLimitError",
     "TTSTimeoutError",

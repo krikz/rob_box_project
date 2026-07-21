@@ -456,3 +456,23 @@ Gate: golden metadata tests для sample rate/format, fallback tests, суще�
 - MiniMax models: https://platform.minimax.io/docs/guides/models-intro
 - MiniMax image generation: https://platform.minimax.io/docs/guides/image-generation
 - MiniMax TTS HTTP: https://platform.minimax.io/docs/api-reference/speech-t2a-http
+
+## 9.1 TTS-специфичные детали (см. ADR-0003)
+
+Этот документ покрывает MiniMax **в целом** (LLM/TTS/image-gen).
+TTS-специфичные вопросы — маппинг `TTSSettings` ↔ MiniMax T2A v2 body,
+контракт выходных данных `/voice/audio/speech`, retry-стратегия
+на стороне `tts_node`, sync vs streaming решение (sync) и raw-bytes
+vs base64 (raw hex-decode) — вынесены в отдельные документы:
+
+- [`docs/adr/0003-minimax-tts-architecture.md`](docs/adr/0003-minimax-tts-architecture.md) — ADR с обоснованием решений и trade-offs.
+- [`docs/architecture/minimax-tts-architecture.md`](docs/architecture/minimax-tts-architecture.md) — реализационный справочник: полные таблицы маппинга, цепочки преобразований, схема конфигурации.
+- [`docs/diagrams/minimax-tts-sequence.mmd`](docs/diagrams/minimax-tts-sequence.mmd) — sequence-диаграмма end-to-end потока.
+
+**Ключевые решения, зафиксированные в ADR-0003:**
+
+1. Retry-loop реализуется **в tts_node, не в провайдере** (провайдер остаётся чистой raise-on-fail функцией).
+2. Контракт топика `/voice/audio/speech` **не меняется** — `int16 LE PCM` через `audio_common_msgs/AudioData`, как у Yandex-пути.
+3. Автоматический fallback MiniMax → Yandex → Silero **не делается** — пользователь явно выбрал MiniMax через `provider=minimax`, ошибка пробрасывается наверх.
+4. Streaming v1 возвращает **один терминальный `TTSChunk`** (буферизует SSE); true chunk-per-frame через WebSocket — отложен в фазу M5/M6.
+5. MiniMax отдаёт hex-encoded PCM — декодируется в `bytes.fromhex()`; альтернативы (base64/multipart) отклонены.

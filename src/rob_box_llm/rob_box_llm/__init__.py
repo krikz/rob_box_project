@@ -11,9 +11,9 @@ LLM public surface:
     ProviderCapabilities                 — capability introspection (P1 / M0)
     DeepSeekProvider, MiMoProvider, MiniMaxProvider, FakeLLMProvider — concrete impls
     errors             — RateLimitError, TimeoutError, ContentFilterError,
-                         AuthError, ProviderError
+                         AuthError, CapabilityUnavailableError, ProviderError
 
-TTS public surface (added in P0.5 — see ADR-0002):
+TTS public surface (added in P0.5 — see ADR-0003):
     TTSProvider        — ABC; synthesize() and stream()
     TTSAudio, TTSChunk, TTSSettings, TTSFormat — value objects
     MiniMaxTTSProvider — concrete impl over MiniMax T2A v2 HTTP
@@ -47,28 +47,30 @@ from rob_box_llm.provider import (
     TextPart,
     ToolCall,
     ToolResult,
+    TextPart,
+    ImagePart,
+    MessagePart,
+    MessageContent,
+    ProviderCapabilities,
 )
+from rob_box_llm.tts import (
+    TTSProvider,
+    TTSAudio,
+    TTSChunk,
+    TTSSettings,
+    TTSFormat,
+    FakeTTSProvider,
+)
+from rob_box_llm import errors
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.fake import FakeCall, FakeLLMProvider
 from rob_box_llm.providers.mimo import MiMoProvider
-from rob_box_llm.providers.minimax import (
-    DEFAULT_THINKING_POLICY,
-    MINIMAX_MAX_IMAGE_BYTES,
-    MiniMaxProvider,
-    MiniMaxRedactedLogFilter,
-)
+from rob_box_llm.providers.minimax import MiniMaxProvider
+from rob_box_llm.providers.fake import FakeLLMProvider
 from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider
-from rob_box_llm.tts import (
-    TTSAudio,
-    TTSChunk,
-    TTSFormat,
-    TTSProvider,
-    TTSSettings,
-)
-from rob_box_llm.tts import FakeTTSProvider
 
 __all__ = [
-    # LLM ABC + value objects
+    # LLM
     "LLMProvider",
     "LLMMessage",
     "LLMResponse",
@@ -77,36 +79,23 @@ __all__ = [
     "ToolResult",
     "TextPart",
     "ImagePart",
+    "MessagePart",
     "MessageContent",
     "ProviderCapabilities",
-    # LLM providers
     "DeepSeekProvider",
     "MiMoProvider",
     "MiniMaxProvider",
-    "MiniMaxRedactedLogFilter",
-    "MINIMAX_MAX_IMAGE_BYTES",
-    "DEFAULT_THINKING_POLICY",
     "FakeLLMProvider",
-    "FakeCall",
-    # LLM errors
-    "ProviderError",
-    "RateLimitError",
-    "TimeoutError",
-    "ContentFilterError",
-    "AuthError",
-    # TTS ABC + value objects
+    # TTS
     "TTSProvider",
     "TTSAudio",
     "TTSChunk",
     "TTSSettings",
     "TTSFormat",
-    # TTS providers
     "MiniMaxTTSProvider",
     "FakeTTSProvider",
-    # TTS errors
-    "TTSError",
-    "TTSRateLimitError",
-    "TTSTimeoutError",
-    "TTSAuthError",
-    "TTSBadRequestError",
+    # Errors module (re-export for convenience)
+    "errors",
 ]
+
+__version__ = "0.2.1"
