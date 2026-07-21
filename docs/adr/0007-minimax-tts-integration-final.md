@@ -118,7 +118,7 @@ ADR-0004 фиксирует большинство решений, но разм
   ЗАПРЕЩЁН (ADR-0003 §4). Retry-owning — на caller'е
   (`tts_node`/`TTSCLI`).
 
-### 2.3 Registry + Factory (ADR-0004 §2.3, §2.5)
+### 2.3 Registry + Factory (ADR-0004 §2.3, §2.8)
 
 - `TTSProviderRegistry` — хранит `builders: dict[str, ProviderBuilder]`.
   Built-ins регистрируются **явно в composition root**
@@ -127,7 +127,7 @@ ADR-0004 фиксирует большинство решений, но разм
 - `TTSProviderFactory.create(name, config, registry)` — синхронная
   фабрика, возвращает `BaseTTSProvider` (или конкретного потомка).
 - Migration на registry — **отложена до второго opt-in провайдера**
-  (ADR-0004 §2.5). До этого `tts_node` знает только `minimax`/legacy
+  (ADR-0004 §2.8). До этого `tts_node` знает только `minimax`/legacy
   как прямые импорты.
 
 ### 2.4 Конфигурация (cross-ADR reference)
@@ -136,13 +136,13 @@ ADR-0004 фиксирует большинство решений, но разм
 |--------------------|-------------------------|------|---------------------------------|
 | ROS-путь `tts_node` | ROS-параметры (primary) | runtime config | `tts_node` при старте (typed) |
 | ROS-путь           | ENV (только секреты)    | `MINIMAX_API_KEY`, `MINIMAX_GROUP_ID` | `minimax_tts.py:347-393` |
-| Multi-robot deploy | YAML `/etc/rob_box/tts.yaml` (opt-in) | всё кроме секретов | ADR-0004 §2.2 YAML-схема |
+| Multi-robot deploy | YAML `/etc/rob_box/tts.yaml` (opt-in) | всё кроме секретов | ADR-0004 §2.5 YAML-схема |
 | CLI / cron         | **pydantic-settings** `MiniMaxTTSConfig` (5 секций: auth/network/retries/audio/logging) | всё | ADR-0006 §2.3, fail-fast |
 
 Сводная таблица всех 17 настроек — в [ADR-0006 §4](0006-minimax-tts-pydantic-settings-config.md).
 
 **Почему pydantic-settings только в CLI:**
-- ADR-0004 §2.2 / §3.4 явно отвергает pydantic-settings в базовом
+- ADR-0004 §2.5 / §3.4 явно отвергает pydantic-settings в базовом
   пайплайне (`rob_box_llm` сейчас не зависит от `pydantic`, добавление
   = +1 hard dep, потенциальные конфликты с `pydantic>=2`).
 - В CLI нет ROS-launch → нет typed ROS-параметров → нужен полный
@@ -320,10 +320,10 @@ Default state: **disabled** (порог = 0, см. ADR-0006 §4). Activation —
 |----------------------------------------------------------|---------------------------------------------------------------------|----------------------------------------------------------------|-----------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
 | `BaseTTSProvider` ABC, opt-in (ADR-0004 §2.1)            | +1 abstract class сейчас; +0 строк кода до появления 2-го провайдера | Без изменений                                                  | ✅ База для всех будущих TTS (ElevenLabs, Google, Azure, local) | ✅ Idempotent `aclose()` + retry-hook на caller'е                                                |
 | MiniMax = прямой наследник `TTSProvider` (не ABC)         | 0 сейчас                                                            | Без изменений                                                  | ⚠️ Миграция на ABC при появлении 2-го провайдера               | ✅ Не ломает существующий Yandex/Silero пайплайн                                                |
-| ROS-параметры + ENV (секреты) + опц. YAML (ADR-0004 §2.2) | +0 hard deps                                                        | Без изменений                                                  | ✅ Multi-robot через YAML                                       | ✅ Только секреты в ENV → нельзя случайно закоммитить                                            |
+| ROS-параметры + ENV (секреты) + опц. YAML (ADR-0004 §2.5) | +0 hard deps                                                        | Без изменений                                                  | ✅ Multi-robot через YAML                                       | ✅ Только секреты в ENV → нельзя случайно закоммитить                                            |
 | pydantic-settings только CLI/cron (ADR-0006)              | +1 hard dep (`pydantic-settings`) только в `rob_box_llm.config`     | Без изменений в ROS-пути                                       | ✅ CLI/cron получают типизированный валидатор + fail-fast       | ✅ `extra='forbid'` ловит ENV-опечатки до HTTP-вызова                                            |
 | Секции в `MiniMaxTTSConfig` (auth/network/retries/audio/logging) | +5 pydantic-моделей; CLI-help сгруппирует               | Без изменений                                                  | ✅ Легко добавлять новые секции (voice_clone, caching)         | ✅ `AuthConfig.env_file=None` — секреты НЕ в файле                                                |
-| `TTSProviderRegistry` + composition root (ADR-0004 §2.5) | +1 indirection (после миграции)                                     | Без изменений                                                  | ✅ Добавление провайдера без правки `tts_node`                  | ✅ Single source of error surface                                                                 |
+| `TTSProviderRegistry` + composition root (ADR-0004 §2.3, §2.8) | +1 indirection (после миграции)                                     | Без изменений                                                  | ✅ Добавление провайдера без правки `tts_node`                  | ✅ Single source of error surface                                                                 |
 | `RetryPolicy` value-object (ADR-0004 §2.9)               | +1 dataclass; рефактор `tts_node` retry-loop                        | Без изменений (та же политика)                                 | ✅ CLI/cron переиспользуют; sub-fragment `0007a` детализирует  | ✅ Зафиксированный контракт retry: classification + backoff + `Retry-After`                       |
 | `CircuitBreaker` обозначен, default disabled (ADR-0004 §2.10) | +0 строк сейчас; +N строк при >100 TPS/час                       | Без изменений                                                  | ✅ Shape зафиксирована (`CLOSED→OPEN→HALF_OPEN`)                | ⚠️ Без CB retry-policy хватает до ~100/час/робот; свыше — обязательно                              |
 | Streaming: sync (default) + SSE (opt) + WS (reserved) (ADR-0004 §2.11, `0007a`) | +1 ветка кода; WS отложен в future-ADR                  | ⚠️ Текущий MiniMax SSE буферизует ответ → не даёт sub-second TTFB | ✅ Готовая точка входа для chunk-per-frame                     | ✅ Backpressure/cancellation политика зафиксирована в sub-fragment `0007a`                       |
@@ -342,8 +342,8 @@ Default state: **disabled** (порог = 0, см. ADR-0006 §4). Activation —
 |-----------------------------------------------------------|--------------------------------------------------------------------|
 | Самохостинг TTS (XTTS, Silero-server, MeloTTS)            | +ops-load (GPU/CPU на роботе, обновления моделей), нет economy of scale; MiniMax даёт качественный голос "из коробки" за per-character pricing |
 | Принудительная замена Yandex/Silero на MiniMax             | ADR-0002 §2.1 зафиксировал opt-in; Yandex/Silero нужны для offline и privacy-сценариев |
-| pydantic-settings в ROS-пути                              | ADR-0004 §2.2 / §3.4 — +1 hard dep в `rob_box_llm`; ROS-параметры уже дают typed access |
-| Implicit module-scanning для registry                     | Неявные side-effects, плохо тестируется; ADR-0004 §2.5 фиксирует явную регистрацию |
+| pydantic-settings в ROS-пути                              | ADR-0004 §2.5 / §3.4 — +1 hard dep в `rob_box_llm`; ROS-параметры уже дают typed access |
+| Implicit module-scanning для registry                     | Неявные side-effects, плохо тестируется; ADR-0004 §2.3 фиксирует явную регистрацию |
 | Self-host circuit breaker (state в файл)                  | Single-process достаточно для on-robot; при ≥2 процессах — отдельный future-ADR |
 | WS chunk-per-frame сразу                                  | ADR-0004 §7 / `0007a` §"WebSocket (reserved)": требует verified contract MiniMax; не блокирует sync default |
 | 24 kHz native на ROS-выходе                               | Sub-frag `0007b`: запрещено менять метаданные без ресэмплинга (изменит тональность); 16 kHz — общий знаменатель для всех downstream |
@@ -383,10 +383,10 @@ Default state: **disabled** (порог = 0, см. ADR-0006 §4). Activation —
   Не блокирует production (`rob_box_llm` сейчас не использует CLI
   entry-point).
 - **`tts_node` остаётся в зоне "imports MiniMaxTTSProvider directly"**
-  до миграции на registry. Это сознательно отложено (ADR-0004 §2.5):
+  до миграции на registry. Это сознательно отложено (ADR-0004 §2.3):
   нечего регистрировать, пока нет второго провайдера.
 - **Pydantic-settings не используется в ROS** — разработчик на ROS-узле
-  может ожидать единый подход. Документировано в ADR-0004 §2.2 + ADR-0006 §1.
+  может ожидать единый подход. Документировано в ADR-0004 §2.5 + ADR-0006 §1.
 - **AudioStamped требует custom message definition + ROS-package build** —
   при реальной активации (не сейчас). Мета-топик opt-in, дефолт OFF.
 
