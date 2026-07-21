@@ -109,6 +109,10 @@
 
 ## 🧪 Test bench (воспроизводимое окружение)
 
+> Полная пошаговая инструкция: **[TEST_BENCH.md](TEST_BENCH.md)** — подготовка,
+> standalone MiniMax mock, полный bench, ROS2 capture harness, ffmpeg-сценарии,
+> acceptance checks и известный endpoint blocker.
+>
 > Зафиксированные версии и инварианты для воспроизводимой сборки и прогона
 > `rob_box_llm` + `rob_box_voice` (см. задачу `t_85c00e0c`).
 
