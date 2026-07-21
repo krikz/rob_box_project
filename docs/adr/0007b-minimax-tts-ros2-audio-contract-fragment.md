@@ -11,6 +11,8 @@
 | Связанный код | `src/rob_box_llm/rob_box_llm/tts.py`, `src/rob_box_llm/rob_box_llm/providers/minimax_tts.py`, `src/rob_box_voice/rob_box_voice/tts_node.py` |
 | Диаграмма | [`../diagrams/minimax-tts-ros2-audio-contract-sequence.mmd`](../diagrams/minimax-tts-ros2-audio-contract-sequence.mmd) |
 | Сопутствующий sub-fragment | [0007a — Reliability](0007a-minimax-tts-reliability-fragment.md) |
+| Reference-спека | [`../architecture/ros2-audio-contract-spec.md`](../architecture/ros2-audio-contract-spec.md) |
+| Dataflow-диаграмма | [`../diagrams/minimax-tts-ros2-dataflow.mmd`](../diagrams/minimax-tts-ros2-dataflow.mmd) |
 
 ## 1. Контекст и границы
 
