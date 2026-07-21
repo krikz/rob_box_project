@@ -418,19 +418,28 @@ class MiniMaxTTSProvider(TTSProvider):
         try:
             data = resp.json()
         except json.JSONDecodeError as exc:
+            response_text = _redact_sensitive_text(
+                resp.text[:200], secrets=(self._api_key, self._group_id)
+            )
             raise TTSError(
-                f"Non-JSON response: {resp.text[:200]}", provider=self.name
+                f"Non-JSON response: {response_text}", provider=self.name
             ) from exc
 
         # MiniMax's error envelope: base_resp.status_code != 0 → API-level error.
         base_resp = data.get("base_resp") or {}
         status_code = base_resp.get("status_code", 0)
         if status_code != 0:
-            status_msg = base_resp.get("status_msg", "unknown")
+            raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+            status_msg = _redact_sensitive_text(
+                raw_status_msg,
+                secrets=(self._api_key, self._group_id),
+            )
             message = f"minimax API error {status_code}: {status_msg}"
             # Heuristic mapping — we don't have a documented taxonomy beyond
-            # status_code so we use the status_msg text to pick a category.
-            msg_lower = status_msg.lower()
+            # status_code so we use the original status text to pick a category;
+            # redaction may replace short test credentials inside words such as
+            # ``key`` and must not alter exception classification.
+            msg_lower = raw_status_msg.lower()
             if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
                 raise TTSAuthError(message, provider=self.name)
             if "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
@@ -556,7 +565,11 @@ class MiniMaxTTSProvider(TTSProvider):
                     try:
                         resp.raise_for_status()
                     except httpx.HTTPStatusError as exc:
-                        raise _map_exception(exc, provider=self.name) from exc
+                        raise _map_exception(
+                            exc,
+                            provider=self.name,
+                            secrets=(self._api_key, self._group_id),
+                        ) from exc
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
@@ -568,13 +581,20 @@ class MiniMaxTTSProvider(TTSProvider):
                     try:
                         evt = json.loads(line)
                     except json.JSONDecodeError:
-                        _log.debug("ignoring non-JSON SSE line: %r", line[:80])
+                        diagnostic = _redact_sensitive_text(
+                            line[:80], secrets=(self._api_key, self._group_id)
+                        )
+                        _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
                         continue
                     base_resp = evt.get("base_resp") or {}
                     if base_resp.get("status_code", 0) != 0:
-                        status_msg = str(base_resp.get("status_msg", "unknown"))
+                        raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+                        status_msg = _redact_sensitive_text(
+                            raw_status_msg,
+                            secrets=(self._api_key, self._group_id),
+                        )
                         message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
-                        msg_lower = status_msg.lower()
+                        msg_lower = raw_status_msg.lower()
                         if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
                             api_error: TTSError = TTSAuthError(message, provider=self.name)
                         elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
@@ -615,7 +635,11 @@ class MiniMaxTTSProvider(TTSProvider):
                     yield TTSChunk(finish_reason="error")
                     return
                 raise
-            mapped_error = _map_exception(exc, provider=self.name)
+            mapped_error = _map_exception(
+                exc,
+                provider=self.name,
+                secrets=(self._api_key, self._group_id),
+            )
             if yielded_audio:
                 yield TTSChunk(finish_reason="error")
                 return

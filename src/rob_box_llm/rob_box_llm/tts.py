@@ -166,6 +166,7 @@ class TTSProvider(abc.ABC):
            accepts a single terminal chunk as a valid v1 implementation.
         """
         raise NotImplementedError
+        yield  # pragma: no cover — shapes this ABC as an async generator
 
     async def aclose(self) -> None:  # noqa: D401 — async context-manager hook
         """Release resources. Default impl is no-op for stateless providers.
