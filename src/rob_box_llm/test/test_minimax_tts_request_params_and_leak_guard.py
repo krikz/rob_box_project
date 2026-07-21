@@ -205,3 +205,199 @@ async def test_api_key_echoed_by_server_is_redacted_from_exception(
         await provider.aclose()
 
     _assert_key_redacted(exc_info.value, _REALISTIC_TEST_KEY)
+
+
+@pytest.mark.minimax
+@pytest.mark.asyncio
+async def test_non_json_success_echoed_credentials_are_redacted_from_exception(
+    mock_minimax_http: respx.Router,
+) -> None:
+    """Malformed success bodies are untrusted and must be redacted."""
+    mock_minimax_http.post(
+        f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
+        params={"GroupId": FAKE_GROUP_ID},
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            text=f"not-json {_REALISTIC_TEST_KEY} {FAKE_GROUP_ID}",
+        )
+    )
+    provider = MiniMaxTTSProvider(
+        api_key=_REALISTIC_TEST_KEY,
+        group_id=FAKE_GROUP_ID,
+    )
+
+    try:
+        with pytest.raises(TTSError) as exc_info:
+            await provider.synthesize("hello")
+    finally:
+        await provider.aclose()
+
+    _assert_key_redacted(exc_info.value, _REALISTIC_TEST_KEY)
+    _assert_key_redacted(exc_info.value, FAKE_GROUP_ID)
+
+
+@pytest.mark.minimax
+@pytest.mark.asyncio
+async def test_api_error_envelope_echoed_credentials_are_redacted_from_exception(
+    mock_minimax_http: respx.Router,
+) -> None:
+    """MiniMax error-envelope messages must not expose credentials."""
+    mock_minimax_http.post(
+        f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
+        params={"GroupId": FAKE_GROUP_ID},
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "base_resp": {
+                    "status_code": 1001,
+                    "status_msg": (
+                        f"auth rejected {_REALISTIC_TEST_KEY} {FAKE_GROUP_ID}"
+                    ),
+                }
+            },
+        )
+    )
+    provider = MiniMaxTTSProvider(
+        api_key=_REALISTIC_TEST_KEY,
+        group_id=FAKE_GROUP_ID,
+    )
+
+    try:
+        with pytest.raises(TTSAuthError) as exc_info:
+            await provider.synthesize("hello")
+    finally:
+        await provider.aclose()
+
+    _assert_key_redacted(exc_info.value, _REALISTIC_TEST_KEY)
+    _assert_key_redacted(exc_info.value, FAKE_GROUP_ID)
+
+
+@pytest.mark.minimax
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 500])
+async def test_stream_http_error_echoed_credentials_are_redacted_from_exception(
+    mock_minimax_http: respx.Router,
+    status_code: int,
+) -> None:
+    """Streaming HTTP errors must redact credentials echoed by upstream."""
+    mock_minimax_http.post(
+        f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
+        params={"GroupId": FAKE_GROUP_ID},
+    ).mock(
+        return_value=httpx.Response(
+            status_code,
+            text=f"rejected {_REALISTIC_TEST_KEY} {FAKE_GROUP_ID}",
+        )
+    )
+    provider = MiniMaxTTSProvider(
+        api_key=_REALISTIC_TEST_KEY,
+        group_id=FAKE_GROUP_ID,
+    )
+
+    try:
+        with pytest.raises(TTSError) as exc_info:
+            async for _ in provider.stream("hello"):
+                pytest.fail("stream yielded before HTTP error")
+    finally:
+        await provider.aclose()
+
+    _assert_key_redacted(exc_info.value, _REALISTIC_TEST_KEY)
+    _assert_key_redacted(exc_info.value, FAKE_GROUP_ID)
+
+
+@pytest.mark.minimax
+@pytest.mark.asyncio
+async def test_stream_api_error_envelope_echoed_credentials_are_redacted(
+    mock_minimax_http: respx.Router,
+) -> None:
+    """Streaming API error events must redact credential-like content."""
+    event = {
+        "base_resp": {
+            "status_code": 1001,
+            "status_msg": f"auth rejected {_REALISTIC_TEST_KEY} {FAKE_GROUP_ID}",
+        }
+    }
+    body = f"data:{json.dumps(event)}\n\ndata:[DONE]\n\n"
+    mock_minimax_http.post(
+        f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
+        params={"GroupId": FAKE_GROUP_ID},
+    ).mock(return_value=httpx.Response(200, text=body))
+    provider = MiniMaxTTSProvider(
+        api_key=_REALISTIC_TEST_KEY,
+        group_id=FAKE_GROUP_ID,
+    )
+
+    try:
+        with pytest.raises(TTSAuthError) as exc_info:
+            async for _ in provider.stream("hello"):
+                pytest.fail("stream yielded before API error")
+    finally:
+        await provider.aclose()
+
+    _assert_key_redacted(exc_info.value, _REALISTIC_TEST_KEY)
+    _assert_key_redacted(exc_info.value, FAKE_GROUP_ID)
+
+
+@pytest.mark.minimax
+@pytest.mark.asyncio
+async def test_stream_malformed_event_does_not_log_credentials(
+    caplog: pytest.LogCaptureFixture,
+    mock_minimax_http: respx.Router,
+) -> None:
+    """Malformed SSE diagnostics must redact configured credentials."""
+    body = (
+        f"data:not-json {_REALISTIC_TEST_KEY} {FAKE_GROUP_ID}\n\n"
+        "data:[DONE]\n\n"
+    )
+    mock_minimax_http.post(
+        f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
+        params={"GroupId": FAKE_GROUP_ID},
+    ).mock(return_value=httpx.Response(200, text=body))
+    provider = MiniMaxTTSProvider(
+        api_key=_REALISTIC_TEST_KEY,
+        group_id=FAKE_GROUP_ID,
+    )
+
+    caplog.set_level(logging.DEBUG, logger="rob_box_llm.providers.minimax_tts")
+    try:
+        with pytest.raises(TTSError):
+            async for _ in provider.stream("hello"):
+                pytest.fail("malformed stream unexpectedly yielded")
+    finally:
+        await provider.aclose()
+
+    log_text = _captured_log_text(caplog)
+    assert _REALISTIC_TEST_KEY not in log_text
+    assert FAKE_GROUP_ID not in log_text
+
+
+@pytest.mark.minimax
+@pytest.mark.asyncio
+async def test_stream_transport_error_credentials_are_redacted_from_exception(
+    mock_minimax_http: respx.Router,
+) -> None:
+    """Streaming transport diagnostics must not expose configured secrets."""
+    mock_minimax_http.post(
+        f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
+        params={"GroupId": FAKE_GROUP_ID},
+    ).mock(
+        side_effect=httpx.ReadError(
+            f"transport echoed {_REALISTIC_TEST_KEY} {FAKE_GROUP_ID}"
+        )
+    )
+    provider = MiniMaxTTSProvider(
+        api_key=_REALISTIC_TEST_KEY,
+        group_id=FAKE_GROUP_ID,
+    )
+
+    try:
+        with pytest.raises(TTSError) as exc_info:
+            async for _ in provider.stream("hello"):
+                pytest.fail("stream yielded before transport error")
+    finally:
+        await provider.aclose()
+
+    _assert_key_redacted(exc_info.value, _REALISTIC_TEST_KEY)
+    _assert_key_redacted(exc_info.value, FAKE_GROUP_ID)
