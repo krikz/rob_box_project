@@ -86,3 +86,4 @@ Thumbs.db
 
 .worktrees/
 docker/vision/config/voice_assistant/event_mode.yaml
+.colcon-bench/
