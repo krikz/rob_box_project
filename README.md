@@ -29,6 +29,11 @@
 - **[Настройка LSLIDAR](docs/guides/LSLIDAR_SETUP.md)** - Подключение лидара
 - **[Решение проблем](docs/guides/TROUBLESHOOTING.md)** - Диагностика и устранение неисправностей
 - **[Bash алиасы](docs/deployment/VISION_PI_DEPLOYMENT.md)** - Удобные команды
+- **[MiniMax LLM (text + vision)](docs/guides/MINIMAX.md)** 🆕 — opt-in
+  провайдер для `rob_box_llm`: API key, env, factory-конфиг, capabilities,
+  troubleshooting
+- **[MiniMax TTS](docs/guides/MINIMAX_TTS.md)** — opt-in TTS через
+  `/v1/t2a_v2` (отдельный endpoint, общий API-ключ)
 
 ### 📖 Справочная информация
 - **[Архитектура](docs/architecture/SYSTEM_OVERVIEW.md)** - Полная архитектура системы
@@ -49,6 +54,22 @@
 📂 **[Полная документация](docs/README.md)** - Структурированный каталог всей документации
 
 ## ⚡ Последние изменения
+
+**22 июля 2026** — MiniMax LLM-провайдер (PR #907, фазы M0+M1+M4):
+- 🧠 **`MiniMaxProvider`** — OpenAI-compatible адаптер для `MiniMax-M3` в `rob_box_llm`:
+  text + tools + streaming + vision, opt-in через `MINIMAX_API_KEY`
+- 🖼️ **Мультимодальный `LLMMessage.content`** — `TextPart` / `ImagePart`
+  с per-model capability gate (`MINIMAX_MAX_IMAGE_BYTES = 10 MB`)
+- 🔐 **`MiniMaxRedactedLogFilter`** + маппинг `base_resp.status_code` →
+  типизированные `ProviderError` (auth / rate limit / content filter)
+- 📐 **`ProviderCapabilities` + `capabilities_for(model)`** —
+  fail-fast gate до сетевого вызова, безопасный fallback
+- 📖 **Документация** — [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
+  (text+vision гайд), `docs/guides/examples/minimax_llm.yaml` (factory
+  шаблон), `architecture/minimax-provider.md`, [ADR-0002](docs/adr/0002-minimax-provider.md)
+- 🧪 **35 новых unit-тестов** + полный conformance suite; **85 зелёных** в `rob_box_llm` итого
+- ⚠️ **Не вошло**: provider registry/factory (M2), consumer migration (M3),
+  image generation (M6) — отдельные Kanban-задачи
 
 **19 февраля 2026** - PRD и система AI-агентов:
 - 📋 **PRD.md** — Product Requirements Document: 34 задачи, milestones, acceptance criteria
