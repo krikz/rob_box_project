@@ -29,6 +29,9 @@
 - **[Настройка LSLIDAR](docs/guides/LSLIDAR_SETUP.md)** - Подключение лидара
 - **[Решение проблем](docs/guides/TROUBLESHOOTING.md)** - Диагностика и устранение неисправностей
 - **[Bash алиасы](docs/deployment/VISION_PI_DEPLOYMENT.md)** - Удобные команды
+- **[MiniMax TTS — руководство пользователя](docs/guides/MINIMAX_TTS.md)** - подключение MiniMax T2A v2 как TTS-провайдера в `tts_node`
+- **[MiniMax TTS — getting started](docs/guides/MINIMAX_TTS_GETTING_STARTED.md)** - минимальный путь от нуля до публикации аудио в ROS2
+- **[MiniMax TTS — API reference](docs/api/MINIMAX_TTS.md)** - публичный контракт `MiniMaxTTSProvider` (параметры, возвращаемые значения, исключения)
 
 ### 📖 Справочная информация
 - **[Архитектура](docs/architecture/SYSTEM_OVERVIEW.md)** - Полная архитектура системы
@@ -49,6 +52,11 @@
 📂 **[Полная документация](docs/README.md)** - Структурированный каталог всей документации
 
 ## ⚡ Последние изменения
+
+**[Unreleased] — MiniMax TTS-провайдер**
+- 🔊 **`MiniMaxTTSProvider`** — новый TTS-провайдер через MiniMax T2A v2 HTTP (синхронный + SSE-стрим), встроен в `rob_box_llm` рядом с `BaseTTSProvider` и registry. Активируется через `tts_node.provider="minimax"`.
+- 📚 Документация: гайд пользователя (`docs/guides/MINIMAX_TTS.md`), getting started с публикацией в ROS2 (`docs/guides/MINIMAX_TTS_GETTING_STARTED.md`), API reference (`docs/api/MINIMAX_TTS.md`), research-реферат публичного API MiniMax (`docs/research/minimax-tts-api.md`).
+- 🧪 Покрытие: 47 юнит-тестов в `test_tts_extension_points.py` + 25 в `test_minimax_tts_provider_extra.py`; ruff clean; публичный контракт backward-compat (subclass TTSProvider).
 
 **19 февраля 2026** - PRD и система AI-агентов:
 - 📋 **PRD.md** — Product Requirements Document: 34 задачи, milestones, acceptance criteria
@@ -288,6 +296,23 @@ timeout 5 ros2 run rob_box_voice led_node
 - 📋 **Интеграция с LLM** для естественного общения
 - 📋 **Система предотвращения столкновений**
 - 📋 **Телеметрия и удалённый мониторинг**
+
+## 🎙️ TTS-провайдеры
+
+Голосовой ассистент `tts_node` (пакет `rob_box_voice`) поддерживает три TTS-движка, переключаемых ROS-параметром `tts_node.provider`:
+
+| Провайдер | Где работает | Когда выбирать |
+|---|---|---|
+| **Yandex Cloud TTS** (gRPC v3, голос `anton`) | онлайн | ROBBOX-голос по умолчанию; минимальная настройка |
+| **Silero v5** (offline) | офлайн | нет сети на роботе; базовый fallback |
+| **MiniMax TTS** (HTTP T2A v2) | онлайн | многоязычный синтез, выбор голоса из обширного каталога, эмоциональная окраска |
+
+MiniMax подключается **opt-in** через `provider: "minimax"`. Секреты (`MINIMAX_API_KEY`, `MINIMAX_GROUP_ID`) живут только в ENV — никогда не в launch-yaml и не в логах.
+
+- Подробная инструкция: **[docs/guides/MINIMAX_TTS.md](docs/guides/MINIMAX_TTS.md)**
+- Минимальный путь от нуля до публикации в ROS2: **[docs/guides/MINIMAX_TTS_GETTING_STARTED.md](docs/guides/MINIMAX_TTS_GETTING_STARTED.md)**
+- Публичный контракт `MiniMaxTTSProvider` (параметры, возвращаемые значения, исключения): **[docs/api/MINIMAX_TTS.md](docs/api/MINIMAX_TTS.md)**
+- Архитектурное обоснование: **[ADR-0003](docs/adr/0003-minimax-tts-architecture.md)**
 
 ## 📦 Связанные репозитории
 

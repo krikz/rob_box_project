@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+### 🎉 Добавлено
+
+#### TTS — `MiniMaxTTSProvider` (MiniMax T2A v2 HTTP)
+- **`MiniMaxTTSProvider`** в пакете `rob_box_llm` — реализация абстрактного `TTSProvider` поверх MiniMax T2A v2 HTTP (`POST https://api.minimax.io/v1/t2a_v2`). Sync (`synthesize()`) + SSE-стриминг (`stream()`), маппинг ошибок MiniMax (`base_resp.status_code`) → `TTSError`-подклассы (`TTSAuthError`, `TTSRateLimitError`, `TTSBadRequestError`, `TTSTimeoutError`).
+- **`BaseTTSProvider` + 5 extension hooks** в `rob_box_llm.tts_provider_base`: `capabilities()`, `list_voices()`, `healthcheck()`, `_build_request_payload()`, `_http_client_factory()`. `BaseTTSProvider IS-A TTSProvider` — backward-compat сохранён.
+- **`TTSProviderRegistry` + `TTSProviderFactory` + `register_builtin_tts_providers()`** в `rob_box_llm.tts_provider_registry` — composition root для 3rd-party провайдеров. Сейчас зарегистрирован только `"minimax"`.
+- **Value-objects:** `TTSCapabilities` (8 boolean flags), `TTSVoice` (normalized voice entry), `TTSHealth` (pre-flight snapshot).
+- **`_ALLOWED_EXTRA_KEYS` allow-list** для `TTSSettings.extra` — forward-compat с будущими полями MiniMax (timbre_weights, subtitle_timestamp, pronunciation_dict, …) без угрозы инъекции в reserved top-level keys.
+- **`_RedactGroupIdFilter`** на `logging.getLogger("httpx")` — `GroupId` в access-логах заменяется на `<redacted>`, даже если сторонний код поднимет уровень логгера.
+- **Документация:**
+  - `docs/guides/MINIMAX_TTS.md` — пользовательский гайд (591 строка): API key, ENV, ROS-параметры, голоса/языки, примеры кода, troubleshooting (7 категорий ошибок).
+  - `docs/guides/MINIMAX_TTS_GETTING_STARTED.md` — минимальный путь от нуля до публикации в `/voice/audio/speech`.
+  - `docs/api/MINIMAX_TTS.md` — API reference (конструктор, методы, исключения, value-objects, ограничения).
+  - `docs/guides/examples/minimax_tts.yaml` — копируемый шаблон ROS2-конфигурации.
+  - `docs/research/minimax-tts-api.md` — research-реферат публичного API MiniMax.
+- **Тесты:** 47 новых юнит-тестов в `test_tts_extension_points.py` (extension points + backward-compat) + 25 в `test_minimax_tts_provider_extra.py` (defensive + config paths). Ruff clean.
+
+#### CI / harness (P0)
+- **`feature/harness-p0-foundation`** — extension points для TTS-провайдеров + migration `MiniMaxTTSProvider` на новую базу (коммит `37315f48`, ADR-0008).
+- **ADR-0007 (`MiniMax TTS — финальный сводный архитектурный контракт интеграции`)** — переведён в статус **Accepted**. Добавлены §7 (Rollout/SLO/Rollback) и §8 (Review-пакет). Все 7 критериев §9 выполнены: реализация `BaseTTSProvider` + `TTSProviderRegistry` приземлена, регрессионные тесты зелёные (244 passed, 100% coverage на `minimax_tts.py`).
+
+### 📚 Документация
+- Раздел "🎙️ TTS-провайдеры" в `README.md` — таблица трёх движков (Yandex / Silero / MiniMax) со ссылками на гайды.
+
+---
+
 ## [Март 2026] — PR #572: Integrate MCP tools, enhance documentation, and improve test coverage
 
 > Ветка `feature/agent-skills` → `develop` | 566 коммитов | +68840 / -2670 строк
