@@ -7,19 +7,93 @@ and `docs/refactoring-plan.md`.
 
 * `LLMProvider` — async ABC; `complete()` and `stream()`.
 * `LLMMessage`, `LLMResponse`, `LLMChunk`, `LLMSettings`, `ToolCall`, `ToolResult` — value objects.
-* `DeepSeekProvider`, `MiMoProvider` — concrete providers built on
+* `TextPart`, `ImagePart`, `MessageContent`, `ProviderCapabilities` — multimodal content
+  parts and capability introspection (added for PR #907 / MiniMax vision).
+* `DeepSeekProvider`, `MiMoProvider`, **`MiniMaxProvider`** — concrete providers built on
   `openai.AsyncOpenAI`. Same protocol, different `base_url` / default model.
 * `FakeLLMProvider` — deterministic in-memory stand-in for tests; recordable,
   scriptable, supports `on_complete` / `on_stream` callbacks.
 * `errors.ProviderError` and friends — typed exception hierarchy. All SDK
-  exceptions get mapped onto these by the OpenAI-compatible base class.
+  exceptions get mapped onto these by the OpenAI-compatible base class,
+  including MiniMax's in-body `base_resp.status_code` envelope.
+
+## Text + vision providers
+
+| Provider | `name` | Default model | `base_url` | Vision | Use case |
+|----------|--------|---------------|------------|--------|----------|
+| `DeepSeekProvider` | `deepseek` | `deepseek-chat` | `https://api.deepseek.com/v1` | ❌ | Production default for dialogue / Telegram (P0) |
+| `MiMoProvider` | `mimo` | `MiMo-7B` | `https://api.xiaomimimo.com/v1` | ❌ | Xiaomi MiMo opt-in |
+| **`MiniMaxProvider`** | **`minimax`** | **`MiniMax-M3`** | **`https://api.minimax.io/v1`** | **✅** | **Opt-in: text + tools + vision (PR #907, M0+M1+M4)** |
+| `FakeLLMProvider` | `fake` | — | — | configurable | In-memory test stand-in |
+
+> **MiniMax ≠ Xiaomi MiMo.** Despite the visual similarity, these are
+> two distinct vendors. `MiniMaxProvider` only talks to `api.minimax.io`;
+> `MiMoProvider` only to `api.xiaomimimo.com`. Don't cross-wire.
+
+### Quick start — text only
+
+```python
+from rob_box_llm import MiniMaxProvider, LLMMessage, LLMSettings
+
+provider = MiniMaxProvider()  # api_key from MINIMAX_API_KEY env
+resp = await provider.complete(
+    [LLMMessage(role="user", content="Привет!")],
+    settings=LLMSettings(temperature=0.0, max_tokens=128),
+)
+print(resp.content)
+```
+
+### Quick start — vision
+
+```python
+from pathlib import Path
+from rob_box_llm import (
+    MiniMaxProvider, LLMMessage, LLMSettings,
+    TextPart, ImagePart,
+)
+
+provider = MiniMaxProvider()
+resp = await provider.complete(
+    [LLMMessage(role="user", content=(
+        TextPart(text="Что на изображении? Опиши в 30 слов."),
+        ImagePart(source=Path("/tmp/frame.jpg").read_bytes(),
+                  media_type="image/jpeg", detail="low"),
+    ))],
+    settings=LLMSettings(model="MiniMax-M3"),
+)
+```
+
+### Capabilities and limitations
+
+`MiniMaxProvider` advertises `text=True`, `streaming_text=True`,
+`tools=True`, `image_input=True` (per model), `streaming_tools=False`.
+The last gate is deliberate — see the streaming tool-call fail-fast note
+in [the user guide](../../docs/guides/MINIMAX.md#84-capabilityunavailableerror-streaming--tools)
+and [ADR-0002 §5.2](../../docs/adr/0002-minimax-provider.md). For
+tool-calling always use `complete()`, not `stream()`.
+
+Image input is **gated per-model**: only vision-capable models
+(`*M3*`, `*M2-vision*`, `*vision*`) accept `ImagePart`. Other models
+return `ProviderCapabilities(image_input=False)` and surface
+`CapabilityUnavailableError` before the network call. Each frame is also
+bounded at `MINIMAX_MAX_IMAGE_BYTES = 10 MB` (engineering default
+mirroring MiniMax's published guidance — single-edit constant).
+
+### Where to read more
+
+* User guide: [docs/guides/MINIMAX.md](../../docs/guides/MINIMAX.md)
+  — API key, env, factory YAML, capabilities, troubleshooting.
+* Factory YAML template: [docs/guides/examples/minimax_llm.yaml](../../docs/guides/examples/minimax_llm.yaml).
+* Architecture: [architecture/minimax-provider.md](../../architecture/minimax-provider.md)
+  — capability graph, M0–M6 phases, error mapping.
+* ADR: [docs/adr/0002-minimax-provider.md](../../docs/adr/0002-minimax-provider.md).
 
 ## What does NOT live here (yet)
 
-* Fallback / retry logic — P1 (`FallbackProvider` wraps two providers).
+* Provider registry / factory / fallback decorator — PR #907 M2 (in flight).
 * ROS integration. This module is ROS-free on purpose.
 * The existing `rob_box_voice.llm.provider_manager.ProviderManager` is
-  **untouched** per P0 rules — migration of live consumers happens in P1.
+  **untouched** per P0 rules — migration of live consumers happens in M3.
 
 ## Usage
 

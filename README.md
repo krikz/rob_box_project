@@ -53,10 +53,21 @@
 
 ## ⚡ Последние изменения
 
-**[Unreleased] — MiniMax TTS-провайдер**
-- 🔊 **`MiniMaxTTSProvider`** — новый TTS-провайдер через MiniMax T2A v2 HTTP (синхронный + SSE-стрим), встроен в `rob_box_llm` рядом с `BaseTTSProvider` и registry. Активируется через `tts_node.provider="minimax"`.
-- 📚 Документация: гайд пользователя (`docs/guides/MINIMAX_TTS.md`), getting started с публикацией в ROS2 (`docs/guides/MINIMAX_TTS_GETTING_STARTED.md`), API reference (`docs/api/MINIMAX_TTS.md`), research-реферат публичного API MiniMax (`docs/research/minimax-tts-api.md`).
-- 🧪 Покрытие: 47 юнит-тестов в `test_tts_extension_points.py` + 25 в `test_minimax_tts_provider_extra.py`; ruff clean; публичный контракт backward-compat (subclass TTSProvider).
+**22 июля 2026** — MiniMax LLM-провайдер (PR #907, фазы M0+M1+M4):
+- 🧠 **`MiniMaxProvider`** — OpenAI-compatible адаптер для `MiniMax-M3` в `rob_box_llm`:
+  text + tools + streaming + vision, opt-in через `MINIMAX_API_KEY`
+- 🖼️ **Мультимодальный `LLMMessage.content`** — `TextPart` / `ImagePart`
+  с per-model capability gate (`MINIMAX_MAX_IMAGE_BYTES = 10 MB`)
+- 🔐 **`MiniMaxRedactedLogFilter`** + маппинг `base_resp.status_code` →
+  типизированные `ProviderError` (auth / rate limit / content filter)
+- 📐 **`ProviderCapabilities` + `capabilities_for(model)`** —
+  fail-fast gate до сетевого вызова, безопасный fallback
+- 📖 **Документация** — [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
+  (text+vision гайд), `docs/guides/examples/minimax_llm.yaml` (factory
+  шаблон), `architecture/minimax-provider.md`, [ADR-0002](docs/adr/0002-minimax-provider.md)
+- 🧪 **35 новых unit-тестов** + полный conformance suite; **85 зелёных** в `rob_box_llm` итого
+- ⚠️ **Не вошло**: provider registry/factory (M2), consumer migration (M3),
+  image generation (M6) — отдельные Kanban-задачи
 
 **19 февраля 2026** - PRD и система AI-агентов:
 - 📋 **PRD.md** — Product Requirements Document: 34 задачи, milestones, acceptance criteria
