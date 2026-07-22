@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, AsyncIterator, Mapping, Optional, cast
 
 import httpx
@@ -39,6 +40,7 @@ from rob_box_llm.tts import (
     TTSAudio,
     TTSChunk,
     TTSFormat,
+    TTSProvider,
     TTSSettings,
 )
 from rob_box_llm.tts_provider_base import (
@@ -301,8 +303,86 @@ class _RedactGroupIdFilter(logging.Filter):
 _HTTPX_GROUP_ID_FILTER = _RedactGroupIdFilter()
 
 
+# Built-in voice catalogue for ``list_voices()``.
+#
+# MiniMax T2A v2 does NOT expose a public ``/v1/voices`` endpoint as of
+# 2026-07-22 (ADR-0003 §4). Until that endpoint lands we serve a static
+# catalogue extracted from MiniMax's documented voice list. When the
+# endpoint becomes public this constant is replaced by an HTTP call.
+_BUILTIN_VOICES: tuple[TTSVoice, ...] = (
+    TTSVoice(
+        id="male-qn-qingse",
+        name="Qingse (male, Chinese-leaning)",
+        language="zh",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="female-shaonv",
+        name="Shaonv (female, youthful)",
+        language="zh",
+        gender="female",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Calm_Woman",
+        name="Calm Woman (female, English)",
+        language="en",
+        gender="female",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="English_PassionateWarrior",
+        name="English Passionate Warrior",
+        language="en",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Russian_Husky_Man",
+        name="Russian Husky Man",
+        language="ru",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Russian_Calm_Woman",
+        name="Russian Calm Woman",
+        language="ru",
+        gender="female",
+        supports_cloning=True,
+    ),
+)
+
+
 class MiniMaxTTSProvider(BaseTTSProvider):
     """MiniMax TTS via the T2A v2 HTTP endpoint.
+
+    Subclasses :class:`rob_box_llm.tts_provider_base.BaseTTSProvider`,
+    which itself IS-A :class:`rob_box_llm.tts.TTSProvider`. The 5
+    extension points are filled in as follows:
+
+    1. ``capabilities()``              → streaming=True (SSE), voice_cloning=True
+                                         (via ``timbre_weights``), audio_format_pcm=True,
+                                         audio_format_mp3=True; ssml=False,
+                                         pronunciation_dict=False (available via
+                                         ``settings.extra``, not first-class),
+                                         audio_format_ogg=False (API doesn't support
+                                         — falls back to MP3 in ``synthesize``),
+                                         custom_endpoint=False.
+    2. ``list_voices()``               → returns a static catalogue from
+                                         :data:`_BUILTIN_VOICES`. MiniMax's T2A v2
+                                         has no public ``/v1/voices`` endpoint as of
+                                         2026-07-22 (ADR-0003 §4).
+    3. ``healthcheck()``               → cheap pre-flight: validates auth
+                                         credentials are configured (no upstream call).
+                                         Heavy health is reserved for explicit
+                                         ``ping_minimax.py`` script.
+    4. ``_build_request_payload``      → pure mapping (TTSSettings → T2A v2 body);
+                                         override-friendly.
+    5. ``_http_client_factory``        → ``httpx.AsyncClient(timeout=self._timeout)``;
+                                         default is sufficient (no custom headers,
+                                         no proxy, no OAuth).
 
     Parameters
     ----------
@@ -327,6 +407,13 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         Inject a pre-built :class:`httpx.AsyncClient` (handy for tests with a
         ``MockTransport``). The provider does NOT close an injected client on
         ``aclose()`` — caller owns it.
+
+    Migration note (ADR-0008):
+        Before t_25b8e221 this class inherited :class:`TTSProvider` directly.
+        Migrating to :class:`BaseTTSProvider` is a single-line change to the
+        class declaration and adds 3 small override methods. The public
+        contract (synthesize / stream / aclose) is unchanged, so existing
+        ROS callers in ``tts_node`` keep working without modification.
     """
 
     DEFAULT_BASE_URL = "https://api.minimax.io"

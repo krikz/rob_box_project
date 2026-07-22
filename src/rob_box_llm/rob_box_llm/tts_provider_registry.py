@@ -71,6 +71,14 @@ class TTSProviderRegistry:
             )
         return self._builders[name]
 
+    def unregister(self, name: str) -> None:
+        """Remove a builder from the registry. Test-only helper.
+
+        Production code should never unregister — composition root is
+        supposed to be set once at process start.
+        """
+        self._builders.pop(name, None)
+
     def names(self) -> list[str]:
         """Return all registered provider names (sorted)."""
         return sorted(self._builders)
