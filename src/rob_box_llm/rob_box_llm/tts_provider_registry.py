@@ -1,24 +1,34 @@
 """TTS Provider registry + factory.
 
-Composition-root contract:
-    * :func:`register_builtin_tts_providers` is the ONLY place built-in
-      providers get registered. Called once at process start.
-    * No auto-discovery via ``importlib.metadata.entry_points()`` —
-      ADR-0004 §2.3 explicitly rejects this (implicit side-effects,
-      hard to test, hidden dependencies at import time).
-    * :meth:`TTSProviderFactory.create` is the only entry point for both
-      ROS path (``tts_node._synthesize_and_play``) and CLI path (future).
+Landed in P0.5 / ADR-0008. Provides:
+
+* :class:`TTSProviderRegistry`     — in-memory ``name → builder`` map
+* :class:`TTSProviderFactory`      — single entry point for constructing
+  a provider; caches instances per ``(name, config_hash)``
+* :func:`register_builtin_tts_providers` — registers ``"minimax"`` (and
+  future built-ins like ``"elevenlabs"``, ``"google"``, ``"local-piper"``)
 
 Why a separate registry module:
-    * Single source of truth for ``provider_name → builder`` mapping.
-    * Lets 3rd-party packages register their own providers without
-      touching ``rob_box_llm`` (callers add to a passed-in registry).
-    * Gives tests a way to inject mock providers under any name.
+
+* Single source of truth for ``provider_name → builder`` mapping.
+* Lets 3rd-party packages register their own providers without
+  touching ``rob_box_llm`` (callers add to a passed-in registry).
+* Gives tests a way to inject mock providers under any name.
+
+Composition-root contract:
+
+* :func:`register_builtin_tts_providers` is the ONLY place built-in
+  providers get registered. Called once at process start.
+* No auto-discovery via ``importlib.metadata.entry_points()`` —
+  ADR-0004 §2.3 explicitly rejects this (implicit side-effects,
+  hard to test, hidden dependencies at import time).
+* :meth:`TTSProviderFactory.create` is the only entry point for both
+  ROS path (``tts_node._synthesize_and_play``) and CLI path (future).
 
 See also:
-    * ``docs/architecture/tts-extension-points.md`` — full design doc
-    * ``docs/adr/0004-minimax-tts-integration-design.md`` §2.3, §2.8
-    * ``docs/adr/0008-tts-provider-extension-points.md`` — landed ADR
+
+* ``docs/architecture/tts-extension-points.md`` — full design doc
+* ``docs/adr/0004-minimax-tts-integration-design.md`` §2.3, §2.8
 """
 
 from __future__ import annotations
@@ -26,7 +36,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
-    # Forward references only — never imported at runtime.
     from rob_box_llm.tts_provider_base import BaseTTSProvider, ProviderBuilder
 
 
@@ -54,7 +63,7 @@ class TTSProviderRegistry:
         self._builders[name] = builder
 
     def resolve(self, name: str) -> "ProviderBuilder":
-        """Return the builder for ``name``. Raises ``KeyError` if missing."""
+        """Return the builder for ``name``. Raises ``KeyError`` if missing."""
         if name not in self._builders:
             raise KeyError(
                 f"Unknown TTS provider: {name!r}. "
@@ -92,7 +101,7 @@ class TTSProviderFactory:
         cls,
         name: str,
         config: Mapping[str, Any],
-        registry: TTSProviderRegistry,
+        registry: "TTSProviderRegistry",
     ) -> "BaseTTSProvider":
         """Resolve ``name`` in ``registry``, invoke builder with ``config``,
         cache and return the result.
@@ -117,8 +126,8 @@ class TTSProviderFactory:
 
 
 def register_builtin_tts_providers(
-    registry: TTSProviderRegistry | None = None,
-) -> TTSProviderRegistry:
+    registry: "TTSProviderRegistry | None" = None,
+) -> "TTSProviderRegistry":
     """Register MiniMax (and future built-ins) under their canonical names.
 
     Called once at process start from the composition root

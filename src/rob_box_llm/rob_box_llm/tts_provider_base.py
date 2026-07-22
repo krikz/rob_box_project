@@ -1,47 +1,59 @@
 """TTS Provider extension ports and capability metadata.
 
-Public contract (frozen once implemented):
+Landed in P0.5 / ADR-0008 (commit t_25b8e221 on the ``wt/t_25b8e221``
+branch, mirrored here as part of t_8cbf9995). Provides:
 
-    * ``BaseTTSProvider``           — abstract port
-    * ``TTSCapabilities``           — frozen dataclass of 8 boolean flags
-    * ``TTSVoice``                  — normalized voice catalogue entry
-    * ``TTSHealth``                 — frozen pre-flight health snapshot
-    * ``ProviderBuilder``           — factory callback type
+* :class:`BaseTTSProvider` — abstract port
+* :class:`TTSCapabilities` — frozen dataclass of 8 boolean flags
+* :class:`TTSVoice`        — normalized voice catalogue entry
+* :class:`TTSHealth`       — frozen pre-flight health snapshot
+* :class:`ProviderBuilder` — factory callback type
 
 Subclassing rules:
 
-    * Override ``_build_request_payload`` (mandatory) — pure mapping
-      ``(text, settings, voice_meta) -> dict``.
-    * Override ``_http_client_factory`` (mandatory unless default httpx works)
-      to customise transport / TLS / proxy / OAuth.
-    * Override ``capabilities``, ``list_voices``, ``healthcheck`` only if the
-      provider supports them; default impls are honest no-ops.
+* :class:`BaseTTSProvider` IS-A :class:`rob_box_llm.tts.TTSProvider` —
+  every existing call site that type-annotates ``TTSProvider`` keeps
+  working unchanged.
+* Override :meth:`BaseTTSProvider._build_request_payload` (mandatory) —
+  pure mapping ``(text, settings, voice_meta) -> dict``.
+* Override :meth:`BaseTTSProvider._http_client_factory` (mandatory unless
+  the default ``httpx`` works) to customise transport / TLS / proxy /
+  OAuth.
+* Override :meth:`capabilities`, :meth:`list_voices`, :meth:`healthcheck`
+  only if the provider supports them; default impls are honest no-ops.
 
 Backward-compat with PR #907:
 
-    * ``BaseTTSProvider`` IS-A ``TTSProvider`` — every existing call site
-      that type-annotates ``TTSProvider`` keeps working unchanged.
-    * ``MiniMaxTTSProvider(TTSProvider)`` stays untouched until the second
-      opt-in provider lands; migration is a single-line
-      ``class MiniMaxTTSProvider(BaseTTSProvider)`` (see ADR-0008).
+* The public contract :meth:`synthesize` / :meth:`stream` / :meth:`aclose`
+  on :class:`TTSProvider` is unchanged — existing call sites and tests
+  continue to work.
+* Code that type-annotates ``TTSProvider`` keeps resolving to the same
+  runtime instance; only providers that opt-in to
+  :class:`BaseTTSProvider` get the extension surface.
 
 See also:
-    * ``docs/architecture/tts-extension-points.md`` — full design doc
-    * ``docs/adr/0008-tts-provider-extension-points.md`` — landed ADR
+
+* ``docs/architecture/tts-extension-points.md`` — full design doc
+* ``docs/adr/0008-tts-provider-extension-points.md`` — Accepted ADR
 """
 
 from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping
-
-from rob_box_llm.tts import TTSProvider  # IS-A relationship (frozen contract)
 
 if TYPE_CHECKING:
     import httpx
 
-    from rob_box_llm.tts import TTSSettings
+    from rob_box_llm.tts import TTSSettings, TTSProvider as _TTSProvider  # noqa: F401
+
+# Import the runtime ABC at module load time. We do this here (instead
+# of using a ``TYPE_CHECKING`` guard only) so ``BaseTTSProvider`` is a
+# concrete runtime subclass — important for ``isinstance(x, TTSProvider)``
+# checks performed by existing call sites after the migration.
+from rob_box_llm.tts import TTSProvider  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +95,10 @@ class TTSVoice:
     ``"en-US-Wavenet-A"``, local Piper uses ``.onnx`` filenames).
     This dataclass is the smallest common subset the rest of rob_box
     can rely on. Provider-specific extras go in ``extra``.
+
+    ``extra`` is wrapped in :class:`types.MappingProxyType` at construction
+    time so callers cannot mutate the catalogue entry after the provider
+    published it.
     """
 
     id: str
@@ -92,6 +108,11 @@ class TTSVoice:
     preview_url: str | None = None
     supports_cloning: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # ``frozen=True`` blocks normal assignment; use object.__setattr__.
+        if isinstance(self.extra, dict):
+            object.__setattr__(self, "extra", MappingProxyType(self.extra))
 
 
 # ---------------------------------------------------------------------------
@@ -136,24 +157,18 @@ with the same config returns equivalent instances.
 # ---------------------------------------------------------------------------
 
 
-class BaseTTSProvider(TTSProvider, abc.ABC):
+class BaseTTSProvider(TTSProvider):
     """Extension port for future TTS providers.
 
     Inherits all behaviour from :class:`rob_box_llm.tts.TTSProvider`
-    (synthesize / stream / aclose contract — frozen at P0.5,
-    see ``tts.py:121-177``) and adds 5 override hooks:
+    (``synthesize`` / ``stream`` / ``aclose`` contract — frozen at P0.5,
+    see ``tts.py``) and adds 5 override hooks:
 
-    * :meth:`capabilities`         — optional, default empty
-    * :meth:`list_voices`          — optional, default empty list
-    * :meth:`healthcheck`          — optional, default always-ok
-    * :meth:`_build_request_payload` — mandatory, pure mapping
-    * :meth:`_http_client_factory`   — mandatory unless default httpx works
-
-    .. note::
-
-        Existing ``MiniMaxTTSProvider(TTSProvider)`` does NOT migrate to
-        this base in this PR — that change is deferred until the second
-        opt-in provider lands (ADR-0004 §2.8). Migrating earlier is YAGNI.
+    * :meth:`capabilities`            — optional, default empty
+    * :meth:`list_voices`             — optional, default empty list
+    * :meth:`healthcheck`             — optional, default always-ok
+    * :meth:`_build_request_payload`  — mandatory, pure mapping
+    * :meth:`_http_client_factory`    — mandatory unless default httpx works
 
     Subclassing example::
 
@@ -190,7 +205,7 @@ class BaseTTSProvider(TTSProvider, abc.ABC):
         """Static capability declaration.
 
         Override if your provider supports streaming / voice-cloning /
-        SSML / specific audio formats. Default: all flags False.
+        SSML / specific audio formats. Default: all flags ``False``.
         """
         return TTSCapabilities()
 
@@ -199,7 +214,12 @@ class BaseTTSProvider(TTSProvider, abc.ABC):
         return []
 
     async def healthcheck(self) -> TTSHealth:
-        """Pre-flight health check. Default: always ok."""
+        """Pre-flight health check. Default: always ok.
+
+        The default implementation does NOT call upstream — providers
+        that need a real probe (OAuth check, ``/version`` endpoint) must
+        override and cache the result.
+        """
         return TTSHealth(ok=True, provider=self.name)
 
     # ---- mandatory extension points (override required) ----

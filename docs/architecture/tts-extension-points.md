@@ -3,14 +3,14 @@
 | Поле          | Значение                                                                  |
 |---------------|---------------------------------------------------------------------------|
 | Каталог       | `docs/architecture/`                                                      |
-| Статус        | **Accepted** (t_25b8e221 / ADR-0008 landed 2026-07-22)                    |
+| Статус        | **Accepted** — landed in t_8cbf9995 (see [ADR-0008](../adr/0008-tts-provider-extension-points-landed.md)) |
 | Дата          | 2026-07-21                                                                |
 | Автор         | architect (Hermes Agent)                                                  |
 | Контекст      | Kanban task `t_8d714ff0` (спроектировать структуру класса + точки расширения TTS) |
 | Родительские ADR | [ADR-0004 §2.1–2.4](../adr/0004-minimax-tts-integration-design.md) (port, registry, retry, CB), [ADR-0007](../adr/0007-minimax-tts-integration-final.md) §2.2 (итоговая архитектура), [ADR-0003](../adr/0003-minimax-tts-architecture.md) (текущая реализация MiniMax), [ADR-0008](../adr/0008-tts-provider-extension-points.md) (landed implementation) |
 | AS-IS         | [docs/analysis/tts-current-interface.md](../analysis/tts-current-interface.md) |
 | Диаграммы     | [docs/diagrams/tts-extension-class.mmd](../diagrams/tts-extension-class.mmd), [docs/diagrams/tts-extension-sequence.mmd](../diagrams/tts-extension-sequence.mmd) |
-| Production-код | [`src/rob_box_llm/rob_box_llm/tts_provider_base.py`](../../src/rob_box_llm/rob_box_llm/tts_provider_base.py), [`src/rob_box_llm/rob_box_llm/tts_provider_registry.py`](../../src/rob_box_llm/rob_box_llm/tts_provider_registry.py) |
+| Код-стабы     | [`docs/architecture/stubs/tts_provider_base.py`](#stubs) (сигнатуры методов без реализации) |
 
 ---
 
@@ -76,8 +76,8 @@
 |---------------------------------------|---------------------------------------------------------------------|---------------------------------------------------------------------------------------------|
 | Доменные value-объекты (frozen P0.5) | `src/rob_box_llm/rob_box_llm/tts.py`                                | `TTSProvider` ABC, `TTSSettings`, `TTSAudio`, `TTSChunk`, `TTSFormat`, `FakeTTSProvider`    |
 | Иерархия ошибок (frozen P0.5)         | `src/rob_box_llm/rob_box_llm/errors.py`                             | `TTSError` + `TTSAuthError`, `TTSBadRequestError`, `TTSRateLimitError`, `TTSTimeoutError`     |
-| **Новое** — порты и capability-мета  | `src/rob_box_llm/rob_box_llm/tts_provider_base.py` (см. §stubs)    | `BaseTTSProvider(TTSProvider)`, `TTSCapabilities`, `TTSVoice`, `TTSHealth`, `ProviderBuilder` |
-| **Новое** — реестр и фабрика         | `src/rob_box_llm/rob_box_llm/tts_provider_registry.py` (см. §stubs) | `TTSProviderRegistry`, `TTSProviderFactory.create()`, `register_builtin_tts_providers()`    |
+| **Новое** — порты и capability-мета  | `docs/architecture/stubs/tts_provider_base.py` (см. §stubs)    | `BaseTTSProvider(TTSProvider)`, `TTSCapabilities`, `TTSVoice`, `TTSHealth`, `ProviderBuilder` |
+| **Новое** — реестр и фабрика         | `docs/architecture/stubs/tts_provider_registry.py` (см. §stubs) | `TTSProviderRegistry`, `TTSProviderFactory.create()`, `register_builtin_tts_providers()`    |
 | MiniMax-адаптер (текущий, не трогаем)| `src/rob_box_llm/rob_box_llm/providers/minimax_tts.py`              | `MiniMaxTTSProvider(TTSProvider)` — в P0.5 не мигрирует                                       |
 | Composition root (точка подключения) | `src/rob_box_voice/rob_box_voice/tts_node.py:_synthesize_and_play`  | `tts_node` сейчас хардкодит `MiniMaxTTSProvider`; **в P0.6** заменяется на `TTSProviderFactory.create(provider_name, config, registry)` |
 | CLI composition root (будущее)        | `src/rob_box_llm/rob_box_llm/tts_cli.py`                            | ещё не существует; ADR-0006 зафиксировал `MiniMaxTTSConfig` (pydantic-settings) для него     |
@@ -221,17 +221,17 @@ Local Piper CLI:   {"text_file": ..., "voice_model": ..., "output_file": ..., "c
 | [docs/diagrams/tts-extension-class.mmd](../diagrams/tts-extension-class.mmd)                       | Class-диаграмма: TTSProvider → BaseTTSProvider → MiniMax / ElevenLabs / Google / LocalPiper + capabilities + registry |
 | [docs/diagrams/tts-extension-sequence.mmd](../diagrams/tts-extension-sequence.mmd)                 | Sequence: tts_node → factory.create() → registry.resolve() → provider    |
 | [docs/architecture/tts-extension-points.md](../architecture/tts-extension-points.md)               | Этот документ                                                           |
-| `src/rob_box_llm/rob_box_llm/tts_provider_base.py`                                                | Сигнатуры `BaseTTSProvider`, `TTSCapabilities`, `TTSVoice`, `TTSHealth`, `ProviderBuilder` (design-only, no logic) |
-| `src/rob_box_llm/rob_box_llm/tts_provider_registry.py`                                             | Сигнатуры `TTSProviderRegistry`, `TTSProviderFactory.create()`, `register_builtin_tts_providers()` (design-only)  |
-| `src/rob_box_llm/rob_box_llm/providers/elevenlabs_tts.py`                                         | Stub `ElevenLabsTTSProvider(BaseTTSProvider)` (только сигнатуры + docstring) |
-| `src/rob_box_llm/rob_box_llm/providers/google_tts.py`                                              | Stub `GoogleTTSProvider(BaseTTSProvider)` (только сигнатуры)              |
-| `src/rob_box_llm/rob_box_llm/providers/local_piper_tts.py`                                         | Stub `LocalPiperTTSProvider(BaseTTSProvider)` (только сигнатуры)          |
+| `docs/architecture/stubs/tts_provider_base.py`                                                | Сигнатуры `BaseTTSProvider`, `TTSCapabilities`, `TTSVoice`, `TTSHealth`, `ProviderBuilder` (design-only, no logic) |
+| `docs/architecture/stubs/tts_provider_registry.py`                                             | Сигнатуры `TTSProviderRegistry`, `TTSProviderFactory.create()`, `register_builtin_tts_providers()` (design-only)  |
+| `docs/architecture/stubs/elevenlabs_tts.py`                                         | Stub `ElevenLabsTTSProvider(BaseTTSProvider)` (только сигнатуры + docstring) |
+| `docs/architecture/stubs/google_tts.py`                                              | Stub `GoogleTTSProvider(BaseTTSProvider)` (только сигнатуры)              |
+| `docs/architecture/stubs/local_piper_tts.py`                                         | Stub `LocalPiperTTSProvider(BaseTTSProvider)` (только сигнатуры)          |
 
 ---
 
 ## Stubs
 
-> Файлы лежат в `src/rob_box_llm/rob_box_llm/` под именами, указанными в §9. **Ни один из них не импортируется production-кодом** до тех пор, пока задача `t_25b8e221` не доведёт их до рабочего состояния и ADR-0007 не переедет в `Accepted`. Здесь они — design-only: docstring + сигнатура + `pass` / `...`.
+> Файлы лежат в `docs/architecture/stubs/` (design-only, **НЕ импортируются** production-кодом до завершения `t_25b8e221` и перевода ADR-0007 в `Accepted`). Содержат только docstring + сигнатуры + `pass` / `...`.
 
 ### `tts_provider_base.py`
 

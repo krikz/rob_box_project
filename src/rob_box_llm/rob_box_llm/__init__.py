@@ -107,12 +107,12 @@ __all__ = [
     "TTSFormat",
     "MiniMaxTTSProvider",
     "FakeTTSProvider",
-    # TTS extension surface (t_25b8e221 / ADR-0008)
+    # TTS extension points (P0.5 / ADR-0008)
     "BaseTTSProvider",
-    "ProviderBuilder",
     "TTSCapabilities",
-    "TTSHealth",
     "TTSVoice",
+    "TTSHealth",
+    "ProviderBuilder",
     "TTSProviderRegistry",
     "TTSProviderFactory",
     "register_builtin_tts_providers",
