@@ -1,15 +1,4 @@
-"""TTS Provider extension ports and capability metadata — DESIGN ONLY (t_8d714ff0).
-
-**STATUS: design-only stub. NOT imported by production code.**
-
-This file exists purely to document the proposed extension surface for
-future TTS providers (ElevenLabs / Google / Azure / local Piper). It is
-kept under ``docs/architecture/stubs/`` rather than the production source
-tree (``src/rob_box_llm/``) so it cannot accidentally be imported.
-
-When this design is accepted (ADR-0007 → Accepted and t_25b8e221 lands),
-this file will move to ``src/rob_box_llm/rob_box_llm/tts_provider_base.py``
-and acquire real implementations.
+"""TTS Provider extension ports and capability metadata.
 
 Public contract (frozen once implemented):
 
@@ -34,11 +23,11 @@ Backward-compat with PR #907:
       that type-annotates ``TTSProvider`` keeps working unchanged.
     * ``MiniMaxTTSProvider(TTSProvider)`` stays untouched until the second
       opt-in provider lands; migration is a single-line
-      ``class MiniMaxTTSProvider(BaseTTSProvider)``.
+      ``class MiniMaxTTSProvider(BaseTTSProvider)`` (see ADR-0008).
 
 See also:
     * ``docs/architecture/tts-extension-points.md`` — full design doc
-    * ``docs/adr/0007-minimax-tts-integration-final.md`` — parent ADR
+    * ``docs/adr/0008-tts-provider-extension-points.md`` — landed ADR
 """
 
 from __future__ import annotations
@@ -46,6 +35,8 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping
+
+from rob_box_llm.tts import TTSProvider  # IS-A relationship (frozen contract)
 
 if TYPE_CHECKING:
     import httpx
@@ -130,12 +121,7 @@ class TTSHealth:
 # ---------------------------------------------------------------------------
 
 
-# Forward-declared so the type alias is valid even before TTSProviderRegistry
-# imports this module.
-if TYPE_CHECKING:
-    ProviderBuilder = Callable[[Mapping[str, Any]], "BaseTTSProvider"]
-else:
-    ProviderBuilder = Callable[[Mapping[str, Any]], "BaseTTSProvider"]
+ProviderBuilder = Callable[[Mapping[str, Any]], "BaseTTSProvider"]
 """Factory callback used by :class:`TTSProviderRegistry`.
 
 Takes a config dict (already validated by pydantic-settings in CLI path,
@@ -150,7 +136,7 @@ with the same config returns equivalent instances.
 # ---------------------------------------------------------------------------
 
 
-class BaseTTSProvider(abc.ABC):
+class BaseTTSProvider(TTSProvider, abc.ABC):
     """Extension port for future TTS providers.
 
     Inherits all behaviour from :class:`rob_box_llm.tts.TTSProvider`
