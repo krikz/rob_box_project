@@ -34,7 +34,7 @@ Backward-compat with PR #907:
 See also:
 
 * ``docs/architecture/tts-extension-points.md`` — full design doc
-* ``docs/adr/0008-tts-provider-extension-points.md`` — Accepted ADR
+* ``docs/adr/0008-tts-provider-extension-points-landed.md`` — Accepted ADR
 """
 
 from __future__ import annotations
