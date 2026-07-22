@@ -26,6 +26,7 @@
 
 #### CI / harness (P0)
 - **`feature/harness-p0-foundation`** — extension points для TTS-провайдеров + migration `MiniMaxTTSProvider` на новую базу (коммит `37315f48`, ADR-0008).
+- **ADR-0007 (`MiniMax TTS — финальный сводный архитектурный контракт интеграции`)** — переведён в статус **Accepted**. Добавлены §7 (Rollout/SLO/Rollback) и §8 (Review-пакет). Все 7 критериев §9 выполнены: реализация `BaseTTSProvider` + `TTSProviderRegistry` приземлена, регрессионные тесты зелёные (244 passed, 100% coverage на `minimax_tts.py`).
 
 ### 📚 Документация
 - Раздел "🎙️ TTS-провайдеры" в `README.md` — таблица трёх движков (Yandex / Silero / MiniMax) со ссылками на гайды.

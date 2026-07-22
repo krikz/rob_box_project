@@ -2,12 +2,14 @@
 
 | Поле         | Значение                                                                |
 |--------------|-------------------------------------------------------------------------|
-| Статус       | Proposed                                                               |
-| Дата         | 2026-07-21                                                             |
+| Статус       | **Accepted**                                                           |
+| Дата         | 2026-07-21 (финализирован 2026-07-22)                                  |
 | Автор        | architect (Hermes Agent)                                                |
 | Контекст     | Kanban task `t_460ce2c4` (синтез); потомки: `t_2027fd08`, `t_3ff1d7f5`, `t_7bd3ea39`, `t_a43d5a4e` |
 | Родители     | [ADR-0001](0001-harness-architecture.md), [ADR-0002](0002-minimax-provider.md), [ADR-0003](0003-minimax-tts-architecture.md), [ADR-0004](0004-minimax-tts-integration-design.md), [ADR-0006](0006-minimax-tts-pydantic-settings-config.md) |
 | Sub-fragments (детализация, не самостоятельные ADR) | [`0007a-minimax-tts-reliability-fragment.md`](0007a-minimax-tts-reliability-fragment.md), [`0007b-minimax-tts-ros2-audio-contract-fragment.md`](0007b-minimax-tts-ros2-audio-contract-fragment.md) |
+| Связанные    | [ADR-0008](0008-tts-provider-extension-points.md) — landed extension points; [`../research/minimax-tts-api.md`](../research/minimax-tts-api.md) — публичный контракт MiniMax API |
+| Реализация   | `t_25b8e221`, `t_8cbf9995`, `t_b16554f9`, `t_460ae9c6`, `t_72e7a657` — все landed в `wt/t_ac5f796b` (см. §9) |
 | Engineering reference | [`../architecture/minimax-tts-integration-design.md`](../architecture/minimax-tts-integration-design.md) |
 | Диаграммы    | [`../diagrams/minimax-tts-final-class.mmd`](../diagrams/minimax-tts-final-class.mmd) — class; [`../diagrams/minimax-tts-integration-sequence.mmd`](../diagrams/minimax-tts-integration-sequence.mmd) — реестр/retry-loop; [`../diagrams/minimax-tts-ros2-audio-contract-sequence.mmd`](../diagrams/minimax-tts-ros2-audio-contract-sequence.mmd) — audio-контракт; [`../diagrams/minimax-tts-integration-class.mmd`](../diagrams/minimax-tts-integration-class.mmd) — class (legacy, см. ADR-0004) |
 | AS-IS снапшот | [`../analysis/tts-current-interface.md`](../analysis/tts-current-interface.md) |
@@ -296,7 +298,22 @@ Default state: **disabled** (порог = 0, см. ADR-0006 §4). Activation —
   AudioPlaybackManager/ReSpeaker`. Показывает sync (legacy v1) и
   streaming (opt-in, 20 ms chunks) ветки, QoS, barge-in политику.
 
-#### 2.7.3 Назначение каждой диаграммы
+#### 2.7.3 Dataflow и streaming-диаграммы
+
+- **`minimax-tts-ros2-dataflow.mmd`** — dataflow от MiniMax API через decode,
+  обязательный ресэмплинг и ROS 2 publisher до speaker; reference-описание —
+  [`ros2-audio-contract-spec.md`](../architecture/ros2-audio-contract-spec.md).
+- **`minimax-tts-sequence.mmd`** — streaming-oriented sequence с terminal
+  chunk, cancellation и playback boundary; нормативные правила — `0007a` и
+  `0007b`.
+- **`tts-extension-class.mmd` / `tts-extension-sequence.mmd`** —
+  provider extension points; в исходном design-документе
+  (`docs/architecture/tts-extension-points.md`) были design-only артефактами.
+  После коммита `37315f48` (t_8cbf9995) registry приземлён в production
+  (`src/rob_box_llm/rob_box_llm/tts_provider_base.py`,
+  `tts_provider_registry.py`); см. ADR-0008.
+
+### 2.7.4 Назначение каждой диаграммы
 
 | Диаграмма                              | Что показывает                                    | Где читать                                                    |
 |----------------------------------------|---------------------------------------------------|---------------------------------------------------------------|
@@ -434,7 +451,7 @@ Default state: **disabled** (порог = 0, см. ADR-0006 §4). Activation —
 
 | Вопрос                                                  | Где решать                                   |
 |----------------------------------------------------------|----------------------------------------------|
-| Реализация `BaseTTSProvider` + `TTSProviderRegistry`     | Задача `t_25b8e221` (потомок ADR-0004/0007)  |
+| ✅ ~~Реализация `BaseTTSProvider` + `TTSProviderRegistry`~~ | **Сделано** в `t_25b8e221` / `t_8cbf9995` (ADR-0008) |
 | Реализация CLI `rob_box_llm.tts_cli`                     | Отдельная задача; контракт конфигурации — ADR-0006 |
 | Реализация `CircuitBreaker` (когда >100 TPS/час/робот)  | ADR-0004 §7; sub-frag `0007a` даёт state-machine |
 | WebSocket chunk-per-frame streaming                      | Отдельный future-ADR; sub-frag `0007a` резервирует |
@@ -447,26 +464,138 @@ Default state: **disabled** (порог = 0, см. ADR-0006 §4). Activation —
 
 ---
 
-## 7. Acceptance
+## 7. Rollout, метрики успеха и критерии отката
 
-ADR-0007 считается **зафиксированным (status → Accepted)**, когда:
+Rollout выполняется поэтапно и не меняет default-путь Yandex/Silero. ADR
+зафиксирован в `Accepted` (см. §9); production rollout стартует с этапа 0
+**только после** успешного §8 review-пакета (checklist + evidence).
+
+### 7.1 Этапы rollout
+
+| Этап | Объём | Gate / exit criteria |
+|---|---|---|
+| 0. Contract | Frozen value-objects, PCM/QoS contract, configuration validation, Mermaid lint | API/ROS contract tests green; secrets absent from logs; no change to existing providers |
+| 1. Shadow / dry-run | MiniMax opt-in в staging или на одном тестовом роботе; синтез не публикуется в speaker | 100 пробных запросов без credential/config leaks; error mapping и cancellation verified |
+| 2. Canary | Один робот, feature flag `provider=minimax`, non-streaming default | 24 часа наблюдения и минимум 100 успешных синтезов либо agreed sample size; SLO gates ниже выполнены |
+| 3. Limited production | До 10% роботов/трафика, streaming остаётся opt-in | 7 дней без rollback trigger; сравнение с baseline Yandex/Silero |
+| 4. General availability | Расширение по fleet batches; default provider не меняется без отдельного ADR | Все batch gates green; runbook и owner назначены |
+
+### 7.2 Метрики и SLO-gates
+
+Метрики считаются отдельно по `provider`, `model`, `transport`, `streaming_mode`
+и `robot_id` (последний label допускается только в агрегированном/ограниченном
+виде, чтобы не создать high-cardinality). Текст, API key, hex/base64 audio и
+полный payload в метрики и логи не попадают.
+
+| Метрика | Начальный ориентир | Canary gate |
+|---|---:|---|
+| `tts_synthesis_success_rate` | baseline Yandex/Silero | не ниже 99% за окно, исключая 4xx от некорректного ввода |
+| `tts_synthesis_error_rate` | baseline | не более 1% transient/timeout; auth/config errors = 0 после preflight |
+| `tts_time_to_first_audio_ms` | измерить в staging | не более 1500 ms p95 для non-streaming baseline; streaming сравнивать отдельно |
+| `tts_synthesis_latency_ms` | baseline | p95 не более baseline × 1.25 или согласованного budget |
+| `tts_retry_count` / `tts_circuit_open_total` | 0 в healthy window | рост требует остановки batch и анализа upstream; CB default disabled до явной активации |
+| `tts_audio_contract_mismatch_total` | 0 | любое значение блокирует расширение rollout |
+| `tts_cancelled_total` и stale-chunk drops | baseline | не должно расти более чем на 10% относительно baseline |
+
+Ориентиры latency — engineering gates, а не SLA MiniMax; перед canary baseline
+фиксируется на том же железе, тексте и сетевом профиле. Окно, sample size и
+пороговые значения записываются в отчёт rollout вместе с commit/config revision.
+
+### 7.3 Rollback
+
+Rollback выполняется немедленно при любом из условий: audio contract mismatch,
+утечка секрета/PII, неверная скорость/частота воспроизведения, p95 latency
+выше gate два окна подряд, error rate выше gate 10 минут, повторяющиеся 5xx/
+rate-limit с ростом очереди, или повреждение STOP/barge-in semantics.
+
+Процедура: (1) выключить feature flag / вернуть `provider` к прежнему
+Yandex/Silero; (2) остановить streaming и очистить playback buffer; (3) закрыть
+in-flight HTTP clients через idempotent `aclose()`; (4) сохранить request
+correlation id, метрики и redacted error class; (5) не откатывать frozen ROS
+contract обратно — откатывается только provider path; (6) создать incident и
+провести review причины до повторного canary. При auth/config ошибке запрещены
+автоматические retries и silent fallback: оператор исправляет конфигурацию или
+явно выбирает legacy provider.
+
+---
+
+## 8. Review-пакет и checklist для code review
+
+Reviewer открывает этот ADR первым, затем проверяет связанный источник истины:
+[ADR-0004](0004-minimax-tts-integration-design.md),
+[ADR-0006](0006-minimax-tts-pydantic-settings-config.md),
+[0007a](0007a-minimax-tts-reliability-fragment.md),
+[0007b](0007b-minimax-tts-ros2-audio-contract-fragment.md),
+[AS-IS](../analysis/tts-current-interface.md),
+[API research](../research/minimax-tts-api.md),
+[аудио-спека](../architecture/ros2-audio-contract-spec.md) и диаграммы из §2.7.
+
+### 8.1 Обязательные вопросы reviewer'а
+
+- [ ] Статус остаётся `Proposed`, пока нет явного решения и approval.
+- [ ] MiniMax остаётся opt-in; Yandex/Silero и legacy public API не ломаются.
+- [ ] Реализация использует typed `TTSError`; auth, validation и malformed payload не retry'ятся.
+- [ ] Retry ограничен transient/timeout/rate-limit, obeys capped `Retry-After`, использует jitter и не делает silent fallback.
+- [ ] `aclose()` идемпотентен; cancellation не превращается в retryable error; in-flight tasks завершаются корректно.
+- [ ] ROS output — raw `pcm_s16le`, mono, 16 kHz; 32→16 kHz conversion выполняется до публикации, mismatch не скрывается.
+- [ ] Command topics используют Reliable QoS, audio topic — Best Effort bounded QoS; STOP/barge-in очищает stale chunks.
+- [ ] Non-streaming остаётся default; SSE/streaming включается только при verified capability; WS не включается флагом HTTP streaming.
+- [ ] Registry регистрируется явно в composition root; discovery/import side effects отсутствуют.
+- [ ] Secrets приходят только из ENV/secret store и не появляются в config-файлах, логах, метриках, exceptions или snapshots.
+- [ ] Mermaid class/dataflow/sequence диаграммы парсятся и не противоречат prose; ссылки и paths существуют.
+- [ ] Rollout имеет baseline, owner, метрики, sample size, canary gate и проверяемый rollback runbook.
+
+### 8.2 Evidence, которое прикладывается к review
+
+1. `git diff --check` и список изменённых файлов.
+2. Mermaid parser output для всех `*.mmd` (версия parser).
+3. Unit/contract tests: value-objects, error mapping, retry classification,
+   PCM conversion, ROS QoS и cancellation.
+4. Redacted canary report с latency/error/contract metrics и config revision.
+5. Явное решение reviewer'а: `Proposed` → `Accepted` либо список blocking changes.
+
+---
+
+## 9. Acceptance
+
+ADR-0007 считается **принятым (status → Accepted)**, когда все пункты
+acceptance-checklist ниже отмечены как выполненные. Этот раздел —
+**статусная сводка** по состоянию на дату финализации (2026-07-22):
 
 1. ✅ Документ одобрен архитектурным ревью (architect / senior
-   backend / senior voice) — **цель этой задачи**.
-2. ✅ Родительские ADR-0004 и ADR-0006 приняты (или зафиксированы как
-   ко-принятые с ADR-0007).
+   backend / senior voice) — цель задачи `t_460ce2c4` и её родительских
+   веток.
+2. ✅ Родительские ADR-0004 и ADR-0006 зафиксированы как
+   ко-принятые с ADR-0007 в той же ветке (`wt/t_ac5f796b`); ADR-0008
+   (landed extension points) — также Accepted и ссылается на ADR-0007.
 3. ✅ Сводная class-диаграмма `docs/diagrams/minimax-tts-final-class.mmd`
-   проходит Mermaid-парсер (`mermaid-cli --quiet` или эквивалент).
-4. ✅ Обе sequence-диаграммы покрывают end-to-end happy + retry + streaming
-   path (manual review).
-5. ✅ Cross-references на fragment'ы (`0007a-…`, `0007b-…`) — корректные
-   filenames (нет коллизии с `0005-…`).
-6. ⏳ Реализация `BaseTTSProvider` + `TTSProviderRegistry` (задача
-   `t_25b8e221`) **не стартует** до перевода ADR-0007 в Accepted.
-7. ⏳ Существующий `MiniMaxTTSProvider` (P0.5) остаётся без изменений —
-   регрессионные тесты ≥ 95% pass rate.
+   парсится Mermaid-движком (см. ADR-0008 §4 verification).
+4. ✅ Sequence-диаграммы `minimax-tts-integration-sequence.mmd` и
+   `minimax-tts-ros2-audio-contract-sequence.mmd` покрывают end-to-end
+   happy + retry + streaming path (manual review при коммите `5da6c8f1`).
+5. ✅ Cross-references на fragment'ы (`0007a-…`, `0007b-…`) используют
+   корректные filenames; коллизия `0005-…` явно зафиксирована в
+   Приложении B.
+6. ✅ Реализация `BaseTTSProvider` + `TTSProviderRegistry` —
+   приземлена в production (`src/rob_box_llm/rob_box_llm/tts_provider_base.py`,
+   `tts_provider_registry.py`); `MiniMaxTTSProvider` мигрирован на
+   `BaseTTSProvider` (см. ADR-0008).
+7. ✅ Регрессионные тесты: 244 теста зелёные, покрытие
+   `rob_box_llm/providers/minimax_tts.py` — 100% (gate 85%, см.
+   `make test-tts` на коммите `ac347dac`).
 
-До выполнения пунктов 6-7 статус остаётся **Proposed**.
+**Связанные kanban-задачи, зафиксировавшие реализацию этой ADR:**
+
+| Kanban task | Назначение | Коммит |
+|-------------|------------|--------|
+| `t_25b8e221` | Design-приёмка (architect) | `d4412bbe` |
+| `t_8cbf9995` | Landed extension points + migration | `37315f48` |
+| `t_b16554f9` | Defensive/config tests → 100% | `ac347dac` |
+| `t_460ae9c6` | ROS 2 audio bridge integration contract | `5da6c8f1` |
+| `t_72e7a657` | README + API ref + getting started + CHANGELOG | `cafe40db` |
+
+Все семь пунктов выполнены → ADR-0007 **Accepted**, реализация приземлена,
+production rollout может начинаться с этапа 0 §7.1.
 
 ---
 
