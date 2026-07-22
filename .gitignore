@@ -67,6 +67,10 @@ docker-compose.override.yml
 /frames_*.pdf
 /clog
 
+# Local Debian packages and ROS .deb drops (test-bench env setup)
+/*.deb
+/*.rpm
+
 # TTS audio bench: artifacts and runtime logs are regenerable; fixtures and
 # scripts commit normally.
 tts_audio_bench/artifacts/
