@@ -1,230 +1,85 @@
-%% docs/diagrams/minimax-tts-integration-class.mmd
-%% Class diagram for MiniMax TTS integration — current state and
-%% extension points.
-%% Companion to docs/adr/0004-minimax-tts-integration-design.md and
-%% docs/architecture/minimax-tts-integration-design.md.
-
+%% ADR-0004 target class diagram: provider port, MiniMax adapter,
+%% registry/factory composition root and consumers.
 classDiagram
-    %% =========================================================
-    %% ABC + value objects (frozen at P0.5)
-    %% =========================================================
-    class TTSProvider {
-        <<abstract>>
-        +name: str = "abstract"
-        +synthesize(text, *, settings) TTSAudio*
-        +stream(text, *, settings) AsyncIterator~TTSChunk~*
+    class BaseTTSProvider {
+        <<abstract port>>
+        +name: str
+        +synthesize(text, settings) TTSAudio*
+        +stream(text, settings) AsyncIterator~TTSChunk~*
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
         +aclose() None
     }
 
-    class TTSSettings {
-        <<frozen dataclass>>
-        +model: Optional~str~
-        +voice: Optional~str~
-        +language: Optional~str~
-        +speed: Optional~float~
-        +volume: Optional~float~
-        +pitch: Optional~int~
-        +emotion: Optional~str~
-        +sample_rate: Optional~int~
-        +format: TTSFormat = PCM
-        +text_normalization: Optional~bool~
-        +extra: Mapping~str, Any~
-    }
-
-    class TTSAudio {
-        <<frozen dataclass>>
-        +samples: bytes
-        +sample_rate: int
-        +format: TTSFormat = PCM
-        +raw: Any|None
-        +duration_s() float
-    }
-
-    class TTSChunk {
-        <<frozen dataclass>>
-        +samples: bytes = b""
-        +sample_rate: int = 0
-        +format: TTSFormat = PCM
-        +finish_reason: Optional~str~
-    }
-
-    class TTSFormat {
-        <<str enum>>
-        PCM = "pcm"
-        WAV = "wav"
-        MP3 = "mp3"
-        OGG = "ogg"
-    }
-
-    TTSProvider ..> TTSSettings : consumes
-    TTSProvider ..> TTSAudio : produces
-    TTSProvider ..> TTSChunk : yields
-
-    %% =========================================================
-    %% Error hierarchy (frozen at P0.5)
-    %% =========================================================
-    class TTSError {
-        +provider: str|None
-    }
-    class TTSAuthError
-    class TTSBadRequestError
-    class TTSRateLimitError
-    class TTSTimeoutError
-
-    TTSError <|-- TTSAuthError
-    TTSError <|-- TTSBadRequestError
-    TTSError <|-- TTSRateLimitError
-    TTSError <|-- TTSTimeoutError
-
-    TTSProvider ..> TTSError : raises
-
-    %% =========================================================
-    %% Concrete impl: MiniMaxTTSProvider (current)
-    %% =========================================================
     class MiniMaxTTSProvider {
-        <<concrete>>
-        +name = "minimax"
-        +DEFAULT_BASE_URL = "https://api.minimax.io"
-        +DEFAULT_VOICE = "male-qn-qingse"
-        +DEFAULT_MODEL = "speech-02-hd"
-        +DEFAULT_TIMEOUT = 30.0
-        -_api_key: str
-        -_group_id: str
-        -_base_url: str
-        -_default_voice: str
-        -_default_model: str
-        -_timeout: float
-        -_client: httpx.AsyncClient
-        -_owns_client: bool
-        +__init__(api_key, group_id, base_url, default_voice, default_model, timeout, client)
-        -_headers() dict
-        -_params() dict
-        -_post(payload) dict
-        -_build_payload(text, settings, *, stream, default_voice, default_model) dict
-        -_decode_audio(data, fmt) tuple~bytes, int~
-        +synthesize(text, *, settings) TTSAudio
-        +stream(text, *, settings) AsyncIterator~TTSChunk~
-        +aclose() None$
+        <<HTTP/SSE/WS adapter>>
+        -http_client: AsyncClient
+        -ws_client: WebSocketClient
+        -config: MiniMaxTTSConfig
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
+        -build_payload(text, settings) dict
+        -map_exception(error) TTSError
     }
 
-    class FakeTTSProvider {
-        <<concrete, test>>
-        +name = "fake"
-        -_sample_rate: int = 32000
-        +synthesize(text, *, settings) TTSAudio
-        +stream(text, *, settings) AsyncIterator~TTSChunk~
-        +aclose() None$
-    }
-
-    TTSProvider <|-- MiniMaxTTSProvider
-    TTSProvider <|-- FakeTTSProvider
-
-    %% =========================================================
-    %% Module-level helpers (private)
-    %% =========================================================
-    class _MinimaxHelpers {
-        <<module: minimax_tts.py>>
-        ~_LANGUAGE_ALIASES: dict
-        ~_map_language(lang) str|None
-        ~_redact_sensitive_text(text, *, secrets) str
-        ~_map_exception(exc, *, provider, secrets) TTSError
-        ~_build_payload(...) dict
-        ~_RESERVED_PAYLOAD_KEYS: frozenset
-        ~_ALLOWED_EXTRA_KEYS: frozenset
-        ~_RedactGroupIdFilter : logging.Filter
-    }
-
-    MiniMaxTTSProvider ..> _MinimaxHelpers : uses
-
-    %% =========================================================
-    %% Forward-compat (NOT IMPLEMENTED YET)
-    %% Documented in ADR-0004 — dashed border
-    %% =========================================================
-    class BaseTTSProvider {
-        <<forward-compat, NOT YET>>
-        +name = "abstract-base"
-        -_retry_policy: RetryPolicy
-        -_breaker: CircuitBreaker
-        -_with_protection(coro_factory)
-        +validate_settings(settings)$
+    class FutureProvider {
+        <<ElevenLabs / Google / local>>
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
     }
 
     class TTSProviderRegistry {
-        <<forward-compat, NOT YET>>
-        -_providers: dict~str, type~
-        +register(name, cls)$
-        +create(name, **kwargs) TTSProvider$
-        +names() list~str~$
-        ~_register_builtin(reg)$
+        -builders: dict~str, ProviderBuilder~
+        +register(name, builder) None
+        +get(name) ProviderBuilder
+        +names() tuple~str~
     }
 
-    class RetryPolicy {
-        <<forward-compat, NOT YET>>
-        +max_retries: int = 2
-        +backoff_ms: int = 500
-        +retry_on_rate_limit: bool = True
-        +default() RetryPolicy$
-        +backoff_seconds(attempt) float$
-        +should_retry(exc, attempt) bool$
+    class TTSProviderFactory {
+        +create(name, config, registry) BaseTTSProvider$
     }
 
-    class CircuitBreaker {
-        <<forward-compat, NOT YET>>
-        +failure_threshold: int = 5
-        +reset_timeout_s: float = 60.0
-        +disabled() CircuitBreaker$
+    class ProviderBuilder {
+        <<callable>>
+        +build(config) BaseTTSProvider
     }
 
-    TTSProvider <|-- BaseTTSProvider : «forward-compat, opt-in»
-    BaseTTSProvider ..> RetryPolicy : uses
-    BaseTTSProvider ..> CircuitBreaker : uses
-    TTSProviderRegistry ..> TTSProvider : creates
-
-    %% =========================================================
-    %% ROS consumer (tts_node)
-    %% =========================================================
     class TTSNode {
-        <<ROS node>>
-        +provider: str = "yandex"
-        +minimax_api_key: str
-        +minimax_group_id: str
-        +minimax_voice: str = "male-qn-qingse"
-        +minimax_model: str = "speech-02-hd"
-        +minimax_language: str = "ru"
-        +minimax_speed: float = 1.0
-        +minimax_sample_rate: int = 32000
-        +minimax_timeout: float = 30.0
-        +minimax_format: TTSFormat = PCM
-        +minimax_max_retries: int = 2
-        +minimax_retry_backoff_ms: int = 500
-        +minimax_streaming: bool = False
-        +audio_topic: str = "/voice/audio/speech"
-        +audio_output_sample_rate: int = 16000
-        +audio_qos_reliability: str = "best_effort"
-        +audio_qos_depth: int = 10
-        -minimax_provider: MiniMaxTTSProvider|None
-        +_synthesize_and_play(...)
-        -_synthesize_minimax_async(...)
-        -_synthesize_minimax_with_retry(...)
-        -_synthesize_minimax_streaming_publish(...)
-        -_decode_minimax_audio(...)
-        -_publish_audio(...)
-        -_parse_format(value) TTSFormat
+        <<consumer / composition root>>
+        -provider: BaseTTSProvider
+        +synthesize_and_publish(text) None
     }
 
-    TTSNode ..> TTSProvider : synthesizes via
-    TTSNode ..> TTSSettings : builds
-    TTSNode ..> TTSAudio : consumes
-    TTSNode ..> TTSChunk : consumes (streaming)
-    TTSNode ..> TTSError : propagates
-    TTSNode ..> MiniMaxTTSProvider : instantiates (lazy)
+    class TTSCLI {
+        <<consumer>>
+        -provider: BaseTTSProvider
+        +run(text) int
+    }
 
-    %% =========================================================
-    %% Style hints for forward-compat (use classDef in render)
-    %% =========================================================
-    %% classDef future stroke-dasharray: 5 5
-    %% class BaseTTSProvider,TTSProviderRegistry,RetryPolicy,CircuitBreaker future
+    class TestHarness {
+        <<consumer>>
+        -provider: BaseTTSProvider
+        +verify_contract() None
+    }
 
-    note for TTSNode "Retry-loop живёт в\n_synthesize_minimax_with_retry\n(tts_node.py:1201-1258).\nPer ADR-0003 §5.2 — НЕ в провайдере."
-    note for MiniMaxTTSProvider "Прямой наследник TTSProvider.\nНЕ наследует BaseTTSProvider —\nэто forward-compat hook для будущих\nпровайдеров (ElevenLabs, Azure)."
-    note for TTSProvider "ABC frozen at P0.5.\nЗапрещено: менять сигнатуру\nsynthesize()/stream()/aclose()."
+    BaseTTSProvider <|-- MiniMaxTTSProvider : implements
+    BaseTTSProvider <|-- FutureProvider : implements
+    TTSProviderRegistry o-- ProviderBuilder : stores
+    TTSProviderFactory ..> TTSProviderRegistry : lookup
+    TTSProviderFactory ..> ProviderBuilder : invokes
+    ProviderBuilder ..> BaseTTSProvider : creates
+    TTSNode ..> TTSProviderFactory : create at startup
+    TTSCLI ..> TTSProviderFactory : create at startup
+    TTSNode --> BaseTTSProvider : Strategy / DI
+    TTSCLI --> BaseTTSProvider : Strategy / DI
+    TestHarness --> BaseTTSProvider : conformance
+
+    note for TTSProviderRegistry "Built-ins импортируются и регистрируются\nявно в composition root. Decorator — только sugar;\nникакого implicit module scanning."
+    note for MiniMaxTTSProvider "Vendor HTTP/WS DTO, auth и error mapping\nне выходят за границу адаптера."
+    note for FutureProvider "Новый provider реализует порт, builder\nи регистрацию; потребители не меняются."

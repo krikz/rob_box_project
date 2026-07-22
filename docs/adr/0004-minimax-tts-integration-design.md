@@ -77,66 +77,163 @@ Yandex/Silero пайплайна. ADR-0003 детализировал реали
 
 ## 2. Решения
 
-### 2.1 Минимальный базовый класс для будущих провайдеров
+### 2.1 Единый порт `BaseTTSProvider`
 
-**Решение:** ввести тонкий слой `BaseTTSProvider` поверх существующего
-`TTSProvider` ABC. Существующий `MiniMaxTTSProvider` остаётся без
-изменений (он уже имплементирует `TTSProvider` напрямую — обратная
-совместимость). `BaseTTSProvider` приносит **общий retry-hook +
-common-error-mapping** и опциональные lifecycle-методы.
+**Бизнес-проблема:** `tts_node`, CLI и будущие потребители не должны знать
+особенности MiniMax, ElevenLabs, Google Cloud TTS или локальной модели. Им
+нужен один заменяемый контракт, который можно подменить тестовым адаптером.
+
+**Решение:** сохранить существующий `TTSProvider` ABC как совместимый alias
+на время миграции, а целевое имя порта — `BaseTTSProvider`. Это тонкий ABC,
+а не место для retry, circuit breaker или vendor-specific конфигурации:
 
 ```python
-# Иллюстративный псевдокод, НЕ финальный API
-class BaseTTSProvider(TTSProvider):
-    """Опциональный базовый класс для будущих TTS-провайдеров.
+# Иллюстративный контракт, production-кода в этом ADR нет.
+class BaseTTSProvider(ABC):
+    name: ClassVar[str]
 
-    MiniMaxTTSProvider НЕ наследует его — он уже на ABC.
-    BaseTTSProvider нужен для стандартизации retry/circuit-breaker/
-    config-валидации в следующих имплементациях (ElevenLabs, Azure и т.д.),
-    и для единой точки подключения к registry (см. §2.5).
-    """
+    @abstractmethod
+    async def synthesize(self, text: str, *, settings: TTSSettings) -> TTSAudio: ...
 
-    name: str = "abstract-base"
+    @abstractmethod
+    def stream(
+        self, text: str, *, settings: TTSSettings
+    ) -> AsyncIterator[TTSChunk]: ...
 
-    def __init__(self, *, retry_policy: RetryPolicy | None = None,
-                 breaker: CircuitBreaker | None = None) -> None:
-        self._retry_policy = retry_policy or RetryPolicy.default()
-        self._breaker = breaker or CircuitBreaker.disabled()
+    async def list_voices(self) -> Sequence[TTSVoice]:
+        """Опциональная capability; default — пустой список."""
+        return ()
 
-    async def _with_protection(self, coro_factory):
-        """Применить retry + circuit breaker к одному вызову.
+    async def healthcheck(self) -> TTSHealth:
+        """Проверка готовности без синтеза пользовательского текста."""
+        return TTSHealth(healthy=True)
 
-        coro_factory — async-callable без аргументов (замыкание на
-        конкретный HTTP-вызов). Пост-обработка ошибок лежит на
-        наследнике: BaseTTSProvider только повторяет или прерывает.
-        """
+    async def aclose(self) -> None:
+        """Idempotent lifecycle hook."""
 ```
 
-**Trade-offs:**
+Обязательными являются `synthesize()`, `stream()` и idempotent `aclose()`.
+`list_voices()` и `healthcheck()` имеют безопасные default-реализации, потому
+что локальная модель может не иметь удалённого voice catalog/health endpoint.
+`healthcheck()` не должен отправлять пользовательский текст или создавать
+платный synthesis-вызов, если провайдер допускает дешёвую локальную проверку.
+Все провайдеры возвращают общие value-objects и поднимают иерархию
+`TTSError`; vendor DTO и HTTP-клиенты наружу не выходят.
 
-| Альтернатива                                       | Почему отвергнута                                                   |
-|-----------------------------------------------------|---------------------------------------------------------------------|
-| Сразу вшить retry в `TTSProvider.synthesize()`     | Сломает текущее ADR-0003 решение "retry снаружи, в tts_node"; провайдер становится stateful, теряется композиция |
-| Потребовать наследования от `BaseTTSProvider`       | Существующий `MiniMaxTTSProvider` уже работает без него; добавлять обязательное наследование = ломать frozen ABC |
-| Абстрактный `RetryMixin` поверх ABC                | Примеси с `async def` имеют тонкости с `super()`; чище явный базовый класс |
+**Самая простая альтернатива:** оставить прямой импорт MiniMax и очередной
+`if provider == ...` в каждом потребителе. Она дешевле для одного провайдера,
+но при втором размножает ветвления, конфиг и тесты.
 
-**Конкретные ручки, которые `BaseTTSProvider` СОДЕРЖИТ (только
-forward-compat):**
+**Trade-off:** ещё одна абстракция и conformance-suite против заменяемости и
+единой поверхности ошибок. Если не вводить порт сейчас, первая интеграция
+останется рабочей, но стоимость второго провайдера будет включать рефакторинг
+всех потребителей.
 
-- `_with_protection(coro)` — повторить вызов `coro()` в рамках
-  `RetryPolicy` (см. §2.6), под защитой `CircuitBreaker` (см. §2.7).
-- `validate_settings(settings)` — вызывается перед первым вызовом;
-  по умолчанию no-op, наследники могут переопределить для fail-fast
-  локальной валидации.
-- `aclose()` — наследует default no-op из `TTSProvider`; наследники
-  обязаны сделать idempotent (как у `MiniMaxTTSProvider.aclose()`).
+### 2.2 `MiniMaxTTSProvider` как HTTP/WS adapter
 
-> **Совместимость:** `MiniMaxTTSProvider` остаётся **прямым
-> наследником `TTSProvider`** — его retry-loop в `tts_node.py`
-> (ADR-0003 §5.2) не меняется. `BaseTTSProvider` подключается
-> только в будущих провайдерах.
+`MiniMaxTTSProvider` реализует `BaseTTSProvider` и инкапсулирует transport:
 
-### 2.2 Конфигурация: ROS-параметры + ENV + опциональный YAML
+- `synthesize()` строит T2A HTTP payload, вызывает sync HTTP endpoint,
+  декодирует ответ в `TTSAudio`;
+- `stream()` скрывает SSE сегодня и допускает WS transport позднее, но наружу
+  всегда возвращает `AsyncIterator[TTSChunk]`;
+- `list_voices()` обращается к MiniMax voice catalog, если endpoint доступен;
+  при отсутствии capability возвращает пустой список либо документированную
+  статическую выборку, не маскируя сетевую ошибку как успех;
+- `healthcheck()` проверяет локальную валидность конфигурации и доступность API
+  без логирования `api_key`, `group_id` или текста;
+- `_build_payload`, `_map_exception`, HTTP/WS client и vendor response DTO
+  остаются private деталями адаптера;
+- `aclose()` закрывает только клиент, которым владеет экземпляр, и остаётся
+  idempotent.
+
+Retry остаётся политикой orchestration-слоя: автоматический retry внутри
+провайдера сделал бы число платных запросов неявным и затруднил бы отмену
+streaming-вызовов. DI используется для передачи HTTP/WS client, clock и
+настроек — это позволяет тестировать адаптер без сети.
+
+### 2.3 Registry + Factory: одна composition root
+
+```python
+ProviderBuilder = Callable[[Mapping[str, Any]], BaseTTSProvider]
+
+class TTSProviderRegistry:
+    def register(self, name: str, builder: ProviderBuilder) -> None: ...
+    def get(self, name: str) -> ProviderBuilder: ...
+    def names(self) -> tuple[str, ...]: ...
+
+
+def register_tts_provider(name: str):
+    """Decorator, регистрирующий builder/class в default registry."""
+    ...
+
+
+class TTSProviderFactory:
+    @classmethod
+    def create(
+        cls, name: str, config: Mapping[str, Any], *,
+        registry: TTSProviderRegistry = default_registry,
+    ) -> BaseTTSProvider:
+        builder = registry.get(name.casefold())
+        return builder(config)
+```
+
+Registry хранит **builders**, а не только классы: у облачного адаптера и
+локальной модели разные constructor dependencies. Factory отвечает за
+нормализацию имени, lookup и создание экземпляра; provider-specific builder —
+за валидацию своего config и DI. Дубликат canonical-name и неизвестное имя —
+fail-fast конфигурационные ошибки со списком доступных имён.
+
+Built-ins регистрируются явно в composition root (`register_builtin_tts()`),
+а не через сканирование модулей/entry points: это детерминировано и не требует
+plugin framework. Decorator допустим как синтаксический sugar, но модуль всё
+равно должен быть импортирован composition root — "магической" регистрации
+без импорта нет.
+
+Потребитель вызывает только
+`TTSProviderFactory.create(config.provider, config.provider_options)` и затем
+работает через `BaseTTSProvider`. В тестах ему можно инъецировать отдельный
+registry с `FakeTTSProvider`; глобальный registry не мутируется.
+
+**Паттерны:**
+
+- **Strategy** — конкретный provider выбирается runtime-конфигурацией;
+- **Factory** — централизует создание и единые ошибки конфигурации;
+- **Registry** — добавляет provider без изменения factory и потребителей;
+- **DI** — передаёт registry/builders/transport clients и устраняет hardcoded
+  зависимости.
+
+**Почему не service locator в доменной логике:** registry доступен только в
+composition root. Передача registry глубоко в `tts_node` скрыла бы зависимости.
+**Почему не entry points сейчас:** deployment монорепозитория не требует
+динамической установки сторонних plugins. Их можно добавить позже, не меняя
+порт или factory API.
+
+### 2.4 Контракт добавления нового провайдера
+
+Чтобы ElevenLabs, Google Cloud TTS или локальная модель появились в factory
+без изменений потребителей, реализатор обязан:
+
+1. Реализовать `BaseTTSProvider`: `synthesize`, `stream`, idempotent `aclose`;
+   реализовать `list_voices`/`healthcheck`, если capability осмысленна.
+2. Преобразовать provider response в `TTSAudio`/`TTSChunk` и ошибки — в
+   `TTSError`; не выдавать наружу vendor SDK types.
+3. Определить builder, который валидирует только свою config schema и получает
+   внешние зависимости через DI.
+4. Зарегистрировать уникальное canonical-name через decorator или явный
+   `registry.register(name, builder)` в composition root.
+5. Пройти общий provider conformance-suite и adapter-specific tests.
+
+Изменения в `tts_node`, CLI и других потребителях после этого не требуются.
+Локальная модель отличается только builder'ом (model path/device вместо API
+key); контракт и lifecycle те же.
+
+**Что будет, если отложить registry:** при единственном MiniMax это допустимо
+и проще. Обязательный триггер миграции — добавление второго runtime-selectable
+TTS-провайдера или второго потребителя вне ROS; до этого дизайн остаётся
+целевым контрактом, а не оправданием преждевременного plugin framework.
+
+### 2.5 Конфигурация: ROS-параметры + ENV + опциональный YAML
 
 **Решение:** текущая схема (ADR-0003 §2.2) — **ROS-параметры +
 ENV-fallback только для секретов** — остаётся primary-каналом.
@@ -179,12 +276,12 @@ runtime ROS-параметры → ENV (только секреты) → YAML-ф
 > источника правды. Этот ADR **подтверждает** решение и расширяет:
 > в YAML можно всё (кроме секретов — они остаются ENV-only).
 
-### 2.3 Контракт выходных данных с аудиостэком
+### 2.6 Контракт выходных данных с аудиостэком
 
 **Решение:** **зафиксировать версию контракта на `/voice/audio/speech`**
 и **зафиксировать forward-compat hook** для будущего `AudioStamped`.
 
-#### 2.3.1 Текущий контракт (frozen в P0.5)
+#### 2.6.1 Текущий контракт (frozen в P0.5)
 
 ```
 audio_common_msgs/AudioData.data : uint8[]
@@ -197,7 +294,7 @@ metadata = out-of-band (audio_output_sample_rate, audio_channels ROS-парам�
 Этот контракт остаётся **неизменным** в рамках ADR-0004. Существующие
 подписчики (`sound_node`, `mcp_audio_tools`) работают без правок.
 
-#### 2.3.2 Forward-compat: `AudioStamped`-вариант
+#### 2.6.2 Forward-compat: `AudioStamped`-вариант
 
 Открываем **отдельный топик** `/voice/audio/speech_meta` (по умолчанию
 выключен), где публикуется `audio_common_msgs/AudioDataStamped`-подобное
@@ -221,7 +318,7 @@ metadata = out-of-band (audio_output_sample_rate, audio_channels ROS-парам�
 запущен с `audio_meta_topic != ""` (ROS-параметр, default пустая
 строка → off).
 
-### 2.4 Forward-compat для CLI и cron
+### 2.7 Forward-compat для CLI и cron
 
 **Решение:** допускается использование `TTSProvider` **вне ROS**:
 
@@ -233,15 +330,15 @@ metadata = out-of-band (audio_output_sample_rate, audio_channels ROS-парам�
 
 - `aclose()` в `finally`-блоке (для провайдеров с stateful клиентом,
   как `MiniMaxTTSProvider`).
-- Retry-цикл (тот же `RetryPolicy`, что и в `tts_node`, см. §2.6).
+- Retry-цикл (тот же `RetryPolicy`, что и в `tts_node`, см. §2.9).
 - Логирование в stdout (без зависимостей от `rclpy`).
 
 > **Граница:** CLI НЕ входит в этот ADR как реализация. Это
 > **forward-compat hook** — сейчас `rob_box_llm.tts_cli` не
 > существует. Если он появится, он обязан использовать `RetryPolicy`
-> из §2.6 и НЕ зависеть от `rclpy`.
+> из §2.9 и НЕ зависеть от `rclpy`.
 
-### 2.5 Точки расширения: registry и DI
+### 2.8 Точки расширения: registry и DI
 
 **Решение:** ввести `TTSProviderRegistry` в `rob_box_llm.tts_registry`
 **опционально**. Существующий код (`tts_node.py:740-756`) **не
@@ -309,7 +406,7 @@ self._provider_inst = default_registry().create(
 > (ElevenLabs, Azure, Yandex v4). Сейчас миграция ради одного
 > `MiniMaxTTSProvider` — YAGNI (ADR-0003 §6 уже отложил).
 
-### 2.6 Retry-policy как first-class объект
+### 2.9 Retry-policy как first-class объект
 
 **Решение:** retry-policy выносится в `RetryPolicy` dataclass и
 передаётся в `tts_node` через ROS-параметры (или через YAML/CLI).
@@ -324,7 +421,7 @@ self._provider_inst = default_registry().create(
 class RetryPolicy:
     """Retry policy for transient TTS failures.
 
-    Per ADR-0004 §2.6 / ADR-0003 §5.2:
+    Per ADR-0004 §2.9 / ADR-0003 §5.2:
     - TTSAuthError / TTSBadRequestError → NO retry (raise immediately)
     - TTSRateLimitError (429)            → retry_budget = 1, exp backoff
     - TTSTimeoutError / TTSError (5xx)   → retry_budget = max_retries, exp backoff
@@ -360,7 +457,7 @@ class RetryPolicy:
 **Маппинг на текущий код `tts_node.py:1226-1254`** — точное
 соответствие. Никаких изменений в поведении MiniMax-пути.
 
-### 2.7 Circuit breaker (отложенный, но обозначенный)
+### 2.10 Circuit breaker (отложенный, но обозначенный)
 
 **Решение:** **не реализуем сейчас**. Причина: retry-policy уже
 снижает каскадные сбои, а у нас один робот с десятками TTS-вызовов
@@ -372,7 +469,7 @@ class RetryPolicy:
 class CircuitBreaker:
     """Placeholder for future circuit-breaker state.
 
-    Per ADR-0004 §2.7 — НЕ реализуется в P0.5/P1. Обозначаем форму,
+    Per ADR-0004 §2.10 — НЕ реализуется в P0.5/P1. Обозначаем форму,
     чтобы будущие провайдеры сразу использовали её.
 
     States:
@@ -396,7 +493,7 @@ class CircuitBreaker:
 когда появится **несколько потребителей** TTS одновременно
 (второй сценарий — multi-robot fleet).
 
-### 2.8 Стриминг: sync (default) + SSE (optional) + WebSocket (reserved)
+### 2.11 Стриминг: sync (default) + SSE (optional) + WebSocket (reserved)
 
 **Решение:** без изменений по сравнению с ADR-0003 §2.4 —
 трехуровневая стратегия:
@@ -539,7 +636,7 @@ ADR считается зафиксированным (статус перево
 
 1. ✅ Документ одобрен архитектурным ревью.
 2. ⏳ `t_25b8e221` (потомок) реализует **минимум** §2.5 (Registry)
-   и §2.6 (`RetryPolicy` value-object), даже если `BaseTTSProvider`
+   и §2.9 (`RetryPolicy` value-object), даже если `BaseTTSProvider`
    ещё не используется.
 3. ⏳ `/voice/audio/speech_meta` топик **не активирован** в production
    без явного use-case (сохраняем обратную совместимость).
@@ -556,8 +653,8 @@ ADR считается зафиксированным (статус перево
 |----------------------------------------|---------------------------------------------|------------------------------|------------------------------|--------------------------------------------|
 | BaseTTSProvider как forward-compat (§2.1) | +1 абстрактный класс, +0 строк кода сейчас | Без изменений                | ✅ База для всех будущих     | ✅ Idempotent aclose + retry-hook           |
 | YAML-конфиг опционально (§2.2)         | +1 парсер (если используется)                | Без изменений                | ✅ Multi-robot deployment    | ✅ Только секреты в ENV (не дублируется)   |
-| AudioStamped как opt-in топик (§2.3)   | +1 ROS-publisher (если активирован)          | Без изменений                | ✅ Multi-channel mic stack   | ⚠️ Не активировать без use-case             |
+| AudioStamped как opt-in топик (§2.6)   | +1 ROS-publisher (если активирован)          | Без изменений                | ✅ Multi-channel mic stack   | ⚠️ Не активировать без use-case             |
 | TTSProviderRegistry (§2.5)              | +1 indirection (после миграции)              | Без изменений                | ✅ Add provider без правки tts_node | ✅ Single source of error surface      |
-| RetryPolicy value-object (§2.6)        | +1 dataclass, рефактор tts_node              | Без изменений (та же политика) | ✅ CLI/cron переиспользуют  | ✅ Зафиксированный контракт retry          |
-| Circuit breaker обозначен, не реализован (§2.7) | +0 строк сейчас, +datalass позже      | Без изменений сейчас         | ✅ Shape зафиксирована       | ⚠️ До ~100/час retry-policy хватает       |
-| Streaming: sync+SSE, WebSocket reserved (§2.8) | +0 сейчас                              | Sync: ~2-3 s TTFA, SSE: ~2 s TTFA, WS reserved | ⚠️ WS ждёт M5/M6      | ✅ Buffering SSE не врёт, контракт frozen   |
+| RetryPolicy value-object (§2.9)        | +1 dataclass, рефактор tts_node              | Без изменений (та же политика) | ✅ CLI/cron переиспользуют  | ✅ Зафиксированный контракт retry          |
+| Circuit breaker обозначен, не реализован (§2.10) | +0 строк сейчас, +datalass позже      | Без изменений сейчас         | ✅ Shape зафиксирована       | ⚠️ До ~100/час retry-policy хватает       |
+| Streaming: sync+SSE, WebSocket reserved (§2.11) | +0 сейчас                              | Sync: ~2-3 s TTFA, SSE: ~2 s TTFA, WS reserved | ⚠️ WS ждёт M5/M6      | ✅ Buffering SSE не врёт, контракт frozen   |

@@ -63,6 +63,43 @@
 - Устранение неполадок
 - Соображения безопасности (TLS/mTLS)
 
+### [minimax-provider.md](minimax-provider.md)
+**MiniMax LLM-провайдер (верхний уровень)**
+
+- Решение о подключении MiniMax как opt-in адаптера LLM (ADR-0002, Accepted)
+- Архитектурный разбор PR #907, as-is → target
+- Маппинг возможностей, registry/fallback/secrets
+- Фазный rollout M0–M6
+
+### [minimax-tts-architecture.md](minimax-tts-architecture.md)
+**MiniMax TTS-провайдер: архитектура интеграции**
+
+- TTS-контракт `BaseTTSProvider` / `MiniMaxTTSProvider`
+- Конфигурация через ROS-параметры и ENV
+- Цепочка: MiniMax API → `TTSAudio` → `tts_node` → `/voice/audio/speech`
+- Таблица маппинга `TTSSettings` → T2A v2 body
+- См. также [ros2-audio-contract-spec.md](ros2-audio-contract-spec.md) (dataflow, QoS, ответственность за конверсию/ресэмплинг)
+
+### [minimax-tts-integration-design.md](minimax-tts-integration-design.md)
+**MiniMax TTS: design-контракт интеграции (ADR-0004)**
+
+- Port/Adapter (`BaseTTSProvider`), `TTSProviderRegistry` + `TTSProviderFactory`
+- Retry-policy, circuit breaker, opt-in streaming
+- AudioStamped / `speech_meta` для streaming с метаданными
+- Trade-off матрица
+
+### [ros2-audio-contract-spec.md](ros2-audio-contract-spec.md)
+**ROS 2 Audio Contract — MiniMax TTS → Speaker** (спецификация, Proposed)
+
+- Frozen PCM-контракт v1: `int16 LE` mono 16 кГц, `audio_common_msgs/AudioData`
+- Карта топиков и QoS-профилей
+- **Таблица статичных vs варьирующихся от голоса параметров** (явно)
+- **Таблица ответственности за конверсию/ресэмплинг** (6 сценариев несовпадения формата)
+- Mermaid dataflow-диаграмма потока от API MiniMax до динамика
+- Sink-архитектура (direct sounddevice / sound_play / audio_play_node)
+- Требования к латентности (TTFA, jitter, CPU)
+- Сопутствующая Mermaid: [`../diagrams/minimax-tts-ros2-dataflow.mmd`](../diagrams/minimax-tts-ros2-dataflow.mmd)
+
 ## 🔗 Связанные документы
 
 - [Документация пакетов](../packages/)
