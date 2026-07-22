@@ -1,17 +1,4 @@
-"""TTS Provider registry + factory — DESIGN ONLY (t_8d714ff0).
-
-**STATUS: design-only stub. NOT imported by production code.**
-
-This file exists purely to document the proposed composition-root
-mechanism for picking TTS providers by name. It will move to
-``src/rob_box_llm/rob_box_llm/tts_provider_registry.py`` when ADR-0007 is
-accepted and t_25b8e221 lands.
-
-Why a separate registry module:
-    * Single source of truth for ``provider_name → builder`` mapping.
-    * Lets 3rd-party packages register their own providers without
-      touching ``rob_box_llm`` (callers add to a passed-in registry).
-    * Gives tests a way to inject mock providers under any name.
+"""TTS Provider registry + factory.
 
 Composition-root contract:
     * :func:`register_builtin_tts_providers` is the ONLY place built-in
@@ -22,9 +9,16 @@ Composition-root contract:
     * :meth:`TTSProviderFactory.create` is the only entry point for both
       ROS path (``tts_node._synthesize_and_play``) and CLI path (future).
 
+Why a separate registry module:
+    * Single source of truth for ``provider_name → builder`` mapping.
+    * Lets 3rd-party packages register their own providers without
+      touching ``rob_box_llm`` (callers add to a passed-in registry).
+    * Gives tests a way to inject mock providers under any name.
+
 See also:
     * ``docs/architecture/tts-extension-points.md`` — full design doc
     * ``docs/adr/0004-minimax-tts-integration-design.md`` §2.3, §2.8
+    * ``docs/adr/0008-tts-provider-extension-points.md`` — landed ADR
 """
 
 from __future__ import annotations
@@ -33,7 +27,6 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     # Forward references only — never imported at runtime.
-    # Production location after ADR-0007 Accepted: src/rob_box_llm/.
     from rob_box_llm.tts_provider_base import BaseTTSProvider, ProviderBuilder
 
 
@@ -61,13 +54,21 @@ class TTSProviderRegistry:
         self._builders[name] = builder
 
     def resolve(self, name: str) -> "ProviderBuilder":
-        """Return the builder for ``name``. Raises ``KeyError`` if missing."""
+        """Return the builder for ``name``. Raises ``KeyError` if missing."""
         if name not in self._builders:
             raise KeyError(
                 f"Unknown TTS provider: {name!r}. "
                 f"Available: {sorted(self._builders)}"
             )
         return self._builders[name]
+
+    def unregister(self, name: str) -> None:
+        """Remove a builder from the registry. Test-only helper.
+
+        Production code should never unregister — composition root is
+        supposed to be set once at process start.
+        """
+        self._builders.pop(name, None)
 
     def names(self) -> list[str]:
         """Return all registered provider names (sorted)."""

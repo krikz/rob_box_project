@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, AsyncIterator, Mapping, Optional, cast
 
 import httpx
@@ -41,6 +42,12 @@ from rob_box_llm.tts import (
     TTSFormat,
     TTSProvider,
     TTSSettings,
+)
+from rob_box_llm.tts_provider_base import (
+    BaseTTSProvider,
+    TTSCapabilities,
+    TTSHealth,
+    TTSVoice,
 )
 
 _log = logging.getLogger(__name__)
@@ -296,8 +303,86 @@ class _RedactGroupIdFilter(logging.Filter):
 _HTTPX_GROUP_ID_FILTER = _RedactGroupIdFilter()
 
 
-class MiniMaxTTSProvider(TTSProvider):
+# Built-in voice catalogue for ``list_voices()``.
+#
+# MiniMax T2A v2 does NOT expose a public ``/v1/voices`` endpoint as of
+# 2026-07-22 (ADR-0003 §4). Until that endpoint lands we serve a static
+# catalogue extracted from MiniMax's documented voice list. When the
+# endpoint becomes public this constant is replaced by an HTTP call.
+_BUILTIN_VOICES: tuple[TTSVoice, ...] = (
+    TTSVoice(
+        id="male-qn-qingse",
+        name="Qingse (male, Chinese-leaning)",
+        language="zh",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="female-shaonv",
+        name="Shaonv (female, youthful)",
+        language="zh",
+        gender="female",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Calm_Woman",
+        name="Calm Woman (female, English)",
+        language="en",
+        gender="female",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="English_PassionateWarrior",
+        name="English Passionate Warrior",
+        language="en",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Russian_Husky_Man",
+        name="Russian Husky Man",
+        language="ru",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Russian_Calm_Woman",
+        name="Russian Calm Woman",
+        language="ru",
+        gender="female",
+        supports_cloning=True,
+    ),
+)
+
+
+class MiniMaxTTSProvider(BaseTTSProvider):
     """MiniMax TTS via the T2A v2 HTTP endpoint.
+
+    Subclasses :class:`rob_box_llm.tts_provider_base.BaseTTSProvider`,
+    which itself IS-A :class:`rob_box_llm.tts.TTSProvider`. The 5
+    extension points are filled in as follows:
+
+    1. ``capabilities()``              → streaming=True (SSE), voice_cloning=True
+                                         (via ``timbre_weights``), audio_format_pcm=True,
+                                         audio_format_mp3=True; ssml=False,
+                                         pronunciation_dict=False (available via
+                                         ``settings.extra``, not first-class),
+                                         audio_format_ogg=False (API doesn't support
+                                         — falls back to MP3 in ``synthesize``),
+                                         custom_endpoint=False.
+    2. ``list_voices()``               → returns a static catalogue from
+                                         :data:`_BUILTIN_VOICES`. MiniMax's T2A v2
+                                         has no public ``/v1/voices`` endpoint as of
+                                         2026-07-22 (ADR-0003 §4).
+    3. ``healthcheck()``               → cheap pre-flight: validates auth
+                                         credentials are configured (no upstream call).
+                                         Heavy health is reserved for explicit
+                                         ``ping_minimax.py`` script.
+    4. ``_build_request_payload``      → pure mapping (TTSSettings → T2A v2 body);
+                                         override-friendly.
+    5. ``_http_client_factory``        → ``httpx.AsyncClient(timeout=self._timeout)``;
+                                         default is sufficient (no custom headers,
+                                         no proxy, no OAuth).
 
     Parameters
     ----------
@@ -322,6 +407,13 @@ class MiniMaxTTSProvider(TTSProvider):
         Inject a pre-built :class:`httpx.AsyncClient` (handy for tests with a
         ``MockTransport``). The provider does NOT close an injected client on
         ``aclose()`` — caller owns it.
+
+    Migration note (ADR-0008):
+        Before t_25b8e221 this class inherited :class:`TTSProvider` directly.
+        Migrating to :class:`BaseTTSProvider` is a single-line change to the
+        class declaration and adds 3 small override methods. The public
+        contract (synthesize / stream / aclose) is unchanged, so existing
+        ROS callers in ``tts_node`` keep working without modification.
     """
 
     DEFAULT_BASE_URL = "https://api.minimax.io"
@@ -340,8 +432,6 @@ class MiniMaxTTSProvider(TTSProvider):
         timeout: float = DEFAULT_TIMEOUT,
         client: Optional[httpx.AsyncClient] = None,
     ) -> None:
-        import os
-
         self.name = "minimax"
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key or os.getenv("MINIMAX_API_KEY") or ""
@@ -350,7 +440,7 @@ class MiniMaxTTSProvider(TTSProvider):
         self._default_model = default_model
         self._timeout = timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._client = client or self._http_client_factory()
         # httpx's default INFO-level access log echoes the full URL —
         # including the ``GroupId`` query parameter — to the ``httpx``
         # logger every request. Attach a filter to the originating logger so
@@ -364,6 +454,120 @@ class MiniMaxTTSProvider(TTSProvider):
             for item in _httpx_logger.filters
         ):
             _httpx_logger.addFilter(_HTTPX_GROUP_ID_FILTER)
+
+    # ------------------------------------------------------------------
+    # Extension points (BaseTTSProvider)
+    # ------------------------------------------------------------------
+
+    def capabilities(self) -> TTSCapabilities:
+        """Declare MiniMax T2A v2 capabilities.
+
+        Flags reflect the documented T2A v2 surface as of 2026-07-22:
+
+        * ``streaming``        — True; SSE under ``stream=true`` in T2A v2.
+        * ``voice_cloning``    — True; ``timbre_weights`` in
+          ``settings.extra`` accepts custom voice mixing.
+        * ``ssml``             — False; T2A v2 does not parse SSML.
+        * ``pronunciation_dict`` — False as a first-class field, but
+          accepted under ``settings.extra["pronunciation_dict"]`` (not
+          advertised as a capability because the integration is opt-in
+          via ``extra``).
+        * ``audio_format_pcm/mp3`` — True; both are documented.
+        * ``audio_format_ogg`` — False; T2A v2 rejects OGG and we
+          fall back to MP3 in :meth:`synthesize`.
+        * ``custom_endpoint``   — False; this provider is always
+          MiniMax-hosted.
+        """
+        return TTSCapabilities(
+            streaming=True,
+            voice_cloning=True,
+            ssml=False,
+            pronunciation_dict=False,
+            audio_format_pcm=True,
+            audio_format_mp3=True,
+            audio_format_ogg=False,
+            custom_endpoint=False,
+        )
+
+    async def list_voices(self) -> list[TTSVoice]:
+        """Return MiniMax's static voice catalogue.
+
+        The T2A v2 endpoint does not expose a public voices listing as of
+        2026-07-22, so we serve a snapshot of the documented catalogue.
+        See :data:`_BUILTIN_VOICES`. When MiniMax publishes a public
+        voices endpoint this becomes an HTTP call with TTL cache.
+        """
+        return list(_BUILTIN_VOICES)
+
+    async def healthcheck(self) -> TTSHealth:
+        """Cheap pre-flight: validate auth credentials are configured.
+
+        Does NOT issue a network call — that's reserved for the explicit
+        ``ping_minimax.py`` diagnostic script. We only fail-fast here
+        because callers use :meth:`healthcheck` to decide whether to
+        attempt synthesis, and a missing ``api_key`` / ``group_id`` is a
+        configuration error, not a transient one.
+        """
+        import time
+
+        start = time.perf_counter()
+        if not self._api_key:
+            return TTSHealth(
+                ok=False,
+                provider=self.name,
+                reason="MINIMAX_API_KEY not configured",
+            )
+        if not self._group_id:
+            return TTSHealth(
+                ok=False,
+                provider=self.name,
+                reason="MINIMAX_GROUP_ID not configured",
+            )
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        return TTSHealth(ok=True, provider=self.name, latency_ms=latency_ms)
+
+    def _http_client_factory(self) -> httpx.AsyncClient:
+        """Construct the HTTP client this provider uses.
+
+        Default behaviour from :class:`BaseTTSProvider` is sufficient for
+        MiniMax (no custom headers — Authorization + GroupId are added per
+        request by :meth:`_headers` / :meth:`_params`). We override only
+        to be explicit and document the intent.
+        """
+        return httpx.AsyncClient(timeout=self._timeout)
+
+    def _build_request_payload(
+        self,
+        text: str,
+        settings: TTSSettings,
+        voice_meta: TTSVoice | None,
+    ) -> dict[str, Any]:
+        """Pure mapping ``TTSSettings → MiniMax T2A v2 body``.
+
+        ``stream`` is fixed to ``False`` here (synchronous call); the
+        streaming variant lives in :meth:`stream` which builds its own
+        payload via the module-level :func:`_build_payload` (kept as a
+        helper for backward-compat with tests).
+
+        If ``voice_meta`` is provided AND ``settings.voice`` is ``None``,
+        the voice id is taken from ``voice_meta.id`` — this is how
+        callers that pre-resolve voices (e.g. via :meth:`list_voices`)
+        pass their choice without setting ``TTSSettings.voice``.
+        """
+        effective_settings = settings
+        if voice_meta is not None and not settings.voice:
+            # Build a shallow copy with voice overridden; we can't mutate
+            # the frozen TTSSettings dataclass directly.
+            import dataclasses
+
+            effective_settings = dataclasses.replace(settings, voice=voice_meta.id)
+        return _build_payload(
+            text,
+            effective_settings,
+            stream=False,
+            default_voice=self._default_voice,
+            default_model=self._default_model,
+        )
 
     # ------------------------------------------------------------------
     # HTTP plumbing

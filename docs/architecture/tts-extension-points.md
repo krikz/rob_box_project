@@ -3,14 +3,14 @@
 | Поле          | Значение                                                                  |
 |---------------|---------------------------------------------------------------------------|
 | Каталог       | `docs/architecture/`                                                      |
-| Статус        | Draft (design only, no implementation)                                    |
+| Статус        | **Accepted** (t_25b8e221 / ADR-0008 landed 2026-07-22)                    |
 | Дата          | 2026-07-21                                                                |
 | Автор         | architect (Hermes Agent)                                                  |
 | Контекст      | Kanban task `t_8d714ff0` (спроектировать структуру класса + точки расширения TTS) |
-| Родительские ADR | [ADR-0004 §2.1–2.4](../adr/0004-minimax-tts-integration-design.md) (port, registry, retry, CB), [ADR-0007](../adr/0007-minimax-tts-integration-final.md) §2.2 (итоговая архитектура), [ADR-0003](../adr/0003-minimax-tts-architecture.md) (текущая реализация MiniMax) |
+| Родительские ADR | [ADR-0004 §2.1–2.4](../adr/0004-minimax-tts-integration-design.md) (port, registry, retry, CB), [ADR-0007](../adr/0007-minimax-tts-integration-final.md) §2.2 (итоговая архитектура), [ADR-0003](../adr/0003-minimax-tts-architecture.md) (текущая реализация MiniMax), [ADR-0008](../adr/0008-tts-provider-extension-points.md) (landed implementation) |
 | AS-IS         | [docs/analysis/tts-current-interface.md](../analysis/tts-current-interface.md) |
 | Диаграммы     | [docs/diagrams/tts-extension-class.mmd](../diagrams/tts-extension-class.mmd), [docs/diagrams/tts-extension-sequence.mmd](../diagrams/tts-extension-sequence.mmd) |
-| Код-стабы     | [`src/rob_box_llm/rob_box_llm/tts_provider_base.py`](#stubs) (сигнатуры методов без реализации) |
+| Production-код | [`src/rob_box_llm/rob_box_llm/tts_provider_base.py`](../../src/rob_box_llm/rob_box_llm/tts_provider_base.py), [`src/rob_box_llm/rob_box_llm/tts_provider_registry.py`](../../src/rob_box_llm/rob_box_llm/tts_provider_registry.py) |
 
 ---
 
