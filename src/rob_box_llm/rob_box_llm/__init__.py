@@ -61,6 +61,18 @@ from rob_box_llm.tts import (
     TTSFormat,
     FakeTTSProvider,
 )
+from rob_box_llm.tts_provider_base import (
+    BaseTTSProvider,
+    ProviderBuilder,
+    TTSCapabilities,
+    TTSHealth,
+    TTSVoice,
+)
+from rob_box_llm.tts_provider_registry import (
+    TTSProviderFactory,
+    TTSProviderRegistry,
+    register_builtin_tts_providers,
+)
 from rob_box_llm import errors
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.fake import FakeCall, FakeLLMProvider
@@ -95,6 +107,15 @@ __all__ = [
     "TTSFormat",
     "MiniMaxTTSProvider",
     "FakeTTSProvider",
+    # TTS extension points (P0.5 / ADR-0008)
+    "BaseTTSProvider",
+    "TTSCapabilities",
+    "TTSVoice",
+    "TTSHealth",
+    "ProviderBuilder",
+    "TTSProviderRegistry",
+    "TTSProviderFactory",
+    "register_builtin_tts_providers",
     # Errors module (re-export for convenience)
     "errors",
 ]

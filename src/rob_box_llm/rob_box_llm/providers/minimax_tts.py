@@ -39,8 +39,13 @@ from rob_box_llm.tts import (
     TTSAudio,
     TTSChunk,
     TTSFormat,
-    TTSProvider,
     TTSSettings,
+)
+from rob_box_llm.tts_provider_base import (
+    BaseTTSProvider,
+    TTSCapabilities,
+    TTSHealth,
+    TTSVoice,
 )
 
 _log = logging.getLogger(__name__)
@@ -296,7 +301,7 @@ class _RedactGroupIdFilter(logging.Filter):
 _HTTPX_GROUP_ID_FILTER = _RedactGroupIdFilter()
 
 
-class MiniMaxTTSProvider(TTSProvider):
+class MiniMaxTTSProvider(BaseTTSProvider):
     """MiniMax TTS via the T2A v2 HTTP endpoint.
 
     Parameters
@@ -350,7 +355,10 @@ class MiniMaxTTSProvider(TTSProvider):
         self._default_model = default_model
         self._timeout = timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        # Route through the extension hook so subclasses can customise
+        # transport / TLS / OAuth headers — see BaseTTSProvider for the
+        # default ``httpx.AsyncClient(timeout=self._timeout)`` factory.
+        self._client = client or self._http_client_factory()
         # httpx's default INFO-level access log echoes the full URL —
         # including the ``GroupId`` query parameter — to the ``httpx``
         # logger every request. Attach a filter to the originating logger so
@@ -364,6 +372,161 @@ class MiniMaxTTSProvider(TTSProvider):
             for item in _httpx_logger.filters
         ):
             _httpx_logger.addFilter(_HTTPX_GROUP_ID_FILTER)
+
+    # ------------------------------------------------------------------
+    # Extension surface — overrides of BaseTTSProvider hooks
+    # ------------------------------------------------------------------
+
+    def capabilities(self) -> TTSCapabilities:
+        """Static capability declaration for MiniMax.
+
+        MiniMax's T2A v2 endpoint advertises:
+
+        * streaming (SSE under ``stream=true``)
+        * voice cloning (via ``timbre_weights`` in ``settings.extra``)
+        * audio_format_pcm + audio_format_mp3 (documented)
+        * audio_format_ogg (NOT documented; we transparently fall back
+          to MP3 — see :meth:`synthesize` / :meth:`stream`)
+
+        We do NOT claim ``ssml`` (MiniMax has no SSML parser) or
+        ``pronunciation_dict`` (the field exists but is not surfaced in
+        the public ``TTSSettings`` shape yet — leave the flag off until
+        the value-object adds the field, otherwise tests would silently
+        start using a capability the provider doesn't actually expose).
+        """
+        return TTSCapabilities(
+            streaming=True,
+            voice_cloning=True,
+            ssml=False,
+            pronunciation_dict=False,
+            audio_format_pcm=True,
+            audio_format_mp3=True,
+            audio_format_ogg=False,
+            custom_endpoint=False,
+        )
+
+    async def list_voices(self) -> list[TTSVoice]:
+        """Return the built-in voice catalogue.
+
+        The 6 voices documented as MiniMax's pre-built set (see the T2A
+        v2 reference) are returned without an upstream call — they're
+        stable catalogue entries, not per-account customisations. If
+        the product later needs account-specific voice lists, this is
+        the override point: add an HTTP call, keep the return type.
+        """
+        return [
+            TTSVoice(
+                id="male-qn-qingse",
+                name="Qn Qingse",
+                language="zh",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="female-shaonv",
+                name="Shaonv",
+                language="zh",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Calm_Woman",
+                name="Calm Woman",
+                language="en",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="English_PassionateWarrior",
+                name="English Passionate Warrior",
+                language="en",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_DeepVoice",
+                name="Russian Deep Voice",
+                language="ru",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_CalmWoman",
+                name="Russian Calm Woman",
+                language="ru",
+                gender="female",
+                supports_cloning=False,
+            ),
+        ]
+
+    async def healthcheck(self) -> TTSHealth:
+        """Cheap pre-flight: verify both credentials are configured.
+
+        Does NOT call upstream — that would defeat the point of a
+        pre-flight (and would burn quota). If credentials are missing
+        we return ``ok=False`` with a short reason; otherwise the
+        snapshot says ``ok=True`` and ``latency_ms=0.0`` because we
+        haven't actually done a network round-trip.
+
+        ``time.perf_counter`` is unused here because the check is
+        pure-validation; if a future implementation adds an HTTP probe,
+        it should wrap the call with ``perf_counter()`` and populate
+        ``latency_ms``.
+        """
+        if not self._api_key:
+            return TTSHealth(
+                ok=False, provider=self.name, reason="MINIMAX_API_KEY missing"
+            )
+        if not self._group_id:
+            return TTSHealth(
+                ok=False, provider=self.name, reason="MINIMAX_GROUP_ID missing"
+            )
+        return TTSHealth(ok=True, provider=self.name)
+
+    def _http_client_factory(self) -> httpx.AsyncClient:
+        """Build the default ``httpx.AsyncClient`` for MiniMax.
+
+        Overrides :meth:`BaseTTSProvider._http_client_factory` only to
+        document the intent; the implementation matches the base
+        default exactly. Subclasses (e.g. a China-endpoint variant)
+        can override to set ``base_url=`` and per-request headers.
+        """
+        return httpx.AsyncClient(timeout=self._timeout)
+
+    def _build_request_payload(
+        self,
+        text: str,
+        settings: TTSSettings,
+        voice_meta: TTSVoice | None,
+    ) -> dict[str, Any]:
+        """Pure mapping ``TTSSettings → MiniMax T2A v2 body``.
+
+        Subclasses / tests can override this hook to inspect a
+        ``voice_meta`` catalogue entry (e.g. to swap to a cloned voice
+        id when ``supports_cloning=True``). The default implementation
+        delegates to the module-level :func:`_build_payload` helper,
+        which is the same function used by the non-extended public
+        ``synthesize`` / ``stream`` paths — keeping a single mapping
+        function avoids the "two payload builders drift apart" bug.
+
+        ``voice_meta`` is currently advisory: the public
+        :meth:`synthesize` / :meth:`stream`` already resolve the
+        ``settings.voice`` themselves before calling the module-level
+        helper, so by the time we get here ``voice_meta`` is for
+        logging / future cloning logic, not for mutation.
+        """
+        # Note: callers in synthesize() / stream() need the non-stream
+        # / stream flag respectively. They don't pass it through this
+        # hook — that's why the public methods still call _build_payload
+        # directly. This hook exists for the registry / future-providers
+        # contract and for unit-testing the mapping in isolation.
+        return _build_payload(
+            text,
+            settings,
+            stream=False,  # overridden by synthesize / stream paths
+            default_voice=self._default_voice,
+            default_model=self._default_model,
+        )
 
     # ------------------------------------------------------------------
     # HTTP plumbing

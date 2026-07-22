@@ -3,7 +3,7 @@
 | Поле          | Значение                                                                  |
 |---------------|---------------------------------------------------------------------------|
 | Каталог       | `docs/architecture/`                                                      |
-| Статус        | Draft (design only, no implementation)                                    |
+| Статус        | **Accepted** — landed in t_8cbf9995 (see [ADR-0008](../adr/0008-tts-provider-extension-points-landed.md)) |
 | Дата          | 2026-07-21                                                                |
 | Автор         | architect (Hermes Agent)                                                  |
 | Контекст      | Kanban task `t_8d714ff0` (спроектировать структуру класса + точки расширения TTS) |
