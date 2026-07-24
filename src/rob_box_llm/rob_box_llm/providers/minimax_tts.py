@@ -23,15 +23,15 @@ the returned value so downstream decoders never dispatch on a false marker.
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
-from collections.abc import Awaitable, Callable
 import io
 import json
 import logging
 import os
 import random
-from typing import Any, AsyncIterator, Mapping, Optional, cast
 import wave
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
+from typing import Any, AsyncIterator, Mapping, Optional, cast
 
 import httpx
 
@@ -49,10 +49,10 @@ from rob_box_llm.tts import (
     TTSSettings,
 )
 from rob_box_llm.tts_provider_base import (
-    BaseTTSProvider,
     DEFAULT_MAX_CONNECTIONS,
     DEFAULT_MAX_CONTENT_SIZE,
     DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+    BaseTTSProvider,
     TTSCapabilities,
     TTSHealth,
     TTSVoice,
@@ -226,9 +226,7 @@ def _map_exception(
     if isinstance(exc, TTSError):
         return exc
     if isinstance(exc, httpx.TimeoutException):
-        return TTSTimeoutError(
-            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
-        )
+        return TTSTimeoutError(_redact_sensitive_text(str(exc), secrets=secrets), provider=provider)
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         body = _redact_sensitive_text(exc.response.text, secrets=secrets)
@@ -240,12 +238,8 @@ def _map_exception(
             return TTSBadRequestError(f"{status}: {body}", provider=provider)
         return TTSError(f"{status}: {body}", provider=provider)
     if isinstance(exc, httpx.HTTPError):
-        return TTSTimeoutError(
-            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
-        )
-    return TTSError(
-        _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
-    )
+        return TTSTimeoutError(_redact_sensitive_text(str(exc), secrets=secrets), provider=provider)
+    return TTSError(_redact_sensitive_text(str(exc), secrets=secrets), provider=provider)
 
 
 def _build_payload(
@@ -302,9 +296,7 @@ def _build_payload(
     audio_setting: dict[str, Any] = {
         "sample_rate": sample_rate,
         "bitrate": 128000,
-        "format": (
-            fmt.value if fmt != TTSFormat.OGG else "mp3"
-        ),  # OGG unsupported, fall back
+        "format": (fmt.value if fmt != TTSFormat.OGG else "mp3"),  # OGG unsupported, fall back
         "channel": 1,
     }
 
@@ -335,8 +327,7 @@ def _build_payload(
                 payload[key] = value
             else:
                 _log.warning(
-                    "minimax_tts: dropping unknown extra key %r "
-                    "(not in allowlist %s)",
+                    "minimax_tts: dropping unknown extra key %r " "(not in allowlist %s)",
                     key,
                     sorted(_ALLOWED_EXTRA_KEYS),
                 )
@@ -346,8 +337,7 @@ def _build_payload(
         overlap = set(settings.extra.keys()) & _RESERVED_PAYLOAD_KEYS
         if overlap:
             raise TTSBadRequestError(
-                f"settings.extra contains reserved top-level payload keys: "
-                f"{sorted(overlap)}",
+                f"settings.extra contains reserved top-level payload keys: " f"{sorted(overlap)}",
                 provider="minimax",
             )
     return payload
@@ -557,9 +547,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         sleep: _Sleep = asyncio.sleep,
     ) -> None:
         self.name = "minimax"
-        resolved_base_url = (
-            base_url or os.getenv("MINIMAX_TTS_BASE_URL") or self.DEFAULT_BASE_URL
-        )
+        resolved_base_url = base_url or os.getenv("MINIMAX_TTS_BASE_URL") or self.DEFAULT_BASE_URL
         self._base_url = resolved_base_url.rstrip("/")
         self._api_key = api_key or os.getenv("MINIMAX_API_KEY") or ""
         self._group_id = group_id or os.getenv("MINIMAX_GROUP_ID") or ""
@@ -599,10 +587,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         # logger at INFO; relying on logger level alone would be undone by
         # normal application logging configuration.
         _httpx_logger = logging.getLogger("httpx")
-        if not any(
-            isinstance(item, _RedactGroupIdFilter)
-            for item in _httpx_logger.filters
-        ):
+        if not any(isinstance(item, _RedactGroupIdFilter) for item in _httpx_logger.filters):
             _httpx_logger.addFilter(_HTTPX_GROUP_ID_FILTER)
 
     # ------------------------------------------------------------------
@@ -706,13 +691,9 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         ``latency_ms``.
         """
         if not self._api_key:
-            return TTSHealth(
-                ok=False, provider=self.name, reason="MINIMAX_API_KEY missing"
-            )
+            return TTSHealth(ok=False, provider=self.name, reason="MINIMAX_API_KEY missing")
         if not self._group_id:
-            return TTSHealth(
-                ok=False, provider=self.name, reason="MINIMAX_GROUP_ID missing"
-            )
+            return TTSHealth(ok=False, provider=self.name, reason="MINIMAX_GROUP_ID missing")
         return TTSHealth(ok=True, provider=self.name)
 
     def _http_client_factory(self) -> httpx.AsyncClient:
@@ -848,9 +829,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 body_bytes[:200].decode("utf-8", errors="replace"),
                 secrets=(self._api_key, self._group_id),
             )
-            raise TTSError(
-                f"Non-JSON response: {response_text}", provider=self.name
-            ) from exc
+            raise TTSError(f"Non-JSON response: {response_text}", provider=self.name) from exc
 
         # MiniMax's error envelope: base_resp.status_code != 0 → API-level error.
         base_resp = data.get("base_resp") or {}
@@ -893,13 +872,9 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         if not audio_hex:
             raise TTSError("minimax response missing 'data.audio'", provider=self.name)
         try:
-            return bytes.fromhex(audio_hex), int(
-                payload.get("audio_sample_rate", 32000)
-            )
+            return bytes.fromhex(audio_hex), int(payload.get("audio_sample_rate", 32000))
         except ValueError as exc:
-            raise TTSError(
-                f"minimax returned non-hex audio payload: {exc}", provider=self.name
-            ) from exc
+            raise TTSError(f"minimax returned non-hex audio payload: {exc}", provider=self.name) from exc
 
     # ------------------------------------------------------------------
     # Public API
@@ -935,9 +910,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             payload["voice_setting"]["voice_id"],
             actual_format.value,
         )
-        return TTSAudio(
-            samples=samples, sample_rate=sample_rate, format=actual_format, raw=data
-        )
+        return TTSAudio(samples=samples, sample_rate=sample_rate, format=actual_format, raw=data)
 
     async def synthesize_bytes(
         self,
@@ -952,10 +925,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         options share both an in-memory LRU entry and an in-flight request.
         """
         format_value = opts.pop("format", "pcm_24000")
-        if (
-            not isinstance(format_value, str)
-            or format_value not in _SUPPORTED_BYTE_FORMATS
-        ):
+        if not isinstance(format_value, str) or format_value not in _SUPPORTED_BYTE_FORMATS:
             raise TTSBadRequestError(
                 "format must be one of: pcm_22050, pcm_24000, wav",
                 provider=self.name,
@@ -972,9 +942,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 return cached
             task = self._inflight.get(cache_key)
             if task is None:
-                task = asyncio.create_task(
-                    self._synthesize_bytes_uncached(text, voice, format_value, opts)
-                )
+                task = asyncio.create_task(self._synthesize_bytes_uncached(text, voice, format_value, opts))
                 self._inflight[cache_key] = task
 
         try:
@@ -1075,9 +1043,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             emotion=self._optional_str(typed_values["emotion"], name="emotion"),
             sample_rate=sample_rate,
             format=output_format,
-            text_normalization=self._optional_bool(
-                typed_values["text_normalization"], name="text_normalization"
-            ),
+            text_normalization=self._optional_bool(typed_values["text_normalization"], name="text_normalization"),
             extra=extra,
         )
 
@@ -1087,9 +1053,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     audio = await self.synthesize(text, settings=settings)
                 if format_value == "wav" and not audio.samples.startswith(b"RIFF"):
                     try:
-                        return _pcm_to_wav(
-                            audio.samples, sample_rate=audio.sample_rate
-                        )
+                        return _pcm_to_wav(audio.samples, sample_rate=audio.sample_rate)
                     except ValueError as exc:
                         raise TTSError(str(exc), provider=self.name) from exc
                 return audio.samples
@@ -1225,9 +1189,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                         try:
                             evt = json.loads(line)
                         except json.JSONDecodeError:
-                            diagnostic = _redact_sensitive_text(
-                                line[:80], secrets=(self._api_key, self._group_id)
-                            )
+                            diagnostic = _redact_sensitive_text(line[:80], secrets=(self._api_key, self._group_id))
                             _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
                             continue
                         base_resp = evt.get("base_resp") or {}
@@ -1261,9 +1223,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                                     f"minimax returned non-hex audio payload: {exc}",
                                     provider=self.name,
                                 ) from exc
-                            collected_sr = int(
-                                payload_data.get("audio_sample_rate", collected_sr or 32000)
-                            )
+                            collected_sr = int(payload_data.get("audio_sample_rate", collected_sr or 32000))
                             yielded_audio = True
                             actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
                             yield TTSChunk(
@@ -1301,9 +1261,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
 
         if not yielded_audio:
             # No audio delivered → pre-yield "no data" failure: raise.
-            raise TTSError(
-                "minimax stream returned no audio chunks", provider=self.name
-            )
+            raise TTSError("minimax stream returned no audio chunks", provider=self.name)
 
         # Empty terminal chunk makes end-of-stream unambiguous without adding
         # latency to the audio frames above.

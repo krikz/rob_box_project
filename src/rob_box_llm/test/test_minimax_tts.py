@@ -73,6 +73,12 @@ import pytest
 import respx
 from faker import Faker
 
+from conftest import (
+    FAKE_API_KEY,
+    FAKE_GROUP_ID,
+    MINIMAX_BASE_URL,
+    MINIMAX_T2A_PATH,
+)
 from rob_box_llm.errors import (
     TTSAuthError,
     TTSBadRequestError,
@@ -82,14 +88,6 @@ from rob_box_llm.errors import (
 )
 from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider
 from rob_box_llm.tts import TTSAudio, TTSFormat, TTSSettings
-
-from conftest import (
-    FAKE_API_KEY,
-    FAKE_GROUP_ID,
-    MINIMAX_BASE_URL,
-    MINIMAX_T2A_PATH,
-)
-
 
 # ----------------------------------------------------------------------- #
 # 0. Original feature — format-specific round-trip                        #
@@ -216,9 +214,7 @@ async def test_synthesize_formats(
     assert result.raw["data"]["audio_length"] == len(audio_bytes)
     assert route.calls.last.response.status_code == 200
     assert route.calls.last.response.headers["Content-Type"] == content_type
-    assert route.calls.last.response.headers["Content-Length"] == str(
-        len(response_content)
-    )
+    assert route.calls.last.response.headers["Content-Length"] == str(len(response_content))
 
 
 # ----------------------------------------------------------------------- #
@@ -312,9 +308,7 @@ class TestVoiceDiversity:
         voice_id: str,
     ) -> None:
         route = _register_ok_route(mock_minimax_http)
-        await minimax_provider.synthesize(
-            sample_text, settings=TTSSettings(voice=voice_id)
-        )
+        await minimax_provider.synthesize(sample_text, settings=TTSSettings(voice=voice_id))
 
         assert route.called
         body = json.loads(route.calls.last.request.content)
@@ -334,12 +328,8 @@ class TestVoiceDiversity:
         ``voice_id`` field between the two calls.
         """
         route = _register_ok_route(mock_minimax_http)
-        await minimax_provider.synthesize(
-            sample_text, settings=TTSSettings(voice="Calm_Woman")
-        )
-        await minimax_provider.synthesize(
-            sample_text, settings=TTSSettings(voice="Russian_Husky_Man")
-        )
+        await minimax_provider.synthesize(sample_text, settings=TTSSettings(voice="Calm_Woman"))
+        await minimax_provider.synthesize(sample_text, settings=TTSSettings(voice="Russian_Husky_Man"))
 
         assert route.call_count == 2
         first_body = json.loads(route.calls[0].request.content)
@@ -469,12 +459,8 @@ class TestNoInMemoryCache:
         distinct requests and must hit the wire twice.
         """
         route = _register_ok_route(mock_minimax_http)
-        await minimax_provider.synthesize(
-            sample_text, settings=TTSSettings(voice="Calm_Woman")
-        )
-        await minimax_provider.synthesize(
-            sample_text, settings=TTSSettings(voice="Russian_Husky_Man")
-        )
+        await minimax_provider.synthesize(sample_text, settings=TTSSettings(voice="Calm_Woman"))
+        await minimax_provider.synthesize(sample_text, settings=TTSSettings(voice="Russian_Husky_Man"))
 
         assert route.call_count == 2
 
@@ -522,9 +508,7 @@ class TestNoRetryOnRetryableStatus:
         mock_minimax_http.post(
             f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
             params={"GroupId": FAKE_GROUP_ID},
-        ).mock(
-            return_value=httpx.Response(status_code, text="transient error")
-        )
+        ).mock(return_value=httpx.Response(status_code, text="transient error"))
 
         with pytest.raises(TTSError):
             await minimax_provider.synthesize(sample_text)
@@ -613,11 +597,7 @@ class TestNoProviderSideRateLimit:
         mock_minimax_http.post(
             f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
             params={"GroupId": FAKE_GROUP_ID},
-        ).mock(
-            return_value=httpx.Response(
-                200, json=_ok_envelope(b"\x00\x01" * 4)
-            )
-        )
+        ).mock(return_value=httpx.Response(200, json=_ok_envelope(b"\x00\x01" * 4)))
 
         # Issue 10 calls concurrently. With no throttling, all 10
         # should complete. With a Semaphore(1), only 1 would be
@@ -625,12 +605,7 @@ class TestNoProviderSideRateLimit:
         # with a strict concurrency cap (e.g. 2) and a slow stub it
         # might not. We use a fast stub so the test verifies the
         # OBSERVABLE absence of sequential waiting.
-        results = await asyncio.gather(
-            *[
-                minimax_provider.synthesize(f"text-{i}")
-                for i in range(10)
-            ]
-        )
+        results = await asyncio.gather(*[minimax_provider.synthesize(f"text-{i}") for i in range(10)])
 
         assert len(results) == 10
         assert all(isinstance(r, TTSAudio) for r in results)
@@ -667,7 +642,7 @@ class TestTimeoutMapped:
         minimax_provider: MiniMaxTTSProvider,
         mock_minimax_http: respx.Router,
         sample_text: str,
-        side_effect: BaseException,
+        side_effect: Exception,
     ) -> None:
         mock_minimax_http.post(
             f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
@@ -781,9 +756,7 @@ class TestHttpStatusShortCircuit:
         mock_minimax_http.post(
             f"{MINIMAX_BASE_URL}{MINIMAX_T2A_PATH}",
             params={"GroupId": FAKE_GROUP_ID},
-        ).mock(
-            return_value=httpx.Response(status_code, text="rejected")
-        )
+        ).mock(return_value=httpx.Response(status_code, text="rejected"))
 
         with pytest.raises(expected_exc):
             await minimax_provider.synthesize(sample_text)

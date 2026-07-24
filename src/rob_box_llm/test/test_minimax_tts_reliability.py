@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-from typing import Any, cast
 import wave
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -81,9 +81,7 @@ async def test_wav_format_wraps_raw_pcm_in_riff_container() -> None:
             },
         )
 
-    provider = MiniMaxTTSProvider(
-        api_key="key", group_id="group", client=_client(handler)
-    )
+    provider = MiniMaxTTSProvider(api_key="key", group_id="group", client=_client(handler))
 
     result = await provider.synthesize_bytes("hello", format="wav")
 
@@ -162,9 +160,7 @@ async def test_clear_cache_during_inflight_prevents_stale_repopulation(
         await release.wait()
         return httpx.Response(200, json=ok_envelope)
 
-    provider = MiniMaxTTSProvider(
-        api_key="key", group_id="group", client=_client(handler)
-    )
+    provider = MiniMaxTTSProvider(api_key="key", group_id="group", client=_client(handler))
     first = asyncio.create_task(provider.synthesize_bytes("hello"))
     await request_started.wait()
     await provider.clear_cache()
