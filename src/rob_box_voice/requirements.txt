@@ -3,7 +3,7 @@
 # === Аудио ===
 pyaudio>=0.2.14
 sounddevice>=0.5.5
-numpy>=2.5.0
+numpy>=2.5.1
 pydub>=0.25.1  # MP3 processing для sound effects
 
 # === USB интерфейс для ReSpeaker ===
@@ -20,8 +20,8 @@ openai-whisper>=20250625
 faster-whisper>=1.2.1  # Faster inference via CTranslate2
 
 # Yandex Cloud STT (fallback, online)
-grpcio>=1.81.1
-grpcio-tools>=1.81.1
+grpcio>=1.82.0
+grpcio-tools>=1.82.0
 protobuf>=7.35.1
 
 # === TTS (Text-to-Speech) ===
