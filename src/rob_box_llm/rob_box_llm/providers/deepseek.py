@@ -370,7 +370,13 @@ class _OpenAICompatibleProvider(LLMProvider):
                 return
 
     async def aclose(self) -> None:
-        await self._client.close()
+        # Idempotent — safe to call multiple times from ``finally`` blocks.
+        # The underlying AsyncOpenAI client exposes ``is_closed``; without
+        # the guard, a second ``aclose()`` after the client has already been
+        # closed raises RuntimeError, which masks the real exception in
+        # teardown paths.
+        if not self._client.is_closed:
+            await self._client.close()
 
 
 def _safe_json(raw: Any) -> dict[str, Any]:
