@@ -32,6 +32,7 @@ Design constraints (see ``architecture/minimax-provider.md`` and
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from typing import Any, Iterable, Mapping, Optional
@@ -314,14 +315,7 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         merged_extra: dict[str, Any] = dict(settings.extra)
         if "thinking" not in merged_extra:
             merged_extra["thinking"] = dict(self._thinking)
-        return LLMSettings(
-            model=settings.model,
-            temperature=settings.temperature,
-            max_tokens=settings.max_tokens,
-            stop=settings.stop,
-            tool_choice=settings.tool_choice,
-            extra=merged_extra,
-        )
+        return dataclasses.replace(settings, extra=merged_extra)
 
 
 __all__ = [
