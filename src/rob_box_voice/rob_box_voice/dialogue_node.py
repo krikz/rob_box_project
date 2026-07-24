@@ -12,6 +12,7 @@ Publishes:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import re
@@ -22,6 +23,8 @@ from typing import Any, Dict, List, Optional
 
 import rclpy
 import yaml
+# (constants moved to block below the imports; see
+# "Concurrency primitives" right after the import block.)
 from agents import Agent, Runner, function_tool
 from agents.exceptions import MaxTurnsExceeded
 from agents.items import ToolCallItem
@@ -70,6 +73,30 @@ try:
     _SKILLS_AVAILABLE = True
 except ImportError:
     _SKILLS_AVAILABLE = False  # skills module not yet installed
+
+
+# ── Concurrency primitives ──────────────────────────────────────────────────
+# Bounded concurrency for the asyncio loop driver. PR #907 review
+# (BLK-9 / thread-audit §Finding 2) flagged the previous bare
+# `threading.Thread(target=..., daemon=True).start()` for the loop driver.
+# We replace it with a module-level bounded ``ThreadPoolExecutor`` whose
+# single worker hosts ``loop.run_forever()``; the Future is stored on
+# the node so a controlled ``shutdown_asyncio_loop()`` can ``.result()``
+# (await completion) instead of relying on the daemon flag to silently
+# kill the thread at process exit.
+#
+# Sizing rationale (``ASYNCIO_LOOP_DRIVER_MAX_WORKERS = 1``):
+#   * The loop driver is a single long-running coroutine scheduler.
+#     Adding more workers would just create idle threads that never
+#     accept work — the loop is single-threaded by asyncio contract.
+#   * Concurrency on top of the loop is provided by asyncio task
+#     scheduling (single-flight via ``_cancel_run``) and by
+#     ``loop.run_in_executor(...)`` for MCP I/O, which uses its own
+#     bounded pool. The driver itself must remain size-1.
+ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
+ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
+ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
+
 
 # ── Feature flag — set USE_SKILLS=false to fall back to flat tool mode ────────
 USE_SKILLS: bool = os.getenv("USE_SKILLS", "true").lower() == "true"
@@ -148,9 +175,23 @@ class DialogueNode(Node):
         self._conversation: List[dict] = []
         self._conv_lock = threading.Lock()
 
-        # ── asyncio loop in daemon thread ────────────────────────────
+        # ── asyncio loop in bounded executor (BLK-9 follow-up) ─────
+        # The asyncio loop is hosted on a single worker inside a module-level
+        # bounded ``ThreadPoolExecutor`` (``ASYNCIO_LOOP_DRIVER_MAX_WORKERS = 1``).
+        # This replaces the previous bare ``threading.Thread(target=...,
+        # daemon=True).start()`` — see ``Concurrency primitives`` above.
+        # The Future is retained on the node so ``shutdown_asyncio_loop()``
+        # can await the worker (bounded wait, with timeout) instead of
+        # relying on the daemon flag to silently kill the thread at process
+        # exit.
         self._loop = asyncio.new_event_loop()
-        threading.Thread(target=self._loop.run_forever, daemon=True).start()
+        self._asyncio_loop_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=ASYNCIO_LOOP_DRIVER_MAX_WORKERS,
+            thread_name_prefix=ASYNCIO_LOOP_DRIVER_NAME_PREFIX,
+        )
+        self._asyncio_loop_future: Optional[concurrent.futures.Future] = (
+            self._asyncio_loop_executor.submit(self._loop.run_forever)
+        )
 
         # ── Current agent task (cancelled on barge-in) ──────────────
         self._run_task: Optional[asyncio.Task] = None
@@ -2122,6 +2163,58 @@ class DialogueNode(Node):
         msg.data = self.dialogue_manager.state.value
         self._state_pub.publish(msg)
 
+    def shutdown_asyncio_loop(self, wait: bool = True) -> None:
+        """Stop the asyncio loop and release its bounded executor worker.
+
+        Replaces the previous reliance on ``daemon=True`` to silently kill
+        the loop driver at process exit. Idempotent.
+
+        Steps:
+          1. ``loop.call_soon_threadsafe(loop.stop)`` — asks the event loop
+             to break out of ``run_forever()`` at the next scheduling tick.
+          2. ``future.result(timeout=ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S)``
+             — blocks this thread until the worker confirms exit. With
+             ``wait=False`` we skip the join and cancel any still-pending
+             work so we don't hang ROS teardown.
+          3. ``executor.shutdown(wait=wait)`` — releases the OS thread.
+        """
+        future = getattr(self, "_asyncio_loop_future", None)
+        executor = getattr(self, "_asyncio_loop_executor", None)
+        loop = getattr(self, "_loop", None)
+
+        if future is None or executor is None or loop is None:
+            return
+        if future.done():
+            # Already exited (either by a previous call or by the loop being
+            # stopped elsewhere); just release the executor.
+            executor.shutdown(wait=False)
+            return
+
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError as exc:
+            # Loop may already be closed if a prior shutdown ran partially.
+            self.get_logger().warn(f"asyncio loop stop dispatch failed: {exc}")
+
+        try:
+            future.result(timeout=ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S)
+        except concurrent.futures.TimeoutError:
+            self.get_logger().warn(
+                f"asyncio loop driver did not stop within "
+                f"{ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S:.1f}s; cancelling"
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive: never raise from shutdown
+            self.get_logger().warn(f"asyncio loop driver join raised: {exc}")
+        finally:
+            executor.shutdown(wait=False)
+
+    def destroy_node(self) -> None:
+        """ROS2 hook — ensure the asyncio loop executor is released."""
+        try:
+            self.shutdown_asyncio_loop(wait=False)
+        finally:
+            super().destroy_node()
+
 
 def main(args=None) -> None:
     rclpy.init(args=args)
@@ -2131,6 +2224,15 @@ def main(args=None) -> None:
     try:
         executor.spin()
     except KeyboardInterrupt:
+        pass
+    # Explicitly drain the asyncio loop driver before rclpy tears the
+    # process down. ``destroy_node()`` already invokes this, but we also
+    # call it here for the path where shutdown is triggered by SIGINT
+    # caught at the executor level (KeyboardInterrupt) without the node
+    # going through its destroy hook cleanly.
+    try:
+        node.shutdown_asyncio_loop(wait=False)
+    except Exception:  # noqa: BLE001 — main() must not raise during teardown
         pass
     rclpy.shutdown()
 
