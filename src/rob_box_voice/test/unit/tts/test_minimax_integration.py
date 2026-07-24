@@ -19,6 +19,8 @@ import asyncio
 import io
 import struct
 import sys
+import threading
+import time
 import wave
 from unittest.mock import MagicMock
 
@@ -104,6 +106,7 @@ def _make_fake_node():
     node.get_logger = MagicMock()
     node._decoded_audio_to_float32 = tts_node.TTSNode._decoded_audio_to_float32
     node._decode_minimax_audio = tts_node.TTSNode._decode_minimax_audio.__get__(node, type(node))
+    node._ensure_minimax_provider = tts_node.TTSNode._ensure_minimax_provider.__get__(node, type(node))
     node._prepare_audio_for_topic = tts_node.TTSNode._prepare_audio_for_topic.__get__(node, type(node))
     return node
 
@@ -547,6 +550,112 @@ class TestParseFormat:
 
 class TestProviderCleanup:
     def test_close_minimax_provider_closes_client_and_clears_reference(self):
+        node = _make_fake_node()
+
+        class Provider:
+            closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        provider = Provider()
+        node.minimax_provider = provider
+
+        tts_node.TTSNode.close_minimax_provider(node)
+
+        assert provider.closed is True
+        assert node.minimax_provider is None
+
+
+class TestProviderLifecycleSynchronization:
+    def test_concurrent_lazy_init_constructs_one_provider(self, monkeypatch):
+        node = _make_fake_node()
+        node.minimax_provider = None
+        constructed = []
+
+        class Provider:
+            pass
+
+        def factory(**kwargs):
+            # Make the race window deterministic: the second caller must wait
+            # for the first caller's constructor before it can inspect state.
+            time.sleep(0.01)
+            provider = Provider()
+            constructed.append(provider)
+            return provider
+
+        monkeypatch.setattr(tts_node, "MiniMaxTTSProvider", factory)
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(tts_node.TTSNode._ensure_minimax_provider(node))
+            except Exception as exc:  # pragma: no cover - assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        assert len(constructed) == 1
+        assert results == [constructed[0]] * len(results)
+        assert node._minimax_provider_initialized is True
+
+    def test_shutdown_skips_uninitialized_provider(self):
+        node = _make_fake_node()
+        node.minimax_provider = None
+
+        tts_node.TTSNode.close_minimax_provider(node)
+
+        assert node._minimax_shutdown_requested is True
+        assert node.minimax_provider is None
+
+    def test_shutdown_waits_for_construction_then_closes_provider(self, monkeypatch):
+        node = _make_fake_node()
+        node.minimax_provider = None
+        constructor_started = threading.Event()
+        allow_constructor_to_finish = threading.Event()
+
+        class Provider:
+            closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        provider = Provider()
+
+        def factory(**kwargs):
+            constructor_started.set()
+            assert allow_constructor_to_finish.wait(timeout=1.0)
+            return provider
+
+        monkeypatch.setattr(tts_node, "MiniMaxTTSProvider", factory)
+        init_thread = threading.Thread(
+            target=lambda: tts_node.TTSNode._ensure_minimax_provider(node)
+        )
+        init_thread.start()
+        assert constructor_started.wait(timeout=1.0)
+
+        close_thread = threading.Thread(
+            target=lambda: tts_node.TTSNode.close_minimax_provider(node)
+        )
+        close_thread.start()
+        allow_constructor_to_finish.set()
+        init_thread.join(timeout=1.0)
+        close_thread.join(timeout=1.0)
+
+        assert not init_thread.is_alive()
+        assert not close_thread.is_alive()
+        assert provider.closed is True
+        assert node.minimax_provider is None
+        assert node._minimax_provider_initialized is False
+
+    def test_shutdown_closes_initialized_provider_even_when_flag_missing(self):
+        """Compatibility with lightweight test doubles made before the flag."""
         node = _make_fake_node()
 
         class Provider:
