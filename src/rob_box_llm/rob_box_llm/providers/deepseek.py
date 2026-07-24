@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any, AsyncIterator, Iterable, Mapping, Optional
+from typing import Any, AsyncIterator, Iterable, Mapping, Optional, Union
 
 from openai import (
     APIConnectionError,
@@ -185,7 +185,13 @@ class _OpenAICompatibleProvider(LLMProvider):
         base_url: str,
         default_model: str,
         api_key: Optional[str] = None,
-        timeout: float = 30.0,
+        # Accept either a bare ``float`` (all phases) or a per-phase
+        # :class:`httpx.Timeout` — see ``MiniMaxProvider.DEFAULT_TIMEOUT``
+        # for the BLK-5 rationale (per-phase defaults are needed so a
+        # DNS/TLS hang on the connect phase doesn't burn the whole
+        # 30 s budget). OpenAI's ``AsyncOpenAI(timeout=...)`` accepts
+        # both shapes natively, so we pass through unchanged.
+        timeout: Union[float, "httpx.Timeout", None] = 30.0,
         client: Optional[AsyncOpenAI] = None,
     ) -> None:
         self.name = name

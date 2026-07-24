@@ -241,14 +241,28 @@ class BaseTTSProvider(TTSProvider):
     def _http_client_factory(self) -> "httpx.AsyncClient":
         """Construct the HTTP client this provider uses.
 
-        Default = ``httpx.AsyncClient(timeout=self._timeout)``. Override
+        Default = ``httpx.AsyncClient(timeout=<self._timeout>)``. Override
         for OAuth (Google), custom headers (ElevenLabs), proxy / TLS, etc.
         The provider DOES NOT own the returned client — caller (or
         :meth:`aclose`) handles teardown.
+
+        ``self._timeout`` may be a plain ``float`` (applied to every
+        phase — httpx semantics) or a per-phase :class:`httpx.Timeout`.
+        The BLK-5 fix in :mod:`rob_box_llm.providers.minimax_tts` sets
+        a per-phase value by default so a slow DNS / TLS handshake on
+        the connect phase no longer burns the whole 30 s budget. This
+        base method is shape-agnostic: it passes the attribute straight
+        through to ``httpx.AsyncClient`` and only fills in a per-phase
+        default if the subclass never set ``self._timeout`` at all.
         """
         import httpx  # local import keeps tts.py import-cheap
 
-        timeout: float = getattr(self, "_timeout", 30.0)
+        timeout = getattr(self, "_timeout", None)
+        if timeout is None:
+            # Per-phase default applied only when a subclass skipped
+            # ``self._timeout`` entirely. Matches the MiniMax LLM
+            # provider's DEFAULT_TIMEOUT (see providers/minimax.py).
+            timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
         return httpx.AsyncClient(timeout=timeout)
 
 

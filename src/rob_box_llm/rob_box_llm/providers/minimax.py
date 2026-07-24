@@ -34,8 +34,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional, Union
 
+import httpx
 from openai import AsyncOpenAI
 
 from rob_box_llm.errors import (
@@ -78,6 +79,52 @@ MINIMAX_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
 #: Pushed through ``settings.extra`` so callers can override it for agentic /
 #: tool-call scenarios where reasoning is desirable.
 DEFAULT_THINKING_POLICY: dict[str, str] = {"type": "disabled"}
+
+#: Per-phase HTTP timeout used by the MiniMax LLM client.
+#:
+#: A bare ``float`` would mean "use this many seconds for every phase
+#: (connect/read/write/pool)" — so a DNS or TLS hang on the connect phase
+#: would block for the full 30 s, which is the symptom BLK-5 set out to
+#: fix. We split the budget:
+#:
+#: * ``connect=5.0``  — TCP+TLS handshake; a slow connect usually means
+#:   the host is unreachable and the user should hear about it fast.
+#: * ``read=20.0``    — covers LLM streaming; MiniMax-M3 long-context
+#:   replies can take ~10–15 s and we want headroom.
+#: * ``write=10.0``   — request body upload; image frames are 10 MB but
+#:   the wire is usually fast, so 10 s is comfortable.
+#: * ``pool=5.0``     — waiting for a free connection from the SDK's
+#:   internal pool; should be near-instant.
+#:
+#: Pass an :class:`httpx.Timeout` (or a plain float, which is treated as
+#: a single "all phases" value) to override per-instance.
+DEFAULT_TIMEOUT: httpx.Timeout = httpx.Timeout(
+    connect=5.0, read=20.0, write=10.0, pool=5.0
+)
+
+
+def _coerce_timeout(value: Union[float, httpx.Timeout, None]) -> httpx.Timeout:
+    """Normalise the ``timeout`` constructor argument to :class:`httpx.Timeout`.
+
+    Accepts:
+
+    * ``None``  — falls back to :data:`DEFAULT_TIMEOUT`.
+    * ``float`` — applied to every phase (httpx semantics). Useful for
+      quick overrides like ``timeout=60.0`` in tests.
+    * :class:`httpx.Timeout` — used as-is.
+
+    The OpenAI SDK accepts ``httpx.Timeout`` natively for its ``timeout=``
+    kwarg, so the returned value passes straight through to
+    ``AsyncOpenAI(timeout=...)`` without further conversion.
+    """
+    if value is None:
+        return DEFAULT_TIMEOUT
+    if isinstance(value, httpx.Timeout):
+        return value
+    # Numeric (int/float). httpx already normalises a single number to
+    # "all phases", so we just construct the Timeout explicitly to keep
+    # the type predictable.
+    return httpx.Timeout(timeout=float(value))
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +266,7 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         base_url: str = DEFAULT_BASE_URL,
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
-        timeout: float = 30.0,
+        timeout: Union[float, httpx.Timeout, None] = DEFAULT_TIMEOUT,
         client: Optional[AsyncOpenAI] = None,
         # Extra knobs the composition root may want to bind without subclassing:
         # Defaults to ``DEFAULT_THINKING_POLICY`` ("disabled") for latency-
@@ -227,12 +274,18 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         # out of the default; pass your own mapping to override.
         thinking: Optional[Mapping[str, str]] = DEFAULT_THINKING_POLICY,
     ) -> None:
+        # Normalise to ``httpx.Timeout`` so the OpenAI SDK gets a per-phase
+        # configuration by default (see ``_coerce_timeout`` and the BLK-5
+        # review note for the rationale). A bare ``float`` keeps working as
+        # "all phases" — older call-sites that pass ``timeout=30.0`` do not
+        # need to change.
+        resolved_timeout = _coerce_timeout(timeout)
         super().__init__(
             name="minimax",
             base_url=base_url,
             default_model=model,
             api_key=api_key,
-            timeout=timeout,
+            timeout=resolved_timeout,
             client=client,
         )
         # The thinking policy is applied via ``settings.extra`` for each call;
@@ -328,5 +381,6 @@ __all__ = [
     "MiniMaxProvider",
     "MINIMAX_MAX_IMAGE_BYTES",
     "DEFAULT_THINKING_POLICY",
+    "DEFAULT_TIMEOUT",
     "MiniMaxRedactedLogFilter",
 ]

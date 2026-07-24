@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, AsyncIterator, Mapping, Optional, cast
+from typing import Any, AsyncIterator, Mapping, Optional, Union, cast
 
 import httpx
 
@@ -402,7 +402,14 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         ``"speech-02-hd"`` — high-quality speech, supports Russian + emotion.
         Use ``"speech-02-turbo"`` for lower latency.
     timeout:
-        httpx timeout in seconds.
+        HTTP timeout applied to the synthesise / stream POSTs.
+
+        Accepts a plain ``float`` (applied to every phase) or a
+        per-phase :class:`httpx.Timeout`. The default is per-phase
+        (``connect=5``, ``read=20``, ``write=10``, ``pool=5``) so that
+        a DNS / TLS hang on the connect phase does not block the user
+        for the full read budget — see :data:`DEFAULT_TIMEOUT` and
+        BLK-5.
     client:
         Inject a pre-built :class:`httpx.AsyncClient` (handy for tests with a
         ``MockTransport``). The provider does NOT close an injected client on
@@ -419,7 +426,28 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     DEFAULT_BASE_URL = "https://api.minimax.io"
     DEFAULT_VOICE = "male-qn-qingse"
     DEFAULT_MODEL = "speech-02-hd"
-    DEFAULT_TIMEOUT = 30.0
+    #: Per-phase HTTP timeout used by the MiniMax TTS client.
+    #:
+    #: A bare ``float`` would mean "use this many seconds for every phase
+    #: (connect/read/write/pool)" — so a DNS or TLS hang on the connect
+    #: phase would block the user for the full 30 s, which is the
+    #: symptom BLK-5 set out to fix. We split the budget:
+    #:
+    #: * ``connect=5.0``  — TCP+TLS handshake; a slow connect usually
+    #:   means the host is unreachable and the user should hear about
+    #:   it fast.
+    #: * ``read=20.0``    — covers long streaming downloads; MiniMax
+    #:   T2A v2 can take a few seconds for big payloads.
+    #: * ``write=10.0``   — request body upload; the request is small
+    #:   (text + a few hundred bytes of params), so 10 s is generous.
+    #: * ``pool=5.0``     — waiting for a free connection from the
+    #:   client pool; should be near-instant.
+    #:
+    #: Pass an :class:`httpx.Timeout` (or a plain float, treated as
+    #: "all phases") to override per-instance.
+    DEFAULT_TIMEOUT: httpx.Timeout = httpx.Timeout(
+        connect=5.0, read=20.0, write=10.0, pool=5.0
+    )
 
     def __init__(
         self,
@@ -429,7 +457,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         base_url: str = DEFAULT_BASE_URL,
         default_voice: str = DEFAULT_VOICE,
         default_model: str = DEFAULT_MODEL,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Union[float, httpx.Timeout, None] = DEFAULT_TIMEOUT,
         client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         import os
@@ -440,7 +468,16 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         self._group_id = group_id or os.getenv("MINIMAX_GROUP_ID") or ""
         self._default_voice = default_voice
         self._default_model = default_model
-        self._timeout = timeout
+        # ``self._timeout`` may now be either a plain float (all
+        # phases) or a per-phase :class:`httpx.Timeout`. The base
+        # ``_http_client_factory`` passes it through unchanged, so
+        # httpx normalises both shapes correctly.
+        if timeout is None:
+            self._timeout: Union[float, httpx.Timeout] = DEFAULT_TIMEOUT
+        elif isinstance(timeout, httpx.Timeout):
+            self._timeout = timeout
+        else:
+            self._timeout = float(timeout)
         self._owns_client = client is None
         # Route through the extension hook so subclasses can customise
         # transport / TLS / OAuth headers — see BaseTTSProvider for the
