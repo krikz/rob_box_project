@@ -8,6 +8,42 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + M
   - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
   - MiniMax T2A v2 (HTTP, opt-in через provider=minimax)
+
+Concurrency
+-----------
+Two bounded executors, both ``concurrent.futures.ThreadPoolExecutor``:
+
+* **Synthesis executor** (``self._synthesis_executor``) —
+  ``max_workers = SYNTHESIS_MAX_WORKERS_DEFAULT = 2`` (ROS-параметр
+  ``synthesis_max_workers``, допустимый диапазон 1..4). Каждый worker
+  обрабатывает ровно один TTS HTTP/gRPC synthesis request
+  (Yandex / Silero / MiniMax) и публикует результат на
+  ``/voice/audio/speech``. Семафор на ``max_workers + max_queue``
+  (``SYNTHESIS_MAX_QUEUE_DEFAULT = 16``) даёт back-pressure: при переполнении
+  новые задачи дропаются, а не плодят потоки.
+* **Async-bridge executor** (``ASYNC_BRIDGE_MAX_WORKERS = 1``) — per-call,
+  живёт только внутри ``with``-блока вокруг ``asyncio.run(...)`` в
+  ``_synthesize_minimax*``. Нужен, потому что ROS-callback синхронный,
+  а ``MiniMaxTTSProvider.stream()`` — async; одного воркера достаточно,
+  т.к. он тут же ``.result()``-ит и выходит.
+
+Rationale: Yandex и MiniMax провайдеры не открывают соединения на каждый
+запрос — каждый worker держит свой keep-alive HTTP/2 или gRPC-channel.
+2 воркера дают практически полную утилизацию одного синтеза (~300–800 ms
+per request) без удвоения стоимости каналов. Burst input rate выше
+~2 synthesis/s встанет в очередь на семафоре; rate выше
+``max_workers + max_queue`` synthesis/s (~18/s) начнёт дропаться. Дальнейшее
+увеличение через ROS-параметр ``synthesis_max_workers`` (см. ниже).
+
+Tuning
+------
+ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
+
+* ``synthesis_max_workers`` (int, 1..4, default 2) — размер пула.
+* ``synthesis_max_queue`` (int, default 16) — ёмкость очереди перед drop.
+
+Размер пула — намеренный trade-off между throughput и числом одновременных
+внешних соединений; см. PR #907 BLK-9.
 """
 
 import concurrent.futures
