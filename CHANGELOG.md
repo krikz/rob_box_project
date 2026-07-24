@@ -7,6 +7,44 @@
 
 ## [Unreleased]
 
+### [Harness P0] — MiniMax LLM-провайдер в `rob_box_harness`
+
+> Ветка `wt/t_2bf98118` → `feature/harness-p0-foundation`.
+> Реализует требования M1–M10 из ADR-0001 §2.6 для harness-стороны
+> `LLMProvider` порта. Тонкая обёртка над `rob_box_llm.providers.minimax`,
+> добавляющая env-based auth, `chat()`-shortcut и retry с экспоненциальным
+> backoff.
+
+#### Добавлено
+
+* **`rob_box_harness.providers.minimax.MiniMaxProvider`** —
+  harness-side обёртка (`HarnessMiniMaxProvider` — канонический
+  класс под алиасом `MiniMaxProvider`), реализующая `LLMProvider`
+  из ADR-0001. Принимает `api_key` явно либо читает из
+  `MINIMAX_API_KEY` env (YAML-литералы запрещены), поддерживает
+  `chat(messages, **kwargs)` shortcut поверх `LLMSettings`, и
+  retry с экспоненциальным backoff (`RetryPolicy(max_attempts=3,
+  backoff_base=0.5, backoff_jitter=0.25)`) на `RateLimitError` /
+  `TimeoutError`. `AuthError` / `ContentFilterError` /
+  `CapabilityUnavailableError` не ретраятся (программные ошибки).
+* **`build_minimax_provider(llm_config, env=…, retry=…, client=…)`** —
+  фабрика из `LLMConfig`. Валидирует `provider == "minimax"`, требует
+  API-ключ через env, поддерживает инжекцию `AsyncOpenAI` клиента
+  (для тестов с `httpx.MockTransport`).
+* **`RetryPolicy`** — `frozen=True` dataclass с валидацией аргументов
+  и `delay_for(attempt) -> float` (базовая задержка + uniform jitter).
+* **README** — `src/rob_box_harness/rob_box_harness/providers/README.md`:
+  YAML-схема, ENV-карта, error/retry таблицы, примеры.
+
+#### Тесты
+
+* `test/test_minimax_provider.py` — 56 unit-тестов, 95% coverage
+  нового модуля, mypy strict-clean на источнике. Полностью offline:
+  fake SDK client для большинства сценариев + `httpx.MockTransport`
+  для трёх e2e-тестов wire-формата (chat-completions POST →
+  response body → `LLMResponse`).
+* Полный harness test suite: 144/144 pass.
+
 ### [PR #907] — MiniMax LLM-интеграция в `rob_box_llm` (text + tools + vision)
 
 > Ветка `feature/harness-p0-foundation` → `develop`. Один feature branch,
