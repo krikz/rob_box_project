@@ -107,7 +107,6 @@ for the full YAML schema and the secret-resolution rules.
 | Variable               | Required | Purpose                                                       |
 |------------------------|----------|---------------------------------------------------------------|
 | `MINIMAX_API_KEY`      | yes      | API key for the MiniMax global endpoint (`api.minimax.io`).   |
-| `ROB_BOX_DISABLE_NETWORK` | no     | When set to `"1"` / `"true"`, raise during construction — useful for CI dry-runs. |
 
 The provider never reads or writes any other env vars, and the API
 key is never logged. Attach `MiniMaxRedactedLogFilter` to your root

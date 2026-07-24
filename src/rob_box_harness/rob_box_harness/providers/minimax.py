@@ -117,11 +117,6 @@ _log = logging.getLogger(__name__)
 #: when no explicit ``api_key=`` is supplied.
 MINIMAX_API_KEY_ENV: str = "MINIMAX_API_KEY"
 
-#: Set to ``"1"`` / ``"true"`` to make ``build_minimax_provider``
-#: raise during construction (instead of returning a provider that
-#: will fail on first call). Useful for tests and CI dry-runs.
-_DISABLE_NETWORK_ENV: str = "ROB_BOX_DISABLE_NETWORK"
-
 
 # ---------------------------------------------------------------------------
 # Retry policy
