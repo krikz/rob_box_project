@@ -9,6 +9,44 @@ Subscribes:
 Publishes:
     /voice/dialogue/response (String) — JSON response with SSML
     /voice/dialogue/state    (String) — current state (IDLE / LISTENING / DIALOGUE / SILENCED)
+
+Concurrency
+-----------
+Один bounded executor — ``ASYNCIO_LOOP_DRIVER_MAX_WORKERS = 1``
+(``concurrent.futures.ThreadPoolExecutor``, имя потока
+``ASYNCIO_LOOP_DRIVER_NAME_PREFIX = "dialogue-async-loop"``).
+Единственный worker хостит ``loop.run_forever()`` для asyncio-цикла,
+внутри которого крутятся ``Runner.run_streamed``/agent tasks. Future
+сохраняется на узле, и ``shutdown_asyncio_loop()`` ждёт его завершения
+(``ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S = 2.0``).
+
+Что делает каждый worker: держит один asyncio loop и обслуживает все
+async coroutines (LLM streaming, MCP tool calls через ``run_in_executor``).
+Никакого HTTP-синтеза/распознавания тут нет — только agent-runtime.
+
+Rationale (driver = 1):
+    asyncio loop — single-threaded by contract. Увеличение ``max_workers``
+    дало бы idle-потоки, которые никогда не получают work. Concurrency
+    поверх цикла обеспечивают сами asyncio tasks (``_cancel_run``
+    гарантирует single-flight для одновременных STT chunks) и отдельные
+    пулы внутри ``loop.run_in_executor(...)`` для blocking MCP I/O.
+
+Operational limits:
+    Один loop = одна одновременная ``Runner.run`` итерация в любой момент.
+    Burst STT-результатов, пришедших во время текущего запроса, не плодят
+    новые loops — они либо дропаются через ``_cancel_run``, либо
+    становятся в очередь внутри agent runtime. Если подать rate выше
+    ~1 LLM-call/s (типичный latency streaming response — 1–3 s для
+    DeepSeek), задержка между публикацией ``/voice/dialogue/response`` и
+    следующим STT chunk-ом будет расти линейно с длиной очереди.
+    Это намеренный back-pressure, не bug.
+
+Tuning
+------
+``ASYNCIO_LOOP_DRIVER_MAX_WORKERS`` — module-level константа, меняется
+только пересборкой. Снят с ROS-параметра намеренно (см. PR #907 BLK-9):
+драйвер цикла — критичный для shutdown, runtime-параметр был бы race
+condition.
 """
 
 import asyncio
