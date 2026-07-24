@@ -48,7 +48,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Тестовые файлы живут на feature/agent (или другой ветке из input)
           ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
