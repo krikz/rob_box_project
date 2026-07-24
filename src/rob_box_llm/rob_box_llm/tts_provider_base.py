@@ -57,6 +57,41 @@ from rob_box_llm.tts import TTSProvider  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# Connection-pool + response-size defaults (BLK-6 / PR-907 review).
+#
+# httpx defaults to ``Limits(max_connections=100, max_keepalive_connections=20)``
+# which is wildly over-provisioned for a single-tenant TTS provider that does
+# one HTTP call per utterance. We tighten both numbers — ten concurrent calls
+# is the realistic upper bound for a voice pipeline that holds dialogue turn
+# latency budget (~300ms) and never bursts more than a handful of in-flight
+# requests.
+#
+# ``MAX_CONTENT_SIZE`` is enforced at the application layer (see
+# :func:`rob_box_llm.providers.minimax_tts._enforce_content_size`) because
+# httpx's :class:`httpx.Limits` does NOT expose a ``max_content_size``
+# parameter — that knob exists in some HTTP libraries (e.g. aiohttp's
+# ``ClientSession`` payload-size guards) but not in httpx's design, which
+# leaves body-bound enforcement to the caller. We mirror the PR-907 review
+# intent ("50 MB ceiling") here as the single source of truth.
+# ---------------------------------------------------------------------------
+DEFAULT_MAX_CONNECTIONS: int = 10
+"""Maximum number of concurrent HTTP connections in the pool."""
+
+DEFAULT_MAX_KEEPALIVE_CONNECTIONS: int = 5
+"""Maximum number of idle keep-alive connections kept open between requests."""
+
+DEFAULT_MAX_CONTENT_SIZE: int = 50 * 1024 * 1024  # 50 MiB
+"""Hard ceiling on response body size in bytes.
+
+Set per the PR-907 review: a runaway MiniMax response (e.g. an LLM
+reply embedding 100 MB of JSON, or a T2A v2 ``audio`` hex string for a
+very long utterance) must not OOM the worker process. Providers should
+apply this limit via :func:`_enforce_content_size` (or the equivalent)
+before returning the body to callers.
+"""
+
+
+# ---------------------------------------------------------------------------
 # Capability metadata — frozen dataclass, 8 boolean flags
 # ---------------------------------------------------------------------------
 
@@ -181,6 +216,11 @@ class BaseTTSProvider(TTSProvider):
                     base_url="https://api.elevenlabs.io",
                     headers={"xi-api-key": self._api_key},
                     timeout=httpx.Timeout(self._timeout),
+                    # Tighten the default pool — single-tenant voice
+                    # pipeline never bursts past a handful of sockets.
+                    limits=httpx.Limits(
+                        max_connections=10, max_keepalive_connections=5
+                    ),
                 )
 
             def _build_request_payload(
@@ -241,15 +281,29 @@ class BaseTTSProvider(TTSProvider):
     def _http_client_factory(self) -> "httpx.AsyncClient":
         """Construct the HTTP client this provider uses.
 
-        Default = ``httpx.AsyncClient(timeout=self._timeout)``. Override
+        Default = ``httpx.AsyncClient(timeout=..., limits=...)``. Override
         for OAuth (Google), custom headers (ElevenLabs), proxy / TLS, etc.
         The provider DOES NOT own the returned client — caller (or
         :meth:`aclose`) handles teardown.
+
+        The connection-pool limits mirror the BLK-6 / PR-907 review
+        defaults (:data:`DEFAULT_MAX_CONNECTIONS` / :data:`DEFAULT_MAX_KEEPALIVE_CONNECTIONS`)
+        so a single process can't fan out to 100 simultaneous sockets by
+        accident. Body-size capping is the caller's job — httpx does not
+        expose ``max_content_size`` on :class:`httpx.Limits`; see
+        :data:`DEFAULT_MAX_CONTENT_SIZE` and the per-provider
+        ``_enforce_content_size`` helper.
         """
         import httpx  # local import keeps tts.py import-cheap
 
         timeout: float = getattr(self, "_timeout", 30.0)
-        return httpx.AsyncClient(timeout=timeout)
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=DEFAULT_MAX_CONNECTIONS,
+                max_keepalive_connections=DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+        )
 
 
 __all__ = [
@@ -258,4 +312,7 @@ __all__ = [
     "TTSVoice",
     "TTSHealth",
     "ProviderBuilder",
+    "DEFAULT_MAX_CONNECTIONS",
+    "DEFAULT_MAX_KEEPALIVE_CONNECTIONS",
+    "DEFAULT_MAX_CONTENT_SIZE",
 ]

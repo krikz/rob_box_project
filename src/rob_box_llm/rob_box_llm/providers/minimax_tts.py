@@ -45,6 +45,9 @@ from rob_box_llm.tts import (
 )
 from rob_box_llm.tts_provider_base import (
     BaseTTSProvider,
+    DEFAULT_MAX_CONNECTIONS,
+    DEFAULT_MAX_CONTENT_SIZE,
+    DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
     TTSCapabilities,
     TTSHealth,
     TTSVoice,
@@ -91,6 +94,92 @@ def _redact_sensitive_text(text: str, *, secrets: tuple[str, ...]) -> str:
         if secret:
             text = text.replace(secret, "<redacted>")
     return text
+
+
+class _ContentSizeExceeded(TTSError):
+    """Sentinel subclass of :class:`TTSError` for the BLK-6 size guard.
+
+    The streaming ``stream()`` path wraps its body in a generic
+    ``except Exception`` that converts recoverable transport errors
+    into an in-band ``TTSChunk(finish_reason="error")`` so the caller
+    can drain partial audio. The size guard, however, is a hard
+    policy ceiling — it must ALWAYS propagate to the caller, even if
+    audio has already been streamed. We use this marker so the outer
+    ``except`` block can re-raise it unchanged instead of converting
+    it to an in-band error chunk.
+    """
+
+    pass
+
+
+def _enforce_content_size(
+    content_length: int | str | None,
+    actual_len: int | None,
+    *,
+    limit: int = DEFAULT_MAX_CONTENT_SIZE,
+    provider: str,
+) -> None:
+    """Raise :class:`_ContentSizeExceeded` if a response exceeds ``limit`` bytes.
+
+    Called from the MiniMax TTS provider at every response boundary:
+
+    * :meth:`MiniMaxTTSProvider._post` — after reading the JSON body
+      for the non-streaming T2A v2 endpoint.
+    * :meth:`MiniMaxTTSProvider.stream` — on the SSE byte stream, once
+      the upstream has sent :rfc:`7230` ``Content-Length`` (early bail)
+      or after each ``aiter_bytes`` chunk for chunked / no-length
+      responses.
+
+    BLK-6 / PR-907: httpx's :class:`httpx.Limits` does NOT expose
+    ``max_content_size`` — that knob belongs to other HTTP libraries
+    (e.g. aiohttp). We enforce the ceiling here instead. The check is
+    intentionally cheap (one integer comparison) so it can be invoked
+    on every chunk without measurable overhead.
+
+    Parameters
+    ----------
+    content_length:
+        The ``Content-Length`` header value from the upstream response,
+        or ``None`` if the server did not advertise one. Passed as the
+        raw header value so callers don't need to coerce it themselves.
+    actual_len:
+        The number of bytes actually read so far (or the final length
+        when the body is buffered). ``None`` means "unknown" — the
+        function falls back to checking only the header.
+    limit:
+        Maximum allowed size in bytes. Defaults to
+        :data:`rob_box_llm.tts_provider_base.DEFAULT_MAX_CONTENT_SIZE`
+        (50 MiB). Tests override to drive the failure path cheaply.
+    provider:
+        Provider name threaded into the exception for diagnostics.
+
+    Raises
+    ------
+    _ContentSizeExceeded
+        If either the advertised ``Content-Length`` OR the actual bytes
+        read exceed ``limit``. Subclassing :class:`TTSError` keeps the
+        exception catchable as the domain error everywhere downstream,
+        while the sentinel class lets the streaming path's outer
+        ``except`` block re-raise it unchanged instead of converting it
+        to an in-band error chunk.
+    """
+    if content_length is not None:
+        try:
+            advertised = int(content_length)
+        except (TypeError, ValueError):
+            advertised = -1
+        if advertised > limit:
+            raise _ContentSizeExceeded(
+                f"minimax response too large: Content-Length={advertised} "
+                f"exceeds limit={limit} bytes (provider={provider})",
+                provider=provider,
+            )
+    if actual_len is not None and actual_len > limit:
+        raise _ContentSizeExceeded(
+            f"minimax response too large: read {actual_len} bytes "
+            f"exceeds limit={limit} bytes (provider={provider})",
+            provider=provider,
+        )
 
 
 def _map_exception(
@@ -577,8 +666,26 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         document the intent; the implementation matches the base
         default exactly. Subclasses (e.g. a China-endpoint variant)
         can override to set ``base_url=`` and per-request headers.
+
+        BLK-6 / PR-907: the pool is tightened to
+        :data:`DEFAULT_MAX_CONNECTIONS` /
+        :data:`DEFAULT_MAX_KEEPALIVE_CONNECTIONS` — a single-tenant
+        voice pipeline never bursts past a handful of concurrent
+        sockets, and httpx's default of 100/20 invites an OOM via
+        runaway response bodies. Response-body size is bounded
+        separately by :func:`_enforce_content_size` at the
+        :meth:`_post` / :meth:`stream` boundary because httpx's
+        :class:`httpx.Limits` does NOT expose a ``max_content_size``
+        parameter (verified against httpx 0.27–0.28; not on the
+        upstream roadmap).
         """
-        return httpx.AsyncClient(timeout=self._timeout)
+        return httpx.AsyncClient(
+            timeout=self._timeout,
+            limits=httpx.Limits(
+                max_connections=DEFAULT_MAX_CONNECTIONS,
+                max_keepalive_connections=DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+        )
 
     def _build_request_payload(
         self,
@@ -665,11 +772,25 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     secrets=(self._api_key, self._group_id),
                 ) from exc
 
+        # BLK-6: enforce response-size ceiling BEFORE decoding the body.
+        # httpx has no ``max_content_size`` on :class:`httpx.Limits`, so we
+        # guard at the application boundary. ``resp.aread()`` is the
+        # canonical way to drain the body once for both the size check
+        # and the JSON parse below — calling ``resp.json()`` would
+        # re-read the buffer for non-streaming bodies.
+        body_bytes = await resp.aread()
+        _enforce_content_size(
+            resp.headers.get("Content-Length"),
+            len(body_bytes),
+            provider=self.name,
+        )
+
         try:
-            data = resp.json()
+            data = json.loads(body_bytes)
         except json.JSONDecodeError as exc:
             response_text = _redact_sensitive_text(
-                resp.text[:200], secrets=(self._api_key, self._group_id)
+                body_bytes[:200].decode("utf-8", errors="replace"),
+                secrets=(self._api_key, self._group_id),
             )
             raise TTSError(
                 f"Non-JSON response: {response_text}", provider=self.name
@@ -801,6 +922,19 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         )
         yielded_audio = False
         collected_sr = 0
+        # BLK-6: cumulative byte counter for the SSE stream. ``aiter_bytes``
+        # yields raw network bytes (which include the SSE framing + JSON
+        # envelope, not just the decoded audio), so this naturally fires
+        # BEFORE the audio payload itself blows the budget — we get a
+        # cheap, single-comparison OOM guard per chunk.
+        bytes_seen = 0
+        # BLK-6: set when the upstream signals end-of-stream via
+        # ``data: [DONE]``. The outer ``aiter_bytes`` loop must keep
+        # draining the socket so we don't strand half-consumed bytes
+        # in the connection pool; once the inner ``for line`` loop is
+        # done, we break out of the outer loop and fall through to the
+        # terminal ``stop`` chunk yield below.
+        saw_done = False
         try:
             url = f"{self._base_url}/v1/t2a_v2"
             async with self._client.stream(
@@ -810,6 +944,15 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 headers=self._headers(),
                 content=json.dumps(payload),
             ) as resp:
+                # BLK-6: early bail on an oversized Content-Length. If the
+                # upstream advertised a body larger than our policy ceiling,
+                # we fail BEFORE buffering any bytes — the same guard as
+                # ``_post`` runs at the streaming boundary too.
+                _enforce_content_size(
+                    resp.headers.get("Content-Length"),
+                    None,
+                    provider=self.name,
+                )
                 if resp.status_code >= 400:
                     await resp.aread()
                     try:
@@ -820,66 +963,105 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                             provider=self.name,
                             secrets=(self._api_key, self._group_id),
                         ) from exc
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    # MiniMax SSE payload: "data:{json}\n\n"
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    if line == "[DONE]":
-                        break
+                async for chunk in resp.aiter_bytes():
+                    bytes_seen += len(chunk)
+                    if bytes_seen > DEFAULT_MAX_CONTENT_SIZE:
+                        # BLK-6: this is a HARD POLICY ceiling. The outer
+                        # ``except Exception`` (below) converts recoverable
+                        # transport errors into an in-band ``error`` chunk,
+                        # but partial audio + a silent swallow is the wrong
+                        # outcome here — the caller asked for a bounded
+                        # response and we must ALWAYS propagate. ``_ContentSizeExceeded``
+                        # is a :class:`TTSError` subclass so the outer
+                        # handler recognises it and re-raises unchanged.
+                        raise _ContentSizeExceeded(
+                            f"minimax stream too large: read {bytes_seen} bytes "
+                            f"exceeds limit={DEFAULT_MAX_CONTENT_SIZE} bytes "
+                            f"(provider={self.name})",
+                            provider=self.name,
+                        )
                     try:
-                        evt = json.loads(line)
-                    except json.JSONDecodeError:
-                        diagnostic = _redact_sensitive_text(
-                            line[:80], secrets=(self._api_key, self._group_id)
-                        )
-                        _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
-                        continue
-                    base_resp = evt.get("base_resp") or {}
-                    if base_resp.get("status_code", 0) != 0:
-                        raw_status_msg = str(base_resp.get("status_msg", "unknown"))
-                        status_msg = _redact_sensitive_text(
-                            raw_status_msg,
-                            secrets=(self._api_key, self._group_id),
-                        )
-                        message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
-                        msg_lower = raw_status_msg.lower()
-                        if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
-                            api_error: TTSError = TTSAuthError(message, provider=self.name)
-                        elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
-                            api_error = TTSRateLimitError(message, provider=self.name)
-                        elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
-                            api_error = TTSBadRequestError(message, provider=self.name)
-                        else:
-                            api_error = TTSError(message, provider=self.name)
-                        if yielded_audio:
-                            yield TTSChunk(finish_reason="error")
-                            return
-                        raise api_error
-                    payload_data = evt.get("data") or {}
-                    chunk_hex = payload_data.get("audio")
-                    if chunk_hex:
+                        text = chunk.decode("utf-8", errors="replace")
+                    except Exception as exc:  # noqa: BLE001
+                        raise TTSError(
+                            f"minimax stream decode error: {exc}",
+                            provider=self.name,
+                        ) from exc
+                    # SSE events are separated by blank lines; ``aiter_bytes``
+                    # hands us raw network bytes, so we split on those. This
+                    # is equivalent to aiter_lines() but interleaved with the
+                    # byte-count guard above.
+                    for line in text.splitlines():
+                        if not line:
+                            continue
+                        # MiniMax SSE payload: "data:{json}\n\n"
+                        if line.startswith("data:"):
+                            line = line[5:].strip()
+                        if line == "[DONE]":
+                            saw_done = True
+                            continue
                         try:
-                            chunk_samples = bytes.fromhex(chunk_hex)
-                        except ValueError as exc:
-                            raise TTSError(
-                                f"minimax returned non-hex audio payload: {exc}",
-                                provider=self.name,
-                            ) from exc
-                        collected_sr = int(
-                            payload_data.get("audio_sample_rate", collected_sr or 32000)
-                        )
-                        yielded_audio = True
-                        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
-                        yield TTSChunk(
-                            samples=chunk_samples,
-                            sample_rate=collected_sr,
-                            format=actual_format,
-                        )
+                            evt = json.loads(line)
+                        except json.JSONDecodeError:
+                            diagnostic = _redact_sensitive_text(
+                                line[:80], secrets=(self._api_key, self._group_id)
+                            )
+                            _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
+                            continue
+                        base_resp = evt.get("base_resp") or {}
+                        if base_resp.get("status_code", 0) != 0:
+                            raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+                            status_msg = _redact_sensitive_text(
+                                raw_status_msg,
+                                secrets=(self._api_key, self._group_id),
+                            )
+                            message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
+                            msg_lower = raw_status_msg.lower()
+                            if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
+                                api_error: TTSError = TTSAuthError(message, provider=self.name)
+                            elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
+                                api_error = TTSRateLimitError(message, provider=self.name)
+                            elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
+                                api_error = TTSBadRequestError(message, provider=self.name)
+                            else:
+                                api_error = TTSError(message, provider=self.name)
+                            if yielded_audio:
+                                yield TTSChunk(finish_reason="error")
+                                return
+                            raise api_error
+                        payload_data = evt.get("data") or {}
+                        chunk_hex = payload_data.get("audio")
+                        if chunk_hex:
+                            try:
+                                chunk_samples = bytes.fromhex(chunk_hex)
+                            except ValueError as exc:
+                                raise TTSError(
+                                    f"minimax returned non-hex audio payload: {exc}",
+                                    provider=self.name,
+                                ) from exc
+                            collected_sr = int(
+                                payload_data.get("audio_sample_rate", collected_sr or 32000)
+                            )
+                            yielded_audio = True
+                            actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
+                            yield TTSChunk(
+                                samples=chunk_samples,
+                                sample_rate=collected_sr,
+                                format=actual_format,
+                            )
+                    if saw_done:
+                        # Drain the rest of the socket (if any) so the
+                        # connection returns cleanly to the keep-alive pool,
+                        # then exit the outer byte loop.
+                        break
         except Exception as exc:  # noqa: BLE001
             # Transport/decoder failures after the first audio frame are
             # represented in-band; before that point they must raise.
+            # The size guard is the exception — it must ALWAYS propagate
+            # because partial audio + a silent swallow is the wrong
+            # outcome (the caller asked for a bounded response).
+            if isinstance(exc, _ContentSizeExceeded):
+                raise
             if isinstance(exc, TTSError):
                 if yielded_audio:
                     yield TTSChunk(finish_reason="error")
