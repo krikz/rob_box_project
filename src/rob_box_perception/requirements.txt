@@ -1,2 +1,2 @@
 # DeepSeek API (совместимо с OpenAI SDK)
-openai>=2.43.0
+openai>=2.44.0
