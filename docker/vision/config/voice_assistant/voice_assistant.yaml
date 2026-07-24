@@ -126,7 +126,7 @@
 
     # ===== TTS Node (Text-to-Speech) =====
     tts_node:
-      provider: "piper"  # piper | silero | yandex | google
+      provider: "yandex"  # yandex | silero | minimax
 
       # Piper TTS (RECOMMENDED: Fast, high quality, offline)
       piper:

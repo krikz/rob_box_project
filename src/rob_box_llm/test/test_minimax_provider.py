@@ -156,10 +156,19 @@ class _FakeOpenAIClient:
     def __init__(self) -> None:
         self.chat = MagicMock()
         self.chat.completions = _FakeCompletions()
-        self.closed = False
+        self._is_closed = False
+        self.close_calls = 0
+
+    @property
+    def is_closed(self) -> bool:
+        # Mirrors ``openai.AsyncOpenAI.is_closed`` — the real provider
+        # (inherited from ``_OpenAICompatibleProvider``) relies on this
+        # attribute to make ``aclose`` idempotent.
+        return self._is_closed
 
     async def close(self) -> None:
-        self.closed = True
+        self.close_calls += 1
+        self._is_closed = True
 
 
 def _fake_401_response() -> httpx.Response:
@@ -665,7 +674,18 @@ def test_stream_base_resp_error_raises_before_yielding():
 def test_aclose_closes_client():
     p, c = _make_minimax()
     asyncio.run(p.aclose())
-    assert c.closed is True
+    assert c.is_closed is True
+    assert c.close_calls == 1
+
+
+def test_aclose_is_idempotent():
+    """Inherited from ``_OpenAICompatibleProvider`` — re-closing must be a
+    no-op rather than raising RuntimeError."""
+    p, c = _make_minimax()
+    asyncio.run(p.aclose())
+    asyncio.run(p.aclose())
+    assert c.is_closed is True
+    assert c.close_calls == 1
 
 
 # ---------------------------------------------------------------------------

@@ -123,10 +123,18 @@ class _FakeOpenAIClient:
     def __init__(self) -> None:
         self.chat = MagicMock()
         self.chat.completions = _FakeCompletions()
-        self.closed = False
+        self._is_closed = False
+        self.close_calls = 0
+
+    @property
+    def is_closed(self) -> bool:
+        # Mirrors ``openai.AsyncOpenAI.is_closed`` — the real provider relies
+        # on this attribute to make ``aclose`` idempotent.
+        return self._is_closed
 
     async def close(self) -> None:
-        self.closed = True
+        self.close_calls += 1
+        self._is_closed = True
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +222,26 @@ def test_complete_settings_override_model_and_temperature():
     kwargs = c.chat.completions.calls[0]
     assert kwargs["model"] == "deepseek-reasoner"
     assert kwargs["temperature"] == 0.0
+
+
+def test_complete_accepts_one_shot_generator_messages() -> None:
+    """BLK-4 regression: ``messages`` is iterated twice
+    (``_require_capability_for_messages`` then ``_build_kwargs``). A
+    one-shot generator would be empty on the second pass, producing
+    ``messages=[]`` in the SDK call → 400 / empty reply. The fix freezes
+    iterables to a tuple at the top of ``complete()``.
+    """
+    p, c = _make_deepseek()
+    c.chat.completions.next_response = _ok_response("ok")
+
+    def gen():
+        yield LLMMessage(role="system", content="sys")
+        yield LLMMessage(role="user", content="hi")
+
+    resp = asyncio.run(p.complete(gen()))
+    assert resp.content == "ok"
+    kwargs = c.chat.completions.calls[0]
+    assert [m["role"] for m in kwargs["messages"]] == ["system", "user"]
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +418,35 @@ def test_provider_name_is_set():
 def test_aclose_closes_client():
     p, c = _make_deepseek()
     asyncio.run(p.aclose())
-    assert c.closed is True
+    assert c.is_closed is True
+    assert c.close_calls == 1
+
+
+def test_aclose_is_idempotent():
+    """Calling aclose() twice (e.g. from nested finally blocks) must not
+    raise and must not invoke the underlying client close() again."""
+    p, c = _make_deepseek()
+    asyncio.run(p.aclose())
+    # Second call must be a no-op — no RuntimeError, no extra close().
+    asyncio.run(p.aclose())
+    assert c.is_closed is True
+    assert c.close_calls == 1
+
+
+def test_aclose_is_noop_when_client_already_closed():
+    """If the underlying client was closed out from under us (e.g. caller
+    owns the client), aclose() must stay silent rather than masking the
+    original teardown with a RuntimeError."""
+    p, c = _make_deepseek()
+
+    async def _simulate():
+        # Simulate someone else having already closed the client.
+        await c.close()
+        await p.aclose()
+
+    asyncio.run(_simulate())
+    assert c.is_closed is True
+    assert c.close_calls == 1
 
 
 # ---------------------------------------------------------------------------

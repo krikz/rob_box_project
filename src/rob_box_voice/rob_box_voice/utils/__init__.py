@@ -17,6 +17,7 @@ from .respeaker_interface import (
     ReSpeakerInterface,
     ReSpeakerTuning,
 )
+from .redact import redact_upstream_body
 
 __all__ = [
     'find_respeaker_device',
@@ -31,4 +32,5 @@ __all__ = [
     'AudioBuffer',
     'ReSpeakerInterface',
     'ReSpeakerTuning',
+    'redact_upstream_body',
 ]

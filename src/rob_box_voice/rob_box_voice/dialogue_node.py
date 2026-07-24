@@ -43,6 +43,7 @@ from std_msgs.msg import Bool, String
 from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
 from .core.dialogue_manager import DialogueManager, DialogueState
+from .utils.redact import redact_upstream_body
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -1591,8 +1592,14 @@ class DialogueNode(Node):
                 continue
 
             except APIStatusError as exc:
+                # OWASP A09 — the response body is untrusted text. Some
+                # proxies echo the inbound ``Authorization`` header or
+                # ``Cookie`` value verbatim in the JSON error envelope, so
+                # we MUST mask credential material before it reaches the
+                # logger. ``status_code`` and ``request_id`` are safe.
+                safe_body = redact_upstream_body(str(exc.response.text)[:200])
                 self.get_logger().error(
-                    f"🌩️ API error {exc.status_code}: {str(exc.response.text)[:200]} "
+                    f"🌩️ API error {exc.status_code}: {safe_body} "
                     f"(request_id={exc.request_id})"
                 )
                 if exc.status_code >= 500 and attempt < max_retries:
