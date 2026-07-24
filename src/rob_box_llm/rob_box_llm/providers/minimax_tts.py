@@ -22,10 +22,16 @@ the returned value so downstream decoders never dispatch on a false marker.
 
 from __future__ import annotations
 
+import asyncio
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
+import io
 import json
 import logging
 import os
+import random
 from typing import Any, AsyncIterator, Mapping, Optional, cast
+import wave
 
 import httpx
 
@@ -40,7 +46,6 @@ from rob_box_llm.tts import (
     TTSAudio,
     TTSChunk,
     TTSFormat,
-    TTSProvider,
     TTSSettings,
 )
 from rob_box_llm.tts_provider_base import (
@@ -54,6 +59,25 @@ from rob_box_llm.tts_provider_base import (
 )
 
 _log = logging.getLogger(__name__)
+
+_Sleep = Callable[[float], Awaitable[None]]
+_SUPPORTED_BYTE_FORMATS: dict[str, tuple[TTSFormat, int]] = {
+    "pcm_22050": (TTSFormat.PCM, 22_050),
+    "pcm_24000": (TTSFormat.PCM, 24_000),
+    "wav": (TTSFormat.WAV, 24_000),
+}
+
+
+def _pcm_to_wav(samples: bytes, *, sample_rate: int) -> bytes:
+    if not samples or len(samples) % 2:
+        raise ValueError("PCM payload must contain complete 16-bit samples")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(samples)
+    return buffer.getvalue()
 
 
 # MiniMax-specific BCP-47 → human-readable language name. MiniMax's
@@ -509,27 +533,59 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     DEFAULT_VOICE = "male-qn-qingse"
     DEFAULT_MODEL = "speech-02-hd"
     DEFAULT_TIMEOUT = 30.0
+    DEFAULT_MAX_ATTEMPTS = 3
+    DEFAULT_RETRY_BASE_DELAY = 0.5
+    DEFAULT_RETRY_JITTER = 0.25
+    DEFAULT_MAX_CONCURRENCY = 1
+    DEFAULT_CACHE_SIZE = 128
 
     def __init__(
         self,
         *,
         api_key: Optional[str] = None,
         group_id: Optional[str] = None,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str | None = None,
         default_voice: str = DEFAULT_VOICE,
         default_model: str = DEFAULT_MODEL,
         timeout: float = DEFAULT_TIMEOUT,
         client: Optional[httpx.AsyncClient] = None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
+        retry_jitter: float = DEFAULT_RETRY_JITTER,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        cache_size: int = DEFAULT_CACHE_SIZE,
+        sleep: _Sleep = asyncio.sleep,
     ) -> None:
-        import os
-
         self.name = "minimax"
-        self._base_url = base_url.rstrip("/")
+        resolved_base_url = (
+            base_url or os.getenv("MINIMAX_TTS_BASE_URL") or self.DEFAULT_BASE_URL
+        )
+        self._base_url = resolved_base_url.rstrip("/")
         self._api_key = api_key or os.getenv("MINIMAX_API_KEY") or ""
         self._group_id = group_id or os.getenv("MINIMAX_GROUP_ID") or ""
         self._default_voice = default_voice
         self._default_model = default_model
         self._timeout = timeout
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if retry_base_delay < 0.0:
+            raise ValueError("retry_base_delay must be >= 0")
+        if retry_jitter < 0.0:
+            raise ValueError("retry_jitter must be >= 0")
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
+        if cache_size < 0:
+            raise ValueError("cache_size must be >= 0")
+        self._max_attempts = max_attempts
+        self._retry_base_delay = retry_base_delay
+        self._retry_jitter = retry_jitter
+        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._cache_size = cache_size
+        self._cache: OrderedDict[str, bytes] = OrderedDict()
+        self._cache_lock = asyncio.Lock()
+        self._cache_generation = 0
+        self._inflight: dict[str, asyncio.Task[bytes]] = {}
+        self._sleep = sleep
         self._owns_client = client is None
         # Route through the extension hook so subclasses can customise
         # transport / TLS / OAuth headers — see BaseTTSProvider for the
@@ -882,6 +938,172 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         return TTSAudio(
             samples=samples, sample_rate=sample_rate, format=actual_format, raw=data
         )
+
+    async def synthesize_bytes(
+        self,
+        text: str,
+        voice: str | None = None,
+        **opts: object,
+    ) -> bytes:
+        """Return cached audio bytes via the compact harness-style API.
+
+        Supported ``format`` values are ``pcm_22050``, ``pcm_24000`` and
+        ``wav``. Calls with the same normalized text, voice, format and
+        options share both an in-memory LRU entry and an in-flight request.
+        """
+        format_value = opts.pop("format", "pcm_24000")
+        if (
+            not isinstance(format_value, str)
+            or format_value not in _SUPPORTED_BYTE_FORMATS
+        ):
+            raise TTSBadRequestError(
+                "format must be one of: pcm_22050, pcm_24000, wav",
+                provider=self.name,
+            )
+        if any(not isinstance(key, str) for key in opts):
+            raise TTSBadRequestError("option names must be strings", provider=self.name)
+
+        cache_key = self._make_cache_key(text, voice, format_value, opts)
+        async with self._cache_lock:
+            generation = self._cache_generation
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                self._cache.move_to_end(cache_key)
+                return cached
+            task = self._inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._synthesize_bytes_uncached(text, voice, format_value, opts)
+                )
+                self._inflight[cache_key] = task
+
+        try:
+            result = await task
+        finally:
+            if task.done():
+                async with self._cache_lock:
+                    if self._inflight.get(cache_key) is task:
+                        self._inflight.pop(cache_key, None)
+
+        async with self._cache_lock:
+            if self._cache_size > 0 and generation == self._cache_generation:
+                self._cache[cache_key] = result
+                self._cache.move_to_end(cache_key)
+                while len(self._cache) > self._cache_size:
+                    self._cache.popitem(last=False)
+        return result
+
+    async def clear_cache(self) -> None:
+        """Clear completed synthesis results under the cache lock."""
+        async with self._cache_lock:
+            self._cache_generation += 1
+            self._cache.clear()
+
+    def _make_cache_key(
+        self,
+        text: str,
+        voice: str | None,
+        format_value: str,
+        opts: Mapping[str, object],
+    ) -> str:
+        try:
+            return json.dumps(
+                [text, voice, format_value, opts],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TTSBadRequestError(
+                f"synthesize options must be JSON-serializable: {exc}",
+                provider=self.name,
+            ) from exc
+
+    def _optional_str(self, value: object, *, name: str) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        raise TTSBadRequestError(f"{name} must be a string", provider=self.name)
+
+    def _optional_float(self, value: object, *, name: str) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TTSBadRequestError(f"{name} must be numeric", provider=self.name)
+        return float(value)
+
+    def _optional_int(self, value: object, *, name: str) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TTSBadRequestError(f"{name} must be an integer", provider=self.name)
+        return value
+
+    def _optional_bool(self, value: object, *, name: str) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        raise TTSBadRequestError(f"{name} must be a boolean", provider=self.name)
+
+    async def _synthesize_bytes_uncached(
+        self,
+        text: str,
+        voice: str | None,
+        format_value: str,
+        opts: Mapping[str, object],
+    ) -> bytes:
+        output_format, sample_rate = _SUPPORTED_BYTE_FORMATS[format_value]
+        typed_values = {
+            "model": opts.get("model"),
+            "language": opts.get("language"),
+            "speed": opts.get("speed"),
+            "volume": opts.get("volume"),
+            "pitch": opts.get("pitch"),
+            "emotion": opts.get("emotion"),
+            "text_normalization": opts.get("text_normalization"),
+        }
+        extra = {key: value for key, value in opts.items() if key not in typed_values}
+        settings = TTSSettings(
+            model=self._optional_str(typed_values["model"], name="model"),
+            voice=voice,
+            language=self._optional_str(typed_values["language"], name="language"),
+            speed=self._optional_float(typed_values["speed"], name="speed"),
+            volume=self._optional_float(typed_values["volume"], name="volume"),
+            pitch=self._optional_int(typed_values["pitch"], name="pitch"),
+            emotion=self._optional_str(typed_values["emotion"], name="emotion"),
+            sample_rate=sample_rate,
+            format=output_format,
+            text_normalization=self._optional_bool(
+                typed_values["text_normalization"], name="text_normalization"
+            ),
+            extra=extra,
+        )
+
+        for attempt in range(self._max_attempts):
+            try:
+                async with self._semaphore:
+                    audio = await self.synthesize(text, settings=settings)
+                if format_value == "wav" and not audio.samples.startswith(b"RIFF"):
+                    try:
+                        return _pcm_to_wav(
+                            audio.samples, sample_rate=audio.sample_rate
+                        )
+                    except ValueError as exc:
+                        raise TTSError(str(exc), provider=self.name) from exc
+                return audio.samples
+            except (TTSRateLimitError, TTSTimeoutError, TTSError) as exc:
+                if isinstance(exc, (TTSAuthError, TTSBadRequestError)):
+                    raise
+                if attempt + 1 >= self._max_attempts:
+                    raise
+                delay = self._retry_base_delay * (2**attempt)
+                if self._retry_jitter:
+                    delay += random.uniform(0.0, self._retry_jitter)
+                await self._sleep(delay)
+
+        raise RuntimeError("retry loop exhausted without result")
 
     async def stream(
         self,
