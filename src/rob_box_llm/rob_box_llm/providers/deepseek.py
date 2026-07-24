@@ -312,6 +312,13 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools: Iterable[Mapping[str, Any]] = (),
         settings: LLMSettings | None = None,
     ) -> LLMResponse:
+        # BLK-4: freeze iterables on entry. ``_require_capability_for_messages``
+        # iterates ``messages`` (any() over image parts) and ``_build_kwargs``
+        # iterates both again. A one-shot generator would be empty on the
+        # second pass, sending messages=[] to the SDK → 400 / empty reply.
+        # tuple() is O(n) memory and removes the whole class of bugs.
+        messages = tuple(messages)
+        tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
         try:
@@ -351,6 +358,11 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools: Iterable[Mapping[str, Any]] = (),
         settings: LLMSettings | None = None,
     ) -> AsyncIterator[LLMChunk]:
+        # BLK-4: see note in ``complete()`` — iterables are consumed twice
+        # (_require_capability_for_messages then _build_kwargs), so a
+        # generator would be empty on the second pass.
+        messages = tuple(messages)
+        tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=True)
         kwargs = self._build_kwargs(messages, tools, settings, stream=True)
         try:

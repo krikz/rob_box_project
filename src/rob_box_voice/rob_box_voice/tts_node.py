@@ -10,6 +10,7 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + M
   - MiniMax T2A v2 (HTTP, opt-in через provider=minimax)
 """
 
+import concurrent.futures
 import io
 import json
 import os
@@ -218,6 +219,28 @@ class TTSNode(Node):
         self.declare_parameter("audio_qos_reliability", "best_effort")
         self.declare_parameter("audio_qos_depth", 10)
 
+        # Synthesis worker pool (BLK-9 fix).
+        #
+        # PR #907 originally spawned `threading.Thread(target=..., daemon=True)`
+        # for every /voice/tts/say request with no bound, leaving the node
+        # vulnerable to unbounded thread fan-out under bursty input
+        # (OWASP A04:2021). We now use a bounded ThreadPoolExecutor and
+        # rely on its internal queue to absorb backlog.
+        #
+        # Sizing notes:
+        #   * Each worker is a blocking HTTP-synth → ALSA-play pipeline; they
+        #     are serialized through `_synthesis_lock` inside the worker.
+        #   * `max_workers=2` lets the next request start its HTTP call while
+        #     the previous one is still streaming ALSA playback (synthesis
+        #     and playback are sequential within a single worker, but the
+        #     pre-synth HTTP fetch can overlap with another worker's
+        #     playback tail).
+        #   * Overflow is benign: ThreadPoolExecutor enqueues and the
+        #     stale-dialogue-id check inside `_run_synthesis_worker` drops
+        #     tasks from a previous dialogue (barge-in).
+        self.declare_parameter("synthesis_max_workers", 2)  # 1..4
+        self.declare_parameter("synthesis_max_queue", 16)  # pending tasks cap before drop
+
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
         self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0 = нормальная скорость)
@@ -262,7 +285,12 @@ class TTSNode(Node):
         )
         self.minimax_retry_backoff_ms = max(0, int(self.get_parameter("minimax_retry_backoff_ms").value))
         self.minimax_streaming = bool(self.get_parameter("minimax_streaming").value)
-        self.minimax_provider = None  # lazy: создаётся в _synthesize_minimax()
+        self.minimax_provider = None  # lazy: создаётся в _ensure_minimax_provider()
+        # Provider construction opens an httpx client and must be atomic with
+        # shutdown.  ROS callbacks can run on different executor threads.
+        self._minimax_provider_lock = threading.Lock()
+        self._minimax_provider_initialized = False
+        self._minimax_shutdown_requested = False
 
         self.audio_topic = str(self.get_parameter("audio_topic").value)
         self.audio_output_sample_rate = int(
@@ -363,6 +391,37 @@ class TTSNode(Node):
         # Serialize synth/play workers; callbacks stay non-blocking while queued
         # requests are dropped by dialogue-id checks after barge-in.
         self._synthesis_lock = threading.Lock()
+
+        # Bounded synthesis executor (BLK-9 fix).
+        #
+        # Replaces the previous `threading.Thread(target=..., daemon=True)`
+        # fan-out.  ThreadPoolExecutor keeps at most `max_workers` OS threads
+        # alive and enqueues overflow into an unbounded internal queue.  We
+        # pair the executor with a plain `Semaphore` so that submissions
+        # beyond `max_queue + max_workers` are rejected (non-blocking
+        # `acquire()` returns False) instead of silently piling up zombie
+        # pending tasks.
+        #
+        # `_synthesis_lock` is the per-node gate that serializes the actual
+        # blocking HTTP+ALSA work inside each worker — the executor only
+        # bounds *thread count*, the semaphore + lock bound *in-flight work*.
+        max_workers = max(1, min(4, int(self.get_parameter("synthesis_max_workers").value)))
+        max_queue = max(1, int(self.get_parameter("synthesis_max_queue").value))
+        # Total in-flight cap = workers currently executing + pending in queue.
+        # Once the cap is hit, submit() is rejected and the ROS callback
+        # logs+returns instead of silently enqueuing forever.
+        self._synthesis_slots = threading.Semaphore(max_queue + max_workers)
+        self._synthesis_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="tts-synth",
+        )
+        self._synthesis_executor_max_workers = max_workers
+        self._synthesis_executor_shutdown = False
+        # Coarse counter for diagnostics / tests; racy by design, just for visibility.
+        self._synthesis_in_flight = 0
+        self.get_logger().info(
+            f"  Synthesis executor: max_workers={max_workers}, max_queue={max_queue}"
+        )
 
         # Dialogue session tracking (для синхронизации с dialogue_node)
         self.current_dialogue_id = None
@@ -600,12 +659,20 @@ class TTSNode(Node):
             # Синтез/воспроизведение блокируют сетью и ALSA. Не держим ROS
             # executor callback: control/new-dialogue callbacks должны оставаться
             # отзывчивыми для STOP/barge-in.
-            threading.Thread(
-                target=self._run_synthesis_worker,
-                args=(ssml, text, dialogue_id, ssml_attributes, speech_id),
-                name=f"tts-{speech_id[:8]}",
-                daemon=True,
-            ).start()
+            #
+            # BLK-9: dispatch into a bounded ThreadPoolExecutor so we never
+            # spawn unbounded `threading.Thread(target=..., daemon=True)`
+            # under bursty input.  Overflow is rejected via _synthesis_slots
+            # and logged here rather than queued forever.
+            self._submit_synthesis(
+                self._run_synthesis_worker,
+                speech_id,
+                ssml,
+                text,
+                dialogue_id,
+                ssml_attributes,
+                speech_id,
+            )
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ JSON parse error: {e}")
@@ -685,6 +752,70 @@ class TTSNode(Node):
                         pass
 
         return attributes
+
+    def _submit_synthesis(
+        self,
+        fn,
+        speech_id: str,
+        *args,
+    ):
+        """Submit a synth worker through the bounded executor (BLK-9).
+
+        Acquires a slot from `_synthesis_slots` first; if no slot is free
+        (i.e. `(max_workers + max_queue)` tasks are already in-flight or
+        pending) we log and return without submitting, instead of spawning
+        a new thread or letting the executor's unbounded internal queue
+        accumulate forever.
+
+        The slot is released automatically when the future completes
+        (success or failure) via the `_release_synthesis_slot` callback.
+        """
+        if self._synthesis_executor_shutdown:
+            self.get_logger().warning(
+                f"⚠️  Dropping TTS submit after executor shutdown "
+                f"(speech_id={speech_id[:8] if speech_id else 'None'})"
+            )
+            return
+        if not self._synthesis_slots.acquire(blocking=False):
+            self.get_logger().warning(
+                f"⚠️  TTS synth pool full "
+                f"(speech_id={speech_id[:8] if speech_id else 'None'}) — dropping"
+            )
+            return
+        self._synthesis_in_flight += 1
+        try:
+            future = self._synthesis_executor.submit(fn, *args)
+        except RuntimeError as exc:
+            # Executor was shut down between our check and submit() — rare
+            # but possible during node teardown.
+            self._synthesis_slots.release()
+            self._synthesis_in_flight -= 1
+            self.get_logger().warning(
+                f"⚠️  Executor refused submit for "
+                f"speech_id={speech_id[:8] if speech_id else 'None'}: {exc}"
+            )
+            return
+        future.add_done_callback(self._on_synthesis_done)
+
+    def _on_synthesis_done(self, future):
+        """Release a synth slot regardless of success/failure.
+
+        Runs on whatever worker thread completed, so it must not touch
+        ROS state directly (callbacks, parameters) — only thread-safe
+        primitives like the semaphore and integer counter.
+        """
+        try:
+            exc = future.exception()
+        except concurrent.futures.CancelledError:
+            exc = None
+        if exc is not None:
+            self.get_logger().warning(
+                f"⚠️  Synthesis worker raised: {exc!r}"
+            )
+        self._synthesis_slots.release()
+        # The counter is monotonic-ish under CPython GIL; the racy
+        # underflow on rare shutdown race is acceptable for diagnostics.
+        self._synthesis_in_flight = max(0, self._synthesis_in_flight - 1)
 
     def _run_synthesis_worker(
         self,
@@ -1144,15 +1275,7 @@ class TTSNode(Node):
                 provider="minimax",
             )
 
-        # Lazy init провайдера (один раз на ноду).
-        if self.minimax_provider is None:
-            self.minimax_provider = MiniMaxTTSProvider(
-                api_key=self.minimax_api_key,
-                group_id=self.minimax_group_id,
-                default_voice=self.minimax_voice,
-                default_model=self.minimax_model,
-                timeout=self.minimax_timeout,
-            )
+        provider = self._ensure_minimax_provider()
 
         # Скорость речи: берём из SSML или параметр ноды.
         speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
@@ -1170,7 +1293,7 @@ class TTSNode(Node):
         )
 
         try:
-            tts_audio = await self.minimax_provider.synthesize(text, settings=settings)
+            tts_audio = await provider.synthesize(text, settings=settings)
         except MiniMaxTTSError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1365,22 +1488,7 @@ class TTSNode(Node):
             Exception с человекочитаемым сообщением при любой ошибке MiniMax
             (вызывающий код решает — retry, fallback, или проброс наверх).
         """
-        if not MINIMAX_AVAILABLE or self.minimax_provider is None:
-            # Lazy init (если ещё не сделали).
-            if not MINIMAX_AVAILABLE:
-                raise Exception("rob_box_llm недоступен — MiniMax не подключён")
-            if not self.minimax_api_key or not self.minimax_group_id:
-                raise MiniMaxTTSAuthError(
-                    "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы",
-                    provider="minimax",
-                )
-            self.minimax_provider = MiniMaxTTSProvider(
-                api_key=self.minimax_api_key,
-                group_id=self.minimax_group_id,
-                default_voice=self.minimax_voice,
-                default_model=self.minimax_model,
-                timeout=self.minimax_timeout,
-            )
+        provider = self._ensure_minimax_provider()
 
         speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
         settings = TTSSettings(
@@ -1392,7 +1500,7 @@ class TTSNode(Node):
             format=self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM,
         )
         try:
-            async for chunk in self.minimax_provider.stream(text, settings=settings):
+            async for chunk in provider.stream(text, settings=settings):
                 yield chunk
         except MiniMaxTTSError:
             raise
@@ -1432,19 +1540,110 @@ class TTSNode(Node):
 
         self.audio_pub.publish(msg)
 
+    def _ensure_minimax_provider(self):
+        """Return the MiniMax provider, constructing it exactly once.
+
+        Construction creates the provider's HTTP client, so publishing the
+        reference before construction completes would let a concurrent
+        shutdown observe a half-initialized object.  The lock also makes two
+        executor workers share one client instead of racing to create two.
+        """
+        if not MINIMAX_AVAILABLE:
+            raise Exception("rob_box_llm недоступен — MiniMax не подключён")
+        if not self.minimax_api_key or not self.minimax_group_id:
+            raise MiniMaxTTSAuthError(
+                "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы",
+                provider="minimax",
+            )
+
+        # Keep the helper usable with the lightweight objects used by the
+        # unit tests, which do not run TTSNode.__init__.
+        lock = getattr(self, "_minimax_provider_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._minimax_provider_lock = lock
+
+        with lock:
+            if getattr(self, "_minimax_shutdown_requested", False):
+                raise RuntimeError("MiniMax provider is shutting down")
+
+            provider = getattr(self, "minimax_provider", None)
+            if provider is not None:
+                self._minimax_provider_initialized = True
+                return provider
+
+            provider = MiniMaxTTSProvider(
+                api_key=self.minimax_api_key,
+                group_id=self.minimax_group_id,
+                default_voice=self.minimax_voice,
+                default_model=self.minimax_model,
+                timeout=self.minimax_timeout,
+            )
+            # Publish only a fully constructed provider.
+            self.minimax_provider = provider
+            self._minimax_provider_initialized = True
+            return provider
+
     def close_minimax_provider(self):
         """Close the lazy MiniMax HTTP client before ROS node shutdown."""
-        if self.minimax_provider is None:
+        lock = getattr(self, "_minimax_provider_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._minimax_provider_lock = lock
+
+        # Mark shutdown before taking the provider snapshot.  Any concurrent
+        # lazy-init call then fails instead of creating a client after cleanup.
+        with lock:
+            self._minimax_shutdown_requested = True
+            is_initialized = getattr(
+                self,
+                "_minimax_provider_initialized",
+                getattr(self, "minimax_provider", None) is not None,
+            )
+            if not is_initialized:
+                return
+            provider = getattr(self, "minimax_provider", None)
+
+        if provider is None:
             return
 
         import asyncio
 
         try:
-            asyncio.run(self.minimax_provider.aclose())
+            asyncio.run(provider.aclose())
         except Exception as exc:  # shutdown must continue even on cleanup failure
             self.get_logger().warn(f"MiniMax provider cleanup failed: {exc}")
         finally:
-            self.minimax_provider = None
+            with lock:
+                self.minimax_provider = None
+                self._minimax_provider_initialized = False
+
+    def shutdown_synthesis_executor(self, wait: bool = False, timeout: float = 2.0):
+        """Drain the bounded synth executor (BLK-9).
+
+        Idempotent. Called from ``main()`` before ``destroy_node()`` so the
+        worker pool releases its threads cleanly. ``wait=False`` by default
+        because ALSA playback can block beyond a reasonable shutdown window
+        and we don't want to hang ROS teardown; the daemon-style behavior
+        matches the previous ``threading.Thread(daemon=True)`` semantics.
+        """
+        executor = getattr(self, "_synthesis_executor", None)
+        if executor is None:
+            return
+        if self._synthesis_executor_shutdown:
+            return
+        self._synthesis_executor_shutdown = True
+        try:
+            executor.shutdown(wait=wait, cancel_futures=not wait)
+        except TypeError:
+            # cancel_futures was added in 3.9; fall back if unavailable.
+            executor.shutdown(wait=wait)
+        except Exception as exc:
+            self.get_logger().warn(f"Synthesis executor shutdown failed: {exc}")
+        self.get_logger().info(
+            f"Synthesis executor shutdown (wait={wait}, max_workers="
+            f"{self._synthesis_executor_max_workers})"
+        )
 
     def cleanup_playback_noise(self):
         """
@@ -1517,6 +1716,16 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # BLK-8 + BLK-9: order matters here.
+        #
+        # 1. Mark MiniMax provider as shutting down so no NEW worker can
+        #    race to lazy-init a client during teardown.
+        # 2. Stop accepting new TTS submits and cancel pending futures.
+        # 3. Close the lazy MiniMax HTTP client (asyncio.run aclose()).
+        # 4. Destroy the node and rclpy.
+        with node._minimax_provider_lock:
+            node._minimax_shutdown_requested = True
+        node.shutdown_synthesis_executor(wait=False)
         node.close_minimax_provider()
         node.destroy_node()
         rclpy.shutdown()
