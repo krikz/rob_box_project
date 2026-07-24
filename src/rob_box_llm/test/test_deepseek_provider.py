@@ -224,6 +224,26 @@ def test_complete_settings_override_model_and_temperature():
     assert kwargs["temperature"] == 0.0
 
 
+def test_complete_accepts_one_shot_generator_messages() -> None:
+    """BLK-4 regression: ``messages`` is iterated twice
+    (``_require_capability_for_messages`` then ``_build_kwargs``). A
+    one-shot generator would be empty on the second pass, producing
+    ``messages=[]`` in the SDK call → 400 / empty reply. The fix freezes
+    iterables to a tuple at the top of ``complete()``.
+    """
+    p, c = _make_deepseek()
+    c.chat.completions.next_response = _ok_response("ok")
+
+    def gen():
+        yield LLMMessage(role="system", content="sys")
+        yield LLMMessage(role="user", content="hi")
+
+    resp = asyncio.run(p.complete(gen()))
+    assert resp.content == "ok"
+    kwargs = c.chat.completions.calls[0]
+    assert [m["role"] for m in kwargs["messages"]] == ["system", "user"]
+
+
 # ---------------------------------------------------------------------------
 # stream()
 # ---------------------------------------------------------------------------
