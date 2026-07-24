@@ -41,6 +41,26 @@ The ``respx`` mock is per-test (function-scoped) so the ``call_count``
 bookkeeping is always clean. The conftest's ``_scrub_minimax_env``
 autouse fixture wipes real credentials from the environment so a stray
 ``os.getenv`` cannot poison a test.
+
+Decision log (2026-07-24)
+=========================
+
+The brief required three behaviours the provider does not currently
+implement — cache, retry/backoff on 429/5xx, and provider-side rate
+limit. The first attempt of this task was paused for review of two
+possible resolutions:
+
+  1. **Pin tests** (chosen): add explicit regression-pin tests that
+     document the current behaviour and fail loudly if a future
+     contributor adds the feature without updating the expectation.
+  2. **Implement the features** in the provider first, then write the
+     tests. Rejected for this task because the brief is bound to
+     "write unit tests" — provider changes need a separate code task
+     with their own architecture review.
+
+The pin tests are the gates described in the table above. The reviewer
+unblocked without picking a side, so the chosen path is to ship the
+pin tests now and open a follow-up task for the provider implementation.
 """
 
 from __future__ import annotations
