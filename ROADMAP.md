@@ -46,10 +46,13 @@
 - ✅ **Zenoh DDS** - современная альтернатива CycloneDDS с облачной интеграцией
 - ✅ **Build Machine** - локальная CI/CD инфраструктура (10-20x ускорение)
 - ✅ **Dual Raspberry Pi 5** - распределённая обработка (16GB + 8GB)
+- ✅ **Harness Framework (P0)** - `rob_box_harness` с `Harness[StateT]`, lifecycle, 5 портами (`LLMProvider` / `ToolProvider` / `MemoryStore` / `SideEffectBus` / `Transport` + `Clock`), `HarnessRegistry` + `run_harness()`. ADR-0001 (MADR, Accepted). 88 тестов / 90% coverage / mypy strict-clean. Документация: [`src/rob_box_harness/README.md`](src/rob_box_harness/README.md), [`docs/guides/harness-quickstart.md`](docs/guides/harness-quickstart.md), [`SPEC_CURRENT.md`](SPEC_CURRENT.md).
+- ✅ **MiniMax LLM-провайдер в Harness** - `rob_box_harness.providers.minimax.MiniMaxProvider` (ADR-0001 M1–M10): env-auth, `chat()`-shortcut, retry с экспоненциальным backoff. 56 тестов / 95% coverage. Документация: [`src/rob_box_harness/rob_box_harness/providers/README.md`](src/rob_box_harness/rob_box_harness/providers/README.md), [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md).
 
 **Планируется:**
 - 🔄 **LLM-powered Autonomous Agent** - полноценный AI агент с tool use (PR #362, в активной разработке)
-- � **AI HAT+ 26 TOPS (Hailo-8L NPU)** - hardware-accelerated inference (YOLOv8, Whisper, face recognition), Vision Pi. Анализ: `docs/AI_HAT_UPGRADE_ANALYSIS.md`
+- 🔄 **DialogHarness / PersistentHarness / TelegramHarness (P1)** - реальные харнесы поверх существующих ROS2-нод. ADR-0001 §2.7. См. чеклист в [`SPEC_CURRENT.md` §3.B](SPEC_CURRENT.md).
+- 🔄 **AI HAT+ 26 TOPS (Hailo-8L NPU)** - hardware-accelerated inference (YOLOv8, Whisper, face recognition), Vision Pi. Анализ: `docs/AI_HAT_UPGRADE_ANALYSIS.md`
 - 🔮 **Stereo Visual Odometry** - visual SLAM от OAK-D камеры
 - 🔮 **Sensor Fusion (EKF)** - объединение всех источников одометрии
 - 🔮 **Self-Hosted LLM Infrastructure** - собственные сервера для LLM моделей
@@ -872,20 +875,27 @@
 
 ---
 
-### 🎯 Этап 2: Естественное взаимодействие (В РАЗРАБОТКЕ 🔄)
+### 🎯 Этап 2: Естественное взаимодействие (В РАЗРАБОТКЕ 🔄 → P0 DONE)
 **Цель:** Робот понимает речь и может поддерживать диалог
 
 - [x] Голосовой ассистент с wake word detection
 - [x] STT + TTS (offline/cloud hybrid)
 - [x] Dialogue с LLM (DeepSeek/Qwen)
 - [x] LED индикация и анимации
+- [x] **Harness Framework P0** — `rob_box_harness` готов: контракт, lifecycle, 5 портов, registry, `run_harness()`, dummy-карнесы. ADR-0001 (MADR, Accepted). Источник: [`SPEC_CURRENT.md`](SPEC_CURRENT.md) §2.
+- [x] **MiniMax LLM в Harness** — `rob_box_harness.providers.minimax.MiniMaxProvider`: env-auth, `chat()`-shortcut, retry. 95% coverage. См. [`docs/guides/harness-quickstart.md`](docs/guides/harness-quickstart.md).
+- [x] **MiniMax LLM в `rob_box_llm`** — `MiniMaxProvider` (PR #907): text + vision + tools. См. [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md).
+- [x] **MiniMax TTS** — `MiniMaxTTSProvider` (ADR-0007). См. [`docs/guides/MINIMAX_TTS_GETTING_STARTED.md`](docs/guides/MINIMAX_TTS_GETTING_STARTED.md).
+- [ ] **DialogHarness (P1)** — обёртка харнеса вокруг `DialogueNode`. ADR-0001 §2.7.1. Чеклист в [`SPEC_CURRENT.md`](SPEC_CURRENT.md) §3.B.
+- [ ] **PersistentHarness (P1)** — один харнес для audio/stt/tts/sound/led/cmd. ADR-0001 §2.7.2.
+- [ ] **TelegramHarness (P1)** — обёртка вокруг `TelegramNode`, мост к voice через skill. ADR-0001 §2.7.3.
 - [ ] **Internal Dialogue (рефлексия)** - в процессе доработки
 - [ ] **Context Aggregator** - в процессе доработки
 - [ ] **Semantic mapping** - разметка карты с точками доставки
 - [ ] **Голосовые команды навигации** - "Иди на кухню"
 - [ ] **LLM-powered агент** для автономного поведения
 
-**Ожидаемое завершение:** Q1 2026
+**Ожидаемое завершение P1:** Q1 2026 (DialogHarness / PersistentHarness / TelegramHarness)
 
 ---
 

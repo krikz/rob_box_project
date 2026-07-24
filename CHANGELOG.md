@@ -7,6 +7,7 @@
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Harness P0: pytest-конфиг и CI-джобы (Kanban `t_b13cf256`)
 
 > Готовит почву для ветки `feature/harness-p0-foundation` →
@@ -53,6 +54,45 @@
   непокрытых строк.
 * Default-PR-чек — `Harness unit tests (no network)`; блокирует
   merge. `integration-tests` — manual/opt-in.
+=======
+### [Harness P0] — MiniMax LLM-провайдер в `rob_box_harness`
+
+> Ветка `wt/t_2bf98118` → `feature/harness-p0-foundation`.
+> Реализует требования M1–M10 из ADR-0001 §2.6 для harness-стороны
+> `LLMProvider` порта. Тонкая обёртка над `rob_box_llm.providers.minimax`,
+> добавляющая env-based auth, `chat()`-shortcut и retry с экспоненциальным
+> backoff.
+
+#### Добавлено
+
+* **`rob_box_harness.providers.minimax.MiniMaxProvider`** —
+  harness-side обёртка (`HarnessMiniMaxProvider` — канонический
+  класс под алиасом `MiniMaxProvider`), реализующая `LLMProvider`
+  из ADR-0001. Принимает `api_key` явно либо читает из
+  `MINIMAX_API_KEY` env (YAML-литералы запрещены), поддерживает
+  `chat(messages, **kwargs)` shortcut поверх `LLMSettings`, и
+  retry с экспоненциальным backoff (`RetryPolicy(max_attempts=3,
+  backoff_base=0.5, backoff_jitter=0.25)`) на `RateLimitError` /
+  `TimeoutError`. `AuthError` / `ContentFilterError` /
+  `CapabilityUnavailableError` не ретраятся (программные ошибки).
+* **`build_minimax_provider(llm_config, env=…, retry=…, client=…)`** —
+  фабрика из `LLMConfig`. Валидирует `provider == "minimax"`, требует
+  API-ключ через env, поддерживает инжекцию `AsyncOpenAI` клиента
+  (для тестов с `httpx.MockTransport`).
+* **`RetryPolicy`** — `frozen=True` dataclass с валидацией аргументов
+  и `delay_for(attempt) -> float` (базовая задержка + uniform jitter).
+* **README** — `src/rob_box_harness/rob_box_harness/providers/README.md`:
+  YAML-схема, ENV-карта, error/retry таблицы, примеры.
+
+#### Тесты
+
+* `test/test_minimax_provider.py` — 56 unit-тестов, 95% coverage
+  нового модуля, mypy strict-clean на источнике. Полностью offline:
+  fake SDK client для большинства сценариев + `httpx.MockTransport`
+  для трёх e2e-тестов wire-формата (chat-completions POST →
+  response body → `LLMResponse`).
+* Полный harness test suite: 144/144 pass.
+>>>>>>> wt/t_81622105
 
 ### [PR #907] — MiniMax LLM-интеграция в `rob_box_llm` (text + tools + vision)
 
@@ -115,6 +155,62 @@
   фаза M3, отдельная Kanban-задача. Текущие legacy-пути сохранены.
 * Image generation через MiniMax — отложено (YAGNI), до подтверждённого
   consumer (потенциально Telegram media tool).
+
+### [PR #907 / harness-p0] — `rob_box_harness`: ядро Harness Framework по ADR-0001
+
+> Ветка `feature/harness-p0-foundation`. Фундамент: контракт `Harness`,
+> пять портов (LLMProvider / ToolProvider / MemoryStore / SideEffectBus /
+> Transport) + `Clock` для DI времени, единая точка входа
+> `run_harness(name, input, config)`. Реальные Dialog/Persistent/Telegram
+> адаптеры придут в P1 — этот PR даёт только каркас и smoke-тесты.
+
+#### Добавлено
+
+* **Новый пакет `src/rob_box_harness/`** (Python, ament_python):
+  * `Harness[StateT]` (ABC) — `__init__` / `init` / `run` / `teardown`,
+    идемпотентные на каждой фазе, `async with harness` гарантирует
+    `teardown` на исключении (ADR-0001 §2.3).
+  * `LifecycleHooks` — `on_start / on_turn_begin / on_tool_call /
+    on_tool_result / on_response_chunk / on_error / on_stop`.
+  * `SessionSnapshot` + `Harness.snapshot() / restore()` — для тестов
+    и replay.
+  * Порты: `LLMProvider` (re-export из `rob_box_llm`), `ToolProvider`
+    (`FakeToolProvider` для тестов), `MemoryStore` (`InMemoryStore`),
+    `SideEffectBus` (`NoopBus` / `RecordingBus` / `CompositeBus`),
+    `Transport` (`BaseTransport` / `FakeTransport`), `Clock`
+    (`SystemClock` / `MockClock`).
+  * `HarnessConfig` + `load_config(path)` — YAML + `${ENV_VAR}`
+    placeholder interpolation (ADR-0001 §2.5).
+  * `HarnessRegistry` + `HarnessFactory` + `register_builtin_harnesses`
+    + `run_harness(name, input, config)` + `run_harness_sync` —
+    single entry point.
+  * Встроенные dummy-`Harness`-ы `echo` и `upper` + `DummyLLMProvider`
+    для smoke-теста.
+  * Иерархия ошибок: `HarnessError` → `ConfigError`,
+    `HarnessNotFoundError`, `HarnessStateError`,
+    `ProviderNotFoundError`, `HookError`.
+  * `README.md` с quick-start, YAML-шаблоном, архитектурной диаграммой.
+* **88 unit-тестов** в `src/rob_box_harness/test/` — lifecycle
+  (init/idempotence/teardown), hooks, snapshot/restore, registry,
+  factory cache, dummy harness end-to-end, config loader (ENV
+  interpolation + layered files), clock mock, memory, effects, tools,
+  transport. 90% line coverage.
+* **mypy strict-clean** (20 source files, 0 issues) — благодаря
+  `ignore_missing_imports = True` для `rob_box_llm` (нет py.typed).
+* **Документация:** `docs/adr/0001-harness-architecture.md` —
+  финальный архитектурный ADR (MADR, Accepted) с lifecycle sequence
+  diagram, extension points и MiniMax-требованиями M1–M10. Линкуется
+  из SPEC_CURRENT и ROADMAP.
+
+#### Не входит в PR (P1)
+
+* Реальные `DialogHarness` / `PersistentHarness` / `TelegramHarness` —
+  каждая нода станет тонкой обёрткой над `Harness` + своими портами;
+  отдельные Kanban-задачи под каждый адаптер.
+* SQL / Redis `MemoryStore` — появятся, когда первый реальный
+  harness потребует персистентности.
+* ROS2 `Transport` — зависит от первой ROS2-ноды, мигрирующей на
+  harness; до того `FakeTransport` достаточно для тестов.
 
 ## [Март 2026] — PR #572: Integrate MCP tools, enhance documentation, and improve test coverage
 
