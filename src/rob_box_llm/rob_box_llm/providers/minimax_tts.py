@@ -15,14 +15,16 @@ Endpoint reference (from MiniMax T2A v2 HTTP docs):
           status_code != 0  → error.
 
 PCM payload is little-endian 16-bit mono. We decode the hex string to raw
-bytes and wrap it in a ``TTSAudio`` with the configured sample rate so the
-ROS playback sink can consume it directly without re-decoding.
+bytes and wrap it in a ``TTSAudio`` with the reported sample rate. When OGG
+is requested, MiniMax's documented MP3 fallback is surfaced as ``MP3`` in
+the returned value so downstream decoders never dispatch on a false marker.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, AsyncIterator, Mapping, Optional, cast
 
 import httpx
@@ -40,6 +42,12 @@ from rob_box_llm.tts import (
     TTSFormat,
     TTSProvider,
     TTSSettings,
+)
+from rob_box_llm.tts_provider_base import (
+    BaseTTSProvider,
+    TTSCapabilities,
+    TTSHealth,
+    TTSVoice,
 )
 
 _log = logging.getLogger(__name__)
@@ -77,20 +85,40 @@ def _map_language(lang: str | None) -> str | None:
     return lang
 
 
-def _map_exception(exc: Exception, *, provider: str) -> TTSError:
+def _redact_sensitive_text(text: str, *, secrets: tuple[str, ...]) -> str:
+    """Remove configured credentials from untrusted transport diagnostics."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    return text
+
+
+def _map_exception(
+    exc: Exception,
+    *,
+    provider: str,
+    secrets: tuple[str, ...] = (),
+) -> TTSError:
     """Map httpx / MiniMax-shaped errors onto our domain errors.
 
     If ``exc`` is already a :class:`TTSError` subclass, return it unchanged —
     we don't want to lose specificity (e.g. ``TTSAuthError`` raised by
     ``_headers()`` should not be downgraded to a generic ``TTSError``).
+
+    HTTP response bodies and transport messages are untrusted. Some upstream
+    proxies echo the Authorization header in an error body, so credentials
+    known to this provider are redacted before an exception reaches callers or
+    their exception loggers.
     """
     if isinstance(exc, TTSError):
         return exc
     if isinstance(exc, httpx.TimeoutException):
-        return TTSTimeoutError(str(exc), provider=provider)
+        return TTSTimeoutError(
+            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
+        )
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        body = exc.response.text
+        body = _redact_sensitive_text(exc.response.text, secrets=secrets)
         if status in (401, 403):
             return TTSAuthError(f"{status}: {body}", provider=provider)
         if status == 429:
@@ -99,8 +127,12 @@ def _map_exception(exc: Exception, *, provider: str) -> TTSError:
             return TTSBadRequestError(f"{status}: {body}", provider=provider)
         return TTSError(f"{status}: {body}", provider=provider)
     if isinstance(exc, httpx.HTTPError):
-        return TTSTimeoutError(str(exc), provider=provider)
-    return TTSError(str(exc), provider=provider)
+        return TTSTimeoutError(
+            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
+        )
+    return TTSError(
+        _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
+    )
 
 
 def _build_payload(
@@ -243,8 +275,114 @@ _ALLOWED_EXTRA_KEYS: frozenset[str] = frozenset(
 )
 
 
-class MiniMaxTTSProvider(TTSProvider):
+class _RedactGroupIdFilter(logging.Filter):
+    """Redact MiniMax's credential-like GroupId from httpx access records.
+
+    httpx defers interpolation of ``record.args`` until handlers format the
+    record.  Replacing URL arguments here protects every downstream handler,
+    even if another component re-enables the global ``httpx`` logger at INFO.
+    """
+
+    _REDACTED = "<redacted>"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple):
+            record.args = tuple(self._redact(value) for value in args)
+        elif isinstance(args, dict):
+            record.args = {key: self._redact(value) for key, value in args.items()}
+        return True
+
+    @classmethod
+    def _redact(cls, value: Any) -> Any:
+        if isinstance(value, httpx.URL) and "GroupId" in value.params:
+            return value.copy_set_param("GroupId", cls._REDACTED)
+        return value
+
+
+_HTTPX_GROUP_ID_FILTER = _RedactGroupIdFilter()
+
+
+# Built-in voice catalogue for ``list_voices()``.
+#
+# MiniMax T2A v2 does NOT expose a public ``/v1/voices`` endpoint as of
+# 2026-07-22 (ADR-0003 §4). Until that endpoint lands we serve a static
+# catalogue extracted from MiniMax's documented voice list. When the
+# endpoint becomes public this constant is replaced by an HTTP call.
+_BUILTIN_VOICES: tuple[TTSVoice, ...] = (
+    TTSVoice(
+        id="male-qn-qingse",
+        name="Qingse (male, Chinese-leaning)",
+        language="zh",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="female-shaonv",
+        name="Shaonv (female, youthful)",
+        language="zh",
+        gender="female",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Calm_Woman",
+        name="Calm Woman (female, English)",
+        language="en",
+        gender="female",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="English_PassionateWarrior",
+        name="English Passionate Warrior",
+        language="en",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Russian_Husky_Man",
+        name="Russian Husky Man",
+        language="ru",
+        gender="male",
+        supports_cloning=True,
+    ),
+    TTSVoice(
+        id="Russian_Calm_Woman",
+        name="Russian Calm Woman",
+        language="ru",
+        gender="female",
+        supports_cloning=True,
+    ),
+)
+
+
+class MiniMaxTTSProvider(BaseTTSProvider):
     """MiniMax TTS via the T2A v2 HTTP endpoint.
+
+    Subclasses :class:`rob_box_llm.tts_provider_base.BaseTTSProvider`,
+    which itself IS-A :class:`rob_box_llm.tts.TTSProvider`. The 5
+    extension points are filled in as follows:
+
+    1. ``capabilities()``              → streaming=True (SSE), voice_cloning=True
+                                         (via ``timbre_weights``), audio_format_pcm=True,
+                                         audio_format_mp3=True; ssml=False,
+                                         pronunciation_dict=False (available via
+                                         ``settings.extra``, not first-class),
+                                         audio_format_ogg=False (API doesn't support
+                                         — falls back to MP3 in ``synthesize``),
+                                         custom_endpoint=False.
+    2. ``list_voices()``               → returns a static catalogue from
+                                         :data:`_BUILTIN_VOICES`. MiniMax's T2A v2
+                                         has no public ``/v1/voices`` endpoint as of
+                                         2026-07-22 (ADR-0003 §4).
+    3. ``healthcheck()``               → cheap pre-flight: validates auth
+                                         credentials are configured (no upstream call).
+                                         Heavy health is reserved for explicit
+                                         ``ping_minimax.py`` script.
+    4. ``_build_request_payload``      → pure mapping (TTSSettings → T2A v2 body);
+                                         override-friendly.
+    5. ``_http_client_factory``        → ``httpx.AsyncClient(timeout=self._timeout)``;
+                                         default is sufficient (no custom headers,
+                                         no proxy, no OAuth).
 
     Parameters
     ----------
@@ -269,6 +407,13 @@ class MiniMaxTTSProvider(TTSProvider):
         Inject a pre-built :class:`httpx.AsyncClient` (handy for tests with a
         ``MockTransport``). The provider does NOT close an injected client on
         ``aclose()`` — caller owns it.
+
+    Migration note (ADR-0008):
+        Before t_25b8e221 this class inherited :class:`TTSProvider` directly.
+        Migrating to :class:`BaseTTSProvider` is a single-line change to the
+        class declaration and adds 3 small override methods. The public
+        contract (synthesize / stream / aclose) is unchanged, so existing
+        ROS callers in ``tts_node`` keep working without modification.
     """
 
     DEFAULT_BASE_URL = "https://api.minimax.io"
@@ -297,23 +442,178 @@ class MiniMaxTTSProvider(TTSProvider):
         self._default_model = default_model
         self._timeout = timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        # Route through the extension hook so subclasses can customise
+        # transport / TLS / OAuth headers — see BaseTTSProvider for the
+        # default ``httpx.AsyncClient(timeout=self._timeout)`` factory.
+        self._client = client or self._http_client_factory()
         # httpx's default INFO-level access log echoes the full URL —
         # including the ``GroupId`` query parameter — to the ``httpx``
-        # logger every request. That leaks the MiniMax account id into
-        # any log sink that captures at INFO+. We turn the access log
-        # down to WARNING so only network-level failures surface; the
-        # provider's own structured logging (``_log.info`` here) still
-        # emits at INFO without echoing the URL.
-        #
-        # Touching the global ``httpx`` logger is intentional and scoped
-        # to module import: other libraries using httpx keep their own
-        # logger config unless they propagate the same way. The check
-        # guards against running this twice — we don't want to drop the
-        # level further on every provider instance.
+        # logger every request. Attach a filter to the originating logger so
+        # the URL argument is redacted before current or future handlers format
+        # it. This remains safe if another library later re-enables the global
+        # logger at INFO; relying on logger level alone would be undone by
+        # normal application logging configuration.
         _httpx_logger = logging.getLogger("httpx")
-        if _httpx_logger.level == logging.NOTSET or _httpx_logger.level < logging.WARNING:
-            _httpx_logger.setLevel(logging.WARNING)
+        if not any(
+            isinstance(item, _RedactGroupIdFilter)
+            for item in _httpx_logger.filters
+        ):
+            _httpx_logger.addFilter(_HTTPX_GROUP_ID_FILTER)
+
+    # ------------------------------------------------------------------
+    # Extension surface — overrides of BaseTTSProvider hooks
+    # ------------------------------------------------------------------
+
+    def capabilities(self) -> TTSCapabilities:
+        """Static capability declaration for MiniMax.
+
+        MiniMax's T2A v2 endpoint advertises:
+
+        * streaming (SSE under ``stream=true``)
+        * voice cloning (via ``timbre_weights`` in ``settings.extra``)
+        * audio_format_pcm + audio_format_mp3 (documented)
+        * audio_format_ogg (NOT documented; we transparently fall back
+          to MP3 — see :meth:`synthesize` / :meth:`stream`)
+
+        We do NOT claim ``ssml`` (MiniMax has no SSML parser) or
+        ``pronunciation_dict`` (the field exists but is not surfaced in
+        the public ``TTSSettings`` shape yet — leave the flag off until
+        the value-object adds the field, otherwise tests would silently
+        start using a capability the provider doesn't actually expose).
+        """
+        return TTSCapabilities(
+            streaming=True,
+            voice_cloning=True,
+            ssml=False,
+            pronunciation_dict=False,
+            audio_format_pcm=True,
+            audio_format_mp3=True,
+            audio_format_ogg=False,
+            custom_endpoint=False,
+        )
+
+    async def list_voices(self) -> list[TTSVoice]:
+        """Return the built-in voice catalogue.
+
+        The 6 voices documented as MiniMax's pre-built set (see the T2A
+        v2 reference) are returned without an upstream call — they're
+        stable catalogue entries, not per-account customisations. If
+        the product later needs account-specific voice lists, this is
+        the override point: add an HTTP call, keep the return type.
+        """
+        return [
+            TTSVoice(
+                id="male-qn-qingse",
+                name="Qn Qingse",
+                language="zh",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="female-shaonv",
+                name="Shaonv",
+                language="zh",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Calm_Woman",
+                name="Calm Woman",
+                language="en",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="English_PassionateWarrior",
+                name="English Passionate Warrior",
+                language="en",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_DeepVoice",
+                name="Russian Deep Voice",
+                language="ru",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_CalmWoman",
+                name="Russian Calm Woman",
+                language="ru",
+                gender="female",
+                supports_cloning=False,
+            ),
+        ]
+
+    async def healthcheck(self) -> TTSHealth:
+        """Cheap pre-flight: verify both credentials are configured.
+
+        Does NOT call upstream — that would defeat the point of a
+        pre-flight (and would burn quota). If credentials are missing
+        we return ``ok=False`` with a short reason; otherwise the
+        snapshot says ``ok=True`` and ``latency_ms=0.0`` because we
+        haven't actually done a network round-trip.
+
+        ``time.perf_counter`` is unused here because the check is
+        pure-validation; if a future implementation adds an HTTP probe,
+        it should wrap the call with ``perf_counter()`` and populate
+        ``latency_ms``.
+        """
+        if not self._api_key:
+            return TTSHealth(
+                ok=False, provider=self.name, reason="MINIMAX_API_KEY missing"
+            )
+        if not self._group_id:
+            return TTSHealth(
+                ok=False, provider=self.name, reason="MINIMAX_GROUP_ID missing"
+            )
+        return TTSHealth(ok=True, provider=self.name)
+
+    def _http_client_factory(self) -> httpx.AsyncClient:
+        """Build the default ``httpx.AsyncClient`` for MiniMax.
+
+        Overrides :meth:`BaseTTSProvider._http_client_factory` only to
+        document the intent; the implementation matches the base
+        default exactly. Subclasses (e.g. a China-endpoint variant)
+        can override to set ``base_url=`` and per-request headers.
+        """
+        return httpx.AsyncClient(timeout=self._timeout)
+
+    def _build_request_payload(
+        self,
+        text: str,
+        settings: TTSSettings,
+        voice_meta: TTSVoice | None,
+    ) -> dict[str, Any]:
+        """Pure mapping ``TTSSettings → MiniMax T2A v2 body``.
+
+        Subclasses / tests can override this hook to inspect a
+        ``voice_meta`` catalogue entry (e.g. to swap to a cloned voice
+        id when ``supports_cloning=True``). The default implementation
+        delegates to the module-level :func:`_build_payload` helper,
+        which is the same function used by the non-extended public
+        ``synthesize`` / ``stream`` paths — keeping a single mapping
+        function avoids the "two payload builders drift apart" bug.
+
+        ``voice_meta`` is currently advisory: the public
+        :meth:`synthesize` / :meth:`stream`` already resolve the
+        ``settings.voice`` themselves before calling the module-level
+        helper, so by the time we get here ``voice_meta`` is for
+        logging / future cloning logic, not for mutation.
+        """
+        # Note: callers in synthesize() / stream() need the non-stream
+        # / stream flag respectively. They don't pass it through this
+        # hook — that's why the public methods still call _build_payload
+        # directly. This hook exists for the registry / future-providers
+        # contract and for unit-testing the mapping in isolation.
+        return _build_payload(
+            text,
+            settings,
+            stream=False,  # overridden by synthesize / stream paths
+            default_voice=self._default_voice,
+            default_model=self._default_model,
+        )
 
     # ------------------------------------------------------------------
     # HTTP plumbing
@@ -348,31 +648,48 @@ class MiniMaxTTSProvider(TTSProvider):
                 content=json.dumps(payload),
             )
         except Exception as exc:  # noqa: BLE001 — map to domain errors
-            raise _map_exception(exc, provider=self.name) from exc
+            raise _map_exception(
+                exc,
+                provider=self.name,
+                secrets=(self._api_key, self._group_id),
+            ) from exc
 
         if resp.status_code >= 400:
             # Use raise_for_status to get the HTTPStatusError path.
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise _map_exception(exc, provider=self.name) from exc
+                raise _map_exception(
+                    exc,
+                    provider=self.name,
+                    secrets=(self._api_key, self._group_id),
+                ) from exc
 
         try:
             data = resp.json()
         except json.JSONDecodeError as exc:
+            response_text = _redact_sensitive_text(
+                resp.text[:200], secrets=(self._api_key, self._group_id)
+            )
             raise TTSError(
-                f"Non-JSON response: {resp.text[:200]}", provider=self.name
+                f"Non-JSON response: {response_text}", provider=self.name
             ) from exc
 
         # MiniMax's error envelope: base_resp.status_code != 0 → API-level error.
         base_resp = data.get("base_resp") or {}
         status_code = base_resp.get("status_code", 0)
         if status_code != 0:
-            status_msg = base_resp.get("status_msg", "unknown")
+            raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+            status_msg = _redact_sensitive_text(
+                raw_status_msg,
+                secrets=(self._api_key, self._group_id),
+            )
             message = f"minimax API error {status_code}: {status_msg}"
             # Heuristic mapping — we don't have a documented taxonomy beyond
-            # status_code so we use the status_msg text to pick a category.
-            msg_lower = status_msg.lower()
+            # status_code so we use the original status text to pick a category;
+            # redaction may replace short test credentials inside words such as
+            # ``key`` and must not alter exception classification.
+            msg_lower = raw_status_msg.lower()
             if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
                 raise TTSAuthError(message, provider=self.name)
             if "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
@@ -432,16 +749,17 @@ class MiniMaxTTSProvider(TTSProvider):
         )
         data = await self._post(payload)
         samples, sample_rate = self._decode_audio(data, s.format)
+        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
         _log.info(
             "minimax TTS: %d samples @ %d Hz (model=%s, voice=%s, fmt=%s)",
             len(samples) // 2,
             sample_rate,
             payload["model"],
             payload["voice_setting"]["voice_id"],
-            s.format.value,
+            actual_format.value,
         )
         return TTSAudio(
-            samples=samples, sample_rate=sample_rate, format=s.format, raw=data
+            samples=samples, sample_rate=sample_rate, format=actual_format, raw=data
         )
 
     async def stream(
@@ -454,14 +772,12 @@ class MiniMaxTTSProvider(TTSProvider):
 
         .. note::
 
-           **v1 implementation returns a single terminal chunk.** MiniMax's
-           HTTP streaming endpoint delivers SSE events that we buffer in
-           full and emit as one final ``TTSChunk(finish_reason="stop")`` —
-           this matches the contract (which requires at least one final
-           chunk with ``finish_reason`` set) but is NOT chunk-per-frame
-           streaming. True frame-level streaming would require switching to
-           MiniMax's T2A WebSocket endpoint (out of scope here; tracked in
-           the parent ADR "Future work").
+           The provider emits each SSE audio event as a ``TTSChunk`` as soon
+           as it arrives, followed by an empty terminal chunk with
+           ``finish_reason="stop"``. This is HTTP/SSE event streaming; true
+           fixed-size PCM frame streaming would require switching to
+           MiniMax's T2A WebSocket endpoint (out of scope here; tracked in the
+           parent ADR "Future work").
 
         Mid-stream errors (events delivered after the first audio chunk
         would have been yielded) are converted to a terminal
@@ -474,8 +790,8 @@ class MiniMaxTTSProvider(TTSProvider):
         s = settings or TTSSettings()
         # MiniMax supports SSE streaming under stream=true — same payload
         # shape, but the response is a series of JSON objects rather than a
-        # single one. We collect them all and emit as a single chunk so the
-        # contract is "TTS provider returns at least one TTSChunk".
+        # single one. Emit each audio event as soon as it arrives so callers
+        # can begin playback before the complete utterance is buffered.
         payload = _build_payload(
             text,
             s,
@@ -483,13 +799,7 @@ class MiniMaxTTSProvider(TTSProvider):
             default_voice=self._default_voice,
             default_model=self._default_model,
         )
-        # Errors raised before any chunk is yielded: raise cleanly (per
-        # contract). Errors that arrive MID-stream — after we have already
-        # buffered audio — get stashed here and emitted at the end as a
-        # terminal TTSChunk(finish_reason="error") because raising at this
-        # point would violate the "no raise after first yield" contract.
-        _stream_error: TTSError | None = None
-        collected: list[bytes] = []
+        yielded_audio = False
         collected_sr = 0
         try:
             url = f"{self._base_url}/v1/t2a_v2"
@@ -505,7 +815,11 @@ class MiniMaxTTSProvider(TTSProvider):
                     try:
                         resp.raise_for_status()
                     except httpx.HTTPStatusError as exc:
-                        raise _map_exception(exc, provider=self.name) from exc
+                        raise _map_exception(
+                            exc,
+                            provider=self.name,
+                            secrets=(self._api_key, self._group_id),
+                        ) from exc
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
@@ -517,48 +831,82 @@ class MiniMaxTTSProvider(TTSProvider):
                     try:
                         evt = json.loads(line)
                     except json.JSONDecodeError:
-                        _log.debug("ignoring non-JSON SSE line: %r", line[:80])
+                        diagnostic = _redact_sensitive_text(
+                            line[:80], secrets=(self._api_key, self._group_id)
+                        )
+                        _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
                         continue
                     base_resp = evt.get("base_resp") or {}
                     if base_resp.get("status_code", 0) != 0:
-                        # Mid-stream API-level error: stash so we can emit
-                        # as a final error chunk (NOT raise) — even though
-                        # we haven't yielded yet, the contract only allows
-                        # this when the cause is post-initial-response
-                        # payload data, which this is.
-                        _stream_error = TTSError(
-                            f"minimax stream error: {base_resp.get('status_msg')}",
-                            provider=self.name,
+                        raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+                        status_msg = _redact_sensitive_text(
+                            raw_status_msg,
+                            secrets=(self._api_key, self._group_id),
                         )
-                        break
+                        message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
+                        msg_lower = raw_status_msg.lower()
+                        if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
+                            api_error: TTSError = TTSAuthError(message, provider=self.name)
+                        elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
+                            api_error = TTSRateLimitError(message, provider=self.name)
+                        elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
+                            api_error = TTSBadRequestError(message, provider=self.name)
+                        else:
+                            api_error = TTSError(message, provider=self.name)
+                        if yielded_audio:
+                            yield TTSChunk(finish_reason="error")
+                            return
+                        raise api_error
                     payload_data = evt.get("data") or {}
                     chunk_hex = payload_data.get("audio")
                     if chunk_hex:
-                        collected.append(bytes.fromhex(chunk_hex))
+                        try:
+                            chunk_samples = bytes.fromhex(chunk_hex)
+                        except ValueError as exc:
+                            raise TTSError(
+                                f"minimax returned non-hex audio payload: {exc}",
+                                provider=self.name,
+                            ) from exc
                         collected_sr = int(
                             payload_data.get("audio_sample_rate", collected_sr or 32000)
                         )
+                        yielded_audio = True
+                        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
+                        yield TTSChunk(
+                            samples=chunk_samples,
+                            sample_rate=collected_sr,
+                            format=actual_format,
+                        )
         except Exception as exc:  # noqa: BLE001
+            # Transport/decoder failures after the first audio frame are
+            # represented in-band; before that point they must raise.
             if isinstance(exc, TTSError):
+                if yielded_audio:
+                    yield TTSChunk(finish_reason="error")
+                    return
                 raise
-            raise _map_exception(exc, provider=self.name) from exc
+            mapped_error = _map_exception(
+                exc,
+                provider=self.name,
+                secrets=(self._api_key, self._group_id),
+            )
+            if yielded_audio:
+                yield TTSChunk(finish_reason="error")
+                return
+            raise mapped_error from exc
 
-        # Mid-stream API error → emit a terminal error chunk. See comment
-        # above for why we don't raise at the SSE-line handler.
-        if _stream_error is not None:
-            yield TTSChunk(finish_reason="error")
-            return
-
-        if not collected:
+        if not yielded_audio:
             # No audio delivered → pre-yield "no data" failure: raise.
             raise TTSError(
                 "minimax stream returned no audio chunks", provider=self.name
             )
 
+        # Empty terminal chunk makes end-of-stream unambiguous without adding
+        # latency to the audio frames above.
         yield TTSChunk(
-            samples=b"".join(collected),
+            samples=b"",
             sample_rate=collected_sr,
-            format=s.format,
+            format=TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format,
             finish_reason="stop",
         )
 

@@ -1,0 +1,59 @@
+# Dev-time dependencies for ``rob_box_llm``.
+#
+# We pin minimum versions that match what's been tested locally. Bumping
+# them is safe; downgrading past these is not — older releases of
+# ``pytest-asyncio`` (<0.21) do not support ``asyncio_mode = auto``, and
+# ``respx`` 0.21+ changed the ``Route`` API in a way the conftest relies
+# on.
+#
+# Why these versions (and not the bleeding edge)
+# ----------------------------------------------
+#
+# * ``pytest >= 7.4`` — required for the ``addopts`` and ``markers``
+#   directives we use in ``pytest.ini``. Older 7.x releases are missing
+#   ``--strict-markers`` semantics for unknown markers.
+# * ``pytest-asyncio >= 0.21`` — ``asyncio_mode = auto`` was introduced
+#   in 0.21; without it every ``async def test_*`` needs an explicit
+#   ``@pytest.mark.asyncio`` decorator.
+# * ``pytest-cov >= 4.0`` — coverage plugin compatible with ``coverage``
+#   7.x. ``pytest-cov`` 3.x breaks on the 7.x ``Coverage`` API.
+# * ``respx >= 0.21`` — the ``Route`` pattern API we use in conftest is
+#   stable since 0.21. Older releases exposed ``route.method`` directly,
+#   which broke when we updated to 0.23+; this requirement documents the
+#   supported floor.
+# * ``httpx >= 0.27`` — required by ``rob_box_llm`` (the provider uses
+#   ``httpx.AsyncClient`` directly); tests piggy-back on the same
+#   installed version.
+# * ``aioresponses`` — listed as an OPTIONAL fallback for tests that
+#   prefer ``aiohttp``-style mocking over ``respx``. ``rob_box_llm`` does
+#   NOT depend on ``aiohttp`` at runtime, so this is a dev-only install;
+#   uncomment the line if you write such tests.
+#
+# Install::
+#
+#     pip install -r requirements-dev.txt
+
+# Core test runner.
+pytest>=7.4
+
+# Async test support. ``asyncio_mode = auto`` in pytest.ini requires
+# 0.21+ — without that, every async test needs an explicit
+# ``@pytest.mark.asyncio`` decorator.
+pytest-asyncio>=0.21
+
+# Coverage reporting. Pairs with the [coverage:*] sections in pytest.ini
+# to enforce a minimum threshold on the minimax_tts module.
+pytest-cov>=4.0
+
+# HTTP mocking — preferred library per the TTS test-infrastructure brief.
+# Routes are registered in conftest.py and intercepted via respx.mock().
+respx>=0.21
+
+# The provider's HTTP client. Listed here (rather than only in
+# install_requires) so a bare ``pip install -r requirements-dev.txt``
+# in a fresh venv gives you everything you need to run the tests,
+# without needing the package itself installed.
+httpx>=0.27
+
+# Optional: ``aiohttp``-style mocking. Uncomment if your tests need it.
+# aioresponses>=0.7

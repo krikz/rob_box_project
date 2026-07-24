@@ -1,0 +1,313 @@
+%% ADR-0007 (финальный сводный ADR): сводная class-диаграмма
+%% интеграции MiniMax TTS. Объединяет классы из:
+%%   - ADR-0004 §2.1–2.11 (port, adapter, registry, factory, retry, CB, streaming)
+%%   - sub-fragment 0007a (reliability): режимы, retry policy, circuit breaker states
+%%   - sub-fragment 0007b (ros2-audio-contract): audio topic/message контракт
+%%   - ADR-0006 (config): pydantic-settings секции
+%%
+%% Этот граф — единая "карта классов" того, что вводится / затрагивается
+%% интеграцией MiniMax TTS в rob_box. Все классы — иллюстративные
+%% value-objects / ABC; production-кода в Mermaid нет.
+
+classDiagram
+    direction LR
+
+    ' ============================================================
+    ' Domain value-objects (frozen в P0.5, см. tts.py:121-177)
+    ' ============================================================
+    class TTSSettings {
+        <<value-object>>
+        +voice: str
+        +model: str
+        +language: str
+        +speed: float
+        +sample_rate: int
+        +format: AudioFormat
+        +timeout: float
+    }
+
+    class TTSAudio {
+        <<value-object>>
+        +samples: bytes
+        +sample_rate: int
+        +channels: int
+    }
+
+    class TTSChunk {
+        <<value-object, streaming>>
+        +samples: bytes
+        +finish_reason: Literal~continue|stop|error~
+    }
+
+    class TTSVoice {
+        <<value-object>>
+        +id: str
+        +name: str
+        +language: str
+    }
+
+    class TTSHealth {
+        <<value-object>>
+        +healthy: bool
+        +latency_ms: float
+        +detail: Mapping~str,Any~
+    }
+
+    ' ============================================================
+    ' TTSError hierarchy (tts.py + errors.py:63-90)
+    ' ============================================================
+    class TTSError {
+        <<exception, base>>
+        +request_id: str
+    }
+    class TTSAuthError {
+        <<401/403>>
+    }
+    class TTSBadRequestError {
+        <<4xx>>
+    }
+    class TTSRateLimitError {
+        <<429>>
+        +retry_after_s: float
+    }
+    class TTSUpstreamError {
+        <<5xx / contract>>
+        +breaker_open: bool
+    }
+    class TTSTimeoutError {
+        <<connect/read>>
+    }
+
+    TTSError <|-- TTSAuthError
+    TTSError <|-- TTSBadRequestError
+    TTSError <|-- TTSRateLimitError
+    TTSError <|-- TTSUpstreamError
+    TTSError <|-- TTSTimeoutError
+
+    ' ============================================================
+    ' Port & adapter (ADR-0004 §2.1–2.2)
+    ' ============================================================
+    class BaseTTSProvider {
+        <<abstract port>>
+        +name: ClassVar~str~
+        +synthesize(text, settings) TTSAudio*
+        +stream(text, settings) AsyncIterator~TTSChunk~*
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
+    }
+
+    class MiniMaxTTSProvider {
+        <<HTTP/SSE/WS adapter>>
+        -http_client: AsyncClient
+        -ws_client: WebSocketClient
+        -config: MiniMaxTTSConfig
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
+        -build_payload(text, settings) dict
+        -map_exception(error) TTSError
+    }
+
+    class FutureProvider {
+        <<ElevenLabs / Google / local>>
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+    }
+
+    BaseTTSProvider <|-- MiniMaxTTSProvider : implements
+    BaseTTSProvider <|-- FutureProvider : implements
+
+    MiniMaxTTSProvider ..> TTSSettings : reads
+    MiniMaxTTSProvider ..> TTSAudio : returns
+    MiniMaxTTSProvider ..> TTSChunk : yields
+    MiniMaxTTSProvider ..> TTSError : raises
+
+    ' ============================================================
+    ' Registry + factory (ADR-0004 §2.3, §2.8)
+    ' ============================================================
+    class ProviderBuilder {
+        <<callable>>
+        +build(config) BaseTTSProvider
+    }
+
+    class TTSProviderRegistry {
+        -builders: dict~str, ProviderBuilder~
+        +register(name, builder) None
+        +get(name) ProviderBuilder
+        +names() tuple~str, ...
+    }
+
+    class TTSProviderFactory {
+        +create(name, config, registry) BaseTTSProvider$
+    }
+
+    TTSProviderRegistry o-- ProviderBuilder : stores
+    TTSProviderFactory ..> TTSProviderRegistry : lookup
+    TTSProviderFactory ..> ProviderBuilder : invokes
+    ProviderBuilder ..> BaseTTSProvider : creates
+    ProviderBuilder ..> MiniMaxTTSProvider : builds
+    ProviderBuilder ..> FutureProvider : builds
+
+    ' ============================================================
+    ' Config schema (ADR-0006 §2.3) — pydantic-settings
+    ' ============================================================
+    class MiniMaxTTSConfig {
+        <<pydantic-settings, CLI/cron only>>
+        +auth: AuthConfig
+        +network: NetworkConfig
+        +retries: RetriesConfig
+        +audio: AudioConfig
+        +logging: LoggingConfig
+    }
+    class AuthConfig {
+        +api_key: SecretStr
+        +group_id: SecretStr
+    }
+    class NetworkConfig {
+        +base_url: HttpUrl
+        +timeout: float
+    }
+    class RetriesConfig {
+        +max_retries: int
+        +retry_backoff_ms: int
+        +circuit_breaker_threshold: int
+    }
+    class AudioConfig {
+        +voice: VoiceId
+        +model: ModelId
+        +language: LanguageShort
+        +sample_rate: SampleRateHz
+        +format: AudioFormat
+    }
+    class LoggingConfig {
+        +redact_group_id: bool
+        +debug_payload: bool
+    }
+
+    MiniMaxTTSConfig *-- AuthConfig
+    MiniMaxTTSConfig *-- NetworkConfig
+    MiniMaxTTSConfig *-- RetriesConfig
+    MiniMaxTTSConfig *-- AudioConfig
+    MiniMaxTTSConfig *-- LoggingConfig
+
+    MiniMaxTTSProvider ..> MiniMaxTTSConfig : holds
+
+    ' ============================================================
+    ' Retry & circuit breaker (ADR-0004 §2.9–2.10; reliability)
+    ' ============================================================
+    class RetryPolicy {
+        <<dataclass, frozen>>
+        +max_retries: int
+        +backoff_ms: int
+        +retry_on_rate_limit: bool
+        +should_retry(exc, attempt) bool
+        +backoff_seconds(attempt) float
+    }
+    class CircuitBreaker {
+        <<forward-compat, не реализован в P0.5>>
+        +state: BreakerState
+        +failure_threshold: int
+        +reset_timeout_s: float
+        +record_success() None
+        +record_failure(exc) None
+        +allow() bool
+    }
+    class BreakerState {
+        <<enum>>
+        CLOSED
+        OPEN
+        HALF_OPEN
+    }
+
+    CircuitBreaker --> BreakerState : current
+
+    class RetryExecutor {
+        <<async function>>
+        +with_retry(operation, policy, rng) await
+    }
+
+    RetryExecutor ..> RetryPolicy : reads
+    RetryExecutor ..> TTSError : classifies
+    RetryExecutor ..> CircuitBreaker : consults
+
+    ' ============================================================
+    ' Streaming modes (ADR-0004 §2.11; reliability fragment)
+    ' ============================================================
+    class StreamingMode {
+        <<enum>>
+        AUTO
+        NON_STREAMING
+        STREAMING
+    }
+
+    ' ============================================================
+    ' ROS 2 audio contract (sub-fragment 0007b §2.2, §2.4)
+    ' ============================================================
+    class AudioDataMsg {
+        <<audio_common_msgs/AudioData>>
+        +data: uint8[]
+    }
+    class AudioStampedMsg {
+        <<custom, opt-in>>
+        +header: Header
+        +sample_rate: int32
+        +channels: int8
+        +format: string
+        +samples: uint8[]
+    }
+
+    ' ============================================================
+    ' Consumers (composition roots)
+    ' ============================================================
+    class TTSNode {
+        <<ROS consumer / composition root>>
+        -provider: BaseTTSProvider
+        -retry_policy: RetryPolicy
+        -breaker: CircuitBreaker
+        +synthesize_and_publish(text) None
+        +on_shutdown() None
+    }
+    class TTSCLI {
+        <<CLI / cron consumer, ADR-0006 forward-compat>>
+        -provider: BaseTTSProvider
+        -cfg: MiniMaxTTSConfig
+        +run(text) int
+    }
+    class TestHarness {
+        <<consumer / conformance suite>>
+        -provider: BaseTTSProvider
+        +verify_contract() None
+    }
+    class AudioPlayNode {
+        <<logical downstream consumer>>
+        <<and/or in-process AudioPlaybackManager/sounddevice>>
+    }
+
+    TTSNode ..> TTSProviderFactory : create at startup
+    TTSCLI ..> MiniMaxTTSConfig : loads from ENV/file
+    TTSCLI ..> TTSProviderFactory : create at startup
+    TTSNode --> BaseTTSProvider : holds via DI
+    TTSCLI --> BaseTTSProvider : holds via DI
+    TestHarness --> BaseTTSProvider : conformance
+
+    TTSNode ..> RetryPolicy : reads
+    TTSNode ..> CircuitBreaker : owns (when enabled)
+    TTSNode ..> AudioDataMsg : publishes
+    TTSNode ..> AudioStampedMsg : publishes (opt-in)
+
+    AudioPlayNode ..> AudioDataMsg : subscribes (legacy)
+    AudioPlayNode ..> AudioStampedMsg : subscribes (opt-in)
+
+    ' ============================================================
+    ' Composition-root invariant: built-in registration is explicit,
+    ' никакого implicit module scanning. Decorator — only sugar.
+    ' ============================================================
+    note for TTSProviderRegistry "Built-ins регистрируются\nявно в composition root\nregister_builtin_tts().\nНикакого implicit scanning."
+    note for MiniMaxTTSProvider "Vendor HTTP/WS DTO, auth и error mapping\nне выходят за границу адаптера.\nВнутренний retry ЗАПРЕЩЁН\n(ADR-0003 §4)."
+    note for MiniMaxTTSConfig "Только CLI / cron —\nROS-путь остаётся на\nROS-параметрах (ADR-0003 §2.2)."
+    note for CircuitBreaker "Default: disabled.\nForward-compat hook для\n>100 TTS-вызовов/час/робот\n(ADR-0004 §2.10)."
+    note for RetryPolicy "Caller owns retry-loop,\nне провайдер (ADR-0003 §4).\nReusable между ROS и CLI."
+    note for AudioStampedMsg "Opt-in: топик /voice/audio/speech_meta\nвключается только при\naudio_meta_topic != \"\"."

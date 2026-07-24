@@ -7,6 +7,162 @@
 
 ## [Unreleased]
 
+### [Harness P0] — MiniMax LLM-провайдер в `rob_box_harness`
+
+> Ветка `wt/t_2bf98118` → `feature/harness-p0-foundation`.
+> Реализует требования M1–M10 из ADR-0001 §2.6 для harness-стороны
+> `LLMProvider` порта. Тонкая обёртка над `rob_box_llm.providers.minimax`,
+> добавляющая env-based auth, `chat()`-shortcut и retry с экспоненциальным
+> backoff.
+
+#### Добавлено
+
+* **`rob_box_harness.providers.minimax.MiniMaxProvider`** —
+  harness-side обёртка (`HarnessMiniMaxProvider` — канонический
+  класс под алиасом `MiniMaxProvider`), реализующая `LLMProvider`
+  из ADR-0001. Принимает `api_key` явно либо читает из
+  `MINIMAX_API_KEY` env (YAML-литералы запрещены), поддерживает
+  `chat(messages, **kwargs)` shortcut поверх `LLMSettings`, и
+  retry с экспоненциальным backoff (`RetryPolicy(max_attempts=3,
+  backoff_base=0.5, backoff_jitter=0.25)`) на `RateLimitError` /
+  `TimeoutError`. `AuthError` / `ContentFilterError` /
+  `CapabilityUnavailableError` не ретраятся (программные ошибки).
+* **`build_minimax_provider(llm_config, env=…, retry=…, client=…)`** —
+  фабрика из `LLMConfig`. Валидирует `provider == "minimax"`, требует
+  API-ключ через env, поддерживает инжекцию `AsyncOpenAI` клиента
+  (для тестов с `httpx.MockTransport`).
+* **`RetryPolicy`** — `frozen=True` dataclass с валидацией аргументов
+  и `delay_for(attempt) -> float` (базовая задержка + uniform jitter).
+* **README** — `src/rob_box_harness/rob_box_harness/providers/README.md`:
+  YAML-схема, ENV-карта, error/retry таблицы, примеры.
+
+#### Тесты
+
+* `test/test_minimax_provider.py` — 56 unit-тестов, 95% coverage
+  нового модуля, mypy strict-clean на источнике. Полностью offline:
+  fake SDK client для большинства сценариев + `httpx.MockTransport`
+  для трёх e2e-тестов wire-формата (chat-completions POST →
+  response body → `LLMResponse`).
+* Полный harness test suite: 144/144 pass.
+
+### [PR #907] — MiniMax LLM-интеграция в `rob_box_llm` (text + tools + vision)
+
+> Ветка `feature/harness-p0-foundation` → `develop`. Один feature branch,
+> внутри несколько фаз (M0 + M1 + M4, см. `architecture/minimax-provider.md`).
+> TTS и image generation намеренно не входят — это отдельные адаптеры
+> (TTS-фаза уже смержена через PR #907/ADR-0007).
+
+#### Добавлено
+
+* **`MiniMaxProvider`** — OpenAI-compatible адаптер существующего
+  `LLMProvider` (`MiniMax-M3`, `https://api.minimax.io/v1`). Наследуется
+  от общего `_OpenAICompatibleProvider` и переиспользует маппинг SDK
+  исключений на типизированный `errors.ProviderError`.
+* **Мультимодальный `LLMMessage.content`**: backward-compatible расширение
+  до `str | tuple[MessagePart, ...]`. Новые value objects
+  `TextPart`/`ImagePart` сериализуются в OpenAI `image_url` content
+  blocks (URL pass-through / bytes → base64-data-URL).
+* **`ProviderCapabilities`** + `capabilities_for(model)` —
+  capability introspection для безопасного fallback и fail-fast gate
+  до сетевого вызова. `image_input` сужается до vision-capable моделей
+  (`*M3*`, `*M2-vision*`, `*vision*`).
+* **`MINIMAX_MAX_IMAGE_BYTES = 10 MB`** — инженерный default для image
+  payload; единая точка правки, юнит-тесты на превышение лимита.
+* **`MiniMaxRedactedLogFilter`** — utility для гарантированного
+  вычёркивания `MINIMAX_API_KEY` из log records.
+* **Маппинг `base_resp.status_code`** — HTTP 200 c прикладной ошибкой
+  MiniMax превращается в `AuthError`/`RateLimitError`/`ContentFilterError`/
+  `ProviderError` через общий `_post_process_response` hook.
+* **`MiniMaxProvider.thinking` (per-call override)** — default
+  `{type: disabled}` (latency-sensitive); переопределяется через
+  `settings.extra` для agent mode.
+* **35 новых unit-тестов** (`test_minimax_provider.py`): fake SDK,
+  text/tool/error/thinking/image-validation, vision off для не-vision моделей.
+  85 зелёных в `rob_box_llm` итого.
+* **Документация:**
+  * `docs/guides/MINIMAX.md` — пользовательский гайд по text+vision
+    провайдеру (API key, env, factory YAML, capabilities, troubleshooting).
+  * `docs/guides/examples/minimax_llm.yaml` — копируемый шаблон
+    `llm.providers` для registry/factory.
+  * `src/rob_box_llm/README.md` — обновлён: добавлена таблица
+    text+vision провайдеров с явными `name` / `base_url` / capabilities.
+  * `.env.example` — секция `LLM ПРОВАЙДЕРЫ` (отдельно от TTS-блока).
+  * `architecture/minimax-provider.md` — обзорный проектный документ.
+  * `docs/adr/0002-minimax-provider.md` — capability-segregated ADR.
+
+#### Изменено
+
+* `src/rob_box_llm/rob_box_llm/__init__.py` — публичные экспорты
+  `MiniMaxProvider`, `TextPart`, `ImagePart`, `MessagePart`,
+  `MessageContent`, `ProviderCapabilities` (semver-minor: 0.1.0 → 0.2.1).
+* `src/rob_box_llm/rob_box_llm/errors.py` — добавлены
+  `CapabilityUnavailableError` и обновлён docstring иерархии.
+
+#### Не входит в PR #907
+
+* Реестр провайдеров / factory / fallback decorator — фаза M2, отдельная
+  Kanban-задача (после PR #907).
+* Миграция `DialogueNode` и Telegram `LLMChat` на новый `LLMProvider` —
+  фаза M3, отдельная Kanban-задача. Текущие legacy-пути сохранены.
+* Image generation через MiniMax — отложено (YAGNI), до подтверждённого
+  consumer (потенциально Telegram media tool).
+
+### [PR #907 / harness-p0] — `rob_box_harness`: ядро Harness Framework по ADR-0001
+
+> Ветка `feature/harness-p0-foundation`. Фундамент: контракт `Harness`,
+> пять портов (LLMProvider / ToolProvider / MemoryStore / SideEffectBus /
+> Transport) + `Clock` для DI времени, единая точка входа
+> `run_harness(name, input, config)`. Реальные Dialog/Persistent/Telegram
+> адаптеры придут в P1 — этот PR даёт только каркас и smoke-тесты.
+
+#### Добавлено
+
+* **Новый пакет `src/rob_box_harness/`** (Python, ament_python):
+  * `Harness[StateT]` (ABC) — `__init__` / `init` / `run` / `teardown`,
+    идемпотентные на каждой фазе, `async with harness` гарантирует
+    `teardown` на исключении (ADR-0001 §2.3).
+  * `LifecycleHooks` — `on_start / on_turn_begin / on_tool_call /
+    on_tool_result / on_response_chunk / on_error / on_stop`.
+  * `SessionSnapshot` + `Harness.snapshot() / restore()` — для тестов
+    и replay.
+  * Порты: `LLMProvider` (re-export из `rob_box_llm`), `ToolProvider`
+    (`FakeToolProvider` для тестов), `MemoryStore` (`InMemoryStore`),
+    `SideEffectBus` (`NoopBus` / `RecordingBus` / `CompositeBus`),
+    `Transport` (`BaseTransport` / `FakeTransport`), `Clock`
+    (`SystemClock` / `MockClock`).
+  * `HarnessConfig` + `load_config(path)` — YAML + `${ENV_VAR}`
+    placeholder interpolation (ADR-0001 §2.5).
+  * `HarnessRegistry` + `HarnessFactory` + `register_builtin_harnesses`
+    + `run_harness(name, input, config)` + `run_harness_sync` —
+    single entry point.
+  * Встроенные dummy-`Harness`-ы `echo` и `upper` + `DummyLLMProvider`
+    для smoke-теста.
+  * Иерархия ошибок: `HarnessError` → `ConfigError`,
+    `HarnessNotFoundError`, `HarnessStateError`,
+    `ProviderNotFoundError`, `HookError`.
+  * `README.md` с quick-start, YAML-шаблоном, архитектурной диаграммой.
+* **88 unit-тестов** в `src/rob_box_harness/test/` — lifecycle
+  (init/idempotence/teardown), hooks, snapshot/restore, registry,
+  factory cache, dummy harness end-to-end, config loader (ENV
+  interpolation + layered files), clock mock, memory, effects, tools,
+  transport. 90% line coverage.
+* **mypy strict-clean** (20 source files, 0 issues) — благодаря
+  `ignore_missing_imports = True` для `rob_box_llm` (нет py.typed).
+* **Документация:** `docs/adr/0001-harness-architecture.md` —
+  финальный архитектурный ADR (MADR, Accepted) с lifecycle sequence
+  diagram, extension points и MiniMax-требованиями M1–M10. Линкуется
+  из SPEC_CURRENT и ROADMAP.
+
+#### Не входит в PR (P1)
+
+* Реальные `DialogHarness` / `PersistentHarness` / `TelegramHarness` —
+  каждая нода станет тонкой обёрткой над `Harness` + своими портами;
+  отдельные Kanban-задачи под каждый адаптер.
+* SQL / Redis `MemoryStore` — появятся, когда первый реальный
+  harness потребует персистентности.
+* ROS2 `Transport` — зависит от первой ROS2-ноды, мигрирующей на
+  harness; до того `FakeTransport` достаточно для тестов.
+
 ## [Март 2026] — PR #572: Integrate MCP tools, enhance documentation, and improve test coverage
 
 > Ветка `feature/agent-skills` → `develop` | 566 коммитов | +68840 / -2670 строк

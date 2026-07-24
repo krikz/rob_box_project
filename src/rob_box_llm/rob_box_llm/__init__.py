@@ -22,12 +22,29 @@ TTS public surface (added in P0.5 — see ADR-0003):
                          TTSAuthError, TTSBadRequestError
 """
 
+from __future__ import annotations
+
+from rob_box_llm.errors import (
+    AuthError,
+    ContentFilterError,
+    ProviderError,
+    RateLimitError,
+    TimeoutError,
+    TTSAuthError,
+    TTSBadRequestError,
+    TTSError,
+    TTSRateLimitError,
+    TTSTimeoutError,
+)
 from rob_box_llm.provider import (
-    LLMProvider,
-    LLMMessage,
-    LLMResponse,
+    ImagePart,
     LLMChunk,
-    LLMSettings,
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    MessageContent,
+    ProviderCapabilities,
+    TextPart,
     ToolCall,
     ToolResult,
     TextPart,
@@ -44,8 +61,21 @@ from rob_box_llm.tts import (
     TTSFormat,
     FakeTTSProvider,
 )
+from rob_box_llm.tts_provider_base import (
+    BaseTTSProvider,
+    ProviderBuilder,
+    TTSCapabilities,
+    TTSHealth,
+    TTSVoice,
+)
+from rob_box_llm.tts_provider_registry import (
+    TTSProviderFactory,
+    TTSProviderRegistry,
+    register_builtin_tts_providers,
+)
 from rob_box_llm import errors
 from rob_box_llm.providers.deepseek import DeepSeekProvider
+from rob_box_llm.providers.fake import FakeCall, FakeLLMProvider
 from rob_box_llm.providers.mimo import MiMoProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
 from rob_box_llm.providers.fake import FakeLLMProvider
@@ -57,7 +87,6 @@ __all__ = [
     "LLMMessage",
     "LLMResponse",
     "LLMChunk",
-    "LLMSettings",
     "ToolCall",
     "ToolResult",
     "TextPart",
@@ -65,6 +94,7 @@ __all__ = [
     "MessagePart",
     "MessageContent",
     "ProviderCapabilities",
+    "errors",
     "DeepSeekProvider",
     "MiMoProvider",
     "MiniMaxProvider",
@@ -77,6 +107,15 @@ __all__ = [
     "TTSFormat",
     "MiniMaxTTSProvider",
     "FakeTTSProvider",
+    # TTS extension points (P0.5 / ADR-0008)
+    "BaseTTSProvider",
+    "TTSCapabilities",
+    "TTSVoice",
+    "TTSHealth",
+    "ProviderBuilder",
+    "TTSProviderRegistry",
+    "TTSProviderFactory",
+    "register_builtin_tts_providers",
     # Errors module (re-export for convenience)
     "errors",
 ]

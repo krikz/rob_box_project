@@ -1,0 +1,92 @@
+# =============================================================================
+# MiniMax (LLM) — пример factory-конфигурации для provider registry
+# =============================================================================
+#
+# Этот файл — копируемая заготовка для подключения MiniMaxProvider в
+# rob_box_llm registry/factory (фаза M2 PR #907, в работе). Скопируйте
+# секцию `llm:` в свой composition-root конфиг или передайте этот файл
+# напрямую в factory.
+#
+# Секреты (MINIMAX_API_KEY) сюда НЕ вставляйте — они подтягиваются из ENV
+# по имени, указанному в api_key_env (см. docker/vision/.env.secrets.template).
+#
+# Подробнее:
+#   - docs/guides/MINIMAX.md              — пользовательский гайд
+#   - architecture/minimax-provider.md     — реализационный контракт
+#   - docs/adr/0002-minimax-provider.md    — ADR с trade-off
+#
+# Поведение:
+#   - provider_order задаёт порядок попыток; первый с api_key в ENV —
+#     победитель; остальные — fallback decorators.
+#   - streaming_tools: false намеренно; см. §8.4 в docs/guides/MINIMAX.md
+#   - fallback: при 5xx / 429 / timeout переключаемся на следующего в
+#     списке; auth/contentFilter НЕ ретраим.
+# =============================================================================
+
+llm:
+  # Порядок попыток: MiniMax первым, MiMo вторым, DeepSeek последним.
+  # Чтобы отключить MiniMax — переставьте его в хвост или удалите.
+  provider_order: [minimax, mimo, deepseek]
+
+  providers:
+    # ------------------------------------------------------------------
+    # MiniMax — text + vision (opt-in, см. ADR-0002)
+    # ------------------------------------------------------------------
+    minimax:
+      # Имя модели. По умолчанию MiniMax-M3 (vision-capable).
+      # Альтернативы: MiniMax-M3-chat (text-only, дешевле).
+      model: MiniMax-M3
+
+      # Имя ENV-переменной для Bearer-токена.
+      # НЕ сам токен. Без MINIMAX_API_KEY в ENV провайдер пропускается.
+      api_key_env: MINIMAX_API_KEY
+
+      # Переопределение base URL (опционально).
+      # По умолчанию: https://api.minimax.io/v1 (зашит в коде).
+      # Используйте только для тест-mock'а или прокси.
+      # base_url: https://api.minimax.io/v1
+
+      # HTTP timeout для complete()/stream(). Default в коде — 30.0 сек.
+      timeout_sec: 30.0
+
+      # Thinking policy: latency-sensitive default — disabled.
+      # Для agent mode с tool calls поднимите: {"type": "enabled", "budget": 4096}
+      thinking: disabled
+
+    # ------------------------------------------------------------------
+    # Xiaomi MiMo (legacy opt-in)
+    # ------------------------------------------------------------------
+    mimo:
+      model: MiMo-7B
+      api_key_env: MIMO_API_KEY
+      base_url: https://api.xiaomimimo.com/v1
+      timeout_sec: 30.0
+
+    # ------------------------------------------------------------------
+    # DeepSeek — production default для dialogue/Telegram
+    # ------------------------------------------------------------------
+    deepseek:
+      model: deepseek-chat
+      api_key_env: DEEPSEEK_API_KEY
+      base_url: https://api.deepseek.com/v1
+      timeout_sec: 30.0
+
+# =============================================================================
+# Ниже — НЕ-yaml настройки для справки (не читаются registry напрямую,
+# приведены для контекста оператора при ручном smoke-тесте):
+# =============================================================================
+#
+# Только-текстовый smoke-test MiniMax-M3 (без vision):
+#   curl -sS -X POST "$MINIMAX_BASE_URL/chat/completions" \
+#     -H "Authorization: Bearer $MINIMAX_API_KEY" \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"MiniMax-M3","messages":[{"role":"user","content":"Привет"}]}'
+#
+# Vision smoke (multipart с bytes image — этот registry не покрывает,
+# vision-capable модели добавляются через LLMSettings(extra={"image_url": ...})):
+#   см. docs/guides/MINIMAX.md §6.2
+#
+# Запуск робота с MiniMax-M3 как primary LLM:
+#   ros2 launch rob_box_voice voice_assistant.launch.py llm_provider:=minimax
+#
+# =============================================================================

@@ -121,9 +121,11 @@ Yandex отдавал стерео).
 ### 2.4 Sync vs streaming: выбран sync `synthesize()`
 
 **Решение:** основной путь — sync `TTSProvider.synthesize()`.
-SSE-streaming `stream()` реализован в провайдере для контракта и
-будущих use-case, но **на стыке с tts_node не используется**
-(буферизуется в один `TTSChunk`).
+Опциональный путь `minimax_streaming=true` использует
+`TTSProvider.stream()` и публикует каждый SSE-аудиочанк в ROS-топик по
+мере поступления; итоговое воспроизведение остаётся последовательным
+после завершения синтеза. True fixed-size frame streaming через
+WebSocket требует отдельного lifecycle и остаётся отложенным.
 
 Обоснование:
 
@@ -137,9 +139,10 @@ SSE-streaming `stream()` реализован в провайдере для к�
 - Один `AudioData` msg на весь синтез — это **уже поведение Yandex**
   в текущем коде, так что контракт топика не нарушается.
 
-`stream()` остаётся в провайдере как v1 implementation (буферизует
-SSE, эмитит один `TTSChunk(finish_reason="stop")`) — покрывает
-contract-tests (`test_tts_provider_contract.py`).
+`stream()` эмитит аудиочанки SSE по одному и завершается пустым
+терминальным `TTSChunk(finish_reason="stop")`; mid-stream ошибки после
+первого чанка представлены `finish_reason="error"`, а ошибки до первого
+чанка выбрасываются как `TTSError`.
 
 ### 2.5 Raw bytes vs base64: выбран raw (hex-decode)
 

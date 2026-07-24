@@ -29,6 +29,9 @@
 - **[Настройка LSLIDAR](docs/guides/LSLIDAR_SETUP.md)** - Подключение лидара
 - **[Решение проблем](docs/guides/TROUBLESHOOTING.md)** - Диагностика и устранение неисправностей
 - **[Bash алиасы](docs/deployment/VISION_PI_DEPLOYMENT.md)** - Удобные команды
+- **[MiniMax TTS — руководство пользователя](docs/guides/MINIMAX_TTS.md)** - подключение MiniMax T2A v2 как TTS-провайдера в `tts_node`
+- **[MiniMax TTS — getting started](docs/guides/MINIMAX_TTS_GETTING_STARTED.md)** - минимальный путь от нуля до публикации аудио в ROS2
+- **[MiniMax TTS — API reference](docs/api/MINIMAX_TTS.md)** - публичный контракт `MiniMaxTTSProvider` (параметры, возвращаемые значения, исключения)
 
 ### 📖 Справочная информация
 - **[Архитектура](docs/architecture/SYSTEM_OVERVIEW.md)** - Полная архитектура системы
@@ -49,6 +52,22 @@
 📂 **[Полная документация](docs/README.md)** - Структурированный каталог всей документации
 
 ## ⚡ Последние изменения
+
+**22 июля 2026** — MiniMax LLM-провайдер (PR #907, фазы M0+M1+M4):
+- 🧠 **`MiniMaxProvider`** — OpenAI-compatible адаптер для `MiniMax-M3` в `rob_box_llm`:
+  text + tools + streaming + vision, opt-in через `MINIMAX_API_KEY`
+- 🖼️ **Мультимодальный `LLMMessage.content`** — `TextPart` / `ImagePart`
+  с per-model capability gate (`MINIMAX_MAX_IMAGE_BYTES = 10 MB`)
+- 🔐 **`MiniMaxRedactedLogFilter`** + маппинг `base_resp.status_code` →
+  типизированные `ProviderError` (auth / rate limit / content filter)
+- 📐 **`ProviderCapabilities` + `capabilities_for(model)`** —
+  fail-fast gate до сетевого вызова, безопасный fallback
+- 📖 **Документация** — [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
+  (text+vision гайд), `docs/guides/examples/minimax_llm.yaml` (factory
+  шаблон), `architecture/minimax-provider.md`, [ADR-0002](docs/adr/0002-minimax-provider.md)
+- 🧪 **35 новых unit-тестов** + полный conformance suite; **85 зелёных** в `rob_box_llm` итого
+- ⚠️ **Не вошло**: provider registry/factory (M2), consumer migration (M3),
+  image generation (M6) — отдельные Kanban-задачи
 
 **19 февраля 2026** - PRD и система AI-агентов:
 - 📋 **PRD.md** — Product Requirements Document: 34 задачи, milestones, acceptance criteria
@@ -106,6 +125,97 @@
 - 🌐 Снижение network: с 80-100 Mbps до 8-15 Mbps
 - 💾 Экономия памяти: ~50% на обоих Pi
 - ✅ Стабильная работа: 5 FPS без пропусков
+
+## 🧪 Test bench (воспроизводимое окружение)
+
+> Полная пошаговая инструкция: **[TEST_BENCH.md](TEST_BENCH.md)** — подготовка,
+> standalone MiniMax mock, полный bench, ROS2 capture harness, ffmpeg-сценарии,
+> acceptance checks и известный endpoint blocker.
+>
+> Зафиксированные версии и инварианты для воспроизводимой сборки и прогона
+> `rob_box_llm` + `rob_box_voice` (см. задачу `t_85c00e0c`).
+
+### Подтверждённые версии (Debian 13 / trixie, хост builder)
+
+| Компонент | Версия | Источник |
+|---|---|---|
+| OS | Debian GNU/Linux 13 (trixie), kernel 6.8.0-124-generic | `/etc/os-release`, `uname -r` |
+| ROS 2 distro | **Humble** (`/opt/ros/humble`) | `apt packages.ros.org/ros2/ubuntu jammy` |
+| Python (ROS) | **3.10.12** (`/usr/bin/python3.10`) | `/opt/ros/humble/bin/ros2` shebang |
+| Python (system) | 3.11.15 (`/usr/local/bin/python3`) | hermes docker backend; **не использовать для ROS** |
+| rclpy | `2.3.2-1jammy.20260304.204758` (через `ros-humble-rcl-logging-spdlog`/interface) | `dpkg -l` |
+| ament_* | `1.3.14-1jammy.20260226.*` | `dpkg -l` |
+| `ros-humble-audio-common-msgs` | `0.4.0-2jammy.20260611.075308` | `dpkg -l` |
+| `ros-humble-std-srvs` | `4.9.1-1jammy.20260605.120647` | `dpkg -l` |
+| `colcon` (colcon-common-extensions) | 0.26.0 | `apt` |
+| `rosdep` | 0.26.0 | `apt` |
+| `ffmpeg` | 7.1.5-0+deb13u1 | `apt` |
+| `pytest` / `pytest-asyncio` / `pytest-cov` | 9.1.1 / 1.4.0 / 7.1.0 | pip 25.1.1 (user site, 3.10) |
+| `httpx`, `openai` | 0.28.1, 2.46.0 | pip (system Debian, 3.10) |
+| `aplay` / `arecord` (alsa-utils) | 1.2.14-1 | `apt` |
+| **ALSA loopback** (`snd_aloop`) | ❌ **не загружается** (модуль отсутствует в этом ядре) | `modinfo snd_aloop` → not found |
+
+### Виртуальный audio sink вместо ReSpeaker
+
+Реальное USB-устройство ReSpeaker Mic Array v2.0 в test-bench **не используется**.
+Разрешённые фиктивные sink-и (по убыванию предпочтения):
+
+1. **PulseAudio `module-null-sink` + `module-loopback`** (headless host с `pulseaudio -D`):
+   ```bash
+   pactl load-module module-null-sink sink_name=respeaker_fake
+   pactl load-module module-loopback source=respeaker_fake.monitor
+   ```
+2. **FFmpeg null muxer** (полностью файловый sink, без pulse):
+   ```bash
+   ffmpeg -f lavfi -i "anullsrc=channel_layout=mono:sample_rate=16000" -t 1 /dev/null
+   ```
+3. **ReSpeaker 4-mic config + AEC** — только если USB подключён и `arecord -l` показывает
+   `respeaker: 4-channel` (см. `src/rob_box_voice/scripts/configure_respeaker_aec.py`).
+
+> **Важно:** `audio_node` сам находит устройство через `find_respeaker_device`
+> (`src/rob_box_voice/rob_box_voice/utils/audio_utils.py`). Если ни один из sink-ов не
+> создан, нода упадёт при старте — это ожидаемо и фиксируется в BLOCKERS.md,
+> production-код не редактируется.
+
+### Acceptance check (воспроизводимая команда)
+
+```bash
+# 1. Подгрузить ROS + наш workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+# 2. Подтвердить, что оба пакета собрались и видны
+ros2 pkg list | grep -E 'rob_box_(llm|voice)'
+
+# 3. Подтвердить, что тестовая нода стартует (LED не требует аудио-железа)
+timeout 5 ros2 run rob_box_voice led_node
+#   Ожидаемо: "LEDNode инициализирован" + "❌ ReSpeaker LED не найден"
+#   (ReSpeaker LED на этой машине не подключён, но ROS-цикл работает.)
+```
+
+### Workarounds для test-bench (НЕ править прод-код)
+
+Эти шаги нужны, чтобы **сам ROS работал** в текущем Debian 13 окружении.
+Прод-код пакетов не меняется.
+
+1. **spdlog ABI mismatch** (rclpy не импортируется из-за `librcl_logging_spdlog.so`
+   против `libspdlog.so.1.10` с null_mutex):
+   ```bash
+   apt-get install -y ros-humble-rcl-logging-noop
+   mv /opt/ros/humble/lib/librcl_logging_spdlog.so{,.bak}
+   ln -s librcl_logging_noop.so /opt/ros/humble/lib/librcl_logging_spdlog.so
+   ```
+2. **NumPy 2.x ABI break** (`/usr/lib/python3/dist-packages/numpy` скомпилирован
+   против Python 3.10 ABI, но содержит неполные бинари — `numpy._core._multiarray_umath`
+   not found при импорте):
+   ```bash
+   python3.10 -m pip install --user --no-cache-dir 'numpy<2'
+   # Теперь импорт rclpy под python3.10 работает (numpy 1.26.4).
+   ```
+3. **Python ABI** — все entry-points (`install/.../bin/led_node`, `tts_node`, …) и
+   `/opt/ros/humble/bin/ros2` имеют shebang `#!/usr/bin/python3`, что на этой машине
+   указывает на `/usr/bin/python3.10`. **Не запускать `ros2 run …` под `python3.11`** —
+   ROS бинари слинкованы с libpython3.10.
 
 ## 🎯 Цель проекта
 
@@ -197,6 +307,23 @@
 - 📋 **Интеграция с LLM** для естественного общения
 - 📋 **Система предотвращения столкновений**
 - 📋 **Телеметрия и удалённый мониторинг**
+
+## 🎙️ TTS-провайдеры
+
+Голосовой ассистент `tts_node` (пакет `rob_box_voice`) поддерживает три TTS-движка, переключаемых ROS-параметром `tts_node.provider`:
+
+| Провайдер | Где работает | Когда выбирать |
+|---|---|---|
+| **Yandex Cloud TTS** (gRPC v3, голос `anton`) | онлайн | ROBBOX-голос по умолчанию; минимальная настройка |
+| **Silero v5** (offline) | офлайн | нет сети на роботе; базовый fallback |
+| **MiniMax TTS** (HTTP T2A v2) | онлайн | многоязычный синтез, выбор голоса из обширного каталога, эмоциональная окраска |
+
+MiniMax подключается **opt-in** через `provider: "minimax"`. Секреты (`MINIMAX_API_KEY`, `MINIMAX_GROUP_ID`) живут только в ENV — никогда не в launch-yaml и не в логах.
+
+- Подробная инструкция: **[docs/guides/MINIMAX_TTS.md](docs/guides/MINIMAX_TTS.md)**
+- Минимальный путь от нуля до публикации в ROS2: **[docs/guides/MINIMAX_TTS_GETTING_STARTED.md](docs/guides/MINIMAX_TTS_GETTING_STARTED.md)**
+- Публичный контракт `MiniMaxTTSProvider` (параметры, возвращаемые значения, исключения): **[docs/api/MINIMAX_TTS.md](docs/api/MINIMAX_TTS.md)**
+- Архитектурное обоснование: **[ADR-0003](docs/adr/0003-minimax-tts-architecture.md)**
 
 ## 📦 Связанные репозитории
 
