@@ -32,8 +32,13 @@ services:
     environment:
       RUST_LOG: zenoh=warn
     volumes:
-      - ./config:/test-config:ro
-    command: -c /test-config/zenoh_router_test.json5
+      - type: bind
+        source: ./config/zenoh_router_test.json5
+        target: /zenoh_config.json5
+        read_only: true
+    # DEBUG: используем sh чтобы посмотреть что реально примонтировалось
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ls -la /zenoh_config.json5; file /zenoh_config.json5; echo '---'; cat /zenoh_config.json5; echo '---'; exec /zenohd -c /zenoh_config.json5"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
       interval: 3s
