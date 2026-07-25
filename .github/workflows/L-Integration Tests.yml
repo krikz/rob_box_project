@@ -17,15 +17,9 @@ on:
     workflows: ["L: Build Vision Pi Services"]
     types: [completed]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "Docker image tag (latest / dev / test / local)"
-        required: false
-        default: ""
-      test_branch:
-        description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
-        required: false
-        default: "feature/agent"
+    # Ветка выбирается в UI комбобоксе при запуске → github.ref_name.
+    # Тег образа auto-derived из имени ветки (main→latest, develop→dev,
+    # feature/*→test, иначе local). Никаких лишних inputs не нужно.
 
 permissions:
   contents: read
@@ -50,8 +44,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          # Тестовые файлы живут на feature/agent (или другой ветке из input)
-          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
+          # Берём ту ветку, которую выбрали в UI (workflow_dispatch)
+          # или ветку из завершённого workflow_run
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           clean: true
 
       # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
@@ -84,20 +79,15 @@ jobs:
       - name: Determine image tag
         id: tag
         env:
-          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
           WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
-          if [ -n "$INPUT_IMAGE_TAG" ]; then
-            TAG="$INPUT_IMAGE_TAG"
-          else
-            BRANCH="$WORKFLOW_BRANCH"
-            case "$BRANCH" in
-              main)                 TAG="latest" ;;
-              develop)              TAG="dev" ;;
-              feature/*|copilot/*) TAG="test" ;;
-              *)                    TAG="local" ;;
-            esac
-          fi
+          BRANCH="$WORKFLOW_BRANCH"
+          case "$BRANCH" in
+            main)                 TAG="latest" ;;
+            develop)              TAG="dev" ;;
+            feature/*|copilot/*) TAG="test" ;;
+            *)                    TAG="local" ;;
+          esac
           FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"

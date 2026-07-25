@@ -16,15 +16,9 @@ on:
     types: [completed]
     branches: [main, develop, "feature/**"]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "Docker image tag (latest / dev / test)"
-        required: false
-        default: ""
-      test_branch:
-        description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
-        required: false
-        default: "feature/agent"
+    # Ветка выбирается в UI комбобоксе при запуске → github.ref_name.
+    # Тег образа auto-derived из имени ветки (main→latest, develop→dev,
+    # feature/*→test, иначе local). Никаких лишних inputs не нужно.
 
 permissions:
   contents: read
@@ -53,8 +47,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          # Тестовые файлы живут на feature/agent (или другой ветке из input)
-          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
+          # Берём ту ветку, которую выбрали в UI (workflow_dispatch)
+          # или ветку из завершённого workflow_run
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
 
       # ── QEMU для запуска arm64 образов на amd64 runner ────────────────────
       - name: Set up QEMU (arm64 emulation)
@@ -69,20 +64,14 @@ jobs:
       - name: Determine image tag
         id: tag
         run: |
-          # Если передан вручную — использовать его
-          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
-            TAG="${{ github.event.inputs.image_tag }}"
-          else
-            # Определяем ветку: из workflow_run или из текущей ветки
-            BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
-            echo "Branch: $BRANCH"
-            case "$BRANCH" in
-              main)        TAG="latest" ;;
-              develop)     TAG="dev" ;;
-              feature/*|copilot/*) TAG="test" ;;
-              *)           TAG="test" ;;
-            esac
-          fi
+          BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+          echo "Branch: $BRANCH"
+          case "$BRANCH" in
+            main)        TAG="latest" ;;
+            develop)     TAG="dev" ;;
+            feature/*|copilot/*) TAG="test" ;;
+            *)           TAG="test" ;;
+          esac
           FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
