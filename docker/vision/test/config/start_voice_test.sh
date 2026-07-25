@@ -33,11 +33,23 @@ done
 
 echo ""
 echo "Запуск dialogue_node (test config)..."
-echo "  LLM:       DeepSeek API (deepseek-chat)"
+echo "  LLM:       Ollama (qwen2.5:0.5b)"
 echo "  MCP tools: disabled"
 echo "  Wake words: empty (прямой диалог)"
 echo ""
 
+# ROS 2 Humble bug: --params-file не применяется для Python-нод
+# (declare_parameter дефолт побеждает). Используем -p вместо.
 exec ros2 run rob_box_voice dialogue_node \
     --ros-args \
-    --params-file "${VOICE_TEST_CONFIG:-/test-config/voice_assistant_test.yaml}"
+    -p provider:=deepseek \
+    -p api_key:="ollama" \
+    -p base_url:="http://localhost:11435/v1" \
+    -p model:="qwen2.5:0.5b" \
+    -p temperature:=0.5 \
+    -p max_tokens:=150 \
+    -p streaming:=true \
+    -p enable_fallback:=false \
+    -p enable_mcp_tools:=false \
+    -p wake_words:="" \
+    -p silence_words:="стоп,тихо,замолчи"
