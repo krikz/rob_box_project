@@ -20,10 +20,10 @@ source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
 source /ws/install/setup.bash
 
 # Ждём Zenoh router
-echo "Ожидание Zenoh router (localhost:7447)..."
+echo "Ожидание Zenoh router (localhost:17447)..."
 RETRY=0
 while [ $RETRY -lt 30 ]; do
-    if nc -z localhost 7447 2>/dev/null; then
+    if nc -z localhost 17447 2>/dev/null; then
         echo "✓ Zenoh router доступен"
         break
     fi
