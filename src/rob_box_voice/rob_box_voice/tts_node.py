@@ -8,6 +8,42 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + M
   - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
   - MiniMax T2A v2 (HTTP, opt-in через provider=minimax)
+
+Concurrency
+-----------
+Two bounded executors, both ``concurrent.futures.ThreadPoolExecutor``:
+
+* **Synthesis executor** (``self._synthesis_executor``) —
+  ``max_workers = SYNTHESIS_MAX_WORKERS_DEFAULT = 2`` (ROS-параметр
+  ``synthesis_max_workers``, допустимый диапазон 1..4). Каждый worker
+  обрабатывает ровно один TTS HTTP/gRPC synthesis request
+  (Yandex / Silero / MiniMax) и публикует результат на
+  ``/voice/audio/speech``. Семафор на ``max_workers + max_queue``
+  (``SYNTHESIS_MAX_QUEUE_DEFAULT = 16``) даёт back-pressure: при переполнении
+  новые задачи дропаются, а не плодят потоки.
+* **Async-bridge executor** (``ASYNC_BRIDGE_MAX_WORKERS = 1``) — per-call,
+  живёт только внутри ``with``-блока вокруг ``asyncio.run(...)`` в
+  ``_synthesize_minimax*``. Нужен, потому что ROS-callback синхронный,
+  а ``MiniMaxTTSProvider.stream()`` — async; одного воркера достаточно,
+  т.к. он тут же ``.result()``-ит и выходит.
+
+Rationale: Yandex и MiniMax провайдеры не открывают соединения на каждый
+запрос — каждый worker держит свой keep-alive HTTP/2 или gRPC-channel.
+2 воркера дают практически полную утилизацию одного синтеза (~300–800 ms
+per request) без удвоения стоимости каналов. Burst input rate выше
+~2 synthesis/s встанет в очередь на семафоре; rate выше
+``max_workers + max_queue`` synthesis/s (~18/s) начнёт дропаться. Дальнейшее
+увеличение через ROS-параметр ``synthesis_max_workers`` (см. ниже).
+
+Tuning
+------
+ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
+
+* ``synthesis_max_workers`` (int, 1..4, default 2) — размер пула.
+* ``synthesis_max_queue`` (int, default 16) — ёмкость очереди перед drop.
+
+Размер пула — намеренный trade-off между throughput и числом одновременных
+внешних соединений; см. PR #907 BLK-9.
 """
 
 import concurrent.futures
@@ -158,6 +194,28 @@ except ImportError:
     print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Silero fallback.")
 
 
+# ── Concurrency primitives (BLK-9 follow-up) ────────────────────────────────
+# Synthesis executor — bounded ``ThreadPoolExecutor`` whose size is driven
+# by the ROS parameters ``synthesis_max_workers`` (1..4, default 2) and
+# ``synthesis_max_queue`` (default 16), with a ``Semaphore`` slot cap of
+# ``max_workers + max_queue`` for back-pressure. Replaces the original
+# PR #907 ``threading.Thread(target=..., daemon=True).start()`` fan-out
+# (OWASP A04:2021 — Unrestricted Resource Consumption).
+SYNTHESIS_MAX_WORKERS_DEFAULT: int = 2  # 1..4
+SYNTHESIS_MAX_QUEUE_DEFAULT: int = 16  # pending tasks cap before drop
+SYNTHESIS_SHUTDOWN_TIMEOUT_S: float = 2.0
+SYNTHESIS_THREAD_NAME_PREFIX: str = "tts-synth"
+
+# Async-bridge executor — small per-call ``ThreadPoolExecutor`` used to
+# host a single ``asyncio.run(...)`` so the synchronous ROS callback can
+# drive an async streaming method without colliding with the main thread's
+# already-running loop. Each ``with`` block creates and shuts down its
+# own executor — strictly lifecycle-bounded (max_workers=1, lifetime
+# shorter than the surrounding function call), so this is the same
+# primitive as the synthesis executor and not an unbounded fan-out.
+ASYNC_BRIDGE_MAX_WORKERS: int = 1
+
+
 class TTSNode(Node):
     """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback + MiniMax (opt-in)"""
 
@@ -238,8 +296,8 @@ class TTSNode(Node):
         #   * Overflow is benign: ThreadPoolExecutor enqueues and the
         #     stale-dialogue-id check inside `_run_synthesis_worker` drops
         #     tasks from a previous dialogue (barge-in).
-        self.declare_parameter("synthesis_max_workers", 2)  # 1..4
-        self.declare_parameter("synthesis_max_queue", 16)  # pending tasks cap before drop
+        self.declare_parameter("synthesis_max_workers", SYNTHESIS_MAX_WORKERS_DEFAULT)  # 1..4
+        self.declare_parameter("synthesis_max_queue", SYNTHESIS_MAX_QUEUE_DEFAULT)  # pending tasks cap before drop
 
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
@@ -413,7 +471,7 @@ class TTSNode(Node):
         self._synthesis_slots = threading.Semaphore(max_queue + max_workers)
         self._synthesis_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix="tts-synth",
+            thread_name_prefix=SYNTHESIS_THREAD_NAME_PREFIX,
         )
         self._synthesis_executor_max_workers = max_workers
         self._synthesis_executor_shutdown = False
@@ -1438,7 +1496,9 @@ class TTSNode(Node):
         if loop is not None:
             import concurrent.futures
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=ASYNC_BRIDGE_MAX_WORKERS,
+            ) as ex:
                 ex.submit(lambda: _asyncio.run(_consume_and_publish())).result()
         else:
             _asyncio.run(_consume_and_publish())
@@ -1469,7 +1529,9 @@ class TTSNode(Node):
             # в проде не срабатывает. Оставляем fallback на всякий случай.
             import concurrent.futures
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=ASYNC_BRIDGE_MAX_WORKERS,
+            ) as ex:
                 return ex.submit(lambda: asyncio.run(coro)).result()
         # Нет активного loop (типичный кейс ROS callback) → asyncio.run.
         return asyncio.run(coro)
@@ -1618,7 +1680,7 @@ class TTSNode(Node):
                 self.minimax_provider = None
                 self._minimax_provider_initialized = False
 
-    def shutdown_synthesis_executor(self, wait: bool = False, timeout: float = 2.0):
+    def shutdown_synthesis_executor(self, wait: bool = False, timeout: float = SYNTHESIS_SHUTDOWN_TIMEOUT_S):
         """Drain the bounded synth executor (BLK-9).
 
         Idempotent. Called from ``main()`` before ``destroy_node()`` so the
