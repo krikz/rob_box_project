@@ -103,10 +103,14 @@ jobs:
       # ── Подготовка ─────────────────────────────────────────────────────────
       - name: Prepare test config (copy to host-accessible path)
         run: |
-          # Docker daemon на хосте не видит пути внутри runner-контейнера
-          # (/runner/_work → /data/runner1/_work на хосте). Копируем конфиг
-          # в /tmp/ который един для хоста и контейнера.
+          # Docker daemon на хосте не видит пути внутри runner-контейнера.
+          # Копируем в /tmp/ — един для хоста и контейнера.
+          # Важно: rm -rf перед cp, иначе при повторном запуске файлы
+          # уходят в /tmp/test_config/config/ вместо /tmp/test_config/.
+          rm -rf /tmp/test_config
           cp -r ${{ env.TEST_DIR }}/config /tmp/test_config
+          echo "Config copied:"
+          cat /tmp/test_config/zenoh_router_test.json5
 
       - name: Prepare results directory
         run: mkdir -p ${{ env.TEST_DIR }}/results
