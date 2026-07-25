@@ -76,8 +76,6 @@ async def run_request_response_loop(
         post_process = lambda text: text  # noqa: E731 — local identity
 
     user_text = ensure_user_text(input_data)
-    await harness.hooks.invoke("on_turn_begin", harness.name, input_data)
-
     messages: list[LLMMessage] = [LLMMessage(role="user", content=user_text)]
     response = await harness.llm.complete(messages)
     assistant_text = (
