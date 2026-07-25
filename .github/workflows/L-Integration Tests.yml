@@ -80,7 +80,7 @@ jobs:
           echo "=== First 3 lines of entrypoint.sh ==="
           head -3 ${{ env.TEST_DIR }}/ollama/entrypoint.sh || true
           echo "=== Docker version ==="
-          docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Engine.Version}}'
+          docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Engine.Version}}' 2>/dev/null || echo "Docker daemon not accessible (self-hosted runner may need docker start)"
 
       # ── Определить тег ─────────────────────────────────────────────────────
       - name: Determine image tag
