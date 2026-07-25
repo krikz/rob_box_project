@@ -276,7 +276,13 @@ class BaseTTSProvider(TTSProvider):
             # ``self._timeout`` entirely. Matches the MiniMax LLM
             # provider's DEFAULT_TIMEOUT (see providers/minimax.py).
             timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
-        return httpx.AsyncClient(timeout=timeout)
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=DEFAULT_MAX_CONNECTIONS,
+                max_keepalive_connections=DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+        )
 
 
 __all__ = [

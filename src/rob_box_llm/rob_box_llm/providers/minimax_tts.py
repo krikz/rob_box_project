@@ -529,10 +529,34 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         ROS callers in ``tts_node`` keep working without modification.
     """
 
+
+def _coerce_tts_timeout(value: "float | httpx.Timeout | None") -> "httpx.Timeout":
+    """Normalise the ``timeout`` constructor argument.
+
+    Accepts ``None`` (falls back to per-phase default), ``float``
+    (applied to every phase), or :class:`httpx.Timeout` (used as-is).
+    Mirrors :func:`rob_box_llm.providers.minimax._coerce_timeout`.
+    """
+    import httpx
+
+    if value is None:
+        return httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+    if isinstance(value, httpx.Timeout):
+        return value
+    return httpx.Timeout(timeout=float(value))
+
+
+class MiniMaxTTSProvider(BaseTTSProvider):
+    """MiniMax Text-to-Speech provider (T2A v2)."""
+
     DEFAULT_BASE_URL = "https://api.minimax.io"
     DEFAULT_VOICE = "male-qn-qingse"
     DEFAULT_MODEL = "speech-02-hd"
-    DEFAULT_TIMEOUT = 30.0
+    # BLK-5: per-phase httpx.Timeout so a slow DNS/TLS handshake on
+    # connect no longer burns the entire 30 s budget.
+    DEFAULT_TIMEOUT: "httpx.Timeout" = httpx.Timeout(  # type: ignore[valid-type]
+        connect=5.0, read=20.0, write=10.0, pool=5.0
+    )
     DEFAULT_MAX_ATTEMPTS = 3
     DEFAULT_RETRY_BASE_DELAY = 0.5
     DEFAULT_RETRY_JITTER = 0.25
@@ -547,7 +571,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         base_url: str | None = None,
         default_voice: str = DEFAULT_VOICE,
         default_model: str = DEFAULT_MODEL,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: "float | httpx.Timeout" = DEFAULT_TIMEOUT,  # type: ignore[valid-type]
         client: Optional[httpx.AsyncClient] = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
@@ -565,7 +589,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         self._group_id = group_id or os.getenv("MINIMAX_GROUP_ID") or ""
         self._default_voice = default_voice
         self._default_model = default_model
-        self._timeout = timeout
+        self._timeout = _coerce_tts_timeout(timeout)
         if max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
         if retry_base_delay < 0.0:
