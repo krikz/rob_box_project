@@ -21,6 +21,7 @@ setup(
             "pytest-asyncio>=0.21",
             "pytest-cov>=4.0",
             "respx>=0.21",
+            "faker>=18.0",
         ],
     },
     zip_safe=True,
