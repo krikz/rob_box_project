@@ -164,6 +164,7 @@ def _stable_config_hash(config: HarnessConfig) -> Mapping[str, Any]:
         "memory": config.memory.__dict__ if config.memory is not None else None,
         "effects": config.effects.__dict__ if config.effects is not None else None,
         "transport": config.transport.__dict__ if config.transport is not None else None,
+        "tts": config.tts.__dict__ if config.tts is not None else None,
     }
 
 
