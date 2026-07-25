@@ -49,11 +49,15 @@ jobs:
           ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           clean: true
 
-      # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
+      # ── Очистка старых контейнеров и артефактов ────────────────────────────
       - name: Cleanup previous test containers
         working-directory: ${{ env.TEST_DIR }}
         # НЕ --volumes: сохраняем voice-test_ollama-models (кэш модели ~350MB)
-        run: docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
+        run: |
+          docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
+          # Docker создаёт пустую директорию при монтировании несуществующего
+          # файла — чистим артефакты от предыдущих упавших запусков
+          rm -rf config/zenoh_router_test.json5 2>/dev/null || true
 
       # ── Проверка что нужные файлы есть после checkout ─────────────────────
       - name: Verify test files exist
