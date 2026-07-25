@@ -61,9 +61,9 @@ services:
     healthcheck:
       # Healthcheck проходит только после того как модель загружена и готова отвечать
       test: ["CMD-SHELL", "curl -sf http://localhost:11435/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
-      interval: 5s
-      timeout: 10s
-      retries: 60       # до 5 минут на первый pull (на быстром интернете ~30s)
+      interval: 10s
+      timeout: 15s
+      retries: 120      # до 20 минут на первый pull (~350MB модель)
       start_period: 10s
 
   # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
