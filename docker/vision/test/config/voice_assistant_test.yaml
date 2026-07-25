@@ -1,14 +1,14 @@
 # voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
 #
-# LLM: DeepSeek API (api.deepseek.com, deepseek-v4-flash)
-# API key передаётся через env DEEPSEEK_API_KEY — не коммитить
+# LLM: Ollama (qwen2.5:0.5b) — локальный, без API key
+# OpenAI-совместимый endpoint на порту 11435
 
 /dialogue_node:
   ros__parameters:
     provider: "deepseek"
-    api_key: ""   # берётся из env DEEPSEEK_API_KEY
-    base_url: "https://api.deepseek.com"
-    model: "deepseek-v4-flash"
+    api_key: "ollama"
+    base_url: "http://localhost:11435/v1"
+    model: "qwen2.5:0.5b"
     temperature: 0.5
     max_tokens: 150       # короткие ответы = быстрые тесты
     streaming: true
