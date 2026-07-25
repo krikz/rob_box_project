@@ -52,6 +52,10 @@ ros2 pkg list | grep -E 'rob_box_(llm|voice)'
 ```bash
 export MINIMAX_API_KEY="eyJhbGciOi..."        # без Bearer
 export MINIMAX_GROUP_ID="123456789012345678"
+# Опционально:
+# export MINIMAX_TTS_BASE_URL="https://api.minimax.io"
+# export MINIMAX_TTS_VOICE="Russian_CalmWoman"
+# export MINIMAX_TTS_MAX_CONCURRENCY=1
 ```
 
 Быстрая проверка — `curl` напрямую к MiniMax:
@@ -72,42 +76,33 @@ curl -sS -X POST "https://api.minimax.io/v1/t2a_v2?GroupId=$MINIMAX_GROUP_ID" \
 
 ## 4. Шаг 3 — Минимальный синтез из Python
 
-10 строк, чтобы услышать MiniMax из терминала:
+Готовый пример [`examples/tts_minimax_example.py`](../../examples/tts_minimax_example.py)
+читает настройки из ENV, получает провайдер `minimax` через registry/factory и
+сохраняет raw PCM как корректный WAV-файл стандартным модулем `wave`.
 
-```python
-import asyncio, os
-from rob_box_llm import MiniMaxTTSProvider, TTSSettings, TTSFormat
+Из корня репозитория выполните:
 
-async def main():
-    provider = MiniMaxTTSProvider(
-        api_key=os.environ["MINIMAX_API_KEY"],
-        group_id=os.environ["MINIMAX_GROUP_ID"],
-    )
-    try:
-        audio = await provider.synthesize(
-            "Привет, я MiniMax TTS!",
-            settings=TTSSettings(
-                voice="male-qn-qingse",
-                language="ru",
-                speed=1.0,
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-            ),
-        )
-        # audio.samples — int16 little-endian; сохраняем в WAV для sanity-check
-        import wave
-        with wave.open("hello.wav", "wb") as f:
-            f.setnchannels(1); f.setsampwidth(2); f.setframerate(audio.sample_rate)
-            f.writeframes(audio.samples)
-        print(f"OK: {len(audio.samples)} bytes, {audio.duration_s:.2f}s")
-    finally:
-        await provider.aclose()
+```bash
+PYTHONPATH=src/rob_box_llm \
+python3 examples/tts_minimax_example.py \
+  --text "Привет, я MiniMax TTS!" \
+  --output /tmp/minimax-hello.wav
 
-asyncio.run(main())
-aplay hello.wav   # или ffplay hello.wav
+python3 - <<'PY'
+import wave
+
+with wave.open("/tmp/minimax-hello.wav", "rb") as audio:
+    print(audio.getparams())
+PY
 ```
 
-Это всё, что нужно для **offline** сценария. Если дошли сюда — провайдер работает.
+В результате появится mono WAV: signed 16-bit PCM, 24 000 Hz. Прослушать его
+можно командой `aplay /tmp/minimax-hello.wav` или
+`ffplay /tmp/minimax-hello.wav`.
+
+Пример использует `TTSProviderFactory.create("minimax", ...)`, а не создаёт
+`MiniMaxTTSProvider` напрямую. Это тот же composition-root путь, который
+используют интеграции проекта.
 
 ---
 

@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+### MiniMax TTS-провайдер
+
+#### Добавлено
+
+* `examples/tts_minimax_example.py` — end-to-end пример получения провайдера
+  через registry/factory, синтеза PCM и записи валидного mono WAV модулем
+  `wave`. Конфигурация читается из ENV, включая custom base URL и локальный
+  лимит конкурентности.
+* API reference и Getting Started обновлены для bytes API, поддерживаемых
+  голосов и форматов `pcm_22050`, `pcm_24000`, `wav`; добавлены инструкции по
+  запуску примера, проверке WAV и ссылка на ADR-0001.
+
 ### [PR #907] — MiniMax LLM-интеграция в `rob_box_llm` (text + tools + vision)
 
 > Ветка `feature/harness-p0-foundation` → `develop`. Один feature branch,
