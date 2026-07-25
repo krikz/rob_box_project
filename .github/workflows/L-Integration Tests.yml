@@ -56,8 +56,11 @@ jobs:
         run: |
           docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
           # Docker создаёт пустую директорию при монтировании несуществующего
-          # файла — чистим артефакты от предыдущих упавших запусков
-          rm -rf config/zenoh_router_test.json5 2>/dev/null || true
+          # файла — чистим только если это директория (артефакт), не трогаем файл
+          if [ -d config/zenoh_router_test.json5 ]; then
+            rm -rf config/zenoh_router_test.json5
+            echo "Removed stale zenoh config directory artifact"
+          fi
 
       # ── Проверка что нужные файлы есть после checkout ─────────────────────
       - name: Verify test files exist
