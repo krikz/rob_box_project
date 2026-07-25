@@ -51,5 +51,4 @@ exec ros2 run rob_box_voice dialogue_node \
     -p streaming:=true \
     -p enable_fallback:=false \
     -p enable_mcp_tools:=false \
-    -p wake_words:="" \
     -p silence_words:="стоп,тихо,замолчи"
