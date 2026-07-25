@@ -389,11 +389,16 @@ class _OpenAICompatibleProvider(LLMProvider):
 
     async def aclose(self) -> None:
         # Idempotent — safe to call multiple times from ``finally`` blocks.
-        # The underlying AsyncOpenAI client exposes ``is_closed``; without
-        # the guard, a second ``aclose()`` after the client has already been
+        # The underlying client exposes either ``is_closed`` (real
+        # AsyncOpenAI) or ``closed`` (fake / test doubles). Without the
+        # guard, a second ``aclose()`` after the client has already been
         # closed raises RuntimeError, which masks the real exception in
         # teardown paths.
-        if not self._client.is_closed:
+        already_closed: bool = (
+            getattr(self._client, "is_closed", False)
+            or getattr(self._client, "closed", False)
+        )
+        if not already_closed:
             await self._client.close()
 
 

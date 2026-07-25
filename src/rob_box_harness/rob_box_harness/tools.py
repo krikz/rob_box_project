@@ -110,11 +110,40 @@ class FakeToolProvider(ToolProvider):
         tools: Mapping[str, tuple[ToolSpec, ToolHandler]] | None = None,
     ) -> None:
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = dict(tools or {})
+        # Register the built-in "echo" tool so the smoke harness's
+        # DummyLLMProvider tool-call path works out of the box.
+        if "echo" not in self._tools:
+            self._register_builtin_echo()
+
+    def _register_builtin_echo(self) -> None:
+        """Register a built-in ``echo`` tool unless one already exists.
+
+        Tests may register their own ``echo`` tool with custom behaviour;
+        we only install the default when no ``echo`` tool has been
+        registered yet (either via constructor or ``register()``).
+        """
+        if "echo" in self._tools:
+            return
+        echo_spec = ToolSpec(
+            name="echo",
+            description="Echo back the provided arguments.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to echo back."},
+                },
+            },
+        )
+
+        async def _echo_handler(args: Mapping[str, Any]) -> str:
+            return f"echo: {args.get('text', '')}"
+
+        self._tools["echo"] = (echo_spec, _echo_handler)
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
-        """Register a tool. Raises ``ValueError`` on duplicate name."""
-        if spec.name in self._tools:
-            raise ValueError(f"tool {spec.name!r} already registered")
+        """Register a tool. Silently overrides an existing registration
+        with the same name — tests use this to replace the built-in
+        ``echo`` tool with a custom capturing handler."""
         self._tools[spec.name] = (spec, handler)
 
     async def discover(self) -> tuple[ToolSpec, ...]:

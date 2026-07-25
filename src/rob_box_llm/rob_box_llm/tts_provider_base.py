@@ -57,6 +57,19 @@ from rob_box_llm.tts import TTSProvider  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# Default connection / content limits for TTS providers
+# ---------------------------------------------------------------------------
+
+DEFAULT_MAX_CONNECTIONS: int = 10
+"""Maximum concurrent HTTP connections per TTS provider pool."""
+
+DEFAULT_MAX_CONTENT_SIZE: int = 50 * 1024 * 1024  # 50 MB
+"""Maximum response body size (bytes) before a streaming provider aborts."""
+
+DEFAULT_MAX_KEEPALIVE_CONNECTIONS: int = 5
+"""Maximum idle keep-alive connections retained per provider pool."""
+
+# ---------------------------------------------------------------------------
 # Capability metadata — frozen dataclass, 8 boolean flags
 # ---------------------------------------------------------------------------
 
