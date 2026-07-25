@@ -95,6 +95,35 @@ class TransportConfig:
 
 
 @dataclass(frozen=True)
+class TTSConfig:
+    """Configuration for the TTSProvider side-effect port.
+
+    Mirrors the shape of :class:`LLMConfig` so the harness can compose
+    LLM + TTS the same way (YAML + env, env-only secrets, frozen
+    dataclass). Used by the harness-side TTS providers (e.g.
+    :mod:`rob_box_harness.tts.minimax_tts`) and by the future
+    Dialog/Persistent harnesses that publish replies through TTS.
+
+    ``provider`` is mandatory; everything else has sensible defaults.
+    ``api_key`` is the *name* of an env var (``"${MINIMAX_API_KEY}"``),
+    never a literal — see :func:`_resolve_string` for the resolution
+    pipeline.
+    """
+
+    provider: str  # "minimax" | future: "elevenlabs" | "google" | "local-piper"
+    model: str | None = None
+    voice: str | None = None  # default voice id
+    language: str | None = None  # BCP-47 (e.g. "ru", "en-US")
+    sample_rate: int | None = None  # Hz — provider default if None
+    format: str = "pcm"  # "pcm" | "wav" | "mp3" | "ogg"
+    timeout_s: float | None = None
+    cache: bool = False  # enable hash(text+voice) cache for repeats
+    rate_limit_per_min: int | None = None  # soft cap; None = unlimited
+    extra: Mapping[str, Any] = field(default_factory=dict)
+    api_key: str | None = None  # may be set via ENV; never serialised
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     """Configuration for the structured logger."""
 
@@ -120,6 +149,7 @@ class HarnessConfig:
     memory: MemoryConfig | None = None
     effects: EffectsConfig | None = None
     transport: TransportConfig | None = None
+    tts: TTSConfig | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     # ----- factories -----------------------------------------------------
@@ -175,6 +205,7 @@ class HarnessConfig:
         memory_cfg = _parse_memory(raw.get("memory"))
         effects_cfg = _parse_effects(raw.get("effects"))
         transport_cfg = _parse_transport(raw.get("transport"))
+        tts_cfg = _parse_tts(raw.get("tts"), secrets=secrets)
         logging_cfg = _parse_logging(raw.get("logging"))
 
         return cls(
@@ -186,6 +217,7 @@ class HarnessConfig:
             memory=memory_cfg,
             effects=effects_cfg,
             transport=transport_cfg,
+            tts=tts_cfg,
             logging=logging_cfg,
         )
 
@@ -454,6 +486,87 @@ def _parse_transport(raw: Any) -> TransportConfig | None:
     return TransportConfig(kind=kind, topics=dict(topics))
 
 
+def _parse_tts(
+    raw: Any,
+    *,
+    secrets: Mapping[str, str] | None,
+) -> TTSConfig | None:
+    """Parse the ``tts`` YAML section into a :class:`TTSConfig`.
+
+    Mirrors the validation shape of :func:`_parse_llm` so the harness
+    treats the two ports uniformly: required ``provider`` string,
+    optional numeric / string knobs, ``api_key`` resolved through the
+    env placeholder pipeline (``"${MINIMAX_API_KEY}"`` syntax, never a
+    literal). Returns ``None`` when the section is absent — TTS is
+    optional in the harness config because some harnesses (e.g. the
+    pure-LLM ``echo``) don't speak audio.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ConfigError("'tts' section must be a mapping", section="tts")
+    provider = raw.get("provider")
+    if not isinstance(provider, str) or not provider:
+        raise ConfigError(
+            "'tts.provider' must be a non-empty string",
+            section="tts.provider",
+        )
+
+    sample_rate = raw.get("sample_rate")
+    if sample_rate is not None and not isinstance(sample_rate, int):
+        raise ConfigError(
+            "'tts.sample_rate' must be an integer (Hz)",
+            section="tts.sample_rate",
+        )
+    timeout_s = raw.get("timeout_s")
+    if timeout_s is not None and not isinstance(timeout_s, (int, float)):
+        raise ConfigError(
+            "'tts.timeout_s' must be a number",
+            section="tts.timeout_s",
+        )
+    fmt = raw.get("format", "pcm")
+    if not isinstance(fmt, str) or fmt not in ("pcm", "wav", "mp3", "ogg"):
+        raise ConfigError(
+            "'tts.format' must be one of 'pcm' | 'wav' | 'mp3' | 'ogg'",
+            section="tts.format",
+        )
+    rate_limit = raw.get("rate_limit_per_min")
+    if rate_limit is not None and not isinstance(rate_limit, int):
+        raise ConfigError(
+            "'tts.rate_limit_per_min' must be an integer or null",
+            section="tts.rate_limit_per_min",
+        )
+    cache_flag = raw.get("cache", False)
+    if not isinstance(cache_flag, bool):
+        raise ConfigError(
+            "'tts.cache' must be a boolean",
+            section="tts.cache",
+        )
+    extras = raw.get("extra", {})
+    if not isinstance(extras, Mapping):
+        raise ConfigError(
+            "'tts.extra' must be a mapping",
+            section="tts.extra",
+        )
+    api_key_raw = raw.get("api_key")
+    api_key: str | None = None
+    if api_key_raw is not None:
+        api_key = _resolve_string(str(api_key_raw), secrets=secrets)
+    return TTSConfig(
+        provider=provider,
+        model=raw.get("model"),
+        voice=raw.get("voice"),
+        language=raw.get("language"),
+        sample_rate=sample_rate,
+        format=fmt,
+        timeout_s=float(timeout_s) if timeout_s is not None else None,
+        cache=cache_flag,
+        rate_limit_per_min=rate_limit,
+        extra=dict(extras),
+        api_key=api_key,
+    )
+
+
 def _parse_logging(raw: Any) -> LoggingConfig:
     if raw is None:
         return LoggingConfig()
@@ -492,6 +605,7 @@ __all__ = [
     "MemoryConfig",
     "EffectsConfig",
     "TransportConfig",
+    "TTSConfig",
     "LoggingConfig",
     "HarnessConfig",
     "load_config",
