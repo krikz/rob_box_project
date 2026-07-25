@@ -14,5 +14,12 @@
     multicast: {
       enabled: false  // В тестах строго unicast, без multicast discovery
     }
+  },
+  
+  // Отключаем shared memory — не нужно для тестов, экономит /dev/shm
+  transport: {
+    shared_memory: {
+      enabled: false
+    }
   }
 }
