@@ -19,7 +19,7 @@ scenario_runner/runner.py — Исполнитель интеграционны�
   5. Выводит результаты и записывает results.json
   6. Выход с кодом 0 (все прошли) или 1 (есть провалы)
 
-LLM: Ollama (qwen2.5:0.5b) — OpenAI-совместимый API на порту 11434.
+LLM: Ollama (qwen2.5:0.5b) — OpenAI-совместимый API на порту 11435.
 
 Запуск: python3 runner.py
 """

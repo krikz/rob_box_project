@@ -50,14 +50,14 @@ services:
     container_name: ollama-test
     network_mode: host
     environment:
-      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_HOST: 0.0.0.0:11435
       OLLAMA_KEEP_ALIVE: 1h
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
     volumes:
       - ollama-models:/root/.ollama          # персистентный кэш моделей
     healthcheck:
       # Healthcheck проходит только после того как модель загружена и готова отвечать
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:11435/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
       interval: 5s
       timeout: 10s
       retries: 60       # до 5 минут на первый pull (на быстром интернете ~30s)
