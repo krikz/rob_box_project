@@ -22,10 +22,16 @@ the returned value so downstream decoders never dispatch on a false marker.
 
 from __future__ import annotations
 
+import asyncio
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
+import io
 import json
 import logging
 import os
-from typing import Any, AsyncIterator, Mapping, Optional, Union, cast
+import random
+from typing import Any, AsyncIterator, Mapping, Optional, cast
+import wave
 
 import httpx
 
@@ -40,17 +46,38 @@ from rob_box_llm.tts import (
     TTSAudio,
     TTSChunk,
     TTSFormat,
-    TTSProvider,
     TTSSettings,
 )
 from rob_box_llm.tts_provider_base import (
     BaseTTSProvider,
+    DEFAULT_MAX_CONNECTIONS,
+    DEFAULT_MAX_CONTENT_SIZE,
+    DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
     TTSCapabilities,
     TTSHealth,
     TTSVoice,
 )
 
 _log = logging.getLogger(__name__)
+
+_Sleep = Callable[[float], Awaitable[None]]
+_SUPPORTED_BYTE_FORMATS: dict[str, tuple[TTSFormat, int]] = {
+    "pcm_22050": (TTSFormat.PCM, 22_050),
+    "pcm_24000": (TTSFormat.PCM, 24_000),
+    "wav": (TTSFormat.WAV, 24_000),
+}
+
+
+def _pcm_to_wav(samples: bytes, *, sample_rate: int) -> bytes:
+    if not samples or len(samples) % 2:
+        raise ValueError("PCM payload must contain complete 16-bit samples")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(samples)
+    return buffer.getvalue()
 
 
 # MiniMax-specific BCP-47 → human-readable language name. MiniMax's
@@ -91,6 +118,92 @@ def _redact_sensitive_text(text: str, *, secrets: tuple[str, ...]) -> str:
         if secret:
             text = text.replace(secret, "<redacted>")
     return text
+
+
+class _ContentSizeExceeded(TTSError):
+    """Sentinel subclass of :class:`TTSError` for the BLK-6 size guard.
+
+    The streaming ``stream()`` path wraps its body in a generic
+    ``except Exception`` that converts recoverable transport errors
+    into an in-band ``TTSChunk(finish_reason="error")`` so the caller
+    can drain partial audio. The size guard, however, is a hard
+    policy ceiling — it must ALWAYS propagate to the caller, even if
+    audio has already been streamed. We use this marker so the outer
+    ``except`` block can re-raise it unchanged instead of converting
+    it to an in-band error chunk.
+    """
+
+    pass
+
+
+def _enforce_content_size(
+    content_length: int | str | None,
+    actual_len: int | None,
+    *,
+    limit: int = DEFAULT_MAX_CONTENT_SIZE,
+    provider: str,
+) -> None:
+    """Raise :class:`_ContentSizeExceeded` if a response exceeds ``limit`` bytes.
+
+    Called from the MiniMax TTS provider at every response boundary:
+
+    * :meth:`MiniMaxTTSProvider._post` — after reading the JSON body
+      for the non-streaming T2A v2 endpoint.
+    * :meth:`MiniMaxTTSProvider.stream` — on the SSE byte stream, once
+      the upstream has sent :rfc:`7230` ``Content-Length`` (early bail)
+      or after each ``aiter_bytes`` chunk for chunked / no-length
+      responses.
+
+    BLK-6 / PR-907: httpx's :class:`httpx.Limits` does NOT expose
+    ``max_content_size`` — that knob belongs to other HTTP libraries
+    (e.g. aiohttp). We enforce the ceiling here instead. The check is
+    intentionally cheap (one integer comparison) so it can be invoked
+    on every chunk without measurable overhead.
+
+    Parameters
+    ----------
+    content_length:
+        The ``Content-Length`` header value from the upstream response,
+        or ``None`` if the server did not advertise one. Passed as the
+        raw header value so callers don't need to coerce it themselves.
+    actual_len:
+        The number of bytes actually read so far (or the final length
+        when the body is buffered). ``None`` means "unknown" — the
+        function falls back to checking only the header.
+    limit:
+        Maximum allowed size in bytes. Defaults to
+        :data:`rob_box_llm.tts_provider_base.DEFAULT_MAX_CONTENT_SIZE`
+        (50 MiB). Tests override to drive the failure path cheaply.
+    provider:
+        Provider name threaded into the exception for diagnostics.
+
+    Raises
+    ------
+    _ContentSizeExceeded
+        If either the advertised ``Content-Length`` OR the actual bytes
+        read exceed ``limit``. Subclassing :class:`TTSError` keeps the
+        exception catchable as the domain error everywhere downstream,
+        while the sentinel class lets the streaming path's outer
+        ``except`` block re-raise it unchanged instead of converting it
+        to an in-band error chunk.
+    """
+    if content_length is not None:
+        try:
+            advertised = int(content_length)
+        except (TypeError, ValueError):
+            advertised = -1
+        if advertised > limit:
+            raise _ContentSizeExceeded(
+                f"minimax response too large: Content-Length={advertised} "
+                f"exceeds limit={limit} bytes (provider={provider})",
+                provider=provider,
+            )
+    if actual_len is not None and actual_len > limit:
+        raise _ContentSizeExceeded(
+            f"minimax response too large: read {actual_len} bytes "
+            f"exceeds limit={limit} bytes (provider={provider})",
+            provider=provider,
+        )
 
 
 def _map_exception(
@@ -402,14 +515,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         ``"speech-02-hd"`` — high-quality speech, supports Russian + emotion.
         Use ``"speech-02-turbo"`` for lower latency.
     timeout:
-        HTTP timeout applied to the synthesise / stream POSTs.
-
-        Accepts a plain ``float`` (applied to every phase) or a
-        per-phase :class:`httpx.Timeout`. The default is per-phase
-        (``connect=5``, ``read=20``, ``write=10``, ``pool=5``) so that
-        a DNS / TLS hang on the connect phase does not block the user
-        for the full read budget — see :data:`DEFAULT_TIMEOUT` and
-        BLK-5.
+        httpx timeout in seconds.
     client:
         Inject a pre-built :class:`httpx.AsyncClient` (handy for tests with a
         ``MockTransport``). The provider does NOT close an injected client on
@@ -426,58 +532,60 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     DEFAULT_BASE_URL = "https://api.minimax.io"
     DEFAULT_VOICE = "male-qn-qingse"
     DEFAULT_MODEL = "speech-02-hd"
-    #: Per-phase HTTP timeout used by the MiniMax TTS client.
-    #:
-    #: A bare ``float`` would mean "use this many seconds for every phase
-    #: (connect/read/write/pool)" — so a DNS or TLS hang on the connect
-    #: phase would block the user for the full 30 s, which is the
-    #: symptom BLK-5 set out to fix. We split the budget:
-    #:
-    #: * ``connect=5.0``  — TCP+TLS handshake; a slow connect usually
-    #:   means the host is unreachable and the user should hear about
-    #:   it fast.
-    #: * ``read=20.0``    — covers long streaming downloads; MiniMax
-    #:   T2A v2 can take a few seconds for big payloads.
-    #: * ``write=10.0``   — request body upload; the request is small
-    #:   (text + a few hundred bytes of params), so 10 s is generous.
-    #: * ``pool=5.0``     — waiting for a free connection from the
-    #:   client pool; should be near-instant.
-    #:
-    #: Pass an :class:`httpx.Timeout` (or a plain float, treated as
-    #: "all phases") to override per-instance.
-    DEFAULT_TIMEOUT: httpx.Timeout = httpx.Timeout(
-        connect=5.0, read=20.0, write=10.0, pool=5.0
-    )
+    DEFAULT_TIMEOUT = 30.0
+    DEFAULT_MAX_ATTEMPTS = 3
+    DEFAULT_RETRY_BASE_DELAY = 0.5
+    DEFAULT_RETRY_JITTER = 0.25
+    DEFAULT_MAX_CONCURRENCY = 1
+    DEFAULT_CACHE_SIZE = 128
 
     def __init__(
         self,
         *,
         api_key: Optional[str] = None,
         group_id: Optional[str] = None,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str | None = None,
         default_voice: str = DEFAULT_VOICE,
         default_model: str = DEFAULT_MODEL,
-        timeout: Union[float, httpx.Timeout, None] = DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_TIMEOUT,
         client: Optional[httpx.AsyncClient] = None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
+        retry_jitter: float = DEFAULT_RETRY_JITTER,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        cache_size: int = DEFAULT_CACHE_SIZE,
+        sleep: _Sleep = asyncio.sleep,
     ) -> None:
-        import os
-
         self.name = "minimax"
-        self._base_url = base_url.rstrip("/")
+        resolved_base_url = (
+            base_url or os.getenv("MINIMAX_TTS_BASE_URL") or self.DEFAULT_BASE_URL
+        )
+        self._base_url = resolved_base_url.rstrip("/")
         self._api_key = api_key or os.getenv("MINIMAX_API_KEY") or ""
         self._group_id = group_id or os.getenv("MINIMAX_GROUP_ID") or ""
         self._default_voice = default_voice
         self._default_model = default_model
-        # ``self._timeout`` may now be either a plain float (all
-        # phases) or a per-phase :class:`httpx.Timeout`. The base
-        # ``_http_client_factory`` passes it through unchanged, so
-        # httpx normalises both shapes correctly.
-        if timeout is None:
-            self._timeout: Union[float, httpx.Timeout] = DEFAULT_TIMEOUT
-        elif isinstance(timeout, httpx.Timeout):
-            self._timeout = timeout
-        else:
-            self._timeout = float(timeout)
+        self._timeout = timeout
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if retry_base_delay < 0.0:
+            raise ValueError("retry_base_delay must be >= 0")
+        if retry_jitter < 0.0:
+            raise ValueError("retry_jitter must be >= 0")
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
+        if cache_size < 0:
+            raise ValueError("cache_size must be >= 0")
+        self._max_attempts = max_attempts
+        self._retry_base_delay = retry_base_delay
+        self._retry_jitter = retry_jitter
+        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._cache_size = cache_size
+        self._cache: OrderedDict[str, bytes] = OrderedDict()
+        self._cache_lock = asyncio.Lock()
+        self._cache_generation = 0
+        self._inflight: dict[str, asyncio.Task[bytes]] = {}
+        self._sleep = sleep
         self._owns_client = client is None
         # Route through the extension hook so subclasses can customise
         # transport / TLS / OAuth headers — see BaseTTSProvider for the
@@ -614,8 +722,26 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         document the intent; the implementation matches the base
         default exactly. Subclasses (e.g. a China-endpoint variant)
         can override to set ``base_url=`` and per-request headers.
+
+        BLK-6 / PR-907: the pool is tightened to
+        :data:`DEFAULT_MAX_CONNECTIONS` /
+        :data:`DEFAULT_MAX_KEEPALIVE_CONNECTIONS` — a single-tenant
+        voice pipeline never bursts past a handful of concurrent
+        sockets, and httpx's default of 100/20 invites an OOM via
+        runaway response bodies. Response-body size is bounded
+        separately by :func:`_enforce_content_size` at the
+        :meth:`_post` / :meth:`stream` boundary because httpx's
+        :class:`httpx.Limits` does NOT expose a ``max_content_size``
+        parameter (verified against httpx 0.27–0.28; not on the
+        upstream roadmap).
         """
-        return httpx.AsyncClient(timeout=self._timeout)
+        return httpx.AsyncClient(
+            timeout=self._timeout,
+            limits=httpx.Limits(
+                max_connections=DEFAULT_MAX_CONNECTIONS,
+                max_keepalive_connections=DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+        )
 
     def _build_request_payload(
         self,
@@ -702,11 +828,25 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     secrets=(self._api_key, self._group_id),
                 ) from exc
 
+        # BLK-6: enforce response-size ceiling BEFORE decoding the body.
+        # httpx has no ``max_content_size`` on :class:`httpx.Limits`, so we
+        # guard at the application boundary. ``resp.aread()`` is the
+        # canonical way to drain the body once for both the size check
+        # and the JSON parse below — calling ``resp.json()`` would
+        # re-read the buffer for non-streaming bodies.
+        body_bytes = await resp.aread()
+        _enforce_content_size(
+            resp.headers.get("Content-Length"),
+            len(body_bytes),
+            provider=self.name,
+        )
+
         try:
-            data = resp.json()
+            data = json.loads(body_bytes)
         except json.JSONDecodeError as exc:
             response_text = _redact_sensitive_text(
-                resp.text[:200], secrets=(self._api_key, self._group_id)
+                body_bytes[:200].decode("utf-8", errors="replace"),
+                secrets=(self._api_key, self._group_id),
             )
             raise TTSError(
                 f"Non-JSON response: {response_text}", provider=self.name
@@ -799,6 +939,172 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             samples=samples, sample_rate=sample_rate, format=actual_format, raw=data
         )
 
+    async def synthesize_bytes(
+        self,
+        text: str,
+        voice: str | None = None,
+        **opts: object,
+    ) -> bytes:
+        """Return cached audio bytes via the compact harness-style API.
+
+        Supported ``format`` values are ``pcm_22050``, ``pcm_24000`` and
+        ``wav``. Calls with the same normalized text, voice, format and
+        options share both an in-memory LRU entry and an in-flight request.
+        """
+        format_value = opts.pop("format", "pcm_24000")
+        if (
+            not isinstance(format_value, str)
+            or format_value not in _SUPPORTED_BYTE_FORMATS
+        ):
+            raise TTSBadRequestError(
+                "format must be one of: pcm_22050, pcm_24000, wav",
+                provider=self.name,
+            )
+        if any(not isinstance(key, str) for key in opts):
+            raise TTSBadRequestError("option names must be strings", provider=self.name)
+
+        cache_key = self._make_cache_key(text, voice, format_value, opts)
+        async with self._cache_lock:
+            generation = self._cache_generation
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                self._cache.move_to_end(cache_key)
+                return cached
+            task = self._inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._synthesize_bytes_uncached(text, voice, format_value, opts)
+                )
+                self._inflight[cache_key] = task
+
+        try:
+            result = await task
+        finally:
+            if task.done():
+                async with self._cache_lock:
+                    if self._inflight.get(cache_key) is task:
+                        self._inflight.pop(cache_key, None)
+
+        async with self._cache_lock:
+            if self._cache_size > 0 and generation == self._cache_generation:
+                self._cache[cache_key] = result
+                self._cache.move_to_end(cache_key)
+                while len(self._cache) > self._cache_size:
+                    self._cache.popitem(last=False)
+        return result
+
+    async def clear_cache(self) -> None:
+        """Clear completed synthesis results under the cache lock."""
+        async with self._cache_lock:
+            self._cache_generation += 1
+            self._cache.clear()
+
+    def _make_cache_key(
+        self,
+        text: str,
+        voice: str | None,
+        format_value: str,
+        opts: Mapping[str, object],
+    ) -> str:
+        try:
+            return json.dumps(
+                [text, voice, format_value, opts],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TTSBadRequestError(
+                f"synthesize options must be JSON-serializable: {exc}",
+                provider=self.name,
+            ) from exc
+
+    def _optional_str(self, value: object, *, name: str) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        raise TTSBadRequestError(f"{name} must be a string", provider=self.name)
+
+    def _optional_float(self, value: object, *, name: str) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TTSBadRequestError(f"{name} must be numeric", provider=self.name)
+        return float(value)
+
+    def _optional_int(self, value: object, *, name: str) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TTSBadRequestError(f"{name} must be an integer", provider=self.name)
+        return value
+
+    def _optional_bool(self, value: object, *, name: str) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        raise TTSBadRequestError(f"{name} must be a boolean", provider=self.name)
+
+    async def _synthesize_bytes_uncached(
+        self,
+        text: str,
+        voice: str | None,
+        format_value: str,
+        opts: Mapping[str, object],
+    ) -> bytes:
+        output_format, sample_rate = _SUPPORTED_BYTE_FORMATS[format_value]
+        typed_values = {
+            "model": opts.get("model"),
+            "language": opts.get("language"),
+            "speed": opts.get("speed"),
+            "volume": opts.get("volume"),
+            "pitch": opts.get("pitch"),
+            "emotion": opts.get("emotion"),
+            "text_normalization": opts.get("text_normalization"),
+        }
+        extra = {key: value for key, value in opts.items() if key not in typed_values}
+        settings = TTSSettings(
+            model=self._optional_str(typed_values["model"], name="model"),
+            voice=voice,
+            language=self._optional_str(typed_values["language"], name="language"),
+            speed=self._optional_float(typed_values["speed"], name="speed"),
+            volume=self._optional_float(typed_values["volume"], name="volume"),
+            pitch=self._optional_int(typed_values["pitch"], name="pitch"),
+            emotion=self._optional_str(typed_values["emotion"], name="emotion"),
+            sample_rate=sample_rate,
+            format=output_format,
+            text_normalization=self._optional_bool(
+                typed_values["text_normalization"], name="text_normalization"
+            ),
+            extra=extra,
+        )
+
+        for attempt in range(self._max_attempts):
+            try:
+                async with self._semaphore:
+                    audio = await self.synthesize(text, settings=settings)
+                if format_value == "wav" and not audio.samples.startswith(b"RIFF"):
+                    try:
+                        return _pcm_to_wav(
+                            audio.samples, sample_rate=audio.sample_rate
+                        )
+                    except ValueError as exc:
+                        raise TTSError(str(exc), provider=self.name) from exc
+                return audio.samples
+            except (TTSRateLimitError, TTSTimeoutError, TTSError) as exc:
+                if isinstance(exc, (TTSAuthError, TTSBadRequestError)):
+                    raise
+                if attempt + 1 >= self._max_attempts:
+                    raise
+                delay = self._retry_base_delay * (2**attempt)
+                if self._retry_jitter:
+                    delay += random.uniform(0.0, self._retry_jitter)
+                await self._sleep(delay)
+
+        raise RuntimeError("retry loop exhausted without result")
+
     async def stream(
         self,
         text: str,
@@ -838,6 +1144,19 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         )
         yielded_audio = False
         collected_sr = 0
+        # BLK-6: cumulative byte counter for the SSE stream. ``aiter_bytes``
+        # yields raw network bytes (which include the SSE framing + JSON
+        # envelope, not just the decoded audio), so this naturally fires
+        # BEFORE the audio payload itself blows the budget — we get a
+        # cheap, single-comparison OOM guard per chunk.
+        bytes_seen = 0
+        # BLK-6: set when the upstream signals end-of-stream via
+        # ``data: [DONE]``. The outer ``aiter_bytes`` loop must keep
+        # draining the socket so we don't strand half-consumed bytes
+        # in the connection pool; once the inner ``for line`` loop is
+        # done, we break out of the outer loop and fall through to the
+        # terminal ``stop`` chunk yield below.
+        saw_done = False
         try:
             url = f"{self._base_url}/v1/t2a_v2"
             async with self._client.stream(
@@ -847,6 +1166,15 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 headers=self._headers(),
                 content=json.dumps(payload),
             ) as resp:
+                # BLK-6: early bail on an oversized Content-Length. If the
+                # upstream advertised a body larger than our policy ceiling,
+                # we fail BEFORE buffering any bytes — the same guard as
+                # ``_post`` runs at the streaming boundary too.
+                _enforce_content_size(
+                    resp.headers.get("Content-Length"),
+                    None,
+                    provider=self.name,
+                )
                 if resp.status_code >= 400:
                     await resp.aread()
                     try:
@@ -857,66 +1185,105 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                             provider=self.name,
                             secrets=(self._api_key, self._group_id),
                         ) from exc
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    # MiniMax SSE payload: "data:{json}\n\n"
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    if line == "[DONE]":
-                        break
+                async for chunk in resp.aiter_bytes():
+                    bytes_seen += len(chunk)
+                    if bytes_seen > DEFAULT_MAX_CONTENT_SIZE:
+                        # BLK-6: this is a HARD POLICY ceiling. The outer
+                        # ``except Exception`` (below) converts recoverable
+                        # transport errors into an in-band ``error`` chunk,
+                        # but partial audio + a silent swallow is the wrong
+                        # outcome here — the caller asked for a bounded
+                        # response and we must ALWAYS propagate. ``_ContentSizeExceeded``
+                        # is a :class:`TTSError` subclass so the outer
+                        # handler recognises it and re-raises unchanged.
+                        raise _ContentSizeExceeded(
+                            f"minimax stream too large: read {bytes_seen} bytes "
+                            f"exceeds limit={DEFAULT_MAX_CONTENT_SIZE} bytes "
+                            f"(provider={self.name})",
+                            provider=self.name,
+                        )
                     try:
-                        evt = json.loads(line)
-                    except json.JSONDecodeError:
-                        diagnostic = _redact_sensitive_text(
-                            line[:80], secrets=(self._api_key, self._group_id)
-                        )
-                        _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
-                        continue
-                    base_resp = evt.get("base_resp") or {}
-                    if base_resp.get("status_code", 0) != 0:
-                        raw_status_msg = str(base_resp.get("status_msg", "unknown"))
-                        status_msg = _redact_sensitive_text(
-                            raw_status_msg,
-                            secrets=(self._api_key, self._group_id),
-                        )
-                        message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
-                        msg_lower = raw_status_msg.lower()
-                        if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
-                            api_error: TTSError = TTSAuthError(message, provider=self.name)
-                        elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
-                            api_error = TTSRateLimitError(message, provider=self.name)
-                        elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
-                            api_error = TTSBadRequestError(message, provider=self.name)
-                        else:
-                            api_error = TTSError(message, provider=self.name)
-                        if yielded_audio:
-                            yield TTSChunk(finish_reason="error")
-                            return
-                        raise api_error
-                    payload_data = evt.get("data") or {}
-                    chunk_hex = payload_data.get("audio")
-                    if chunk_hex:
+                        text = chunk.decode("utf-8", errors="replace")
+                    except Exception as exc:  # noqa: BLE001
+                        raise TTSError(
+                            f"minimax stream decode error: {exc}",
+                            provider=self.name,
+                        ) from exc
+                    # SSE events are separated by blank lines; ``aiter_bytes``
+                    # hands us raw network bytes, so we split on those. This
+                    # is equivalent to aiter_lines() but interleaved with the
+                    # byte-count guard above.
+                    for line in text.splitlines():
+                        if not line:
+                            continue
+                        # MiniMax SSE payload: "data:{json}\n\n"
+                        if line.startswith("data:"):
+                            line = line[5:].strip()
+                        if line == "[DONE]":
+                            saw_done = True
+                            continue
                         try:
-                            chunk_samples = bytes.fromhex(chunk_hex)
-                        except ValueError as exc:
-                            raise TTSError(
-                                f"minimax returned non-hex audio payload: {exc}",
-                                provider=self.name,
-                            ) from exc
-                        collected_sr = int(
-                            payload_data.get("audio_sample_rate", collected_sr or 32000)
-                        )
-                        yielded_audio = True
-                        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
-                        yield TTSChunk(
-                            samples=chunk_samples,
-                            sample_rate=collected_sr,
-                            format=actual_format,
-                        )
+                            evt = json.loads(line)
+                        except json.JSONDecodeError:
+                            diagnostic = _redact_sensitive_text(
+                                line[:80], secrets=(self._api_key, self._group_id)
+                            )
+                            _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
+                            continue
+                        base_resp = evt.get("base_resp") or {}
+                        if base_resp.get("status_code", 0) != 0:
+                            raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+                            status_msg = _redact_sensitive_text(
+                                raw_status_msg,
+                                secrets=(self._api_key, self._group_id),
+                            )
+                            message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
+                            msg_lower = raw_status_msg.lower()
+                            if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
+                                api_error: TTSError = TTSAuthError(message, provider=self.name)
+                            elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
+                                api_error = TTSRateLimitError(message, provider=self.name)
+                            elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
+                                api_error = TTSBadRequestError(message, provider=self.name)
+                            else:
+                                api_error = TTSError(message, provider=self.name)
+                            if yielded_audio:
+                                yield TTSChunk(finish_reason="error")
+                                return
+                            raise api_error
+                        payload_data = evt.get("data") or {}
+                        chunk_hex = payload_data.get("audio")
+                        if chunk_hex:
+                            try:
+                                chunk_samples = bytes.fromhex(chunk_hex)
+                            except ValueError as exc:
+                                raise TTSError(
+                                    f"minimax returned non-hex audio payload: {exc}",
+                                    provider=self.name,
+                                ) from exc
+                            collected_sr = int(
+                                payload_data.get("audio_sample_rate", collected_sr or 32000)
+                            )
+                            yielded_audio = True
+                            actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
+                            yield TTSChunk(
+                                samples=chunk_samples,
+                                sample_rate=collected_sr,
+                                format=actual_format,
+                            )
+                    if saw_done:
+                        # Drain the rest of the socket (if any) so the
+                        # connection returns cleanly to the keep-alive pool,
+                        # then exit the outer byte loop.
+                        break
         except Exception as exc:  # noqa: BLE001
             # Transport/decoder failures after the first audio frame are
             # represented in-band; before that point they must raise.
+            # The size guard is the exception — it must ALWAYS propagate
+            # because partial audio + a silent swallow is the wrong
+            # outcome (the caller asked for a bounded response).
+            if isinstance(exc, _ContentSizeExceeded):
+                raise
             if isinstance(exc, TTSError):
                 if yielded_audio:
                     yield TTSChunk(finish_reason="error")

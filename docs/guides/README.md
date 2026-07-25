@@ -201,6 +201,10 @@
 - `minimax_llm.yaml` — factory-конфиг для `rob_box_llm` registry
   (`llm.providers: [minimax, mimo, deepseek]`)
 
+Исполняемый Python-пример находится в
+[`examples/tts_minimax_example.py`](../../examples/tts_minimax_example.py):
+registry/factory → MiniMax TTS → валидный WAV.
+
 ## 🎨 Дополнительные возможности
 
 ### [ANIMATION_EDITOR.md](ANIMATION_EDITOR.md)

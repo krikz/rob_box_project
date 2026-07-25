@@ -4,7 +4,7 @@
 > **Модуль:** `rob_box_llm.providers.minimax_tts`
 > **Транспорт:** HTTP `POST https://api.minimax.io/v1/t2a_v2` (MiniMax T2A v2)
 > **Альтернативы по base_url:** `https://api-uw.minimax.io` (Reduced TTFA), провайдерская нода для Китая
-> **Стиль:** Markdown с блоками OpenAPI-стиля. Для архитектурных решений см. [ADR-0003](../adr/0003-minimax-tts-architecture.md); для пользовательского сценария — [MINIMAX_TTS.md](../guides/MINIMAX_TTS.md).
+> **Стиль:** Markdown с блоками OpenAPI-стиля. Для архитектурных решений см. [ADR-0003](../adr/0003-minimax-tts-architecture.md); для пользовательского сценария — [Getting Started](../guides/MINIMAX_TTS_GETTING_STARTED.md).
 
 ---
 
@@ -20,7 +20,7 @@
 8. [Метод `healthcheck()`](#8-метод-healthcheck)
 9. [Value-objects (`TTSSettings`, `TTSAudio`, `TTSChunk`, `TTSFormat`)](#9-value-objects)
 10. [Исключения](#10-исключения)
-11. [Переменные окружения](#11-переменные-окружения)
+11. [Bytes API и переменные окружения](#11-bytes-api-и-переменные-окружения)
 12. [Ограничения и не-поддерживаемое](#12-ограничения)
 
 ---
@@ -55,11 +55,16 @@ MiniMaxTTSProvider(
     *,
     api_key: Optional[str] = None,
     group_id: Optional[str] = None,
-    base_url: str = "https://api.minimax.io",
+    base_url: Optional[str] = None,
     default_voice: str = "male-qn-qingse",
     default_model: str = "speech-02-hd",
     timeout: float = 30.0,
     client: Optional[httpx.AsyncClient] = None,
+    max_attempts: int = 3,
+    retry_base_delay: float = 0.5,
+    retry_jitter: float = 0.25,
+    max_concurrency: int = 1,
+    cache_size: int = 128,
 ) -> None
 ```
 
@@ -67,11 +72,16 @@ MiniMaxTTSProvider(
 |---|---|---|---|
 | `api_key` | `Optional[str]` | ENV `MINIMAX_API_KEY` | MiniMax API key. Без префикса `Bearer`. Префикс добавляет провайдер. Если не задан ни параметром, ни ENV — **первый вызов** `synthesize`/`stream` поднимет `TTSAuthError`. |
 | `group_id` | `Optional[str]` | ENV `MINIMAX_GROUP_ID` | MiniMax account/group id. Передаётся как query-параметр `GroupId=…` в каждый запрос. Обязателен. |
-| `base_url` | `str` | `"https://api.minimax.io"` | Корень API. Для TTFA-оптимизированной ноды используйте `"https://api-uw.minimax.io"`. Для тестов — `http://localhost:port`. |
+| `base_url` | `Optional[str]` | ENV `MINIMAX_TTS_BASE_URL` → `"https://api.minimax.io"` | Корень API. Аргумент конструктора имеет приоритет над ENV. Для тестов можно указать локальный mock endpoint. |
 | `default_voice` | `str` | `"male-qn-qingse"` | Voice id, который подставляется в payload, если `TTSSettings.voice is None`. |
 | `default_model` | `str` | `"speech-02-hd"` | Model, который подставляется, если `TTSSettings.model is None`. Допустимые: `speech-02-hd`, `speech-02-turbo`, `speech-01-hd`, `speech-01-turbo`. |
 | `timeout` | `float` | `30.0` | httpx timeout в секундах на каждый HTTP-запрос (sync и streaming). |
 | `client` | `Optional[httpx.AsyncClient]` | `None` | Инжектированный клиент (для тестов с `httpx.MockTransport`). Если задан — провайдер **не закрывает** его в `aclose()` (ответственность на вызывающем). |
+| `max_attempts` | `int` | `3` | Максимум попыток в `synthesize_bytes()` для retryable ошибок. |
+| `retry_base_delay` | `float` | `0.5` | Начальная задержка exponential backoff, секунды. |
+| `retry_jitter` | `float` | `0.25` | Максимальный случайный jitter, секунды. |
+| `max_concurrency` | `int` | `1` | Локальный лимит одновременных запросов `synthesize_bytes()`. |
+| `cache_size` | `int` | `128` | Максимум результатов во встроенном LRU-кэше; `0` отключает completed-result cache. |
 
 **Возвращает:** `None`.
 
@@ -264,12 +274,12 @@ async def list_voices(self) -> list[TTSVoice]
 
 | `id` | `language` | `gender` | `supports_cloning` |
 |---|---|---|---|
-| `male-qn-qingse` | `zh` | `male` | `True` |
-| `female-shaonv` | `zh` | `female` | `True` |
-| `Calm_Woman` | `en` | `female` | `True` |
-| `English_PassionateWarrior` | `en` | `male` | `True` |
-| `Russian_Husky_Man` | `ru` | `male` | `True` |
-| `Russian_Calm_Woman` | `ru` | `female` | `True` |
+| `male-qn-qingse` | `zh` | `male` | `False` |
+| `female-shaonv` | `zh` | `female` | `False` |
+| `Calm_Woman` | `en` | `female` | `False` |
+| `English_PassionateWarrior` | `en` | `male` | `False` |
+| `Russian_DeepVoice` | `ru` | `male` | `False` |
+| `Russian_CalmWoman` | `ru` | `female` | `False` |
 
 **Не бросает.** Полный актуальный каталог — в [документации MiniMax](https://platform.minimaxi.com/docs/api-reference/voice-cloning/voice-cloning-1).
 
@@ -377,14 +387,42 @@ Enum: `PCM`, `WAV`, `MP3`, `OGG`. Значение `OGG` в `TTSSettings.format`
 
 ---
 
-## 11. Переменные окружения
+## 11. Bytes API и переменные окружения
+
+Для коротких интеграций используйте компактный метод:
+
+```python
+async def synthesize_bytes(
+    text: str,
+    voice: Optional[str] = None,
+    **opts: object,
+) -> bytes
+```
+
+Поддерживаемые форматы:
+
+| `format` | Возвращаемые bytes | Sample rate |
+|---|---|---|
+| `pcm_22050` | raw signed 16-bit little-endian mono PCM | 22 050 Hz |
+| `pcm_24000` | raw signed 16-bit little-endian mono PCM | 24 000 Hz |
+| `wav` | RIFF/WAVE контейнер; raw PCM оборачивается модулем `wave`, если API не вернул контейнер | 24 000 Hz |
+
+Метод кэширует успешные результаты, объединяет одинаковые in-flight запросы,
+ограничивает конкурентность и повторяет retryable ошибки. `TTSAuthError` и
+`TTSBadRequestError` не повторяются.
+
+### Переменные окружения
 
 | ENV | Когда читается | Default | Обязательно? |
 |---|---|---|---|
 | `MINIMAX_API_KEY` | Конструктор, если `api_key=None` | — | Да, для реального синтеза. `healthcheck()` вернёт `ok=False` |
 | `MINIMAX_GROUP_ID` | Конструктор, если `group_id=None` | — | Да, для реального синтеза. `healthcheck()` вернёт `ok=False` |
+| `MINIMAX_TTS_BASE_URL` | Конструктор, если `base_url=None` | `https://api.minimax.io` | Нет. Укажите только для proxy, тестового или регионального endpoint. |
 
-Приоритет: **аргумент конструктора** > ENV. Параметр ROS-ноды `minimax_api_key` / `minimax_group_id` с пустой строкой → fallback на ENV (см. `tts_node.py`).
+Приоритет: **аргумент конструктора** > ENV > встроенный default. Лимит
+конкурентности не читается провайдером из ENV: передайте `max_concurrency`
+явно. В готовом примере переменная `MINIMAX_TTS_MAX_CONCURRENCY` преобразуется
+в этот аргумент на уровне приложения.
 
 ---
 
@@ -408,6 +446,9 @@ Enum: `PCM`, `WAV`, `MP3`, `OGG`. Значение `OGG` в `TTSSettings.format`
 **Лимиты MiniMax API** (см. `docs/research/minimax-tts-api.md` §10):
 
 - Общий пул **RPM = 60** для всех T2A-моделей на аккаунт.
+- `max_concurrency` ограничивает число параллельных запросов, но не RPM. Если
+  приложение может превысить квоту аккаунта, добавьте rate limiter перед
+  вызовом провайдера.
 - Текст ≤ 10 000 символов на запрос.
 - Биллинг — по `extra_info.usage_characters` (1 символ входа = 1 character).
 
@@ -417,9 +458,11 @@ Enum: `PCM`, `WAV`, `MP3`, `OGG`. Значение `OGG` в `TTSSettings.format`
 
 - [docs/guides/MINIMAX_TTS.md](../guides/MINIMAX_TTS.md) — пользовательский гайд с примерами ROS2
 - [docs/guides/MINIMAX_TTS_GETTING_STARTED.md](../guides/MINIMAX_TTS_GETTING_STARTED.md) — минимальный путь от нуля до публикации в ROS2
+- [`examples/tts_minimax_example.py`](../../examples/tts_minimax_example.py) — исполняемый registry/factory → PCM → WAV пример
+- [ADR-0001](../adr/0001-harness-architecture.md) — базовая архитектура harness и capability registry
 - [docs/research/minimax-tts-api.md](../research/minimax-tts-api.md) — research-реферат публичного API MiniMax
 - [docs/architecture/minimax-tts-architecture.md](../architecture/minimax-tts-architecture.md) — реализационный контракт
 - [docs/adr/0003-minimax-tts-architecture.md](../adr/0003-minimax-tts-architecture.md) — ADR с обоснованием
-- [docs/adr/0008-tts-provider-extension-points.md](../adr/0008-tts-provider-extension-points.md) — точки расширения (`BaseTTSProvider`)
+- [docs/adr/0008-tts-provider-extension-points-landed.md](../adr/0008-tts-provider-extension-points-landed.md) — точки расширения (`BaseTTSProvider`)
 
-**Версия документа:** 1.0 (2026-07-22) · **Покрывает:** `rob_box_llm>=0.2.1`, `MiniMaxTTSProvider` поверх MiniMax T2A v2 HTTP.
+**Версия документа:** 1.1 (2026-07-24) · **Покрывает:** `rob_box_llm>=0.2.1`, `MiniMaxTTSProvider` поверх MiniMax T2A v2 HTTP.
