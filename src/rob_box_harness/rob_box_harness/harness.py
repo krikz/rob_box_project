@@ -148,13 +148,13 @@ class Harness(abc.ABC, Generic[StateT]):
         that need custom wiring should override and call
         ``await super().init()`` first.
         """
-        if self._initialized:
-            return
         if self._running:
             raise HarnessStateError(
                 "init() called while run() is in progress",
                 harness=self.name,
             )
+        if self._initialized:
+            return
 
         # Default port construction. Concrete harnesses override
         # init() to inject real providers (DeepSeek, ROS2, ...).
@@ -214,6 +214,11 @@ class Harness(abc.ABC, Generic[StateT]):
         """Release resources. Idempotent."""
         if not self._initialized:
             return
+        if self._running:
+            raise HarnessStateError(
+                "teardown() called while run() is in progress",
+                harness=self.name,
+            )
         try:
             await self.hooks.invoke("on_stop", self.name)
         finally:
