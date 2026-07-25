@@ -60,7 +60,7 @@ services:
       - ollama-models:/root/.ollama          # персистентный кэш моделей
     healthcheck:
       # Healthcheck проходит только после того как модель загружена и готова отвечать
-      test: ["CMD-SHELL", "curl -sf http://localhost:11435/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
       interval: 10s
       timeout: 15s
       retries: 120      # до 20 минут на первый pull (~350MB модель)
