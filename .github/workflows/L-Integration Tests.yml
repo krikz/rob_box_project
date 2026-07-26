@@ -130,7 +130,6 @@ jobs:
           IMAGE_TAG: ${{ steps.tag.outputs.tag }}
           ROS_DISTRO: ${{ env.ROS_DISTRO }}
           PLATFORM: linux/arm64
-          SCENARIO_PATTERN: "00_barge_in.yaml"
         run: |
           # Монтируем конфиг/сценарии/результаты из /tmp/ — этот путь виден Docker daemon на хосте
           # (./config внутри runner-контейнера → /runner/_work/... — daemon не видит)
