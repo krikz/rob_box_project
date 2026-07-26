@@ -485,7 +485,7 @@ class ScenarioRunner(Node):
             if not rescue_sent and self._dialogue_state == "listening":
                 elapsed = idle_timeout_s - (deadline2 - time.time())
                 silence = time.time() - self._last_any_response_ts
-                if elapsed > 20.0 and silence > 15.0:
+                if elapsed > 10.0 and silence > 5.0:
                     self.get_logger().info(
                         f"[wait_for_idle] RESCUE: node stuck in 'listening' "
                         f"(elapsed={elapsed:.1f}s, silence={silence:.1f}s) — injecting silence word"
