@@ -81,12 +81,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-mock
-          # Локально ставим rob_box_harness (без colcon).
-          pip install -e src/rob_box_harness
-          # rob_box_harness зависит от rob_box_llm (для LLMProvider port).
+          # rob_box_llm MUST be installed FIRST — rob_box_harness depends on it.
           if [ -d src/rob_box_llm ]; then
             pip install -e src/rob_box_llm
           fi
+          pip install -e src/rob_box_harness
 
       - name: Run unit tests with coverage
         # Строго без сети: pytest-cov считает, network-тесты авто-скипаются
@@ -186,10 +185,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-mock
-          pip install -e src/rob_box_harness
+          # rob_box_llm MUST be installed FIRST — rob_box_harness depends on it.
           if [ -d src/rob_box_llm ]; then
             pip install -e src/rob_box_llm
           fi
+          pip install -e src/rob_box_harness
 
       - name: Run network/integration tests
         env:
