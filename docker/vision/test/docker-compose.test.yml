@@ -115,7 +115,7 @@ services:
       PYTHONUNBUFFERED: "1"
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
-      OVERALL_TIMEOUT: "300"
+      DEFAULT_SCENARIO_TIMEOUT: "90"
     volumes:
       - ./config:/test-config:ro
       - ./scenario_runner/scenarios:/scenarios:ro
