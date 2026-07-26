@@ -22,17 +22,18 @@ RUN if [ -n "$APT_PROXY" ]; then \
         fi \
     fi
 
-# Установка плагинов для сжатия изображений и Zenoh
-RUN apt-get update && \
+# WORKAROUND: базовый образ rtabmap_ros:kilted имеет протухшие GPG ключи Noble
+# Обновляем ключи, затем ставим плагины и Zenoh (прокси отключён — apt-cacher-ng не支持 Noble)
+RUN rm -f /etc/apt/apt.conf.d/02proxy && \
+    apt-get update -o Acquire::AllowInsecureRepositories=true && \
+    apt-get install -y -o APT::Get::AllowUnauthenticated=true ubuntu-keyring && \
+    apt-get update && \
     apt-get install -y \
         ros-kilted-image-transport-plugins \
         ros-kilted-compressed-image-transport \
         ros-kilted-theora-image-transport \
-        ros-kilted-rmw-zenoh-cpp \
-        && rm -rf /var/lib/apt/lists/*
-
-# Удаляем APT прокси конфигурацию после установки пакетов
-RUN rm -f /etc/apt/apt.conf.d/02proxy
+        ros-kilted-rmw-zenoh-cpp && \
+    rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем переменные окружения для Zenoh
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \

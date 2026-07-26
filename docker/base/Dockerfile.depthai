@@ -27,15 +27,16 @@ RUN if [ -n "$APT_PROXY" ]; then \
 RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
     gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg
 
-# Устанавливаем Zenoh middleware и дополнительные плагины
-RUN apt-get update && \
+# WORKAROUND: базовый образ depthai-ros:kilted имеет протухшие GPG ключи Noble
+# Обновляем ключи, затем ставим Zenoh (прокси отключён — apt-cacher-ng не支持 Noble)
+RUN rm -f /etc/apt/apt.conf.d/02proxy && \
+    apt-get update -o Acquire::AllowInsecureRepositories=true && \
+    apt-get install -y -o APT::Get::AllowUnauthenticated=true ubuntu-keyring && \
+    apt-get update && \
     apt-get install -y \
         ros-kilted-rmw-zenoh-cpp \
-        ros-kilted-compressed-depth-image-transport \
-        && rm -rf /var/lib/apt/lists/*
-
-# Удаляем APT прокси конфигурацию после установки пакетов
-RUN rm -f /etc/apt/apt.conf.d/02proxy
+        ros-kilted-compressed-depth-image-transport && \
+    rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем переменные окружения для Zenoh
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
