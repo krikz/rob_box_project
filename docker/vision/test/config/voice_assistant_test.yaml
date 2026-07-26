@@ -33,3 +33,9 @@
 
     llm_timeout_sec: 30.0
     max_iterations: 3
+
+    # Не хранить вызовы memory-тулов в истории диалога.
+    # Иначе LLM видит handle_memory в истории → pattern-completion:
+    # вызывает его для КАЖДОГО запроса (даже "привет") →
+    # история пухнет → OOM после 7+ сценариев.
+    history_excluded_tools: ["handle_memory", "handle_navigation"]
