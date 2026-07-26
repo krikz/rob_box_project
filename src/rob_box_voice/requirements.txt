@@ -20,13 +20,13 @@ openai-whisper>=20250625
 faster-whisper>=1.2.1  # Faster inference via CTranslate2
 
 # Yandex Cloud STT (fallback, online)
-grpcio>=1.82.0
-grpcio-tools>=1.82.0
+grpcio>=1.83.0
+grpcio-tools>=1.83.0
 protobuf>=7.35.1
 
 # === TTS (Text-to-Speech) ===
 # Piper - Fast, high quality, offline (RECOMMENDED)
-piper-tts>=1.4.2
+piper-tts>=1.6.0
 
 # Silero - Alternative offline TTS with multiple voices
 torch>=2.13.0  # CPU only for ARM64
@@ -38,7 +38,7 @@ omegaconf>=2.3.1
 
 # === Dialogue & LLM ===
 # DeepSeek / OpenAI compatible API
-openai>=2.44.0
+openai>=2.48.0
 
 # === Утилиты ===
 pyyaml>=6.0.3
