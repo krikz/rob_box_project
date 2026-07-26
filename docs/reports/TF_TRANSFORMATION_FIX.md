@@ -82,7 +82,7 @@ twist-mux:
     - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
     - ROBOT_ID=${ROBOT_ID}
 +   - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
-    - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    - LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib/aarch64-linux-gnu:/opt/ros/kilted/lib
 ```
 
 **Updated command to use wrapper:**
@@ -112,7 +112,7 @@ twist-mux:
 +echo "ZENOH_SESSION_CONFIG_URI=$ZENOH_SESSION_CONFIG_URI"
  
  # Source ROS 2
- source /opt/ros/humble/setup.bash
+ source /opt/ros/kilted/setup.bash
 ```
 
 ---
@@ -193,15 +193,15 @@ docker exec robot-state-publisher cat $ZENOH_SESSION_CONFIG_URI | grep namespace
 ### Step 4: Verify TF Publication
 ```bash
 # Inside robot-state-publisher container
-docker exec robot-state-publisher bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list | grep tf'
+docker exec robot-state-publisher bash -c 'source /opt/ros/kilted/setup.bash && ros2 topic list | grep tf'
 # Expected:
 # /tf
 # /tf_static
 
-docker exec robot-state-publisher bash -c 'source /opt/ros/humble/setup.bash && ros2 topic hz /tf_static'
+docker exec robot-state-publisher bash -c 'source /opt/ros/kilted/setup.bash && ros2 topic hz /tf_static'
 # Expected: Publishing at some rate (may be low if static)
 
-docker exec robot-state-publisher bash -c 'source /opt/ros/humble/setup.bash && ros2 topic echo /tf_static --once'
+docker exec robot-state-publisher bash -c 'source /opt/ros/kilted/setup.bash && ros2 topic echo /tf_static --once'
 # Expected: Transformation messages including base_link → lslidar_n10
 ```
 

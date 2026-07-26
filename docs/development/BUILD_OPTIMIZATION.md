@@ -33,7 +33,7 @@ RUN chmod +x /start_lslidar.sh
 # docker-compose.yaml
 services:
   lslidar:
-    image: ghcr.io/krikz/rob_box:lslidar-humble-latest
+    image: ghcr.io/krikz/rob_box:lslidar-kilted-latest
     volumes:
             - ./config:/config:ro                  # Общие конфиги (zenoh, cyclonedds)
             - ./scripts/lslidar:/scripts:ro        # Скрипты запуска
@@ -137,7 +137,7 @@ FROM ghcr.io/krikz/rob_box_base:ros2-zenoh
 
 # 2. Установка системных пакетов (редко меняется)
 RUN apt-get update && apt-get install -y \
-    ros-humble-apriltag-ros \
+    ros-kilted-apriltag-ros \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. Клонирование и сборка (редко меняется)
@@ -180,9 +180,9 @@ FROM ${BASE_IMAGE}
 
 # Установка зависимостей для сборки
 RUN apt-get update && apt-get install -y \
-    ros-humble-rosidl-default-generators \
-    ros-humble-builtin-interfaces \
-    ros-humble-ament-cmake \
+    ros-kilted-rosidl-default-generators \
+    ros-kilted-builtin-interfaces \
+    ros-kilted-ament-cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Клонирование и сборка драйвера
@@ -191,7 +191,7 @@ RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_dri
 
 WORKDIR /ws
 SHELL ["/bin/bash", "-c"]
-RUN source /opt/ros/humble/setup.bash && \
+RUN source /opt/ros/kilted/setup.bash && \
     colcon build --symlink-install
 
 # Volumes монтируются в docker-compose.yaml

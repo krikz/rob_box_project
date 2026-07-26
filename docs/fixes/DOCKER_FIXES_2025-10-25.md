@@ -175,7 +175,7 @@ healthcheck:
 **Considered Options**:
 1. Source ROS environment in healthcheck
    ```yaml
-   test: ["CMD-SHELL", "source /opt/ros/humble/setup.bash && ros2 node list | grep voice_assistant || exit 1"]
+   test: ["CMD-SHELL", "source /opt/ros/kilted/setup.bash && ros2 node list | grep voice_assistant || exit 1"]
    ```
    ❌ Complex, slow, requires full ROS environment
 

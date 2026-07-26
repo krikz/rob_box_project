@@ -186,10 +186,10 @@ tts_node:
 ```bash
 # На локальной машине или CI/CD
 cd docker/vision/voice_base
-docker build -t ghcr.io/krikz/rob_box:voice-base-humble-latest .
+docker build -t ghcr.io/krikz/rob_box:voice-base-kilted-latest .
 
 cd ../voice_assistant
-docker build -t ghcr.io/krikz/rob_box:voice-assistant-humble-latest .
+docker build -t ghcr.io/krikz/rob_box:voice-assistant-kilted-latest .
 ```
 
 **Ожидаемое время:**
@@ -200,7 +200,7 @@ docker build -t ghcr.io/krikz/rob_box:voice-assistant-humble-latest .
 
 ```bash
 # Выгрузить образы в файл
-docker save ghcr.io/krikz/rob_box:voice-assistant-humble-latest | \
+docker save ghcr.io/krikz/rob_box:voice-assistant-kilted-latest | \
   gzip > voice-assistant-v5.tar.gz
 
 # Загрузить на Vision Pi
@@ -286,7 +286,7 @@ ros2 topic pub --once /voice/tts/request std_msgs/msg/String \
 **Длинный текст:**
 ```bash
 ros2 topic pub --once /voice/tts/request std_msgs/msg/String \
-  "{data: 'Робот РОББОКС - это автономный колёсный ровер, построенный на ROS 2 Humble. Он оснащён камерой OAK-D для зрения, LiDAR сканером для навигации, и голосовым ассистентом на основе Silero TTS версии пять. Новая версия в полтора-два раза быстрее предыдущей, что критично для работы на Raspberry Pi. Кроме того, она умеет правильно расставлять ударения в омографах, таких как замок и замок, готов и готов, мука и мука. Это существенно улучшает качество звучания и делает речь более естественной.'}"
+  "{data: 'Робот РОББОКС - это автономный колёсный ровер, построенный на ROS 2 kilted. Он оснащён камерой OAK-D для зрения, LiDAR сканером для навигации, и голосовым ассистентом на основе Silero TTS версии пять. Новая версия в полтора-два раза быстрее предыдущей, что критично для работы на Raspberry Pi. Кроме того, она умеет правильно расставлять ударения в омографах, таких как замок и замок, готов и готов, мука и мука. Это существенно улучшает качество звучания и делает речь более естественной.'}"
 ```
 
 **Проверить:**

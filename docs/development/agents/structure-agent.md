@@ -188,7 +188,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=apt-cache \
 COPY src/<ros2_package> /ros2_ws/src/<ros2_package>
 
 # Сборка
-RUN cd /ros2_ws && . /opt/ros/humble/setup.sh && \
+RUN cd /ros2_ws && . /opt/ros/kilted/setup.sh && \
     colcon build --symlink-install \
     --packages-select <ros2_package>
 

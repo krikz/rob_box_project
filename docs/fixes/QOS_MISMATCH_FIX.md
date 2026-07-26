@@ -161,6 +161,6 @@ To avoid similar issues in the future:
 
 ## References
 
-- ROS 2 QoS Documentation: https://docs.ros.org/en/humble/Concepts/About-Quality-of-Service-Settings.html
+- ROS 2 QoS Documentation: https://docs.ros.org/en/kilted/Concepts/About-Quality-of-Service-Settings.html
 - Zenoh DDS Bridge: https://github.com/eclipse-zenoh/zenoh-plugin-dds
 - Original issue analysis in clog file (lines showing timeout errors)

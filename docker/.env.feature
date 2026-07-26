@@ -1,7 +1,7 @@
 # Docker configuration for FEATURE branches (testing)
 # This file is automatically loaded when deploying from feature/* branches
 
-ROS_DISTRO=humble
+ROS_DISTRO=kilted
 IMAGE_TAG=test
 REGISTRY=ghcr.io
 REPOSITORY_OWNER=krikz
@@ -12,6 +12,6 @@ SERVICE_IMAGE_PREFIX=${REGISTRY}/${REPOSITORY_OWNER}/rob_box
 ROBOT_ID=RBXU100001
 
 # Test image tags will be:
-# - ghcr.io/krikz/rob_box:voice-assistant-humble-test
-# - ghcr.io/krikz/rob_box:oak-d-humble-test
+# - ghcr.io/krikz/rob_box:voice-assistant-kilted-test
+# - ghcr.io/krikz/rob_box:oak-d-kilted-test
 # etc.

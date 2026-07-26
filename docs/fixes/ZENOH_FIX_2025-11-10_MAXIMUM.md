@@ -454,7 +454,7 @@ Main Pi                    Vision Pi
 dpkg -l | grep zenoh
 
 # Проверить доступные обновления
-apt-cache policy ros-humble-rmw-zenoh-cpp
+apt-cache policy ros-kilted-rmw-zenoh-cpp
 ```
 
 **Если доступна Zenoh 1.0+:** Рассмотреть обновление (требует тестирования)

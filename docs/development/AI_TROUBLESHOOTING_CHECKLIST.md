@@ -152,7 +152,7 @@ docker exec <container_name> ros2 topic list
 ```bash
 docker exec -it <container_name> bash
 # Inside container:
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 ros2 topic list
 ros2 node list
 exit
@@ -186,12 +186,12 @@ cat package.xml | grep '<depend>'
 
 **Check:**
 - [ ] Все `<depend>` пакеты установлены?
-- [ ] Версии совместимы с ROS Humble?
+- [ ] Версии совместимы с ROS kilted?
 
 **Install missing deps:**
 ```bash
 sudo apt update
-sudo apt install ros-humble-<missing-package>
+sudo apt install ros-kilted-<missing-package>
 ```
 
 ---
@@ -404,7 +404,7 @@ colcon test-result --verbose
 
 #### ✅ Step 1: Check base image availability
 ```bash
-docker pull ros:humble-ros-base
+docker pull ros:kilted-ros-base
 docker pull ubuntu:22.04
 ```
 
@@ -473,7 +473,7 @@ cat docker/vision/docker-compose.yaml | grep -A5 "voice-assistant:"
 **If missing:**
 ```yaml
 voice-assistant:
-  image: ghcr.io/krikz/rob_box:voice-assistant-humble-test
+  image: ghcr.io/krikz/rob_box:voice-assistant-kilted-test
   env_file: .env.secrets  # ADD THIS
 ```
 
@@ -801,11 +801,11 @@ python3 -c "import json; json.load(open('src/rob_box_animations/animations/<name
 echo $AMENT_PREFIX_PATH
 ```
 
-**Expected:** `/opt/ros/humble` в пути
+**Expected:** `/opt/ros/kilted` в пути
 
 **If empty:**
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 ```
 
 ---
@@ -897,7 +897,7 @@ cat CMakeLists.txt | grep "find_package"
 
 docker-compose.yaml:
 voice-assistant:
-  image: ghcr.io/krikz/rob_box:voice-assistant-humble-test
+  image: ghcr.io/krikz/rob_box:voice-assistant-kilted-test
   env_file: .env.secrets
   restart: unless-stopped
 ```

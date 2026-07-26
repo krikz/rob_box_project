@@ -9,13 +9,13 @@
 #   - ReSpeaker Mic Array v2.0 (USB, 4 микрофона, 12× RGB LED)
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-kilted-latest
 # Версия сборки для инвалидации кеша при изменении зависимостей
 ARG BUILD_VERSION=2026-03-08-app-layer
 
 FROM ${BASE_IMAGE}
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=kilted
 
 # Метаданные
 LABEL org.opencontainers.image.title="Voice Assistant System for Vision Pi"
@@ -108,7 +108,7 @@ COPY docker/vision/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 
 # ИСПРАВЛЕНИЕ: Убираем проблемные CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH,
 # которые мешают правильному поиску библиотек через CMake package config.
-# Sourcing /opt/ros/humble/setup.sh достаточно для правильной настройки путей.
+# Sourcing /opt/ros/kilted/setup.sh достаточно для правильной настройки путей.
 # В production image не используем --symlink-install: для ament_python это ведет
 # к setup.py develop --editable, а поведение editable-режима зависит от версии setuptools.
 # ДОПОЛНИТЕЛЬНО: очищаем CMake кеш перед сборкой для избежания проблем с base image

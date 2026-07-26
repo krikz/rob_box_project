@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-ROS_DISTRO="humble"
+ROS_DISTRO="kilted"
 PLATFORM="linux/amd64"  # Быстрее для теста
 
 echo -e "${BLUE}╔═══════════════════════════════════════════╗${NC}"
@@ -38,7 +38,7 @@ quick_build() {
         --file "${dockerfile}" \
         --build-arg ROS_DISTRO="${ROS_DISTRO}" \
         --build-arg IMAGE_TAG=latest \
-        --build-arg BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest \
+        --build-arg BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest \
         --load \
         --tag "test:${name}" \
         --progress=plain \

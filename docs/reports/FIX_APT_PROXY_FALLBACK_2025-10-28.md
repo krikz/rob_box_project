@@ -9,7 +9,7 @@
 Local self-hosted runners failed to build base Docker images with error:
 ```
 503 Connection closed, check DlMaxRetries [IP: 172.17.0.1 3142]
-E: Unable to locate package ros-humble-rmw-zenoh-cpp
+E: Unable to locate package ros-kilted-rmw-zenoh-cpp
 ```
 
 ### Root Cause

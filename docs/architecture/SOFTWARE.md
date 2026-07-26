@@ -63,12 +63,12 @@ graph TD
 | Компонент | Технология | Версия | Назначение |
 |-----------|------------|--------|------------|
 | **OS** | Ubuntu Server | 22.04 ARM64 | Базовая ОС для Raspberry Pi |
-| **ROS** | ROS 2 Humble | 2023 LTS | Робототехический фреймворк |
+| **ROS** | ROS 2 kilted | 2023 LTS | Робототехический фреймворк |
 | **Middleware** | Zenoh | 0.11+ | Распределённая связь |
 | **Контейнеризация** | Docker | 24.0+ | Изоляция сервисов |
 | **Оркестрация** | Docker Compose | 2.20+ | Управление контейнерами |
 | **SLAM** | RTAB-Map | 0.21+ | Картография и локализация |
-| **Navigation** | Nav2 | Humble | Планирование траектории |
+| **Navigation** | Nav2 | kilted | Планирование траектории |
 | **Vision** | DepthAI / OpenCV | Latest | Обработка изображений |
 | **Build System** | colcon | Latest | Сборка ROS 2 пакетов |
 
@@ -564,38 +564,38 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 - **Healthcheck**: `wget http://localhost:8000/@/local/router`
 
 #### twist-mux
-- **Образ**: `ghcr.io/krikz/rob_box:twist-mux-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:twist-mux-kilted-latest`
 - **Назначение**: Мультиплексирование команд скорости с приоритетами
 - **Приоритеты**: 1. Nav2, 2. Teleop, 3. Joystick
 - **Конфигурация**: `config/twist_mux/twist_mux.yaml`
 
 #### rtabmap
-- **Образ**: `ghcr.io/krikz/rob_box:rtabmap-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:rtabmap-kilted-latest`
 - **Назначение**: SLAM картография и локализация
 - **Входы**: `/scan`, `/camera/color/image_raw`, `/camera/depth/image_rect_raw`, `/odom`
 - **Выходы**: `/map`, `/rtabmap/localization_pose`, `/rtabmap/cloud_map`
 - **Persistent данные**: `./maps:/root/.ros/rtabmap`
 
 #### lslidar
-- **Образ**: `ghcr.io/krikz/rob_box:lslidar-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:lslidar-kilted-latest`
 - **Назначение**: Драйвер LS LiDAR N10
 - **Выход**: `/scan` (sensor_msgs/LaserScan) @ 10 Hz
 - **Параметры**: `config/lslidar/lslidar.yaml`
 
 #### nav2 (future)
-- **Образ**: `ghcr.io/krikz/rob_box:nav2-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:nav2-kilted-latest`
 - **Назначение**: Автономная навигация
 - **Компоненты**: planner, controller, bt_navigator, lifecycle_manager
 - **Параметры**: `config/nav2/nav2_params.yaml`
 
 #### vesc-driver
-- **Образ**: `ghcr.io/krikz/rob_box:vesc-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:vesc-kilted-latest`
 - **Назначение**: Управление VESC по CAN
 - **Устройство**: `/dev/spidev0.0` (MCP2515 CAN hat)
 - **Privileged**: Да (доступ к SPI)
 
 #### micro-ros-agent
-- **Образ**: `ghcr.io/krikz/rob_box:micro-ros-agent-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:micro-ros-agent-kilted-latest`
 - **Назначение**: Мост между ESP32 (Micro-ROS) и ROS 2
 - **Устройство**: `/dev/ttyUSB0` (ESP32 Serial)
 - **Скорость**: 115200 baud
@@ -611,14 +611,14 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 - **Connect**: `tcp/10.1.1.10:7447`
 
 #### oak-d
-- **Образ**: `ghcr.io/krikz/rob_box:oak-d-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:oak-d-kilted-latest`
 - **Назначение**: Драйвер OAK-D Lite камеры
 - **Выходы**: `/camera/color/image_raw`, `/camera/depth/image_rect_raw`, camera_info
 - **Устройства**: `/dev/bus/usb` (privileged mode)
 - **Конфигурация**: `config/oak-d/oak_d_config.yaml`
 
 #### apriltag
-- **Образ**: `ghcr.io/krikz/rob_box:apriltag-humble-latest`
+- **Образ**: `ghcr.io/krikz/rob_box:apriltag-kilted-latest`
 - **Назначение**: Детекция AprilTag маркеров
 - **Вход**: `/camera/color/image_raw`, `/camera/color/camera_info`
 - **Выходы**: `/apriltag/detections`, `/tf` (трансформы маркеров)
@@ -698,7 +698,7 @@ Main Pi (peer mode)                Vision Pi (client mode)
 
 #### Установка
 ```bash
-sudo apt install ros-humble-rmw-zenoh-cpp
+sudo apt install ros-kilted-rmw-zenoh-cpp
 ```
 
 #### Использование

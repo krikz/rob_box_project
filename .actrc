@@ -34,7 +34,7 @@
 # Environment variables
 --env REGISTRY=ghcr.io
 --env REPOSITORY_OWNER=krikz
---env ROS_DISTRO=humble
+--env ROS_DISTRO=kilted
 --env IMAGE_TAG=local
 
 # Secrets (create .secrets file for actual values)

@@ -124,7 +124,7 @@
 
 | Пакет | README есть | Ноды описаны | Топики описаны | Параметры описаны | Критические пробелы |
 |-------|-------------|--------------|----------------|-------------------|---------------------|
-| `rob_box_voice` | ✅ | ✅ (7 нод) | ⚠️ частично | ⚠️ частично | `ros-jazzy-audio-common-msgs` → должно быть `humble`; установка описана для bare metal, не Docker; не упомянут `USE_SKILLS`, `VoiceMemory`, `MusicSkill`, `ollama` интеграция |
+| `rob_box_voice` | ✅ | ✅ (7 нод) | ⚠️ частично | ⚠️ частично | `ros-jazzy-audio-common-msgs` → должно быть `kilted`; установка описана для bare metal, не Docker; не упомянут `USE_SKILLS`, `VoiceMemory`, `MusicSkill`, `ollama` интеграция |
 | `rob_box_perception` | ✅ | ✅ | ⚠️ частично | ❌ нет | "Рефакторинг Q1 2025" — устарело на год; `vision_stub_node` описан как TODO, но это рабочая реализация |
 | `rob_box_animations` | ✅ | ✅ | ✅ | ✅ | Хорошая документация; `animation-player` container name неверен — в docker-compose нет такого container, он в `led-matrix` |
 | `rob_box_mcp_tools` | ✅ | ⚠️ | ⚠️ | ❌ | "Рефакторинг Q1 2025" устарело; нет списка MCP tools и их назначений |
@@ -201,7 +201,7 @@ Prometheus, Loki, Grafana — развёртываются на **отдельн
 
 5. **[HIGH] TROUBLESHOOTING.md — устаревший основной кейс**: Описывает "RTAB-Map не получает данные от камеры" — этот режим отключён (`depth:=false`). Нужны актуальные кейсы: Zenoh connectivity, LiDAR не публикует, VESC timeout.
 
-6. **[MEDIUM] rob_box_voice README — stale dependencies**: `ros-jazzy-audio-common-msgs` должно быть `ros-humble-*`. Установка описана для bare metal, а не Docker. Новые фичи (`USE_SKILLS`, `VoiceMemory`, `MusicSkill`, `Renardo/SuperCollider`) не описаны.
+6. **[MEDIUM] rob_box_voice README — stale dependencies**: `ros-jazzy-audio-common-msgs` должно быть `ros-kilted-*`. Установка описана для bare metal, а не Docker. Новые фичи (`USE_SKILLS`, `VoiceMemory`, `MusicSkill`, `Renardo/SuperCollider`) не описаны.
 
 7. **[MEDIUM] rob_box_perception README — "Q1 2025" статус рефакторинга**: Прошёл год. Нужно либо пометить как DONE/changed либо обновить статус.
 
@@ -333,7 +333,7 @@ Prometheus, Loki, Grafana — развёртываются на **отдельн
 
 | Пакет | Что обновить |
 |-------|-------------|
-| `rob_box_voice` | Fix: `ros-humble-*` (не jazzy); добавить: `USE_SKILLS`, `VoiceMemory`, Ollama, SuperCollider/Renardo интеграция; убрать bare metal install steps |
+| `rob_box_voice` | Fix: `ros-kilted-*` (не jazzy); добавить: `USE_SKILLS`, `VoiceMemory`, Ollama, SuperCollider/Renardo интеграция; убрать bare metal install steps |
 | `rob_box_perception` | Обновить статус рефакторинга; добавить параметры нод |
 | `rob_box_mcp_tools` | Обновить статус рефакторинга; добавить список MCP tools |
 | `rob_box_animations` | Fix: container name `animation-player` → `led-matrix` в примерах команд |

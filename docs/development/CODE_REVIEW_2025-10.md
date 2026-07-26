@@ -116,7 +116,7 @@
 ```yaml
 # ✅ GOOD: Proper service definition
 oak-d:
-  image: ghcr.io/krikz/rob_box:oak-d-humble-latest
+  image: ghcr.io/krikz/rob_box:oak-d-kilted-latest
   container_name: oak-d
   network_mode: host  # ✅ Correct for Zenoh
   privileged: true    # ✅ Needed for USB access
@@ -440,7 +440,7 @@ jobs:
           file: docker/vision/oak-d/Dockerfile
           platforms: linux/arm64
           push: true
-          tags: ghcr.io/krikz/rob_box:oak-d-humble-latest
+          tags: ghcr.io/krikz/rob_box:oak-d-kilted-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 ```

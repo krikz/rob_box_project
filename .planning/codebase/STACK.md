@@ -17,8 +17,8 @@
 ## Runtime
 
 **Environment:**
-- Ubuntu 22.04 (Jammy) — bundled with `ros:humble-ros-base`
-- Python 3.10 — default Python in ROS 2 Humble / Ubuntu 22.04
+- Ubuntu 22.04 (Jammy) — bundled with `ros:kilted-ros-base`
+- Python 3.10 — default Python in ROS 2 kilted / Ubuntu 22.04
 
 **Package Manager:**
 - pip (Python packages, installed in Dockerfiles)
@@ -28,7 +28,7 @@
 ## Frameworks
 
 **Core:**
-- ROS 2 Humble (`ros:humble-ros-base`) — middleware for all nodes; pub/sub, services, actions
+- ROS 2 kilted (`ros:kilted-ros-base`) — middleware for all nodes; pub/sub, services, actions
 - rmw_zenoh_cpp — DDS middleware replacing default FastDDS; configured via `RMW_IMPLEMENTATION=rmw_zenoh_cpp`
 - ament_python — Python ROS 2 package build type (all Python packages)
 - ament_cmake + ament_cmake_python — CMake-based ROS 2 build (vesc_nexus, rob_box_animations)
@@ -44,12 +44,12 @@
 - `grpcio`, `grpcio-tools`, `protobuf`, `yandex-cloud-ml-sdk` — Yandex Cloud TTS/STT gRPC API v3
 
 **Navigation / SLAM:**
-- RTAB-Map (`introlab3it/rtabmap_ros:humble-latest`) — LiDAR SLAM, loop closure, 2D/3D mapping
+- RTAB-Map (`introlab3it/rtabmap_ros:kilted-latest`) — LiDAR SLAM, loop closure, 2D/3D mapping
 - Nav2 — autonomous navigation stack (`docker/main/nav2/`)
 - ros2_control + `vesc_nexus` plugin — hardware abstraction for VESC motor controllers
 
 **Vision:**
-- DepthAI ROS (`luxonis/depthai-ros:v2.12.2-humble`) — OAK-D depth camera driver; **pinned to v2.12.2** (last version with arm64 support)
+- DepthAI ROS (`luxonis/depthai-ros:v2.12.2-kilted`) — OAK-D depth camera driver; **pinned to v2.12.2** (last version with arm64 support)
 - AprilTag detection — integrated into OAK-D container (`docker/vision/oak-d/`)
 
 **Music / Sound:**
@@ -96,7 +96,7 @@
 
 **Zenoh:**
 - `eclipse/zenoh:1.6.2` — router image; deployed as `zenoh-router` on each Pi
-- `rmw_zenoh_cpp` (from `ros-humble-rmw-zenoh-cpp`) — ROS 2 RMW implementation
+- `rmw_zenoh_cpp` (from `ros-kilted-rmw-zenoh-cpp`) — ROS 2 RMW implementation
 
 **Infrastructure:**
 - `gcr.io/cadvisor/cadvisor:v0.52.1` — container metrics
@@ -114,8 +114,8 @@
 
 **Build:**
 - `docker/base/Dockerfile.ros2-zenoh` — base for most services
-- `docker/base/Dockerfile.rtabmap` — RTAB-Map base (extends `introlab3it/rtabmap_ros:humble-latest`)
-- `docker/base/Dockerfile.depthai` — DepthAI base (extends `luxonis/depthai-ros:v2.12.2-humble`)
+- `docker/base/Dockerfile.rtabmap` — RTAB-Map base (extends `introlab3it/rtabmap_ros:kilted-latest`)
+- `docker/base/Dockerfile.depthai` — DepthAI base (extends `luxonis/depthai-ros:v2.12.2-kilted`)
 - `docker/base/Dockerfile.pcl` — PCL base (extends ros2-zenoh base)
 - Image tags tracked per-service in `docker/main/.image-versions.{env}` and `docker/vision/.image-versions.{env}`
 

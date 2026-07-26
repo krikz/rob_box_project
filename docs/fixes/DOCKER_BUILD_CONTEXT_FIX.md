@@ -143,7 +143,7 @@ This fixes: "Could NOT find Boost (missing: Boost_INCLUDE_DIR thread)" error.
  env:
    REGISTRY: ghcr.io
    IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
-   ROS_DISTRO: humble
+   ROS_DISTRO: kilted
 -  LOCAL_BASE_REGISTRY: 192.168.1.125:5000/krikz/rob_box_base
 +  # Локальный registry - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
 +  LOCAL_BASE_REGISTRY: ""

@@ -17,7 +17,7 @@
 | **Макс. скорость** | 0.3 m/s | 0.22 m/s | 1.0 m/s | 2.0 m/s |
 | **Лидар** | LS-C16 (360°) | LDS-01 (360°, 3.5m) | Sick LMS1XX | Sick LMS1XX |
 | **Одометрия** | ICP (RTAB-Map) | Колесная | Колесная | Колесная |
-| **ROS Distro** | Humble | Humble | Noetic (ROS 1) | Noetic (ROS 1) |
+| **ROS Distro** | kilted | kilted | Noetic (ROS 1) | Noetic (ROS 1) |
 
 ---
 
@@ -350,9 +350,9 @@ docker logs nav2 | grep "Goal succeeded" | wc -l
 
 ## 📚 Источники данных
 
-### TurtleBot3 Burger (ROS 2 Humble)
+### TurtleBot3 Burger (ROS 2 kilted)
 - **Repository:** https://github.com/ROBOTIS-GIT/turtlebot3
-- **File:** `turtlebot3_navigation2/param/humble/burger.yaml`
+- **File:** `turtlebot3_navigation2/param/kilted/burger.yaml`
 - **Характеристики:**
   - Размер: 140×140×192mm
   - Вес: 1.0 кг
@@ -428,5 +428,5 @@ Rob Box использует `0.1m` — **лучше!** ✅
 ---
 
 **Составлено:** GitHub Copilot  
-**На основе:** TurtleBot3 Burger (ROS 2 Humble), Rob Box ffcff97, Husky/Jackal specs  
+**На основе:** TurtleBot3 Burger (ROS 2 kilted), Rob Box ffcff97, Husky/Jackal specs  
 **Дата:** 2025-12-16  

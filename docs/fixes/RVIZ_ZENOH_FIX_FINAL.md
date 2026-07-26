@@ -128,7 +128,7 @@ ros2 topic list
 
 ### Robot Topics Verified on Main Pi
 ```bash
-ssh ros2@10.1.1.20 "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list'"
+ssh ros2@10.1.1.20 "docker exec rtabmap bash -c 'source /opt/ros/kilted/setup.bash && ros2 topic list'"
 # Output (partial):
 /camera/camera/color/image_raw/compressed
 /camera/stereo/image_raw

@@ -101,12 +101,12 @@ docker buildx build \
 **In `docker/main/lslidar/Dockerfile`** (lines 18-19):
 ```dockerfile
 RUN apt-get update && apt-get install -y \
-    ros-humble-rosidl-default-generators \
-    ros-humble-rosidl-default-runtime \
-    ros-humble-builtin-interfaces \
-    ros-humble-std-msgs \
-    ros-humble-sensor-msgs \
-    ros-humble-ament-cmake \
+    ros-kilted-rosidl-default-generators \
+    ros-kilted-rosidl-default-runtime \
+    ros-kilted-builtin-interfaces \
+    ros-kilted-std-msgs \
+    ros-kilted-sensor-msgs \
+    ros-kilted-ament-cmake \
     libboost-dev \           # ✅ Added
     libboost-thread-dev \    # ✅ Added
     && rm -rf /var/lib/apt/lists/*
@@ -197,7 +197,7 @@ After the previous fixes in PR #32, a new issue emerged when running the `[L] Bu
 **Symptom:**
 ```
 Could not resolve 'host.docker.internal'
-E: Unable to locate package ros-humble-rmw-zenoh-cpp
+E: Unable to locate package ros-kilted-rmw-zenoh-cpp
 ```
 
 **Root Cause:**

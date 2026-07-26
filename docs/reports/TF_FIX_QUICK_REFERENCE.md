@@ -45,14 +45,14 @@ Expected: ✅ `/tmp/zenoh_session_config.json5`
 ### 4. Verify TF Topics
 ```bash
 docker exec robot-state-publisher bash -c \
-  'source /opt/ros/humble/setup.bash && ros2 topic list | grep tf'
+  'source /opt/ros/kilted/setup.bash && ros2 topic list | grep tf'
 ```
 Expected: ✅ `/tf` and `/tf_static` listed
 
 ### 5. Check TF Content
 ```bash
 docker exec robot-state-publisher bash -c \
-  'source /opt/ros/humble/setup.bash && ros2 topic echo /tf_static --once'
+  'source /opt/ros/kilted/setup.bash && ros2 topic echo /tf_static --once'
 ```
 Expected: ✅ Transformations including `base_link → lslidar_n10`
 

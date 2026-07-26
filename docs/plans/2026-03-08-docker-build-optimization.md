@@ -6,7 +6,7 @@
 
 **Architecture:** Keep Rob Box runtime rules intact: configs/scripts remain volume-mounted, host networking stays unchanged, and optimization focuses on Docker layer boundaries. The first pass hardens CI triggers and build context; the second pass restructures `voice-assistant` into slower-changing dependency/resource layers and faster-changing application layers.
 
-**Tech Stack:** Docker Buildx, GitHub Actions, ROS 2 Humble, docker-compose, GHCR
+**Tech Stack:** Docker Buildx, GitHub Actions, ROS 2 kilted, docker-compose, GHCR
 
 ---
 

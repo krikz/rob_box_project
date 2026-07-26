@@ -13,7 +13,7 @@
 
 ## 📋 Требования
 
-- ROS 2 Humble
+- ROS 2 kilted
 - Bluetooth джойстик (протестировано с ExpressLRS Joystick)
 - Устройство должно быть подключено как `/dev/input/js0`
 

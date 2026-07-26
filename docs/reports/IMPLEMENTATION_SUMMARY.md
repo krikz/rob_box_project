@@ -40,9 +40,9 @@ docker-compose up -d
 
 | Branch | IMAGE_TAG | Images |
 |--------|-----------|--------|
-| main | latest | `*-humble-latest` |
-| develop | dev | `*-humble-dev` |
-| feature/* | test | `*-humble-test` |
+| main | latest | `*-kilted-latest` |
+| develop | dev | `*-kilted-dev` |
+| feature/* | test | `*-kilted-test` |
 
 ## Documentation
 

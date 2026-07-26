@@ -20,7 +20,7 @@
 ```
 [ERROR] [launch]: Caught exception in launch (see debug for traceback): 
 "package 'rviz2' not found, searching: ['/ws/install/lslidar_driver', 
-'/ws/install/lslidar_msgs', '/opt/ros/humble']"
+'/ws/install/lslidar_msgs', '/opt/ros/kilted']"
 ```
 
 **Root Cause:**
@@ -47,7 +47,7 @@
 - Results in invalid path: `/opt/ros//setup.bash` (double slash)
 
 **Why this happened:**
-- `ROS_DISTRO=humble` not defined in `docker-compose.yaml`
+- `ROS_DISTRO=kilted` not defined in `docker-compose.yaml`
 - Works in Main Pi because defined at compose level
 - Vision Pi compose file missing this variable
 
@@ -117,7 +117,7 @@ exec ros2 launch /config/lslidar/lslidar_headless_launch.py
 voice-assistant:
   environment:
     - ROS_DOMAIN_ID=0
-    - ROS_DISTRO=humble  # ← ADDED
+    - ROS_DISTRO=kilted  # ← ADDED
     - RMW_IMPLEMENTATION=rmw_zenoh_cpp
     ...
 ```
@@ -209,7 +209,7 @@ exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py
 
 **Reason:**
 - Feature branches need testing with Docker images before deletion
-- Docker image tags (e.g., `voice-assistant-humble-test`) persist
+- Docker image tags (e.g., `voice-assistant-kilted-test`) persist
 - Developer can verify on robot before manual deletion
 - Prevents accidental loss of work-in-progress
 
@@ -226,7 +226,7 @@ exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py
 2. **GitHub Actions triggered:**
    - Workflow: `build-vision-services.yml`
    - Branch: `feature/voice-assistant`
-   - Image tag: `voice-assistant-humble-test`
+   - Image tag: `voice-assistant-kilted-test`
    - Platform: `linux/arm64`
 
 3. **Pull latest code on Vision Pi:**
@@ -340,11 +340,11 @@ Main Pi: /robot/status → Vision Pi: TTS + Sound + Animations
 
 | Branch | Tag | Usage |
 |--------|-----|-------|
-| `main` | `voice-assistant-humble-latest` | Production |
-| `develop` | `voice-assistant-humble-dev` | Staging |
-| `feature/*` | `voice-assistant-humble-test` | Testing |
+| `main` | `voice-assistant-kilted-latest` | Production |
+| `develop` | `voice-assistant-kilted-dev` | Staging |
+| `feature/*` | `voice-assistant-kilted-test` | Testing |
 
-**Current:** `feature/voice-assistant` → `voice-assistant-humble-test`
+**Current:** `feature/voice-assistant` → `voice-assistant-kilted-test`
 
 ## Next Steps
 

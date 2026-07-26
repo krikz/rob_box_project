@@ -402,11 +402,11 @@ add-apt-repository universe
 curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" > /etc/apt/sources.list.d/ros2.list
 apt-get update
-apt-get install -y ros-humble-desktop python3-colcon-common-extensions
+apt-get install -y ros-kilted-desktop python3-colcon-common-extensions
 
 # Run tests
 cd /workspace
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 colcon test
 ```
 
@@ -596,7 +596,7 @@ TOTAL                           112     17    85%
 python3 --version  # Should match CI (3.10)
 
 # Check ROS2 sourced
-echo $ROS_DISTRO  # Should be 'humble'
+echo $ROS_DISTRO  # Should be 'kilted'
 
 # Clean build
 cd ~/voice_ws
@@ -676,7 +676,7 @@ pytest --cov=rob_box_voice
 
 ### Documentation
 - [pytest docs](https://docs.pytest.org/)
-- [ROS2 Testing Guide](https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/Testing-Main.html)
+- [ROS2 Testing Guide](https://docs.ros.org/en/kilted/Tutorials/Intermediate/Testing/Testing-Main.html)
 - [unittest mock](https://docs.python.org/3/library/unittest.mock.html)
 
 ### Related Files

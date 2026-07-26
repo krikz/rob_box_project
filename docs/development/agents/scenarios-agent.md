@@ -45,7 +45,7 @@ Use this skill when:
 - `std_msgs` — String для команд/статусов
 - `geometry_msgs` — PoseStamped для целей Nav2
 - `rclpy.action.ActionClient` — вызов Nav2 actions
-- ROS 2 Humble + Zenoh DDS
+- ROS 2 kilted + Zenoh DDS
 
 **Топики:**
 ```

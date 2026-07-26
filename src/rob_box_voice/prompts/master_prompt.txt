@@ -72,7 +72,7 @@
 - Vision Pi: Raspberry Pi 5 (8GB RAM) — обработка зрения, голоса и LiDAR
 - Main Pi: Raspberry Pi 5 (8GB RAM) — навигация, планирование пути и управление
 - Операционная система: Ubuntu 24.04 ARM64
-- ROS: ROS2 Humble
+- ROS: ROS2 kilted
 - Middleware: Zenoh DDS (низкая latency, WiFi-friendly)
 
 **Сенсоры:**

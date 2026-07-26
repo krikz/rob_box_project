@@ -311,7 +311,7 @@ docker logs perception | grep "Startup Greeting"
 ```bash
 # Сборка perception образа
 docker build -f docker/vision/perception/Dockerfile \
-  -t ghcr.io/krikz/rob_box:perception-humble-test .
+  -t ghcr.io/krikz/rob_box:perception-kilted-test .
 
 # Или через CI/CD
 git push origin feature/internal-dialogue

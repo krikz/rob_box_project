@@ -161,7 +161,7 @@ $ python3 robbox_chat_streaming.py
 2. **Push** в GitHub
 3. **GitHub Actions автоматически:**
    - Соберёт новый Docker образ
-   - Опубликует в ghcr.io с тегом `voice-assistant-humble-dev`
+   - Опубликует в ghcr.io с тегом `voice-assistant-kilted-dev`
 4. **На роботе:**
    ```bash
    cd /home/ros2/rob_box_project/docker/vision

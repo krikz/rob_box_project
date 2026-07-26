@@ -26,7 +26,7 @@ env:
   GHCR_REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/krikz/rob_box_base
   LOCAL_PREFIX: localhost:5000/krikz/rob_box_base
-  ROS_DISTRO: humble
+  ROS_DISTRO: kilted
 
 jobs:
   # Сборка базового образа ROS 2 + Zenoh (общая база для всех)

@@ -17,7 +17,7 @@
 
 ### Симптомы
 ```
-CMake Error at /opt/ros/humble/share/builtin_interfaces/cmake/
+CMake Error at /opt/ros/kilted/share/builtin_interfaces/cmake/
   ament_cmake_export_libraries-extras.cmake:48 (message):
   Package 'builtin_interfaces' exports the library
   'builtin_interfaces__rosidl_generator_c' which couldn't be found
@@ -26,7 +26,7 @@ CMake Error at /opt/ros/humble/share/builtin_interfaces/cmake/
 ### Диагностика
 ```bash
 # Библиотека СУЩЕСТВУЕТ
-ls -lh /opt/ros/humble/lib/libbuiltin_interfaces__rosidl_generator_c.so
+ls -lh /opt/ros/kilted/lib/libbuiltin_interfaces__rosidl_generator_c.so
 # -rw-r--r-- 1 root root 14K Aug 24 15:19 ...
 
 # CMake config ВИДИТ её
@@ -37,7 +37,7 @@ grep "_exported_libraries" .../ament_cmake_export_libraries-extras.cmake
 ```
 
 ### Причина
-Base Docker образ (`ghcr.io/krikz/rob_box:nav2-humble-latest`) содержал **сломанные CMake конфигурационные файлы** для ROS2 пакетов после обновлений.
+Base Docker образ (`ghcr.io/krikz/rob_box:nav2-kilted-latest`) содержал **сломанные CMake конфигурационные файлы** для ROS2 пакетов после обновлений.
 
 ### Решение #1 (Частичное)
 Добавили переустановку пакетов в Dockerfile:
@@ -69,7 +69,7 @@ RUN apt-get update && apt-get install -y \
 CMake Error: Package 'builtin_interfaces' exports the library
   'builtin_interfaces__rosidl_generator_c' which couldn't be found
 Call Stack:
-  /opt/ros/humble/share/sensor_msgs/cmake/...
+  /opt/ros/kilted/share/sensor_msgs/cmake/...
   CMakeLists.txt:12 (find_package)
 ```
 
@@ -309,11 +309,11 @@ find_package(rclpy REQUIRED)
 ### Проверка библиотек ROS2
 ```bash
 # Проверка наличия библиотеки
-ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so*
+ls -lh /opt/ros/kilted/lib/libbuiltin_interfaces*.so*
 
 # Проверка CMake config
 grep "_exported_libraries" \
-  /opt/ros/humble/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake
+  /opt/ros/kilted/share/builtin_interfaces/cmake/ament_cmake_export_libraries-extras.cmake
 
 # Проверка LD_LIBRARY_PATH
 echo $LD_LIBRARY_PATH

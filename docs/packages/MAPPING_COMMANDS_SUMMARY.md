@@ -181,7 +181,7 @@ MAPPING_INTENTS = {
 ssh ros2@10.1.1.20
 
 # Проверить доступные сервисы RTABMap
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service list | grep rtabmap"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 service list | grep rtabmap"
 
 # Ожидаемый вывод:
 # /rtabmap/reset_memory
@@ -192,7 +192,7 @@ docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service l
 # /rtabmap/trigger_new_map
 
 # Проверить текущий режим
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 param get /rtabmap/rtabmap Mem/IncrementalMemory"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 param get /rtabmap/rtabmap Mem/IncrementalMemory"
 # Output: Boolean value is: true (SLAM mode)
 #         Boolean value is: false (Localization mode)
 ```
@@ -201,13 +201,13 @@ docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 param get
 
 ```bash
 # Переключить в Localization
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service call /rtabmap/set_mode_localization std_srvs/srv/Empty"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 service call /rtabmap/set_mode_localization std_srvs/srv/Empty"
 
 # Переключить обратно в Mapping
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service call /rtabmap/set_mode_mapping std_srvs/srv/Empty"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 service call /rtabmap/set_mode_mapping std_srvs/srv/Empty"
 
 # Сброс памяти (новая карта)
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service call /rtabmap/reset_memory std_srvs/srv/Empty"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 service call /rtabmap/reset_memory std_srvs/srv/Empty"
 ```
 
 ### 3. Проверка backup:

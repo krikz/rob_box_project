@@ -31,7 +31,7 @@
 
 **⚠️ ПРОБЛЕМА ДЛЯ ROB BOX:**
 ```
-ROS 2 Humble → rmw_zenoh_cpp → Zenoh 0.10.x/0.11.x (СТАРАЯ ВЕРСИЯ)
+ROS 2 kilted → rmw_zenoh_cpp → Zenoh 0.10.x/0.11.x (СТАРАЯ ВЕРСИЯ)
                                       ↓
                     Многие критичные fixes НЕ ВКЛЮЧЕНЫ
                                       ↓
@@ -206,7 +206,7 @@ Vision Pi Router → Main Pi Router
 1. **Мониторинг версий**
    ```bash
    # Проверить версию rmw_zenoh_cpp на обоих Pi
-   apt-cache policy ros-humble-rmw-zenoh-cpp
+   apt-cache policy ros-kilted-rmw-zenoh-cpp
    
    # Убедиться, что версии идентичны
    ```
@@ -250,7 +250,7 @@ Vision Pi Router → Main Pi Router
 ### Долгосрочные (архитектурные изменения)
 
 1. **Обновление до Zenoh 1.0+**
-   - ROS 2 Humble использует старую версию Zenoh (0.10.x или 0.11.x)
+   - ROS 2 kilted использует старую версию Zenoh (0.10.x или 0.11.x)
    - Zenoh 1.0+ имеет улучшенную обработку congestion
    - Требует проверки совместимости с rmw_zenoh_cpp
 
@@ -358,13 +358,13 @@ Vision Pi Router → Main Pi Router
 - 📊 **Улучшенная watchdog performance** - лучший мониторинг состояния
 
 **Проблема для Rob Box:**
-- ROS 2 Humble использует rmw_zenoh_cpp на базе **Zenoh 0.10.x/0.11.x** (старая версия)
+- ROS 2 kilted использует rmw_zenoh_cpp на базе **Zenoh 0.10.x/0.11.x** (старая версия)
 - Многие критичные fixes из Zenoh 1.5.0 **НЕ ДОСТУПНЫ** в текущей конфигурации
 - Issue #1876 (indefinite blocking) может быть **исправлен в Zenoh 1.5.0**
 
 **Рекомендация:**
 - Наше решение - это **best effort** для текущей версии Zenoh
-- Следить за обновлениями rmw_zenoh_cpp в ROS 2 Humble
+- Следить за обновлениями rmw_zenoh_cpp в ROS 2 kilted
 - Рассмотреть переход на ROS 2 Jazzy/Rolling (если они используют Zenoh 1.x)
 
 ### Рекомендация:
@@ -380,7 +380,7 @@ Vision Pi Router → Main Pi Router
 2. Downsampling в RTAB-Map
 3. Network quality monitoring и optimization
 4. Рассмотреть UDP для sensor streams
-5. **Проверить возможность обновления до Zenoh 1.5.0+** (если доступно для ROS 2 Humble)
+5. **Проверить возможность обновления до Zenoh 1.5.0+** (если доступно для ROS 2 kilted)
 
 **В долгосрочной перспективе:**
 - Следить за updates Zenoh (issue #1876, #314)

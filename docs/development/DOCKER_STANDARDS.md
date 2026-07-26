@@ -145,12 +145,12 @@ docker/base/
 #### Принципы проектирования базовых образов:
 
 1. **Наследование от upstream** - используем официальные образы как основу:
-   - `rob_box_base:rtabmap` ← FROM `introlab3it/rtabmap_ros:humble-latest`
-   - `rob_box_base:depthai` ← FROM `luxonis/depthai-ros:humble-latest`
+   - `rob_box_base:rtabmap` ← FROM `introlab3it/rtabmap_ros:kilted-latest`
+   - `rob_box_base:depthai` ← FROM `luxonis/depthai-ros:kilted-latest`
    - `rob_box_base:pcl` ← FROM `rob_box_base:ros2-zenoh`
 
 2. **Минимальное дополнение** - базовый образ добавляет только:
-   - `ros-humble-rmw-zenoh-cpp` (Zenoh middleware)
+   - `ros-kilted-rmw-zenoh-cpp` (Zenoh middleware)
    - Специфичные для функционала пакеты (PCL, image-transport, etc)
    - ENV переменные для Zenoh
 
@@ -164,7 +164,7 @@ docker/base/
 # robot_state_publisher - простой сервис, использует общую базу
 ARG BASE_IMAGE=rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
-RUN apt-get install -y ros-humble-robot-state-publisher ros-humble-xacro
+RUN apt-get install -y ros-kilted-robot-state-publisher ros-kilted-xacro
 
 # rtabmap - SLAM, использует специализированную базу
 ARG BASE_IMAGE=rob_box_base:rtabmap
@@ -329,7 +329,7 @@ environment:
   - RUST_LOG=zenoh=info
   
   # Дополнительные (для специфичных контейнеров)
-  - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib
+  - LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib
   - QT_QPA_PLATFORM=offscreen  # Для headless режима
 ```
 
@@ -342,7 +342,7 @@ environment:
 #### Image names:
 - Формат: `<service>-custom:latest` для кастомных образов
 - Пример: `robot-state-publisher-custom:latest`, `rtabmap-custom:latest`
-- Официальные образы: `eclipse/zenoh:1.6.2`, `ros:humble-ros-base`
+- Официальные образы: `eclipse/zenoh:1.6.2`, `ros:kilted-ros-base`
 
 #### Volume paths:
 - Всегда относительные пути от папки с docker-compose: `./config`, `./maps`, `./scripts`
@@ -385,7 +385,7 @@ for i in $(seq 1 $attempts); do
 done
 
 # 2. Source ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 [ -f /ws/install/setup.bash ] && source /ws/install/setup.bash
 
 # 3. Запуск основного процесса
@@ -458,10 +458,10 @@ depends_on:
 
 2. **Dockerfile:**
    ```dockerfile
-   FROM ros:humble-ros-base
+   FROM ros:kilted-ros-base
 
    RUN apt-get update && apt-get install -y \
-       ros-humble-rmw-zenoh-cpp \
+       ros-kilted-rmw-zenoh-cpp \
        <other-deps> \
        && rm -rf /var/lib/apt/lists/*
 

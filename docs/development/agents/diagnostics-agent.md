@@ -216,7 +216,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs rtabmap --tail 50'
 
 # Проверить что /map топик публикуется
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 topic hz /map --wait-for-timer-startup"'
+  'docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 topic hz /map --wait-for-timer-startup"'
 ```
 
 ---
@@ -226,7 +226,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 \
 ```bash
 # Статус Nav2 lifecycle nodes
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec nav2 bash -c "source /opt/ros/humble/setup.bash && ros2 lifecycle list 2>/dev/null | head -20"'
+  'docker exec nav2 bash -c "source /opt/ros/kilted/setup.bash && ros2 lifecycle list 2>/dev/null | head -20"'
 
 # Все ноды должны быть в состоянии 'active'
 # Если 'unconfigured' или 'inactive' — Nav2 не поднялся
@@ -242,15 +242,15 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs nav2 --tail 100 | grep -E "ERR
 ```bash
 # Состояние контроллеров
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec ros2-control bash -c "source /opt/ros/humble/setup.bash && ros2 control list_controllers"'
+  'docker exec ros2-control bash -c "source /opt/ros/kilted/setup.bash && ros2 control list_controllers"'
 
 # Одометрия - должна меняться при движении
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec ros2-control bash -c "source /opt/ros/humble/setup.bash && ros2 topic echo /odom --once"'
+  'docker exec ros2-control bash -c "source /opt/ros/kilted/setup.bash && ros2 topic echo /odom --once"'
 
 # Частота публикации одометрии
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec ros2-control bash -c "source /opt/ros/humble/setup.bash && timeout 5 ros2 topic hz /odom"'
+  'docker exec ros2-control bash -c "source /opt/ros/kilted/setup.bash && timeout 5 ros2 topic hz /odom"'
 ```
 
 ---
@@ -260,7 +260,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 \
 ```bash
 # Лидар должен публиковать /scan
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec lslidar bash -c "source /opt/ros/humble/setup.bash && timeout 5 ros2 topic hz /scan"'
+  'docker exec lslidar bash -c "source /opt/ros/kilted/setup.bash && timeout 5 ros2 topic hz /scan"'
 
 # Если не публикует:
 sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs lslidar --tail 30'
@@ -278,7 +278,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs oak-d --tail 50'
 
 # Должен публиковать: /camera/color/image_raw, /camera/depth/image_raw
 sshpass -p 'open' ssh ros2@10.1.1.21 \
-  'docker exec oak-d bash -c "source /opt/ros/humble/setup.bash && timeout 5 ros2 topic hz /camera/color/image_raw"'
+  'docker exec oak-d bash -c "source /opt/ros/kilted/setup.bash && timeout 5 ros2 topic hz /camera/color/image_raw"'
 
 # USB устройство OAK-D
 sshpass -p 'open' ssh ros2@10.1.1.21 'lsusb | grep MyriadX\|Luxonis\|OAK'
@@ -297,7 +297,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs voice-assistant --tail 100 | g
 
 # Статус LLM провайдера
 sshpass -p 'open' ssh ros2@10.1.1.21 \
-  'docker exec voice-assistant bash -c "source /opt/ros/humble/setup.bash && ros2 topic echo /rob_box/voice/status --once" 2>/dev/null || echo "Топик не найден"'
+  'docker exec voice-assistant bash -c "source /opt/ros/kilted/setup.bash && ros2 topic echo /rob_box/voice/status --once" 2>/dev/null || echo "Топик не найден"'
 
 # Микрофон доступен?
 sshpass -p 'open' ssh ros2@10.1.1.21 'docker exec voice-assistant arecord -l 2>&1 | head -10'
@@ -312,7 +312,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs led-matrix --tail 30'
 
 # Отправить тестовую анимацию
 sshpass -p 'open' ssh ros2@10.1.1.21 \
-  'docker exec voice-assistant bash -c "source /opt/ros/humble/setup.bash && ros2 topic pub /rob_box/led/state std_msgs/String \"{data: NAVIGATING}\" --once" 2>/dev/null'
+  'docker exec voice-assistant bash -c "source /opt/ros/kilted/setup.bash && ros2 topic pub /rob_box/led/state std_msgs/String \"{data: NAVIGATING}\" --once" 2>/dev/null'
 ```
 
 ---
@@ -345,7 +345,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'ping -c 5 10.1.1.11 | tail -3'
 ```bash
 sshpass -p 'open' ssh ros2@10.1.1.20 \
   'docker exec nav2 bash -c "
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/kilted/setup.bash
     ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
     \"{pose: {header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.0}, orientation: {w: 1.0}}}}\"
   "'
@@ -356,7 +356,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 \
 # Команда движения вперёд 2 секунды
 sshpass -p 'open' ssh ros2@10.1.1.20 \
   'docker exec ros2-control bash -c "
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/kilted/setup.bash
     ros2 topic pub /cmd_vel geometry_msgs/Twist \
     \"{linear: {x: 0.2}}\" --rate 10 &
     sleep 2
@@ -371,13 +371,13 @@ sshpass -p 'open' ssh ros2@10.1.1.20 \
 # Publisher на Main Pi, subscriber на Vision Pi
 sshpass -p 'open' ssh ros2@10.1.1.20 \
   'docker exec ros2-control bash -c "
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/kilted/setup.bash
     ros2 topic pub /test_zenoh std_msgs/String \"{data: hello_from_main}\" --once
   "' &
 
 sshpass -p 'open' ssh ros2@10.1.1.21 \
   'docker exec oak-d bash -c "
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/kilted/setup.bash
     timeout 5 ros2 topic echo /test_zenoh --once
   "'
 ```
@@ -431,8 +431,8 @@ $MAIN 'curl -s http://localhost:8000/@/local/router > /dev/null && echo "Main Ze
 $VISION 'curl -s http://localhost:8000/@/local/router > /dev/null && echo "Vision Zenoh: OK" || echo "Vision Zenoh: FAIL"'
 
 echo "=== [4/5] Критичные ROS 2 топики ==="
-$MAIN 'docker exec lslidar bash -c "source /opt/ros/humble/setup.bash && timeout 3 ros2 topic hz /scan 2>&1 | tail -1"'
-$MAIN 'docker exec ros2-control bash -c "source /opt/ros/humble/setup.bash && timeout 3 ros2 topic hz /odom 2>&1 | tail -1"'
+$MAIN 'docker exec lslidar bash -c "source /opt/ros/kilted/setup.bash && timeout 3 ros2 topic hz /scan 2>&1 | tail -1"'
+$MAIN 'docker exec ros2-control bash -c "source /opt/ros/kilted/setup.bash && timeout 3 ros2 topic hz /odom 2>&1 | tail -1"'
 
 echo "=== [5/5] Температуры ==="
 $MAIN 'echo "Main Pi: $(cat /sys/class/thermal/thermal_zone0/temp | awk "{print \$1/1000}") °C"'
@@ -474,7 +474,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker events --since 24h --filter type=co
 
 # TF дерево (что связано с чем)
 sshpass -p 'open' ssh ros2@10.1.1.20 \
-  'docker exec robot-state-publisher bash -c "source /opt/ros/humble/setup.bash && timeout 5 ros2 run tf2_tools view_frames 2>/dev/null; cat frames.pdf > /dev/null 2>&1; cat frames.gv 2>/dev/null | head -30"'
+  'docker exec robot-state-publisher bash -c "source /opt/ros/kilted/setup.bash && timeout 5 ros2 run tf2_tools view_frames 2>/dev/null; cat frames.pdf > /dev/null 2>&1; cat frames.gv 2>/dev/null | head -30"'
 
 # Версии образов которые сейчас запущены
 sshpass -p 'open' ssh ros2@10.1.1.20 'docker ps --format "{{.Names}}: {{.Image}}"'

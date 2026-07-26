@@ -6,7 +6,7 @@
   **Дорожная карта развития автономного робота-доставщика**
   
   [![Status](https://img.shields.io/badge/Status-Active%20Development-green)]()
-  [![ROS](https://img.shields.io/badge/ROS-Humble-blue)]()
+  [![ROS](https://img.shields.io/badge/ROS-kilted-blue)]()
   [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205-red)]()
 </div>
 
@@ -787,7 +787,7 @@
 | Компонент | Технология | Версия |
 |-----------|-----------|--------|
 | **Операционная система** | Ubuntu Server | 24.04.2 LTS |
-| **ROS Middleware** | ROS 2 | Humble Hawksbill |
+| **ROS Middleware** | ROS 2 | kilted Hawksbill |
 | **DDS Middleware** | Zenoh DDS | rmw_zenoh_cpp |
 | **Контейнеризация** | Docker + Docker Compose | 24.x |
 | **Оркестрация** | Docker Compose | v2.x |

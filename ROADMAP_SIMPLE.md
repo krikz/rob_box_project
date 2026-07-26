@@ -203,7 +203,7 @@
 
 ### Платформа
 - **ОС:** Ubuntu 24.04 Server
-- **Робототехника:** ROS 2 Humble
+- **Робототехника:** ROS 2 kilted
 - **Middleware:** Zenoh DDS
 - **Контейнеризация:** Docker + Docker Compose
 

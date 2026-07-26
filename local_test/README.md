@@ -21,11 +21,11 @@
 ### Предварительные требования
 
 ```bash
-# ROS 2 Humble с Zenoh middleware
-sudo apt install ros-humble-rmw-zenoh-cpp
+# ROS 2 kilted с Zenoh middleware
+sudo apt install ros-kilted-rmw-zenoh-cpp
 
 # Дополнительные пакеты
-sudo apt install ros-humble-rqt-image-view python3-opencv python3-cv-bridge
+sudo apt install ros-kilted-rqt-image-view python3-opencv python3-cv-bridge
 ```
 
 ### Конфигурация подключения
@@ -65,7 +65,7 @@ cd local_test
 
 **Что делает:**
 - Подключается к роботу через Zenoh
-- Источник ROS 2 Humble
+- Источник ROS 2 kilted
 - Запускает RViz2 с доступом ко всем топикам робота
 
 **Доступные данные:**
@@ -123,7 +123,7 @@ cd local_test
 
 **Или напрямую:**
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ZENOH_SESSION_CONFIG_URI="$(pwd)/zenoh_client_config.json5"
 python3 visualize_apriltag.py
@@ -251,7 +251,7 @@ ssh ros2@10.1.1.21 "docker ps | grep zenoh"
 
 **Решение:**
 ```bash
-sudo apt install ros-humble-rmw-zenoh-cpp
+sudo apt install ros-kilted-rmw-zenoh-cpp
 ```
 
 ### Проблема: Изображение не отображается

@@ -90,7 +90,7 @@ echo "✅ All src/ packages have README.md"
 
 # DOCS-05: No jazzy references in voice README
 if grep -rn "jazzy" src/rob_box_voice/README.md 2>/dev/null; then
-  echo "FAIL: Found 'jazzy' in rob_box_voice README — should be 'humble'"; exit 1
+  echo "FAIL: Found 'jazzy' in rob_box_voice README — should be 'kilted'"; exit 1
 fi
 echo "✅ Voice README: no jazzy dependency"
 

@@ -152,10 +152,10 @@ export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"  # ✅ НЕ ZENOH_CONFIG!
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 export ZENOH_ROUTER_CHECK_ATTEMPTS=30
 export RUST_LOG=zenoh=warn
-export LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
 # CRITICAL FIX: Prioritize ROS Ogre vendor libraries over system libraries
-export LD_LIBRARY_PATH="/opt/ros/humble/opt/rviz_ogre_vendor/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/opt/ros/kilted/opt/rviz_ogre_vendor/lib:${LD_LIBRARY_PATH}"
 ```
 
 ## 🐛 Проблема с Ogre библиотеками (побочная)
@@ -172,7 +172,7 @@ rviz2: error while loading shared libraries: libOgreMain.so.1.12.1: cannot open 
 # Удалить системную версию Ogre 1.12.10
 sudo apt remove --purge libogre-1.12-dev libogre1.12.10 -y
 
-# RViz будет использовать свою версию из /opt/ros/humble/opt/rviz_ogre_vendor/lib/
+# RViz будет использовать свою версию из /opt/ros/kilted/opt/rviz_ogre_vendor/lib/
 ```
 
 **Важно**: Скрипт `start_rviz.sh` уже приоритизирует ROS Ogre vendor библиотеки через `LD_LIBRARY_PATH`.

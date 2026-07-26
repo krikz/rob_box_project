@@ -39,7 +39,7 @@ GitHub Actions **автоматически** соберёт новый Docker �
 1. ✅ GitHub Actions обнаружит изменения в `src/rob_box_voice/**`
 2. ✅ Запустит job `build-voice-assistant`
 3. ✅ Соберёт Docker образ для `linux/arm64`
-4. ✅ Опубликует в `ghcr.io/krikz/rob_box:voice-assistant-humble-dev`
+4. ✅ Опубликует в `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev`
 
 **Проверить статус:**
 https://github.com/krikz/rob_box_project/actions

@@ -7,7 +7,7 @@
 ### Платформа
 - **Hardware:** Raspberry Pi 5 (ARM64, 8GB RAM)
 - **OS:** Ubuntu 24.04 ARM64
-- **ROS:** ROS2 Humble/Jazzy
+- **ROS:** ROS2 kilted/Jazzy
 - **Memory budget:** ~2GB для voice assistant контейнера
 
 ### Качество
@@ -508,7 +508,7 @@ tts_node:
 
 **Интеграция:**
 ```bash
-sudo apt install ros-humble-audio-common
+sudo apt install ros-kilted-audio-common
 ```
 
 **Плюсы:**

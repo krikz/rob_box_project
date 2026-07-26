@@ -140,7 +140,7 @@ COPY sound_pack /ws/sound_pack
 **Сервис `voice-assistant`:**
 ```yaml
 voice-assistant:
-  image: ghcr.io/krikz/rob_box:voice-assistant-humble-latest  ✅ Правильный образ
+  image: ghcr.io/krikz/rob_box:voice-assistant-kilted-latest  ✅ Правильный образ
   container_name: voice-assistant
   network_mode: host
   privileged: true
@@ -172,8 +172,8 @@ voice-assistant:
 **✅ Все корректно!**
 
 **Теги образов:**
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-latest` → после мержа в `main`
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-dev` → после мержа в `develop`
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-latest` → после мержа в `main`
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev` → после мержа в `develop`
 
 ---
 
@@ -213,8 +213,8 @@ build-voice-assistant:
         images: ghcr.io/krikz/rob_box
         tags: |
           type=raw,value=voice-assistant-${{ needs.determine-tag.outputs.full_tag }}
-          type=raw,value=voice-assistant-humble-latest,enable=${{ github.ref == 'refs/heads/main' }}
-          type=sha,prefix=voice-assistant-humble-
+          type=raw,value=voice-assistant-kilted-latest,enable=${{ github.ref == 'refs/heads/main' }}
+          type=sha,prefix=voice-assistant-kilted-
     
     - name: Build and push voice-assistant
       uses: docker/build-push-action@v5
@@ -230,9 +230,9 @@ build-voice-assistant:
 ```
 
 **Теги, которые будут созданы:**
-- При push в `develop`: `voice-assistant-humble-dev`
-- При push в `main`: `voice-assistant-humble-latest`
-- Всегда: `voice-assistant-humble-<git-sha>`
+- При push в `develop`: `voice-assistant-kilted-dev`
+- При push в `main`: `voice-assistant-kilted-latest`
+- Всегда: `voice-assistant-kilted-<git-sha>`
 
 **✅ Всё настроено правильно!**
 
@@ -258,7 +258,7 @@ verify-build:
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
 FROM ${BASE_IMAGE}
 ```
-✅ Использует базовый образ с ROS2 Humble + Zenoh
+✅ Использует базовый образ с ROS2 kilted + Zenoh
 
 **Копирование ROS packages:**
 ```dockerfile
@@ -372,7 +372,7 @@ git push origin feature/voice-assistant
 
 **GitHub Actions автоматически:**
 1. ✅ Соберёт `voice-assistant` для `linux/arm64`
-2. ✅ Опубликует в `ghcr.io/krikz/rob_box:voice-assistant-humble-dev`
+2. ✅ Опубликует в `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev`
 3. ✅ Мерджнет в `develop` (если настроен auto-merge)
 
 **Проверить статус:**
@@ -507,7 +507,7 @@ User: Что такое робот РОББОКС?
 4. **Зависимости базового образа:**
    - Base: `ghcr.io/krikz/rob_box_base:rtabmap`
    - Если этот образ не существует, сборка упадёт
-   - Альтернатива: поменять на `ros2-zenoh-humble-latest`
+   - Альтернатива: поменять на `ros2-zenoh-kilted-latest`
 
 ---
 

@@ -109,7 +109,7 @@ ros2 topic pub --once /voice/stt/result std_msgs/msg/String "{data: 'нет'}"
 ```bash
 # На Main Pi (10.1.1.20) - проверить наличие RTABMap сервисов
 ssh ros2@10.1.1.20
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service list | grep rtabmap"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 service list | grep rtabmap"
 
 # Ожидаемый вывод:
 # /rtabmap/reset_memory
@@ -126,7 +126,7 @@ docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 service l
 ```bash
 # 1. Перезапустить voice-assistant контейнер с новым образом
 ssh ros2@10.1.1.21
-docker pull ghcr.io/krikz/rob_box:voice-assistant-humble-test
+docker pull ghcr.io/krikz/rob_box:voice-assistant-kilted-test
 docker restart voice-assistant
 
 # 2. Проверить логи dialogue_node
@@ -144,7 +144,7 @@ docker logs -f voice-assistant | grep "Mapping"
 
 ```bash
 # Проверить текущий режим
-docker exec rtabmap bash -c "source /opt/ros/humble/setup.bash && ros2 param get /rtabmap/rtabmap Mem/IncrementalMemory"
+docker exec rtabmap bash -c "source /opt/ros/kilted/setup.bash && ros2 param get /rtabmap/rtabmap Mem/IncrementalMemory"
 
 # true = SLAM mode (mapping)
 # false = Localization mode

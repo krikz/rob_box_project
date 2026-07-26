@@ -10,7 +10,7 @@ ARG BUILD_VERSION=2026-03-08-v2
 
 FROM ${BASE_IMAGE}
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=kilted
 
 # Метаданные
 LABEL org.opencontainers.image.title="Voice Base Image"

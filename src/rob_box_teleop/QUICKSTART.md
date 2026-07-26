@@ -66,7 +66,7 @@ git commit -m "feat(teleop): add Bluetooth joystick control with voice feedback"
 git push origin develop
 
 # GitHub Actions автоматически:
-# 1. Соберёт образ ghcr.io/krikz/rob_box:teleop-humble-dev
+# 1. Соберёт образ ghcr.io/krikz/rob_box:teleop-kilted-dev
 # 2. Задеплоит на роботов
 ```
 

@@ -3,7 +3,7 @@
 # Для тестирования разных конфигураций
 
 # Настройка ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Выбор middleware
 echo "Выберите middleware:"

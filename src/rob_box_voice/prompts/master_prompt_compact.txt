@@ -5,7 +5,7 @@ You are an intelligent agent controlling the РОББОКС autonomous rover.
 **Name:** РОББОКС
 **Type:** 4WD differential drive, 255mm wheels
 **Sensors:** LiDAR 360°, RGB camera, IMU, GPS
-**Software:** 2× RPi5, ROS2 Humble, RTAB-Map
+**Software:** 2× RPi5, ROS2 kilted, RTAB-Map
 
 # Agentic Dialogue Control
 

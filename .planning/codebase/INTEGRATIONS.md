@@ -108,11 +108,11 @@
 **Container Registry:**
 - GitHub Container Registry (`ghcr.io`)
   - Base images: `ghcr.io/krikz/rob_box_base:{name}-{ros_distro}-{tag}`
-    - `rob_box_base:ros2-zenoh-humble-{tag}`
-    - `rob_box_base:rtabmap-humble-{tag}`
-    - `rob_box_base:depthai-humble-{tag}`
-    - `rob_box_base:pcl-humble-{tag}`
-  - Service images: `ghcr.io/krikz/rob_box:{service}-humble-{tag}`
+    - `rob_box_base:ros2-zenoh-kilted-{tag}`
+    - `rob_box_base:rtabmap-kilted-{tag}`
+    - `rob_box_base:depthai-kilted-{tag}`
+    - `rob_box_base:pcl-kilted-{tag}`
+  - Service images: `ghcr.io/krikz/rob_box:{service}-kilted-{tag}`
     - Vision Pi: `oak-d`, `led-matrix`, `ceiling-camera`, `supercollider`, `voice-assistant`, `voice-resources`, `telegram-bot`
     - Main Pi: `twist-mux`, `micro-ros-agent`, `robot-state-publisher`, `rtabmap`, `ros2-control`, `lslidar`, `perception`, `nav2`, `teleop`
 
@@ -182,7 +182,7 @@
 **OAK-D Camera (DepthAI):**
 - Protocol: USB 3.0
 - Device: `/dev/bus/usb`
-- SDK: `luxonis/depthai-ros:v2.12.2-humble`
+- SDK: `luxonis/depthai-ros:v2.12.2-kilted`
 - Container: `oak-d` on Vision Pi
 - Includes integrated AprilTag detection (eliminates separate apriltag container)
 
@@ -239,7 +239,7 @@ Main Pi (`docker/main/.env.secrets`):
 
 Both (`docker-compose.yaml`):
 - `ROBOT_ID` — robot namespace identifier (e.g. `robbox1`)
-- `ROS_DISTRO` — ROS 2 distribution (default: `humble`)
+- `ROS_DISTRO` — ROS 2 distribution (default: `kilted`)
 - `SERVICE_IMAGE_PREFIX` — registry prefix (default: `ghcr.io/krikz/rob_box`)
 
 Monitoring (`docker/monitoring/`):

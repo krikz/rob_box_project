@@ -189,9 +189,9 @@ sudo apt-get install joystick jstest-gtk evtest
 **Result:** Packages installed, but no effect on device recognition
 
 ### ❌ Solution 2: Use joy_linux_node instead of joy_node
-**Finding:** `ros-humble-joy-linux` package exists but `joy_linux_node` executable doesn't exist
+**Finding:** `ros-kilted-joy-linux` package exists but `joy_linux_node` executable doesn't exist
 ```bash
-docker exec teleop ls /opt/ros/humble/lib/joy/
+docker exec teleop ls /opt/ros/kilted/lib/joy/
 # Output: game_controller_node, joy_enumerate_devices, joy_node (NO joy_linux_node)
 ```
 

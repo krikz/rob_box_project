@@ -84,12 +84,12 @@ if [ -f "$ENV_FILE" ]; then
     echo "✅ Docker теги настроены успешно!"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "Будут использоваться образы с тегом: -humble-${IMAGE_TAG}"
+    echo "Будут использоваться образы с тегом: -kilted-${IMAGE_TAG}"
     echo ""
     echo "Примеры:"
-    echo "  - ghcr.io/krikz/rob_box:voice-assistant-humble-${IMAGE_TAG}"
-    echo "  - ghcr.io/krikz/rob_box:oak-d-humble-${IMAGE_TAG}"
-    echo "  - ghcr.io/krikz/rob_box:rtabmap-humble-${IMAGE_TAG}"
+    echo "  - ghcr.io/krikz/rob_box:voice-assistant-kilted-${IMAGE_TAG}"
+    echo "  - ghcr.io/krikz/rob_box:oak-d-kilted-${IMAGE_TAG}"
+    echo "  - ghcr.io/krikz/rob_box:rtabmap-kilted-${IMAGE_TAG}"
     echo ""
     echo "Для деплоя выполните:"
     echo "  cd docker/vision && docker-compose pull && docker-compose up -d"
@@ -102,7 +102,7 @@ fi
 
 # Экспортируем переменные для использования в текущей сессии
 export IMAGE_TAG
-export ROS_DISTRO=humble
+export ROS_DISTRO=kilted
 export REGISTRY=ghcr.io
 export REPOSITORY_OWNER=krikz
 export BASE_IMAGE_PREFIX="${REGISTRY}/${REPOSITORY_OWNER}/rob_box_base"

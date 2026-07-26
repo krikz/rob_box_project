@@ -71,9 +71,9 @@ docker-compose down
 ### Шаг 3: Удаление старого образа apriltag (опционально)
 
 ```bash
-docker rmi ghcr.io/krikz/rob_box:apriltag-humble-latest
-docker rmi ghcr.io/krikz/rob_box:apriltag-humble-dev
-docker rmi ghcr.io/krikz/rob_box:apriltag-humble-test
+docker rmi ghcr.io/krikz/rob_box:apriltag-kilted-latest
+docker rmi ghcr.io/krikz/rob_box:apriltag-kilted-dev
+docker rmi ghcr.io/krikz/rob_box:apriltag-kilted-test
 ```
 
 ### Шаг 4: Pull нового образа OAK-D
@@ -215,7 +215,7 @@ docker logs oak-d 2>&1 | grep -i "error\|fail\|apriltag"
 ## Дополнительные ресурсы
 
 - [DepthAI ROS Driver Documentation](https://docs.luxonis.com/software/ros/depthai-ros/driver/)
-- [AprilTag ROS 2 Documentation](https://docs.ros.org/en/ros2_packages/humble/api/apriltag_ros/)
+- [AprilTag ROS 2 Documentation](https://docs.ros.org/en/ros2_packages/kilted/api/apriltag_ros/)
 - [OAK-D Lite Hardware Specs](../architecture/HARDWARE.md)
 
 ---

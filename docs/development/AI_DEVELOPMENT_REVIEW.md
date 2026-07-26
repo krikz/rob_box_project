@@ -153,7 +153,7 @@ AI агент не знает какие файлы открывать для к
 
 ### ✅ ХОРОШО (specific + context):
 "Voice assistant на Vision Pi падает с ошибкой ModuleNotFoundError: nav2_msgs. 
-Проверь docker/vision/voice_assistant/Dockerfile, добавлен ли пакет ros-humble-nav2-msgs 
+Проверь docker/vision/voice_assistant/Dockerfile, добавлен ли пакет ros-kilted-nav2-msgs 
 в секцию apt-get install. Если нет - добавь его."
 
 ---
@@ -394,13 +394,13 @@ def proc(s,d=1.0):
 ```dockerfile
 # ✅ ПРАВИЛЬНО
 RUN apt-get update && apt-get install -y \
-    ros-humble-nav2-msgs \
-    ros-humble-geometry-msgs \
+    ros-kilted-nav2-msgs \
+    ros-kilted-geometry-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # ❌ НЕПРАВИЛЬНО (no cleanup, separate RUN)
 RUN apt-get update
-RUN apt-get install -y ros-humble-nav2-msgs
+RUN apt-get install -y ros-kilted-nav2-msgs
 ```
 
 ## YAML

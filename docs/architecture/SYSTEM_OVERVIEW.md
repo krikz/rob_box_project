@@ -385,7 +385,7 @@ Vision Pi (10.1.1.11)
 ```
 docker/
 ├── base/                        # Базовые образы
-│   ├── ros2-humble-base/       # ROS 2 + Zenoh
+│   ├── ros2-kilted-base/       # ROS 2 + Zenoh
 │   └── ros2-dev-base/          # + dev tools
 ├── main/                        # Main Pi сервисы
 │   ├── docker-compose.yaml

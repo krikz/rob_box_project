@@ -1,8 +1,8 @@
 # Базовый образ для DepthAI (OAK-D camera)
 # Наследуется от официального образа Luxonis и добавляет Zenoh
-# ВАЖНО: humble-latest стал amd64-only с 27.02.2026 (перешёл на v3 API)
-# Пинируем v2.12.2-humble — последняя v2 версия с поддержкой arm64 + amd64
-FROM luxonis/depthai-ros:v2.12.2-humble
+# ВАЖНО: kilted-latest стал amd64-only с 27.02.2026 (перешёл на v3 API)
+# Пинируем v2.12.2-kilted — последняя v2 версия с поддержкой arm64 + amd64
+FROM luxonis/depthai-ros:v2.12.2-kilted
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""
@@ -30,8 +30,8 @@ RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
 # Устанавливаем Zenoh middleware и дополнительные плагины
 RUN apt-get update && \
     apt-get install -y \
-        ros-humble-rmw-zenoh-cpp \
-        ros-humble-compressed-depth-image-transport \
+        ros-kilted-rmw-zenoh-cpp \
+        ros-kilted-compressed-depth-image-transport \
         && rm -rf /var/lib/apt/lists/*
 
 # Удаляем APT прокси конфигурацию после установки пакетов
@@ -41,7 +41,7 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
     ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     RUST_LOG=zenoh=info \
-    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib/aarch64-linux-gnu:/opt/ros/kilted/lib
 
 # Метаданные образа
 LABEL maintainer="rob_box_project" \

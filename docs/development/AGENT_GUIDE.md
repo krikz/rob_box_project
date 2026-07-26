@@ -31,7 +31,7 @@
 
 "Voice assistant на Vision Pi падает с ошибкой `ModuleNotFoundError: No module named 'nav2_msgs'` в command_node. 
 
-Проверь `docker/vision/voice_assistant/Dockerfile` - добавлен ли пакет `ros-humble-nav2-msgs` в секцию `RUN apt-get install`. Если нет - добавь его в список пакетов вместе с другими `ros-humble-*` зависимостями."
+Проверь `docker/vision/voice_assistant/Dockerfile` - добавлен ли пакет `ros-kilted-nav2-msgs` в секцию `RUN apt-get install`. Если нет - добавь его в список пакетов вместе с другими `ros-kilted-*` зависимостями."
 
 **Почему хорошо:**
 - ✅ Конкретная ошибка с текстом
@@ -320,7 +320,7 @@ Feature Branch (feature/*)
     Auto-merge → Main (main)
          ↓
     Docker Images Published
-    ghcr.io/krikz/rob_box:*-humble-latest
+    ghcr.io/krikz/rob_box:*-kilted-latest
 ```
 
 ### Workflow файлы
@@ -337,14 +337,14 @@ Feature Branch (feature/*)
 
 | Branch | Tag | Использование |
 |--------|-----|---------------|
-| **main** | `*-humble-latest` | Production (стабильная версия) |
-| **develop** | `*-humble-dev` | Development (тестирование) |
-| **feature/*** | `*-humble-test` | Feature testing (текущая разработка) |
+| **main** | `*-kilted-latest` | Production (стабильная версия) |
+| **develop** | `*-kilted-dev` | Development (тестирование) |
+| **feature/*** | `*-kilted-test` | Feature testing (текущая разработка) |
 
 **Пример для voice-assistant:**
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-latest` (main)
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-dev` (develop)
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-test` (feature/*)
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-latest` (main)
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev` (develop)
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-test` (feature/*)
 
 ### Workflow для изменения кода
 
@@ -364,7 +364,7 @@ git push origin feature/fix-voice-assistant
 # 4. GitHub Actions автоматически:
 #    - Определяет что изменился Vision Pi
 #    - Запускает build-vision-services.yml
-#    - Собирает voice-assistant-humble-test
+#    - Собирает voice-assistant-kilted-test
 #    - Пушит образ в ghcr.io
 #    - Мерджит в develop (если сборка успешна)
 #    - Удаляет feature ветку
@@ -396,7 +396,7 @@ gh run view <run-id> --log
 # На Vision Pi - проверить какой образ используется
 sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
 
-# Должен показать: ghcr.io/krikz/rob_box  voice-assistant-humble-test
+# Должен показать: ghcr.io/krikz/rob_box  voice-assistant-kilted-test
 ```
 
 ### Когда НЕ нужна пересборка образа
@@ -972,7 +972,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_CONFIG=/config/zenoh_session_config.json5
-      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+      - LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib/aarch64-linux-gnu:/opt/ros/kilted/lib
     depends_on:
       - zenoh-router
 ```

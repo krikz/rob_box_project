@@ -1,5 +1,5 @@
 #!/bin/bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Запускаем AprilTag с использованием Zenoh
 # Используем /camera/rgb/image_raw для детекции маркеров

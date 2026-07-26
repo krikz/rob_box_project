@@ -143,7 +143,7 @@ class StartupGreetingNode(Node):
         msg.data = json.dumps(chunk_json, ensure_ascii=False)
         self.tts_pub.publish(msg)
         
-        # 4. Завершаем работу ноды через 3 секунды (без once=True для Humble)
+        # 4. Завершаем работу ноды через 3 секунды (без once=True для kilted)
         self.shutdown_timer = self.create_timer(3.0, self.shutdown_node)
     
     def shutdown_node(self):

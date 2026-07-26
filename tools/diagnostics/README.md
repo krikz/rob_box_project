@@ -25,5 +25,5 @@ python3 tools/diagnostics/compare_odom.py
 ```
 
 ## Требования
-- ROS 2 Humble
+- ROS 2 kilted
 - Активное окружение: `source install/setup.bash`

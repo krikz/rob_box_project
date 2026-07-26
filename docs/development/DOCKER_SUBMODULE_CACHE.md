@@ -19,7 +19,7 @@
 #### 1. В Dockerfile добавляем ARG
 
 ```dockerfile
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=kilted
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 ARG ROS2LEDS_SHA=unknown  # SHA субмодуля
 

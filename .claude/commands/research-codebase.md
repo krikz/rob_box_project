@@ -1,6 +1,6 @@
 # Research Codebase
 
-Ты — Research Lead для проекта **Rob Box** (автономный ровер, ROS 2 Humble + Zenoh).
+Ты — Research Lead для проекта **Rob Box** (автономный ровер, ROS 2 kilted + Zenoh).
 
 ## Твоя роль
 Провести исследование кодовой базы по задаче ниже и создать документ с фактами.
@@ -23,7 +23,7 @@ $ARGUMENTS
 
 ## Стек проекта
 - **Python** (ROS 2 nodes, black 120, isort, flake8)
-- **ROS 2 Humble** — nodes, topics, services, actions
+- **ROS 2 kilted** — nodes, topics, services, actions
 - **Docker Compose** — сервисы на Main Pi (10.1.1.10) и Vision Pi (10.1.1.11)
 - **Zenoh DDS** — middleware вместо стандартного RMW
 - **Исходники:** `src/` — ROS 2 пакеты, `docker/` — Docker образы

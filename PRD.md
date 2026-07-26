@@ -28,7 +28,7 @@
 
 ### 1.1. Описание продукта
 
-**РОББОКС** — автономный колёсный робот для использования внутри помещений, построенный на ROS 2 Humble + Zenoh DDS.  
+**РОББОКС** — автономный колёсный робот для использования внутри помещений, построенный на ROS 2 kilted + Zenoh DDS.  
 Платформа является **многоцелевой образовательной/демонстрационной системой**, на которой реализуются бизнес-сценарии:
 
 | Сценарий | Описание |
@@ -329,10 +329,10 @@
 | Слой | Технология | Версия |
 |------|-----------|--------|
 | Операционная система | Ubuntu Server | 24.04 ARM64 |
-| Robot Framework | ROS 2 | Humble |
+| Robot Framework | ROS 2 | kilted |
 | DDS Middleware | Zenoh (`rmw_zenoh_cpp`) | 0.11+ |
 | SLAM | RTAB-Map | 0.21+ |
-| Navigation | Nav2 | Humble |
+| Navigation | Nav2 | kilted |
 | Vision | DepthAI, OpenCV | Latest |
 | Containers | Docker + Docker Compose | 24.0+ |
 | STT | Vosk (`vosk-model-ru-0.42`) | Offline |

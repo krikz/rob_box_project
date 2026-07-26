@@ -47,7 +47,7 @@ python3 local_test/hardware/test_usb_vad.py
 - 253 WS2812B LEDs на GPIO10 (SPI0 MOSI)
 
 ### Для ReSpeaker:
-- JSK audio common: `ros-humble-jsk-audio-common`
+- JSK audio common: `ros-kilted-jsk-audio-common`
 - ReSpeaker 4-Mic Array (USB)
 - ALSA drivers
 

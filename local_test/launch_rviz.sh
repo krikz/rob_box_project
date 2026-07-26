@@ -5,7 +5,7 @@ echo "🎨 === RViz2 с Zenoh Middleware ==="
 echo ""
 
 # Source ROS2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Установка Zenoh middleware
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
@@ -17,7 +17,7 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 # Фикс конфликта snap/GTK
 unset GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR
 
-echo "✓ ROS2 Humble sourced"
+echo "✓ ROS2 kilted sourced"
 echo "✓ RMW: $RMW_IMPLEMENTATION"
 echo "✓ Zenoh config: $ZENOH_SESSION_CONFIG_URI"
 echo ""

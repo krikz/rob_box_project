@@ -70,7 +70,7 @@ curl http://localhost:5000/v2/_catalog | jq
 curl http://localhost:5000/v2/krikz/rob_box/tags/list | jq
 
 # Загрузка образа в registry
-./scripts/push_to_local_registry.sh ghcr.io/krikz/rob_box:oak-d-humble-latest
+./scripts/push_to_local_registry.sh ghcr.io/krikz/rob_box:oak-d-kilted-latest
 
 # Очистка registry
 ./scripts/cleanup_registry.sh --dry-run  # Просмотр
@@ -160,7 +160,7 @@ docker logs -f build-github-runner
 curl http://localhost:5000/v2/_catalog | jq
 
 # 4. На Raspberry Pi: обновите образ
-docker pull 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+docker pull 10.1.1.5:5000/krikz/rob_box:oak-d-kilted-latest
 
 # Должно быть быстро (30-60 секунд вместо 10-15 минут)
 ```
@@ -237,7 +237,7 @@ git push origin feature/my-service
 #    - Загрузит в ghcr.io
 
 # 4. На Raspberry Pi: тестирование
-docker pull 10.1.1.5:5000/krikz/rob_box:my-service-humble-test
+docker pull 10.1.1.5:5000/krikz/rob_box:my-service-kilted-test
 # Быстрая загрузка из локального registry!
 ```
 
@@ -294,7 +294,7 @@ RUN apt-get update && apt-get install -y my-package
 
 # ❌ ПЛОХО (долго)
 FROM ubuntu:22.04
-RUN apt-get update && apt-get install -y ros-humble-desktop
+RUN apt-get update && apt-get install -y ros-kilted-desktop
 ```
 
 ### 2. Используйте BuildKit cache

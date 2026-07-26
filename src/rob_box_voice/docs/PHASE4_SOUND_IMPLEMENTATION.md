@@ -372,7 +372,7 @@ voice-assistant:
 ## References
 
 - [PyDub Documentation](https://github.com/jiaaro/pydub)
-- [ROS2 Publisher/Subscriber](https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Writing-A-Simple-Py-Publisher-And-Subscriber.html)
+- [ROS2 Publisher/Subscriber](https://docs.ros.org/en/kilted/Tutorials/Beginner-Client-Libraries/Writing-A-Simple-Py-Publisher-And-Subscriber.html)
 - [Threading in Python](https://docs.python.org/3/library/threading.html)
 
 ---

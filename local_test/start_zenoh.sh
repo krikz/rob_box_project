@@ -26,7 +26,7 @@ if pgrep -fa zenohd > /dev/null 2>&1; then
 fi
 
 # Source ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Стартуем роутер через ZENOH_ROUTER_CONFIG_URI (не --config !)
 echo "Запуск роутера с $ROUTER_CONFIG..."

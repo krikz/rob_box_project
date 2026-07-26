@@ -218,7 +218,7 @@
 ## 💻 Программное обеспечение
 
 - **ОС:** Ubuntu 24.04.2 LTS (на обоих Raspberry Pi)
-- **Фреймворк:** ROS 2 Humble Hawksbill
+- **Фреймворк:** ROS 2 kilted Hawksbill
 - **Middleware:** Zenoh DDS (rmw_zenoh_cpp) для оптимизации сетевого трафика
 - **SLAM:** RTAB-Map (RGB-D + 2D LiDAR)
 - **Камера:** DepthAI для OAK-D-Lite

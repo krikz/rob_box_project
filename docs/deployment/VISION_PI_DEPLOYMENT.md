@@ -17,7 +17,7 @@
    git push origin develop
    ```
    - Сборка запустится автоматически
-   - Образ будет: `ghcr.io/krikz/rob_box:voice-assistant-humble-dev`
+   - Образ будет: `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev`
 
 2. **Ручная сборка:**
    - Перейти на GitHub → Actions → "Build Vision Pi Services"
@@ -33,10 +33,10 @@
 
 | Ветка | Тег Docker | Когда использовать |
 |-------|------------|-------------------|
-| `main` | `humble-latest` | Продакшн деплой |
-| `develop` | `humble-dev` | Тестирование новых фич |
-| `release/X.X.X` | `humble-rc-X.X.X` | Release candidate |
-| SHA commit | `humble-<sha>` | Специфичная версия |
+| `main` | `kilted-latest` | Продакшн деплой |
+| `develop` | `kilted-dev` | Тестирование новых фич |
+| `release/X.X.X` | `kilted-rc-X.X.X` | Release candidate |
+| SHA commit | `kilted-<sha>` | Специфичная версия |
 
 ### Локальная сборка (только для тестирования)
 
@@ -46,7 +46,7 @@ cd /home/ros2/rob_box_project
 chmod +x docker/vision/scripts/build_voice_assistant.sh
 ./docker/vision/scripts/build_voice_assistant.sh
 
-# Результат: rob_box:voice-assistant-humble-test
+# Результат: rob_box:voice-assistant-kilted-test
 ```
 
 ⚠️ **Внимание:** Локально собранные образы НЕ используются в продакшн!
@@ -143,7 +143,7 @@ docker-compose up -d
 cd ~/rob_box_project/docker/vision
 
 # Изменить тег в docker-compose.yaml
-sed -i 's/humble-latest/humble-dev/g' docker-compose.yaml
+sed -i 's/kilted-latest/kilted-dev/g' docker-compose.yaml
 
 # Скачать dev образы
 docker-compose pull
@@ -152,7 +152,7 @@ docker-compose pull
 docker-compose up -d
 
 # Вернуть обратно на latest
-sed -i 's/humble-dev/humble-latest/g' docker-compose.yaml
+sed -i 's/kilted-dev/kilted-latest/g' docker-compose.yaml
 ```
 
 #### Откат к предыдущей версии
@@ -163,7 +163,7 @@ docker images | grep voice-assistant
 
 # Изменить тег на конкретный SHA
 # В docker-compose.yaml:
-# image: ghcr.io/krikz/rob_box:voice-assistant-humble-abc1234
+# image: ghcr.io/krikz/rob_box:voice-assistant-kilted-abc1234
 
 docker-compose up -d voice-assistant
 ```
@@ -241,7 +241,7 @@ EOF
 
 ```bash
 # Внутри контейнера или на хосте с ROS2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Список топиков
 ros2 topic list

@@ -44,7 +44,7 @@ python3 tools/robot_control_gui.py
 ## 📋 Требования
 
 - Python 3.10+
-- ROS2 Humble
+- ROS2 kilted
 - tkinter (обычно установлен по умолчанию)
 - rclpy
 

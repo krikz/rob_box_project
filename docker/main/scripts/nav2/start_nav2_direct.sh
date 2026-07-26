@@ -6,7 +6,7 @@ set -e
 echo "Starting Nav2 nodes directly..."
 
 # Source ROS2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 PARAMS="/config/nav2/nav2_params.yaml"
 

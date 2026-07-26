@@ -649,7 +649,7 @@ Robot: "Иду к офис" → NavigateToPose(saved_coords)
 ## References
 
 - [Nav2 Actions](https://navigation.ros.org/tutorials/docs/using_plugins.html)
-- [ROS2 Action Clients](https://docs.ros.org/en/humble/Tutorials/Intermediate/Writing-an-Action-Server-Client/Py.html)
+- [ROS2 Action Clients](https://docs.ros.org/en/kilted/Tutorials/Intermediate/Writing-an-Action-Server-Client/Py.html)
 - [Regex in Python](https://docs.python.org/3/library/re.html)
 - [Twist Mux Documentation](http://wiki.ros.org/twist_mux)
 - [Audio-Reactive Animations](../../rob_box_animations/AUDIO_REACTIVE.md)

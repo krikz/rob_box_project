@@ -8,9 +8,9 @@ Previously, docker-compose files had hardcoded Docker image tags, requiring manu
 ```yaml
 services:
   voice-assistant:
-    image: ghcr.io/krikz/rob_box:voice-assistant-humble-test
-    # После мерджа в develop поменяй на: voice-assistant-humble-dev  ❌
-    # После мерджа в main поменяй на: voice-assistant-humble-latest  ❌
+    image: ghcr.io/krikz/rob_box:voice-assistant-kilted-test
+    # После мерджа в develop поменяй на: voice-assistant-kilted-dev  ❌
+    # После мерджа в main поменяй на: voice-assistant-kilted-latest  ❌
 ```
 
 **After:**
@@ -55,9 +55,9 @@ ${SERVICE_IMAGE_PREFIX}:${service_name}-${ROS_DISTRO}-${IMAGE_TAG}
 ```
 
 **Example results:**
-- Main branch: `ghcr.io/krikz/rob_box:voice-assistant-humble-latest`
-- Develop branch: `ghcr.io/krikz/rob_box:voice-assistant-humble-dev`
-- Feature branch: `ghcr.io/krikz/rob_box:voice-assistant-humble-test`
+- Main branch: `ghcr.io/krikz/rob_box:voice-assistant-kilted-latest`
+- Develop branch: `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev`
+- Feature branch: `ghcr.io/krikz/rob_box:voice-assistant-kilted-test`
 
 ## Common Workflows
 
@@ -180,7 +180,7 @@ docker-compose pull
 **Problem:**
 ```bash
 docker-compose pull
-ERROR: manifest for ghcr.io/krikz/rob_box:voice-assistant-humble-test not found
+ERROR: manifest for ghcr.io/krikz/rob_box:voice-assistant-kilted-test not found
 ```
 
 **Causes & Solutions:**
@@ -253,9 +253,9 @@ ERROR: manifest for ghcr.io/krikz/rob_box:voice-assistant-humble-test not found
 ### GitHub Actions
 
 Workflows already build images with correct tags:
-- `main` branch → `-humble-latest`
-- `develop` branch → `-humble-dev`
-- `feature/*` branches → `-humble-test`
+- `main` branch → `-kilted-latest`
+- `develop` branch → `-kilted-dev`
+- `feature/*` branches → `-kilted-test`
 
 No changes needed to workflows - they work automatically!
 

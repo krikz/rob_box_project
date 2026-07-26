@@ -1,6 +1,6 @@
 # Диагностика и решение проблем
 
-> **Актуально для**: ROS 2 Humble + Zenoh DDS + Docker Compose (май 2026)
+> **Актуально для**: ROS 2 kilted + Zenoh DDS + Docker Compose (май 2026)
 
 ## Проблема: RTAB-Map не строит карту (нет данных от LiDAR)
 
@@ -237,7 +237,7 @@ ros2 topic bw /oak/stereo/image_raw/compressedDepth
 
 ```bash
 # Установите (если нет)
-sudo apt install ros-humble-tf2-tools
+sudo apt install ros-kilted-tf2-tools
 
 # Просмотр дерева трансформаций
 ros2 run tf2_tools view_frames

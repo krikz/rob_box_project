@@ -30,21 +30,21 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     net-tools \
     # ROS 2 development packages needed for building message packages
-    ros-humble-rosidl-default-generators \
-    ros-humble-rosidl-default-runtime \
+    ros-kilted-rosidl-default-generators \
+    ros-kilted-rosidl-default-runtime \
     # ROS2 Control (ros-base уже в базовом образе)
-    ros-humble-ros2-control \
-    ros-humble-ros2-controllers \
-    ros-humble-controller-manager \
-    ros-humble-hardware-interface \
-    ros-humble-pluginlib \
+    ros-kilted-ros2-control \
+    ros-kilted-ros2-controllers \
+    ros-kilted-controller-manager \
+    ros-kilted-hardware-interface \
+    ros-kilted-pluginlib \
     # Контроллеры
-    ros-humble-diff-drive-controller \
-    ros-humble-joint-state-broadcaster \
-    ros-humble-joint-trajectory-controller \
+    ros-kilted-diff-drive-controller \
+    ros-kilted-joint-state-broadcaster \
+    ros-kilted-joint-trajectory-controller \
     # Утилиты
-    ros-humble-xacro \
-    ros-humble-ros2controlcli \
+    ros-kilted-xacro \
+    ros-kilted-ros2controlcli \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория
@@ -65,8 +65,8 @@ COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep и сборка пакетов
 # Явно задаём ROS_DISTRO для rosidl_generator_rs (Rust IDL)
-ENV ROS_DISTRO=humble
-RUN . /opt/ros/humble/setup.sh && \
+ENV ROS_DISTRO=kilted
+RUN . /opt/ros/kilted/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
@@ -78,7 +78,7 @@ RUN . /opt/ros/humble/setup.sh && \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Source workspace
-RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+RUN echo "source /opt/ros/kilted/setup.bash" >> /root/.bashrc && \
     echo "source /ws/install/setup.bash" >> /root/.bashrc
 
 # ROS2 и Zenoh environment variables

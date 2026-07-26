@@ -10,9 +10,9 @@ FROM ${BASE_IMAGE}
 # Установка AprilTag пакетов для интеграции детекции в OAK-D контейнер
 # Это позволяет избежать отдельного контейнера и снизить нагрузку на Vision Pi
 RUN apt-get update && apt-get install -y \
-    ros-humble-apriltag-ros \
-    ros-humble-image-transport-plugins \
-    ros-humble-cv-bridge \
+    ros-kilted-apriltag-ros \
+    ros-kilted-image-transport-plugins \
+    ros-kilted-cv-bridge \
     && rm -rf /var/lib/apt/lists/* 
 
 # ВАЖНО: Launch файлы и скрипты НЕ копируются в образ!

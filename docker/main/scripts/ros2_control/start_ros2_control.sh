@@ -168,7 +168,7 @@ echo -e "${CYAN}🎯 Starting controller spawner in background...${NC}"
 
 # Запускаем controller_manager напрямую (ros2_control_node)
 # robot_description будет получен из топика /robot_description (публикует robot_state_publisher)
-# В Humble нет ros2_control_node.launch.py, запускаем ноду напрямую
+# В kilted нет ros2_control_node.launch.py, запускаем ноду напрямую
 exec ros2 run controller_manager ros2_control_node \
     --ros-args \
     --params-file ${CONTROLLER_CONFIG} \

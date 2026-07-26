@@ -1,6 +1,6 @@
 # Nav2 Navigation Stack для Main Pi
 # Автономная навигация с планированием пути и избежанием препятствий
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="Nav2 Navigation Stack"

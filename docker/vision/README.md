@@ -122,12 +122,12 @@ docker-compose down
 
 ```bash
 # Voice assistant
-docker build -t ghcr.io/krikz/rob_box:voice-assistant-humble-latest \
+docker build -t ghcr.io/krikz/rob_box:voice-assistant-kilted-latest \
   -f voice_assistant/Dockerfile \
   ../..
 
 # Загрузка в registry
-docker push ghcr.io/krikz/rob_box:voice-assistant-humble-latest
+docker push ghcr.io/krikz/rob_box:voice-assistant-kilted-latest
 ```
 
 ### Тестирование локально
@@ -141,7 +141,7 @@ docker run -it --rm \
   --device /dev/bus/usb \
   -v $(pwd)/config:/config \
   -v $(pwd)/../../sound_pack:/ws/sound_pack:ro \
-  ghcr.io/krikz/rob_box:voice-assistant-humble-latest \
+  ghcr.io/krikz/rob_box:voice-assistant-kilted-latest \
   /bin/bash
 
 # Внутри контейнера

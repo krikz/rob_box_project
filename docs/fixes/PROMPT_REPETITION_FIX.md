@@ -301,7 +301,7 @@ tail -f /path/to/logs | grep "✅ Инструмент.*выполнен усп�
 
 ## Ссылки
 
-- ROS 2 QoS Documentation: https://docs.ros.org/en/humble/Concepts/About-Quality-of-Service-Settings.html
+- ROS 2 QoS Documentation: https://docs.ros.org/en/kilted/Concepts/About-Quality-of-Service-Settings.html
 - Zenoh DDS Bridge: https://github.com/eclipse-zenoh/zenoh-plugin-dds
 - DeepSeek API: https://platform.deepseek.com/docs
 - Логи в `clog` файле (новые записи после `[1769699005]`)

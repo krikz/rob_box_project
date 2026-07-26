@@ -9,7 +9,7 @@ echo "=========================================="
 echo ""
 
 # Source ROS2 environment
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Source workspace если есть
 if [ -f /ws/install/setup.bash ]; then

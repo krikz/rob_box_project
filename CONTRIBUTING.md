@@ -165,35 +165,35 @@ git push origin develop
 Docker образы тегируются по формату: `{image_name}:{ros_version}-{branch_tag}`
 
 **Примеры:**
-- `rob_box_base:ros2-zenoh-humble-latest` - Production на ROS 2 Humble
-- `rob_box_base:ros2-zenoh-humble-dev` - Development на ROS 2 Humble
+- `rob_box_base:ros2-zenoh-kilted-latest` - Production на ROS 2 kilted
+- `rob_box_base:ros2-zenoh-kilted-dev` - Development на ROS 2 kilted
 - `rob_box_base:ros2-zenoh-jazzy-latest` - Production на ROS 2 Jazzy
-- `rob_box:rtabmap-humble-rc-1.0.0` - Release candidate 1.0.0 на Humble
+- `rob_box:rtabmap-kilted-rc-1.0.0` - Release candidate 1.0.0 на kilted
 
 ### Поддерживаемые версии ROS 2
 
 | Версия ROS 2 | Кодовое имя | Статус | Docker tag prefix |
 |--------------|-------------|--------|-------------------|
-| Humble Hawksbill | humble | ✅ Активная | `humble-` |
+| kilted Hawksbill | kilted | ✅ Активная | `kilted-` |
 | Jazzy Jalisco | jazzy | 🔄 Планируется | `jazzy-` |
 | Kilted Kaiju | kilted | 📋 Будущая | `kilted-` |
 
-**Текущая версия по умолчанию:** `humble`
+**Текущая версия по умолчанию:** `kilted`
 
 ### Автоматическая сборка
 
-| Ветка | Триггер | Docker тег (Humble) | Описание |
+| Ветка | Триггер | Docker тег (kilted) | Описание |
 |-------|---------|---------------------|----------|
-| `main` | Push/Merge | `humble-latest` | Production релиз |
-| `develop` | Push/Merge | `humble-dev` | Разработка |
-| `release/*` | Push | `humble-rc-X.Y.Z` | Release candidate |
-| `hotfix/*` | Push | `humble-hotfix-X.Y.Z` | Срочное исправление |
+| `main` | Push/Merge | `kilted-latest` | Production релиз |
+| `develop` | Push/Merge | `kilted-dev` | Разработка |
+| `release/*` | Push | `kilted-rc-X.Y.Z` | Release candidate |
+| `hotfix/*` | Push | `kilted-hotfix-X.Y.Z` | Срочное исправление |
 | `feature/*` | - | ❌ Не собирается | Экономия ресурсов |
 | `fix/*` | - | ❌ Не собирается | Экономия ресурсов |
 
 ### Переход на новую версию ROS 2
 
-При переходе на новую версию ROS 2 (например, с Humble на Jazzy):
+При переходе на новую версию ROS 2 (например, с kilted на Jazzy):
 
 1. Создать ветку `ros2/jazzy` из `develop`
 2. Обновить Dockerfiles (FROM ros:jazzy-ros-base)
@@ -207,7 +207,7 @@ git checkout develop
 git checkout -b ros2/jazzy
 
 # Обновить все Dockerfiles
-find docker -name "Dockerfile*" -exec sed -i 's/humble/jazzy/g' {} \;
+find docker -name "Dockerfile*" -exec sed -i 's/kilted/jazzy/g' {} \;
 
 # Протестировать сборку
 cd docker/base && docker build -f Dockerfile.ros2-zenoh -t test:jazzy .
@@ -223,17 +223,17 @@ git push origin ros2/jazzy
 ### Использование образов на Raspberry Pi
 
 ```bash
-# Production (Humble, stable)
-docker-compose pull  # Использует humble-latest по умолчанию
+# Production (kilted, stable)
+docker-compose pull  # Использует kilted-latest по умолчанию
 docker-compose up -d
 
-# Development (Humble, testing)
-export IMAGE_TAG=humble-dev
+# Development (kilted, testing)
+export IMAGE_TAG=kilted-dev
 docker-compose pull
 docker-compose up -d
 
-# Specific release candidate (Humble)
-export IMAGE_TAG=humble-rc-1.0.0
+# Specific release candidate (kilted)
+export IMAGE_TAG=kilted-rc-1.0.0
 docker-compose pull
 docker-compose up -d
 

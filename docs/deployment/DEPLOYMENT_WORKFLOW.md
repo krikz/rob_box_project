@@ -581,7 +581,7 @@ Permission denied (publickey,password)
 3. Проверить что контейнеры запустились: `docker ps`
 4. Вручную проверить топики:
    ```bash
-   docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list'
+   docker exec oak-d bash -c 'source /opt/ros/kilted/setup.bash && ros2 topic list'
    ```
 
 ### Проблема: Workflow создает false positive issues

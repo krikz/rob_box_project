@@ -261,7 +261,7 @@ docker run --rm -it \
   -v $(pwd)/config:/config/shared:ro \
   -v $(pwd)/config/nav2:/config/nav2:ro \
   -v $(pwd)/maps:/maps:ro \
-  ghcr.io/krikz/rob_box:nav2-humble-latest \
+  ghcr.io/krikz/rob_box:nav2-kilted-latest \
   /scripts/start_nav2.sh
 ```
 

@@ -18,7 +18,7 @@ flowchart TD
     D -->|push| E["GitHub Actions:<br/>G-Auto-merge to Main.yml<br/><br/>1. Build ALL services<br/>2. Create PR to main if all success"]
     E -->|creates PR| F[Pull Request<br/>develop → main]
     F -->|manual review & merge| G[Main Branch<br/>main]
-    G --> H[Docker Images Published<br/>ghcr.io/krikz/rob_box:*-humble-latest]
+    G --> H[Docker Images Published<br/>ghcr.io/krikz/rob_box:*-kilted-latest]
     
     style A fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
     style B fill:#fff3cd,stroke:#856404,stroke-width:2px
@@ -85,7 +85,7 @@ push:
 
 **Результат:**
 - Создаётся PR: feature ветка → `develop`
-- Docker images: `*-humble-test`
+- Docker images: `*-kilted-test`
 - PR готов для ревью и ручного мерджа
 - Feature ветка НЕ удаляется автоматически
 
@@ -114,9 +114,9 @@ push:
 
 **Результат:**
 - Создаётся PR: `develop` → `main`
-- Docker images: `*-humble-dev` (для тестирования перед релизом)
+- Docker images: `*-kilted-dev` (для тестирования перед релизом)
 - PR готов для ревью и ручного мерджа
-- После мерджа в main будут созданы образы `*-humble-latest`
+- После мерджа в main будут созданы образы `*-kilted-latest`
 
 ### 3. Build Vision Services (GitHub Actions)
 
@@ -154,7 +154,7 @@ push:
 **Файл:** `.github/workflows/G-Build Base Images.yml`
 
 **Образы:**
-- `ros2-zenoh` - ROS 2 Humble + Zenoh middleware
+- `ros2-zenoh` - ROS 2 kilted + Zenoh middleware
 - `rtabmap` - RTAB-Map base image
 - `depthai` - DepthAI для OAK-D камеры
 - `pcl` - Point Cloud Library для лидаров
@@ -185,7 +185,7 @@ push:
 **Файл:** `.github/workflows/L-Build Base Images.yml`
 
 **Образы:**
-- `ros2-zenoh` - ROS 2 Humble + Zenoh middleware
+- `ros2-zenoh` - ROS 2 kilted + Zenoh middleware
 - `rtabmap` - RTAB-Map base image
 - `depthai` - DepthAI для OAK-D камеры
 - `pcl` - Point Cloud Library для лидаров
@@ -342,21 +342,21 @@ ghcr.io/krikz/rob_box:<service>-<distro>-<version>
 ```
 
 **Примеры:**
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-latest`
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-dev`
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-test`
-- `ghcr.io/krikz/rob_box:voice-assistant-humble-abc1234` (SHA)
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-latest`
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-dev`
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-test`
+- `ghcr.io/krikz/rob_box:voice-assistant-kilted-abc1234` (SHA)
 
 ### Tags по веткам
 
 | Ветка | Tag | Описание | Env файл |
 |-------|-----|----------|----------|
-| `main` | `humble-latest` | Продакшн, стабильная версия | `.env.main` |
-| `develop` | `humble-dev` | Development, тестирование | `.env.develop` |
-| `feature/*` | `humble-test` | Feature testing | `.env.feature` |
-| `release/X.X.X` | `humble-rc-X.X.X` | Release candidate | `.env.develop` + override |
-| `hotfix/*` | `humble-hotfix-X.X.X` | Hotfix | `.env.main` + override |
-| SHA commit | `humble-<sha>` | Специфичная версия | - |
+| `main` | `kilted-latest` | Продакшн, стабильная версия | `.env.main` |
+| `develop` | `kilted-dev` | Development, тестирование | `.env.develop` |
+| `feature/*` | `kilted-test` | Feature testing | `.env.feature` |
+| `release/X.X.X` | `kilted-rc-X.X.X` | Release candidate | `.env.develop` + override |
+| `hotfix/*` | `kilted-hotfix-X.X.X` | Hotfix | `.env.main` + override |
+| SHA commit | `kilted-<sha>` | Специфичная версия | - |
 
 ### Автоматическое управление тегами
 
@@ -911,17 +911,17 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: ghcr.io/krikz/rob_box:oak-d-humble-latest
+          tags: ghcr.io/krikz/rob_box:oak-d-kilted-latest
       
       # Дополнительно: копирование в локальный registry
       - name: Copy to local registry
         if: github.ref == 'refs/heads/main'
         run: |
           # Выполнится на build machine через self-hosted runner
-          docker pull ghcr.io/krikz/rob_box:oak-d-humble-latest
-          docker tag ghcr.io/krikz/rob_box:oak-d-humble-latest \
-                     10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
-          docker push 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+          docker pull ghcr.io/krikz/rob_box:oak-d-kilted-latest
+          docker tag ghcr.io/krikz/rob_box:oak-d-kilted-latest \
+                     10.1.1.5:5000/krikz/rob_box:oak-d-kilted-latest
+          docker push 10.1.1.5:5000/krikz/rob_box:oak-d-kilted-latest
 ```
 
 ### Мониторинг Build Machine

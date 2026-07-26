@@ -16,7 +16,7 @@ echo "=================================================="
 echo "  Voice Assistant TEST mode (dialogue_node only)"
 echo "=================================================="
 
-source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
+source /opt/ros/${ROS_DISTRO:-kilted}/setup.bash
 source /ws/install/setup.bash
 
 # Ждём Zenoh router
@@ -50,7 +50,7 @@ while [ $RETRY -lt 20 ]; do
     RETRY=$((RETRY + 1))
 done
 
-# ROS 2 Humble bug: --params-file не применяется для Python-нод
+# ROS 2 kilted bug: --params-file не применяется для Python-нод
 # (declare_parameter дефолт побеждает). Используем -p вместо.
 exec ros2 run rob_box_voice dialogue_node \
     --ros-args \

@@ -12,7 +12,7 @@
 
 ### `.devcontainer/Dockerfile`
 Определяет Docker образ для разработки. Можно:
-- Использовать готовые образы (например `osrf/ros:humble-desktop`)
+- Использовать готовые образы (например `osrf/ros:kilted-desktop`)
 - Добавлять свои инструменты (gdb, valgrind, python packages)
 - Настраивать aliases и bashrc
 
@@ -20,7 +20,7 @@
 Конфигурация VS Code:
 ```json
 {
-  "name": "ROS2 Humble Dev",
+  "name": "ROS2 kilted Dev",
   "build": {
     "dockerfile": "Dockerfile"
   },
@@ -51,18 +51,18 @@
 - Различные установленные пакеты
 
 **Решение DevContainer:**
-- Все работают в одинаковом контейнере с ROS2 Humble
+- Все работают в одинаковом контейнере с ROS2 kilted
 - Одинаковые версии библиотек
 - Новый разработчик: git clone → "Reopen in Container" → готов к работе
 
 ### 2. Параллельная разработка для разных платформ
 **Сценарий:**
-- Main Pi (ARM64, Ubuntu 22.04, ROS2 Humble)
+- Main Pi (ARM64, Ubuntu 22.04, ROS2 kilted)
 - Vision Pi (ARM64, Ubuntu 22.04, специфичные ML библиотеки)
 - Desktop (x86_64, Ubuntu 24.04, ROS2 Jazzy для тестирования)
 
 **С DevContainers:**
-- Открыть проект для Main Pi → контейнер с Humble ARM64 simulation
+- Открыть проект для Main Pi → контейнер с kilted ARM64 simulation
 - Открыть проект для Vision Pi → контейнер с OpenCV, TensorFlow
 - Открыть проект для Desktop → контейнер с Jazzy
 
@@ -70,9 +70,9 @@
 
 ### 3. Интеграция с существующими Docker образами
 rob_box уже использует Docker:
-- `ghcr.io/krikz/rob_box_base:ros2-zenoh-humble`
-- `ghcr.io/krikz/rob_box:micro-ros-agent-humble-latest`
-- `ghcr.io/krikz/rob_box:nav2-humble-latest`
+- `ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted`
+- `ghcr.io/krikz/rob_box:micro-ros-agent-kilted-latest`
+- `ghcr.io/krikz/rob_box:nav2-kilted-latest`
 
 **Можно создать DevContainer на базе этих образов!**
 
@@ -163,7 +163,7 @@ DevContainer может автоматически устанавливать р
 ### Сценарий 2: Разработка навигации (Nav2)
 **DevContainer на базе nav2 образа:**
 ```dockerfile
-FROM ghcr.io/krikz/rob_box:nav2-humble-latest
+FROM ghcr.io/krikz/rob_box:nav2-kilted-latest
 
 # Добавить dev tools
 RUN apt-get update && apt-get install -y gdb python3-pytest
@@ -300,12 +300,12 @@ RUN echo 'alias cb="colcon build --symlink-install"' >> /root/.bashrc && \
 **Решение:** Multi-stage builds
 ```dockerfile
 # Stage 1: Build
-FROM osrf/ros:humble-desktop AS builder
+FROM osrf/ros:kilted-desktop AS builder
 COPY src/ /ws/src/
 RUN colcon build --install-base /opt/rob_box
 
 # Stage 2: Dev
-FROM osrf/ros:humble-desktop
+FROM osrf/ros:kilted-desktop
 COPY --from=builder /opt/rob_box /opt/rob_box
 RUN apt-get install -y dev-tools
 ```
@@ -346,7 +346,7 @@ RUN apt-get install -y dev-tools
 ## Roadmap для внедрения
 
 ### Фаза 1: Простой DevContainer (1-2 часа)
-- [ ] Создать `.devcontainer/Dockerfile` на базе `osrf/ros:humble-desktop`
+- [ ] Создать `.devcontainer/Dockerfile` на базе `osrf/ros:kilted-desktop`
 - [ ] Создать базовый `.devcontainer/devcontainer.json`
 - [ ] Добавить ROS2 расширения VS Code
 - [ ] Протестировать с `rob_box_description`

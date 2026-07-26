@@ -93,7 +93,7 @@ RUN apt-get install -y --reinstall \
 
 **Почему плохо:**
 - `--reinstall` - лишняя работа если уже установлено
-- Базовый образ `nav2-humble-latest` уже содержит большинство пакетов
+- Базовый образ `nav2-kilted-latest` уже содержит большинство пакетов
 - Отдельный RUN для установки → лишний layer
 
 **Решение:**
@@ -244,7 +244,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 **Текущее:**
 ```dockerfile
-FROM ros:humble-ros-base
+FROM ros:kilted-ros-base
 ```
 
 **Почему не критично:**
@@ -253,7 +253,7 @@ FROM ros:humble-ros-base
 - ARM64 образы имеют приемлемый размер
 
 **Можно рассмотреть:**
-- `ros:humble-ros-core` (ещё меньше, без rviz/rqt)
+- `ros:kilted-ros-core` (ещё меньше, без rviz/rqt)
 - Но тогда нужно устанавливать больше зависимостей вручную
 
 **Рекомендация:** Оставить `ros-base` ✅

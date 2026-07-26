@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Rob Box — автономный ровер на базе ROS 2 Humble + Zenoh DDS, построенный на двух Raspberry Pi 5 (Main: навигация/управление, Vision: сенсоры/голос/LED). Платформа служит R&D стендом для отработки технологий автономной мобильной робототехники: SLAM, голосового управления с LLM, 3D восприятия и надёжной локализации в больших помещениях.
+Rob Box — автономный ровер на базе ROS 2 kilted + Zenoh DDS, построенный на двух Raspberry Pi 5 (Main: навигация/управление, Vision: сенсоры/голос/LED). Платформа служит R&D стендом для отработки технологий автономной мобильной робототехники: SLAM, голосового управления с LLM, 3D восприятия и надёжной локализации в больших помещениях.
 
 ## Core Value
 
@@ -61,7 +61,7 @@ LiDAR видит только горизонтальный срез ~15 см о�
 - **Hardware**: Raspberry Pi 5 — ARM64, ограниченная RAM для тяжёлых ML моделей без NPU
 - **Network**: Zenoh DDS, ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST, требует zenoh-router
 - **Docker**: Все сервисы в Docker, network_mode: host, конфиги через volumes (не COPY)
-- **ROS**: Humble, rmw_zenoh_cpp, RTAB-Map + Nav2
+- **ROS**: kilted, rmw_zenoh_cpp, RTAB-Map + Nav2
 - **AI HAT+**: Hardware не закуплено — не планировать зависимости на него в v1
 
 ## Key Decisions

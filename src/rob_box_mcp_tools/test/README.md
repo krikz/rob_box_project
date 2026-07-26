@@ -339,7 +339,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 ```bash
 # Source ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Source workspace
 source install/setup.bash
@@ -352,4 +352,4 @@ pytest -m integration
 
 - [pytest documentation](https://docs.pytest.org/)
 - [pytest-cov documentation](https://pytest-cov.readthedocs.io/)
-- [ROS 2 Testing](https://docs.ros.org/en/humble/Tutorials/Testing.html)
+- [ROS 2 Testing](https://docs.ros.org/en/kilted/Tutorials/Testing.html)

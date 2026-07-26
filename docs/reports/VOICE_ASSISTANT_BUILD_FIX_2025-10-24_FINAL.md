@@ -20,7 +20,7 @@
 
 ### Симптомы
 ```
-CMake Error at /opt/ros/humble/share/rcutils/cmake/ament_cmake_export_libraries-extras.cmake:48 (message):
+CMake Error at /opt/ros/kilted/share/rcutils/cmake/ament_cmake_export_libraries-extras.cmake:48 (message):
   Package 'rcutils' exports the library 'rcutils' which couldn't be found
 
 Failed   <<< rob_box_perception_msgs [17.9s, exited with code 1]
@@ -32,7 +32,7 @@ Failed   <<< rob_box_perception_msgs [17.9s, exited with code 1]
 - **Build Platform:** linux/amd64 (GitHub Actions runner)
 - **Target Platform:** linux/arm64 (Raspberry Pi 5)
 - **Build Method:** Docker BuildKit с QEMU emulation
-- **Base Image:** `ghcr.io/krikz/rob_box:nav2-humble-latest`
+- **Base Image:** `ghcr.io/krikz/rob_box:nav2-kilted-latest`
 
 ---
 
@@ -44,7 +44,7 @@ Failed   <<< rob_box_perception_msgs [17.9s, exited with code 1]
 **Проблема:** CMake не может найти библиотеку `rcutils` из-за сломанных CMake config файлов в базовом образе
 
 **Почему происходит:**
-1. Базовый образ `nav2-humble-latest` собирался для ARM64 через cross-compilation
+1. Базовый образ `nav2-kilted-latest` собирался для ARM64 через cross-compilation
 2. При cross-compilation CMake config файлы могут содержать некорректные пути
 3. `rob_box_perception_msgs` использует `find_package(rosidl_default_generators)` → зависит от `rcutils`
 4. CMake находит config файл, но не может найти саму библиотеку
@@ -245,7 +245,7 @@ RUN apt-get install -y --reinstall packages  # ❌ Cache уже удалён!
 3. **Не добавлять CMAKE_LIBRARY_PATH:**
    ```dockerfile
    # ❌ НЕПРАВИЛЬНО - ломает архитектурно-специфичные пути
-   colcon build --cmake-args -DCMAKE_LIBRARY_PATH=/opt/ros/humble/lib
+   colcon build --cmake-args -DCMAKE_LIBRARY_PATH=/opt/ros/kilted/lib
    ```
 
 ---
@@ -297,7 +297,7 @@ RUN apt-get install -y --reinstall packages  # ❌ Cache уже удалён!
 
 **Docker образ:**
 ```
-ghcr.io/krikz/rob_box:voice-assistant-humble-latest
+ghcr.io/krikz/rob_box:voice-assistant-kilted-latest
 ```
 
 **Размер образа:** ~2.8 GB  

@@ -1,6 +1,6 @@
 # Nav2 Navigation Parameters для rob_box
 # Main Pi - автономная навигация
-# На основе стандартного nav2_params.yaml из ROS2 Humble
+# На основе стандартного nav2_params.yaml из ROS2 kilted
 
 bt_navigator:
   ros__parameters:

@@ -25,7 +25,7 @@ jobs:
   # Unit Tests
   # ============================================================================
   unit-tests:
-    name: Unit Tests (ROS2 Humble)
+    name: Unit Tests (ROS2 kilted)
     runs-on: ubuntu-22.04
 
     steps:
@@ -34,10 +34,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up ROS2 Humble
+      - name: Set up ROS2 kilted
         uses: ros-tooling/setup-ros@v0.7
         with:
-          required-ros-distributions: humble
+          required-ros-distributions: kilted
 
       - name: Install Python dependencies
         run: |
@@ -50,13 +50,13 @@ jobs:
           sudo apt-get install -y \
             python3-pytest \
             python3-pytest-cov \
-            ros-humble-ament-cmake-pytest \
-            ros-humble-launch-testing \
-            ros-humble-launch-testing-ament-cmake
+            ros-kilted-ament-cmake-pytest \
+            ros-kilted-launch-testing \
+            ros-kilted-launch-testing-ament-cmake
 
       - name: Build workspace
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/kilted/setup.bash
 
           # Create workspace in runner's working directory
           mkdir -p ${{ github.workspace }}/test_ws/src
@@ -70,7 +70,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/kilted/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           cd ${{ github.workspace }}/test_ws
@@ -84,7 +84,7 @@ jobs:
       - name: Display test results
         if: always()
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/kilted/setup.bash
           cd ${{ github.workspace }}/test_ws
           colcon test-result --all --verbose
 
@@ -126,14 +126,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up ROS2 Humble
+      - name: Set up ROS2 kilted
         uses: ros-tooling/setup-ros@v0.7
         with:
-          required-ros-distributions: humble
+          required-ros-distributions: kilted
 
       - name: Build workspace
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/kilted/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           cp -r src/* ${{ github.workspace }}/test_ws/src/
           cd ${{ github.workspace }}/test_ws
@@ -141,7 +141,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/kilted/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           # Run tests marked as integration

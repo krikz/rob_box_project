@@ -168,7 +168,7 @@ async def photo_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 def _depth_compressed_to_jpeg(data: bytes) -> bytes:
     """Convert compressedDepth bytes to a colorized JPEG.
 
-    compressedDepth format (ROS 2 Humble): 12-byte header
+    compressedDepth format (ROS 2 kilted): 12-byte header
     (int32 format + float depthQuantA + float depthQuantB) + PNG (16-bit grayscale).
     Result: colorized JPEG (blue=near, red=far).
     """

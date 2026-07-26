@@ -362,7 +362,7 @@ Logs:
 [INFO] [context_aggregator]: 📡 Node Monitor: отслеживаем 9 нод
 (no error logs about node failure)
 
-Environment: RPi4, ROS2 Humble, commit f37ffdc
+Environment: RPi4, ROS2 kilted, commit f37ffdc
 ```
 
 ---

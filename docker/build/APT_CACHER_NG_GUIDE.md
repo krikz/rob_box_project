@@ -117,10 +117,10 @@ MaxDlSpeed: 0
 ### Repository Mappings
 
 ```ini
-# Ubuntu 22.04 Jammy (ROS 2 Humble base)
+# Ubuntu 22.04 Jammy (ROS 2 kilted base)
 Remap-uburep: file:ubuntu_mirrors /ubuntu ; file:backends_ubuntu
 
-# ROS 2 Humble packages
+# ROS 2 kilted packages
 Remap-rosrep: http://packages.ros.org/ros2/ubuntu
 
 # Ubuntu Ports for ARM64
@@ -202,8 +202,8 @@ RUN if [ -n "$APT_PROXY" ]; then \
 
 # Install packages
 RUN apt-get update && apt-get install -y \
-    ros-humble-navigation2 \
-    ros-humble-nav2-msgs \
+    ros-kilted-navigation2 \
+    ros-kilted-nav2-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Clean up proxy config

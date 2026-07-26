@@ -215,9 +215,9 @@ Built images are tagged based on the branch:
 
 | Branch | Tag | Example |
 |--------|-----|---------|
-| `main` | `latest` | `localhost:5000/krikz/rob_box:voice-assistant-humble-latest` |
-| `develop` | `dev` | `localhost:5000/krikz/rob_box:voice-assistant-humble-dev` |
-| Other | `local` | `localhost:5000/krikz/rob_box:voice-assistant-humble-local` |
+| `main` | `latest` | `localhost:5000/krikz/rob_box:voice-assistant-kilted-latest` |
+| `develop` | `dev` | `localhost:5000/krikz/rob_box:voice-assistant-kilted-dev` |
+| Other | `local` | `localhost:5000/krikz/rob_box:voice-assistant-kilted-local` |
 
 ## Troubleshooting
 
@@ -282,7 +282,7 @@ After a successful build, you can verify the image:
 docker images | grep rob_box
 
 # Check image size and creation date
-docker images localhost:5000/krikz/rob_box:voice-assistant-humble-dev
+docker images localhost:5000/krikz/rob_box:voice-assistant-kilted-dev
 ```
 
 ## Related Documentation

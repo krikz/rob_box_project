@@ -27,10 +27,10 @@ RUN apt-get update && \
     apt-get install -y \
         # PCL (Point Cloud Library) для обработки облаков точек
         libpcl-dev \
-        ros-humble-pcl-conversions \
-        ros-humble-pcl-ros \
+        ros-kilted-pcl-conversions \
+        ros-kilted-pcl-ros \
         # Diagnostic updater для мониторинга состояния устройств
-        ros-humble-diagnostic-updater \
+        ros-kilted-diagnostic-updater \
         # libpcap для захвата сетевых пакетов (Ethernet лидары)
         libpcap-dev \
         # Boost libraries (требуются для многих ROS пакетов и драйверов лидаров)

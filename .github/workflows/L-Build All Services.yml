@@ -22,7 +22,7 @@ permissions:
 env:
   LOCAL_REGISTRY: localhost:5000
   LOCAL_PREFIX: localhost:5000/krikz/rob_box
-  ROS_DISTRO: humble
+  ROS_DISTRO: kilted
 
 jobs:
   # Сборка базовых образов (если нужно)

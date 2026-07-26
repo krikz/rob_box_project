@@ -12,10 +12,10 @@ echo ""
 
 # Tags to delete
 TAGS_TO_DELETE=(
-    "robot-state-publisher-humble-dev"
-    "robot-state-publisher-humble-latest"
-    "robot-state-publisher-humble-local"
-    "robot_state_publisher-humble-dev"
+    "robot-state-publisher-kilted-dev"
+    "robot-state-publisher-kilted-latest"
+    "robot-state-publisher-kilted-local"
+    "robot_state_publisher-kilted-dev"
 )
 
 for tag in "${TAGS_TO_DELETE[@]}"; do

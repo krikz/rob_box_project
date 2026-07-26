@@ -2,7 +2,7 @@
 
 IMAGE_PREFIX ?= ghcr.io/krikz/rob_box
 IMAGE_TAG    ?= latest
-ROS_DISTRO   ?= humble
+ROS_DISTRO   ?= kilted
 PLATFORM     ?= linux/amd64
 
 COMPOSE = docker compose -f docker-compose.test.yml

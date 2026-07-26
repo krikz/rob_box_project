@@ -139,7 +139,7 @@ ros2 interface list | grep robot_sensor_hub
 ## Hardware
 
 See **robot_sensor_hub** firmware repository:
-- https://github.com/krikz/robot_sensor_hub (branch: humble)
+- https://github.com/krikz/robot_sensor_hub (branch: kilted)
 
 **Components:**
 - ESP32-C3

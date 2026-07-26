@@ -8,11 +8,11 @@
 
 ### Ошибка сборки
 ```
-CMake Error at /opt/ros/humble/share/rcutils/cmake/ament_cmake_export_libraries-extras.cmake:48 (message):
+CMake Error at /opt/ros/kilted/share/rcutils/cmake/ament_cmake_export_libraries-extras.cmake:48 (message):
   Package 'rcutils' exports the library 'rcutils' which couldn't be found
 Call Stack (most recent call first):
-  /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake:41 (include)
-  /opt/ros/humble/share/rosidl_runtime_c/cmake/ament_cmake_export_dependencies-extras.cmake:21 (find_package)
+  /opt/ros/kilted/share/rcutils/cmake/rcutilsConfig.cmake:41 (include)
+  /opt/ros/kilted/share/rosidl_runtime_c/cmake/ament_cmake_export_dependencies-extras.cmake:21 (find_package)
   ...
   CMakeLists.txt:10 (find_package)
 
@@ -23,7 +23,7 @@ Failed   <<< rob_box_perception_msgs [17.9s, exited with code 1]
 - **Build Platform:** linux/amd64 (GitHub Actions runner)
 - **Target Platform:** linux/arm64 (Raspberry Pi)
 - **Build Method:** Docker BuildKit with QEMU emulation
-- **Base Image:** `ghcr.io/krikz/rob_box:nav2-humble-latest` (contains pre-installed ROS packages)
+- **Base Image:** `ghcr.io/krikz/rob_box:nav2-kilted-latest` (contains pre-installed ROS packages)
 
 ## 🔍 Корневая причина
 
@@ -34,15 +34,15 @@ Failed   <<< rob_box_perception_msgs [17.9s, exited with code 1]
 Предыдущая попытка исправления использовала:
 ```dockerfile
 RUN apt-get update && apt-get install -y \
-    ros-humble-rcutils \
+    ros-kilted-rcutils \
     ... \
     && apt-get install -y --reinstall \
-    ros-humble-rcutils \
+    ros-kilted-rcutils \
     ...
 ```
 
 **Проблема с этим подходом:**
-1. Базовый образ (`nav2-humble-latest`) уже содержит установленные пакеты
+1. Базовый образ (`nav2-kilted-latest`) уже содержит установленные пакеты
 2. Эти пакеты были установлены в базовом слое (parent layer) Docker
 3. `apt-get install --reinstall` в дочернем слое **не переписывает** файлы из родительского слоя
 4. CMake config файлы остаются со сломанными путями
@@ -123,9 +123,9 @@ RUN apt-get update && \
 
 Если возможно, используйте базовый образ без предустановленных ROS пакетов:
 ```dockerfile
-FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
+FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest
 # Вместо:
-# FROM ghcr.io/krikz/rob_box:nav2-humble-latest
+# FROM ghcr.io/krikz/rob_box:nav2-kilted-latest
 ```
 
 Это избежит проблем с конфликтующими пакетами из базового образа.

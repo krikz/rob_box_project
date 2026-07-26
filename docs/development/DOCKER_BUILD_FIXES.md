@@ -30,10 +30,10 @@ COPY src/robot_sensor_hub_msg /ws/src/robot_sensor_hub_msg
 ### 2. ❌ `docker/main/nav2/Dockerfile` - Устаревший пакет
 **Ошибка:**
 ```
-E: Unable to locate package ros-humble-nav2-recoveries
+E: Unable to locate package ros-kilted-nav2-recoveries
 ```
 
-**Причина:** Пакет `ros-humble-nav2-recoveries` был переименован в `ros-humble-nav2-behaviors` в ROS 2 Humble.
+**Причина:** Пакет `ros-kilted-nav2-recoveries` был переименован в `ros-kilted-nav2-behaviors` в ROS 2 kilted.
 
 **Исправление:**
 ```dockerfile
@@ -76,7 +76,7 @@ CMake Error: Package 'builtin_interfaces' exports the library
 ```
 
 **Причина:** 
-- Базовый образ `ros:humble-ros-base` не содержит библиотеки для генерации ROS 2 messages
+- Базовый образ `ros:kilted-ros-base` не содержит библиотеки для генерации ROS 2 messages
 - rosdep пытается установить необязательные зависимости (GUI tools)
 
 **Исправление:**
@@ -104,15 +104,15 @@ RUN rosdep install --from-paths src --ignore-src -r -y \
 ### `docker/base/Dockerfile.ros2-zenoh` - БЕЗ изменений (минимальный)
 ```dockerfile
 RUN apt-get update && apt-get install -y \
-    ros-humble-rmw-zenoh-cpp \  # Только Zenoh middleware
+    ros-kilted-rmw-zenoh-cpp \  # Только Zenoh middleware
     git wget curl python3-pip    # Только базовые утилиты
 ```
 
 **НЕ добавлены** в базовый образ (правильно!):
-- ❌ `ros-humble-serial-driver` - нужен только в micro_ros_agent
-- ❌ `ros-humble-joint-state-publisher*` - только для разработки
-- ❌ `ros-humble-rviz2` - только для GUI визуализации
-- ❌ `ros-humble-xacro` - добавляется где нужно
+- ❌ `ros-kilted-serial-driver` - нужен только в micro_ros_agent
+- ❌ `ros-kilted-joint-state-publisher*` - только для разработки
+- ❌ `ros-kilted-rviz2` - только для GUI визуализации
+- ❌ `ros-kilted-xacro` - добавляется где нужно
 
 ---
 
@@ -172,10 +172,10 @@ RUN apt-get update && apt-get install -y \
 1. **Commit & Push** всех исправлений в `develop`
 2. **Дождаться** успешной сборки в GitHub Actions
 3. **Проверить** что все образы собрались:
-   - `ghcr.io/krikz/rob_box:micro-ros-agent-humble-dev`
-   - `ghcr.io/krikz/rob_box:nav2-humble-dev`
-   - `ghcr.io/krikz/rob_box:led-matrix-humble-dev`
-   - `ghcr.io/krikz/rob_box:vesc-nexus-humble-dev`
+   - `ghcr.io/krikz/rob_box:micro-ros-agent-kilted-dev`
+   - `ghcr.io/krikz/rob_box:nav2-kilted-dev`
+   - `ghcr.io/krikz/rob_box:led-matrix-kilted-dev`
+   - `ghcr.io/krikz/rob_box:vesc-nexus-kilted-dev`
 4. **При ошибках** - логи автоматически соберутся в артефактах
 
 ---

@@ -363,17 +363,17 @@ docker compose restart zenoh-router
 
 ### Текущая установка
 
-Rob Box использует **rmw_zenoh_cpp** из ROS 2 Humble:
+Rob Box использует **rmw_zenoh_cpp** из ROS 2 kilted:
 
 ```bash
 # Пакет
-ros-humble-rmw-zenoh-cpp
+ros-kilted-rmw-zenoh-cpp
 
-# Зависит от версии релиза Humble
+# Зависит от версии релиза kilted
 # Скорее всего: Zenoh 0.10.x или 0.11.x
 ```
 
-### Версия Zenoh в ROS 2 Humble
+### Версия Zenoh в ROS 2 kilted
 
 | Период | Zenoh версия | Статус проблемы |
 |--------|--------------|-----------------|
@@ -395,7 +395,7 @@ ros-humble-rmw-zenoh-cpp
 
 ```bash
 # На Raspberry Pi
-apt-cache policy ros-humble-rmw-zenoh-cpp
+apt-cache policy ros-kilted-rmw-zenoh-cpp
 
 # Показать все пакеты zenoh
 dpkg -l | grep zenoh

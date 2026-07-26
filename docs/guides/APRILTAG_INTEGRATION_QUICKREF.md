@@ -21,7 +21,7 @@ AprilTag detection is now **integrated into the OAK-D container** instead of run
 - ✏️ Updated `oak-d:` comments
 
 ### OAK-D Container
-- ➕ Added `ros-humble-apriltag-ros` package
+- ➕ Added `ros-kilted-apriltag-ros` package
 - ➕ New launch file: `oakd_with_apriltag.launch.py`
 - ✏️ Startup script uses new launch file
 
@@ -91,7 +91,7 @@ After deployment, you should see:
 ```bash
 $ docker ps
 CONTAINER ID   IMAGE                                    STATUS
-abc123def456   ghcr.io/krikz/rob_box:oak-d-humble-...  Up 2 minutes
+abc123def456   ghcr.io/krikz/rob_box:oak-d-kilted-...  Up 2 minutes
 
 $ docker exec oak-d ros2 node list
 /camera

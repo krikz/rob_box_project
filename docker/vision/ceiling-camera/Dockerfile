@@ -5,13 +5,13 @@ FROM ${BASE_IMAGE}
 
 # Установка USB Camera пакета и image transport для сжатия
 RUN apt-get update && apt-get install -y \
-    ros-humble-usb-cam \
-    ros-humble-image-transport-plugins \
-    ros-humble-cv-bridge \
+    ros-kilted-usb-cam \
+    ros-kilted-image-transport-plugins \
+    ros-kilted-cv-bridge \
     && rm -rf /var/lib/apt/lists/*
 
 # Версия пакета для отслеживания
-RUN echo $(dpkg -s ros-humble-usb-cam | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
+RUN echo $(dpkg -s ros-kilted-usb-cam | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
 
 # Создаем директорию для camera_info файлов (требуется для usb_cam)
 # Фактический файл калибровки будет монтирован через volume

@@ -10,7 +10,7 @@
 #   - 5× панели 5×5 (main_display 5×25)
 #   - Общая цепочка: 381 LED (256 + 125)
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=kilted
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 ARG ROS2LEDS_SHA=unknown
 

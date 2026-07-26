@@ -1,6 +1,6 @@
-# DevContainer для rob_box_project ROS2 Humble Development
+# DevContainer для rob_box_project ROS2 kilted Development
 
-FROM osrf/ros:humble-desktop-full
+FROM osrf/ros:kilted-desktop-full
 
 # Аргументы для неинтерактивной установки
 ARG DEBIAN_FRONTEND=noninteractive
@@ -19,13 +19,13 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     # ROS2 packages
-    ros-humble-xacro \
-    ros-humble-joint-state-publisher-gui \
-    ros-humble-robot-state-publisher \
-    ros-humble-rviz2 \
-    ros-humble-gazebo-ros-pkgs \
+    ros-kilted-xacro \
+    ros-kilted-joint-state-publisher-gui \
+    ros-kilted-robot-state-publisher \
+    ros-kilted-rviz2 \
+    ros-kilted-gazebo-ros-pkgs \
     # micro-ROS
-    ros-humble-micro-ros-agent \
+    ros-kilted-micro-ros-agent \
     # Debugging tools
     gdb \
     valgrind \
@@ -52,7 +52,7 @@ RUN rosdep update
 WORKDIR /workspace
 
 # Автоматический source setup.bash при входе в терминал
-RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+RUN echo "source /opt/ros/kilted/setup.bash" >> /root/.bashrc && \
     echo "if [ -f /workspace/install/setup.bash ]; then source /workspace/install/setup.bash; fi" >> /root/.bashrc && \
     echo "alias cb='colcon build --symlink-install'" >> /root/.bashrc && \
     echo "alias cbp='colcon build --symlink-install --packages-select'" >> /root/.bashrc && \

@@ -437,7 +437,7 @@ pytest --cov=rob_box_voice --cov-fail-under=80
 | `test-summary` | ubuntu-latest | After unit-tests |
 
 **Unit tests job steps:**
-1. Setup ROS 2 Humble (`ros-tooling/setup-ros@v0.7`)
+1. Setup ROS 2 kilted (`ros-tooling/setup-ros@v0.7`)
 2. Install `pytest pytest-cov pytest-mock`
 3. `colcon build --packages-up-to rob_box_voice rob_box_animations rob_box_perception`
 4. `colcon test --packages-select rob_box_voice rob_box_animations rob_box_perception --return-code-on-test-failure`

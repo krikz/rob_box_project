@@ -19,7 +19,7 @@ Procedures for testing motor response, calibrating speed parameters, and verifyi
 
 ```bash
 # Source ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Zenoh env (adjust paths)
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp

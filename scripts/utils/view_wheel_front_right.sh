@@ -24,7 +24,7 @@ sed -i 's|"mode": "peer",|"mode": "peer",\n  "namespace": "robots/'$ROBOT_ID'",|
 export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"
 
 # Source ROS
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 source /home/ros2/rob_box_project/install/setup.bash
 
 # Launch Python viewer with frame_id filter

@@ -27,7 +27,7 @@
 ### [SOFTWARE.md](SOFTWARE.md)
 **Программные компоненты**
 
-- ROS 2 Humble пакеты
+- ROS 2 kilted пакеты
 - Навигация (Nav2, RTABMap)
 - Восприятие (OAK-D pipeline, AprilTag)
 - Управление (Twist Mux, VESC контроллер)

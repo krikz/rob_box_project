@@ -340,7 +340,7 @@ docker compose restart lslidar
 
 - GitHub: https://github.com/krikz/rob_box_project
 - Docker Registry: https://ghcr.io/krikz/rob_box
-- ROS 2 Humble Docs: https://docs.ros.org/en/humble/
+- ROS 2 kilted Docs: https://docs.ros.org/en/kilted/
 - Zenoh: https://zenoh.io/
 - RTAB-Map: http://introlab.github.io/rtabmap/
 

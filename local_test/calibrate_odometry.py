@@ -21,7 +21,7 @@
     python3 local_test/calibrate_odometry.py --linear --speed 0.1 --distance 0.5
 
 Перед запуском:
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/kilted/setup.bash
     export RMW_IMPLEMENTATION=rmw_zenoh_cpp
     export ZENOH_SESSION_CONFIG_URI=$(pwd)/local_test/zenoh_local_session.json5
     export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST

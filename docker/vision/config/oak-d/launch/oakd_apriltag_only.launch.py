@@ -1,7 +1,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
-# OAK-D launch for depthai_ros_driver v2 (v2.12.2-humble, arm64+amd64)
+# OAK-D launch for depthai_ros_driver v2 (v2.12.2-kilted, arm64+amd64)
 # Publishes:
 #   /camera/rgb/image_raw       — colour image
 #   /camera/rgb/camera_info     — colour camera_info

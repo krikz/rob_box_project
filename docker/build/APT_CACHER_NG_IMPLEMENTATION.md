@@ -151,8 +151,8 @@ Remap-ubports: http://ports.ubuntu.com/ubuntu-ports
 | **MaxDlSpeed** | 0 | Без ограничений |
 
 **Поддерживаемые репозитории:**
-- Ubuntu 22.04 Jammy (ROS 2 Humble)
-- ROS 2 Humble (packages.ros.org)
+- Ubuntu 22.04 Jammy (ROS 2 kilted)
+- ROS 2 kilted (packages.ros.org)
 - Ubuntu Ports (ARM64)
 - Debian (базовые пакеты)
 

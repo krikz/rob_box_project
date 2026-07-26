@@ -15,7 +15,7 @@ source scripts/set-docker-tags.sh
 
 # После выполнения будут установлены переменные окружения:
 # - IMAGE_TAG (latest, dev, test, rc-X.Y.Z)
-# - ROS_DISTRO (humble)
+# - ROS_DISTRO (kilted)
 # - SERVICE_IMAGE_PREFIX (ghcr.io/krikz/rob_box)
 ```
 
@@ -54,12 +54,12 @@ Image tag: dev
 ✅ Docker теги настроены успешно!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Будут использоваться образы с тегом: -humble-dev
+Будут использоваться образы с тегом: -kilted-dev
 
 Примеры:
-  - ghcr.io/krikz/rob_box:voice-assistant-humble-dev
-  - ghcr.io/krikz/rob_box:oak-d-humble-dev
-  - ghcr.io/krikz/rob_box:rtabmap-humble-dev
+  - ghcr.io/krikz/rob_box:voice-assistant-kilted-dev
+  - ghcr.io/krikz/rob_box:oak-d-kilted-dev
+  - ghcr.io/krikz/rob_box:rtabmap-kilted-dev
 ```
 
 ---
@@ -112,8 +112,8 @@ Image tag: dev
 # Тег образа (по умолчанию: local)
 export IMAGE_TAG=local
 
-# ROS дистрибутив (по умолчанию: humble)
-export ROS_DISTRO=humble
+# ROS дистрибутив (по умолчанию: kilted)
+export ROS_DISTRO=kilted
 
 # Платформа (по умолчанию: linux/arm64)
 export PLATFORM=linux/arm64
@@ -128,18 +128,18 @@ export PLATFORM=linux/arm64
 Ветка: develop
 Платформа: linux/arm64
 Тег: local
-ROS дистрибутив: humble
+ROS дистрибутив: kilted
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📦 Сборка сервиса: voice-assistant
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Контекст: /path/to/rob_box_project
 Dockerfile: /path/to/docker/vision/voice_assistant/Dockerfile
-Образ: ghcr.io/krikz/rob_box:voice-assistant-humble-local
+Образ: ghcr.io/krikz/rob_box:voice-assistant-kilted-local
 
 [build output...]
 
-✅ Успешно собран: ghcr.io/krikz/rob_box:voice-assistant-humble-local
+✅ Успешно собран: ghcr.io/krikz/rob_box:voice-assistant-kilted-local
 ```
 
 **Производительность:**
@@ -187,7 +187,7 @@ git commit -m "feat: implement awesome feature"
 git push origin feature/my-awesome-feature
 
 # 7. GitHub Actions автоматически:
-#    - Соберёт образ с тегом -humble-test
+#    - Соберёт образ с тегом -kilted-test
 #    - Запустит тесты
 #    - Мерджнет в develop если успешно
 ```
@@ -300,7 +300,7 @@ docker-compose config | grep image:
 **Симптомы:**
 ```
 docker-compose pull
-ERROR: pull access denied for ghcr.io/krikz/rob_box:voice-assistant-humble-wrong
+ERROR: pull access denied for ghcr.io/krikz/rob_box:voice-assistant-kilted-wrong
 ```
 
 **Решение:**

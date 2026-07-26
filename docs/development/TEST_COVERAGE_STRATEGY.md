@@ -380,7 +380,7 @@ class Processor:
 
 - **Python unittest**: [docs.python.org/3/library/unittest](https://docs.python.org/3/library/unittest.html)
 - **pytest-cov**: [pytest-cov.readthedocs.io](https://pytest-cov.readthedocs.io/)
-- **ROS 2 Testing**: [docs.ros.org/en/humble/Tutorials/Testing](https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/Testing-Main.html)
+- **ROS 2 Testing**: [docs.ros.org/en/kilted/Tutorials/Testing](https://docs.ros.org/en/kilted/Tutorials/Intermediate/Testing/Testing-Main.html)
 - **Mock patterns**: [docs.python.org/3/library/unittest.mock](https://docs.python.org/3/library/unittest.mock.html)
 
 ---

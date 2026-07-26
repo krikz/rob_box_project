@@ -1,7 +1,7 @@
 # twist_mux для мультиплексирования команд скорости
 # Приоритизирует команды от разных источников (joystick > nav2)
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=kilted
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
 FROM ${BASE_IMAGE}

@@ -239,7 +239,7 @@ BUILD_MACHINE_IP=10.1.1.5 ./configure_raspberry_pi.sh
 services:
   oak-d:
     # Вместо ghcr.io используем локальный registry
-    image: 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+    image: 10.1.1.5:5000/krikz/rob_box:oak-d-kilted-latest
     # Или автоматически пробовать оба варианта (см. ниже)
 ```
 
@@ -259,7 +259,7 @@ RUN if [ -n "$APT_PROXY" ]; then \
     fi
 
 RUN apt-get update && apt-get install -y \
-    ros-humble-nav2-msgs \
+    ros-kilted-nav2-msgs \
     && rm -rf /var/lib/apt/lists/*
 ```
 
@@ -294,9 +294,9 @@ jobs:
       - name: Push to local registry
         run: |
           # Пушим в локальный registry
-          docker tag ghcr.io/krikz/rob_box:rtabmap-humble-latest \
-                     ${{ secrets.BUILD_MACHINE_IP }}:5000/krikz/rob_box:rtabmap-humble-latest
-          docker push ${{ secrets.BUILD_MACHINE_IP }}:5000/krikz/rob_box:rtabmap-humble-latest
+          docker tag ghcr.io/krikz/rob_box:rtabmap-kilted-latest \
+                     ${{ secrets.BUILD_MACHINE_IP }}:5000/krikz/rob_box:rtabmap-kilted-latest
+          docker push ${{ secrets.BUILD_MACHINE_IP }}:5000/krikz/rob_box:rtabmap-kilted-latest
 ```
 
 ### Проверка работы runner

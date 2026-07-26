@@ -6,7 +6,7 @@
 
 **Architecture:** Keep container images and service behavior unchanged, and focus only on runtime file placement plus compose/doc alignment. The only functional path change in this pass is moving `rtabmap` startup from the shared scripts root into `scripts/rtabmap/`, while preserving explicit documented exceptions for the `rob_box_description` source bind and shared monitoring config.
 
-**Tech Stack:** Docker Compose, bash startup scripts, ROS 2 Humble, Markdown documentation
+**Tech Stack:** Docker Compose, bash startup scripts, ROS 2 kilted, Markdown documentation
 
 ---
 

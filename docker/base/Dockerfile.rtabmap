@@ -1,6 +1,6 @@
 # Базовый образ для RTAB-Map SLAM
 # Наследуется от официального образа RTAB-Map и добавляет Zenoh
-FROM introlab3it/rtabmap_ros:humble-latest
+FROM introlab3it/rtabmap_ros:kilted-latest
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""
@@ -24,10 +24,10 @@ RUN if [ -n "$APT_PROXY" ]; then \
 # Установка плагинов для сжатия изображений и Zenoh
 RUN apt-get update && \
     apt-get install -y \
-        ros-humble-image-transport-plugins \
-        ros-humble-compressed-image-transport \
-        ros-humble-theora-image-transport \
-        ros-humble-rmw-zenoh-cpp \
+        ros-kilted-image-transport-plugins \
+        ros-kilted-compressed-image-transport \
+        ros-kilted-theora-image-transport \
+        ros-kilted-rmw-zenoh-cpp \
         && rm -rf /var/lib/apt/lists/*
 
 # Удаляем APT прокси конфигурацию после установки пакетов
@@ -37,7 +37,7 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
     ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     RUST_LOG=zenoh=info \
-    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib \
+    LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib/aarch64-linux-gnu:/opt/ros/kilted/lib \
     QT_QPA_PLATFORM=offscreen
 
 # Метаданные образа

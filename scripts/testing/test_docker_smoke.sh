@@ -87,7 +87,7 @@ test_ros2_nodes() {
     
     test_start "ROS2 nodes in: $container_name"
     
-    if docker exec "$container_name" bash -c "source /opt/ros/humble/setup.bash && ros2 node list" 2>/dev/null | grep -q "$expected_node"; then
+    if docker exec "$container_name" bash -c "source /opt/ros/kilted/setup.bash && ros2 node list" 2>/dev/null | grep -q "$expected_node"; then
         test_pass "ROS2 nodes: $container_name"
     else
         test_fail "ROS2 nodes: $container_name" "Expected node '$expected_node' not found"
@@ -117,7 +117,7 @@ test_zenoh_router() {
     echo "📡 Testing Zenoh Router"
     echo "----------------------"
     
-    local image="ghcr.io/krikz/rob_box:zenoh-router-humble-latest"
+    local image="ghcr.io/krikz/rob_box:zenoh-router-kilted-latest"
     local container="test-zenoh-router"
     
     test_image_exists "$image"
@@ -137,7 +137,7 @@ test_oak_d() {
     echo "📹 Testing OAK-D Camera"
     echo "----------------------"
     
-    local image="ghcr.io/krikz/rob_box:oak-d-humble-latest"
+    local image="ghcr.io/krikz/rob_box:oak-d-kilted-latest"
     
     test_image_exists "$image"
     # Skip container start (requires hardware)
@@ -150,7 +150,7 @@ test_rtabmap() {
     echo "🗺️  Testing RTAB-Map"
     echo "-------------------"
     
-    local image="ghcr.io/krikz/rob_box:rtabmap-humble-latest"
+    local image="ghcr.io/krikz/rob_box:rtabmap-kilted-latest"
     
     test_image_exists "$image"
     # Skip container start (requires camera/lidar topics)
@@ -163,7 +163,7 @@ test_voice_assistant() {
     echo "🎤 Testing Voice Assistant"
     echo "-------------------------"
     
-    local image="ghcr.io/krikz/rob_box:voice-assistant-humble-test"
+    local image="ghcr.io/krikz/rob_box:voice-assistant-kilted-test"
     
     test_image_exists "$image"
     # Skip container start (requires API keys + hardware)
@@ -176,7 +176,7 @@ test_animation_player() {
     echo "🎨 Testing Animation Player"
     echo "--------------------------"
     
-    local image="ghcr.io/krikz/rob_box:animation-player-humble-latest"
+    local image="ghcr.io/krikz/rob_box:animation-player-kilted-latest"
     
     test_image_exists "$image"
     # Skip container start (requires LED hardware)

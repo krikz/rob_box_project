@@ -1,7 +1,7 @@
 # Dockerfile для VESC Nexus - ROS2 драйвер для управления VESC через CAN
 # Базируется на ros2-zenoh образе для интеграции с Zenoh middleware
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=kilted
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 ARG VESC_NEXUS_SHA=unknown
 

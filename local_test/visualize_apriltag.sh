@@ -5,7 +5,7 @@ echo "🎨 === AprilTag Визуализация ==="
 echo ""
 
 # Source ROS2
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 
 # Настройка Zenoh middleware
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
@@ -17,7 +17,7 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export ZENOH_SESSION_CONFIG_URI="$SCRIPT_DIR/zenoh_client_config.json5"
 
-echo "✓ ROS2 Humble sourced"
+echo "✓ ROS2 kilted sourced"
 echo "✓ RMW: rmw_zenoh_cpp"
 echo "✓ Подключение к Vision Pi"
 echo ""

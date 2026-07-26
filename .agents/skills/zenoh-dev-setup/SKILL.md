@@ -20,8 +20,8 @@ Dev Machine (10.1.1.249, wlp1s0 WiFi)
 ## Prerequisites
 
 ```bash
-# Install ROS 2 Humble + Zenoh middleware
-sudo apt install ros-humble-ros-base ros-humble-ros2cli ros-humble-rmw-zenoh-cpp
+# Install ROS 2 kilted + Zenoh middleware
+sudo apt install ros-kilted-ros-base ros-kilted-ros2cli ros-kilted-rmw-zenoh-cpp
 ```
 
 ## Quick Start (3 steps)
@@ -30,7 +30,7 @@ sudo apt install ros-humble-ros-base ros-humble-ros2cli ros-humble-rmw-zenoh-cpp
 
 ```bash
 cd ~/rob_box_project
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 ZENOH_ROUTER_CONFIG_URI=$(pwd)/local_test/zenoh_local_router.json5 \
   ros2 run rmw_zenoh_cpp rmw_zenohd
 ```
@@ -38,7 +38,7 @@ ZENOH_ROUTER_CONFIG_URI=$(pwd)/local_test/zenoh_local_router.json5 \
 ### Step 2: Set environment (every new terminal)
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/kilted/setup.bash
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ZENOH_SESSION_CONFIG_URI=$(pwd)/local_test/zenoh_local_session.json5
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST

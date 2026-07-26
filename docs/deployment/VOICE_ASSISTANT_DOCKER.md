@@ -8,9 +8,9 @@
 
 ### 1. Docker Image (Dockerfile)
 - **Файл:** `docker/vision/voice_assistant/Dockerfile`
-- **Base:** `ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest`
+- **Base:** `ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest`
 - **Компоненты:**
-  - ROS2 Humble + Zenoh middleware
+  - ROS2 kilted + Zenoh middleware
   - Audio libraries (PyAudio, PortAudio, ALSA)
   - ReSpeaker drivers (usb_4_mic_array, pixel_ring)
   - **STT (Offline-First):**
@@ -31,8 +31,8 @@
 - **Добавлен job:** `build-voice-assistant`
 - **Платформа:** `linux/arm64` (Raspberry Pi 5)
 - **Триггеры:**
-  - Push в `develop` → тег `humble-dev`
-  - Push в `main` → тег `humble-latest`
+  - Push в `develop` → тег `kilted-dev`
+  - Push в `main` → тег `kilted-latest`
   - Manual dispatch
   - Изменения в `docker/vision/**`
 
@@ -40,11 +40,11 @@
 - **Файл:** `.github/workflows/auto-merge-feature-to-develop.yml`
 - **Логика:**
   - Feature branch push → Build changed services → Auto-merge to develop → Delete feature branch
-  - Теги: `*-humble-dev` (после мерджа в develop)
+  - Теги: `*-kilted-dev` (после мерджа в develop)
 - **Файл:** `.github/workflows/auto-merge-to-main.yml`
 - **Логика:**
   - Develop push → Build ALL services → Auto-merge to main → Create release tag
-  - Теги: `*-humble-latest` (production)
+  - Теги: `*-kilted-latest` (production)
 - **Документация:** `docs/CI_CD_PIPELINE.md`
 
 ### 3. Docker Compose Integration
@@ -100,7 +100,7 @@
 ### 8. Build Scripts
 - **Файл:** `docker/vision/scripts/build_voice_assistant.sh`
 - **Назначение:** Локальное тестирование (не для продакшн)
-- **Образ:** `rob_box:voice-assistant-humble-test`
+- **Образ:** `rob_box:voice-assistant-kilted-test`
 
 ## Следующие шаги
 
@@ -113,7 +113,7 @@ git push origin feature/voice-assistant
 
 # GitHub Actions автоматически:
 # 1. Соберёт voice-assistant образ (linux/arm64)
-# 2. Опубликует в ghcr.io с тегом humble-dev
+# 2. Опубликует в ghcr.io с тегом kilted-dev
 # 3. Мерджнет feature/voice-assistant → develop
 # 4. Удалит feature ветку
 ```
@@ -122,7 +122,7 @@ git push origin feature/voice-assistant
 После успешного мерджа feature → develop:
 ```bash
 # Образ будет доступен как:
-# ghcr.io/krikz/rob_box:voice-assistant-humble-dev
+# ghcr.io/krikz/rob_box:voice-assistant-kilted-dev
 
 # Автоматически запустится auto-merge-to-main workflow
 # (если все сервисы собрались успешно)
@@ -173,7 +173,7 @@ git push origin develop
 # 1. Соберёт ВСЕ сервисы
 # 2. Мерджнет develop → main (если всё успешно)
 # 3. Создаст release tag
-# 4. Опубликует образы с тегом humble-latest
+# 4. Опубликует образы с тегом kilted-latest
 
 # На Vision Pi (production)
 git checkout main

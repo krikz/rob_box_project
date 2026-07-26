@@ -13,11 +13,11 @@
 
 ### Ошибка сборки
 ```
-CMake Error at /opt/ros/humble/share/rcutils/cmake/ament_cmake_export_libraries-extras.cmake:48 (message):
+CMake Error at /opt/ros/kilted/share/rcutils/cmake/ament_cmake_export_libraries-extras.cmake:48 (message):
   Package 'rcutils' exports the library 'rcutils' which couldn't be found
 Call Stack (most recent call first):
-  /opt/ros/humble/share/rcutils/cmake/rcutilsConfig.cmake:41 (include)
-  /opt/ros/humble/share/rosidl_runtime_c/cmake/ament_cmake_export_dependencies-extras.cmake:21 (find_package)
+  /opt/ros/kilted/share/rcutils/cmake/rcutilsConfig.cmake:41 (include)
+  /opt/ros/kilted/share/rosidl_runtime_c/cmake/ament_cmake_export_dependencies-extras.cmake:21 (find_package)
   ...
   CMakeLists.txt:10 (find_package)
 
@@ -42,14 +42,14 @@ colcon build \
 **Проблема:** Аргументы `-DCMAKE_LIBRARY_PATH` и `-DCMAKE_FIND_ROOT_PATH` **мешают** нормальной работе CMake package config механизма.
 
 ### Как это работает в ROS 2:
-1. При выполнении `. /opt/ros/humble/setup.sh` устанавливаются все необходимые переменные окружения
+1. При выполнении `. /opt/ros/kilted/setup.sh` устанавливаются все необходимые переменные окружения
 2. CMake использует `find_package()` для поиска пакетов через их Config файлы
 3. Config файлы (например, `rcutilsConfig.cmake`) знают где искать библиотеки
 4. **Добавление** `-DCMAKE_LIBRARY_PATH` и `-DCMAKE_FIND_ROOT_PATH` **переопределяет** эту логику
 
 ### Почему это ломает сборку:
 - CMake начинает искать библиотеки только в указанных путях
-- Архитектурно-специфичные пути (например, `/opt/ros/humble/lib/aarch64-linux-gnu`) игнорируются
+- Архитектурно-специфичные пути (например, `/opt/ros/kilted/lib/aarch64-linux-gnu`) игнорируются
 - Библиотеки существуют, но CMake их не находит из-за переопределённых путей
 
 ## ✅ Решение
@@ -119,7 +119,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 ```diff
 -# ОТЛАДКА: Проверка состояния ПЕРЕД colcon build
 -RUN echo "=== ПЕРЕД COLCON BUILD: проверка builtin_interfaces ===" && \
--    ls -lh /opt/ros/humble/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && \
+-    ls -lh /opt/ros/kilted/lib/libbuiltin_interfaces*.so* 2>/dev/null | head -3 && \
 -    ... (ещё 10 строк debug)
 -
 -# FIX: Добавляем CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH
