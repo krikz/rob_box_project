@@ -44,6 +44,7 @@ from std_msgs.msg import Bool, String
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
 SCENARIOS_DIR = os.getenv("SCENARIOS_DIR", "/scenarios")
+SCENARIO_PATTERN = os.getenv("SCENARIO_PATTERN", "*.yaml")
 RESULTS_FILE = os.getenv("RESULTS_FILE", "/results/test_results.json")
 DEFAULT_SCENARIO_TIMEOUT = int(os.getenv("DEFAULT_SCENARIO_TIMEOUT", "90"))
 
@@ -733,8 +734,8 @@ def main():
 
     # Загружаем сценарии
     scenarios_path = Path(SCENARIOS_DIR)
-    scenario_files = sorted(scenarios_path.glob("*.yaml"))
-    print(f"\n[runner] Found {len(scenario_files)} scenario file(s)")
+    scenario_files = sorted(scenarios_path.glob(SCENARIO_PATTERN))
+    print(f"\n[runner] Found {len(scenario_files)} scenario file(s) matching '{SCENARIO_PATTERN}'")
 
     if not scenario_files:
         print(f"[runner] ERROR: No scenario files in {SCENARIOS_DIR} — aborting")
