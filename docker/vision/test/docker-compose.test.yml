@@ -116,6 +116,7 @@ services:
       RESULTS_FILE: /results/test_results.json
       OVERALL_TIMEOUT: "120"
     volumes:
+      - ./config:/test-config:ro
       - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
     command: ["python3", "/runner/runner.py"]
