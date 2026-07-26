@@ -31,7 +31,7 @@ scenarios:
     steps:
       # Запускаем первый диалог — НЕ ждём ответа, нода уходит в DIALOGUE
       # Минимум 3 слова: dialogue_node фильтрует фразы < 3 слов (word_count < 3)
-      - inject_stt_no_wait: "расскажи анекдот про журавлика"
+      - inject_stt_no_wait: "робок расскажи анекдот про журавлика"
 
       # Ждём пока робот действительно начнёт говорить (speak_text вызван).
       # Симулирует реальный сценарий: пользователь прерывает ПОСЛЕ начала ответа.
@@ -45,7 +45,7 @@ scenarios:
       - inject_vad: false
 
       # Прерывающий запрос — очищает трекинг, ждёт ответ нового диалога
-      - inject_stt: "о чём мы с тобой говорили в прошлый раз"
+      - inject_stt: "робок о чём мы с тобой говорили в прошлый раз"
         timeout_s: 45
         assert_response_not_empty: true
         assert_tool_called: "memory_context"
@@ -63,7 +63,7 @@ scenarios:
       Второй запрос (статус батареи) обрабатывается как новый диалог.
     steps:
       # Запускаем анекдот без ожидания ответа
-      - inject_stt_no_wait: "расскажи смешной анекдот"
+      - inject_stt_no_wait: "робок расскажи смешной анекдот"
 
       # Ждём пока робот начнёт говорить (speak_text вызван)
       - wait_for_speaking: true
@@ -75,7 +75,7 @@ scenarios:
       - inject_vad: false
 
       # Второй запрос — другая тема, должна открыть новый диалог
-      - inject_stt: "какой у тебя заряд батареи"
+      - inject_stt: "робок какой у тебя заряд батареи"
         timeout_s: 45
         assert_response_not_empty: true
 
@@ -93,7 +93,7 @@ scenarios:
       Нода должна обработать новый диалог без зависания. Возврат в idle.
     steps:
       # Запрос который спровоцирует speak_text + listen_for_response
-      - inject_stt: "загадай мне загадку и подожди мой ответ"
+      - inject_stt: "робок загадай мне загадку и подожди мой ответ"
         timeout_s: 50
         assert_response_not_empty: true
 
@@ -108,6 +108,6 @@ scenarios:
       # Короткий завершающий запрос — гарантирует 1 speak_text + IDLE (без listen).
       # Минимум 3 слова (word_count filter). timeout_s увеличен: нода могла
       # застрять в dialogue после listen_for_response barge-in.
-      - inject_stt: "как тебя зовут"
+      - inject_stt: "робок как тебя зовут"
         timeout_s: 45
         assert_response_not_empty: true
