@@ -19,8 +19,6 @@ name: "G: Harness Tests"
 on:
   push:
     branches:
-      - develop
-      - main
       - feature/**
     paths:
       - 'src/rob_box_harness/**'
@@ -57,8 +55,8 @@ jobs:
   unit-tests:
     name: Harness unit tests (no network)
     runs-on: ubuntu-22.04
-    # Если есть harness в дереве — тестируем. Если нет — fail-fast с понятным
-    # сообщением (в PR до merge ветки с harness).
+    # Harness package only exists on feature branches — NEVER on develop/main.
+    # This workflow only triggers on feature/** (see trigger above).
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -69,7 +67,7 @@ jobs:
         run: |
           if [ ! -d "src/rob_box_harness" ]; then
             echo "::error::src/rob_box_harness/ is missing"
-            echo "::error::Merge wt/t_35cfe938 (harness framework) first"
+            echo "::error::This workflow only runs on feature/** branches"
             exit 1
           fi
 
