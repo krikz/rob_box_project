@@ -36,7 +36,8 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy && \
     rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем переменные окружения для Zenoh по умолчанию
-ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+ENV ROS_DISTRO=kilted \
+    RMW_IMPLEMENTATION=rmw_zenoh_cpp \
     ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     RUST_LOG=zenoh=info \
     LD_LIBRARY_PATH=/opt/ros/kilted/opt/zenoh_cpp_vendor/lib:/opt/ros/kilted/lib/aarch64-linux-gnu:/opt/ros/kilted/lib
