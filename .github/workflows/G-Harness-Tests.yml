@@ -25,10 +25,6 @@ on:
       - 'pytest.ini'
       - 'conftest.py'
       - '.github/workflows/G-Harness-Tests.yml'
-  pull_request:
-    branches:
-      - develop
-      - main
   workflow_dispatch:
     inputs:
       mode:
