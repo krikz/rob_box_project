@@ -717,17 +717,24 @@ def main():
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
-    # Ждём Zenoh/ROS2 готовности (dialogue_node должен быть виден)
+    # Ждём Zenoh/ROS2 готовности (dialogue_node должен быть виден).
+    # На холодном старте voice-test может занять до 90s (Zenoh + DeepSeek proxy health).
     print(f"\n[runner] Waiting for dialogue_node to appear...")
-    wait_dl = time.time() + 60
+    wait_dl = time.time() + 120
     while time.time() < wait_dl:
-        names = node.get_node_names()
+        try:
+            names = node.get_node_names()
+        except Exception as exc:
+            # rcl context may temporarily be unavailable during Zenoh reconnection
+            print(f"[runner] get_node_names() failed: {exc} — retrying in 2s...")
+            time.sleep(2.0)
+            continue
         if "dialogue_node" in names:
             print(f"[runner] dialogue_node found!")
             break
         time.sleep(1.0)
     else:
-        print("[runner] WARNING: dialogue_node not found, continuing anyway")
+        print("[runner] WARNING: dialogue_node not found after 120s, continuing anyway")
 
     # Небольшой прогрев — даём dialogue_node получить MCP tools list
     time.sleep(3.0)
