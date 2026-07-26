@@ -139,7 +139,7 @@ def test_default_constants_match_upstream() -> None:
     assert DEFAULT_BASE_URL == "https://api.minimax.io"
     assert DEFAULT_MODEL == "speech-02-hd"
     assert DEFAULT_VOICE == "male-qn-qingse"
-    assert DEFAULT_TIMEOUT == 30.0
+    assert DEFAULT_TIMEOUT == httpx.Timeout(connect=5, read=20, write=10, pool=5)
 
 
 def test_env_var_names_are_canonical() -> None:
