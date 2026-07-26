@@ -9,7 +9,7 @@ scenarios:
     timeout_s: 15
     description: "Пустая строка — нода не падает, нет ответа"
     steps:
-      - inject_stt: "робок "
+      - inject_stt: "робок"
         timeout_s: 3
         assert_no_response: true
 
