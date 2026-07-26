@@ -3,7 +3,7 @@
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-assistant-kilted-latest
 FROM ${BASE_IMAGE}
 
-RUN pip install --no-cache-dir requests pyyaml
+RUN pip install --break-system-packages --no-cache-dir requests pyyaml
 
 COPY runner.py /runner/runner.py
 # Scenarios are mounted as volume at runtime (not baked into image)

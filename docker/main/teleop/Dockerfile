@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest
+FROM ${BASE_IMAGE}
 
 # Install joy node from ROS 2 packages and Serial dependencies
 RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \

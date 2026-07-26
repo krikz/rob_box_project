@@ -36,9 +36,7 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     # Утилиты
     ros-${ROS_DISTRO}-nav2-util \
     ros-${ROS_DISTRO}-nav2-msgs \
-    # Behavior Tree плагины
-    ros-${ROS_DISTRO}-behaviortree-cpp-v3 \
-    # Дополнительные зависимости
+    # Behavior Tree (в Kilted — транзитивная зависимость nav2, отдельный пакет убран)
     ros-${ROS_DISTRO}-navigation2 \
     && rm -rf /var/lib/apt/lists/*
 

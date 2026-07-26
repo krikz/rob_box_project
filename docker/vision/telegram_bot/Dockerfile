@@ -20,7 +20,7 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --break-system-packages --no-cache-dir \
     python-telegram-bot[job-queue]==21.* \
     aiohttp>=3.9 \
     Pillow>=10.0 \

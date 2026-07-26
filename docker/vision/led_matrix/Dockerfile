@@ -37,8 +37,8 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
 # Установка Python библиотек для LED
 # pi5neo - библиотека для управления WS2812B через SPI на Raspberry Pi 5
 # Обновляем pip перед установкой для поддержки современных флагов
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir \
+RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip && \
+    pip3 install --break-system-packages --no-cache-dir \
     pi5neo \
     spidev \
     numpy

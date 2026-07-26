@@ -40,7 +40,7 @@ COPY docker/main/perception/requirements.txt /tmp/perception_requirements.txt
 
 # 4. Устанавливаем Python зависимости (кэшируется отдельно от кода)
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip3 install --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
+    pip3 install --break-system-packages --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
     rm /tmp/perception_requirements.txt
 
 # 5. Копируем ресурсы (prompts) - изменяются иногда
