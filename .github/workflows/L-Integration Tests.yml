@@ -17,15 +17,9 @@ on:
     workflows: ["L: Build Vision Pi Services"]
     types: [completed]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "Docker image tag (latest / dev / test / local)"
-        required: false
-        default: ""
-      test_branch:
-        description: "Ветка с тестовыми файлами (feature/agent, develop, и т.д.)"
-        required: false
-        default: "feature/agent"
+    # Ветка выбирается в UI комбобоксе при запуске → github.ref_name.
+    # Тег образа auto-derived из имени ветки (main→latest, develop→dev,
+    # feature/*→test, иначе local). Никаких лишних inputs не нужно.
 
 permissions:
   contents: read
@@ -48,17 +42,25 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          # Тестовые файлы живут на feature/agent (или другой ветке из input)
-          ref: ${{ github.event.inputs.test_branch || 'feature/agent' }}
+          # Берём ту ветку, которую выбрали в UI (workflow_dispatch)
+          # или ветку из завершённого workflow_run
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           clean: true
 
-      # ── Очистка старых контейнеров от предыдущих запусков ─────────────────
+      # ── Очистка старых контейнеров и артефактов ────────────────────────────
       - name: Cleanup previous test containers
         working-directory: ${{ env.TEST_DIR }}
         # НЕ --volumes: сохраняем voice-test_ollama-models (кэш модели ~350MB)
-        run: docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
+        run: |
+          docker compose -f docker-compose.test.yml down --remove-orphans 2>/dev/null || true
+          # Docker создаёт пустую директорию при монтировании несуществующего
+          # файла — чистим только если это директория (артефакт), не трогаем файл
+          if [ -d config/zenoh_router_test.json5 ]; then
+            rm -rf config/zenoh_router_test.json5
+            echo "Removed stale zenoh config directory artifact"
+          fi
 
       # ── Проверка что нужные файлы есть после checkout ─────────────────────
       - name: Verify test files exist
@@ -78,32 +80,42 @@ jobs:
           echo "=== First 3 lines of entrypoint.sh ==="
           head -3 ${{ env.TEST_DIR }}/ollama/entrypoint.sh || true
           echo "=== Docker version ==="
-          docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Engine.Version}}'
+          docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Engine.Version}}' 2>/dev/null || echo "Docker daemon not accessible (self-hosted runner may need docker start)"
 
       # ── Определить тег ─────────────────────────────────────────────────────
       - name: Determine image tag
         id: tag
         env:
-          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
           WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
-          if [ -n "$INPUT_IMAGE_TAG" ]; then
-            TAG="$INPUT_IMAGE_TAG"
-          else
-            BRANCH="$WORKFLOW_BRANCH"
-            case "$BRANCH" in
-              main)                 TAG="latest" ;;
-              develop)              TAG="dev" ;;
-              feature/*|copilot/*) TAG="test" ;;
-              *)                    TAG="local" ;;
-            esac
-          fi
+          BRANCH="$WORKFLOW_BRANCH"
+          case "$BRANCH" in
+            main)                 TAG="latest" ;;
+            develop)              TAG="dev" ;;
+            feature/*|copilot/*) TAG="test" ;;
+            *)                    TAG="local" ;;
+          esac
           FULL_TAG="${{ env.ROS_DISTRO }}-${TAG}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "full_tag=${FULL_TAG}" >> "$GITHUB_OUTPUT"
           echo "Image tag: voice-assistant-${FULL_TAG}"
 
       # ── Подготовка ─────────────────────────────────────────────────────────
+      - name: Prepare test config (copy to host-accessible path)
+        run: |
+          # Docker daemon на хосте не видит пути внутри runner-контейнера.
+          # Копируем в /tmp/ — един для хоста и контейнера.
+          # Важно: rm -rf перед cp, иначе при повторном запуске файлы
+          # уходят в /tmp/test_config/config/ вместо /tmp/test_config/.
+          rm -rf /tmp/test_config /tmp/test_scenarios /tmp/test_results
+          cp -r ${{ env.TEST_DIR }}/config /tmp/test_config
+          cp -r ${{ env.TEST_DIR }}/scenario_runner/scenarios /tmp/test_scenarios
+          mkdir -p /tmp/test_results
+          echo "Config copied:"
+          cat /tmp/test_config/zenoh_router_test.json5
+          echo "Scenarios:"
+          ls -la /tmp/test_scenarios/
+
       - name: Prepare results directory
         run: mkdir -p ${{ env.TEST_DIR }}/results
 
@@ -119,6 +131,11 @@ jobs:
           ROS_DISTRO: ${{ env.ROS_DISTRO }}
           PLATFORM: linux/arm64
         run: |
+          # Монтируем конфиг/сценарии/результаты из /tmp/ — этот путь виден Docker daemon на хосте
+          # (./config внутри runner-контейнера → /runner/_work/... — daemon не видит)
+          sed -i 's|\./config|/tmp/test_config|g' docker-compose.test.yml
+          sed -i 's|\./scenario_runner/scenarios|/tmp/test_scenarios|g' docker-compose.test.yml
+          sed -i 's|\./results|/tmp/test_results|g' docker-compose.test.yml
           docker compose -f docker-compose.test.yml up \
             --build \
             --abort-on-container-exit \
@@ -126,17 +143,22 @@ jobs:
             --timeout 300
         continue-on-error: true
 
-      # ── Логи при падении ───────────────────────────────────────────────────
-      - name: Show logs on failure
+      # ── Логи при падении — все контейнеры ──────────────────────────────
+      - name: Show all container logs on failure
         if: steps.run_tests.outcome != 'success'
         working-directory: ${{ env.TEST_DIR }}
         run: |
-          echo "=== scenario-runner logs ==="
-          docker compose -f docker-compose.test.yml logs scenario-runner || true
-          echo "=== voice-test logs (tail 50) ==="
-          docker compose -f docker-compose.test.yml logs voice-test --tail 50 || true
-          echo "=== ollama logs (tail 20) ==="
-          docker compose -f docker-compose.test.yml logs ollama --tail 20 || true
+          echo "=============================================="
+          echo "  INTEGRATION TEST FAILURE — ALL CONTAINER LOGS"
+          echo "=============================================="
+          for svc in zenoh-router-test ollama voice-test scenario-runner; do
+            echo ""
+            echo "=== $svc (last 50 lines) ==="
+            docker compose -f docker-compose.test.yml logs "$svc" --tail 50 2>/dev/null || echo "(no logs for $svc)"
+          done
+          echo ""
+          echo "=== Container status at failure ==="
+          docker compose -f docker-compose.test.yml ps 2>/dev/null || true
 
       # ── Остановка ─────────────────────────────────────────────────────────
       - name: Stop containers
@@ -147,12 +169,11 @@ jobs:
       # ── Вывод результатов ─────────────────────────────────────────────────
       - name: Display results
         if: always()
-        working-directory: ${{ env.TEST_DIR }}
         run: |
-          if [ -f results/test_results.json ]; then
+          if [ -f /tmp/test_results/test_results.json ]; then
             python3 -c "
           import json
-          d = json.load(open('results/test_results.json'))
+          d = json.load(open('/tmp/test_results/test_results.json'))
           print(f\"Results: {d['passed']}/{d['total']} passed ({d['failed']} failed)\")
           for s in d['scenarios']:
               icon = '✓' if s['passed'] else '✗'
@@ -165,15 +186,14 @@ jobs:
       # ── GitHub Step Summary ────────────────────────────────────────────────
       - name: Write job summary
         if: always()
-        working-directory: ${{ env.TEST_DIR }}
         run: |
           echo "## 🤖 Integration Test Results (local runner)" >> "$GITHUB_STEP_SUMMARY"
           echo "**Image:** \`voice-assistant-${{ steps.tag.outputs.full_tag }}\` from \`${{ env.LOCAL_REGISTRY }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f results/test_results.json ]; then
+          if [ -f /tmp/test_results/test_results.json ]; then
             python3 -c "
           import json, os
-          d = json.load(open('results/test_results.json'))
+          d = json.load(open('/tmp/test_results/test_results.json'))
           summary = os.environ['GITHUB_STEP_SUMMARY']
           with open(summary, 'a') as f:
               f.write(f\"**{d['passed']}/{d['total']} passed**\n\n\")
@@ -192,7 +212,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: integration-test-results-local-${{ steps.tag.outputs.full_tag }}
-          path: ${{ env.TEST_DIR }}/results/test_results.json
+          path: /tmp/test_results/test_results.json
           retention-days: 30
           if-no-files-found: warn
 

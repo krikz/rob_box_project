@@ -20,10 +20,10 @@ source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
 source /ws/install/setup.bash
 
 # Ждём Zenoh router
-echo "Ожидание Zenoh router (localhost:7447)..."
+echo "Ожидание Zenoh router (localhost:17447)..."
 RETRY=0
 while [ $RETRY -lt 30 ]; do
-    if nc -z localhost 7447 2>/dev/null; then
+    if nc -z localhost 17447 2>/dev/null; then
         echo "✓ Zenoh router доступен"
         break
     fi
@@ -33,11 +33,34 @@ done
 
 echo ""
 echo "Запуск dialogue_node (test config)..."
-echo "  LLM:       DeepSeek API (deepseek-chat)"
-echo "  MCP tools: disabled"
+echo "  LLM:       DeepSeek Chat (через LiteLLM proxy localhost:4000)"
+echo "  MCP tools: enabled"
 echo "  Wake words: empty (прямой диалог)"
 echo ""
 
+# Ждём DeepSeek proxy (на билд-машине)
+echo "Ожидание DeepSeek proxy (localhost:4000)..."
+RETRY=0
+while [ $RETRY -lt 20 ]; do
+    if wget -qO- http://localhost:4000/health 2>/dev/null | grep -q "healthy"; then
+        echo "✓ DeepSeek proxy доступен"
+        break
+    fi
+    sleep 3
+    RETRY=$((RETRY + 1))
+done
+
+# ROS 2 Humble bug: --params-file не применяется для Python-нод
+# (declare_parameter дефолт побеждает). Используем -p вместо.
 exec ros2 run rob_box_voice dialogue_node \
     --ros-args \
-    --params-file "${VOICE_TEST_CONFIG:-/test-config/voice_assistant_test.yaml}"
+    -p provider:=deepseek \
+    -p api_key:="not-needed" \
+    -p base_url:="http://localhost:4000/v1" \
+    -p model:="deepseek-v4-flash" \
+    -p temperature:=0.5 \
+    -p max_tokens:=150 \
+    -p streaming:=true \
+    -p enable_fallback:=false \
+    -p enable_mcp_tools:=true \
+    -p silence_words:="стоп,тихо,замолчи"
