@@ -75,6 +75,7 @@ services:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: voice-test
     network_mode: host
+    mem_limit: 512m
     environment:
       <<: *ros-env
       ROS_DISTRO: humble
@@ -110,6 +111,7 @@ services:
         BASE_IMAGE: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${IMAGE_TAG:-latest}
     container_name: scenario-runner-test
     network_mode: host
+    mem_limit: 256m
     environment:
       <<: *ros-env
       PYTHONUNBUFFERED: "1"
