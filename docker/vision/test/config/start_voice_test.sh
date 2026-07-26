@@ -33,19 +33,31 @@ done
 
 echo ""
 echo "Запуск dialogue_node (test config)..."
-echo "  LLM:       Ollama (qwen2.5:0.5b)"
-echo "  MCP tools: disabled"
+echo "  LLM:       DeepSeek Chat (через LiteLLM proxy localhost:4000)"
+echo "  MCP tools: enabled"
 echo "  Wake words: empty (прямой диалог)"
 echo ""
+
+# Ждём DeepSeek proxy (на билд-машине)
+echo "Ожидание DeepSeek proxy (localhost:4000)..."
+RETRY=0
+while [ $RETRY -lt 20 ]; do
+    if wget -qO- http://localhost:4000/health 2>/dev/null | grep -q "healthy"; then
+        echo "✓ DeepSeek proxy доступен"
+        break
+    fi
+    sleep 3
+    RETRY=$((RETRY + 1))
+done
 
 # ROS 2 Humble bug: --params-file не применяется для Python-нод
 # (declare_parameter дефолт побеждает). Используем -p вместо.
 exec ros2 run rob_box_voice dialogue_node \
     --ros-args \
     -p provider:=deepseek \
-    -p api_key:="ollama" \
-    -p base_url:="http://localhost:11435/v1" \
-    -p model:="qwen2.5:0.5b" \
+    -p api_key:="not-needed" \
+    -p base_url:="http://localhost:4000/v1" \
+    -p model:="deepseek-chat" \
     -p temperature:=0.5 \
     -p max_tokens:=150 \
     -p streaming:=true \

@@ -2,10 +2,10 @@
 # Локальная инфраструктура для сборки Docker образов в локальной сети
 #
 # Компоненты:
+# - DeepSeek Proxy (LiteLLM) — OpenAI API для интеграционных тестов
 # - GitHub Actions self-hosted runner - выполняет workflow локально
 # - Docker Registry - локальное хранилище Docker образов
 # - apt-cacher-ng - кэш APT пакетов для ускорения сборки
-# - Portainer - опциональный веб-интерфейс для управления контейнерами
 
 services:
   # Docker Registry - локальное хранилище образов
@@ -46,6 +46,24 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  # DeepSeek Proxy (LiteLLM) — OpenAI-совместимый API для тестов
+  # Проксирует запросы к DeepSeek API, подставляя ключ из .env.secrets.
+  # Тестовые контейнеры обращаются на localhost:4000/v1 без знания ключа.
+  deepseek-proxy:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: build-deepseek-proxy
+    network_mode: host
+    env_file:
+      - .env.secrets
+    command: --model deepseek/deepseek-chat --port 4000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   # GitHub Actions Self-Hosted Runners (множественные для параллельной работы)
   # Регистрация: ./scripts/register_runner.sh

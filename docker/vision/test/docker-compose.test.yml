@@ -44,9 +44,10 @@ services:
       retries: 20
       start_period: 5s
 
-  # ─── Ollama — реальный локальный LLM (OpenAI-compatible API) ──────────────
-  # Первый запуск вытягивает модель. Последующие используют volume.
+  # ─── Ollama — локальный LLM (опционально, через profiles) ──────────
+  # Запуск с Ollama: docker compose --profile ollama up
   ollama:
+    profiles: [ollama]
     build:
       context: ./ollama
       dockerfile: Dockerfile
@@ -90,8 +91,8 @@ services:
     depends_on:
       zenoh-router-test:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      # DeepSeek proxy работает на билд-машине (docker/build/docker-compose.yaml)
+      # на localhost:4000. start_voice_test.sh ждёт его готовности.
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null 2>&1 || exit 1"]
       interval: 5s
@@ -123,6 +124,7 @@ services:
     depends_on:
       voice-test:
         condition: service_healthy
+      # DeepSeek proxy на билд-машине localhost:4000
 
 volumes:
   # Кэш моделей Ollama — сохраняется между запусками тестов
