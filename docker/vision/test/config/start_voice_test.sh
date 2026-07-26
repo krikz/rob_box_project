@@ -57,7 +57,7 @@ exec ros2 run rob_box_voice dialogue_node \
     -p provider:=deepseek \
     -p api_key:="not-needed" \
     -p base_url:="http://localhost:4000/v1" \
-    -p model:="deepseek-chat" \
+    -p model:="deepseek-v4-flash" \
     -p temperature:=0.5 \
     -p max_tokens:=150 \
     -p streaming:=true \
