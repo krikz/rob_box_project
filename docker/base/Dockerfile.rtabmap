@@ -1,6 +1,7 @@
 # Базовый образ для RTAB-Map SLAM
 # Наследуется от официального образа RTAB-Map и добавляет Zenoh
-FROM introlab3it/rtabmap_ros:kilted-latest
+# kilted-latest = amd64 only; kilted = multi-arch (amd64 + arm64)
+FROM introlab3it/rtabmap_ros:kilted
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""

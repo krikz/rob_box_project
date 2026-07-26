@@ -22,7 +22,8 @@ RUN if [ -n "$APT_PROXY" ]; then \
     fi
 
 # Установка Zenoh middleware и минимальных зависимостей
-RUN apt-get update && \
+# Если APT прокси (apt-cacher-ng) выдаёт GPG errors для Noble — фоллбэк на прямую связь
+RUN (apt-get update && \
     apt-get install -y \
         # Zenoh middleware для ROS 2
         ros-kilted-rmw-zenoh-cpp \
@@ -32,7 +33,17 @@ RUN apt-get update && \
         curl \
         python3-pip \
         # Очистка кэша для уменьшения размера образа
-        && rm -rf /var/lib/apt/lists/*
+        && rm -rf /var/lib/apt/lists/*) || \
+    (echo "⚠️  APT proxy failed (likely Noble GPG cache issue), retrying without proxy..."; \
+     rm -f /etc/apt/apt.conf.d/02proxy; \
+     apt-get update && \
+     apt-get install -y \
+        ros-kilted-rmw-zenoh-cpp \
+        git \
+        wget \
+        curl \
+        python3-pip && \
+     rm -rf /var/lib/apt/lists/*)
 
 # Удаляем APT прокси конфигурацию после установки пакетов
 RUN rm -f /etc/apt/apt.conf.d/02proxy

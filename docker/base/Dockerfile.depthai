@@ -1,8 +1,8 @@
 # Базовый образ для DepthAI (OAK-D camera)
 # Наследуется от официального образа Luxonis и добавляет Zenoh
-# ВАЖНО: kilted-latest стал amd64-only с 27.02.2026 (перешёл на v3 API)
-# Пинируем v2.12.2-kilted — последняя v2 версия с поддержкой arm64 + amd64
-FROM luxonis/depthai-ros:v2.12.2-kilted
+# depthai-ros kilted: НЕТ multi-arch тега, только раздельные amd64/arm64
+# kilted-latest = amd64 only; kilted-arm64-latest = arm64 only (v3 API)
+FROM luxonis/depthai-ros:kilted-arm64-latest
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""
