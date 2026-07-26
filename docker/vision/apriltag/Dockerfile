@@ -4,7 +4,7 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
 # Установка AprilTag пакетов
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     ros-kilted-apriltag-ros \
     ros-kilted-image-transport-plugins \
     ros-kilted-cv-bridge \

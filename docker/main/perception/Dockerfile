@@ -5,7 +5,7 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
 # Установка Python зависимостей и ROS 2 development packages для perception
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     python3-pip \
     # ROS 2 development packages needed for building message packages
     ros-kilted-rosidl-default-generators \

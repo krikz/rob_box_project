@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.description="XRCE-DDS Agent for sensor hub commun
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Установка зависимостей для сборки micro-ROS agent
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     # Build tools
     python3-pip \
     git \

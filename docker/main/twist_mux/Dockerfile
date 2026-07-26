@@ -11,7 +11,7 @@ LABEL org.opencontainers.image.description="Multiplexes velocity commands with p
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Установка twist_mux
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-twist-mux \
     && rm -rf /var/lib/apt/lists/*
 

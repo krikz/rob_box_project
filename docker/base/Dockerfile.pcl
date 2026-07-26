@@ -23,7 +23,9 @@ RUN if [ -n "$APT_PROXY" ]; then \
     fi
 
 # Установка зависимостей для работы с облаками точек
-RUN apt-get update && \
+# Прокси отключён — apt-cacher-ng не поддерживает Noble
+RUN rm -f /etc/apt/apt.conf.d/02proxy && \
+    apt-get update && \
     apt-get install -y \
         # PCL (Point Cloud Library) для обработки облаков точек
         libpcl-dev \
@@ -39,9 +41,6 @@ RUN apt-get update && \
         libboost-system-dev \
         # Очистка кэша
         && rm -rf /var/lib/apt/lists/*
-
-# Удаляем APT прокси конфигурацию после установки пакетов
-RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Метаданные образа
 LABEL maintainer="rob_box_project" \

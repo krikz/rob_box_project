@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.description="ROS2 LED matrix driver and composito
 LABEL org.opencontainers.image.source="https://github.com/krikz/ros2leds"
 
 # Установка системных зависимостей для SPI и LED
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     # SPI и GPIO инструменты
     python3-pip \
     python3-dev \

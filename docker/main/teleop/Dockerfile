@@ -2,7 +2,7 @@
 FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-kilted-latest
 
 # Install joy node from ROS 2 packages and Serial dependencies
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-joy \
     ros-${ROS_DISTRO}-joy-linux \
     joystick \

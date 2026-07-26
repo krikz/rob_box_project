@@ -16,7 +16,7 @@ LABEL org.opencontainers.image.title="SuperCollider Server for Vision Pi"
 LABEL org.opencontainers.image.description="scsynth audio synthesis engine for Renardo/FoxDot real-time music"
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     supercollider-server \
     sc3-plugins-server \
     jackd2 \

@@ -14,7 +14,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/vesc_nexus"
 LABEL org.opencontainers.image.version="1.0.0"
 
 # Установка зависимостей для CAN и ros2_control
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     can-utils \
     iproute2 \
     net-tools \

@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.description="ROS2 Nav2 для автономно�
 LABEL org.opencontainers.image.authors="krikz"
 
 # Установка Nav2 пакетов
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     # Nav2 Core
     ros-${ROS_DISTRO}-nav2-bringup \
     ros-${ROS_DISTRO}-nav2-bt-navigator \

@@ -23,7 +23,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 # ВАЖНО: DEBIAN_FRONTEND=noninteractive обязателен — jackd2 (зависимость
 # supercollider-language) в postinst задаёт вопросы через debconf и может
 # подвесить сборку без TTY.
-RUN apt-get update && apt-get install -y debconf-utils \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y debconf-utils \
     && echo "jackd2 jackd/tweak_rt_limits boolean false" | debconf-set-selections \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3-pip \

@@ -24,7 +24,7 @@ RUN echo "Build version: ${BUILD_VERSION}"
 
 # Установка ROS2 Control и зависимостей
 # Базовый образ rtabmap уже содержит полный ROS2, нужны только Control пакеты
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     # CAN утилиты
     can-utils \
     iproute2 \

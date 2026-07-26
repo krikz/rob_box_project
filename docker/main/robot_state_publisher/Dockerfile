@@ -6,7 +6,7 @@ ARG URDF_FILES_HASH=unknown
 FROM ${BASE_IMAGE}
 
 # Установка специфичных пакетов для robot_state_publisher
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     ros-kilted-robot-state-publisher \
     ros-kilted-xacro \
     && rm -rf /var/lib/apt/lists/*

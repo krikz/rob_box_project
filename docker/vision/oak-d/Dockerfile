@@ -9,7 +9,7 @@ FROM ${BASE_IMAGE}
 
 # Установка AprilTag пакетов для интеграции детекции в OAK-D контейнер
 # Это позволяет избежать отдельного контейнера и снизить нагрузку на Vision Pi
-RUN apt-get update && apt-get install -y \
+RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     ros-kilted-apriltag-ros \
     ros-kilted-image-transport-plugins \
     ros-kilted-cv-bridge \
