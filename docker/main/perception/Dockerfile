@@ -31,7 +31,7 @@ COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 ARG ROS_DISTRO=kilted
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src --ignore-src -r -y || true
+    rosdep install --from-paths src --ignore-src -r -y --skip-keys=control_msgs || true
 
 # 3. Копируем setup.py и requirements.txt - изменяются реже чем код
 COPY src/rob_box_perception/setup.py /ws/src/rob_box_perception/
@@ -39,7 +39,7 @@ COPY docker/main/perception/requirements.txt /tmp/perception_requirements.txt
 
 # 4. Устанавливаем Python зависимости (кэшируется отдельно от кода)
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip3 install --break-system-packages --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
+    pip3 install --break-system-packages --ignore-installed --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
     rm /tmp/perception_requirements.txt
 
 # 5. Копируем ресурсы (prompts) - изменяются иногда

@@ -70,7 +70,7 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y de
 # ============================================================================
 # Python базовые инструменты (отдельный слой, не зависит от requirements.txt)
 # ============================================================================
-RUN pip3 install --break-system-packages --no-cache-dir --retries 5 --timeout 120 --upgrade pip "setuptools>=59.6.0,<68" wheel
+RUN pip3 install --break-system-packages --no-cache-dir --retries 5 --timeout 120 pip "setuptools>=59.6.0,<68" wheel
 
 # ============================================================================
 # Python зависимости
