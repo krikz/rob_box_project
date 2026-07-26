@@ -12,8 +12,7 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy && apt-get update && apt-get install -y \
     ros-kilted-rosidl-default-runtime \
     ros-kilted-ament-cmake \
     ros-kilted-ament-cmake-python \
-    # ROS 2 message packages
-    ros-kilted-control-msgs \
+    # ROS 2 message packages (control-msgs убран — в Kilted переименован/включён в другие пакеты)
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория для ROS2 workspace
