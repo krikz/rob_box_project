@@ -6,9 +6,8 @@ FROM ${BASE_IMAGE}
 RUN pip install --no-cache-dir requests pyyaml
 
 COPY runner.py /runner/runner.py
-COPY scenarios/ /scenarios/
-# Verify scenarios were copied (debug)
-RUN ls -la /scenarios/ && echo "scenarios copied OK"
+# Scenarios are mounted as volume at runtime (not baked into image)
+# so they can be updated without rebuilding
 COPY voice_memory.db /baked_db/voice_memory.db
 
 # Source ROS2 при запуске

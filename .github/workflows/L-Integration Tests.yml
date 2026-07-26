@@ -100,10 +100,18 @@ jobs:
       # ── Подготовка ─────────────────────────────────────────────────────────
       - name: Prepare test config (copy to host-accessible path)
         run: |
-          # Docker daemon на хосте не видит пути внутри runner-контейнера
-          # (/runner/_work → /data/runner1/_work на хосте). Копируем конфиг
-          # в /tmp/ который един для хоста и контейнера.
+          # Docker daemon на хосте не видит пути внутри runner-контейнера.
+          # Копируем в /tmp/ — един для хоста и контейнера.
+          # Важно: rm -rf перед cp, иначе при повторном запуске файлы
+          # уходят в /tmp/test_config/config/ вместо /tmp/test_config/.
+          rm -rf /tmp/test_config /tmp/test_scenarios /tmp/test_results
           cp -r ${{ env.TEST_DIR }}/config /tmp/test_config
+          cp -r ${{ env.TEST_DIR }}/scenario_runner/scenarios /tmp/test_scenarios
+          mkdir -p /tmp/test_results
+          echo "Config copied:"
+          cat /tmp/test_config/zenoh_router_test.json5
+          echo "Scenarios:"
+          ls -la /tmp/test_scenarios/
 
       - name: Prepare results directory
         run: mkdir -p ${{ env.TEST_DIR }}/results
@@ -120,9 +128,11 @@ jobs:
           ROS_DISTRO: ${{ env.ROS_DISTRO }}
           PLATFORM: linux/arm64
         run: |
-          # Монтируем конфиг из /tmp/ — этот путь виден Docker daemon на хосте
+          # Монтируем конфиг/сценарии/результаты из /tmp/ — этот путь виден Docker daemon на хосте
           # (./config внутри runner-контейнера → /runner/_work/... — daemon не видит)
           sed -i 's|./config|/tmp/test_config|g' docker-compose.test.yml
+          sed -i 's|./scenario_runner/scenarios|/tmp/test_scenarios|g' docker-compose.test.yml
+          sed -i 's|./results|/tmp/test_results|g' docker-compose.test.yml
           docker compose -f docker-compose.test.yml up \
             --build \
             --abort-on-container-exit \
@@ -156,12 +166,11 @@ jobs:
       # ── Вывод результатов ─────────────────────────────────────────────────
       - name: Display results
         if: always()
-        working-directory: ${{ env.TEST_DIR }}
         run: |
-          if [ -f results/test_results.json ]; then
+          if [ -f /tmp/test_results/test_results.json ]; then
             python3 -c "
           import json
-          d = json.load(open('results/test_results.json'))
+          d = json.load(open('/tmp/test_results/test_results.json'))
           print(f\"Results: {d['passed']}/{d['total']} passed ({d['failed']} failed)\")
           for s in d['scenarios']:
               icon = '✓' if s['passed'] else '✗'
@@ -174,15 +183,14 @@ jobs:
       # ── GitHub Step Summary ────────────────────────────────────────────────
       - name: Write job summary
         if: always()
-        working-directory: ${{ env.TEST_DIR }}
         run: |
           echo "## 🤖 Integration Test Results (local runner)" >> "$GITHUB_STEP_SUMMARY"
           echo "**Image:** \`voice-assistant-${{ steps.tag.outputs.full_tag }}\` from \`${{ env.LOCAL_REGISTRY }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f results/test_results.json ]; then
+          if [ -f /tmp/test_results/test_results.json ]; then
             python3 -c "
           import json, os
-          d = json.load(open('results/test_results.json'))
+          d = json.load(open('/tmp/test_results/test_results.json'))
           summary = os.environ['GITHUB_STEP_SUMMARY']
           with open(summary, 'a') as f:
               f.write(f\"**{d['passed']}/{d['total']} passed**\n\n\")
@@ -201,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: integration-test-results-local-${{ steps.tag.outputs.full_tag }}
-          path: ${{ env.TEST_DIR }}/results/test_results.json
+          path: /tmp/test_results/test_results.json
           retention-days: 30
           if-no-files-found: warn
 
