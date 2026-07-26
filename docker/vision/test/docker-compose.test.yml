@@ -116,6 +116,7 @@ services:
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
       DEFAULT_SCENARIO_TIMEOUT: "90"
+      SCENARIO_PATTERN: "${SCENARIO_PATTERN:-*.yaml}"
     volumes:
       - ./config:/test-config:ro
       - ./scenario_runner/scenarios:/scenarios:ro
