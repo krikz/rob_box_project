@@ -5,7 +5,17 @@
 
 **Date:** 2026-07-27
 **Phase:** 06-harness-p0-finalization
-**Areas discussed:** Документация (дубли), ADR-соответствие, Оставшиеся изменения, SPEC_CURRENT, PR #907, Два MiniMax-провайдера, P1-скоуп, Docker-интеграция, dialogue_node-миграция
+**Areas discussed:** Документация (дубли), ADR-соответствие, Оставшиеся изменения, SPEC_CURRENT, PR #907, Два MiniMax-провайдера, P1-скоуп, Docker-интеграция, dialogue_node-миграция, Полный список волн из ADR-0001
+
+---
+
+## Волновая структура (финальная)
+
+**User's choice (free text):** "мне не нравится как ты определил волны, давай волна это одна задача, загляни в АДР и ты увидишь там задач дохуя"
+**Decision:** Каждая волна = 1 атомарная задача из ADR-0001/SPEC_CURRENT. Всего 22 волны: W1–W5 (документация), W6–W7 (Docker), W8–W9 (DialogHarness), W10 (PersistentHarness), W11 (TelegramHarness), W12–W13 (порты), W14–W17 (тесты), W18–W22 (PR+аудит).
+
+**User's choice (free text):** "так а у нас разве все уже заимплеменчено по АДР? не вижу тут имплементации интеграции вместо диалог ноды телеграм бота и другой ноды сама замена и потом правка интеграционных тестов"
+**Decision:** Все задачи реализации из ADR-0001 §2.7 (DialogHarness, PersistentHarness, TelegramHarness) + порты (ROS2Transport, SQLiteVoiceMemory) + тесты (C1–C3) включены в Фазу 6 как отдельные волны.
 
 ---
 

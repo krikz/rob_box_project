@@ -6,20 +6,69 @@
 <domain>
 ## Phase Boundary
 
-Фаза 6 финализирует ветку `feature/harness-p0-foundation` (PR #907) — документация, Docker-интеграция, подготовка к мержу в `develop`.
+Фаза 6 финализирует ветку `feature/harness-p0-foundation` (PR #907) — **полная имплементация ADR-0001**: документация, Docker, харнесы для dialog/persistent/telegram, тесты, PR.
 
-**Волновая структура (простые атомарные изменения):**
-- **Wave 6.1** — Документация: смержить дубли в `adr/`, удалить фрагменты ADR-0007a/b/c, обновить `SPEC_CURRENT.md`
-- **Wave 6.2** — Docker: добавить `rob_box_harness` в Docker-образы (voice_assistant)
-- **Wave 6.3** — dialogue_node: начать миграцию на Harness (адаптеры)
+**Волновая структура — 22 атомарные волны (каждая = 1 задача):**
 
-**P0-код уже готов** (`rob_box_harness` — 88 тестов, `MiniMaxProvider` — 56 тестов, 90%+ coverage, mypy strict-clean). Фаза 6 НЕ меняет P0-код, только интегрирует его.
+### Группа A: Документация (W1–W5)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W1** | Мерж `docs/architecture/minimax-tts-architecture.md` → `docs/adr/0003-minimax-tts-architecture.md` (401+325 строк) | Обсуждение D-01 |
+| **W2** | Мерж `docs/architecture/minimax-tts-integration-design.md` → `docs/adr/0004-minimax-tts-integration-design.md` (530+659 строк) | Обсуждение D-01 |
+| **W3** | Мерж фрагментов `0007a/b/c` (739 строк) → финальный `0007-minimax-tts-integration-final.md` | Обсуждение D-01 |
+| **W4** | Удалить дубли из `docs/architecture/`, оставить перекрёстные ссылки на `adr/` | Обсуждение D-01 |
+| **W5** | Обновить `SPEC_CURRENT.md`: P0→Done, описать P1, убрать гермесовские references | Обсуждение D-06 |
+
+### Группа B: Docker (W6–W7)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W6** | Добавить `rob_box_harness` в `docker/vision/voice_assistant/Dockerfile` (+ зависимости) | Обсуждение D-04 |
+| **W7** | Проверить сборку Docker-образа с harress (`docker build`) | Обсуждение D-04 |
+
+### Группа C: DialogHarness (W8–W9)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W8** | `DialogHarness` адаптер: создать класс-обёртку над `Harness[StateT]`, LLM→LLMProvider, 30 tools→ToolExecutor, voice_memory→MemoryStore | ADR-0001 §2.7.1 |
+| **W9** | `DialogueStateMachine`: мигрировать `DialogueManager` + IDLE/LISTENING/DIALOGUE/SILENCED в DSM | ADR-0001 §2.7.1 |
+
+### Группа D: PersistentHarness (W10)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W10** | `PersistentHarness`: унификация 6 нод (audio/stt/tts/sound/led/cmd) — `HardwareLifecycle`, `StatePublisher`, `Clock`, `LoggerAdapter`, `ParameterGuard` | ADR-0001 §2.7.2 |
+
+### Группа E: TelegramHarness (W11)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W11** | `TelegramHarness`: `LLMChat`→`LLMProvider`, `MCPBridge`→`ToolExecutor`, 25 handlers→`TelegramCommandRegistry`, `voice_processor`→skill, `camera_cache`→`SnapshotStore`, `auth`→middleware | ADR-0001 §2.7.3 |
+
+### Группа F: Порты (W12–W13)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W12** | `ROS2Transport`: реальная реализация `Transport` для ROS2-топиков (subscribe/publish) | ADR-0001 §2.4.5 |
+| **W13** | `SQLiteVoiceMemory`: реализация `MemoryStore` для persistent history (`append_turn`, `load_recent`, `save_fact`, `search_facts`) | ADR-0001 §2.4.3 |
+
+### Группа G: Тесты (W14–W17)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W14** | `DialogueNode` test coverage: 9% → 80%+ | SPEC_CURRENT C1 |
+| **W15** | `TelegramNode` test coverage: 0% → 50%+ | SPEC_CURRENT C2 |
+| **W16** | MCP-инструменты test coverage: → 70%+ | SPEC_CURRENT C3 |
+| **W17** | Интеграционные E2E тесты harress + реальные ноды (после W8–W13) | Обсуждение |
+
+### Группа H: PR и аудит (W18–W22)
+| Wave | Задача | Источник |
+|------|--------|----------|
+| **W18** | PR #907: опубликовать финальный сводный комментарий | SPEC_CURRENT A1 |
+| **W19** | ADR-0008 аудит: проверить актуальность `tts-provider-extension-points-landed` | Обсуждение |
+| **W20** | ADR-0009 аудит: проверить актуальность `integration-test-report` | Обсуждение |
+| **W21** | `mypy strict-clean` на всём `rob_box_harness` | ADR-0001 §2.6.1 |
+| **W22** | Линтеры: `black --line-length 120`, `isort --profile black`, `flake8` на всех изменённых файлах | Conventions |
+
+**P0-код уже готов** (`rob_box_harness` — 88 тестов, `MiniMaxProvider` — 56 тестов, 90%+ coverage, mypy strict-clean).
 
 **Вне скоупа Фазы 6:**
-- P1-харнесы (DialogHarness, PersistentHarness, TelegramHarness) — Фаза 7+
-- ROS2Transport, SQLiteVoiceMemory — Фаза 7+
 - Мерж PR #907 — делает пользователь после тестирования
-- Полная миграция dialogue_node — Фаза 7 (здесь только начало)
+- Capability-фильтрация в fallback wrapper — P1 (ADR-0001 §2.6.2)
 
 </domain>
 
@@ -54,25 +103,41 @@
 - ✅ Нужно добавить в `docker/vision/voice_assistant/Dockerfile` (или `voice_base`)
 - Зависимость: `rob_box_llm>=0.2.1`, `PyYAML>=6.0` (из setup.py)
 
-### D-05: dialogue_node — начало миграции
-- Текущий `dialogue_node.py`: 0 упоминаний harness, ~2466 строк, 9% coverage
-- В Фазе 6: создать адаптеры/интерфейсы, не ломая существующий код
-- Полная миграция → Фаза 7
+### D-05: Полная миграция нод на Harness (в рамках Фазы 6)
+- **DialogHarness** (W8–W9): `DialogueNode` (~2466 строк, 9% coverage) → `DialogHarness` + `AgentSession`
+  - LLM-клиент + fallback → `LLMProvider`
+  - 30 инструментов / 5 skills → `ToolExecutor` + `SkillRegistry`
+  - `DialogueManager` + состояния → `DialogueStateMachine`
+  - `voice_memory`, `faq_store` → `MemoryStore`
+- **PersistentHarness** (W10): унификация 6 нод через `HardwareLifecycle`, `StatePublisher`
+- **TelegramHarness** (W11): `LLMChat`(469)+`MCPBridge`(137)+`commands.py`(534)→ports+skills
+- **ROS2Transport** (W12): реальный Transport для ROS2
+- **SQLiteVoiceMemory** (W13): MemoryStore для persistent history
+- **Тесты** (W14–W17): DialogueNode 9→80%, TelegramNode 0→50%, MCP 70%+, E2E
 
-### D-06: SPEC_CURRENT.md — обновить
+### D-06: Docker-интеграция harress
+- ❌ Сейчас `rob_box_harness` НЕ установлен ни в один Dockerfile
+- ✅ W6: добавить в `docker/vision/voice_assistant/Dockerfile`
+- ✅ W7: проверить сборку
+
+### D-07: SPEC_CURRENT.md — обновить (W5)
 - Пометить P0 как ✅ Done
-- Чётко описать P1 (DialogHarness, PersistentHarness, TelegramHarness)
-- Добавить ссылки на новые GSD-фазы (6, 7)
+- Отразить новую волновую структуру
+- Убрать гермесовские references (kanban create, etc.)
 
-### D-07: Мерж PR #907
+### D-08: Мерж PR #907
 - Делает пользователь САМ после тестирования
 - Цель: `feature/harness-p0-foundation` → `develop`
 - Статус: MERGEABLE, OPEN
 
 ### the agent's Discretion
-- Порядок волн: 6.1 (документация) → 6.2 (Docker) → 6.3 (dialogue_node)
-- Конкретный дизайн dialogue_node-адаптеров — на усмотрение агента в рамках ADR-0001
-- Docker-образ: выбрать между `voice_assistant` и `voice_base` на основе анализа зависимостей
+- Порядок волн внутри групп: A→B→C→D→E→F→G→H (зависимости)
+- W1–W5 можно параллельно (разные файлы)
+- W8 должен быть перед W9 (DialogHarness → DialogueStateMachine)
+- W12, W13 нужны для W8–W11 (порты используются харнесами)
+- W14–W17 — после реализации (W8–W13)
+- W21–W22 — последними (quality gates)
+- Конкретный дизайн адаптеров — на усмотрение агента в рамках ADR-0001
 
 </decisions>
 
@@ -134,12 +199,11 @@
 </code_context>
 
 <deferred>
-## Deferred Ideas
+## Deferred Ideas (вне Фазы 6)
 
-- **P1-харнесы** (DialogHarness, PersistentHarness, TelegramHarness) — Фаза 7+
-- **ROS2Transport** (реальный) — Фаза 7+
-- **SQLiteVoiceMemory / RedisStore** — Фаза 7+
-- **Полная миграция dialogue_node** — Фаза 7
 - **Capability-фильтрация в fallback wrapper** — P1 (ADR-0001 §2.6.2)
-- **ADR-фрагменты 0008** (tts-provider-extension-points-landed) — решить судьбу при доку-аудите
+- **RedisStore** (альтернатива SQLiteVoiceMemory) — будущая фаза
+- **Multi-robot fleet координация** — Milestone 3+
+- **AI HAT+ интеграция** — hardware не закуплено
+
 </deferred>
