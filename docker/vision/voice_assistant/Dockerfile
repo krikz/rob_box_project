@@ -66,6 +66,8 @@ COPY src/rob_box_llm/setup.cfg /ws/src/rob_box_llm/
 # Шаг 4: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
 COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
+COPY src/rob_box_harness/resource /ws/src/rob_box_harness/resource
+COPY src/rob_box_llm/resource /ws/src/rob_box_llm/resource
 
 # Шаг 5: Копируем launch файлы и конфигурации
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
