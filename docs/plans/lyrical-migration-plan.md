@@ -55,9 +55,91 @@
 **🚨 БЛОКЕР: `luxonis/depthai-ros` не имеет lyrical тегов!**
 
 Варианты решения:
-1. **Ждать** — Luxonis обычно добавляет новые дистрибутивы через 1-3 месяца после релиза ROS 2
-2. **Билдить самим** — собрать depthai-ros из исходников на базе `ros:lyrical-ros-base`
-3. **Пиар в Luxonis** — запросить lyrical сборку в их репозитории
+
+#### Вариант A: Ждать (≈1-3 месяца)
+Luxonis обычно добавляет новые дистрибутивы через 1-3 месяца после релиза ROS 2.
+Плюсы: ноль усилий. Минусы: неопределённый срок.
+
+#### Вариант B: Запросить у Luxonis
+Создать Issue/PR в `luxonis/depthai-ros` с запросом lyrical сборки.
+Плюсы: помогает сообществу. Минусы: нет гарантии сроков.
+
+#### Вариант C: Свой Dockerfile (рекомендовано)
+Собрать свой образ на базе `ros:lyrical-ros-base`, повторив логику официального.
+
+**Анализ официального Dockerfile (`luxonis/depthai-ros`, ветка `kilted`):**
+```dockerfile
+ARG ROS_DISTRO=kilted
+FROM ros:${ROS_DISTRO}-ros-base
+# Ставит build-зависимости (git, wget, colcon, libusb, etc.)
+# Клонирует depthai-core + depthai-ros исходники
+# rosdep install → colcon build --build-shared-libs
+```
+
+**Что нужно изменить для Lyrical (всего 2 строки):**
+1. `ARG ROS_DISTRO=lyrical`
+2. `git clone --branch lyrical` (или `main` если lyrical ветки нет)
+
+**Наш `Dockerfile.depthai` для lyrical:**
+
+```dockerfile
+# Собственная сборка depthai-ros для ROS 2 Lyrical Luth
+# На основе официального Dockerfile от Luxonis
+ARG ROS_DISTRO=lyrical
+FROM ros:${ROS_DISTRO}-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build-зависимости (без zsh/ohmyzsh — не нужны для production)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common git libusb-1.0-0-dev wget \
+    python3-colcon-common-extensions zip unzip tar \
+    python3-pip python3-dev build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV DEBIAN_FRONTEND=dialog
+ENV WS=/ws
+RUN mkdir -p $WS/src
+
+# Клонируем depthai-ros и depthai-core
+COPY ./ $WS/src/depthai-ros
+RUN cd $WS/src && \
+    git clone --branch main https://github.com/luxonis/depthai-core.git && \
+    cd depthai-core && git submodule update --init --recursive
+
+# Устанавливаем ROS зависимости
+RUN cd $WS/ && rosdep install --from-paths src --ignore-src -r -y
+
+# Собираем (только depthai-ros, без examples/tests для скорости)
+RUN cd $WS/ && . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build \
+    --packages-select depthai-ros depthai_bridge depthai_ros_driver \
+    --symlink-install \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# Устанавливаем Zenoh middleware
+RUN apt-get update && apt-get install -y \
+    ros-${ROS_DISTRO}-rmw-zenoh-cpp && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
+RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
+```
+
+**Оценка сложности:**
+
+| Фактор | Оценка |
+|--------|--------|
+| Написание Dockerfile | 🟢 30 минут (20 строк) |
+| Первая сборка (arm64) | 🔴 2-4 часа (vcpkg + C++ компиляция) |
+| Размер образа | 🔴 ~2 GB (без сборочного мусора) |
+| Кэширование слоёв | 🟢 Повторные сборки — минуты |
+| Поддержка | 🟡 Нужно обновлять при новых версиях depthai |
+
+**Риски:**
+- `depthai-core` может не иметь `lyrical` ветки → использовать `main`
+- `build.sh` может требовать правок под Ubuntu 26.04
+- vcpkg может не собрать некоторые зависимости под Resolute
 
 ### 2.3 Пакеты, которые могут измениться/исчезнуть
 
@@ -115,10 +197,17 @@
 
 ### Этап 5: Решение блокера depthai
 
-- [ ] **5.1** Проверить GitHub Issues в `luxonis/depthai-ros` — есть ли запрос на lyrical
-- [ ] **5.2** Если нет — создать Issue/PR с запросом lyrical сборки
-- [ ] **5.3** Временное решение: собрать `depthai-ros` из исходников в нашем Dockerfile
-- [ ] **5.4** Или использовать `depthai-ros:kilted-arm64-latest` как базу (может не работать из-за разных Ubuntu)
+**Выбранный путь: Вариант C — свой Dockerfile**
+
+- [ ] **5.1** Создать `docker/base/Dockerfile.depthai` для lyrical (на основе официального из `luxonis/depthai-ros`)
+- [ ] **5.2** Клонировать `depthai-core` (ветка `main`) и `depthai-ros` исходники
+- [ ] **5.3** Собрать через `colcon build --packages-select depthai-ros depthai_bridge depthai_ros_driver`
+- [ ] **5.4** Добавить Zenoh (`ros-lyrical-rmw-zenoh-cpp`) в образ
+- [ ] **5.5** Запушить в GHCR как `rob_box_base:depthai-lyrical-latest`
+- [ ] **5.6** Обновить `docker/vision/oak-d/Dockerfile` → использовать новый базовый образ
+- [ ] **5.7** Обновить `docker/vision/zenoh-router/Dockerfile` (если ещё нужен)
+- [ ] **5.8** Запасной план: если сборка из исходников не удаётся → использовать `depthai-ros:kilted-arm64-latest` как временную базу (разные Ubuntu, но может сработать)
+- [ ] **5.9** Создать Issue в `luxonis/depthai-ros` с запросом официальной lyrical сборки (параллельно)
 
 ### Этап 6: Тестирование и CI
 
