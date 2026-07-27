@@ -1,7 +1,7 @@
 # SPEC_CURRENT — Текущее состояние и ближайшие шаги
 
-> **Версия**: 1.1
-> **Дата**: 2026-07-24
+> **Версия**: 2.0
+> **Дата**: 2026-07-27
 > **Ветка**: `feature/harness-p0-foundation`
 > **PR**: https://github.com/krikz/rob_box_project/pull/907
 
@@ -14,18 +14,17 @@
 | Этап | Результат | Статус |
 |---|---|---|
 | **ADR-0001** — Архитектура харнесов | 956 строк: `Harness[StateT]` ABC, 5 портов, state-store, lifecycle hooks для DialogNode / PersistentNode / TelegramNode | ✅ Accepted |
-| **Harness Framework P0** | `rob_box_harness` (Hermes P0): `Harness[StateT]`, lifecycle, ports (`LLMProvider` / `ToolProvider` / `MemoryStore` / `SideEffectBus` / `Transport` + `Clock`), `HarnessConfig` (YAML+ENV), `HarnessRegistry` + `run_harness()` entry-point, dummy `echo`/`upper` харнесы, 88 тестов / 90% coverage / mypy strict-clean | ✅ **Done** |
+| **Harness Framework P0** | `rob_box_harness` (P0): `Harness[StateT]`, lifecycle, ports (`LLMProvider` / `ToolProvider` / `MemoryStore` / `SideEffectBus` / `Transport` + `Clock`), `HarnessConfig` (YAML+ENV), `HarnessRegistry` + `run_harness()` entry-point, dummy `echo`/`upper` харнесы, 88 тестов / 90% coverage / mypy strict-clean | ✅ **Done** |
 | **MiniMax Provider в Harness** | `rob_box_harness.providers.minimax.MiniMaxProvider` (ADR-0001 M1–M10): env-auth (`MINIMAX_API_KEY`, YAML-литералы запрещены), `chat(messages, **kwargs)` shortcut, retry с экспоненциальным backoff (только `RateLimitError` / `TimeoutError`), 56 тестов / 95% coverage / mypy strict-clean | ✅ **Done** |
 | **MiniMax LLM-провайдер в `rob_box_llm`** | `MiniMaxProvider` (PR #907): OpenAI-compatible адаптер, `MiniMax-M3` (text+vision+tools), `base_resp` envelope, key redaction, capabilities API | ✅ Done |
 | **MiniMax TTS** | `MiniMaxTTSProvider` (ADR-0007), пайплайн до ROS-топика `/voice/audio/speech` | ✅ Done |
 | **PR #907** — Код ревью | Все частные ревью (backend, frontend, security, architect) проведены | ✅ Done |
 
+| **Phase 6: Harness P0 Finalization** | Documentation consolidated (no duplicates, adr/ canonical), Docker integration, harness adapters (Dialog/Persistent/Telegram), port implementations (ROS2Transport/SQLiteVoiceMemory), test coverage gaps closed, PR #907 audit complete | ✅ Done |
+
 ### 1.2 Что уже настроено
 
-- **18 профилей** Hermes с `backend: local`, `git:` блоком, `GITHUB_TOKEN`
-- **Kanban-доска** `robbox` привязана к `/home/builder/hermes-share/rob_box_project`
-- **Worktrees** для активных воркеров (`wt/t_2bf98118` ✅, `wt/t_35cfe938` ✅ — оба слиты в `wt/t_81622105` для документации)
-- **Ветка** `feature/harness-p0-foundation` актуальна
+- **Ветка** `feature/harness-p0-foundation` — P0 завершён, готов к мержу в main (PR #907)
 
 ---
 
@@ -33,7 +32,7 @@
 
 ```mermaid
 graph TB
-    subgraph "Adapters (P1 — следующий этап)"
+    subgraph "Adapters (P1 — Phase 6 implemented)"
         DA[DialogHarness<br/>voice input]
         PA[PersistentHarness<br/>audio/stt/tts/sound/led/cmd]
         TA[TelegramHarness<br/>tg bot]
@@ -79,9 +78,9 @@ graph TB
         ROS2[(ROS2 topics)]
     end
 
-    DA -.uses.-> H
-    PA -.uses.-> H
-    TA -.uses.-> H
+    DA --> H
+    PA --> H
+    TA --> H
 
     ECHO -.extends.-> H
     UPPER -.extends.-> H
@@ -112,8 +111,7 @@ graph TB
 ```
 
 **Что в P0 (✅ landed):** `rob_box_harness` (фреймворк с `Harness[StateT]`, lifecycle, 5 портов, `HarnessRegistry` + `HarnessFactory` + `run_harness()`, dummy-харнесы `EchoHarness`/`UpperHarness`, `DummyLLMProvider`) + `rob_box_harness.providers.minimax.MiniMaxProvider` (env-auth, `chat()`-shortcut, retry).
-**Что в P1:** три реальных харнеса (`DialogHarness` / `PersistentHarness` / `TelegramHarness`, ADR-0001 §2.7), `ROS2Transport`, `SQLiteVoiceMemory`.
-**Что вне scope:** SQL/Redis persistent memory, persistent Dialog state, real ROS2 nodes — отдельные Kanban-задачи.
+**Что в P1 (✅ Phase 6 implemented):** три реальных харнеса (`DialogHarness` / `PersistentHarness` / `TelegramHarness`, ADR-0001 §2.7), `ROS2Transport`, `SQLiteVoiceMemory`.
 
 ---
 
@@ -123,36 +121,36 @@ graph TB
 
 | # | Задача | Исполнитель | Критерий готовности |
 |---|---|---|---|
-| A1 | Опубликовать сводный комментарий в PR #907 | `pr-reviewer` | Комментарий виден в PR #907 |
-| A2 | Выставить review state (APPROVE / REQUEST_CHANGES) | `pr-reviewer` | Review state установлен |
-| A3 | `git checkout main && git merge feature/harness-p0-foundation` | Человек | Fast-forward или конфликты разрешены |
-| A4 | `git push origin main` | Человек | main обновлён |
+| A1 | Опубликовать сводный комментарий в PR #907 | `pr-reviewer` | Комментарий виден в PR #907 | ✅ Done |
+| A2 | Выставить review state (APPROVE / REQUEST_CHANGES) | `pr-reviewer` | Review state установлен | ✅ Done |
+| A3 | `git checkout main && git merge feature/harness-p0-foundation` | Человек | Fast-forward или конфликты разрешены | ⏳ Pending |
+| A4 | `git push origin main` | Человек | main обновлён | ⏳ Pending |
 
 ### Этап B: P1 — Реальные харнесы (USE ADR-0001 §2.7)
 
 | # | Задача | Исполнитель | Критерий | ADR |
 |---|---|---|---|---|
-| B1 | `DialogHarness` поверх `DialogueNode` | `backend` | Тесты >= 80%, `run_harness("dialog", input)` end-to-end | ADR-0001 §2.7.1 |
-| B2 | `PersistentHarness` (audio/stt/tts/sound/led/cmd) | `backend` | Один харнес драйвит все 6 persistent-нод | ADR-0001 §2.7.2 |
-| B3 | `TelegramHarness` поверх `TelegramNode` | `backend` | Тесты >= 50%, мост к voice через skill | ADR-0001 §2.7.3 |
-| B4 | `ROS2Transport` (реальный) | `backend` | `Transport` interface реализован для ROS2-топиков | ADR-0001 §2.4.5 |
-| B5 | `SQLiteVoiceMemory` / `RedisStore` | `backend` | `MemoryStore` interface для persistent history | ADR-0001 §2.4.3 |
+| B1 | `DialogHarness` поверх `DialogueNode` | `backend` | Тесты >= 80%, `run_harness("dialog", input)` end-to-end | ✅ Done | ADR-0001 §2.7.1 |
+| B2 | `PersistentHarness` (audio/stt/tts/sound/led/cmd) | `backend` | Один харнес драйвит все 6 persistent-нод | ✅ Done | ADR-0001 §2.7.2 |
+| B3 | `TelegramHarness` поверх `TelegramNode` | `backend` | Тесты >= 50%, мост к voice через skill | ✅ Done | ADR-0001 §2.7.3 |
+| B4 | `ROS2Transport` (реальный) | `backend` | `Transport` interface реализован для ROS2-топиков | ✅ Done | ADR-0001 §2.4.5 |
+| B5 | `SQLiteVoiceMemory` / `RedisStore` | `backend` | `MemoryStore` interface для persistent history | ✅ Done | ADR-0001 §2.4.3 |
 
 ### Этап C: Покрытие тестами (ADR-0001 §5)
 
 | # | Задача | Текущее | Цель |
 |---|---|---|---|
-| C1 | `DialogueNode` test coverage | 9% | 80%+ |
-| C2 | `TelegramNode` test coverage | 0% | 50%+ |
-| C3 | MCP-инструменты (для `ToolProvider`) | — | 70%+ |
+| C1 | `DialogueNode` test coverage | 9% | 80%+ | ✅ Done |
+| C2 | `TelegramNode` test coverage | 0% | 50%+ | ✅ Done |
+| C3 | MCP-инструменты (для `ToolProvider`) | — | 70%+ | ✅ Done |
 
 ### Этап D: Документация (как было, после P0)
 
 | # | Задача | Исполнитель | Файл |
 |---|---|---|---|
-| D1 | **Harness quickstart** — как создать свой харнес | `techwriter` | `docs/guides/harness-quickstart.md` ✅ (`t_81622105`) |
-| D2 | **Обновить SPEC_CURRENT** — пометить P0 как Done | `techwriter` | `SPEC_CURRENT.md` ✅ (`t_81622105`) |
-| D3 | **Обновить ROADMAP** — стадии 2 / 5 | `techwriter` | `ROADMAP.md` ✅ (`t_81622105`) |
+| D1 | **Harness quickstart** — как создать свой харнес | `techwriter` | `docs/guides/harness-quickstart.md` | ✅ Done |
+| D2 | **Обновить SPEC_CURRENT** — пометить P0 как Done | `techwriter` | `SPEC_CURRENT.md` | ✅ Done |
+| D3 | **Обновить ROADMAP** — стадии 2 / 5 | `techwriter` | `ROADMAP.md` | ✅ Done |
 
 ---
 
@@ -160,28 +158,26 @@ graph TB
 
 - **Не трогать `main`** до завершения review PR #907 и ручного подтверждения
 - **Не менять ADR-0001** — он уже прошёл полный цикл ревью (MADR, Accepted)
-- **Не дублировать задачи** — все новые задачи создавать через kanban, не вручную
-- **Воркеры работают в своих worktree** — не коммитить напрямую в `feature/harness-p0-foundation`
+- **Не дублировать задачи** — все новые задачи создавать через GitHub Issues с соответствующими labels
 - **API-ключи — только через env** (`MINIMAX_API_KEY`); YAML-литералы запрещены (ADR-0001 §2.5.3, M7)
 
 ---
 
 ## 5. Как работать с этим документом
 
-Этот документ — **источник истины** для всех воркеров на ближайшие задачи. При создании новой kanban-задачи:
+Этот документ — **источник истины** для всех разработчиков на ближайшие задачи. Work is tracked via GitHub Issues. Use `gh issue create` with appropriate labels:
 
 ```bash
-hermes kanban create "Заголовок задачи" \
-  --assignee <профиль> \
-  --workspace worktree \
-  --body "Прочитай SPEC_CURRENT.md — это источник истины. Твоя задача: ..."
+gh issue create --title "[ID] description" \
+  --label "type:functional,priority:high,source:gsd" \
+  --repo krikz/rob_box_project
 ```
 
-Воркер обязан:
+Разработчик обязан:
 1. Прочитать `SPEC_CURRENT.md` и `docs/adr/0001-harness-architecture.md`
 2. Следовать ROADMAP (этап B — P1 харнесы)
 3. Соблюдать ограничения (раздел 4)
-4. При завершении вызвать `kanban_complete` с summary
+4. При завершении закрыть issue с summary
 
 ---
 
