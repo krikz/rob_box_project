@@ -119,7 +119,7 @@ Plans:
 
 Plans:
 - [ ] 05-01-PLAN.md — Wave 1: Механическая миграция (~200 файлов, всё кроме Nav2 и DepthAI)
-- [ ] 05-02-PLAN.md — Wave 2: Nav2 source-build + DepthAI source-build (будет создан после Wave 1)
+- [ ] 05-02-PLAN.md — Wave 2: Nav2 source-build + DepthAI source-build (2 tasks: Nav2 Dockerfile source-build, DepthAI Dockerfile source-build + GitHub Issue)
 
 ## Progress
 
@@ -130,4 +130,4 @@ Plans:
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
-| 5. Миграция Humble → Lyrical | 1/2 | In progress | Wave 1 planned |
+| 5. Миграция Humble → Lyrical | 2/2 | Planned | Wave 1 + Wave 2 plans ready |
