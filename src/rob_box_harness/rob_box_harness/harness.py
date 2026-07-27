@@ -43,7 +43,7 @@ from typing import Any, Generic, Mapping, TypeVar
 
 from rob_box_harness.clock import Clock, SystemClock
 from rob_box_harness.config import HarnessConfig
-from rob_box_harness.errors import HarnessError, HarnessStateError
+from rob_box_harness.errors import HarnessError, HarnessStateError, HookError
 from rob_box_harness.lifecycle import LifecycleHooks
 from rob_box_harness.snapshot import SessionSnapshot
 from rob_box_harness.transport import Transport, FakeTransport
@@ -251,12 +251,35 @@ class Harness(abc.ABC, Generic[StateT]):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        # ``on_error`` is the hook the framework gives observers to
+        # log / metrics-on-failure. ``lifecycle.LifecycleHooks.invoke``
+        # promises that any exception it surfaces is wrapped in
+        # ``HookError``; the harness contract (this module's
+        # docstring + ``lifecycle.py:99-101``) is that ``HookError``
+        # is observable to the caller, never silently swallowed.
+        # We therefore capture the ``HookError``, still run
+        # ``teardown`` so resources aren't leaked, and re-raise so
+        # the surrounding ``async with`` body sees it. ``on_error``
+        # itself may also raise a non-HookError exception (e.g. a
+        # bare ``KeyError`` from a misconfigured observer) — that
+        # path is covered by the fallback branch below; both raise
+        # the same exception type so the caller's ``except`` clauses
+        # remain uniform.
+        hook_exc: HookError | None = None
         if exc_type is not None:
             try:
                 await self.hooks.invoke("on_error", self.name, exc)
-            except Exception:  # noqa: BLE001 — log, do not re-raise
-                logger.exception("harness %s: on_error hook raised", self.name)
+            except HookError as e:
+                hook_exc = e
+            except Exception as e:  # noqa: BLE001 — on_error is a user hook
+                hook_exc = HookError(
+                    f"on_error hook raised {type(e).__name__}: {e}",
+                    harness=self.name,
+                    hook="on_error",
+                )
         await self.teardown()
+        if hook_exc is not None:
+            raise hook_exc
 
     # ----- abstract step --------------------------------------------------
 

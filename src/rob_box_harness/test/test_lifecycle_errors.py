@@ -205,3 +205,58 @@ async def test_teardown_remains_consistent_when_stop_hook_fails() -> None:
 
     assert harness.is_initialized is False
     assert harness.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_on_error_hook_propagates_after_teardown() -> None:
+    """A ``HookError`` raised by ``on_error`` must surface AFTER teardown.
+
+    Contract (harness.py docstring + ``lifecycle.py:99-101``):
+    hook errors are observable to the caller of ``async with``,
+    not silently swallowed. ``__aexit__`` must still run
+    ``teardown()`` so ports are closed before the exception is
+    re-raised — that ordering is the bug this test pins down.
+
+    We trigger the error path by giving the harness a provider
+    that raises ``ProviderError`` on ``complete`` — the same
+    shape ``test_context_manager_reports_provider_error_and_tears_down``
+    uses. The DIFFERENCE here is that ``on_error`` itself blows up,
+    which is exactly what the old code silently swallowed.
+    """
+    teardown_ran: list[bool] = []
+
+    def broken_on_error(_error: BaseException) -> None:
+        raise HookError("on_error broke", harness="echo", hook="on_error")
+
+    # Subclass ``EchoHarness`` to record (without monkeypatching)
+    # that ``teardown()`` runs before the ``HookError`` propagates.
+    # We keep the real lifecycle by ``super()``-into ``teardown``.
+    class _ObservingHarness(EchoHarness):
+        async def teardown(self) -> None:  # type: ignore[override]
+            await super().teardown()
+            teardown_ran.append(True)
+
+    provider = _FailingProvider()
+    harness = _ObservingHarness(
+        _config(),
+        llm=provider,
+        hooks=LifecycleHooks(on_error=broken_on_error),
+    )
+
+    with pytest.raises(HookError, match="on_error broke") as caught:
+        async with harness:
+            await harness.run("hello")
+
+    # 1. The original HookError from on_error reached the caller.
+    assert isinstance(caught.value, HookError)
+    assert caught.value.hook == "on_error"
+    # 2. teardown() ran BEFORE the raise — no resource leak.
+    assert teardown_ran == [True], (
+        "teardown() must run before HookError is re-raised "
+        f"(got teardown_ran={teardown_ran!r})"
+    )
+    # 3. The original ``on_error`` raised HookError directly, which
+    #    ``lifecycle.invoke`` re-raises without wrapping — so
+    #    ``__cause__`` is None and the same instance surfaces to
+    #    the caller (see ``test_existing_hook_error_is_not_double_wrapped``).
+    assert caught.value.__cause__ is None
