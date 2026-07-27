@@ -10,6 +10,7 @@
 - [x] **Phase 2: Ревью структуры** - Проверить Docker layout и пакеты на соответствие стандартам проекта
 - [x] **Phase 3: Code Quality Review** - Разобрать tech debt, запустить статический анализ, задокументировать стратегию рефакторинга
 - [ ] **Phase 4: GitHub Issues Integration** - Мигрировать tasks.json → GitHub Issues, настроить label taxonomy, обновить workflow агента
+- [ ] **Phase 6: Harness P0 Finalization** - Финализация `feature/harness-p0-foundation`: ревью документации (убрать дубли), проверка ADR-соответствия, доделка оставшихся изменений перед мержем в main
 
 ## Phase Details
 
@@ -103,6 +104,28 @@ Plans:
 - [ ] 04-01: Обновить скиллы + copilot-instructions (GitHub Issues вместо tasks.json)
 - [ ] 04-02: GitHub labels (17 шт.) + milestones (M1/M2/M3) через gh CLI
 - [ ] 04-03: Migrate tasks.json + TECH_DEBT → Issues; STUB → #N; удалить tasks.json
+
+### Phase 6: Harness P0 Finalization
+**Goal**: Ветка `feature/harness-p0-foundation` готова к мержу в main: документация без дублей, все ADR-требования выполнены, оставшиеся изменения доделаны
+**Depends on**: Phase 4 (инфраструктура GitHub Issues), ADR-0001, ADR-0002, ADR-0007, ADR-0009
+**Branch**: `feature/harness-p0-foundation`
+**PR**: https://github.com/krikz/rob_box_project/pull/907
+**Canonical refs**:
+  - [`SPEC_CURRENT.md`](SPEC_CURRENT.md) — источник истины для P0/P1
+  - [`docs/adr/0001-harness-architecture.md`](docs/adr/0001-harness-architecture.md)
+  - [`docs/adr/0002-minimax-provider.md`](docs/adr/0002-minimax-provider.md)
+  - [`docs/adr/0007-minimax-tts-integration-final.md`](docs/adr/0007-minimax-tts-integration-final.md)
+  - [`docs/adr/0009-harness-tts-contract.md`](docs/adr/0009-harness-tts-contract.md)
+  - [`src/rob_box_harness/README.md`](src/rob_box_harness/README.md)
+  - [`docs/guides/harness-quickstart.md`](docs/guides/harness-quickstart.md)
+  - [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
+**Success Criteria** (what must be TRUE):
+  1. Все документационные файлы проверены на дубликаты, расхождения устранены
+  2. ADR-0001 §2.7 (P1-харнесы) requirements задокументированы как deferred
+  3. Все оставшиеся изменения на ветке закоммичены
+  4. SPEC_CURRENT.md обновлён — P0 помечен как завершённый
+  5. Ветка готова к `git merge feature/harness-p0-foundation` → main
+**Plans**: TBD
 
 ## Progress
 
