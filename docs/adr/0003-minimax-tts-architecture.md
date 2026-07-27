@@ -54,9 +54,7 @@ wire-in (`t_257dbfb9`) сейчас в работе.
 как единый провайдер-агностичный value-object, который
 `MiniMaxTTSProvider._build_payload` маппит в JSON T2A v2.
 
-Полная таблица маппинга — в
-[`../architecture/minimax-tts-architecture.md#21-ttssettings--t2a-v2-body`](../architecture/minimax-tts-architecture.md).
-Ключевые правила:
+Полная таблица маппинга (ниже). Ключевые правила:
 
 - Провайдер **никогда не дропает неустановленные поля** из body —
   иначе MiniMax применит свои дефолты и результат может
@@ -71,6 +69,49 @@ wire-in (`t_257dbfb9`) сейчас в работе.
   (`model`/`text`/`stream`/`voice_setting`/`audio_setting`/
   `text_normalization`) → `TTSBadRequestError` (защита от
   перетирания наших typed-полей через extra — security boundary).
+
+**Таблица маппинга `TTSSettings` → MiniMax T2A v2 body:**
+
+| `TTSSettings` (rob_box_llm) | MiniMax T2A v2 поле | Default если None | Валидация на стороне провайдера |
+| --- | --- | --- | --- |
+| `model` | `model` | `"speech-02-hd"` | — |
+| `voice` | `voice_setting.voice_id` | `"male-qn-qingse"` | — |
+| `language` (BCP-47 / full) | `voice_setting.language` | `"Russian"` (после маппинга) | `_LANGUAGE_ALIASES` для `"ru"→"Russian"` и т.п.; нераспознанный код передаётся as-is |
+| `speed` | `voice_setting.speed` (float) | — | (диапазон провайдера: 0.5–2.0; валидируется API) |
+| `volume` | `voice_setting.vol` (float) | — | `[0.0, 10.0]` — наружу → `TTSBadRequestError` (fail-fast) |
+| `pitch` | `voice_setting.pitch` (int) | — | — |
+| `emotion` | `voice_setting.emotion` | — | — |
+| `sample_rate` | `audio_setting.sample_rate` | `32000` Hz | MiniMax поддерживает 8000/16000/22050/24000/32000/44100 |
+| `format` | `audio_setting.format` | `TTSFormat.PCM` → `"pcm"` | `OGG` → `"mp3"` (MiniMax OGG не принимает) |
+| `text_normalization` | `text_normalization` (top-level bool) | — | — |
+| `extra` | top-level whitelist | — | allow-list 9 ключей; reserved (model/text/stream/voice_setting/audio_setting/text_normalization) → `TTSBadRequestError` |
+
+Подробности allow-list и reserved-логика — `minimax_tts.py:_ALLOWED_EXTRA_KEYS`
+и `_RESERVED_PAYLOAD_KEYS`.
+
+**Таблица маппинга ROS-параметры → `TTSSettings`:**
+
+| ROS-параметр (tts_node) | Тип | Default | Источник | Куда идёт в `TTSSettings` |
+| --- | --- | --- | --- | --- |
+| `provider` | string | `"yandex"` | — | гейт: если `"minimax"` → MiniMax-путь |
+| `minimax_api_key` | string | `""` | ROS или `MINIMAX_API_KEY` ENV | `MiniMaxTTSProvider(api_key=...)` |
+| `minimax_group_id` | string | `""` | ROS или `MINIMAX_GROUP_ID` ENV | `MiniMaxTTSProvider(group_id=...)` |
+| `minimax_voice` | string | `"male-qn-qingse"` | ROS | `TTSSettings.voice` |
+| `minimax_model` | string | `"speech-02-hd"` | ROS | `TTSSettings.model` |
+| `minimax_language` | string | `"ru"` | ROS | `TTSSettings.language` |
+| `minimax_speed` | double | `1.0` | ROS или SSML `<prosody rate>` (приоритет SSML) | `TTSSettings.speed` |
+| `minimax_sample_rate` | int | `32000` | ROS | `TTSSettings.sample_rate` |
+| `minimax_timeout` | double | `30.0` | ROS | `MiniMaxTTSProvider(timeout=...)` |
+
+**Приоритет источников:** ROS-параметр > ENV (только для
+`api_key`/`group_id`). Для остальных полей ENV-fallback не реализован —
+это намеренно: реконфигурация голоса/языка на лету через ROS — основной
+путь, и держать дублирующие ENV для них = плодить источники правды.
+
+**Приоритет внутри MiniMax-пути:** SSML `<prosody rate>` > ROS
+`minimax_speed` (если SSML попал в `ssml_attributes["rate"]` — берём его).
+
+> **Merged from `docs/architecture/minimax-tts-architecture.md` per ADR consolidation (Phase 6, D-01).**
 
 ### 2.2 Конфигурация: секреты, ENV, ROS
 
@@ -323,3 +364,16 @@ ADR считается зафиксированным (статус перево
    на тестовом стенде с приемлемой latency.
 
 До выполнения пунктов 2-4 статус остаётся **Proposed**.
+
+---
+
+## 9. Merged Content (Phase 6 consolidation)
+
+> Content merged from `docs/architecture/minimax-tts-architecture.md` per ADR consolidation (Phase 6, D-01 — single-source-of-truth enforcement).
+
+**Merged sections:**
+- §2.1: Detailed `TTSSettings` → T2A v2 body mapping table (12 rows with validation column)
+- §2.2: Detailed ROS-параметры → `TTSSettings` mapping table (9 rows with source/priority)
+- §2.2: Source priority rules (ROS > ENV for secrets only; SSML > ROS for speed)
+
+**Post-merge status:** `docs/architecture/minimax-tts-architecture.md` replaced with cross-reference stub pointing to this ADR. No content loss — all unique sections preserved.
