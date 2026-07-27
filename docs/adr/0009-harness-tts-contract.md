@@ -46,7 +46,7 @@ class TTSProvider(abc.ABC):
 | Опция TTSSettings | Маппинг в MiniMax T2A v2 | Дефолт MiniMax |
 |---|---|---|
 | `model`         | `model` (`"speech-02-hd"`, `"speech-02-turbo"`, …) | `"speech-02-hd"` |
-| `voice`         | `voice_setting.voice_id` (каталог из `list_voices()` — 6 голосов ru/en/zh) | `"English_expressive_narrator"` (provider default) |
+| `voice`         | `voice_setting.voice_id` (каталог из `list_voices()` — 6 голосов ru/en/zh) | `"male-qn-qingse"` (`MiniMaxTTSProvider.DEFAULT_VOICE`; harness-обёртка пробрасывает как `default_voice=`) |
 | `language`      | BCP-47 → human-readable (`"ru"→"Russian"`, `"en"→"English"`) | `None` (API решает) |
 | `speed`         | `voice_setting.speed` (0.5–2.0) | `1.0` |
 | `volume`        | `voice_setting.vol` (0.0–10.0) | `1.0` |
@@ -59,9 +59,9 @@ class TTSProvider(abc.ABC):
 
 **Формат выхода** (что попадает в `TTSAudio.samples`):
 - `TTSFormat.PCM` → raw int16 LE mono (PCM 22050/24000/32000 Hz в зависимости от `sample_rate`). Это **основной контракт топика** `/voice/audio/speech` (ADR-0003 §2.3).
-- `TTSFormat.WAV` → RIFF/WAVE с правильным заголовком (MiniMax сам оборачивает; upsample к нужному `sample_rate` если требуется).
+- `TTSFormat.WAV` → RIFF/WAVE с правильным заголовком. MiniMax сам не оборачивает; upstream `MiniMaxTTSProvider._pcm_to_wav` (см. `src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:71-82, 1112-1118`) локально оборачивает PCM в WAV через `wave.open(...)` если MiniMax вернул голый PCM в ответ на запрос WAV. **Upsample к другому `sample_rate` не делается** — возвращается тот `sample_rate`, который прислал MiniMax.
 - `TTSFormat.MP3` → MPEG-1 Layer III (провайдер сам декодирует при желании).
-- `TTSFormat.OGG` → **не поддерживается MiniMax**; если запрошен, провайдер тихо подменяет на MP3 с warning-логом (см. ADR-0003 §2.1).
+- `TTSFormat.OGG` → **не поддерживается MiniMax**; если запрошен, upstream-провайдер **тихо** подменяет поле `audio_setting.format` с `ogg` на `mp3` (см. `minimax_tts.py:306-307`, `fmt.value if fmt != TTSFormat.OGG else "mp3"`) и помечает результат как `TTSFormat.MP3` (через `TTSAudio.format`). **Warning-лог НЕ эмитится** — поведение документировано в этом ADR как фича (см. ADR-0003 §2.1 и §4).
 
 ### 2.3 Ошибки (иерархия — `src/rob_box_llm/rob_box_llm/errors.py`)
 
@@ -69,19 +69,27 @@ class TTSProvider(abc.ABC):
 TTSError (база)
 ├── TTSAuthError           # 401/403 → НЕ retry (programming error)
 ├── TTSBadRequestError     # 400 + зарезервированные ключи в extra → НЕ retry
-├── TTSRateLimitError      # 429 → retry (harness ≤1 попытка с backoff 1s)
-└── TTSTimeoutError        # asyncio.TimeoutError, httpx timeout → retry (≤2, 0.5s/1.5s)
+├── TTSRateLimitError      # 429 → retry (harness: до 3 попыток с экспоненциальным backoff base=0.5 + jitter)
+└── TTSTimeoutError        # asyncio.TimeoutError, httpx timeout → retry (harness: до 3 попыток, та же политика)
 ```
 
 `base_resp.status_code != 0` (envelope MiniMax) → `TTSError` (НЕ retry, бизнес-ошибка).
-Retry-петля реализована **в harness-обёртке** (`HarnessMiniMaxTTSProvider._call_with_retry`), не в upstream-провайдере (ADR-0003 §2.6 — обоснование «retry снаружи»).
+Retry-петля реализована **в harness-обёртке** (`HarnessMiniMaxTTSProvider._call_with_retry` / `.stream`), не в upstream-провайдере (ADR-0003 §2.6 — обоснование «retry снаружи»).
+
+**Реальные дефолты retry-петель** (а не цифры из ранней версии этого ADR):
+- `HarnessMiniMaxTTSProvider._retry = retry or RetryPolicy()`, где `RetryPolicy` — алиас `rob_box_harness.providers.minimax.RetryPolicy` (см. `minimax_tts.py:149`).
+- Стандартный `RetryPolicy` (из `rob_box_harness/providers/minimax.py:127-176`) → `max_attempts=3, backoff_base=0.5, backoff_jitter=0.25` (формула `delay = backoff_base * 2**(attempt-1) + random.uniform(0, backoff_jitter)`, см. `delay_for()`). `backoff_max`-параметра в `RetryPolicy` нет.
+- Retry **только** на `TTSRateLimitError` / `TTSTimeoutError`. `TTSAuthError` / `TTSBadRequestError` / `TTSError` (envelope) проходят мимо retry-цикла.
+- `HarnessMiniMaxTTSProvider.synthesize` и `stream` используют **одну и ту же** retry-петлю, но `stream` ретрит только на **первом** `__anext__()` (после первого чанка ошибки пробрасываются — см. ADR-0003 §2.6).
+- В upstream `MiniMaxTTSProvider` тоже есть `max_attempts/retry_base_delay/retry_jitter` (свои `DEFAULT_MAX_ATTEMPTS=3` и пр., `minimax_tts.py:560-562`), но harness-обёртка их **не использует** — она вызывает `_inner.synthesize(...)` ровно один раз на попытку, а свою retry-петлю ведёт сама.
 
 ### 2.4 Аутентификация и секреты
 
 Только ENV (`ADR-0001 M7 + SPEC_CURRENT §4`):
-- `MINIMAX_API_KEY` — обязателен; иначе `ConfigError(section="tts.api_key")` в `init()`.
+- `MINIMAX_API_KEY` — обязателен; иначе `ConfigError(section="tts.api_key")` в `__init__()` и `build_minimax_tts_provider()`.
 - `MINIMAX_GROUP_ID` — обязателен (query-param MiniMax T2A v2); иначе `ConfigError(section="tts.group_id")`.
-- YAML-литералы запрещены. Плейсхолдер `${MINIMAX_API_KEY}` подставляется в `load_config()`.
+- YAML-литералы запрещены **на уровне конфигурации**: `tts.api_key` в YAML интерпретируется как placeholder вида `${MINIMAX_API_KEY}` и резолвится через `load_config()` в значение переменной окружения. Прямой литерал-строка (например, `api_key: "sk-live-..."`) в YAML — нарушение контракта.
+- **Важно про уровни.** Секрет-резолвинг — это **политика фабрики `build_minimax_tts_provider`**, а не жёсткий запрет внутри `HarnessMiniMaxTTSProvider.__init__`. Сам класс-конструктор принимает `api_key=...` явно (нужно для тестов с `httpx.MockTransport` — чтобы фиксировать заголовок `Authorization: Bearer ...` и не зависеть от глобального `os.environ`). **Программный потребитель**, который строит провайдер напрямую без `build_minimax_tts_provider`, **обходит env-гейт** — это by design (тестируемость) и допустимо, потому что такой код в production идёт только через `load_config()` + фабрику, которые оба enforce env. ADR-0001 M7 + ADR-0008 §4 контролируют это на границе процесса.
 
 ## 3. Регистрация в capability registry (harness-side)
 
@@ -111,7 +119,7 @@ provider = TTSProviderFactory.create("minimax", tts_config, registry)
 | `TTSCapabilities`  | из upstream `BaseTTSProvider.capabilities()` (см. ADR-0008 §2.2.1) — флаги `streaming`, `voice_cloning`, `audio_format_pcm/mp3`, ssml=False, ogg=False |
 | `TTSVoice[]`       | из `list_voices()` — статический каталог 6 голосов ru/en/zh |
 | `TTSHealth`        | из `healthcheck()` — credential-presence check, без HTTP |
-| `RetryPolicy`      | `max_attempts=3, base=0.5` (экспоненциальный backoff + jitter) |
+| `RetryPolicy`      | `max_attempts=3, backoff_base=0.5, backoff_jitter=0.25` (экспоненциальный backoff `delay = backoff_base * 2**(attempt-1) + uniform(0, backoff_jitter)`, см. `RetryPolicy.delay_for` в `providers/minimax.py:163-176`) |
 | `cache`            | опциональный content-hash cache по `hash(text+voice+format+sample_rate+model)` (default OFF) |
 | `rate_limit_per_min` | soft cap, rolling 60s window (default OFF)              |
 
