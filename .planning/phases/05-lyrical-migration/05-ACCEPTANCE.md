@@ -16,14 +16,15 @@
 
 ```
 ПОЛЬЗОВАТЕЛЬ запускает:
-  gh workflow run "L: Build All Services" -f build_base_images=true
+  gh workflow run "L: Build All Services" --ref feature/lyrical -f build_base_images=true
 
 АГЕНТ:
   1. Ждёт завершения (~20-60 мин)
-  2. Смотрит логи упавших сервисов
+  2. Смотрит логи упавших сервисов: gh run view <RUN_ID> --log --job=<JOB_ID>
   3. Анализирует ошибки (пакеты, Python, пути, системные)
   4. Правит код → commit → push
-  5. GOTO шаг 1 (пользователь перезапускает)
+  5. СООБЩАЕТ ПОЛЬЗОВАТЕЛЮ: "Готово, запускай заново: gh workflow run ... --ref feature/lyrical -f build_base_images=true"
+  6. GOTO шаг 1
 ```
 
 **Критерий готовности:** Все base-образы собираются зелёными:
@@ -35,10 +36,10 @@
 
 ```
 ПОЛЬЗОВАТЕЛЬ запускает:
-  gh workflow run "L: Build All Services"
+  gh workflow run "L: Build All Services" --ref feature/lyrical
 
 АГЕНТ:
-  Тот же цикл: логи → анализ → правки → commit → push → перезапуск
+  Тот же цикл: логи → анализ → правки → commit → push → "запускай заново"
 ```
 
 **Критерий готовности:** Все сервисы собираются зелёными.
@@ -64,13 +65,16 @@
 
 ---
 
-## Команды для агента
+## Команды
 
 ```bash
-# Запустить сборку (только пользователь!)
-gh workflow run "L: Build All Services" -f build_base_images=true
+# Фаза 1: Запуск с пересборкой base-образов
+gh workflow run "L: Build All Services" --ref feature/lyrical -f build_base_images=true
 
-# Смотреть статус
+# Фаза 2: Запуск без пересборки base-образов (быстрее)
+gh workflow run "L: Build All Services" --ref feature/lyrical
+
+# Смотреть статус последних запусков
 gh run list --workflow="L: Build All Services" --limit 5
 
 # Смотреть логи конкретного джоба
@@ -84,7 +88,7 @@ docker run --rm ros:lyrical-ros-base apt-cache search ros-lyrical-<name>
 
 ## Правила
 
-1. **Пользователь запускает workflow.** Агент НЕ запускает `gh workflow run` без явного разрешения.
+1. **Пользователь запускает workflow.** Агент сообщает готовую команду, но НЕ выполняет `gh workflow run`.
 2. **Агент анализирует логи** через `gh run view`.
 3. **Каждый fix — отдельный commit** с описанием что и почему.
 4. **Не трогать Nav2 и DepthAI** до Фазы 3 (Wave 2).
@@ -92,4 +96,4 @@ docker run --rm ros:lyrical-ros-base apt-cache search ros-lyrical-<name>
 
 ---
 
-*Создано в рамках plan-phase. Следующий шаг: пользователь запускает `gh workflow run "L: Build All Services" -f build_base_images=true`.*
+*Создано в рамках plan-phase. Следующий шаг: `gh workflow run "L: Build All Services" --ref feature/lyrical -f build_base_images=true`*
