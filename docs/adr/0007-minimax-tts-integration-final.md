@@ -59,6 +59,8 @@ ADR-0004 фиксирует большинство решений, но разм
 
 ### 1.1 Что ADR-0007 НЕ покрывает
 
+**Consolidation complete (Phase 6, D-01):** Fragments 0007a (reliability), 0007b (ROS2 audio contract), and 0007c (runtime operations) verified incorporated. Fragments deleted — all content lives in this single canonical ADR-0007.
+
 - Реализация `BaseTTSProvider` / `RetryPolicy` / `TTSProviderRegistry` —
   это дочерняя задача `t_25b8e221`. ADR-0007 фиксирует только форму
   (что должно быть реализовано), но не реализацию.
