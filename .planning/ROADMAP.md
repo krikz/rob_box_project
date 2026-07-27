@@ -125,7 +125,18 @@ Plans:
   3. Все оставшиеся изменения на ветке закоммичены
   4. SPEC_CURRENT.md обновлён — P0 помечен как завершённый
   5. Ветка готова к `git merge feature/harness-p0-foundation` → main
-**Plans**: TBD
+**Plans**: 9 plans in 5 waves
+
+Plans:
+- [ ] 06-01-PLAN.md — Documentation merges: W1 (0003 merge), W2 (0004 merge), W3 (0007 fragments→final)
+- [ ] 06-02-PLAN.md — Documentation dedup + SPEC update: W4 (remove duplicates), W5 (SPEC_CURRENT.md)
+- [ ] 06-03-PLAN.md — Docker integration: W6 (Dockerfile), W7 (docker build verify)
+- [ ] 06-04-PLAN.md — Port implementations: W12 (ROS2Transport), W13 (SQLiteVoiceMemory)
+- [ ] 06-05-PLAN.md — DialogHarness + DSM: W8 (DialogHarness adapter), W9 (DialogueStateMachine)
+- [ ] 06-06-PLAN.md — Persistent + Telegram: W10 (PersistentHarness), W11 (TelegramHarness)
+- [ ] 06-07-PLAN.md — Unit tests: W14 (DialogHarness tests), W15 (TelegramHarness tests), W16 (MCP+tools tests)
+- [ ] 06-08-PLAN.md — E2E tests: W17 (integration E2E tests)
+- [ ] 06-09-PLAN.md — PR audit + quality: W18 (PR comment), W19–W20 (ADR audits), W21 (mypy), W22 (linters)
 
 ## Progress
 
