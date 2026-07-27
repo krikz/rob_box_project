@@ -23,8 +23,9 @@ RUN if [ -n "$APT_PROXY" ]; then \
     fi
 
 # Установка зависимостей для работы с облаками точек
+# DEBIAN_FRONTEND=noninteractive обязателен: libpcl-dev тянет пакеты с debconf-промптами
 RUN apt-get update && \
-    apt-get install -y \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
         # PCL (Point Cloud Library) для обработки облаков точек
         libpcl-dev \
         ros-lyrical-pcl-conversions \
