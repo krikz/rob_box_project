@@ -1,21 +1,22 @@
-# План миграции: ROS 2 Kilted Kaiju → ROS 2 Lyrical Luth
+# План миграции: ROS 2 Humble Hawksbill → ROS 2 Lyrical Luth
 
-> **Статус:** 📋 План  
-> **Ветка:** `feature/lyrical` ← `develop`  
+> **Статус:** 📋 План (обсуждён 2026-07-27)  
+> **Ветка:** `feature/lyrical` ← `develop` (Humble)  
 > **Дата:** 2026-07-27  
-> **Автор:** AI-assisted planning
+> **Автор:** AI-assisted planning  
+> **Решения:** [05-CONTEXT.md](../.planning/phases/05-lyrical-migration/05-CONTEXT.md)
 
 ---
 
 ## 1. Обзор Lyrical Luth
 
-| Параметр | Kilted Kaiju | Lyrical Luth |
-|----------|-------------|--------------|
-| **Дата релиза** | Май 2025 | Май 2026 |
-| **Ubuntu** | 24.04 Noble Numbat | **26.04 Resolute** ⚠️ |
-| **LTS** | Нет (non-LTS) | **Да, до мая 2031** |
-| **Python (системный)** | 3.12 | **3.14** (предположительно) |
-| **Zenoh** | Внешний middleware (`rmw_zenoh_cpp`) | **Встроенная поддержка**, развивается |
+| Параметр | Humble (текущий) | Lyrical Luth |
+|----------|-------------------|--------------|
+| **Дата релиза** | Май 2022 | Май 2026 |
+| **Ubuntu** | 22.04 Jammy | **26.04 Resolute** ✅ (вышел 23.04.2026) |
+| **LTS** | Да, до мая 2027 | **Да, до мая 2031** |
+| **Python (системный)** | 3.10 | **3.14** (предположительно) |
+| **Zenoh** | Внешний middleware (`rmw_zenoh_cpp`) | **Внешний middleware** (`ros-lyrical-rmw-zenoh-cpp`, v0.10.4) |
 
 ### Ключевые новые фичи Lyrical
 - **EventsCBGExecutor** — 10-15% меньше CPU чем MultithreadedExecutor
@@ -35,22 +36,22 @@
 
 ### 2.1 Критические изменения
 
-| Область | Kilted | Lyrical | Сложность |
-|--------|--------|---------|-----------|
-| **ОС** | Ubuntu 24.04 Noble | Ubuntu 26.04 Resolute | 🔴 Высокая |
-| **Python** | 3.12 | 3.14 (предп.) | 🔴 Высокая |
-| **Системные пакеты** | `noble` | `resolute` (новые репы) | 🟡 Средняя |
-| **ROS пакеты** | `ros-kilted-*` | `ros-lyrical-*` | 🟢 Низкая |
-| **Docker base** | `ros:kilted-ros-base` | `ros:lyrical-ros-base` | 🟢 Низкая |
-| **Zenoh** | Отдельный `rmw_zenoh_cpp` | Встроен? Нужно уточнить | 🟡 Средняя |
+| Область | Humble (текущий) | Lyrical | Сложность |
+|--------|-------------------|---------|-----------|
+| **ОС** | Ubuntu 22.04 Jammy | Ubuntu 26.04 Resolute | 🔴 Высокая |
+| **Python** | 3.10 | 3.14 (предп.) | 🔴 Высокая |
+| **Системные пакеты** | `jammy` | `resolute` (новые репы) | 🟡 Средняя |
+| **ROS пакеты** | `ros-humble-*` | `ros-lyrical-*` (✅ 2154 пакета) | 🟢 Низкая |
+| **Docker base** | `ros:humble-ros-base` | `ros:lyrical-ros-base` (✅ доступен) | 🟢 Низкая |
+| **Zenoh** | `ros-humble-rmw-zenoh-cpp` | `ros-lyrical-rmw-zenoh-cpp` (✅ v0.10.4) | 🟢 Низкая |
 
 ### 2.2 Доступность third-party образов
 
-| Образ | Kilted | Lyrical |
-|-------|--------|---------|
-| `introlab3it/rtabmap_ros` | ✅ `kilted` (amd64+arm64) | ✅ `lyrical-latest` (amd64+arm64) |
-| `luxonis/depthai-ros` | ✅ `kilted-arm64-latest` | ❌ **НЕТ** (ни amd64, ни arm64) |
-| `ros:lyrical-ros-base` | — | ✅ (amd64+arm64) |
+| Образ | Humble (текущий) | Lyrical |
+|-------|-------------------|---------|
+| `introlab3it/rtabmap_ros` | ✅ `humble-latest` (amd64+arm64) | ✅ `lyrical-latest` (amd64+arm64) |
+| `luxonis/depthai-ros` | ✅ `humble-arm64-latest` (v3.3.0) | ❌ **НЕТ** (ни amd64, ни arm64, ни на GitHub, ни community) |
+| `ros:lyrical-ros-base` | — | ✅ (amd64+arm64, обновлён 16.07.2026) |
 
 **🚨 БЛОКЕР: `luxonis/depthai-ros` не имеет lyrical тегов!**
 
@@ -143,14 +144,14 @@ RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
 
 ### 2.3 Пакеты, которые могут измениться/исчезнуть
 
-На основе опыта миграции humble→kilted:
+На основе опыта миграции humble→kilted (ветка `feature/kilted`, 13 коммитов) и анализа Lyrical:
 
-| Пакет (kilted) | Статус в Lyrical | Примечание |
+| Пакет (humble) | Статус в Lyrical | Примечание |
 |----------------|-----------------|------------|
-| `ros-kilted-behaviortree-cpp-v3` | Вероятно `ros-lyrical-behaviortree-cpp` (v4+) | Переименован |
-| `ros-kilted-control-msgs` | Может отсутствовать | Переименован/включён в другие |
-| `ros-kilted-theora-image-transport` | Может быть удалён | Theora устарел |
-| `ros-kilted-rmw-zenoh-cpp` | Может быть `ros-lyrical-rmw-zenoh-cpp` или встроен | Zenoh становится нативным |
+| `ros-humble-behaviortree-cpp-v3` | Вероятно `ros-lyrical-behaviortree-cpp` (v4+) | Переименован |
+| `ros-humble-control-msgs` | Может отсутствовать | Переименован/включён в другие |
+| `ros-humble-theora-image-transport` | Может быть удалён | Theora устарел |
+| `ros-humble-rmw-zenoh-cpp` | ✅ `ros-lyrical-rmw-zenoh-cpp` (v0.10.4) | Доступен, отдельный пакет |
 
 ---
 
@@ -158,24 +159,24 @@ RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
 
 ### Этап 1: Подготовка (безопасно, не ломает сборку)
 
-- [ ] **1.1** Ветка `feature/lyrical` создана (✅ готово)
-- [ ] **1.2** Проверить `ros:lyrical-ros-base` — базовые пакеты, Python, Ubuntu (✅ образ есть)
-- [ ] **1.3** Проверить `pip` версию и поведение `--break-system-packages` в Ubuntu 26.04
-- [ ] **1.4** Проверить APT репозитории для `resolute` (ports.ubuntu.com, packages.ros.org)
-- [ ] **1.5** Уточнить статус Zenoh — встроен ли `rmw_zenoh_cpp` в базовый образ?
+- [x] **1.1** Ветка `feature/lyrical` создана (✅ готово, база: `develop`)
+- [x] **1.2** Проверить `ros:lyrical-ros-base` — базовые пакеты, Python, Ubuntu (✅ образ есть, 16.07.2026)
+- [x] **1.3** Проверить `pip` версию и поведение `--break-system-packages` в Ubuntu 26.04 (⚠️ требуется)
+- [x] **1.4** Проверить APT репозитории: `ports.ubuntu.com` ✅, `archive.ubuntu.com` ✅ (Resolute вышел 23.04.2026)
+- [x] **1.5** Zenoh: `ros-lyrical-rmw-zenoh-cpp` ✅ доступен (v0.10.4, отдельный пакет, НЕ встроен)
 
-### Этап 2: Базовая миграция (аналог humble→kilted)
+### Этап 2: Базовая миграция (аналог humble→kilted, ветка `feature/kilted` — 13 коммитов)
 
-- [ ] **2.1** Массовая замена `kilted` → `lyrical` во всех файлах:
+- [ ] **2.1** Массовая замена `humble` → `lyrical` во всех файлах:
   - `ROS_DISTRO=lyrical` во всех `.env`
-  - `ros:kilted-ros-base` → `ros:lyrical-ros-base` в Dockerfile'ах
-  - `ros-kilted-*` → `ros-lyrical-*` в apt-get
-  - `/opt/ros/kilted/` → `/opt/ros/lyrical/` в скриптах
-  - `*-kilted-*` → `*-lyrical-*` в тегах образов
+  - `ros:humble-ros-base` → `ros:lyrical-ros-base` в Dockerfile'ах
+  - `ros-humble-*` → `ros-lyrical-*` в apt-get
+  - `/opt/ros/humble/` → `/opt/ros/lyrical/` в скриптах
+  - `*-humble-*` → `*-lyrical-*` в тегах образов
 - [ ] **2.2** Обновить Dockerfile'ы:
   - `Dockerfile.ros2-zenoh`: `FROM ros:lyrical-ros-base`
   - `Dockerfile.rtabmap`: `FROM introlab3it/rtabmap_ros:lyrical-latest`
-  - `Dockerfile.depthai`: ❌ ЗАБЛОКИРОВАНО (нет образа)
+  - `Dockerfile.depthai`: ❌ ЗАБЛОКИРОВАНО — нужен свой Dockerfile (см. Этап 5)
 - [ ] **2.3** Обновить CI/CD:
   - `ROS_DISTRO: lyrical` во всех workflow
   - `python-version` (зависит от Ubuntu 26.04)
@@ -189,11 +190,11 @@ RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
 
 ### Этап 4: Специфичные для проекта изменения
 
-- [ ] **4.1** Zenoh: проверить, нужен ли отдельный `rmw_zenoh_cpp` или он встроен
-- [ ] **4.2** Убрать `LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/...` если Zenoh встроен
-- [ ] **4.3** `docker/vision/zenoh-router/Dockerfile` — возможно больше не нужен
-- [ ] **4.4** `docker/main/zenoh-router/Dockerfile` — возможно больше не нужен
-- [ ] **4.5** Использовать новые фичи: `EventsCBGExecutor`, `AsyncNode`
+- [x] **4.1** Zenoh: `ros-lyrical-rmw-zenoh-cpp` — отдельный пакет (v0.10.4), НЕ встроен. Архитектура zenoh-router сохраняется.
+- [ ] **4.2** Обновить `LD_LIBRARY_PATH` для lyrical (путь изменится: `/opt/ros/lyrical/...`)
+- [ ] **4.3** `docker/vision/zenoh-router/Dockerfile` — обновить `ROS_DISTRO`, базовый образ
+- [ ] **4.4** `docker/main/zenoh-router/Dockerfile` — обновить `ROS_DISTRO`, базовый образ
+- [ ] **4.5** Использовать новые фичи: `EventsCBGExecutor`, `AsyncNode` (после успешной сборки)
 
 ### Этап 5: Решение блокера depthai
 
@@ -225,7 +226,7 @@ RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
 | depthai-ros не выходит для lyrical | Высокая | Блокер | Билдить из исходников |
 | Python 3.14 ломает pip пакеты | Средняя | Высокое | `--break-system-packages` + `--ignore-installed` |
 | APT репы Resolute недоступны | Низкая | Блокер | Использовать `old-releases.ubuntu.com` |
-| Zenoh integration меняет архитектуру | Средняя | Среднее | Проверить документацию, адаптировать |
+| Zenoh integration меняет архитектуру | Низкая | Низкое | ✅ Проверено: `rmw_zenoh_cpp` — внешний пакет, архитектура не меняется |
 | Системные пакеты переименованы | Средняя | Среднее | Итеративное исправление по логам CI |
 | rtabmap_ros:lyrical теряет arm64 | Низкая | Среднее | Уже проверено — arm64 есть ✅ |
 
@@ -233,12 +234,12 @@ RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
 
 ## 5. Ожидаемые выгоды от миграции
 
-1. **LTS до 2031** — стабильность на 5 лет (vs Kilted — не LTS)
-2. **Zenoh нативный** — упрощение архитектуры, меньше внешних зависимостей
-3. **EventsCBGExecutor** — 10-15% экономия CPU на роботе
-4. **AsyncNode** — возможность использовать asyncio для голосового ассистента
-5. **URDF 1.2** — capsule geometry, quaternions для более точной модели робота
-6. **Bag improvements** — circular recording для автономной работы
+1. **LTS до 2031** — стабильность на 5 лет (текущий Humble LTS истекает в мае 2027)
+2. **EventsCBGExecutor** — 10-15% экономия CPU на роботе
+3. **AsyncNode** — возможность использовать asyncio для голосового ассистента
+4. **URDF 1.2** — capsule geometry, quaternions для более точной модели робота
+5. **Bag improvements** — circular recording для автономной работы
+6. **Python 3.14** — современные фичи языка, улучшенная производительность
 
 ---
 
@@ -246,22 +247,26 @@ RUN echo "source ${WS}/install/setup.bash" >> /root/.bashrc
 
 | Этап | Часы | Примечание |
 |------|------|------------|
-| Подготовка + исследование | 2-4 | Проверка Python, APT, Zenoh |
-| Базовая замена kilted→lyrical | 1-2 | Массовый search-replace, как для kilted |
-| Системные правки Ubuntu 26.04 | 4-8 | Самая непредсказуемая часть |
-| depthai решение | 4-16 | Если билдить самим — дольше |
-| Итеративные исправления CI | 8-16 | Как показал опыт kilted, много итераций |
-| **Итого** | **20-45 часов** | Сильно зависит от depthai и системных сюрпризов |
+| Подготовка + исследование | 1-2 | ✅ Частично сделано (Zenoh, Ubuntu, ROS проверены) |
+| Базовая замена humble→lyrical | 2-4 | Массовый search-replace (~200 файлов, как humble→kilted) |
+| Системные правки Ubuntu 26.04 | 4-8 | Python 3.10→3.14, системные пакеты jammy→resolute |
+| depthai решение | 4-16 | Сборка из исходников, vcpkg на Resolute |
+| Итеративные исправления CI | 8-16 | Много итераций по опыту kilted |
+| **Итого** | **20-46 часов** | Сильно зависит от depthai и системных сюрпризов |
 
 ---
 
 ## 7. Следующие шаги
 
-1. 🔴 Решить вопрос с `depthai-ros` для lyrical (блокер)
-2. 🟡 Начать поиск-replace `kilted`→`lyrical` (можно параллельно)
-3. 🟡 Проверить Python 3.14 поведение с pip
-4. 🟢 Итеративная сборка и исправление в CI
+1. 🔴 Создать `Dockerfile.depthai` для lyrical (сборка depthai-core из исходников) — **блокер**
+2. 🔴 Создать Issue в `luxonis/depthai-ros` с запросом официальной lyrical сборки
+3. 🟡 Массовая замена `humble`→`lyrical` во всех Dockerfile'ах, `.env`, скриптах
+4. 🟡 Проверить Python 3.14 поведение с pip (`--break-system-packages`, `--ignore-installed`)
+5. 🟡 Проверить `apt-cacher-ng` совместимость с Resolute
+6. 🟢 Запустить `L: Build All Services` и итеративно чинить
+7. 🟢 После успешной сборки — integration тесты на роботе
 
 ---
 
-*План создан на основе успешного опыта миграции humble→kilted (16 коммитов, 200+ файлов).*
+*План создан на основе успешного опыта миграции humble→kilted (ветка `feature/kilted`, 13 коммитов, ~200 файлов).*
+*Обсуждён и скорректирован 2026-07-27. Решения зафиксированы в `.planning/phases/05-lyrical-migration/05-CONTEXT.md`.*
