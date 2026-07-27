@@ -78,7 +78,7 @@ RUN pip3 install --break-system-packages --no-cache-dir --retries 5 --timeout 12
 COPY requirements.txt /tmp/requirements.txt
 
 RUN --mount=type=cache,target=/root/.cache,sharing=locked \
-    pip3 install --break-system-packages --retries 5 --timeout 120 -r /tmp/requirements.txt && \
+    pip3 install --break-system-packages --ignore-installed --retries 5 --timeout 120 -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
 # ============================================================================
