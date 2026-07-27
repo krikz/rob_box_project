@@ -1,5 +1,7 @@
 # MiniMax TTS-провайдер — архитектурный обзор
 
+> **ADR reference:** See [ADR-0002: MiniMax Provider](../adr/0002-minimax-provider.md) for the formal architecture decision record.
+
 | Поле         | Значение                                                                |
 |--------------|-------------------------------------------------------------------------|
 | Статус       | Implemented                                                             |

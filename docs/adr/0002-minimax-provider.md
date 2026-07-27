@@ -1,5 +1,7 @@
 # ADR-0002: MiniMax TTS-провайдер через rob_box_llm.TTSProvider
 
+> **Overview:** See [MiniMax Provider Architecture](../architecture/minimax-provider.md) for a high-level architectural overview.
+
 | Поле         | Значение                                                                |
 |--------------|-------------------------------------------------------------------------|
 | Статус       | Accepted                                                                |
