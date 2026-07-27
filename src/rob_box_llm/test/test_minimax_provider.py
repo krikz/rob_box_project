@@ -693,6 +693,42 @@ def test_aclose_is_idempotent():
 # ---------------------------------------------------------------------------
 
 
+def test_provider_installs_api_key_redaction_on_sdk_and_httpx_loggers(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    api_key = "minimax-auto-filter-secret-do-not-log"
+    monkeypatch.setenv("MINIMAX_API_KEY", api_key)
+    provider_logger = logging.getLogger("rob_box_llm.providers.minimax")
+    httpx_logger = logging.getLogger("httpx")
+
+    previous_filters = {
+        provider_logger: list(provider_logger.filters),
+        httpx_logger: list(httpx_logger.filters),
+    }
+    for logger in previous_filters:
+        logger.filters[:] = [
+            item
+            for item in logger.filters
+            if not isinstance(item, MiniMaxRedactedLogFilter)
+        ]
+
+    try:
+        p, _ = _make_minimax()
+        del p
+
+        with caplog.at_level(logging.INFO):
+            provider_logger.info("Authorization: Bearer %s", api_key)
+            httpx_logger.info("Authorization: Bearer %s", api_key)
+
+        assert [record.getMessage() for record in caplog.records] == [
+            "Authorization: Bearer ***",
+            "Authorization: Bearer ***",
+        ]
+    finally:
+        for logger, filters in previous_filters.items():
+            logger.filters[:] = filters
+
+
 def test_redacted_log_filter_replaces_key_in_message():
     f = MiniMaxRedactedLogFilter(api_key="secret-key-123")
     rec = logging.LogRecord(

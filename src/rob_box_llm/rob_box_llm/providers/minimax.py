@@ -22,9 +22,9 @@ Design constraints (see ``architecture/minimax-provider.md`` and
 * Image payloads are bounded at 10 MB per frame — an engineering default that
   matches MiniMax's published guidance (the documented value may move; this
   constant lives here so a single edit updates the limit).
-* The API key is never logged. A ``MiniMaxRedactedLogFilter`` is provided so
-  callers can attach it to their root logger if they want belt-and-braces
-  redaction of accidental ``Authorization`` leaks.
+* The API key is never logged. ``MiniMaxProvider`` automatically attaches a
+  ``MiniMaxRedactedLogFilter`` to its own and httpx's loggers as belt-and-
+  braces redaction of accidental ``Authorization`` leaks.
 * ``_post_process_response`` translates MiniMax's in-body ``base_resp.status_code``
   envelope into our typed ``ProviderError`` hierarchy so callers can branch
   on quota / safety / auth errors that arrive on HTTP 200.
@@ -275,6 +275,18 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         # out of the default; pass your own mapping to override.
         thinking: Optional[Mapping[str, str]] = DEFAULT_THINKING_POLICY,
     ) -> None:
+        # Install redaction on the originating loggers before any SDK/httpx
+        # record can reach application handlers. Logger filters run before
+        # propagation, so this also protects handlers attached later.
+        for logger in (_log, logging.getLogger("httpx")):
+            if not any(
+                isinstance(item, MiniMaxRedactedLogFilter)
+                for item in logger.filters
+            ):
+                logger.addFilter(
+                    MiniMaxRedactedLogFilter(api_key_env="MINIMAX_API_KEY")
+                )
+
         # Normalise to ``httpx.Timeout`` so the OpenAI SDK gets a per-phase
         # configuration by default (see ``_coerce_timeout`` and the BLK-5
         # review note for the rationale). A bare ``float`` keeps working as
