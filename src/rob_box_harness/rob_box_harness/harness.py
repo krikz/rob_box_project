@@ -168,12 +168,14 @@ class Harness(abc.ABC, Generic[StateT]):
             self.transport = self._default_transport()
 
         self.state = self._initial_state()
-        self._initialized = True
-        logger.debug("harness %s initialised", self.name)
 
         # Hook fires *after* state is in place but *before* any
-        # turn, so observers can warm caches.
+        # turn, so observers can warm caches. Mark the harness as
+        # initialized only after the hook succeeds, preventing a
+        # partially initialized harness from appearing usable.
         await self.hooks.invoke("on_start", self.name)
+        self._initialized = True
+        logger.debug("harness %s initialised", self.name)
 
     async def run(self, input_data: Any = None) -> HarnessRunResult:
         """Process ``input_data`` once and return the result.

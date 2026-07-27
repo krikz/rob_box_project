@@ -151,6 +151,21 @@ async def test_async_with_teardown_on_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_with_teardown_on_on_start_exception() -> None:
+    """``async with`` leaves init state false when ``on_start`` raises."""
+
+    async def fail_on_start(*args: object) -> None:
+        raise RuntimeError("start boom")
+
+    harness = _make_harness()
+    harness.hooks.on_start = fail_on_start
+    with pytest.raises(Exception, match="start boom"):
+        async with harness:
+            pass
+    assert harness.is_initialized is False
+
+
+@pytest.mark.asyncio
 async def test_extensions_recorded_after_run() -> None:
     """The harness stores ``last_input`` / ``last_output`` in extensions."""
     harness = _make_harness()
