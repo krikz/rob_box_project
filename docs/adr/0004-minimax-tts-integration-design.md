@@ -658,3 +658,51 @@ ADR считается зафиксированным (статус перево
 | RetryPolicy value-object (§2.9)        | +1 dataclass, рефактор tts_node              | Без изменений (та же политика) | ✅ CLI/cron переиспользуют  | ✅ Зафиксированный контракт retry          |
 | Circuit breaker обозначен, не реализован (§2.10) | +0 строк сейчас, +datalass позже      | Без изменений сейчас         | ✅ Shape зафиксирована       | ⚠️ До ~100/час retry-policy хватает       |
 | Streaming: sync+SSE, WebSocket reserved (§2.11) | +0 сейчас                              | Sync: ~2-3 s TTFA, SSE: ~2 s TTFA, WS reserved | ⚠️ WS ждёт M5/M6      | ✅ Buffering SSE не врёт, контракт frozen   |
+
+---
+
+## Приложение B. Merged Design Considerations (Phase 6 consolidation)
+
+> Content merged from `docs/architecture/minimax-tts-integration-design.md` per ADR consolidation (Phase 6, D-01 — single-source-of-truth enforcement).
+
+### B.1 Точки расширения
+
+| Точка                          | Как расширять                                       | Сложность |
+|--------------------------------|------------------------------------------------------|-----------|
+| Новый TTS-провайдер            | Реализовать `TTSProvider` + зарегистрировать в `TTSProviderRegistry` (после миграции) | Низкая |
+| Новый формат аудио             | Расширить `TTSFormat` + добавить decoder в `utils/audio_transcode.py` | Низкая |
+| Новый retry-класс              | Создать подкласс или инстанс `RetryPolicy`            | Тривиальная |
+| Новый error-класс              | Подкласс `TTSError`, добавить в иерархию              | Тривиальная |
+| Новый lifecycle hook           | Переопределить `aclose()` (idempotent)               | Тривиальная |
+| Новый transport (WebSocket)    | Создать `MiniMaxStreamingTTSProvider(MiniMaxTTSProvider)` с persistent connection | Средняя |
+
+**Как добавить второго TTS-провайдера (чеклист):**
+
+1. Реализовать `TTSProvider` ABC в `src/rob_box_llm/providers/<name>_tts.py`
+2. Добавить error-mapping (401/403→TTSAuthError, 429→TTSRateLimitError, 4xx→TTSBadRequestError, 5xx→TTSError)
+3. Зарегистрировать в `rob_box_llm/__init__.py` и `__all__`
+4. Добавить ROS-параметры в `tts_node.py:__init__`
+5. Добавить ветку в `tts_node._synthesize_and_play` (до registry-миграции)
+6. Покрыть тестами через conformance suite + `httpx.MockTransport`
+
+**Что НЕ делать:** не трогать `TTSProvider` ABC (frozen), не менять `/voice/audio/speech` топик, не добавлять автоматический fallback между провайдерами, не дублировать retry-loop в провайдере.
+
+### B.2 Стратегия стриминга (три уровня)
+
+| Уровень | Endpoint | Yield | Latency-выгода | Когда использовать |
+|---------|----------|-------|-----------------|--------------------|
+| Sync `synthesize()` | HTTP POST | `TTSAudio` целиком | 0 (базовый) | Основной сценарий (реплики ≤ 30 сек) |
+| SSE `stream()` | HTTP POST + SSE | `TTSChunk` по мере прихода | ~1-2 сек (буферизация ответа по мере поступления) | `minimax_streaming=true` |
+| WebSocket (отложен) | WS persistent | `TTSChunk` per frame | Full (true real-time) | M5/M6 фаза, требует persistent connection |
+
+### B.3 Зависимости и лицензии
+
+| Зависимость | Где используется | Лицензия |
+|-------------|------------------|----------|
+| `httpx>=0.27` | `MiniMaxTTSProvider` HTTP клиент | BSD-3-Clause |
+| `pydub` (lazy) | `utils.audio_transcode` для MP3/OGG | MIT (lazy — пакет опционален) |
+| `ffmpeg` (system) | `utils.audio_transcode` fallback для MP3/OGG | LGPL/GPL (system binary) |
+
+**НЕ добавлять в `rob_box_llm`:** `pydantic`/`pydantic-settings`, `websockets`, `respx` (только тесты).
+
+**Post-merge status:** `docs/architecture/minimax-tts-integration-design.md` replaced with cross-reference stub pointing to this ADR.
