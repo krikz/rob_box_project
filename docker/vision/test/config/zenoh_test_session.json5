@@ -1,10 +1,10 @@
 {
   // Zenoh session config для тестовых контейнеров
-  // Подключается к локальному test-router на localhost:7447
+  // Подключается к локальному test-router на localhost:17447
   mode: "peer",
   
   connect: {
-    endpoints: ["tcp/localhost:7447"]
+    endpoints: ["tcp/localhost:17447"]
   },
   
   // Namespace для тестового робота (будет заменён через sed в ros_with_namespace.sh)
@@ -13,6 +13,13 @@
   scouting: {
     multicast: {
       enabled: false  // В тестах строго unicast, без multicast discovery
+    }
+  },
+  
+  // Отключаем shared memory — не нужно для тестов, экономит /dev/shm
+  transport: {
+    shared_memory: {
+      enabled: false
     }
   }
 }

@@ -7,7 +7,7 @@
 # =============================================================================
 pyyaml
 requests
-omegaconf==2.3.0
+omegaconf==2.3.1
 openpyxl
 
 # =============================================================================
@@ -36,7 +36,7 @@ pyusb
 # PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
 # scipy: Required by Silero v5 for audio resampling and processing
 # =============================================================================
-torch>=2.12.0
+torch>=2.13.0
 torchaudio>=2.11.0
 scipy
 
@@ -60,8 +60,8 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
 # Used in: rob_box_voice/dialogue_node.py
 # =============================================================================
-openai>=2.37.0,<3.0.0
-openai-agents>=0.17.0,<1.0.0
+openai>=2.48.0,<3.0.0
+openai-agents>=0.18.3,<1.0.0
 
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC

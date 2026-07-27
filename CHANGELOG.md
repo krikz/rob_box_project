@@ -7,52 +7,17 @@
 
 ## [Unreleased]
 
-### Harness P0: pytest-конфиг и CI-джобы (Kanban `t_b13cf256`)
-
-> Готовит почву для ветки `feature/harness-p0-foundation` →
-> `develop` мерджа `wt/t_35cfe938` (harness framework) и
-> `wt/t_2bf98118` (MiniMax LLM provider wrapper). Без этих файлов
-> harness-тесты не имели единой точки запуска и coverage-гейта.
+### MiniMax TTS-провайдер
 
 #### Добавлено
 
-* **Корневой `pytest.ini`** — единая точка входа для тестов
-  `rob_box_harness`. Маркеры: `unit`, `harness`, `integration`,
-  `network`, `slow`. Coverage gate 85% для
-  `rob_box_harness` (включая `providers/minimax.py`).
-  `asyncio_mode = auto`, `addopts = --strict-markers`, явный
-  `testpaths = src/rob_box_harness/test` чтобы не тащить в выборку
-  весь `src/*` моно-репо.
-* **Корневой `conftest.py`** — auto-skip `network`/`integration`
-  тестов при отсутствии `MINIMAX_API_KEY` (default — replay,
-  без интернета); sanity-чек в `pytest_report_header`.
-* **CI-workflow `.github/workflows/G-Harness-Tests.yml`** —
-  две джобы:
-  * `unit-tests` (`Harness unit tests (no network)`) — default
-    PR-чек, обязателен для merge в `develop`/`main`. Кэш pip по
-    `src/rob_box_harness/requirements-dev.txt`. Coverage
-    в Codecov (если задан `CODECOV_TOKEN`) и как артефакт.
-  * `integration-tests` (`Harness integration tests`) —
-    ручной/по расписанию, `replay` по умолчанию; `live`-режим
-    включается только через `workflow_dispatch` +
-    `secrets.MINIMAX_API_KEY`.
-  * `test-summary` — пишет итог в GitHub Step Summary,
-    fail-fast если `unit-tests` красные.
-* **Документация `docs/development/HARNESS_TESTING.md`** — TL;DR,
-  таблица маркеров, инструкция по branch protection
-  (`gh api … required_status_checks.contexts`) и порядок добавления
-  нового теста.
-
-#### Acceptance (ТЗ)
-
-* `pytest --collect-only` показывает все 5 маркеров (`unit`,
-  `harness`, `integration`, `network`, `slow`).
-* `pytest -m 'not network'` запускается локально без сети и
-  без секретов; coverage ≥85% по `rob_box_harness` (включая
-  `rob_box_harness/providers/minimax.py`) или fail с указанием
-  непокрытых строк.
-* Default-PR-чек — `Harness unit tests (no network)`; блокирует
-  merge. `integration-tests` — manual/opt-in.
+* `examples/tts_minimax_example.py` — end-to-end пример получения провайдера
+  через registry/factory, синтеза PCM и записи валидного mono WAV модулем
+  `wave`. Конфигурация читается из ENV, включая custom base URL и локальный
+  лимит конкурентности.
+* API reference и Getting Started обновлены для bytes API, поддерживаемых
+  голосов и форматов `pcm_22050`, `pcm_24000`, `wav`; добавлены инструкции по
+  запуску примера, проверке WAV и ссылка на ADR-0001.
 
 ### [PR #907] — MiniMax LLM-интеграция в `rob_box_llm` (text + tools + vision)
 

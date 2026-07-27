@@ -32,35 +32,39 @@ services:
     environment:
       RUST_LOG: zenoh=warn
     volumes:
-      - ./config/zenoh_router_test.json5:/zenoh_config.json5
+      - type: bind
+        source: ./config/zenoh_router_test.json5
+        target: /zenoh_config.json5
+        read_only: true
     command: -c /zenoh_config.json5
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:18001/@/local/router || exit 1"]
       interval: 3s
       timeout: 5s
       retries: 20
       start_period: 5s
 
-  # ─── Ollama — реальный локальный LLM (OpenAI-compatible API) ──────────────
-  # Первый запуск вытягивает модель. Последующие используют volume.
+  # ─── Ollama — локальный LLM (опционально, через profiles) ──────────
+  # Запуск с Ollama: docker compose --profile ollama up
   ollama:
+    profiles: [ollama]
     build:
       context: ./ollama
       dockerfile: Dockerfile
     container_name: ollama-test
     network_mode: host
     environment:
-      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_HOST: 0.0.0.0:11435
       OLLAMA_KEEP_ALIVE: 1h
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
     volumes:
       - ollama-models:/root/.ollama          # персистентный кэш моделей
     healthcheck:
       # Healthcheck проходит только после того как модель загружена и готова отвечать
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
-      interval: 5s
-      timeout: 10s
-      retries: 60       # до 5 минут на первый pull (на быстром интернете ~30s)
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q '${LLM_MODEL:-qwen2.5:0.5b}' || exit 1"]
+      interval: 10s
+      timeout: 15s
+      retries: 120      # до 20 минут на первый pull (~350MB модель)
       start_period: 10s
 
   # ─── Voice Assistant (только dialogue_node, без hardware) ───────────────────
@@ -87,10 +91,10 @@ services:
     depends_on:
       zenoh-router-test:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      # DeepSeek proxy работает на билд-машине (docker/build/docker-compose.yaml)
+      # на localhost:4000. start_voice_test.sh ждёт его готовности.
     healthcheck:
-      test: ["CMD-SHELL", "ros2 node list 2>/dev/null | grep -q dialogue_node || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f dialogue_node > /dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -111,14 +115,17 @@ services:
       PYTHONUNBUFFERED: "1"
       SCENARIOS_DIR: /scenarios
       RESULTS_FILE: /results/test_results.json
-      OVERALL_TIMEOUT: "120"
+      DEFAULT_SCENARIO_TIMEOUT: "90"
+      SCENARIO_PATTERN: "${SCENARIO_PATTERN:-*.yaml}"
     volumes:
+      - ./config:/test-config:ro
       - ./scenario_runner/scenarios:/scenarios:ro
       - ./results:/results
     command: ["python3", "/runner/runner.py"]
     depends_on:
       voice-test:
         condition: service_healthy
+      # DeepSeek proxy на билд-машине localhost:4000
 
 volumes:
   # Кэш моделей Ollama — сохраняется между запусками тестов

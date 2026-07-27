@@ -19,7 +19,7 @@ scenario_runner/runner.py — Исполнитель интеграционны�
   5. Выводит результаты и записывает results.json
   6. Выход с кодом 0 (все прошли) или 1 (есть провалы)
 
-LLM: Ollama (qwen2.5:0.5b) — OpenAI-совместимый API на порту 11434.
+LLM: Ollama (qwen2.5:0.5b) — OpenAI-совместимый API на порту 11435.
 
 Запуск: python3 runner.py
 """
@@ -44,8 +44,9 @@ from std_msgs.msg import Bool, String
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
 SCENARIOS_DIR = os.getenv("SCENARIOS_DIR", "/scenarios")
+SCENARIO_PATTERN = os.getenv("SCENARIO_PATTERN", "*.yaml")
 RESULTS_FILE = os.getenv("RESULTS_FILE", "/results/test_results.json")
-OVERALL_TIMEOUT = int(os.getenv("OVERALL_TIMEOUT", "120"))
+DEFAULT_SCENARIO_TIMEOUT = int(os.getenv("DEFAULT_SCENARIO_TIMEOUT", "90"))
 
 TOPIC_STT = "/voice/stt/result"
 TOPIC_VAD = "/audio/vad"
@@ -485,7 +486,7 @@ class ScenarioRunner(Node):
             if not rescue_sent and self._dialogue_state == "listening":
                 elapsed = idle_timeout_s - (deadline2 - time.time())
                 silence = time.time() - self._last_any_response_ts
-                if elapsed > 20.0 and silence > 15.0:
+                if elapsed > 10.0 and silence > 5.0:
                     self.get_logger().info(
                         f"[wait_for_idle] RESCUE: node stuck in 'listening' "
                         f"(elapsed={elapsed:.1f}s, silence={silence:.1f}s) — injecting silence word"
@@ -655,17 +656,33 @@ def _extract_text(response_json: str) -> str:
 
 # ── Запуск сценария ───────────────────────────────────────────────────────────
 
-def run_scenario(node: ScenarioRunner, scenario: dict) -> dict:
+def run_scenario(node: ScenarioRunner, scenario: dict, deadline: float) -> dict:
+    """Выполнить один сценарий.
+    
+    Args:
+        node: ScenarioRunner instance.
+        scenario: Сценарий из YAML (name, steps, timeout_s).
+        deadline: Unix timestamp — когда сценарий должен завершиться.
+    """
     name = scenario.get("name", "unnamed")
     steps = scenario.get("steps", [])
     results = []
     passed = True
+    timed_out = False
 
     print(f"\n{'='*60}")
     print(f"  SCENARIO: {name}")
     print(f"{'='*60}")
 
     for i, step in enumerate(steps):
+        if time.time() > deadline:
+            timed_out = True
+            passed = False
+            msg = f"SCENARIO TIMEOUT (exceeded {scenario.get('timeout_s', DEFAULT_SCENARIO_TIMEOUT)}s)"
+            print(f"  Step {i+1}: ✗ FAIL — {msg}")
+            results.append({"step": i + 1, "passed": False, "message": msg, "step_def": step})
+            break
+
         try:
             ok, msg = run_step(node, step)
         except Exception as e:
@@ -680,9 +697,12 @@ def run_scenario(node: ScenarioRunner, scenario: dict) -> dict:
             if scenario.get("fail_fast", True):
                 break
 
-    overall = "PASS" if passed else "FAIL"
-    print(f"\n  → Scenario {overall}")
-    return {"name": name, "passed": passed, "steps": results}
+    if timed_out:
+        print(f"\n  → Scenario TIMEOUT")
+    else:
+        overall = "PASS" if passed else "FAIL"
+        print(f"\n  → Scenario {overall}")
+    return {"name": name, "passed": passed, "steps": results, "timeout": timed_out}
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -697,28 +717,32 @@ def main():
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
-    # ── Глобальный дедлайн ────────────────────────────────────────────────────
-    global_deadline = time.time() + OVERALL_TIMEOUT
-
-    # Ждём Zenoh/ROS2 готовности (dialogue_node должен быть виден)
+    # Ждём Zenoh/ROS2 готовности (dialogue_node должен быть виден).
+    # На холодном старте voice-test может занять до 90s (Zenoh + DeepSeek proxy health).
     print(f"\n[runner] Waiting for dialogue_node to appear...")
-    wait_dl = time.time() + 60
+    wait_dl = time.time() + 120
     while time.time() < wait_dl:
-        names = node.get_node_names()
+        try:
+            names = node.get_node_names()
+        except Exception as exc:
+            # rcl context may temporarily be unavailable during Zenoh reconnection
+            print(f"[runner] get_node_names() failed: {exc} — retrying in 2s...")
+            time.sleep(2.0)
+            continue
         if "dialogue_node" in names:
             print(f"[runner] dialogue_node found!")
             break
         time.sleep(1.0)
     else:
-        print("[runner] WARNING: dialogue_node not found, continuing anyway")
+        print("[runner] WARNING: dialogue_node not found after 120s, continuing anyway")
 
     # Небольшой прогрев — даём dialogue_node получить MCP tools list
     time.sleep(3.0)
 
     # Загружаем сценарии
     scenarios_path = Path(SCENARIOS_DIR)
-    scenario_files = sorted(scenarios_path.glob("*.yaml"))
-    print(f"\n[runner] Found {len(scenario_files)} scenario file(s)")
+    scenario_files = sorted(scenarios_path.glob(SCENARIO_PATTERN))
+    print(f"\n[runner] Found {len(scenario_files)} scenario file(s) matching '{SCENARIO_PATTERN}'")
 
     if not scenario_files:
         print(f"[runner] ERROR: No scenario files in {SCENARIOS_DIR} — aborting")
@@ -727,36 +751,37 @@ def main():
         rclpy.shutdown()
         sys.exit(1)
 
+    # ── Главный цикл по сценариям ──────────────────────────────────────────
     all_results = []
     for path in scenario_files:
-        if time.time() > global_deadline:
-            print(f"[runner] OVERALL_TIMEOUT={OVERALL_TIMEOUT}s exceeded, stopping")
-            break
-
         print(f"\n[runner] Loading {path.name}")
         with open(path) as f:
             data = yaml.safe_load(f)
 
         scenarios = data.get("scenarios", [])
         for scenario in scenarios:
-            if time.time() > global_deadline:
-                print(f"[runner] OVERALL_TIMEOUT exceeded, skipping remaining scenarios")
-                all_results.append({
-                    "name": scenario.get("name", "unknown"),
-                    "passed": False,
-                    "steps": [],
-                    "skipped": True,
-                })
-                continue
+            scenario_timeout = scenario.get("timeout_s", DEFAULT_SCENARIO_TIMEOUT)
+            scenario_deadline = time.time() + scenario_timeout
+            scenario_name = scenario.get("name", "unnamed")
+            print(f"[runner] Starting '{scenario_name}' (timeout={scenario_timeout}s)")
 
-            result = run_scenario(node, scenario)
+            result = run_scenario(node, scenario, scenario_deadline)
+
+            # wait_for_idle — в оставшееся время сценария
+            remaining = scenario_deadline - time.time()
+            if remaining > 2.0 and not result.get("timeout"):
+                # Динамически подгоняем idle_timeout под оставшееся время
+                idle_to = min(55.0, max(5.0, remaining - 1.0))
+                node.wait_for_idle(first_non_idle_timeout_s=min(5.0, remaining), idle_timeout_s=idle_to)
+                # Проверяем не вышли ли за deadline после wait_for_idle
+                if time.time() > scenario_deadline:
+                    result["passed"] = False
+                    result["timeout"] = True
+                    print(f"  → Scenario TIMEOUT (wait_for_idle exceeded deadline)")
+            elif result.get("timeout"):
+                pass  # Уже помечен как timeout
+
             all_results.append(result)
-
-            # Ждём пока dialogue_node вернётся в IDLE (LLM завершил все iterations).
-            # Используем state topic вместо тайм-аuta тишины: между LLM-итерациями
-            # может быть 3-5s тишины что обманывало wait_for_quiet.
-            node.wait_for_idle(first_non_idle_timeout_s=5.0, idle_timeout_s=55.0)
-            # Минимальная пауза для стабилизации
             time.sleep(0.5)
 
     # Итоги

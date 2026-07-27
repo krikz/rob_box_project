@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any, AsyncIterator, Iterable, Mapping, Optional
+from typing import Any, AsyncIterator, Iterable, Mapping, Optional, Union
 
 from openai import (
     APIConnectionError,
@@ -185,7 +185,13 @@ class _OpenAICompatibleProvider(LLMProvider):
         base_url: str,
         default_model: str,
         api_key: Optional[str] = None,
-        timeout: float = 30.0,
+        # Accept either a bare ``float`` (all phases) or a per-phase
+        # :class:`httpx.Timeout` — see ``MiniMaxProvider.DEFAULT_TIMEOUT``
+        # for the BLK-5 rationale (per-phase defaults are needed so a
+        # DNS/TLS hang on the connect phase doesn't burn the whole
+        # 30 s budget). OpenAI's ``AsyncOpenAI(timeout=...)`` accepts
+        # both shapes natively, so we pass through unchanged.
+        timeout: Union[float, "httpx.Timeout", None] = 30.0,
         client: Optional[AsyncOpenAI] = None,
     ) -> None:
         self.name = name
@@ -383,11 +389,16 @@ class _OpenAICompatibleProvider(LLMProvider):
 
     async def aclose(self) -> None:
         # Idempotent — safe to call multiple times from ``finally`` blocks.
-        # The underlying AsyncOpenAI client exposes ``is_closed``; without
-        # the guard, a second ``aclose()`` after the client has already been
+        # The underlying client exposes either ``is_closed`` (real
+        # AsyncOpenAI) or ``closed`` (fake / test doubles). Without the
+        # guard, a second ``aclose()`` after the client has already been
         # closed raises RuntimeError, which masks the real exception in
         # teardown paths.
-        if not self._client.is_closed:
+        already_closed: bool = (
+            getattr(self._client, "is_closed", False)
+            or getattr(self._client, "closed", False)
+        )
+        if not already_closed:
             await self._client.close()
 
 

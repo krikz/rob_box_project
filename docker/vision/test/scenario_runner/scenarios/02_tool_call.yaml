@@ -9,30 +9,34 @@
 scenarios:
 
   - name: navigation_command
+    timeout_s: 45
     description: "Команда навигации → нода не падает, ответ приходит"
     steps:
-      - inject_stt: "поехали на кухню"
+      - inject_stt: "робок поехали на кухню"
         timeout_s: 45
         assert_response_not_empty: true
 
   - name: status_query
+    timeout_s: 45
     description: "Вопрос о местоположении → нода не падает, ответ приходит"
     steps:
-      - inject_stt: "где ты сейчас находишься?"
+      - inject_stt: "робок где ты сейчас находишься?"
         timeout_s: 45
         assert_response_not_empty: true
 
   - name: stop_command
+    timeout_s: 45
     description: "Команда стоп → нода не падает, ответ приходит"
     steps:
-      - inject_stt: "стоп, остановись"
+      - inject_stt: "робок стоп, остановись"
         timeout_s: 45
         assert_response_not_empty: true
 
   - name: response_is_valid_json
+    timeout_s: 45
     description: "Ответ dialogue_node всегда JSON с полем ssml"
     steps:
-      - inject_stt: "выполни какую-нибудь команду"
+      - inject_stt: "робок выполни какую-нибудь команду"
         timeout_s: 45
         assert_response_valid_json: true
         assert_response_has_key: "ssml"

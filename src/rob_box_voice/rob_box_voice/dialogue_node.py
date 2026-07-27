@@ -1897,7 +1897,10 @@ class DialogueNode(Node):
         """Keep the last `max_turns` complete turns in SDK input-list format.
 
         A turn starts at each user message. We keep the last max_turns turns
-        intact, preserving all function_call / function_call_output pairs within.
+        intact, then strip function_call/function_call_output items for excluded
+        tools (prevents pattern-completion feedback loop where LLM sees e.g.
+        handle_memory in history and calls it for every subsequent query).
+        Finally, truncate long function_call_output values.
         """
         user_positions = [
             i
@@ -1909,7 +1912,41 @@ class DialogueNode(Node):
         else:
             cutoff_idx = user_positions[-self._max_turns]
             trimmed = list(items[cutoff_idx:])
+
+        # Strip excluded tool calls to prevent pattern-completion feedback loop.
+        # The LLM sees tool calls in history and mimics them — if handle_memory
+        # is in history, it calls handle_memory for EVERY query, bloating context
+        # and causing OOM after several scenarios.
+        if self._history_excluded_tools:
+            trimmed = self._strip_excluded_tools(trimmed)
+
         return self._truncate_history_outputs(trimmed)
+
+    def _strip_excluded_tools(self, items: list) -> list:
+        """Remove function_call/function_call_output items for excluded tools.
+
+        Keeps user messages and assistant responses — only strips the tool
+        invocation and result pairs. This prevents pattern-completion while
+        preserving conversation flow.
+        """
+        kept = []
+        # Track call_ids to strip: when we see a function_call for an excluded
+        # tool, we remember its call_id and strip both the call and its output.
+        excluded_call_ids: set = set()
+        for item in items:
+            if not isinstance(item, dict):
+                kept.append(item)
+                continue
+            if item.get("type") == "function_call":
+                name = item.get("name", "")
+                if name in self._history_excluded_tools:
+                    excluded_call_ids.add(item.get("call_id", ""))
+                    continue
+            elif item.get("type") == "function_call_output":
+                if item.get("call_id", "") in excluded_call_ids:
+                    continue
+            kept.append(item)
+        return kept
 
     def _truncate_history_outputs(self, items: list, max_len: int = 200) -> list:
         """Truncate long function_call_output values to prevent context bloat.
