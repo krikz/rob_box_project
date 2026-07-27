@@ -6,18 +6,18 @@
 
 ## Summary
 
-Миграция с ROS 2 Humble (Ubuntu 22.04) на ROS 2 Lyrical Luth (Ubuntu 26.04 Resolute) технически возможна, но имеет **один критический архитектурный сюрприз**: Navigation2 (Nav2) **полностью удалён** из дистрибутива Lyrical и заменён на EasyNavigation (NavMap). Это не просто смена названий пакетов — это смена навигационного фреймворка, требующая переписывания Dockerfile и адаптации конфигурации Nav2.
+Миграция с ROS 2 Humble (Ubuntu 22.04) на ROS 2 Lyrical Luth (Ubuntu 26.04 Resolute) технически возможна. **Navigation2 отсутствует в apt-пакетах Lyrical**, но НЕ удалён из экосистемы — исходники на `main` ветке `ros-navigation/navigation2` активно таргетируют Lyrical. Никакой "EasyNavigation" не существует (0 пакетов `easynav`/`navmap` в apt). Source-build Nav2 — единственный и официальный путь.
 
 Остальные изменения ожидаемы: Python 3.10→3.14 с `--break-system-packages`, переименование `behaviortree-cpp-v3`→`behaviortree-cpp`, добавление `python3-pip` (отсутствует по умолчанию). DepthAI остаётся блокером (нужна сборка из исходников). Zenoh-архитектура не меняется.
 
-**Primary recommendation:** Разбить миграцию на 2 волны: (1) всё кроме Nav2 и depthai — быстро, механически; (2) Nav2-переход на EasyNavigation + depthai-сборка — исследовательски, итеративно.
+**Primary recommendation:** Разбить миграцию на 2 волны: (1) всё кроме Nav2 и depthai — быстро, механически; (2) Nav2 source-build + depthai-сборка — исследовательски, итеративно.
 
 ## Architectural Responsibility Map
 
 | Capability | Primary Tier | Secondary Tier | Rationale |
 |------------|-------------|----------------|-----------|
 | ROS 2 base image | Docker base | CI/CD | `FROM ros:lyrical-ros-base` — единая точка входа |
-| Navigation (Nav2→EasyNav) | Docker main | Source build | Nav2 удалён из Lyrical, EasyNav — apt-пакеты + source |
+| Navigation (Nav2) | Docker main | Source build | Nav2 не в apt Lyrical, source-build из `main` ветки |
 | DepthAI/OAK-D | Docker base (новый) | Source build | `luxonis/depthai-ros` не имеет lyrical-тегов |
 | Zenoh middleware | Docker base + router | APT external | `ros-lyrical-rmw-zenoh-cpp` — отдельный пакет |
 | RTAB-Map SLAM | Docker base | Upstream image | `introlab3it/rtabmap_ros:lyrical-latest` ✅ |
@@ -50,28 +50,25 @@ Navigation2 **отсутствует** в ROS 2 Lyrical. В rosdistro Lyrical 0 
 - `ros-lyrical-nav2-minimal-tb4-description`
 - `ros-lyrical-nav2-minimal-tb4-sim`
 
-**Замена:** EasyNavigation — новый навигационный фреймворк, включённый в Lyrical:
-- `NavMap` (v0.4.0-3): `navmap_core`, `navmap_ros`, `navmap_ros_interfaces`, `navmap_rviz_plugin`
-- `easynav` (v0.4.0): `easynav`, `easynav_common`, `easynav_controller`, `easynav_core`, `easynav_interfaces`, `easynav_localizer`, `easynav_maps_manager`
-- `easynav_plugins`
-- `SMACC2` — state machine для навигации
+**⚠️ CORRECTION (2026-07-27): EasyNavigation НЕ СУЩЕСТВУЕТ.** Это был артефакт поиска. 0 пакетов `easynav`/`navmap` в Lyrical apt. Nav2 не удалён — он просто не в apt-пакетах. Ветка `main` в `ros-navigation/navigation2` активно таргетирует Lyrical.
+
+**Решение (verified): Source-build Nav2 из `main` ветки**
+- ✅ `ros-navigation/navigation2` — 4.5k⭐, 398 контрибьюторов, >30 активных PR
+- ✅ PR #6281 merged 5 дней назад: "Updating TF APIs for Lyrical, Rolling, and Jazzy support"
+- ✅ Steve Macenski (Nav2 lead, Jun 2025): "Starting in Rolling today and Lyrical next year"
+- ✅ `nav2_docker` ARM64 Dockerfile: `--build-arg ROS_DISTRO=lyrical` поддерживается
+- ✅ Все build-зависимости в `ros:lyrical`: behaviortree-cpp v4.9.0, nav-msgs v5.9.2, tf2 v0.45.7, rclcpp v32.0.0
+- ✅ Migration guide: docs.nav2.org/migration/Kilted.html
 
 **Последствия для проекта:**
-- `docker/main/nav2/Dockerfile` — **полностью переписать** (20+ `ros-humble-nav2-*` пакетов → EasyNav)
-- Навигационные конфиги (`nav2_params.yaml`, etc.) — требуют адаптации под EasyNav API
-- Запускные скрипты (`start_nav2_direct.sh`) — переписать
-- **Решение EasyNav vs source-build nav2 требует обсуждения с пользователем**
+- `docker/main/nav2/Dockerfile` — переписать на source-build (не механический `s/humble/lyrical/`)
+- `nav2_params.yaml` — API совместимы, изменения минимальны
+- Запускные скрипты — минимальные правки (пути `/opt/ros/lyrical/` + `/nav2_ws/install/`)
 
-**Варианты решения (на обсуждение):**
-
-| Вариант | Плюсы | Минусы | Оценка |
-|---------|-------|--------|--------|
-| A: Перейти на EasyNavigation | Нативный для Lyrical, apt-пакеты, поддерживается | v0.4.0 — незрелый, другой API, риски стабильности | 🔴 Высокий риск |
-| B: Собрать navigation2 из исходников | Знакомый API, зрелый код | Нет lyrical-ветки, ручная сборка, не тестировался на Resolute | 🟡 Средний риск |
-| C: Временно оставить nav2 на humble-базе | Быстро, без изменений кода | Два дистрибутива, defeats purpose D-05 | 🔴 Технический долг |
-| D: Гибрид: EasyNav для простого + nav2 source для сложного | Максимальная гибкость | Максимальная сложность | 🔴 Переусложнение |
-
-**Рекомендация исследователя:** Вариант B (source-build navigation2). EasyNavigation v0.4.0 слишком незрел для production-робота. Navigation2 — зрелый фреймворк с известным поведением. Сборка из исходников на `ros:lyrical-ros-base` должна работать (зависимости: behaviortree-cpp, nav_msgs, tf2 — все доступны в Lyrical как apt-пакеты).
+**Риски source-build:**
+- Nav2 `main` может иметь ABI-несовместимости → пинить коммит
+- Мы early adopters → сообщать об issues upstream
+- Когда выйдут apt-пакеты → переключиться тривиально (конфиги те же)
 
 ## Standard Stack
 
@@ -105,7 +102,7 @@ Navigation2 **отсутствует** в ROS 2 Lyrical. В rosdistro Lyrical 0 
 | `ros-humble-diagnostic-updater` | `ros-lyrical-diagnostic-updater` | ✅ Доступен |
 | `ros-humble-rosidl-default-generators` | `ros-lyrical-rosidl-default-generators` | ✅ Доступен |
 | `ros-humble-ament-cmake` | `ros-lyrical-ament-cmake` | ✅ Доступен |
-| `ros-humble-nav2-*` (20+ пакетов) | **УДАЛЕНЫ** | 🚨 Заменены на EasyNavigation |
+| `ros-humble-nav2-*` (20+ пакетов) | **НЕТ в apt** | 🚨 Source-build из `main` (см. выше) |
 
 ### Supporting — System Packages
 
