@@ -10,6 +10,7 @@
 - [x] **Phase 2: Ревью структуры** - Проверить Docker layout и пакеты на соответствие стандартам проекта
 - [x] **Phase 3: Code Quality Review** - Разобрать tech debt, запустить статический анализ, задокументировать стратегию рефакторинга
 - [ ] **Phase 4: GitHub Issues Integration** - Мигрировать tasks.json → GitHub Issues, настроить label taxonomy, обновить workflow агента
+- [ ] **Phase 5: Миграция ROS 2 Humble → Lyrical Luth** - Перевести все Docker-сервисы на ROS 2 Lyrical (Ubuntu 26.04), включая решение блокеров Nav2 и DepthAI
 
 ## Phase Details
 
@@ -104,6 +105,22 @@ Plans:
 - [ ] 04-02: GitHub labels (17 шт.) + milestones (M1/M2/M3) через gh CLI
 - [ ] 04-03: Migrate tasks.json + TECH_DEBT → Issues; STUB → #N; удалить tasks.json
 
+### Phase 5: Миграция ROS 2 Humble → Lyrical Luth
+**Goal**: Все Docker-сервисы робота работают на ROS 2 Lyrical Luth (Ubuntu 26.04 Resolute)
+**Depends on**: Phase 4
+**Requirements**: MIG-01, MIG-02, MIG-03, MIG-04, MIG-05
+**Success Criteria** (what must be TRUE):
+  1. Все Dockerfile'ы (кроме Nav2 и DepthAI) используют ros:lyrical-ros-base или lyrical-совместимые базовые образы
+  2. CI/CD успешно собирает base-образы (ros2-zenoh, rtabmap, pcl) на lyrical
+  3. Nav2 собран из исходников (ros-navigation/navigation2 main) и работает на роботе
+  4. DepthAI собран из исходников (depthai-core main) и OAK-D камера публикует данные
+  5. Все pip install используют --break-system-packages, python3-pip добавлен в зависимости
+**Plans**: 2 волны (Wave 1 — механическая миграция, Wave 2 — Nav2/DepthAI source-build)
+
+Plans:
+- [ ] 05-01-PLAN.md — Wave 1: Механическая миграция (~200 файлов, всё кроме Nav2 и DepthAI)
+- [ ] 05-02-PLAN.md — Wave 2: Nav2 source-build + DepthAI source-build (будет создан после Wave 1)
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -113,3 +130,4 @@ Plans:
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
+| 5. Миграция Humble → Lyrical | 1/2 | In progress | Wave 1 planned |
