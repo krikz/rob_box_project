@@ -773,27 +773,15 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 
 **If this table is empty:** Not applicable — assumptions have been identified.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should DialogHarness be a parallel implementation or in-place refactor of dialogue_node.py?**
-   - What we know: dialogue_node.py is 2316 lines with 9% coverage. ADR-0001 says "thin ROS2 wrapper remains; logic moves inside."
-   - What's unclear: Is the intent to (a) modify dialogue_node.py to delegate to DialogHarness, or (b) create DialogHarness as a separate file and keep dialogue_node.py unchanged?
-   - Recommendation: **Parallel implementation (option b).** Better for risk management and incremental adoption. The CONTEXT.md (D-05) says "DialogHarness адаптер: создать класс-обёртку над Harness[StateT]" — this suggests a wrapper, not a rewrite.
+1. **Should DialogHarness be a parallel implementation or in-place refactor of dialogue_node.py?** — RESOLVED: Parallel implementation (option b). Build DialogHarness as a separate file (`src/rob_box_harness/harnesses/dialog.py`), keep dialogue_node.py unchanged. Per CONTEXT.md D-05: "создать класс-обёртку", not a rewrite.
 
-2. **What is the `rob_box_harness/package.xml` dependency declaration for rob_box_llm?**
-   - What we know: setup.py declares `rob_box_llm>=0.2.1` as install_requires. package.xml may not have the corresponding `<depend>`.
-   - What's unclear: colcon uses package.xml for build order. If `<depend>rob_box_llm</depend>` is missing, colcon may build harness before llm.
-   - Recommendation: Verify and add if missing BEFORE W6 Dockerfile work.
+2. **What is the `rob_box_harness/package.xml` dependency declaration for rob_box_llm?** — RESOLVED: Verify `<depend>rob_box_llm</depend>` exists in package.xml before W6. If missing, add it. Package MUST declare the dependency for correct colcon build order (llm before harness). setup.py has `rob_box_llm>=0.2.1` — package.xml must match.
 
-3. **What is the current MCP tools test coverage baseline?**
-   - What we know: SPEC_CURRENT says target is 70%+ but doesn't state current coverage.
-   - What's unclear: Is coverage truly 0% or is there some existing test infrastructure?
-   - Recommendation: Run `pytest --cov=rob_box_mcp_tools` before W16 to establish baseline.
+3. **What is the current MCP tools test coverage baseline?** — RESOLVED: Run `pytest --cov=rob_box_mcp_tools` as first step of W16 to establish baseline. If 0%, target 70%+. If already >0%, adjust target proportionally. Baseline command included in plan 06-07 W16 task.
 
-4. **Are the 0007 fragments truly fully incorporated into 0007-final?**
-   - What we know: 0007-final references 0007a and 0007b as "sub-fragments (детализация, не самостоятельные ADR)". 0007c is not listed in the header but exists on disk.
-   - What's unclear: Does 0007c contain unique content not in 0007-final? The final ADR's header doesn't list 0007c as a sub-fragment.
-   - Recommendation: Diff 0007c against 0007-final before merging. If unique, incorporate; otherwise, note and remove.
+4. **Are the 0007 fragments truly fully incorporated into 0007-final?** — RESOLVED: Diff 0007c against 0007-final during W3 merge. If 0007c has unique content not in final, incorporate it. If redundant, note and delete 0007c. W3 task in plan 06-01 already includes diff-and-merge step for all three fragments.
 
 ## Validation Architecture
 
