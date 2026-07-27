@@ -22,7 +22,7 @@ echo ""
 # Check if ROS 2 is sourced
 if [ -z "$ROS_DISTRO" ]; then
     echo -e "${RED}❌ ROS 2 is not sourced!${NC}"
-    echo -e "${YELLOW}Run: source /opt/ros/humble/setup.bash${NC}"
+    echo -e "${YELLOW}Run: source /opt/ros/lyrical/setup.bash${NC}"
     exit 1
 fi
 
@@ -40,7 +40,7 @@ fi
 # Check if RViz is installed
 if ! command -v rviz2 &> /dev/null; then
     echo -e "${RED}❌ RViz2 is not installed!${NC}"
-    echo -e "${YELLOW}Install: sudo apt install ros-humble-rviz2${NC}"
+    echo -e "${YELLOW}Install: sudo apt install ros-lyrical-rviz2${NC}"
     exit 1
 fi
 
@@ -57,7 +57,7 @@ else
     echo -e "${YELLOW}⚠️  ros2 command not available${NC}"
 fi
 
-echo -e "${GREEN}✓${NC} ROS Distro: ${ROS_DISTRO} (Humble recommended)"
+echo -e "${GREEN}✓${NC} ROS Distro: ${ROS_DISTRO} (Lyrical recommended)"
 
 # Robot ID from environment or default
 ROBOT_ID="${ROBOT_ID:-RBXU100001}"
@@ -109,14 +109,14 @@ export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 export ZENOH_ROUTER_CHECK_ATTEMPTS=30
 export RUST_LOG=zenoh=warn
-export LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
 # Optional: Set ROS_DOMAIN_ID if needed
 # export ROS_DOMAIN_ID=0
 
 # CRITICAL FIX: Prioritize ROS Ogre vendor libraries over system libraries
 # RViz requires Ogre 1.12.1 which is bundled with ROS, not system 1.12.10
-export LD_LIBRARY_PATH="/opt/ros/humble/opt/rviz_ogre_vendor/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/opt/ros/lyrical/opt/rviz_ogre_vendor/lib:${LD_LIBRARY_PATH}"
 
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -6,7 +6,7 @@
 ignored:
   - DL3008  # Pin versions in apt-get install
             # Причина: ROS packages часто не имеют фиксированных версий
-            # Мы полагаемся на версию базового образа (ros:humble-ros-base)
+            # Мы полагаемся на версию базового образа (ros:lyrical-ros-base)
   
   - DL3009  # Delete the apt-get lists after installing
             # Причина: Уже обработано в базовых образах

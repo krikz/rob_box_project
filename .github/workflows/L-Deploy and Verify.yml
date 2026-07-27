@@ -735,7 +735,7 @@ jobs:
           # Проверяем топики OAK-D камеры
           echo "Checking oak-d container topics..."
           TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            "docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+            "docker exec oak-d bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then
             echo "❌ No topics found (ROS2 may not be initialized yet)"
@@ -795,7 +795,7 @@ jobs:
           # Проверяем топики в rtabmap контейнере
           echo "Checking rtabmap container topics..."
           TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+            "docker exec rtabmap bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then
             echo "❌ No topics found (ROS2 may not be initialized yet)"

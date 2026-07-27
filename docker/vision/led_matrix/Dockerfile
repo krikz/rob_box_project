@@ -10,7 +10,7 @@
 #   - 5× панели 5×5 (main_display 5×25)
 #   - Общая цепочка: 381 LED (256 + 125)
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=lyrical
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 ARG ROS2LEDS_SHA=unknown
 
@@ -37,8 +37,8 @@ RUN apt-get update && apt-get install -y \
 # Установка Python библиотек для LED
 # pi5neo - библиотека для управления WS2812B через SPI на Raspberry Pi 5
 # Обновляем pip перед установкой для поддержки современных флагов
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir \
+RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip && \
+    pip3 install --break-system-packages --no-cache-dir \
     pi5neo \
     spidev \
     numpy

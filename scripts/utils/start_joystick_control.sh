@@ -62,7 +62,7 @@ EOF
 
 echo "   Starting joy_node..."
 (
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/lyrical/setup.bash
     [ -f install/setup.bash ] && source install/setup.bash
     export RMW_IMPLEMENTATION=rmw_zenoh_cpp
     export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"
@@ -74,7 +74,7 @@ sleep 2
 
 echo "   Starting teleop_node..."
 (
-    source /opt/ros/humble/setup.bash
+    source /opt/ros/lyrical/setup.bash
     [ -f install/setup.bash ] && source install/setup.bash
     export RMW_IMPLEMENTATION=rmw_zenoh_cpp
     export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"

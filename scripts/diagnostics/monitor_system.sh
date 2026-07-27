@@ -97,7 +97,7 @@ if command -v ros2 &> /dev/null; then
     fi
 else
     echo "ROS 2 недоступен в текущем окружении"
-    echo "Запустите: source /opt/ros/humble/setup.bash"
+    echo "Запустите: source /opt/ros/lyrical/setup.bash"
 fi
 
 # Docker контейнеры

@@ -10,7 +10,7 @@ ARG BUILD_VERSION=2026-03-08-v2
 
 FROM ${BASE_IMAGE}
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=lyrical
 
 # Метаданные
 LABEL org.opencontainers.image.title="Voice Base Image"
@@ -70,7 +70,7 @@ RUN apt-get update && apt-get install -y debconf-utils \
 # ============================================================================
 # Python базовые инструменты (отдельный слой, не зависит от requirements.txt)
 # ============================================================================
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 --upgrade pip "setuptools>=59.6.0,<68" wheel
+RUN pip3 install --break-system-packages --no-cache-dir --retries 5 --timeout 120 --upgrade pip "setuptools>=59.6.0,<68" wheel
 
 # ============================================================================
 # Python зависимости
@@ -78,7 +78,7 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 120 --upgrade pip "setupto
 COPY requirements.txt /tmp/requirements.txt
 
 RUN --mount=type=cache,target=/root/.cache,sharing=locked \
-    pip3 install --retries 5 --timeout 120 -r /tmp/requirements.txt && \
+    pip3 install --break-system-packages --retries 5 --timeout 120 -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
 # ============================================================================
@@ -87,7 +87,7 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
 RUN cd /tmp && \
     git clone --depth 1 https://github.com/respeaker/usb_4_mic_array.git && \
     cd usb_4_mic_array && \
-    pip3 install --retries 5 --timeout 120 -r requirements.txt && \
+    pip3 install --break-system-packages --retries 5 --timeout 120 -r requirements.txt && \
     cp tuning.py /usr/local/bin/ && \
     cp dfu.py /usr/local/bin/ && \
     chmod +x /usr/local/bin/tuning.py /usr/local/bin/dfu.py && \

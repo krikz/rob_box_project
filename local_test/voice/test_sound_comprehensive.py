@@ -7,12 +7,12 @@ import os
 import sys
 
 # Настраиваем окружение ROS2
-os.environ.setdefault('ROS_DISTRO', 'humble')
+os.environ.setdefault('ROS_DISTRO', 'lyrical')
 os.environ.setdefault('ROS_PYTHON_VERSION', '3')
 os.environ.setdefault('ROS_VERSION', '2')
 
 # Добавляем пути для ROS2 и нашего кода
-sys.path.insert(0, '/opt/ros/humble/lib/python3.10/site-packages')
+sys.path.insert(0, '/opt/ros/lyrical/lib/python3.10/site-packages')
 sys.path.insert(0, '/ws/install/rob_box_voice/lib/python3.10/site-packages')
 sys.path.append("/ws/src/rob_box_voice")
 

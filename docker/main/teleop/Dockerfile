@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
+FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-lyrical-latest
 
 # Install joy node from ROS 2 packages and Serial dependencies
 RUN apt-get update && apt-get install -y \

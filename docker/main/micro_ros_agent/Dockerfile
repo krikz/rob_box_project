@@ -2,7 +2,7 @@
 # Транслирует сообщения между ROS2 (DDS/Zenoh) и micro-ROS (XRCE-DDS)
 # Работает по UART (serial) с ESP32
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=lyrical
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
 FROM ${BASE_IMAGE}

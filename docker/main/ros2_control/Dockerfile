@@ -30,21 +30,21 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     net-tools \
     # ROS 2 development packages needed for building message packages
-    ros-humble-rosidl-default-generators \
-    ros-humble-rosidl-default-runtime \
+    ros-lyrical-rosidl-default-generators \
+    ros-lyrical-rosidl-default-runtime \
     # ROS2 Control (ros-base уже в базовом образе)
-    ros-humble-ros2-control \
-    ros-humble-ros2-controllers \
-    ros-humble-controller-manager \
-    ros-humble-hardware-interface \
-    ros-humble-pluginlib \
+    ros-lyrical-ros2-control \
+    ros-lyrical-ros2-controllers \
+    ros-lyrical-controller-manager \
+    ros-lyrical-hardware-interface \
+    ros-lyrical-pluginlib \
     # Контроллеры
-    ros-humble-diff-drive-controller \
-    ros-humble-joint-state-broadcaster \
-    ros-humble-joint-trajectory-controller \
+    ros-lyrical-diff-drive-controller \
+    ros-lyrical-joint-state-broadcaster \
+    ros-lyrical-joint-trajectory-controller \
     # Утилиты
-    ros-humble-xacro \
-    ros-humble-ros2controlcli \
+    ros-lyrical-xacro \
+    ros-lyrical-ros2controlcli \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория
@@ -65,8 +65,8 @@ COPY src/rob_box_description /ws/src/rob_box_description
 
 # Установка зависимостей через rosdep и сборка пакетов
 # Явно задаём ROS_DISTRO для rosidl_generator_rs (Rust IDL)
-ENV ROS_DISTRO=humble
-RUN . /opt/ros/humble/setup.sh && \
+ENV ROS_DISTRO=lyrical
+RUN . /opt/ros/lyrical/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \
@@ -78,7 +78,7 @@ RUN . /opt/ros/humble/setup.sh && \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Source workspace
-RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+RUN echo "source /opt/ros/lyrical/setup.bash" >> /root/.bashrc && \
     echo "source /ws/install/setup.bash" >> /root/.bashrc
 
 # ROS2 и Zenoh environment variables

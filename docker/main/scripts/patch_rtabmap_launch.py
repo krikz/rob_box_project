@@ -21,7 +21,7 @@ Usage:
 
 import sys
 
-LAUNCH_FILE = "/opt/ros/humble/share/rtabmap_launch/launch/rtabmap.launch.py"
+LAUNCH_FILE = "/opt/ros/lyrical/share/rtabmap_launch/launch/rtabmap.launch.py"
 SENTINEL = '"Mem/IncrementalMemory"'
 
 # Parameters to inject into the rtabmap Node parameters dict

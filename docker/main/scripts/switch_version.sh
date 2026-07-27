@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Скрипт для переключения версии ROS 2 и тега образов
-# Использование: ./switch_version.sh [humble|jazzy|kilted] [latest|dev|rc-X.Y.Z]
+# Использование: ./switch_version.sh [lyrical|jazzy|kilted] [latest|dev|rc-X.Y.Z]
 
 set -e
 
@@ -18,13 +18,13 @@ print_usage() {
     echo "Использование: $0 <ros_distro> [image_tag]"
     echo ""
     echo "Параметры:"
-    echo "  ros_distro  - Версия ROS 2: humble, jazzy, kilted"
+    echo "  ros_distro  - Версия ROS 2: lyrical, jazzy, kilted"
     echo "  image_tag   - Тег образа (опционально): latest, dev, rc-X.Y.Z, test"
     echo ""
     echo "Примеры:"
-    echo "  $0 humble latest       # Production на Humble"
+    echo "  $0 lyrical latest       # Production на Lyrical"
     echo "  $0 jazzy dev           # Development на Jazzy"
-    echo "  $0 humble rc-1.0.0     # Release candidate 1.0.0 на Humble"
+    echo "  $0 lyrical rc-1.0.0     # Release candidate 1.0.0 на Lyrical"
     echo "  $0 kilted              # Production на Kilted (IMAGE_TAG=latest)"
 }
 
@@ -38,11 +38,11 @@ IMAGE_TAG=${2:-latest}
 
 # Валидация ROS_DISTRO
 case "$ROS_DISTRO" in
-    humble|jazzy|kilted)
+    lyrical|jazzy|kilted)
         ;;
     *)
         echo -e "${RED}Ошибка: Неподдерживаемая версия ROS 2: $ROS_DISTRO${NC}"
-        echo "Поддерживаемые версии: humble, jazzy, kilted"
+        echo "Поддерживаемые версии: lyrical, jazzy, kilted"
         exit 1
         ;;
 esac

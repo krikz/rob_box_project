@@ -8,7 +8,7 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
 FROM ${BASE_IMAGE}
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=lyrical
 
 LABEL org.opencontainers.image.title="Telegram Bot for Rob Box"
 LABEL org.opencontainers.image.description="Operator interface via Telegram for Rob Box autonomous rover"
@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости
-RUN pip3 install --no-cache-dir \
+RUN pip3 install --break-system-packages --no-cache-dir \
     python-telegram-bot[job-queue]==21.* \
     aiohttp>=3.9 \
     Pillow>=10.0 \

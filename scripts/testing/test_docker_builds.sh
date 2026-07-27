@@ -16,7 +16,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Настройки
-ROS_DISTRO="humble"
+ROS_DISTRO="lyrical"
 BUILD_PLATFORM="linux/arm64"  # Или linux/amd64 для быстрого теста
 BASE_IMAGE_TAG="ros2-zenoh-${ROS_DISTRO}-latest"
 

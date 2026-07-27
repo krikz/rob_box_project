@@ -1,7 +1,7 @@
 #!/bin/bash
 # Wrapper для запуска LiDAR-only rtabmap на Main Pi.
 
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 
 # ── Mapping Lifecycle: always start in localization mode ───────────────────
 # rtabmap ВСЕГДА стартует в localization:=true.

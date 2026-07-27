@@ -11,7 +11,7 @@ env:
   REGISTRY: ghcr.io
   LOCAL_REGISTRY: 10.1.1.5:5000  # Update with your build machine IP
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
-  ROS_DISTRO: humble
+  ROS_DISTRO: lyrical
 
 jobs:
   build-example:

@@ -1,6 +1,6 @@
-# Базовый образ ROS 2 Humble + Zenoh
+# Базовый образ ROS 2 Lyrical + Zenoh
 # Общая база для всех контейнеров проекта, которые не требуют специализированных пакетов
-FROM ros:humble-ros-base
+FROM ros:lyrical-ros-base
 
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""
@@ -25,7 +25,7 @@ RUN if [ -n "$APT_PROXY" ]; then \
 RUN apt-get update && \
     apt-get install -y \
         # Zenoh middleware для ROS 2
-        ros-humble-rmw-zenoh-cpp \
+        ros-lyrical-rmw-zenoh-cpp \
         # Базовые утилиты
         git \
         wget \
@@ -41,10 +41,10 @@ RUN rm -f /etc/apt/apt.conf.d/02proxy
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
     ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     RUST_LOG=zenoh=info \
-    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
 
 # Метаданные образа
 LABEL maintainer="rob_box_project" \
-      description="Base ROS 2 Humble + Zenoh image" \
+      description="Base ROS 2 Lyrical + Zenoh image" \
       version="1.0"
 

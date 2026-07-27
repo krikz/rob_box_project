@@ -57,7 +57,7 @@ jobs:
           - ✓ Base images (ros2-zenoh)
 
           ### Docker Images:
-          All images will be tagged as \`*-humble-latest\` after merge.
+          All images will be tagged as \`*-lyrical-latest\` after merge.
 
           ### Actions Required:
           - Review all changes since last release

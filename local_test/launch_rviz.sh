@@ -5,7 +5,7 @@ echo "🎨 === RViz2 с Zenoh Middleware ==="
 echo ""
 
 # Source ROS2
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 
 # Установка Zenoh middleware
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp

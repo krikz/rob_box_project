@@ -2,7 +2,7 @@
 set -e
 
 # Source ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 source /ws/install/setup.bash
 
 # Настройка Zenoh middleware

@@ -1,5 +1,5 @@
 #!/bin/bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 
 # Устанавливаем переменные для оптимизации сжатия изображений
 export COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85

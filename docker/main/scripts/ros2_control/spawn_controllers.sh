@@ -8,7 +8,7 @@ echo "Waiting for controller_manager to be ready..."
 sleep 5
 
 # Source ROS2
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 
 echo "Loading and activating controllers..."
 

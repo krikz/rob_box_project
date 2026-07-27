@@ -5,7 +5,7 @@ set -e
 echo "ZENOH_SESSION_CONFIG_URI=$ZENOH_SESSION_CONFIG_URI"
 
 # Source ROS 2
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 
 # Генерируем URDF из xacro
 echo "Generating URDF from xacro..."

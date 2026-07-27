@@ -9,12 +9,12 @@ FROM ${BASE_IMAGE}
 
 # Устанавливаем дополнительные зависимости для сборки lslidar драйвера
 RUN apt-get update && apt-get install -y \
-    ros-humble-rosidl-default-generators \
-    ros-humble-rosidl-default-runtime \
-    ros-humble-builtin-interfaces \
-    ros-humble-std-msgs \
-    ros-humble-sensor-msgs \
-    ros-humble-ament-cmake \
+    ros-lyrical-rosidl-default-generators \
+    ros-lyrical-rosidl-default-runtime \
+    ros-lyrical-builtin-interfaces \
+    ros-lyrical-std-msgs \
+    ros-lyrical-sensor-msgs \
+    ros-lyrical-ament-cmake \
     libboost-dev \
     libboost-thread-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -33,7 +33,7 @@ RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_dri
 # - ./lslidar/scripts:/scripts:ro (скрипт запуска)
 WORKDIR /ws
 SHELL ["/bin/bash", "-c"]
-RUN source /opt/ros/humble/setup.bash && \
+RUN source /opt/ros/lyrical/setup.bash && \
     colcon build --symlink-install --parallel-workers 1 --executor sequential
 
 # Entrypoint монтируется из volume: /scripts/start_lslidar.sh

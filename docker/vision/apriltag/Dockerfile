@@ -5,12 +5,12 @@ FROM ${BASE_IMAGE}
 
 # Установка AprilTag пакетов
 RUN apt-get update && apt-get install -y \
-    ros-humble-apriltag-ros \
-    ros-humble-image-transport-plugins \
-    ros-humble-cv-bridge \
+    ros-lyrical-apriltag-ros \
+    ros-lyrical-image-transport-plugins \
+    ros-lyrical-cv-bridge \
     && rm -rf /var/lib/apt/lists/*
 
-RUN echo $(dpkg -s ros-humble-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
+RUN echo $(dpkg -s ros-lyrical-apriltag-ros | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
 
 # ВАЖНО: Скрипты и конфиги НЕ копируются в образ!
 # Они монтируются через volumes в docker-compose.yaml:

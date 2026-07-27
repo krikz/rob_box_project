@@ -37,7 +37,7 @@ jobs:
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
         with:
-          required-ros-distributions: humble
+          required-ros-distributions: lyrical
 
       - name: Install Python dependencies
         run: |
@@ -50,13 +50,13 @@ jobs:
           sudo apt-get install -y \
             python3-pytest \
             python3-pytest-cov \
-            ros-humble-ament-cmake-pytest \
-            ros-humble-launch-testing \
-            ros-humble-launch-testing-ament-cmake
+            ros-lyrical-ament-cmake-pytest \
+            ros-lyrical-launch-testing \
+            ros-lyrical-launch-testing-ament-cmake
 
       - name: Build workspace
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
 
           # Create workspace in runner's working directory
           mkdir -p ${{ github.workspace }}/test_ws/src
@@ -70,7 +70,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           cd ${{ github.workspace }}/test_ws
@@ -84,7 +84,7 @@ jobs:
       - name: Display test results
         if: always()
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           cd ${{ github.workspace }}/test_ws
           colcon test-result --all --verbose
 
@@ -129,11 +129,11 @@ jobs:
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
         with:
-          required-ros-distributions: humble
+          required-ros-distributions: lyrical
 
       - name: Build workspace
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           cp -r src/* ${{ github.workspace }}/test_ws/src/
           cd ${{ github.workspace }}/test_ws
@@ -141,7 +141,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           # Run tests marked as integration

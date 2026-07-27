@@ -8,12 +8,12 @@ FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y \
     python3-pip \
     # ROS 2 development packages needed for building message packages
-    ros-humble-rosidl-default-generators \
-    ros-humble-rosidl-default-runtime \
-    ros-humble-ament-cmake \
-    ros-humble-ament-cmake-python \
+    ros-lyrical-rosidl-default-generators \
+    ros-lyrical-rosidl-default-runtime \
+    ros-lyrical-ament-cmake \
+    ros-lyrical-ament-cmake-python \
     # ROS 2 message packages
-    ros-humble-control-msgs \
+    ros-lyrical-control-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория для ROS2 workspace
@@ -29,7 +29,7 @@ COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. Устанавливаем ROS зависимости через rosdep (кэшируется если package.xml не изменился)
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=lyrical
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
@@ -40,7 +40,7 @@ COPY docker/main/perception/requirements.txt /tmp/perception_requirements.txt
 
 # 4. Устанавливаем Python зависимости (кэшируется отдельно от кода)
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip3 install --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
+    pip3 install --break-system-packages --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
     rm /tmp/perception_requirements.txt
 
 # 5. Копируем ресурсы (prompts) - изменяются иногда

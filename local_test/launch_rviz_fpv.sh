@@ -6,7 +6,7 @@
 echo "🎥 === RViz2 FPV — вид из камеры робота ==="
 echo ""
 
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ZENOH_SESSION_CONFIG_URI="$(dirname "$0")/zenoh_local_session.json5"

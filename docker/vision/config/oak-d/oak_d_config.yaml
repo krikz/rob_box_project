@@ -1,4 +1,4 @@
-# depthai_ros_driver v2.12.2-humble configuration
+# depthai_ros_driver v2.12.2-lyrical configuration
 # Node path: /camera/camera (namespace='camera', name='camera')
 # Topics published with i_rs_compat:true:
 #   /camera/camera/color/image_raw      — colour image

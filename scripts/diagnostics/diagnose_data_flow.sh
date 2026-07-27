@@ -39,8 +39,8 @@ echo "  eth0 TX: $TX_RATE KB/s"
 
 echo ""
 echo "[4/5] Checking topic visibility on Main Pi..."
-MAIN_RGB=$($SSH_CMD ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/humble/bin/ros2 topic list 2>/dev/null | grep -c color/image_raw"' 2>/dev/null)
-MAIN_DEPTH=$($SSH_CMD ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/humble/bin/ros2 topic list 2>/dev/null | grep -c depth/image_raw"' 2>/dev/null)
+MAIN_RGB=$($SSH_CMD ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/lyrical/bin/ros2 topic list 2>/dev/null | grep -c color/image_raw"' 2>/dev/null)
+MAIN_DEPTH=$($SSH_CMD ros2@10.1.1.20 'docker exec rtabmap bash -c "/opt/ros/lyrical/bin/ros2 topic list 2>/dev/null | grep -c depth/image_raw"' 2>/dev/null)
 
 echo "  Main Pi sees RGB topics: $MAIN_RGB"
 echo "  Main Pi sees Depth topics: $MAIN_DEPTH"

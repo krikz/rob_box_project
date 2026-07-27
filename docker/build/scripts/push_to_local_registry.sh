@@ -23,8 +23,8 @@ if [ -z "$SOURCE_IMAGE" ]; then
     echo "Usage: $0 <source-image> [<target-tag>]"
     echo ""
     echo "Examples:"
-    echo "  $0 ghcr.io/krikz/rob_box:oak-d-humble-latest"
-    echo "  $0 ghcr.io/krikz/rob_box:rtabmap-humble-latest rtabmap-latest"
+    echo "  $0 ghcr.io/krikz/rob_box:oak-d-lyrical-latest"
+    echo "  $0 ghcr.io/krikz/rob_box:rtabmap-lyrical-latest rtabmap-latest"
     echo ""
     exit 1
 fi

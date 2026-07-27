@@ -17,20 +17,20 @@ docker logs oak-d 2>&1 | grep -E '(ERROR|WARN|Camera ready|Finished)' | tail -10
 echo ""
 
 echo "3. Список ROS2 топиков от камеры:"
-docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list | grep oak'
+docker exec oak-d bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic list | grep oak'
 echo ""
 
 echo "4. Информация о сжатом RGB топике:"
-docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic info /oak/rgb/image_raw/compressed'
+docker exec oak-d bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic info /oak/rgb/image_raw/compressed'
 echo ""
 
 echo "5. Информация о базовом RGB топике (если есть):"
-docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic info /oak/rgb/image_raw' 2>&1 || echo "Базовый топик отсутствует"
+docker exec oak-d bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic info /oak/rgb/image_raw' 2>&1 || echo "Базовый топик отсутствует"
 echo ""
 
 echo "6. Проверка публикации (5 секунд):"
 echo "   Проверяем /oak/rgb/image_raw/compressed..."
-timeout 5 docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic hz /oak/rgb/image_raw/compressed' 2>&1 || echo "   НЕТ ДАННЫХ или TIMEOUT"
+timeout 5 docker exec oak-d bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic hz /oak/rgb/image_raw/compressed' 2>&1 || echo "   НЕТ ДАННЫХ или TIMEOUT"
 echo ""
 
 echo "7. Нагрузка системы:"

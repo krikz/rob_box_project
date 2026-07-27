@@ -22,7 +22,7 @@ echo ""
 # Check if ROS 2 is sourced
 if [ -z "$ROS_DISTRO" ]; then
     echo -e "${RED}❌ ROS 2 is not sourced!${NC}"
-    echo -e "${YELLOW}Run: source /opt/ros/humble/setup.bash${NC}"
+    echo -e "${YELLOW}Run: source /opt/ros/lyrical/setup.bash${NC}"
     exit 1
 fi
 
@@ -37,7 +37,7 @@ fi
 # Check if image_view is installed
 if ! ros2 pkg list 2>/dev/null | grep -q image_tools; then
     echo -e "${YELLOW}⚠️  image_tools not found, trying to install...${NC}"
-    echo -e "${YELLOW}Run: sudo apt install ros-humble-image-tools${NC}"
+    echo -e "${YELLOW}Run: sudo apt install ros-lyrical-image-tools${NC}"
 fi
 
 # Check if rmw_zenoh_cpp is installed

@@ -13,8 +13,8 @@ echo "   This is for local testing only"
 echo ""
 
 # Параметры
-IMAGE_NAME_LOCAL="rob_box:voice-assistant-humble-test"
-IMAGE_NAME_PROD="ghcr.io/krikz/rob_box:voice-assistant-humble-latest"
+IMAGE_NAME_LOCAL="rob_box:voice-assistant-lyrical-test"
+IMAGE_NAME_PROD="ghcr.io/krikz/rob_box:voice-assistant-lyrical-latest"
 DOCKERFILE="docker/vision/voice_assistant/Dockerfile"
 CONTEXT="."
 
@@ -31,13 +31,13 @@ fi
 echo "Building image: $IMAGE_NAME_LOCAL"
 echo "Dockerfile: $DOCKERFILE"
 echo "Context: $CONTEXT"
-echo "Base image: ghcr.io/krikz/rob_box:voice-base-humble-latest"
+echo "Base image: ghcr.io/krikz/rob_box:voice-base-lyrical-latest"
 echo ""
 
 docker build \
     --platform linux/arm64 \
     -t "$IMAGE_NAME_LOCAL" \
-    --build-arg BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest \
+    --build-arg BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-lyrical-latest \
     -f "$DOCKERFILE" \
     "$CONTEXT"
 

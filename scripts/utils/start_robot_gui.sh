@@ -26,7 +26,7 @@ echo -e "${GREEN}✅ Zenoh настроен для робота ${ROBOT_ID}${NC}
 cd "$(dirname "$0")/.." || exit
 
 # Загрузка ROS2 окружения
-source /opt/ros/humble/setup.bash
+source /opt/ros/lyrical/setup.bash
 source install/setup.bash 2>/dev/null || true
 
 # Запуск GUI

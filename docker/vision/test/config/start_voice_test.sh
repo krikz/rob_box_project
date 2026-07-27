@@ -16,7 +16,7 @@ echo "=================================================="
 echo "  Voice Assistant TEST mode (dialogue_node only)"
 echo "=================================================="
 
-source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
+source /opt/ros/${ROS_DISTRO:-lyrical}/setup.bash
 source /ws/install/setup.bash
 
 # Ждём Zenoh router

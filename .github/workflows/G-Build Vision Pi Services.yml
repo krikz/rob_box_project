@@ -26,7 +26,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
-  ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
+  ROS_DISTRO: lyrical  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
   # Локальный registry для self-hosted runners - НЕ ИСПОЛЬЗУЕТСЯ на GitHub cloud runners
   # LOCAL_BASE_REGISTRY устанавливается только в self-hosted jobs индивидуально
   LOCAL_BASE_REGISTRY: ""
