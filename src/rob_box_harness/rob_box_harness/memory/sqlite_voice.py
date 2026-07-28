@@ -193,13 +193,16 @@ class SQLiteVoiceMemory(MemoryStore):
             )
         return turns
 
-    async def append_turn(self, scope: str, turn: Turn) -> None:
+    async def append_turn(self, scope: str, turn: Turn) -> bool:
         """Append ``turn`` to ``scope``. Idempotent on (scope, role, content) within ~5 sec.
 
         Duplicates within the dedup window are silently skipped (debug-
         logged) so callers can safely re-append the same user turn
         after a partial-failure recovery without producing duplicate
         history rows.
+
+        Returns ``True`` if a new row was inserted, ``False`` if a
+        duplicate was detected within the 5-second dedup window.
         """
         # Duplicate detection: check same scope+role+content within last 5 seconds
         cutoff = time.time() - 5.0
@@ -211,7 +214,7 @@ class SQLiteVoiceMemory(MemoryStore):
         )
         if cursor.fetchone() is not None:
             _logger.debug("Duplicate turn detected for scope=%s role=%s", scope, turn.role)
-            return
+            return False
 
         metadata_json = (
             json.dumps(dict(turn.metadata), ensure_ascii=False)
@@ -224,6 +227,7 @@ class SQLiteVoiceMemory(MemoryStore):
             (scope, turn.role, turn.content, turn.name, turn.tool_call_id, metadata_json),
         )
         await self._commit()
+        return True
 
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``, replacing existing fact with the same key."""

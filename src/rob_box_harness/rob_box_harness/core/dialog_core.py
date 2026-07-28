@@ -204,15 +204,11 @@ class DialogCore:
                 )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 result.error = exc
-                # Still persist the user turn so the conversation
-                # history isn't lost when the LLM errors.
-                # ``append_turn`` is documented idempotent (SQLiteVoiceMemory
-                # enforces a 5-second dedup window; InMemoryStore is append-only
-                # but the user turn was NOT appended yet on this path because
-                # the append above happens after the LLM call).
-                await self._memory.append_turn(
-                    self._user_id, Turn(role="user", content=text)
-                )
+                # The user turn was already appended BEFORE the LLM call
+                # (line above). On error, do NOT append again — that
+                # would produce a duplicate row in the conversation
+                # history. SQLiteVoiceMemory also has its own 5-second
+                # dedup window as a safety net.
             # End-of-dialogue: drive the state machine back to IDLE.
             self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             result.new_state = self._dsm.current_state
