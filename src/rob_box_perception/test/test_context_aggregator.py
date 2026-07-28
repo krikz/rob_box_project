@@ -2,25 +2,291 @@
 """
 test_context_aggregator.py - Unit тесты для ContextAggregatorNode
 
-Тестирует:
+Тестирует (после W10: perception LLM-free):
 - Подписку на источники данных
 - Агрегацию контекста
 - Публикацию событий восприятия
 - Работу с кэшем состояния
 - Мониторинг доступности нод
+
+The file installs its own minimal ``rclpy`` / ``std_msgs`` shim when the
+ROS2 runtime is absent so the suite is runnable with plain ``pytest``
+on developer laptops and in CI containers that may not have ROS2.
+Mirrors the pattern used by ``test_perception_bridge.py`` and
+``src/rob_box_voice/test/test_dialogue_shell.py``.
 """
 
+from __future__ import annotations
+
+import os
+import sys
 import time
+import types as _types
 import unittest
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import MagicMock, patch
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped, Point, Quaternion
-from nav_msgs.msg import Odometry
+from typing import Any, Callable, Dict, List, Optional
 
-from rob_box_perception.context_aggregator_node import ContextAggregatorNode
+# ── rclpy / std_msgs / geometry_msgs / nav_msgs shim ─────────────────────
+# Minimal stand-ins for the ROS2 message types that ContextAggregatorNode
+# exercises in tests. We only need the attributes that the test file
+# reads (PoseStamped.pose.position, Odometry.pose.pose.position, etc.).
+class _FakeNode:
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        self._name = name
+        self._logger = MagicMock()
+        self._publishers: Dict[str, MagicMock] = {}
+        self._subs: Dict[str, Callable[[Any], None]] = {}
+        self._params: Dict[str, Any] = {}
+        self._timers: List[Any] = []
+
+    def get_logger(self) -> MagicMock:
+        return self._logger
+
+    def declare_parameter(self, name: str, default: Any = None) -> MagicMock:
+        self._params.setdefault(name, default)
+        return MagicMock()
+
+    def get_parameter(self, name: str) -> Any:
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+        return _Param(self._params.get(name))
+
+    def has_parameter(self, name: str) -> bool:
+        return name in self._params
+
+    def create_publisher(self, msg_type, topic, depth, **kwargs) -> MagicMock:
+        pub = MagicMock()
+        pub.topic = topic
+        pub.published = []
+        original = pub.publish
+
+        def _capture(msg):
+            pub.published.append(msg)
+            return original(msg)
+
+        pub.publish = _capture
+        self._publishers[topic] = pub
+        return pub
+
+    def create_subscription(self, msg_type, topic, callback, qos,
+                              callback_group=None) -> MagicMock:
+        sub = MagicMock()
+        sub.topic = topic
+        sub.callback = callback
+        self._subs[topic] = callback
+        return sub
+
+    def create_timer(self, period, callback, callback_group=None) -> MagicMock:
+        timer = MagicMock()
+        timer.period = period
+        timer.callback = callback
+        self._timers.append(timer)
+        return timer
+
+    def get_name(self) -> str:
+        return self._name
+
+    def destroy_node(self) -> None:
+        return None
+
+    def get_clock(self) -> MagicMock:
+        clock = MagicMock()
+        clock.now.return_value.to_msg.return_value = MagicMock()
+        return clock
+
+
+_mock_rclpy = _types.ModuleType("rclpy")
+_mock_rclpy.init = lambda *a, **kw: None
+_mock_rclpy.shutdown = lambda *a, **kw: None
+_mock_rclpy.ok = lambda: True
+sys.modules.setdefault("rclpy", _mock_rclpy)
+
+_mock_rclpy_node = _types.ModuleType("rclpy.node")
+_mock_rclpy_node.Node = _FakeNode
+sys.modules.setdefault("rclpy.node", _mock_rclpy_node)
+
+_interfaces = _types.ModuleType("rcl_interfaces")
+
+
+class _Log:
+    def __init__(self):
+        self.level = 0
+        self.name = ""
+        self.msg = ""
+        self.stamp = None
+_interfaces_msg = _types.ModuleType("rcl_interfaces.msg")
+_interfaces_msg.Log = _Log
+sys.modules.setdefault("rcl_interfaces", _interfaces)
+sys.modules.setdefault("rcl_interfaces.msg", _interfaces_msg)
+
+_cb_mod = _types.ModuleType("rclpy.callback_groups")
+_cb_mod.ReentrantCallbackGroup = type("ReentrantCallbackGroup", (), {})
+sys.modules.setdefault("rclpy.callback_groups", _cb_mod)
+
+_qos_mod = _types.ModuleType("rclpy.qos")
+_qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
+_qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE="RELIABLE")
+_qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
+sys.modules.setdefault("rclpy.qos", _qos_mod)
+
+_std_msgs = _types.ModuleType("std_msgs")
+_std_msgs_msg = _types.ModuleType("std_msgs.msg")
+
+
+class _String:
+    def __init__(self, data=""):
+        self.data = data
+
+
+class _Bool:
+    def __init__(self, data=False):
+        self.data = data
+
+
+_std_msgs_msg.String = _String
+_std_msgs_msg.Bool = _Bool
+sys.modules.setdefault("std_msgs", _std_msgs)
+sys.modules.setdefault("std_msgs.msg", _std_msgs_msg)
+
+# ── geometry_msgs shim ───────────────────────────────────────────────────
+_geom = _types.ModuleType("geometry_msgs")
+_geom_msg = _types.ModuleType("geometry_msgs.msg")
+
+
+class _Vector3:
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class _Point:
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class _Quaternion:
+    def __init__(self, x=0.0, y=0.0, z=0.0, w=1.0):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.w = w
+
+
+class _Pose:
+    def __init__(self):
+        self.position = _Point()
+        self.orientation = _Quaternion()
+
+
+class _PoseStamped:
+    def __init__(self):
+        self.pose = _Pose()
+        self.header = MagicMock()
+
+
+class _Twist:
+    def __init__(self):
+        self.linear = _Vector3()
+        self.angular = _Vector3()
+
+
+class _TwistWithCovariance:
+    def __init__(self):
+        self.twist = _Twist()
+
+
+_geom_msg.Vector3 = _Vector3
+_geom_msg.Point = _Point
+_geom_msg.Quaternion = _Quaternion
+_geom_msg.Pose = _Pose
+_geom_msg.PoseStamped = _PoseStamped
+_geom_msg.Twist = _Twist
+_geom_msg.TwistWithCovariance = _TwistWithCovariance
+sys.modules.setdefault("geometry_msgs", _geom)
+sys.modules.setdefault("geometry_msgs.msg", _geom_msg)
+
+# ── nav_msgs shim ────────────────────────────────────────────────────────
+_nav = _types.ModuleType("nav_msgs")
+_nav_msg = _types.ModuleType("nav_msgs.msg")
+
+
+class _Odometry:
+    def __init__(self):
+        self.pose = _types.SimpleNamespace(
+            pose=_Pose(),
+            covariance=[],
+        )
+        self.twist = _TwistWithCovariance()
+        self.header = MagicMock()
+
+
+_nav_msg.Odometry = _Odometry
+sys.modules.setdefault("nav_msgs", _nav)
+sys.modules.setdefault("nav_msgs.msg", _nav_msg)
+
+# ── control_msgs shim ────────────────────────────────────────────────────
+# context_aggregator_node.py imports DynamicJointState from control_msgs.msg
+# (used in the /dynamic_joint_states subscriber for battery telemetry).
+_control = _types.ModuleType("control_msgs")
+_control_msg = _types.ModuleType("control_msgs.msg")
+
+
+class _DynamicJointState:
+    def __init__(self):
+        self.joint_names: List[str] = []
+        self.interface_values: List[Any] = []
+        self.header = MagicMock()
+
+
+_control_msg.DynamicJointState = _DynamicJointState
+sys.modules.setdefault("control_msgs", _control)
+sys.modules.setdefault("control_msgs.msg", _control_msg)
+
+# ── rob_box_perception_msgs shim ─────────────────────────────────────────
+# context_aggregator_node.py tries to import ``PerceptionEvent`` from this
+# package and falls back to ``None`` if missing. Without the shim, the
+# ``publish_event`` test sees ``event_pub = None`` and the mock cannot
+# patch ``.publish``. Stub the class so the publisher is created.
+_msgs = _types.ModuleType("rob_box_perception_msgs")
+_msgs_msg = _types.ModuleType("rob_box_perception_msgs.msg")
+
+
+class _PerceptionEvent:
+    def __init__(self):
+        self.header = MagicMock()
+        # The aggregator assigns arbitrary fields; MagicMock attributes
+        # absorb any read.
+        for f in (
+            "timestamp", "battery_level", "robot_pose_x", "robot_pose_y",
+            "current_location", "online_status", "node_health",
+            "active_nodes", "internet_connected", "system_health_status",
+            "system_health_issues", "memory_summary", "recent_events",
+            "important_event", "vision_description", "current_pose",
+            "current_sensors", "current_vision", "ssml_text",
+        ):
+            setattr(self, f, None)
+
+    def __setattr__(self, name, value):
+        # Allow any field assignment silently.
+        object.__setattr__(self, name, value)
+
+
+_msgs_msg.PerceptionEvent = _PerceptionEvent
+sys.modules.setdefault("rob_box_perception_msgs", _msgs)
+sys.modules.setdefault("rob_box_perception_msgs.msg", _msgs_msg)
+
+# Import after the shim is registered.
+import rclpy  # noqa: E402  — resolves to the shim module registered above
+from std_msgs.msg import String, Bool  # noqa: E402
+from geometry_msgs.msg import PoseStamped, Point, Quaternion  # noqa: E402
+from nav_msgs.msg import Odometry  # noqa: E402
+
+from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402
 
 
 class TestContextAggregator(unittest.TestCase):
@@ -49,23 +315,25 @@ class TestContextAggregator(unittest.TestCase):
     def test_node_initialization(self):
         """Тест: Нода инициализируется корректно"""
         self.assertEqual(self.node.get_name(), 'context_aggregator')
-        
-        # Проверяем параметры
+
+        # Проверяем параметры (без enable_summarization — W10 LLM-free)
         self.assertTrue(self.node.has_parameter('publish_rate'))
         self.assertTrue(self.node.has_parameter('memory_window'))
-        self.assertTrue(self.node.has_parameter('enable_summarization'))
-        
+        self.assertTrue(self.node.has_parameter('timezone'))
+
         # Проверяем начальное состояние
         self.assertIsNone(self.node.current_vision)
         self.assertIsNone(self.node.current_pose)
 
     def test_parameters(self):
-        """Тест: Параметры ноды"""
-        # Проверяем значения по умолчанию
+        """Тест: Параметры ноды (LLM-free после W10)"""
+        # Проверяем значения по умолчанию. enable_summarization
+        # был удалён в W10 вместе с LLM-кодом.
         self.assertEqual(self.node.publish_rate, 2.0)
         self.assertEqual(self.node.memory_window, 60)
-        self.assertTrue(self.node.enable_summarization)
         self.assertEqual(self.node.timezone, 'Europe/Moscow')
+        # Подтверждаем что LLM-параметр действительно отсутствует
+        self.assertFalse(self.node.has_parameter('enable_summarization'))
 
     def test_vision_context_subscription(self):
         """Тест: Подписка на vision context"""
@@ -119,13 +387,13 @@ class TestContextAggregator(unittest.TestCase):
         # Создаём STT сообщение
         stt_msg = String()
         stt_msg.data = "Привет робот"
-        
+
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_user_speech'))
-        
-        # Проверяем что есть publisher для транзита STT
-        self.assertTrue(hasattr(self.node, 'speech_pub'))
-        
+
+        # speech_pub удалён в W10 вместе с LLM-кодом.
+        self.assertFalse(hasattr(self.node, 'speech_pub'))
+
         # Вызываем callback (просто проверяем что не падает)
         self.node.on_user_speech(stt_msg)
 
@@ -228,25 +496,22 @@ class TestCallbacks(unittest.TestCase):
         self.assertEqual(self.node.robot_response_events[-1]['type'], 'robot_response')
 
     def test_on_robot_thought(self):
-        """Тест: callback robot_thought"""
-        msg = String()
-        msg.data = "Думаю о маршруте"
-        
-        self.node.on_robot_thought(msg)
-        
-        # Проверяем что добавлено в robot_thought_events
-        self.assertGreater(len(self.node.robot_thought_events), 0)
-        self.assertEqual(self.node.robot_thought_events[-1]['type'], 'robot_thought')
+        """Тест: callback robot_thought (удалён в W10 — пропускаем)"""
+        # on_robot_thought был удалён в W10 вместе с LLM-кодом.
+        self.assertFalse(hasattr(self.node, 'on_robot_thought'))
 
     def test_on_command_intent(self):
-        """Тест: callback command_intent"""
+        """Тест: callback command_intent (сохранён после W10)"""
         msg = String()
         msg.data = "navigate:0.85"
-        
-        self.node.on_command_intent(msg)
-        
-        # Проверяем что добавлено в recent_events
-        self.assertGreater(len(self.node.recent_events), 0)
+
+        # on_command_intent — обычный command routing, без LLM.
+        if hasattr(self.node, 'on_command_intent'):
+            self.node.on_command_intent(msg)
+            # Команда попадает в recent_events через add_to_memory.
+            self.assertGreater(len(self.node.recent_events), 0)
+        else:
+            self.fail("on_command_intent should still exist after W10")
 
     def test_on_command_feedback(self):
         """Тест: callback command_feedback"""
@@ -375,12 +640,13 @@ class TestPublishEvent(unittest.TestCase):
         """Тест: здоровье системы healthy"""
         self.node.current_sensors = {'battery': 40.0}
         self.node.recent_errors = []
-        
+
         status, issues = self.node.check_system_health()
-        
-        # При полной батарее и без ошибок должен быть healthy
-        # Но могут быть проблемы с нодами/интернетом
-        self.assertIn(status, ['healthy', 'degraded'])
+
+        # check_system_health возвращает заглавные ключи
+        # ('HEALTHY' / 'DEGRADED' / 'UNHEALTHY'). Проверяем что
+        # полная батарея и пустой recent_errors дают HEALTHY.
+        self.assertEqual(status, 'HEALTHY')
 
     def test_check_system_health_low_battery(self):
         """Тест: низкая батарея"""
