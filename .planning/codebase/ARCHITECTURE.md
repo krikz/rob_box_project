@@ -24,9 +24,9 @@
 │  │   LS N10 2D    │  │   VESC via CAN  │  │  vel multiplexer │                  │
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘                  │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐                  │
-│  │  perception     │  │  robot-state-   │  │  micro-ros-agent │                  │
-│  │  context_aggr + │  │  publisher      │  │  ESP32 bridge    │                  │
-│  │  reflection     │  │  TF tree        │  │  UART /ttyUSB0   │                  │
+│  │  perception     │  │  robot-state-   │                    │
+│  │  context_aggr + │  │  publisher      │                    │
+│  │  reflection     │  │  TF tree        │                    │
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘                  │
 └──────────────────────────────────┬───────────────────────────────────────────────┘
                                    │ GbE Ethernet 10.1.1.x (Zenoh UDP/TCP)
@@ -63,7 +63,6 @@
 | `twist-mux` | Velocity command multiplexer with priority lanes | `docker/main/twist_mux/` |
 | `nav2` | Nav2 autonomous navigation stack (planner + controller) | `docker/main/nav2/` |
 | `robot-state-publisher` | TF tree from URDF; wraps with Zenoh namespace script | `docker/main/robot_state_publisher/` |
-| `micro-ros-agent` | Bridge between ROS 2 and ESP32 (XRCE-DDS over UART) | `docker/main/micro_ros_agent/` |
 | `perception` | context_aggregator + reflection_node (Internal Dialogue Agent) | `docker/main/perception/`, `src/rob_box_perception/` |
 | `oak-d` | OAK-D Lite RGB-D driver + integrated AprilTag detection | `docker/vision/oak-d/` |
 | `led-matrix` | 381 NeoPixel LED matrix; subscribes to animation requests | `docker/vision/led_matrix/`, `src/rob_box_animations/` |
@@ -92,7 +91,7 @@
 **Driver Layer:**
 - Purpose: Hardware abstraction into ROS 2 topics
 - Location: `docker/main/lslidar/`, `docker/vision/oak-d/`, `src/vesc_nexus/`
-- Contains: lslidar_driver, depthai_ros (OAK-D), vesc_nexus (ros2_control hardware_interface), micro_ros_agent
+- Contains: lslidar_driver, depthai_ros (OAK-D), vesc_nexus (ros2_control hardware_interface)
 - Depends on: Hardware devices
 
 **Perception & Control Layer:**
@@ -205,8 +204,6 @@
 /nav2_*                  ← /map, /rtabmap/localization_pose, /scan
                          → /cmd_vel_nav
 /robot_state_publisher   → /tf, /tf_static (from URDF)
-/micro_ros_agent         ← /device/command
-                         → /device/snapshot (DeviceSnapshot)
 /context_aggregator      ← /rtabmap/localization_pose, /odom, /device/snapshot,
                             /detections, /rosout, /voice/stt/result
                          → /perception/context_update (PerceptionEvent), /perception/user_speech

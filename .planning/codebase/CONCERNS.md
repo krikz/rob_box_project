@@ -106,7 +106,7 @@
 - Recommendations: Enable Zenoh TLS + username/password for production deployments. Acceptable for lab use on isolated network.
 
 **Privileged Docker containers:**
-- Risk: 5 services on Main Pi run `privileged: true` (micro-ros-agent, ros2-control, lslidar, perception, nav2-related services). Two services on Vision Pi also run privileged (oak-d, led-matrix).
+- Risk: 4 services on Main Pi run `privileged: true` (ros2-control, lslidar, perception, nav2-related services). Two services on Vision Pi also run privileged (oak-d, led-matrix).
 - Files: `docker/main/docker-compose.yaml` (lines 68, 217, 255, 372, 395), `docker/vision/docker-compose.yaml` (lines 29, 286)
 - Current mitigation: Required for CAN bus, SPI, and serial hardware access.
 - Recommendations: Replace broad `privileged: true` with targeted `devices:` mounts and `cap_add: [SYS_RAWIO]` where possible; review whether all five main-Pi services genuinely need full privilege.
