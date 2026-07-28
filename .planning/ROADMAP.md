@@ -10,7 +10,7 @@
 - [x] **Phase 2: Ревью структуры** - Проверить Docker layout и пакеты на соответствие стандартам проекта
 - [x] **Phase 3: Code Quality Review** - Разобрать tech debt, запустить статический анализ, задокументировать стратегию рефакторинга
 - [ ] **Phase 4: GitHub Issues Integration** - Мигрировать tasks.json → GitHub Issues, настроить label taxonomy, обновить workflow агента
-- [ ] **Phase 6: Harness P0 Finalization** - Финализация `feature/harness-p0-foundation`: ревью документации (убрать дубли), проверка ADR-соответствия, доделка оставшихся изменений перед мержем в main
+- [~] **Phase 6: Harness P0 Finalization** - Финализация `feature/harness-p0-foundation`: реальная замена старых нод на harness-порты (Dialogue = мозг с LLM, Telegram = тонкий мост, Perception = UART-мост). Архитектура v2 «node replacement»; v1 «parallel wrappers» архивирован в `archive-v1/`
 
 ## Phase Details
 
@@ -120,23 +120,22 @@ Plans:
   - [`docs/guides/harness-quickstart.md`](docs/guides/harness-quickstart.md)
   - [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
 **Success Criteria** (what must be TRUE):
-  1. Все документационные файлы проверены на дубликаты, расхождения устранены
-  2. ADR-0001 §2.7 (P1-харнесы) requirements задокументированы как deferred
-  3. Все оставшиеся изменения на ветке закоммичены
-  4. SPEC_CURRENT.md обновлён — P0 помечен как завершённый
-  5. Ветка готова к `git merge feature/harness-p0-foundation` → main
-**Plans**: 9 plans in 5 waves
+  1. `dialogue_node.py` — тонкая оболочка ~300 строк, вся LLM-логика в harness-портах
+  2. `telegram_node.py` — тонкий ROS2-мост ~80 строк, без своего LLM
+  3. `perception_*` — UART-мост ~200 строк, без LLM, собственная прошивка сенсор-борда
+  4. Все harness-порты (LLMProvider, ToolProvider, MemoryStore) — pure Python, тестируются без ROS2
+  5. ADR-0001 / ADR-0002 / ADR-0007 / ADR-0009 — соответствие, P1 deferred задокументирован
+  6. SPEC_CURRENT.md обновлён — P0 помечен как завершённый
+  7. Ветка готова к `git merge feature/harness-p0-foundation` → main
+**Plans (v2)**: 4 plans in 4 waves (12 internal tasks W1–W12 distributed across the 4 plans)
+
+> **Note:** Phase 6 v1 («parallel implementation», 9 plans in 5 waves) был заархивирован в `.planning/phases/06-harness-p0-finalization/archive-v1/` (commit `16913094`). v1's `feat(harness): W1..W4` commits сохранены и **составляют фактическую работу Plan 06-01 v2** (DeepSeek+MiMo providers, ToolRegistry, DialogCore+DSM, MemoryStore).
 
 Plans:
-- [ ] 06-01-PLAN.md — Documentation merges: W1 (0003 merge), W2 (0004 merge), W3 (0007 fragments→final)
-- [ ] 06-02-PLAN.md — Documentation dedup + SPEC update: W4 (remove duplicates), W5 (SPEC_CURRENT.md)
-- [ ] 06-03-PLAN.md — Docker integration: W6 (Dockerfile), W7 (docker build verify)
-- [ ] 06-04-PLAN.md — Port implementations: W12 (ROS2Transport), W13 (SQLiteVoiceMemory)
-- [ ] 06-05-PLAN.md — DialogHarness + DSM: W8 (DialogHarness adapter), W9 (DialogueStateMachine)
-- [ ] 06-06-PLAN.md — Persistent + Telegram: W10 (PersistentHarness), W11 (TelegramHarness)
-- [ ] 06-07-PLAN.md — Unit tests: W14 (DialogHarness tests), W15 (TelegramHarness tests), W16 (MCP+tools tests)
-- [ ] 06-08-PLAN.md — E2E tests: W17 (integration E2E tests)
-- [ ] 06-09-PLAN.md — PR audit + quality: W18 (PR comment), W19–W20 (ADR audits), W21 (mypy), W22 (linters)
+- [x] 06-01-PLAN.md — **Harness ports foundation** (Wave 1): DeepSeek+MiMo providers, ToolRegistry(34), DialogCore+DSM, MemoryStore waypoints/FAQ/EventProfile. Closed-out 2026-07-28 via safe-resume gate. Production commits: `06dbd5a8`, `43d0111d`, `0b7b66c7`, `900addaf`, `d8665a1c` (merged via `72bab30a`, `f324ae83`). Requirements: HARNESS-LLM-01, HARNESS-TOOL-02, HARNESS-DSM-03, HARNESS-MEMORY-04. Summary: `06-01-SUMMARY.md`.
+- [ ] 06-02-PLAN.md — **Dialogue shell rewrite** (Wave 2, depends on 06-01): `dialogue_node.py` → ~300 строк оболочка, композирующая DialogCore. Requirements: DIALOG-SHELL-05, DIALOG-TEST-06.
+- [ ] 06-03-PLAN.md — **Telegram bridge** (Wave 3): `telegram_node.py` → ~80 строк python-telegram-bot → ROS2 топики. Без LLM! Requirements: TG-LLM-REMOVE-07, TG-BRIDGE-08, TG-TEST-09.
+- [ ] 06-04-PLAN.md — **Perception bridge** (Wave 4): 5 perception нод → ~200 строк UART-мост. Без LLM! Requirements: PERC-LLM-REMOVE-10, PERC-BRIDGE-11, PERC-TEST-12.
 
 ## Progress
 
@@ -146,4 +145,6 @@ Plans:
 | 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
+| 03.1.1. Apply Research (P0 error handling) | 0/1 | Not started | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
+| 6. Harness P0 Finalization | 1/4 | ◆ In progress | 2026-07-28 (Plan 06-01 closed-out)
