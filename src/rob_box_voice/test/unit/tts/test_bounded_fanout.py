@@ -553,7 +553,7 @@ def _build_stub_dialogue_node():
 
 
 def test_dialogue_node_shutdown_drains_loop_future():
-    """destroy_node() must invoke shutdown_asyncio_loop(), which joins
+    """destroy_node() must invoke shutdown_asyncio_loop(), which joins.
     the bounded loop-driver executor instead of abandoning it.
 
     This test builds a stub DialogueNode with a real asyncio loop
@@ -647,7 +647,7 @@ def test_dialogue_node_loop_driver_max_workers_is_one():
 
 
 def test_tts_node_synthesis_executor_uses_bounded_init() -> None:
-    """Structural: TTSNode.__init__ builds the synth executor with the
+    """Structural: TTSNode.__init__ builds the synth executor with the.
     documented size and slot cap.
 
     Belt-and-suspenders against the runtime test: if the runtime test

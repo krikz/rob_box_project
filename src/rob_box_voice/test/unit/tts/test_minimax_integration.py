@@ -357,7 +357,7 @@ class TestRetryClassification:
 
 
 class TestStreamingHook:
-    """Verify the streaming-mode publishing path publishes one AudioData
+    """Verify the streaming-mode publishing path publishes one AudioData.
     msg per chunk (even though today the provider returns a single chunk,
     so behaviour is identical to the sync path).
     """

@@ -528,7 +528,7 @@ class TestMemoryPersistenceAcrossSessions:
     """SQLiteVoiceMemory persists turns across harness lifecycle."""
 
     def test_memory_persistence_across_sessions(self) -> None:
-        """Turns written by one harness survive in SQLiteVoiceMemory
+        """Turns written by one harness survive in SQLiteVoiceMemory.
         and are visible to a fresh harness that points at the same
         file.
 

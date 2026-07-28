@@ -242,7 +242,7 @@ def _patch_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 def test_default_base_url_and_model_are_exposed() -> None:
-    """``DEFAULT_BASE_URL`` / ``DEFAULT_MODEL`` are importable from the
+    """``DEFAULT_BASE_URL`` / ``DEFAULT_MODEL`` are importable from the.
     harness-side module and match the upstream values."""
     assert DEFAULT_BASE_URL == "https://api.minimax.io/v1"
     assert DEFAULT_MODEL == "MiniMax-M3"
@@ -253,7 +253,7 @@ def test_api_key_env_name_is_minimax_api_key() -> None:
 
 
 def test_module_reexports_image_limit_and_filter() -> None:
-    """The harness-side module re-exports the upstream helpers so
+    """The harness-side module re-exports the upstream helpers so.
     callers have a single import path."""
     assert MINIMAX_MAX_IMAGE_BYTES == 10 * 1024 * 1024
     assert DEFAULT_THINKING_POLICY == {"type": "disabled"}
@@ -261,14 +261,14 @@ def test_module_reexports_image_limit_and_filter() -> None:
 
 
 def test_minimaxprovider_is_harnesswrapper_alias() -> None:
-    """``MiniMaxProvider`` is the public name; ``HarnessMiniMaxProvider``
+    """``MiniMaxProvider`` is the public name; ``HarnessMiniMaxProvider``.
     is the canonical class. They MUST be the same object so
     ``isinstance`` checks succeed either way."""
     assert MiniMaxProvider is HarnessMiniMaxProvider
 
 
 def test_provider_is_an_llm_provider() -> None:
-    """``MiniMaxProvider`` IS-A ``LLMProvider`` so the harness can
+    """``MiniMaxProvider`` IS-A ``LLMProvider`` so the harness can.
     pass it to ``harness.llm`` like any other adapter."""
     from rob_box_llm.provider import LLMProvider
 
@@ -315,7 +315,7 @@ def test_construct_with_explicit_api_key_succeeds() -> None:
 
 
 def test_construct_with_env_api_key_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When ``api_key=`` is omitted, the provider reads
+    """When ``api_key=`` is omitted, the provider reads.
     ``MINIMAX_API_KEY`` from the OS env."""
     monkeypatch.setenv(MINIMAX_API_KEY_ENV, "sk-from-env")
     p = MiniMaxProvider(retry=RetryPolicy(max_attempts=1))
@@ -323,7 +323,7 @@ def test_construct_with_env_api_key_succeeds(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_construct_without_api_key_raises_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing key in both ``api_key=`` and env raises ``ConfigError``
+    """Missing key in both ``api_key=`` and env raises ``ConfigError``.
     with a stable ``section`` attribute for callers to branch on."""
     monkeypatch.delenv(MINIMAX_API_KEY_ENV, raising=False)
     with pytest.raises(ConfigError) as exc_info:
@@ -333,7 +333,7 @@ def test_construct_without_api_key_raises_config_error(monkeypatch: pytest.Monke
 
 
 def test_empty_string_api_key_raises_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An empty key (env or explicit) is treated as missing — the
+    """An empty key (env or explicit) is treated as missing — the.
     provider refuses to silently fall back to a no-op credential."""
     monkeypatch.setenv(MINIMAX_API_KEY_ENV, "")
     with pytest.raises(ConfigError) as exc_info:
@@ -354,7 +354,7 @@ def test_explicit_api_key_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_build_from_config_with_env_secret() -> None:
-    """The factory resolves the API key from the env map (no inline
+    """The factory resolves the API key from the env map (no inline.
     literal) and threads ``model`` / ``timeout_s`` through."""
     cfg = HarnessConfig.from_dict(
         {
@@ -374,7 +374,7 @@ def test_build_from_config_with_env_secret() -> None:
 
 
 def test_build_from_config_with_explicit_env_argument(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ``env=`` kwarg of ``build_minimax_provider`` overrides the
+    """The ``env=`` kwarg of ``build_minimax_provider`` overrides the.
     OS env so tests can isolate the environment without monkey-patching.
 
     ``HarnessConfig.from_dict`` resolves ``${MINIMAX_API_KEY}`` from
@@ -417,7 +417,7 @@ def test_build_rejects_none_config() -> None:
 
 
 def test_build_rejects_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """If the env has no key and the config didn't supply one, the
+    """If the env has no key and the config didn't supply one, the.
     factory raises at composition time, not at first request."""
     monkeypatch.delenv(MINIMAX_API_KEY_ENV, raising=False)
     cfg = LLMConfig(provider="minimax", model=DEFAULT_MODEL)
@@ -528,7 +528,7 @@ async def test_complete_settings_override_model() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_builds_settings_and_delegates_to_complete() -> None:
-    """``chat()`` translates kwargs into ``LLMSettings`` and calls
+    """``chat()`` translates kwargs into ``LLMSettings`` and calls.
     ``complete()`` — the request to the wire carries the same fields."""
     p, client = _make_minimax()
     client.chat.completions.next_response = _ok_response("ok")
@@ -552,7 +552,7 @@ async def test_chat_builds_settings_and_delegates_to_complete() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_with_empty_kwargs_uses_defaults() -> None:
-    """When ``chat()`` is called with no kwargs, the request still
+    """When ``chat()`` is called with no kwargs, the request still.
     goes through with the model's defaults."""
     p, client = _make_minimax()
     client.chat.completions.next_response = _ok_response("ok")
@@ -565,7 +565,7 @@ async def test_chat_with_empty_kwargs_uses_defaults() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_with_only_unknown_kwargs() -> None:
-    """A caller can pass only vendor-specific kwargs — they all flow
+    """A caller can pass only vendor-specific kwargs — they all flow.
     into ``extra`` and don't bust the LLMProvider signature."""
     p, client = _make_minimax()
     client.chat.completions.next_response = _ok_response("ok")
@@ -605,7 +605,7 @@ def test_retry_policy_delay_for_grows_exponentially() -> None:
 
 
 def test_retry_policy_delay_for_is_in_jitter_band() -> None:
-    """With jitter > 0, the delay is bounded by ``[base * 2 ** (n-1),
+    """With jitter > 0, the delay is bounded by ``[base * 2 ** (n-1),.
     base * 2 ** (n-1) + jitter)``."""
     # For attempt=2 with base=1.0/jitter=0.5: delay in [2.0, 2.5).
     policy = RetryPolicy(backoff_base=1.0, backoff_jitter=0.5)
@@ -622,7 +622,7 @@ def test_retry_policy_delay_for_attempts_below_one_is_zero() -> None:
 
 @pytest.mark.asyncio
 async def test_complete_retries_on_rate_limit_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``APIStatusError(429)`` → upstream maps to ``RateLimitError`` →
+    """``APIStatusError(429)`` → upstream maps to ``RateLimitError`` →.
     the retry loop catches it and retries until success."""
     sleeps = _patch_sleep(monkeypatch)
     p, client = _make_minimax(
@@ -652,7 +652,7 @@ async def test_complete_retries_on_rate_limit_error(monkeypatch: pytest.MonkeyPa
 async def test_complete_does_not_retry_non_transient_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``AuthError`` propagates immediately — it is a programming error,
+    """``AuthError`` propagates immediately — it is a programming error,.
     not a transient failure. ``CapabilityUnavailableError`` is raised
     before the network call so it bypasses the retry loop by construction."""
     sleeps = _patch_sleep(monkeypatch)
@@ -748,7 +748,7 @@ async def test_complete_retries_on_connection_error(monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.asyncio
 async def test_disabling_retries_means_max_attempts_one() -> None:
-    """``RetryPolicy(max_attempts=1)`` disables retries — the first
+    """``RetryPolicy(max_attempts=1)`` disables retries — the first.
     failure propagates immediately."""
     p, client = _make_minimax(retry=RetryPolicy(max_attempts=1))
 
@@ -830,7 +830,7 @@ async def test_stream_with_tools_raises_capability_error() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_retries_on_initial_429(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The stream path retries the initial request round-trip on a
+    """The stream path retries the initial request round-trip on a.
     transient error."""
     sleeps = _patch_sleep(monkeypatch)
     p, client = _make_minimax(
@@ -870,7 +870,7 @@ async def test_stream_retries_on_initial_429(monkeypatch: pytest.MonkeyPatch) ->
 async def test_stream_retry_closes_failed_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """W-1: when the initial ``__anext__`` on a freshly-opened inner
+    """W-1: when the initial ``__anext__`` on a freshly-opened inner.
     stream raises a transient error, the failed stream MUST be
     ``aclose()``-d before the next attempt opens a new one. Otherwise
     the underlying HTTP body sits in the openai SDK's pool until GC
@@ -1017,7 +1017,7 @@ async def test_stream_retry_closes_failed_attempt(
 async def test_stream_retry_swallows_aclose_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """W-1 robustness: if the failed attempt's ``aclose()`` itself
+    """W-1 robustness: if the failed attempt's ``aclose()`` itself.
     raises (e.g. transport already torn down), the retry must still
     proceed and the original transient error must still surface if
     retries are exhausted.
@@ -1040,7 +1040,7 @@ async def test_stream_retry_swallows_aclose_failure(
     aclose_attempted = {"n": 0}
 
     class _BrokenCloseStream:
-        """A stream whose ``aclose`` itself raises. Used to verify
+        """A stream whose ``aclose`` itself raises. Used to verify.
         that the provider's best-effort cleanup swallows the error
         and lets the retry proceed."""
 
@@ -1141,7 +1141,7 @@ def test_default_provider_name_matches_adr_0001() -> None:
 
 @pytest.mark.asyncio
 async def test_capability_check_runs_before_network() -> None:
-    """Capability gates (e.g. image_input on a non-vision model) MUST
+    """Capability gates (e.g. image_input on a non-vision model) MUST.
     raise before any SDK call is made."""
     p, client = _make_minimax(model="MiniMax-M2.7")
 
@@ -1176,7 +1176,7 @@ async def test_image_payload_above_limit_raises_capability_error() -> None:
 
 @pytest.mark.asyncio
 async def test_provider_error_envelope_raises_typed_error() -> None:
-    """Unknown ``base_resp.status_code`` (HTTP 200 body) becomes a
+    """Unknown ``base_resp.status_code`` (HTTP 200 body) becomes a.
     generic ``ProviderError`` so the caller can branch on it."""
     p, client = _make_minimax()
     client.chat.completions.next_response = _ok_response(
@@ -1198,7 +1198,7 @@ async def test_content_filter_envelope_raises_typed_error() -> None:
 
 @pytest.mark.asyncio
 async def test_rate_limit_envelope_raises_typed_error() -> None:
-    """Rate-limit / quota keywords in ``base_resp.status_msg`` map to
+    """Rate-limit / quota keywords in ``base_resp.status_msg`` map to.
     ``RateLimitError``."""
     p, client = _make_minimax()
     client.chat.completions.next_response = _ok_response(
@@ -1209,7 +1209,7 @@ async def test_rate_limit_envelope_raises_typed_error() -> None:
 
 
 def test_module_reexports_match_upstream_public_surface() -> None:
-    """The harness-side module must re-export the same public names
+    """The harness-side module must re-export the same public names.
     as upstream so ``from rob_box_harness.providers.minimax import X``
     works for every X a caller might be using."""
     from rob_box_harness.providers import minimax as harness_minimax
@@ -1227,7 +1227,7 @@ def test_module_reexports_match_upstream_public_surface() -> None:
 
 @pytest.mark.asyncio
 async def test_complete_returns_llm_response_type() -> None:
-    """The return type is the canonical ``LLMResponse`` — the
+    """The return type is the canonical ``LLMResponse`` — the.
     framework's contract from ADR-0001."""
     p, client = _make_minimax()
     client.chat.completions.next_response = _ok_response("ok")
@@ -1252,7 +1252,7 @@ def _openai_response_payload(
     prompt_tokens: int = 1,
     completion_tokens: int = 2,
 ) -> dict[str, Any]:
-    """Build a JSON body that looks like an OpenAI chat-completion
+    """Build a JSON body that looks like an OpenAI chat-completion.
     response (which MiniMax mirrors)."""
     return {
         "id": "chatcmpl-test",
@@ -1279,7 +1279,7 @@ def _openai_response_payload(
 
 @pytest.mark.asyncio
 async def test_complete_over_mocked_http_transport() -> None:
-    """End-to-end test through a real ``AsyncOpenAI`` client whose
+    """End-to-end test through a real ``AsyncOpenAI`` client whose.
     underlying ``httpx`` is swapped for a ``MockTransport``.
 
     The test never touches the network — the mock intercepts the
@@ -1349,7 +1349,7 @@ async def test_complete_over_mocked_http_transport() -> None:
 
 @pytest.mark.asyncio
 async def test_http_transport_429_is_translated_and_retried() -> None:
-    """A 429 response from the mock transport is mapped to
+    """A 429 response from the mock transport is mapped to.
     ``RateLimitError`` by the upstream SDK and caught by the
     harness-side retry loop."""
     attempts = {"n": 0}
@@ -1388,7 +1388,7 @@ async def test_http_transport_429_is_translated_and_retried() -> None:
 
 @pytest.mark.asyncio
 async def test_http_transport_401_is_translated_to_auth_error() -> None:
-    """A 401 response is mapped to ``AuthError`` and bypasses
+    """A 401 response is mapped to ``AuthError`` and bypasses.
     the retry loop (it's a programming error, not transient)."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

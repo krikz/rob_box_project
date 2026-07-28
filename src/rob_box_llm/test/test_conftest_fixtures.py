@@ -135,7 +135,7 @@ class TestEnvScrubber:
     def test_minimax_provider_does_not_pick_up_leaked_env(
         self, monkeypatch, minimax_provider
     ):
-        """Even with env credentials set BEFORE conftest's autouse fixture
+        """Even with env credentials set BEFORE conftest's autouse fixture.
         ran (i.e. via the test's own monkeypatch), the fixture's explicit
         api_key/group_id kwargs must win — constructor precedence over
         env is the documented contract.

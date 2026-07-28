@@ -214,7 +214,7 @@ class TestDecodeAudioDefensivePaths:
         mock_minimax_http: respx.Router,
         minimax_provider: MiniMaxTTSProvider,
     ) -> None:
-        """If the FIRST event in a stream has non-hex audio, the
+        """If the FIRST event in a stream has non-hex audio, the.
         decoder raises BEFORE any chunk has been yielded. The provider
         re-raises as a :class:`TTSError` (pre-yield raise contract)."""
         body = _sse_event(non_hex_audio="not-a-hex-string") + SSE_DONE
@@ -304,7 +304,7 @@ class TestStreamApiErrorEnvelopeBranches:
         mock_minimax_http: respx.Router,
         minimax_provider: MiniMaxTTSProvider,
     ) -> None:
-        """A status_msg that matches no keyword falls through to the
+        """A status_msg that matches no keyword falls through to the.
         generic ``TTSError`` branch. The contract is the same
         regardless of category — error chunk in-band — so the test only
         asserts the public contract, not the exception class."""
@@ -347,7 +347,7 @@ class TestStreamApiErrorEnvelopeBranches:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestStreamPostYieldFailure:
-    """After the first audio chunk is yielded, a transport failure is
+    """After the first audio chunk is yielded, a transport failure is.
     surfaced in-band as ``TTSChunk(finish_reason='error')``.
 
     The branch is structurally distinct from the API-error-envelope path
@@ -396,7 +396,7 @@ class TestStreamPostYieldFailure:
         mock_minimax_http: respx.Router,
         minimax_provider: MiniMaxTTSProvider,
     ) -> None:
-        """The provider wraps an httpx transport exception into
+        """The provider wraps an httpx transport exception into.
         ``_map_exception`` → ``TTSError`` and emits it as an
         in-band error chunk because the first audio frame has already
         been yielded by the time the exception fires."""
@@ -423,7 +423,7 @@ class TestStreamPostYieldFailure:
         mock_minimax_http: respx.Router,
         minimax_provider: MiniMaxTTSProvider,
     ) -> None:
-        """If an upstream code path raises a TTSError subtype already
+        """If an upstream code path raises a TTSError subtype already.
         (e.g. JSONDecodeError wrapping during a malformed SSE event),
         the provider still surfaces it as a terminal error chunk rather
         than propagating — preserving the post-yield in-band contract.
@@ -477,7 +477,7 @@ class TestStreamPostYieldFailure:
 @pytest.mark.minimax
 @pytest.mark.unit
 class TestRedactGroupIdFilter:
-    """The filter installs on the ``httpx`` logger and rewrites
+    """The filter installs on the ``httpx`` logger and rewrites.
     ``LogRecord.args`` so the GroupId query param is replaced before
     ANY handler formats the record. The ``tuple`` branch is exercised
     by httpx's default INFO-level access log; the ``dict`` branch fires
@@ -509,7 +509,7 @@ class TestRedactGroupIdFilter:
         assert "<redacted>" in rewritten_url.params["GroupId"]
 
     def test_dict_args_redacts_group_id(self) -> None:
-        """``record.args`` as a dict — exercises the dict-args branch
+        """``record.args`` as a dict — exercises the dict-args branch.
         the tuple-args test cannot reach.
 
         CPython's :class:`logging.LogRecord` constructor REJECTS a
@@ -521,7 +521,7 @@ class TestRedactGroupIdFilter:
         """
 
         class _ArgsRecord:
-            """Minimal LogRecord-shaped object — just the ``args``
+            """Minimal LogRecord-shaped object — just the ``args``.
             attribute the filter reads."""
 
             def __init__(self, args: Any) -> None:
@@ -541,7 +541,7 @@ class TestRedactGroupIdFilter:
         assert rewritten.params["GroupId"] == "<redacted>"
 
     def test_non_url_args_pass_through_unchanged(self) -> None:
-        """Non-URL args (strings, ints) must NOT be mutated — only
+        """Non-URL args (strings, ints) must NOT be mutated — only.
         httpx.URL objects with a GroupId param are redacted."""
         record = logging.LogRecord(
             name="httpx",
@@ -734,7 +734,7 @@ class TestTTSAudioShapeForRos2Sink:
         mock_minimax_http: respx.Router,
         minimax_provider: MiniMaxTTSProvider,
     ) -> None:
-        """If the upstream response omits ``audio_sample_rate`` (some
+        """If the upstream response omits ``audio_sample_rate`` (some.
         older API versions did), the provider defaults to 32000 — the
         documented MiniMax T2A v2 default. We assert the fallback here
         so a regression that returned 0 silently is caught.

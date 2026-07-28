@@ -15,7 +15,7 @@ import json
 
 
 class MCPToolRegistry:
-    """Реестр MCP инструментов"""
+    """Реестр MCP инструментов."""
 
     def __init__(self):
         self._tools: Dict[str, MCPTool] = {}
@@ -74,17 +74,17 @@ class MCPToolRegistry:
     def get_openai_tools(self) -> List[Dict[str, Any]]:
         """
         Получить список всех инструментов в OpenAI Tool Calls формате
-        
+
         Совместимо с DeepSeek, Qwen, OpenAI и другими провайдерами.
 
         Returns:
             Список словарей в формате OpenAI functions
         """
         return [tool.to_openai_tool_format() for tool in self._tools.values()]
-    
+
     # Backward compatibility alias
     def get_deepseek_tools(self) -> List[Dict[str, Any]]:
-        """Устаревший метод. Используйте get_openai_tools()"""
+        """Устаревший метод. Используйте get_openai_tools()."""
         return self.get_openai_tools()
 
     def execute(self, tool_name: str, **kwargs) -> MCPToolResult:
@@ -117,13 +117,13 @@ class MCPToolRegistry:
             return MCPToolResult(success=False, error=error_msg)
 
     def __len__(self) -> int:
-        """Количество зарегистрированных инструментов"""
+        """Количество зарегистрированных инструментов."""
         return len(self._tools)
 
     def __contains__(self, name: str) -> bool:
-        """Проверка наличия инструмента"""
+        """Проверка наличия инструмента."""
         return name in self._tools
 
     def __repr__(self) -> str:
-        """Строковое представление реестра"""
+        """Строковое представление реестра."""
         return f"MCPToolRegistry({len(self._tools)} tools: {', '.join(self.list_tools())})"

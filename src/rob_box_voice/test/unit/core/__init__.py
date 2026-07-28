@@ -1,1 +1,1 @@
-"""Unit tests for core.dialogue_manager module"""
+"""Unit tests for core.dialogue_manager module."""

@@ -679,7 +679,7 @@ def test_aclose_closes_client():
 
 
 def test_aclose_is_idempotent():
-    """Inherited from ``_OpenAICompatibleProvider`` — re-closing must be a
+    """Inherited from ``_OpenAICompatibleProvider`` — re-closing must be a.
     no-op rather than raising RuntimeError."""
     p, c = _make_minimax()
     asyncio.run(p.aclose())

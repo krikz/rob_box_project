@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 
 class VoiceParameter(Enum):
-    """Параметры голоса"""
+    """Параметры голоса."""
 
     VOLUME = "volume"
     PITCH = "pitch"
@@ -19,7 +19,7 @@ class VoiceParameter(Enum):
 
 
 class VoiceIntent(Enum):
-    """Намерения управления голосом"""
+    """Намерения управления голосом."""
 
     # Volume
     LOUDER = "louder"
@@ -40,7 +40,7 @@ class VoiceIntent(Enum):
 
 @dataclass
 class VoiceCommandResult:
-    """Результат обработки команды голоса"""
+    """Результат обработки команды голоса."""
 
     parameter: VoiceParameter
     old_value: float

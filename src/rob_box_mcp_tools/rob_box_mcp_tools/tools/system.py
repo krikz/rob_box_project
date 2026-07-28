@@ -41,13 +41,13 @@ def _wait_future(future, timeout_sec: float) -> bool:
 
 
 class SetVolumeTool(MCPTool):
-    """Инструмент для управления громкостью TTS"""
+    """Инструмент для управления громкостью TTS."""
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from rcl_interfaces.srv import GetParameters, SetParameters
-        
+
         self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
         self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
 
@@ -70,18 +70,18 @@ class SetVolumeTool(MCPTool):
                 enum=["louder", "quieter", "max", "normal"],
             )
         ]
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Set volume - FAST операция < 2s (ROS service call)"""
+        """Set volume - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
 
     def execute(self, action: str) -> MCPToolResult:
-        """Установить громкость"""
+        """Установить громкость."""
         # Динамический импорт во время выполнения
         from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
         from rcl_interfaces.srv import GetParameters, SetParameters
-        
+
         self.log_info(f"Изменение громкости: {action}")
 
         if not self.get_params_client.wait_for_service(timeout_sec=1.0):
@@ -146,13 +146,13 @@ class SetVolumeTool(MCPTool):
 
 
 class SetPitchTool(MCPTool):
-    """Инструмент для управления высотой голоса"""
+    """Инструмент для управления высотой голоса."""
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from rcl_interfaces.srv import GetParameters, SetParameters
-        
+
         self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
         self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
 
@@ -175,18 +175,18 @@ class SetPitchTool(MCPTool):
                 enum=["higher", "lower", "normal"],
             )
         ]
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Set pitch - FAST операция < 2s (ROS service call)"""
+        """Set pitch - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
 
     def execute(self, action: str) -> MCPToolResult:
-        """Установить высоту голоса"""
+        """Установить высоту голоса."""
         # Динамический импорт во время выполнения
         from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
         from rcl_interfaces.srv import GetParameters, SetParameters
-        
+
         self.log_info(f"Изменение pitch: {action}")
 
         if not self.get_params_client.wait_for_service(timeout_sec=1.0):
@@ -246,13 +246,13 @@ class SetPitchTool(MCPTool):
 
 
 class SetSpeedTool(MCPTool):
-    """Инструмент для управления скоростью речи"""
+    """Инструмент для управления скоростью речи."""
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from rcl_interfaces.srv import GetParameters, SetParameters
-        
+
         self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
         self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
 
@@ -275,18 +275,18 @@ class SetSpeedTool(MCPTool):
                 enum=["faster", "slower", "normal"],
             )
         ]
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Set speed - FAST операция < 2s (ROS service call)"""
+        """Set speed - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
 
     def execute(self, action: str) -> MCPToolResult:
-        """Установить скорость речи"""
+        """Установить скорость речи."""
         # Динамический импорт во время выполнения
         from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
         from rcl_interfaces.srv import GetParameters, SetParameters
-        
+
         self.log_info(f"Изменение speed: {action}")
 
         if not self.get_params_client.wait_for_service(timeout_sec=1.0):
@@ -349,7 +349,7 @@ class SetSpeedTool(MCPTool):
 
 class GetCurrentTimeTool(MCPTool):
     """Инструмент для получения текущего времени и даты.
-    
+
     Не требует ROS-зависимостей — время берётся из системных часов Python.
     Вызывать когда пользователь спрашивает время, дату, день недели и т.д.
     """
@@ -414,7 +414,7 @@ class GetCurrentTimeTool(MCPTool):
 
 
 class GetRobotStatusTool(MCPTool):
-    """Инструмент для получения статуса робота"""
+    """Инструмент для получения статуса робота."""
 
     @property
     def name(self) -> str:
@@ -427,14 +427,14 @@ class GetRobotStatusTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Get robot status - MEDIUM операция 2-10s (множественные ROS queries)"""
+        """Get robot status - MEDIUM операция 2-10s (множественные ROS queries)."""
         return ToolExecutionType.MEDIUM
 
     def execute(self) -> MCPToolResult:
-        """Получить статус робота"""
+        """Получить статус робота."""
         self.log_info("Запрос статуса робота")
 
         # STUB: get_robot_status возвращает hardcoded данные — реальная позиция и battery

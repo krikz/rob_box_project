@@ -143,7 +143,7 @@ class TestTelegramBus:
         return TelegramBus(channel=channel), channel  # type: ignore[arg-type]
 
     def test_routes_send_reply(self) -> None:
-        """Same intent as the async version, expressed sync to avoid
+        """Same intent as the async version, expressed sync to avoid.
         depending on pytest-asyncio's auto-mode (the project uses
         ``asyncio.run`` explicitly throughout the harness test suite).
         """
@@ -177,7 +177,7 @@ class TestTelegramBus:
 
 
 class TestCompositeBusWithTelegram:
-    """H.3 says only TelegramBus ships in P1.4. ``CompositeBus`` lets us
+    """H.3 says only TelegramBus ships in P1.4. ``CompositeBus`` lets us.
     combine TelegramBus (real channel) with RecordingBus (audit log)."""
 
     def _run(self, coro):  # noqa: ANN001
@@ -197,7 +197,7 @@ class TestCompositeBusWithTelegram:
         assert isinstance(recording.effects[0], SendReplyEffect)
 
     def test_speak_only_routes_to_recording_in_p1_4(self) -> None:
-        """Per H.3, TTSBus is deferred to P2; Speak must NOT raise, just
+        """Per H.3, TTSBus is deferred to P2; Speak must NOT raise, just.
         land on RecordingBus when the harness wires that up."""
         telegram = TelegramBus(channel=_Channel(sent=[]))  # type: ignore[arg-type]
         recording = RecordingBus()

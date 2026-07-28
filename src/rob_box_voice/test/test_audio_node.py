@@ -15,39 +15,39 @@ import numpy as np
 
 
 class TestAudioNode(unittest.TestCase):
-    """Test suite for Audio Node"""
+    """Test suite for Audio Node."""
 
     @classmethod
     def setUpClass(cls):
-        """Set up ROS2 context once for all tests"""
+        """Set up ROS2 context once for all tests."""
         rclpy.init()
 
     @classmethod
     def tearDownClass(cls):
-        """Shutdown ROS2 context"""
+        """Shutdown ROS2 context."""
         rclpy.shutdown()
 
     def setUp(self):
-        """Set up test fixtures before each test"""
+        """Set up test fixtures before each test."""
         # TODO: Uncomment when AudioNode is ready
         # self.node = AudioNode()
         pass
 
     def tearDown(self):
-        """Clean up after each test"""
+        """Clean up after each test."""
         # TODO: Uncomment when AudioNode is ready
         # self.node.destroy_node()
         pass
 
     def test_node_creation(self):
-        """Test that node can be created"""
+        """Test that node can be created."""
         # TODO: Implement when AudioNode is ready
         # self.assertIsInstance(self.node, Node)
         # self.assertEqual(self.node.get_name(), 'audio_node')
         pass
 
     def test_publisher_creation(self):
-        """Test that audio publisher is created"""
+        """Test that audio publisher is created."""
         # TODO: Implement when AudioNode is ready
         # publishers = self.node.get_publisher_names_and_types_by_node(
         #     'audio_node', 'rob_box_voice'
@@ -57,7 +57,7 @@ class TestAudioNode(unittest.TestCase):
 
     @patch('pyaudio.PyAudio')
     def test_audio_device_initialization(self, mock_pyaudio):
-        """Test that audio device is initialized correctly"""
+        """Test that audio device is initialized correctly."""
         # TODO: Implement with mock audio device
         # mock_device = Mock()
         # mock_pyaudio.return_value.open.return_value = mock_device
@@ -66,7 +66,7 @@ class TestAudioNode(unittest.TestCase):
         pass
 
     def test_audio_callback_processing(self):
-        """Test audio data processing in callback"""
+        """Test audio data processing in callback."""
         # TODO: Implement with sample audio data
         # sample_data = np.random.randint(-32768, 32767, 1024, dtype=np.int16)
         # processed_data = self.node.process_audio(sample_data.tobytes())
@@ -74,7 +74,7 @@ class TestAudioNode(unittest.TestCase):
         pass
 
     def test_audio_format_conversion(self):
-        """Test conversion between audio formats"""
+        """Test conversion between audio formats."""
         # TODO: Implement format conversion tests
         # int16_data = np.array([100, -100, 0], dtype=np.int16)
         # float32_data = self.node.int16_to_float32(int16_data)
@@ -83,7 +83,7 @@ class TestAudioNode(unittest.TestCase):
         pass
 
     def test_error_handling_no_device(self):
-        """Test error handling when audio device not found"""
+        """Test error handling when audio device not found."""
         # TODO: Implement error case
         # with patch('pyaudio.PyAudio.open', side_effect=OSError):
         #     with self.assertRaises(RuntimeError):

@@ -17,15 +17,15 @@ import time
 
 
 class HealthMonitor(Node):
-    """Простой монитор здоровья системы"""
-    
+    """Простой монитор здоровья системы."""
+
     def __init__(self):
         super().__init__('health_monitor')
-        
+
         # Параметры
         self.declare_parameter('enable_sounds', True)
         self.enable_sounds = self.get_parameter('enable_sounds').value
-        
+
         self.errors = []
         self.warnings = []
         self.last_status = None  # Для отслеживания изменений статуса
@@ -36,7 +36,7 @@ class HealthMonitor(Node):
         self._noise_patterns = [
             'guess_from_tf',  # icp_odometry до инициализации TF
         ]
-        
+
         # Подписка на логи
         self.rosout_sub = self.create_subscription(
             Log,
@@ -44,22 +44,22 @@ class HealthMonitor(Node):
             self.on_log,
             100
         )
-        
+
         # Publisher для звуков
         self.sound_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
-        
+
         # Таймер для отчётов
         self.report_timer = self.create_timer(5.0, self.print_report)
-        
+
         self.get_logger().info('🏥 Health Monitor запущен')
         self.get_logger().info('   Слушаем /rosout...')
-    
+
     def _is_noise(self, msg_text: str) -> bool:
-        """True если сообщение — известный стартап-шум, не реальный краш"""
+        """True если сообщение — известный стартап-шум, не реальный краш."""
         return any(pattern in msg_text for pattern in self._noise_patterns)
 
     def on_log(self, msg: Log):
-        """Получен лог"""
+        """Получен лог."""
         # Log levels: DEBUG=10, INFO=20, WARN=30, ERROR=40, FATAL=50
         if msg.level >= 40:  # ERROR or FATAL
             # Пропускаем известный стартап-шум
@@ -74,7 +74,7 @@ class HealthMonitor(Node):
             # Оставляем только последние 20 ошибок
             if len(self.errors) > 20:
                 self.errors = self.errors[-20:]
-        
+
         elif msg.level == 30:  # WARN
             self.warnings.append({
                 'node': msg.name,
@@ -84,13 +84,13 @@ class HealthMonitor(Node):
             # Оставляем только последние 10 предупреждений
             if len(self.warnings) > 10:
                 self.warnings = self.warnings[-10:]
-    
+
     def print_report(self):
-        """Печать отчёта о здоровье системы"""
+        """Печать отчёта о здоровье системы."""
         print("\n" + "="*70)
         print("🏥 HEALTH REPORT")
         print("="*70)
-        
+
         # Статус
         now = time.time()
         in_grace = (now - self._start_time) < self._startup_grace_sec
@@ -103,7 +103,7 @@ class HealthMonitor(Node):
             status = "⚠️  DEGRADED"
         else:
             status = "✅ HEALTHY"
-        
+
         # Звуковой сигнал при изменении статуса
         if self.enable_sounds and status != self.last_status:
             if status == "🚨 CRITICAL":
@@ -112,31 +112,31 @@ class HealthMonitor(Node):
                 self._play_sound('confused')
             elif status == "✅ HEALTHY" and self.last_status is not None:  # Восстановление
                 self._play_sound('cute')
-            
+
             self.last_status = status
-        
+
         print(f"Status: {status}")
         print(f"Total Errors: {len(self.errors)} (последние {recent_errors} за минуту)")
         print(f"Total Warnings: {len(self.warnings)}")
-        
+
         # Последние ошибки
         if self.errors:
             print("\n--- Recent Errors ---")
             for e in self.errors[-5:]:
                 age = int(time.time() - e['time'])
                 print(f"  [{e['level']}] {e['node']} ({age}s ago): {e['msg'][:60]}")
-        
+
         # Последние предупреждения
         if self.warnings:
             print("\n--- Recent Warnings ---")
             for w in self.warnings[-3:]:
                 age = int(time.time() - w['time'])
                 print(f"  [WARN] {w['node']} ({age}s ago): {w['msg'][:60]}")
-        
+
         print("="*70)
-    
+
     def _play_sound(self, sound_name: str):
-        """Проиграть звуковой эффект"""
+        """Проиграть звуковой эффект."""
         try:
             msg = String()
             msg.data = sound_name
@@ -149,7 +149,7 @@ class HealthMonitor(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = HealthMonitor()
-    
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

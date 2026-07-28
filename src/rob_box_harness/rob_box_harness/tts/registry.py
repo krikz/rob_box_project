@@ -101,7 +101,7 @@ class TTSProviderFactory:
         config: TTSConfig,
         registry: TTSProviderRegistry,
     ) -> Any:
-        """Resolve ``name`` in ``registry``, invoke the builder with
+        """Resolve ``name`` in ``registry``, invoke the builder with.
         ``config``, cache and return the result.
 
         Raises :class:`ProviderNotFoundError` if ``name`` is unknown.

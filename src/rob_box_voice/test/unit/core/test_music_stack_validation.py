@@ -18,7 +18,7 @@ from rob_box_voice.core.renardo_synthdef_patches import (
 
 
 def test_contains_merge_conflict_markers_detects_conflict_blocks():
-    broken_scd = """<<<<<<< HEAD
+    broken_scd = """<<<<<<< HEAD.
 SynthDef.new(\\organ, {
 =======
 SynthDef.new(\\organ, {
@@ -138,7 +138,7 @@ def test_format_music_stack_report_for_degraded_runtime():
 
 
 def test_resolve_conflicted_scd_content_keeps_bottom_version_for_organ_style_conflicts():
-    conflicted = """<<<<<<< HEAD:renardo_lib/renardo_lib/osc/scsyndef/organ.scd
+    conflicted = """<<<<<<< HEAD:renardo_lib/renardo_lib/osc/scsyndef/organ.scd.
 SynthDef(\\organ,
     {|f=440|\nold body\n}).add;
 =======
@@ -160,7 +160,7 @@ metadata: (category: \\organ)
 
 
 def test_patch_brass_scd_content_replaces_broken_conflicted_source_with_known_good_version():
-    conflicted = """<<<<<<< HEAD
+    conflicted = """<<<<<<< HEAD.
 SynthDef(\\brass, { old body }).add;
 =======
 SynthDef.new(\\brass, { broken new body }).add;
@@ -176,7 +176,7 @@ SynthDef.new(\\brass, { broken new body }).add;
 
 
 def test_patch_organ_scd_content_replaces_upstream_source_with_stable_organ_version():
-    source = """SynthDef.new(\\organ, {
+    source = """SynthDef.new(\\organ, {.
     |f=440|
     old body
 },
@@ -194,7 +194,7 @@ metadata: (category: \\organ)
 
 
 def test_patch_tb303_scd_content_replaces_upstream_source_with_stable_anti_click_version():
-    source = """SynthDef.new(\\tb303, {
+    source = """SynthDef.new(\\tb303, {.
     |atk=0.1, sus=0, dec=1|
     volEnv = EnvGen.ar(Env.new([10e-10, 1, 1, 10e-10], [0.01, sus, dec], 'exp'));
     filEnv = EnvGen.ar(Env.new([10e-10, 1, 10e-10], [0.01, dec], 'exp'));
@@ -214,7 +214,7 @@ def test_patch_tb303_scd_content_replaces_upstream_source_with_stable_anti_click
 def test_apply_renardo_synthdef_patches_patches_tb303_file_in_place(tmp_path):
     tb303_file = tmp_path / "tb303.scd"
     tb303_file.write_text(
-        """SynthDef.new(\\tb303, {
+        """SynthDef.new(\\tb303, {.
     |atk=0.1, sus=0, dec=1|
     volEnv = EnvGen.ar(Env.new([10e-10, 1, 1, 10e-10], [0.01, sus, dec], 'exp'));
 }).add;

@@ -25,10 +25,10 @@ from typing import Tuple
 
 
 class FrameRenderer:
-    """Renders animation frames to ROS2 messages"""
+    """Renders animation frames to ROS2 messages."""
 
     def __init__(self):
-        """Initialize renderer"""
+        """Initialize renderer."""
         self.image_cache = {}
 
     def load_image(self, image_path: str) -> np.ndarray:
@@ -150,11 +150,11 @@ class FrameRenderer:
             return False, str(e)
 
     def clear_cache(self):
-        """Clear image cache to free memory"""
+        """Clear image cache to free memory."""
         self.image_cache.clear()
 
     def get_cache_size(self) -> int:
-        """Get number of cached images"""
+        """Get number of cached images."""
         return len(self.image_cache)
 
 

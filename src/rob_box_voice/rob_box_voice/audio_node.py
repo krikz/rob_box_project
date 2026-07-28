@@ -47,11 +47,11 @@ def ignore_stderr(enable=True):
 
 
 class AudioNode(Node):
-    """Нода для захвата аудио и публикации VAD/DoA с ReSpeaker"""
-    
+    """Нода для захвата аудио и публикации VAD/DoA с ReSpeaker."""
+
     def __init__(self):
         super().__init__('audio_node')
-        
+
         # Параметры
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('channels', 1)
@@ -60,7 +60,7 @@ class AudioNode(Node):
         self.declare_parameter('publish_rate', 10)
         self.declare_parameter('device_index', -1)  # -1 = auto-detect
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
-        
+
         self.sample_rate = self.get_parameter('sample_rate').value
         self.channels = self.get_parameter('channels').value
         self.chunk_size = self.get_parameter('chunk_size').value
@@ -68,14 +68,14 @@ class AudioNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.device_index = self.get_parameter('device_index').value
         self.device_name = self.get_parameter('device_name').value
-        
+
         # QoS для аудио потока
         audio_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             depth=10
         )
-        
+
         # Publishers
         self.audio_pub = self.create_publisher(AudioData, '/audio/audio', audio_qos)
         self.speech_audio_pub = self.create_publisher(AudioData, '/audio/speech_audio', audio_qos)
@@ -83,29 +83,29 @@ class AudioNode(Node):
         self.direction_pub = self.create_publisher(Int32, '/audio/direction', 10)
         self.state_pub = self.create_publisher(String, '/audio/state', 10)
         self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
-        
+
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
-        
+
         # PyAudio
         self.pyaudio_instance: Optional[pyaudio.PyAudio] = None
         self.stream: Optional[pyaudio.Stream] = None
-        
+
         # Состояние
         self.is_running = False
         self.audio_thread: Optional[threading.Thread] = None
-        
+
         # Параметры VAD
         self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
         self.declare_parameter('speech_prefetch', 0.5)      # Буфер перед началом речи
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
         self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
-        
+
         self.speech_continuation = self.get_parameter('speech_continuation').value
         self.speech_prefetch = self.get_parameter('speech_prefetch').value
         self.speech_min_duration = self.get_parameter('speech_min_duration').value
         self.speech_max_duration = self.get_parameter('speech_max_duration').value
-        
+
         # Буферы для VAD
         self.is_speeching = False
         self.speech_stopped_time = self.get_clock().now()
@@ -114,23 +114,23 @@ class AudioNode(Node):
         self.speech_prefetch_bytes = int(
             self.speech_prefetch * self.sample_rate * 2)  # 16-bit = 2 bytes
         self.prev_vad = False
-        
+
         # Таймер для VAD/DoA (после sleep(5) безопасно!)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.check_vad_and_doa)
-        
+
         # Инициализация
         self.get_logger().info('AudioNode инициализирован')
         self.initialize_hardware()
-    
+
     def initialize_hardware(self):
-        """Инициализация ReSpeaker и PyAudio"""
+        """Инициализация ReSpeaker и PyAudio."""
         # Подключиться к ReSpeaker для VAD/DoA через USB
         if self.respeaker.connect():
             self.get_logger().info('✓ ReSpeaker USB подключен для VAD/DoA')
             device_info = self.respeaker.get_device_info()
             if device_info:
                 self.get_logger().info(f"  Устройство: {device_info['product']}")
-            
+
             # НЕ настраиваем параметры - только ЧИТАЕМ VAD!
             # Любая USB запись может заблокировать PyAudio!
             # self.respeaker.configure_audio_processing(agc=True, noise_suppression=True)
@@ -138,12 +138,12 @@ class AudioNode(Node):
             self.get_logger().info(f'  VAD threshold: {self.vad_threshold} dB (по умолчанию)')
         else:
             self.get_logger().warn('⚠ ReSpeaker USB не найден для VAD/DoA')
-        
+
         # Инициализация PyAudio (теперь ReSpeaker должен быть виден как аудио устройство)
         # Глушим ALSA ошибки как в jsk-ros-pkg
         with ignore_stderr(enable=True):
             self.pyaudio_instance = pyaudio.PyAudio()
-        
+
         # Найти устройство
         if self.device_index < 0:
             self.device_index = find_respeaker_device(self.pyaudio_instance)
@@ -152,9 +152,9 @@ class AudioNode(Node):
                 self.list_available_devices()
                 self.publish_state('error_no_device')
                 return
-        
+
         self.get_logger().info(f'✓ Используется аудио устройство index={self.device_index}')
-        
+
         # Открыть аудио поток
         try:
             self.stream = self.pyaudio_instance.open(
@@ -166,30 +166,30 @@ class AudioNode(Node):
                 frames_per_buffer=self.chunk_size,
                 stream_callback=self.audio_callback
             )
-            
+
             self.get_logger().info(f'✓ Аудио поток открыт: {self.sample_rate}Hz, {self.channels}ch')
             self.publish_state('ready')
-            
+
         except Exception as e:
             self.get_logger().error(f'❌ Ошибка открытия аудио потока: {e}')
             self.publish_state('error_stream')
             return
-        
+
         # Запустить поток
         self.is_running = True
         self.stream.start_stream()
         self.get_logger().info('▶ Захват аудио запущен')
         self.publish_state('running')
-    
+
     def audio_callback(self, in_data, frame_count, time_info, status):
-        """Callback для PyAudio stream"""
+        """Callback для PyAudio stream."""
         if status:
             self.get_logger().warn(f'PyAudio status: {status}')
-        
+
         # Публиковать RAW аудио данные
         if in_data and self.is_running:
             msg = AudioData()
-            
+
             # Если многоканальное аудио - конвертируем в моно
             if self.channels > 1:
                 import numpy as np
@@ -203,10 +203,10 @@ class AudioNode(Node):
                 audio_bytes = mono_data.tobytes()
             else:
                 audio_bytes = in_data
-            
+
             msg.data = list(audio_bytes)
             self.audio_pub.publish(msg)
-            
+
             # Буферизация для speech_audio
             if self.is_speeching:
                 # Во время речи - добавляем в speech buffer
@@ -218,18 +218,18 @@ class AudioNode(Node):
                 # Вне речи - обновляем prefetch buffer
                 self.speech_prefetch_buffer += audio_bytes
                 self.speech_prefetch_buffer = self.speech_prefetch_buffer[-self.speech_prefetch_bytes:]
-        
+
         return (None, pyaudio.paContinue)
-    
+
     def check_vad_and_doa(self):
-        """Проверка VAD и DoA от ReSpeaker"""
+        """Проверка VAD и DoA от ReSpeaker."""
         if not self.respeaker.is_connected():
             return
-        
+
         try:
             # Получить текущее время
             now = self.get_clock().now()
-            
+
             # VAD - читаем с обработкой ошибок
             try:
                 vad = self.respeaker.get_vad()
@@ -237,10 +237,10 @@ class AudioNode(Node):
                 # Pipe error или другая USB ошибка - пропускаем этот цикл
                 # (такое может быть если PyAudio активно использует устройство)
                 return
-            
+
             if vad is None:
                 return  # Ошибка чтения, пропускаем
-            
+
             if vad != self.prev_vad:
                 # Публикуем только при изменении
                 msg = Bool()
@@ -248,15 +248,15 @@ class AudioNode(Node):
                 self.vad_pub.publish(msg)
                 self.get_logger().info(f'🎙️  VAD: {"речь" if vad else "тишина"}')
                 self.prev_vad = vad
-            
+
             # Обработка состояния речи
             if vad:
                 # Речь обнаружена - обновляем время остановки
                 self.speech_stopped_time = now
-            
+
             # Проверяем время с момента окончания речи
             time_since_stop = (now - self.speech_stopped_time).nanoseconds / 1e9
-            
+
             if time_since_stop < self.speech_continuation:
                 # Речь продолжается (или недавно закончилась)
                 if not self.is_speeching:
@@ -267,10 +267,10 @@ class AudioNode(Node):
                 buf = self.speech_audio_buffer
                 self.speech_audio_buffer = b""
                 self.is_speeching = False
-                
+
                 # Вычисляем длительность
                 duration = len(buf) / (self.sample_rate * 2)  # 16-bit = 2 bytes
-                
+
                 if self.speech_min_duration <= duration <= self.speech_max_duration:
                     self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
                     # Публикуем speech_audio
@@ -279,7 +279,7 @@ class AudioNode(Node):
                     self.speech_audio_pub.publish(msg)
                 else:
                     self.get_logger().warn(f'❌ Речь отклонена: {duration:.2f}с (min={self.speech_min_duration}, max={self.speech_max_duration})')
-            
+
             # DoA - читаем с обработкой ошибок
             try:
                 direction = self.respeaker.get_direction()
@@ -290,20 +290,20 @@ class AudioNode(Node):
             except Exception:
                 # Pipe error - пропускаем
                 pass
-        
+
         except Exception as e:
             # Общая ошибка - логируем только если это не Pipe error
             if 'Pipe error' not in str(e):
                 self.get_logger().warn(f'VAD/DoA ошибка: {e}')
-    
+
     def publish_state(self, state: str):
-        """Публиковать состояние ноды"""
+        """Публиковать состояние ноды."""
         msg = String()
         msg.data = state
         self.state_pub.publish(msg)
-    
+
     def list_available_devices(self):
-        """Вывести список доступных аудио устройств"""
+        """Вывести список доступных аудио устройств."""
         if self.pyaudio_instance:
             devices = list_audio_devices(self.pyaudio_instance)
             self.get_logger().info('Доступные аудио устройства:')
@@ -312,31 +312,31 @@ class AudioNode(Node):
                     f"  [{dev['index']}] {dev['name']} "
                     f"({dev['channels']}ch, {dev['sample_rate']}Hz)"
                 )
-    
+
     def shutdown(self):
-        """Корректное завершение работы"""
+        """Корректное завершение работы."""
         self.get_logger().info('Остановка AudioNode...')
         self.is_running = False
-        
+
         try:
             if self.stream:
                 self.stream.stop_stream()
                 self.stream.close()
         except:
             pass
-        
+
         try:
             if self.pyaudio_instance:
                 self.pyaudio_instance.terminate()
         except:
             pass
-        
+
         try:
             if self.respeaker and self.respeaker.is_connected():
                 self.respeaker.disconnect()
         except:
             pass
-        
+
         self.publish_state('stopped')
         self.get_logger().info('✓ AudioNode остановлен')
 
@@ -344,7 +344,7 @@ class AudioNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = AudioNode()
-    
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

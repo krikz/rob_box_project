@@ -223,7 +223,7 @@ class DialogCore:
         self,
         history: Iterable[LLMMessage] | None,
     ) -> list[LLMMessage]:
-        """Build the LLM message list — either from ``history`` or
+        """Build the LLM message list — either from ``history`` or.
         via ``memory.load_recent``.
 
         * When the caller passes an explicit iterable, that wins —

@@ -16,8 +16,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Generate launch description для Voice Assistant"""
-    
+    """Generate launch description для Voice Assistant."""
+
     # Аргументы
     config_file_arg = DeclareLaunchArgument(
         'config_file',
@@ -28,7 +28,7 @@ def generate_launch_description():
         ]),
         description='Path to voice assistant config YAML'
     )
-    
+
     namespace_arg = DeclareLaunchArgument(
         'namespace',
         default_value='',
@@ -47,7 +47,7 @@ def generate_launch_description():
     # Конфигурация
     config_file = LaunchConfiguration('config_file')
     namespace = LaunchConfiguration('namespace')
-    
+
     # === Audio Node ===
     audio_node = Node(
         package='rob_box_voice',
@@ -60,7 +60,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === LED Node ===
     led_node = Node(
         package='rob_box_voice',
@@ -73,7 +73,7 @@ def generate_launch_description():
         respawn_delay=2.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === Animation Player Node ===
     animation_node = Node(
         package='rob_box_animations',
@@ -89,7 +89,7 @@ def generate_launch_description():
         respawn=True,
         respawn_delay=3.0
     )
-    
+
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     dialogue_node = Node(
         package='rob_box_voice',
@@ -102,7 +102,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
     tts_node = Node(
         package='rob_box_voice',
@@ -115,7 +115,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === STT Node (Phase 3: Vosk offline recognition) ===
     stt_node = Node(
         package='rob_box_voice',
@@ -128,7 +128,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
         # === Sound Node (Phase 4: Sound Effects) ===
     sound_node = Node(
         package='rob_box_voice',
@@ -141,7 +141,7 @@ def generate_launch_description():
         respawn_delay=3.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === Command Node (Phase 5: Command Recognition) ===
     command_node = Node(
         package='rob_box_voice',
@@ -154,7 +154,7 @@ def generate_launch_description():
         respawn_delay=5.0,
         arguments=['--ros-args', '--log-level', 'info']
     )
-    
+
     # === MCP Server (Agentive Tools Integration) ===
     # ⚠️ Workaround: Python entry points not recognized by ROS 2
     # Using ExecuteProcess instead of Node to run Python module directly
@@ -164,7 +164,7 @@ def generate_launch_description():
         respawn=True,
         respawn_delay=5.0
     )
-    
+
     # === Command Node (Phase 5: TODO) ===
     # sound_node = Node(
     #     package='rob_box_voice',
@@ -176,7 +176,7 @@ def generate_launch_description():
     #     respawn=True,
     #     respawn_delay=3.0
     # )
-    
+
     # === Command Node (Phase 5: TODO) ===
     # command_node = Node(
     #     package='rob_box_voice',
@@ -188,7 +188,7 @@ def generate_launch_description():
     #     respawn=True,
     #     respawn_delay=3.0
     # )
-    
+
     return LaunchDescription([
         config_file_arg,
         namespace_arg,
@@ -203,4 +203,3 @@ def generate_launch_description():
         command_node,   # ✅ Phase 5: Command Recognition
         mcp_server,     # ✅ MCP Tools: Agentive LLM Integration
     ])
-

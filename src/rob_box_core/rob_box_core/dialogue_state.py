@@ -1,4 +1,4 @@
-"""DialogueStateMachine — formal transition wrapper around the existing
+"""DialogueStateMachine — formal transition wrapper around the existing.
 ``DialogueManager``.
 
 The point of this module (per ADR-0001 / P0.3 of the refactoring plan) is to
@@ -52,7 +52,7 @@ _VALID_TRANSITIONS: Mapping[DialogueState, frozenset[DialogueState]] = {
 
 
 class IllegalTransitionError(RuntimeError):
-    """Raised when a caller tries to move between two states that aren't
+    """Raised when a caller tries to move between two states that aren't.
     connected in ``_VALID_TRANSITIONS``."""
 
 

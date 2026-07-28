@@ -225,7 +225,7 @@ def test_complete_settings_override_model_and_temperature():
 
 
 def test_complete_accepts_one_shot_generator_messages() -> None:
-    """BLK-4 regression: ``messages`` is iterated twice
+    """BLK-4 regression: ``messages`` is iterated twice.
     (``_require_capability_for_messages`` then ``_build_kwargs``). A
     one-shot generator would be empty on the second pass, producing
     ``messages=[]`` in the SDK call → 400 / empty reply. The fix freezes
@@ -423,7 +423,7 @@ def test_aclose_closes_client():
 
 
 def test_aclose_is_idempotent():
-    """Calling aclose() twice (e.g. from nested finally blocks) must not
+    """Calling aclose() twice (e.g. from nested finally blocks) must not.
     raise and must not invoke the underlying client close() again."""
     p, c = _make_deepseek()
     asyncio.run(p.aclose())
@@ -434,7 +434,7 @@ def test_aclose_is_idempotent():
 
 
 def test_aclose_is_noop_when_client_already_closed():
-    """If the underlying client was closed out from under us (e.g. caller
+    """If the underlying client was closed out from under us (e.g. caller.
     owns the client), aclose() must stay silent rather than masking the
     original teardown with a RuntimeError."""
     p, c = _make_deepseek()

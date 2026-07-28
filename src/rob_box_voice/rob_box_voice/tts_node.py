@@ -115,7 +115,7 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
 
 @contextmanager
 def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от sounddevice"""
+    """Подавить ALSA ошибки от sounddevice."""
     if enable:
         devnull = None
         try:
@@ -180,7 +180,7 @@ try:
 except ImportError:
 
     def normalize_for_tts(text):
-        """Fallback если нет normalizer"""
+        """Fallback если нет normalizer."""
         return text
 
 
@@ -217,7 +217,7 @@ ASYNC_BRIDGE_MAX_WORKERS: int = 1
 
 
 class TTSNode(Node):
-    """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback + MiniMax (opt-in)"""
+    """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback + MiniMax (opt-in)."""
 
     def __init__(self):
         super().__init__("tts_node")
@@ -549,7 +549,7 @@ class TTSNode(Node):
             self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def _load_silero_model(self):
-        """Загрузить Silero TTS модель (lazy loading)"""
+        """Загрузить Silero TTS модель (lazy loading)."""
         if self.silero_model is not None:
             return  # Уже загружена
 
@@ -601,7 +601,7 @@ class TTSNode(Node):
             self.silero_loading = False
 
     def control_callback(self, msg: String):
-        """Обработка control commands (STOP)"""
+        """Обработка control commands (STOP)."""
         command = msg.data.strip().upper()
 
         if command == "STOP":
@@ -610,7 +610,7 @@ class TTSNode(Node):
             self.publish_state("stopped")
 
     def _interrupt_playback(self):
-        """Прервать текущее воспроизведение (helper метод)"""
+        """Прервать текущее воспроизведение (helper метод)."""
         self.stop_requested = True
         # Сбрасываем current_dialogue_id: последующие TTS-запросы без dialogue_id
         # или с устаревшим dialogue_id будут отброшены.
@@ -639,7 +639,7 @@ class TTSNode(Node):
             self.current_dialogue_id = new_id
 
     def dialogue_callback(self, msg: String):
-        """Обработка JSON chunks от dialogue_node"""
+        """Обработка JSON chunks от dialogue_node."""
         try:
             chunk_data = json.loads(msg.data)
 
@@ -738,7 +738,7 @@ class TTSNode(Node):
             self.get_logger().error(f"❌ TTS error: {e}")
 
     def _extract_text_from_ssml(self, ssml: str) -> str:
-        """Извлекает текст из SSML тегов"""
+        """Извлекает текст из SSML тегов."""
         import re
 
         # Убираем все XML теги
@@ -901,7 +901,7 @@ class TTSNode(Node):
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None
     ):
-        """Синтез речи и воспроизведение"""
+        """Синтез речи и воспроизведение."""
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
 
@@ -1172,7 +1172,7 @@ class TTSNode(Node):
                 self.processing_dialogue_id = None
 
     def _synthesize_yandex(self, text: str, ssml_attributes: dict = None) -> np.ndarray:
-        """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!)
+        """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
 
         Args:
             text: Текст для синтеза
@@ -1589,7 +1589,7 @@ class TTSNode(Node):
         )
 
     def _publish_audio(self, audio_np: np.ndarray):
-        """Публикует аудио в ROS topic"""
+        """Публикует аудио в ROS topic."""
         # Конвертируем в int16 для AudioData
         audio_int16 = (
             np.clip(audio_np, -1.0, 1.0) * 32767
@@ -1734,13 +1734,13 @@ class TTSNode(Node):
             self.get_logger().warn(f"⚠️ TTS noise cleanup failed: {e}")
 
     def publish_state(self, state: str):
-        """Публикация состояния TTS"""
+        """Публикация состояния TTS."""
         msg = String()
         msg.data = state
         self.state_pub.publish(msg)
 
     def parameters_callback(self, params):
-        """Callback для изменения параметров во время работы"""
+        """Callback для изменения параметров во время работы."""
         from rcl_interfaces.msg import SetParametersResult
 
         for param in params:

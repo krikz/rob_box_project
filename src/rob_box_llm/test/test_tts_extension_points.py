@@ -607,7 +607,7 @@ class TestRegisterBuiltinTtsProviders:
 
 
 class TestThirdPartySubclassViaRegistry:
-    """A fictional provider authors can subclass :class:`BaseTTSProvider`,
+    """A fictional provider authors can subclass :class:`BaseTTSProvider`,.
     register a builder, and have ``TTSProviderFactory.create`` hand back
     their instance. This is the whole point of the extension surface."""
 

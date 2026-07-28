@@ -192,7 +192,7 @@ class TestCompressed:
 
     @pytest.mark.parametrize("fmt", [TTSFormat.MP3, TTSFormat.OGG])
     def test_no_decoder_available_raises_clean_error(self, fmt, monkeypatch):
-        """When neither pydub nor ffmpeg is on PATH, we must raise a typed
+        """When neither pydub nor ffmpeg is on PATH, we must raise a typed.
         error (not a generic ImportError) so the caller can surface a
         useful message to the operator.
         """

@@ -15,47 +15,47 @@ import os
 
 
 class TestDialogueNode(unittest.TestCase):
-    """Test suite for Dialogue Node"""
+    """Test suite for Dialogue Node."""
 
     @classmethod
     def setUpClass(cls):
-        """Set up ROS2 context once for all tests"""
+        """Set up ROS2 context once for all tests."""
         rclpy.init()
 
     @classmethod
     def tearDownClass(cls):
-        """Shutdown ROS2 context"""
+        """Shutdown ROS2 context."""
         rclpy.shutdown()
 
     def setUp(self):
-        """Set up test fixtures before each test"""
+        """Set up test fixtures before each test."""
         # Mock API key for testing
         self.original_api_key = os.environ.get('DEEPSEEK_API_KEY')
         os.environ['DEEPSEEK_API_KEY'] = 'test-key-12345'
-        
+
         # TODO: Uncomment when DialogueNode is ready
         # self.node = DialogueNode()
 
     def tearDown(self):
-        """Clean up after each test"""
+        """Clean up after each test."""
         # Restore original API key
         if self.original_api_key:
             os.environ['DEEPSEEK_API_KEY'] = self.original_api_key
         else:
             os.environ.pop('DEEPSEEK_API_KEY', None)
-            
+
         # TODO: Uncomment when DialogueNode is ready
         # self.node.destroy_node()
 
     def test_node_creation(self):
-        """Test that node can be created with API key"""
+        """Test that node can be created with API key."""
         # TODO: Implement when DialogueNode is ready
         # self.assertIsInstance(self.node, Node)
         # self.assertEqual(self.node.get_name(), 'dialogue_node')
         pass
 
     def test_missing_api_key_raises_error(self):
-        """Test that missing API key raises RuntimeError"""
+        """Test that missing API key raises RuntimeError."""
         # TODO: Implement error case
         # os.environ.pop('DEEPSEEK_API_KEY', None)
         # with self.assertRaises(RuntimeError) as context:
@@ -65,7 +65,7 @@ class TestDialogueNode(unittest.TestCase):
 
     @patch('requests.post')
     def test_deepseek_api_call(self, mock_post):
-        """Test DeepSeek API request/response"""
+        """Test DeepSeek API request/response."""
         # Mock API response
         mock_response = Mock()
         mock_response.status_code = 200
@@ -84,7 +84,7 @@ class TestDialogueNode(unittest.TestCase):
 
     @patch('requests.post')
     def test_api_error_handling(self, mock_post):
-        """Test handling of API errors"""
+        """Test handling of API errors."""
         # Mock API error
         mock_post.side_effect = Exception("Connection timeout")
 
@@ -96,7 +96,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_conversation_context_management(self):
-        """Test that conversation context is maintained"""
+        """Test that conversation context is maintained."""
         # TODO: Implement context tracking
         # self.node.add_to_context("user", "Привет")
         # self.node.add_to_context("assistant", "Здравствуй!")
@@ -106,7 +106,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_system_prompt_injection(self):
-        """Test that system prompt is properly injected"""
+        """Test that system prompt is properly injected."""
         # TODO: Implement system prompt test
         # messages = self.node.build_messages("Привет")
         # self.assertTrue(any(m['role'] == 'system' for m in messages))
@@ -115,7 +115,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_max_context_length(self):
-        """Test that context doesn't exceed max length"""
+        """Test that context doesn't exceed max length."""
         # TODO: Implement context limit test
         # for i in range(100):  # Add many messages
         #     self.node.add_to_context("user", f"Message {i}")
@@ -124,7 +124,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_query_queue_accumulation(self):
-        """Test that multiple queries are accumulated in queue"""
+        """Test that multiple queries are accumulated in queue."""
         # TODO: Implement query queue test
         # Simulate multiple rapid queries
         # self.node.stt_callback(String(data="Привет"))
@@ -134,7 +134,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_query_queue_batch_processing(self):
-        """Test that accumulated queries are processed as a batch"""
+        """Test that accumulated queries are processed as a batch."""
         # TODO: Implement batch processing test
         # Add multiple queries to queue
         # self.node.pending_queries = ["Вопрос 1", "Вопрос 2", "Вопрос 3"]
@@ -144,7 +144,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_query_queue_cleared_on_silence(self):
-        """Test that queue is cleared when silence command is received"""
+        """Test that queue is cleared when silence command is received."""
         # TODO: Implement queue clearing test
         # self.node.pending_queries = ["Вопрос 1", "Вопрос 2"]
         # self.node._handle_silence_command()
@@ -152,7 +152,7 @@ class TestDialogueNode(unittest.TestCase):
         pass
 
     def test_llm_processing_flag(self):
-        """Test that llm_processing flag prevents concurrent processing"""
+        """Test that llm_processing flag prevents concurrent processing."""
         # TODO: Implement concurrent processing test
         # self.node.llm_processing = True
         # self.node.stt_callback(String(data="Новый вопрос"))

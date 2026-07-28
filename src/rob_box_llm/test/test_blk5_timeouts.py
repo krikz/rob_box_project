@@ -216,7 +216,7 @@ class TestCoerceTimeout:
 
 
 def test_minimax_tts_default_timeout_is_per_phase_httpx_timeout() -> None:
-    """The TTS provider's ``DEFAULT_TIMEOUT`` is an ``httpx.Timeout``
+    """The TTS provider's ``DEFAULT_TIMEOUT`` is an ``httpx.Timeout``.
     with split per-phase budgets, not a single float.
     """
     tts_default = MiniMaxTTSProvider.DEFAULT_TIMEOUT
@@ -228,7 +228,7 @@ def test_minimax_tts_default_timeout_is_per_phase_httpx_timeout() -> None:
 
 
 def test_minimax_tts_default_client_carries_per_phase_timeout() -> None:
-    """Building a provider with no ``client=`` kwarg uses the default
+    """Building a provider with no ``client=`` kwarg uses the default.
     ``_http_client_factory``, which must hand httpx the per-phase
     :class:`httpx.Timeout`.
     """
@@ -349,7 +349,7 @@ class _MinimalTTS(BaseTTSProvider):
 
 
 def test_base_tts_factory_uses_per_phase_default_when_subclass_skips_timeout() -> None:
-    """A subclass that never sets ``self._timeout`` falls back to a
+    """A subclass that never sets ``self._timeout`` falls back to a.
     per-phase :class:`httpx.Timeout` (not the old single-float 30 s).
     """
     p = _MinimalTTS()

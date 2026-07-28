@@ -45,7 +45,7 @@ class TestHierarchyShape:
         assert issubclass(TTSError, Exception)
 
     def test_tts_error_does_not_inherit_from_provider_error(self):
-        """LLM callers use ``except ProviderError`` — TTS failures MUST NOT
+        """LLM callers use ``except ProviderError`` — TTS failures MUST NOT.
         be silently swallowed by those clauses.
         """
         assert not issubclass(TTSError, ProviderError)
@@ -64,7 +64,7 @@ class TestHierarchyShape:
 
 
 class TestProviderAttribute:
-    """``exc.provider`` is the one bit of structured context every subclass
+    """``exc.provider`` is the one bit of structured context every subclass.
     carries — without it, log messages lose the source provider name.
     """
 
@@ -73,7 +73,7 @@ class TestProviderAttribute:
         assert exc.provider == "minimax"
 
     def test_default_provider_is_none(self):
-        """``TTSError(provider=None)`` is allowed — the base class signature
+        """``TTSError(provider=None)`` is allowed — the base class signature.
         is ``*, provider: str | None = None`` and subclasses inherit it.
         Loggers must handle the None case.
         """
@@ -91,7 +91,7 @@ class TestProviderAttribute:
 
 
 class TestExceptionIdentity:
-    """Errors raised by one provider should not be caught by except clauses
+    """Errors raised by one provider should not be caught by except clauses.
     intended for another — the only safe match is ``except TTSError``.
     """
 

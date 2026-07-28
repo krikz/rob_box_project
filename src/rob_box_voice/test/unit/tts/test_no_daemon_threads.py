@@ -55,7 +55,7 @@ def _strip_strings_and_comments(source: str) -> str:
 
 
 def _live_substring_matches(source: str, pattern: str) -> list[tuple[int, str]]:
-    """Return [(lineno, line_text), ...] for non-comment, non-string
+    """Return [(lineno, line_text), ...] for non-comment, non-string.
     occurrences of *pattern* in *source*."""
     cleaned = _strip_strings_and_comments(source)
     hits: list[tuple[int, str]] = []

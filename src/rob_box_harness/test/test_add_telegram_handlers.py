@@ -1,4 +1,4 @@
-"""Tests for :func:`add_telegram_handlers` — wires a registry onto a
+"""Tests for :func:`add_telegram_handlers` — wires a registry onto a.
 python-telegram-bot ``Application``.
 
 A5 in the P1.4 checklist: ``add_telegram_handlers(registry, app)`` must
@@ -49,7 +49,7 @@ class _FakeCommandHandler:
 
 @pytest.fixture
 def patched_handler_cls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject a fake CommandHandler class into the add_telegram_handlers
+    """Inject a fake CommandHandler class into the add_telegram_handlers.
     module's namespace so we don't depend on python-telegram-bot."""
 
     import rob_box_harness.harnesses.telegram as harness_telegram_mod

@@ -18,13 +18,13 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult
 
 
 class SpeakTextTool(MCPTool):
-    """Инструмент для произнесения текста голосом"""
+    """Инструмент для произнесения текста голосом."""
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
-        
+
         # Publisher для TTS запросов
         self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
         # Publisher для анимаций (инициализируем сразу, чтобы не создавать дубли в execute())
@@ -163,7 +163,7 @@ class SpeakTextTool(MCPTool):
         return [c for c in chunks if c.strip()]
 
     def execute(self, text: str, animation: str = "neutral") -> MCPToolResult:
-        """Произнести текст"""
+        """Произнести текст."""
         import json
         import uuid
 
@@ -204,9 +204,9 @@ class SpeakTextTool(MCPTool):
 
         # Определяем pitch для голоса на основе анимации (только для эмоциональных)
         pitch_map = {
-            "happy": "high", 
-            "sad": "low", 
-            "angry": "high", 
+            "happy": "high",
+            "sad": "low",
+            "angry": "high",
             "excited": "x-high",
             "surprised": "high"
         }
@@ -262,13 +262,13 @@ class SpeakTextTool(MCPTool):
         )
 
 class ListenForResponseTool(MCPTool):
-    """Инструмент для ожидания ответа пользователя"""
+    """Инструмент для ожидания ответа пользователя."""
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
-        
+
         # Publisher для запроса активации STT
         self.stt_request_pub = node.create_publisher(String, "/voice/stt/request", 10)
 
@@ -302,7 +302,7 @@ class ListenForResponseTool(MCPTool):
         ]
 
     def execute(self, timeout_seconds: int = 30, prompt_text: str = "") -> MCPToolResult:
-        """Активировать режим ожидания ответа"""
+        """Активировать режим ожидания ответа."""
         self.log_info(f"Ожидание ответа пользователя (таймаут: {timeout_seconds}s)")
 
         if prompt_text:

@@ -43,7 +43,7 @@ class ToolSpec:
 
 
 ToolHandler = Callable[[Mapping[str, Any]], Awaitable[Any] | Any]
-"""A tool callable. Either sync or async; the framework awaits the
+"""A tool callable. Either sync or async; the framework awaits the.
 result if it's awaitable."""
 
 
@@ -141,7 +141,7 @@ class FakeToolProvider(ToolProvider):
         self._tools["echo"] = (echo_spec, _echo_handler)
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
-        """Register a tool. Silently overrides an existing registration
+        """Register a tool. Silently overrides an existing registration.
         with the same name — tests use this to replace the built-in
         ``echo`` tool with a custom capturing handler."""
         self._tools[spec.name] = (spec, handler)

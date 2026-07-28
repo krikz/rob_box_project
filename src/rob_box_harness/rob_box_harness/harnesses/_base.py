@@ -40,7 +40,7 @@ def ensure_user_text(value: Any) -> str:
 
 
 PostProcessor = Callable[[str], str]
-"""Signature of a final-step text post-processor. Receives the LLM's
+"""Signature of a final-step text post-processor. Receives the LLM's.
 final response text and returns the text the harness will return
 and dispatch."""
 

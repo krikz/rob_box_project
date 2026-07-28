@@ -79,7 +79,7 @@ class TTSSettings:
 
 @dataclass(frozen=True)
 class TTSAudio:
-    """Non-streaming result. `samples` are int16 little-endian PCM unless
+    """Non-streaming result. `samples` are int16 little-endian PCM unless.
     `format` says otherwise; `sample_rate` is what the caller should feed
     into its playback sink."""
 

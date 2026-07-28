@@ -167,7 +167,7 @@ class TestFormatSynthesis:
 
     @pytest.mark.asyncio
     async def test_ogg_format_falls_back_to_mp3_on_wire_and_reports_actual_format(self):
-        """MiniMax does not support OGG; the provider degrades audio_setting
+        """MiniMax does not support OGG; the provider degrades audio_setting.
         to ``mp3`` for the API call and the returned TTSAudio.format reports
         the actual container so downstream transcode selects the right
         decoder.

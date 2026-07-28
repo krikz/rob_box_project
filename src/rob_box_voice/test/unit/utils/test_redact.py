@@ -181,7 +181,7 @@ def _format_api_status_log(exc: _FakeAPIStatusError) -> str:
 
 
 def test_api_status_error_log_masks_bearer_token(caplog):
-    """BLK-1: the dialogue_node APIStatusError branch MUST mask
+    """BLK-1: the dialogue_node APIStatusError branch MUST mask.
     ``Authorization: Bearer <tok>`` in the error log line."""
     bearer = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"
     body = (
@@ -212,7 +212,7 @@ def test_api_status_error_log_masks_bearer_token(caplog):
 
 
 def test_api_status_error_log_masks_token_in_short_200_char_window(caplog):
-    """The first 200 chars of the body MUST be redacted — that is what
+    """The first 200 chars of the body MUST be redacted — that is what.
     dialogue_node ships to the logger."""
     # Construct a body > 200 chars so the slice actually does something.
     padding = "x" * 300

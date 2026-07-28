@@ -212,7 +212,7 @@ class TestABCConformance:
         "factory", [f for f, _ in CONFORMANCE_PROVIDERS], ids=CONFORMANCE_IDS
     )
     def test_synthesize_is_coroutine(self, factory: ProviderFactory) -> None:
-        """``synthesize`` MUST be an async coroutine function — not a
+        """``synthesize`` MUST be an async coroutine function — not a.
         generator, not a plain function. Downstream consumers ``await`` it
         directly; a synchronous implementation would silently break them
         under load."""
@@ -222,7 +222,7 @@ class TestABCConformance:
         "factory", [f for f, _ in CONFORMANCE_PROVIDERS], ids=CONFORMANCE_IDS
     )
     def test_stream_is_async_generator(self, factory: ProviderFactory) -> None:
-        """``stream`` MUST be an async generator function — it's declared
+        """``stream`` MUST be an async generator function — it's declared.
         ``async def`` with ``yield`` inside, so it returns an
         :class:`AsyncIterator[TTSChunk]` that callers consume with
         ``async for``. A regular coroutine returning a list would
@@ -238,7 +238,7 @@ class TestABCConformance:
         "factory", [f for f, _ in CONFORMANCE_PROVIDERS], ids=CONFORMANCE_IDS
     )
     def test_close_is_coroutine(self, factory: ProviderFactory) -> None:
-        """``aclose`` MUST be a coroutine function. Synchronous close
+        """``aclose`` MUST be a coroutine function. Synchronous close.
         would block the event loop on socket teardown — silent perf
         regression."""
         assert inspect.iscoroutinefunction(factory().aclose)
@@ -324,7 +324,7 @@ class TestSynthesizeConformance:
         factory: ProviderFactory,
         settings_factory: SettingsFactory,
     ) -> None:
-        """``format`` MUST be a :class:`TTSFormat` value. The ROS bridge
+        """``format`` MUST be a :class:`TTSFormat` value. The ROS bridge.
         dispatches on this field to pick the right decoder — a raw
         string here would crash at runtime."""
         p = factory()
@@ -349,7 +349,7 @@ class TestStreamConformance:
         factory: ProviderFactory,
         settings_factory: SettingsFactory,
     ) -> None:
-        """The contract requires providers to emit AT LEAST one chunk
+        """The contract requires providers to emit AT LEAST one chunk.
         even on success — that's how callers detect end-of-stream
         deterministically. Zero-chunk streams break every consumer
         that does ``async for c in stream(): …`` because the loop
@@ -389,7 +389,7 @@ class TestStreamConformance:
         factory: ProviderFactory,
         settings_factory: SettingsFactory,
     ) -> None:
-        """Every chunk EXCEPT the last MUST have ``finish_reason is None``
+        """Every chunk EXCEPT the last MUST have ``finish_reason is None``.
         — the contract pins finish_reason to the terminal chunk so callers
         can use ``async for`` to stream audio without losing the signal."""
         p = factory()
@@ -435,7 +435,7 @@ class TestCloseConformance:
         factory: ProviderFactory,
         settings_factory: SettingsFactory,
     ) -> None:
-        """``aclose()`` MUST be safe to call multiple times. Callers
+        """``aclose()`` MUST be safe to call multiple times. Callers.
         typically wrap it in ``finally`` after exception paths, and
         double-close (once explicitly, once via ``async with``) is
         a real-world pattern."""
@@ -462,7 +462,7 @@ class TestInputValidationConformance:
         factory: ProviderFactory,
         settings_factory: SettingsFactory,
     ) -> None:
-        """Empty / whitespace-only text MUST raise :class:`TTSBadRequestError`
+        """Empty / whitespace-only text MUST raise :class:`TTSBadRequestError`.
         BEFORE any HTTP request — otherwise providers either bill for an
         empty synthesis or hang on a server-side zero-length check."""
         p = factory()
@@ -495,14 +495,14 @@ class TestInputValidationConformance:
 
 
 class TestMiniMaxHttpConformance:
-    """The conformance provider for MiniMax goes through real HTTP plumbing
+    """The conformance provider for MiniMax goes through real HTTP plumbing.
     via the mocked transport. These tests confirm the wire shape we expect
     from any conforming MiniMax integration: Bearer auth, GroupId query
     param, POST to the documented T2A v2 path."""
 
     @pytest.fixture
     def provider_with_router(self) -> Iterator[tuple[MiniMaxTTSProvider, respx.Router]]:
-        """Yield (provider, router). The provider is wired to a respx
+        """Yield (provider, router). The provider is wired to a respx.
         router that intercepts ``POST /v1/t2a_v2``."""
         envelope = {
             "data": {

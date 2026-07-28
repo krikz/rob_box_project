@@ -191,7 +191,7 @@ class MCPServer(Node):
             return None
 
     def _register_tools(self):
-        """Регистрация всех доступных инструментов"""
+        """Регистрация всех доступных инструментов."""
         # Navigation tools (require waypoint_store and/or tf_buffer)
         self.registry.register(NavigateToWaypointTool(self, self.waypoint_store))
         self.registry.register(NavigateToCoordinatesTool(self))
@@ -301,7 +301,7 @@ class MCPServer(Node):
             self.voice_memory = None
 
     def publish_tools(self):
-        """Публикация списка доступных инструментов в OpenAI Tool Calls формате"""
+        """Публикация списка доступных инструментов в OpenAI Tool Calls формате."""
         tools = self.registry.get_openai_tools()
         msg = String()
         msg.data = json.dumps(tools, ensure_ascii=False, indent=2)
@@ -360,7 +360,7 @@ class MCPServer(Node):
 
             msg_out = String()
             msg_out.data = json.dumps(response, ensure_ascii=False)
-            
+
             # Логируем ПЕРЕД публикацией
             self.get_logger().info(f"📤 Публикую результат для {tool_name} (request_id: {request_id[:8]})")
             self.result_pub.publish(msg_out)
@@ -379,7 +379,7 @@ class MCPServer(Node):
             self._publish_error(f"Внутренняя ошибка: {str(e)}", "")
 
     def on_perception_update(self, msg):
-        """Обработка обновления контекста восприятия"""
+        """Обработка обновления контекста восприятия."""
         try:
             # Обновляем battery tool
             if hasattr(msg, "battery_percentage"):
@@ -399,7 +399,7 @@ class MCPServer(Node):
             self.get_logger().error(f"❌ Ошибка обновления контекста: {e}")
 
     def _publish_error(self, error_message: str, request_id: str = ""):
-        """Опубликовать сообщение об ошибке"""
+        """Опубликовать сообщение об ошибке."""
         response = {"tool_name": None, "request_id": request_id, "result": {"success": False, "error": error_message}}
 
         msg = String()

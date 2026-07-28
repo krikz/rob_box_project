@@ -20,7 +20,7 @@ import sounddevice as sd
 
 
 def find_respeaker_device():
-    """Найти ReSpeaker аудио устройство"""
+    """Найти ReSpeaker аудио устройство."""
     devices = sd.query_devices()
 
     for idx, device in enumerate(devices):
@@ -89,7 +89,7 @@ def play_test_tone(device_idx, duration=0.5, frequency=440, sample_rate=16000):
 
 
 def main():
-    """Основная функция диагностики"""
+    """Основная функция диагностики."""
     print("=" * 60)
     print("🔊 ReSpeaker White Noise Diagnostic Tool")
     print("=" * 60)

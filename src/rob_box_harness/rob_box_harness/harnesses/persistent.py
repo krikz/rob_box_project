@@ -138,7 +138,7 @@ class HardwareLifecycle:
 
 
 class StatePublisher:
-    """Publishes unified state on ``/<node_name>/state``.
+    """Publish  unified state on ``/<node_name>/state``.
 
     In production this dispatches to the SideEffectBus (which the
     real ROS2 transport picks up). In tests it records publishes

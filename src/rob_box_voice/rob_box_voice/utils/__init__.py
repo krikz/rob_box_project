@@ -1,4 +1,4 @@
-"""Utils package для rob_box_voice"""
+"""Utils package для rob_box_voice."""
 
 from .audio_utils import (
     find_respeaker_device,

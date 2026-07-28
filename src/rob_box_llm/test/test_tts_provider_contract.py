@@ -1,4 +1,4 @@
-"""Tests for the :class:`TTSProvider` ABC contract itself + the bundled
+"""Tests for the :class:`TTSProvider` ABC contract itself + the bundled.
 :class:`FakeTTSProvider`.
 
 These tests guard the *contract*, not a particular provider implementation

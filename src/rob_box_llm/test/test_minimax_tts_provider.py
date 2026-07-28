@@ -181,7 +181,7 @@ class TestBuildPayload:
         )
 
     def test_extra_reserved_key_raises(self):
-        """``voice_setting`` and friends in ``extra`` would silently override
+        """``voice_setting`` and friends in ``extra`` would silently override.
         our typed fields — refuse loudly with TTSBadRequestError.
         """
         s = TTSSettings(extra={"voice_setting": {"voice_id": "attacker"}})
@@ -207,7 +207,7 @@ class TestBuildPayload:
 
     @pytest.mark.parametrize("bad_volume", [-0.1, -1.0, 10.0001, 1000.0])
     def test_volume_out_of_range_rejected(self, bad_volume):
-        """MiniMax T2A v2 documents vol ∈ [0.0, 10.0] — fail-fast with a
+        """MiniMax T2A v2 documents vol ∈ [0.0, 10.0] — fail-fast with a.
         typed TTSBadRequestError instead of bouncing off the API's 400."""
         s = TTSSettings(volume=bad_volume)
         with pytest.raises(TTSBadRequestError) as exc:
@@ -528,7 +528,7 @@ class TestStream:
 
     @pytest.mark.asyncio
     async def test_stream_api_error_after_first_chunk_yields_error_chunk(self):
-        """Mid-stream API-level error: contract says emit a terminal
+        """Mid-stream API-level error: contract says emit a terminal.
         TTSChunk(finish_reason='error') rather than raising, because the
         SSE response shape makes the error equivalent to a network
         hiccup mid-stream rather than an initial-request failure.
@@ -566,7 +566,7 @@ class TestStream:
 class TestAclose:
     @pytest.mark.asyncio
     async def test_aclose_closes_owned_client(self):
-        """When the provider creates its own client (no client= passed), aclose()
+        """When the provider creates its own client (no client= passed), aclose().
         must close that client."""
         p = MiniMaxTTSProvider(api_key="k", group_id="g")
         assert p._owns_client is True
@@ -586,7 +586,7 @@ class TestAclose:
 
     @pytest.mark.asyncio
     async def test_aclose_is_idempotent(self):
-        """``aclose()`` must be safe to call multiple times — callers
+        """``aclose()`` must be safe to call multiple times — callers.
         typically use ``await provider.aclose()`` in a ``finally`` block
         without knowing whether the provider was already cleaned up.
         """

@@ -97,7 +97,7 @@ class AnimationPlayer:
             return False
 
     def _create_publishers(self):
-        """Create ROS2 publishers for all panels in animation"""
+        """Create ROS2 publishers for all panels in animation."""
         if not self.current_animation:
             return
 
@@ -146,7 +146,7 @@ class AnimationPlayer:
             return True
 
     def stop(self):
-        """Stop playback"""
+        """Stop playback."""
         with self.state_lock:
             if not self.is_playing:
                 return
@@ -162,7 +162,7 @@ class AnimationPlayer:
         self.node.get_logger().info('Playback stopped')
 
     def pause(self):
-        """Pause playback"""
+        """Pause playback."""
         with self.state_lock:
             if not self.is_playing or self.is_paused:
                 return
@@ -171,7 +171,7 @@ class AnimationPlayer:
             self.node.get_logger().info('Playback paused')
 
     def resume(self):
-        """Resume playback"""
+        """Resume playback."""
         with self.state_lock:
             if not self.is_playing or not self.is_paused:
                 return
@@ -181,7 +181,7 @@ class AnimationPlayer:
             self.node.get_logger().info('Playback resumed')
 
     def _playback_loop(self):
-        """Main playback loop (runs in separate thread)"""
+        """Main playback loop (runs in separate thread)."""
         animation = self.current_animation
 
         if not animation:
@@ -206,7 +206,7 @@ class AnimationPlayer:
                 self.is_playing = False
 
     def _play_cycle(self):
-        """Play one complete animation cycle"""
+        """Play one complete animation cycle."""
         animation = self.current_animation
 
         if not animation:
@@ -297,5 +297,5 @@ class AnimationPlayer:
             }
 
     def list_animations(self) -> List[str]:
-        """List available animations"""
+        """List available animations."""
         return self.loader.list_available_animations()

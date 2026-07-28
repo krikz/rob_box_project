@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # hook layer; rich typing happens in the inner methods.
 
 Hook = Callable[..., Awaitable[None] | None]
-"""A hook callable. Synchronous and async coroutine functions are both
+"""A hook callable. Synchronous and async coroutine functions are both.
 allowed; the framework awaits the result if it's awaitable."""
 
 

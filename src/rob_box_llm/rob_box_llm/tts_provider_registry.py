@@ -103,7 +103,7 @@ class TTSProviderFactory:
         config: Mapping[str, Any],
         registry: "TTSProviderRegistry",
     ) -> "BaseTTSProvider":
-        """Resolve ``name`` in ``registry``, invoke builder with ``config``,
+        """Resolve ``name`` in ``registry``, invoke builder with ``config``,.
         cache and return the result.
 
         Raises ``KeyError`` if ``name`` is unknown. Raises ``ValueError``

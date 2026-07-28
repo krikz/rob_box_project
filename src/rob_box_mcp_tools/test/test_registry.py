@@ -16,7 +16,7 @@ from rob_box_mcp_tools.registry import MCPToolRegistry
 
 
 class MockTestTool(MCPTool):
-    """Простой мок инструмент для тестирования"""
+    """Простой мок инструмент для тестирования."""
 
     @property
     def name(self) -> str:
@@ -35,7 +35,7 @@ class MockTestTool(MCPTool):
 
 
 class AnotherMockTool(MCPTool):
-    """Еще один мок инструмент"""
+    """Еще один мок инструмент."""
 
     @property
     def name(self) -> str:
@@ -60,17 +60,17 @@ class AnotherMockTool(MCPTool):
 
 @pytest.mark.unit
 class TestMCPToolRegistry:
-    """Тесты для MCPToolRegistry"""
+    """Тесты для MCPToolRegistry."""
 
     def test_registry_creation(self, mock_node):
-        """Тест создания реестра"""
+        """Тест создания реестра."""
         registry = MCPToolRegistry()
 
         assert len(registry) == 0
         assert registry.list_tools() == []
 
     def test_register_tool(self, mock_node):
-        """Тест регистрации инструмента"""
+        """Тест регистрации инструмента."""
         registry = MCPToolRegistry()
         tool = MockTestTool(mock_node)
 
@@ -81,7 +81,7 @@ class TestMCPToolRegistry:
         assert "mock_test_tool" in registry
 
     def test_register_multiple_tools(self, mock_node):
-        """Тест регистрации нескольких инструментов"""
+        """Тест регистрации нескольких инструментов."""
         registry = MCPToolRegistry()
         tool1 = MockTestTool(mock_node)
         tool2 = AnotherMockTool(mock_node)
@@ -94,7 +94,7 @@ class TestMCPToolRegistry:
         assert registry.get_tool("another_mock_tool") == tool2
 
     def test_register_duplicate_tool(self, mock_node):
-        """Тест регистрации дубликата инструмента (должна быть ошибка)"""
+        """Тест регистрации дубликата инструмента (должна быть ошибка)."""
         registry = MCPToolRegistry()
         tool1 = MockTestTool(mock_node)
         tool2 = MockTestTool(mock_node)
@@ -105,7 +105,7 @@ class TestMCPToolRegistry:
             registry.register(tool2)
 
     def test_unregister_tool(self, mock_node):
-        """Тест отмены регистрации инструмента"""
+        """Тест отмены регистрации инструмента."""
         registry = MCPToolRegistry()
         tool = MockTestTool(mock_node)
 
@@ -118,14 +118,14 @@ class TestMCPToolRegistry:
         assert registry.get_tool("mock_test_tool") is None
 
     def test_get_tool_nonexistent(self, mock_node):
-        """Тест получения несуществующего инструмента"""
+        """Тест получения несуществующего инструмента."""
         registry = MCPToolRegistry()
 
         result = registry.get_tool("nonexistent_tool")
         assert result is None
 
     def test_get_all_tools_empty(self, mock_node):
-        """Тест получения всех инструментов из пустого реестра"""
+        """Тест получения всех инструментов из пустого реестра."""
         registry = MCPToolRegistry()
 
         tools = registry.list_tools()
@@ -133,7 +133,7 @@ class TestMCPToolRegistry:
         assert len(tools) == 0
 
     def test_get_tool_names(self, mock_node):
-        """Тест получения списка имен инструментов"""
+        """Тест получения списка имен инструментов."""
         registry = MCPToolRegistry()
         tool1 = MockTestTool(mock_node)
         tool2 = AnotherMockTool(mock_node)
@@ -147,7 +147,7 @@ class TestMCPToolRegistry:
         assert len(names) == 2
 
     def test_get_openai_tools(self, mock_node):
-        """Тест получения инструментов в OpenAI формате"""
+        """Тест получения инструментов в OpenAI формате."""
         registry = MCPToolRegistry()
         tool = MockTestTool(mock_node)
 
@@ -162,7 +162,7 @@ class TestMCPToolRegistry:
         assert "parameters" in openai_tools[0]["function"]
 
     def test_execute_tool(self, mock_node):
-        """Тест выполнения инструмента через реестр"""
+        """Тест выполнения инструмента через реестр."""
         registry = MCPToolRegistry()
         tool = MockTestTool(mock_node)
 
@@ -174,7 +174,7 @@ class TestMCPToolRegistry:
         assert result.data["param1"] == "test_value"
 
     def test_execute_nonexistent_tool(self, mock_node):
-        """Тест выполнения несуществующего инструмента"""
+        """Тест выполнения несуществующего инструмента."""
         registry = MCPToolRegistry()
 
         result = registry.execute("nonexistent_tool")

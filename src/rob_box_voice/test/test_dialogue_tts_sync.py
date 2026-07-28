@@ -10,10 +10,10 @@ from unittest.mock import MagicMock, Mock, patch
 
 
 class TestDialogueTTSSync(unittest.TestCase):
-    """Test suite for Dialogue-TTS dialogue_id synchronization"""
+    """Test suite for Dialogue-TTS dialogue_id synchronization."""
 
     def test_dialogue_node_generates_dialogue_id(self):
-        """Test that dialogue_node generates unique dialogue_id for each response"""
+        """Test that dialogue_node generates unique dialogue_id for each response."""
         # Test that dialogue_id is a valid UUID format
         import uuid
 
@@ -28,7 +28,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertEqual(dialogue_id_1.count("-"), 4)
 
     def test_chunk_includes_dialogue_id(self):
-        """Test that chunks include dialogue_id field"""
+        """Test that chunks include dialogue_id field."""
         # Simulate chunk data structure
         dialogue_id = "test-dialogue-id-123"
         chunk_data = {"dialogue_id": dialogue_id, "ssml": "<speak>Test response</speak>"}
@@ -41,7 +41,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertIn("ssml", parsed)
 
     def test_tts_node_tracks_dialogue_id(self):
-        """Test that TTS node tracks current dialogue_id"""
+        """Test that TTS node tracks current dialogue_id."""
 
         class MockTTSNode:
             def __init__(self):
@@ -75,7 +75,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertEqual(node.current_dialogue_id, "dialogue-2")
 
     def test_tts_rejects_outdated_chunks(self):
-        """Test that TTS rejects chunks from outdated dialogue sessions"""
+        """Test that TTS rejects chunks from outdated dialogue sessions."""
 
         class MockTTSNode:
             def __init__(self):
@@ -110,7 +110,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertFalse(node.should_process_chunk("dialogue-2"))
 
     def test_multiple_chunks_same_dialogue(self):
-        """Test that multiple chunks from same dialogue are all processed"""
+        """Test that multiple chunks from same dialogue are all processed."""
 
         class MockTTSNode:
             def __init__(self):
@@ -140,7 +140,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertEqual(node.processed_chunks, [("dialogue-1", i) for i in range(1, 6)])
 
     def test_dialogue_interruption_scenario(self):
-        """Test realistic scenario: user asks question, then interrupts with new question"""
+        """Test realistic scenario: user asks question, then interrupts with new question."""
 
         class MockTTSNode:
             def __init__(self):
@@ -196,7 +196,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertEqual(node.rejected_chunks[0][0], dialogue_1)
 
     def test_dialogue_id_backward_compatibility(self):
-        """Test that TTS handles chunks without dialogue_id (backward compatibility)"""
+        """Test that TTS handles chunks without dialogue_id (backward compatibility)."""
 
         # Old-style chunk without dialogue_id
         chunk_old_style = {"ssml": "<speak>Old format message</speak>"}
@@ -209,7 +209,7 @@ class TestDialogueTTSSync(unittest.TestCase):
         self.assertIsNone(dialogue_id)
 
     def test_simple_speak_generates_dialogue_id(self):
-        """Test that _speak_simple also generates dialogue_id"""
+        """Test that _speak_simple also generates dialogue_id."""
         import uuid
 
         # Simulate _speak_simple behavior

@@ -167,7 +167,7 @@ def core(
 
 
 def _prime_listening(core: DialogCore) -> None:
-    """Drive the DSM into LISTENING so a subsequent STT_RESULT
+    """Drive the DSM into LISTENING so a subsequent STT_RESULT.
     transitions into DIALOGUE. Mirrors what the shell does when the
     wake-word detector fires."""
     asyncio.run(core.handle_wake_word(""))

@@ -271,7 +271,7 @@ def load_config(
 
 
 def _read_yaml_file(path: Path) -> Mapping[str, Any]:
-    """Read a YAML file. Imported lazily so the dev environment that
+    """Read a YAML file. Imported lazily so the dev environment that.
     hasn't installed PyYAML still gets a clean ImportError.
     """
     if not path.exists():

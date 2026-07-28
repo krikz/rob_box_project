@@ -123,7 +123,7 @@ def test_dispatch_returns_speak_effect_when_handler_emits_it() -> None:
 
 
 def test_dispatch_unknown_command_returns_string_for_legacy() -> None:
-    """Unknown commands return a plain string so the existing 28
+    """Unknown commands return a plain string so the existing 28.
     regression tests asserting on substrings continue to work.
     The harness collapses that string into a SendReplyEffect at
     the bus boundary.
@@ -206,7 +206,7 @@ def _make_harness(reg: TelegramCommandRegistry | None = None) -> tuple[TelegramH
 
 
 def test_harness_dispatches_send_reply_through_bus_for_command() -> None:
-    """Use the harness after wiring the registry — ``init()`` would
+    """Use the harness after wiring the registry — ``init()`` would.
     otherwise re-populate it with the 9 default placeholders.
     """
     from rob_box_harness.config import HarnessConfig

@@ -25,7 +25,7 @@ def _install_all_mocks():
     mock_rclpy = MagicMock()
 
     class FakeNode:
-        """Minimal stub of rclpy.node.Node. TTSNode.__init__ calls
+        """Minimal stub of rclpy.node.Node. TTSNode.__init__ calls.
         declare_parameter (for ~30 params), get_parameter,
         create_publisher / create_subscription, and
         add_on_set_parameters_callback.
