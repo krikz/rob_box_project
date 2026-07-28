@@ -1,209 +1,193 @@
-# Phase 6: Harness P0 Finalization — Context
+# Phase 6: Harness P0 Finalization — Context (REVISED v2)
 
-**Gathered:** 2026-07-27
-**Status:** Ready for planning
+**Gathered:** 2026-07-28
+**Status:** Ready for planning — **REVISED** (v1 «parallel implementation» archived → 06-CONTEXT-v1-parallel.md)
 
 <domain>
 ## Phase Boundary
 
-Фаза 6 финализирует ветку `feature/harness-p0-foundation` (PR #907) — **полная имплементация ADR-0001**: документация, Docker, харнесы для dialog/persistent/telegram, тесты, PR.
+Фаза 6 финализирует ветку `feature/harness-p0-foundation` (PR #907) — **РЕАЛЬНАЯ замена старых нод** на harness-архитектуру.
 
-**Волновая структура — 22 атомарные волны (каждая = 1 задача):**
+**Коренное отличие от v1:** v1 делала «параллельные обёртки» (harness рядом с нодой, никто не включает). **v2 выкидывает старые ноды и заменяет их тонкими оболочками, использующими harness-порты.**
 
-### Группа A: Документация (W1–W5)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W1** | Мерж `docs/architecture/minimax-tts-architecture.md` → `docs/adr/0003-minimax-tts-architecture.md` (401+325 строк) | Обсуждение D-01 |
-| **W2** | Мерж `docs/architecture/minimax-tts-integration-design.md` → `docs/adr/0004-minimax-tts-integration-design.md` (530+659 строк) | Обсуждение D-01 |
-| **W3** | Мерж фрагментов `0007a/b/c` (739 строк) → финальный `0007-minimax-tts-integration-final.md` | Обсуждение D-01 |
-| **W4** | Удалить дубли из `docs/architecture/`, оставить перекрёстные ссылки на `adr/` | Обсуждение D-01 |
-| **W5** | Обновить `SPEC_CURRENT.md`: P0→Done, описать P1, убрать гермесовские references | Обсуждение D-06 |
+### Целевая архитектура
 
-### Группа B: Docker (W6–W7)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W6** | Добавить `rob_box_harness` в `docker/vision/voice_assistant/Dockerfile` (+ зависимости) | Обсуждение D-04 |
-| **W7** | Проверить сборку Docker-образа с harress (`docker build`) | Обсуждение D-04 |
+```
+┌──────────────┐     ROS2 топики      ┌──────────────────┐     ROS2 топики      ┌──────────────┐
+│  Telegram    │ ──────────────────→  │   DIALOGUE       │  ←────────────────── │  Perception  │
+│  (тонкий     │   /voice/stt/result  │   (LLM-МОЗГ)     │   /sensors/data     │  (UART)      │
+│   мост)      │                      │                  │                      │              │
+│  409 строк   │   /voice/dialogue/   │   Harness-порты: │                      │  Без LLM!    │
+│  → ~80 строк │     response ←────── │   • LLMProvider  │                      │  Своя прош.  │
+│  НЕТ LLM!    │                      │   • ToolProvider │                      │              │
+│  VPN в конт. │                      │   • MemoryStore  │                      │              │
+└──────────────┘                      └──────────────────┘                      └──────────────┘
+```
 
-### Группа C: DialogHarness (W8–W9)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W8** | `DialogHarness` адаптер: создать класс-обёртку над `Harness[StateT]`, LLM→LLMProvider, 30 tools→ToolExecutor, voice_memory→MemoryStore | ADR-0001 §2.7.1 |
-| **W9** | `DialogueStateMachine`: мигрировать `DialogueManager` + IDLE/LISTENING/DIALOGUE/SILENCED в DSM | ADR-0001 §2.7.1 |
+### Что переписываем (3 ноды)
 
-### Группа D: PersistentHarness (W10)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W10** | `PersistentHarness`: унификация 6 нод (audio/stt/tts/sound/led/cmd) — `HardwareLifecycle`, `StatePublisher`, `Clock`, `LoggerAdapter`, `ParameterGuard` | ADR-0001 §2.7.2 |
+| Нода | Сейчас | Будет | Суть изменений |
+|------|--------|-------|----------------|
+| **Dialogue** | `dialogue_node.py` 2181 строк | ~300 строк оболочка + harness-порты | LLM-логика, тулзы, DSM, memory → harness. ROS2 pub/sub → тонкая оболочка |
+| **Telegram** | `telegram_node.py` 409 строк + handlers/ | ~80 строк мост | Без своего LLM! Только python-telegram-bot → ROS2 топики. VPN в контейнере |
+| **Perception** | 5 нод, 3536 строк | ~200 строк UART-мост | Без LLM! micro-ROS выкидываем. Своя прошивка сенсор-борда. Perception = UART → топики |
 
-### Группа E: TelegramHarness (W11)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W11** | `TelegramHarness`: `LLMChat`→`LLMProvider`, `MCPBridge`→`ToolExecutor`, 25 handlers→`TelegramCommandRegistry`, `voice_processor`→skill, `camera_cache`→`SnapshotStore`, `auth`→middleware | ADR-0001 §2.7.3 |
+### Что остаётся от текущего harness
 
-### Группа F: Порты (W12–W13)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W12** | `ROS2Transport`: реальная реализация `Transport` для ROS2-топиков (subscribe/publish) | ADR-0001 §2.4.5 |
-| **W13** | `SQLiteVoiceMemory`: реализация `MemoryStore` для persistent history (`append_turn`, `load_recent`, `save_fact`, `search_facts`) | ADR-0001 §2.4.3 |
+**ПЕРЕИСПОЛЬЗУЕМ (порты правильные):**
 
-### Группа G: Тесты (W14–W17)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W14** | `DialogueNode` test coverage: 9% → 80%+ | SPEC_CURRENT C1 |
-| **W15** | `TelegramNode` test coverage: 0% → 50%+ | SPEC_CURRENT C2 |
-| **W16** | MCP-инструменты test coverage: → 70%+ | SPEC_CURRENT C3 |
-| **W17** | Интеграционные E2E тесты harress + реальные ноды (после W8–W13) | Обсуждение |
+| Файл | Строк | Назначение |
+|------|-------|-----------|
+| `harness.py` | 407 | `Harness[StateT]` — базовый класс |
+| `config.py` | 612 | `HarnessConfig` |
+| `lifecycle.py` | 126 | Lifecycle hooks |
+| `providers/minimax.py` | 605 | `MiniMaxProvider` (ADR-0001 M1–M10) |
+| `providers/dummy.py` | — | DummyProvider (тесты) |
+| `providers/fake_llm.py` | — | FakeLLM (тесты) |
+| `executors/ros_mcp.py` | 191 | `ROSMCPToolProvider` |
+| `executors/local.py` | — | Local executor |
+| `executors/mcp_bridge.py` | — | MCP bridge |
+| `memory.py` + `memory/sqlite_voice.py` | — | `MemoryStore` порт + SQLite |
+| `transport.py` + `transport/ros2_transport.py` | — | `Transport` порт + ROS2 impl |
+| `tools.py` | — | Tool definitions |
+| `effects.py` | — | `SideEffectBus` + `Effect` |
+| `registry.py` | — | `HarnessRegistry` |
+| `runner.py` | — | `run_harness()` |
+| `clock.py` | — | `Clock` |
+| `errors.py` | — | Error types |
+| `tts/minimax_tts.py` + `tts/registry.py` | — | TTS provider + registry |
 
-### Группа H: PR и аудит (W18–W22)
-| Wave | Задача | Источник |
-|------|--------|----------|
-| **W18** | PR #907: опубликовать финальный сводный комментарий | SPEC_CURRENT A1 |
-| **W19** | ADR-0008 аудит: проверить актуальность `tts-provider-extension-points-landed` | Обсуждение |
-| **W20** | ADR-0009 аудит: проверить актуальность `integration-test-report` | Обсуждение |
-| **W21** | `mypy strict-clean` на всём `rob_box_harness` | ADR-0001 §2.6.1 |
-| **W22** | Линтеры: `black --line-length 120`, `isort --profile black`, `flake8` на всех изменённых файлах | Conventions |
+**ПЕРЕПИСЫВАЕМ / АДАПТИРУЕМ (v1 «параллельные обёртки» — неверная архитектура):**
 
-**P0-код уже готов** (`rob_box_harness` — 88 тестов, `MiniMaxProvider` — 56 тестов, 90%+ coverage, mypy strict-clean).
+| Файл | Строк | Проблема |
+|------|-------|----------|
+| `harnesses/dialog.py` | 439 | Parallel wrapper, never connected to dialogue_node |
+| `harnesses/telegram.py` | 789 | Parallel wrapper, never connected to telegram_node |
+| `harnesses/persistent.py` | 387 | Lifecycle wrapper for 6 voice nodes, не для perception |
+| `core/dialogue_state_machine.py` | 316 | Может быть переиспользован после адаптации |
+
+### Волновая структура (3 группы × N волн)
+
+**Группа A: Dialogue — переписать dialogue_node под harness**
+- W1: Выделить `LLMProvider` из `dialogue_node._build_agent()` → harness-порт
+- W2: Выделить `ToolProvider` (29 тулзов + 5 skills) → harness-порт
+- W3: Перенести `DialogueStateMachine` (IDLE/LISTENING/DIALOGUE/SILENCED) в harness
+- W4: Перенести `MemoryStore` (VoiceMemory + FAQ) в harness
+- W5: Переписать `dialogue_node.py` как тонкую оболочку (~300 строк)
+- W6: Интеграционные тесты: dialogue_node + harness-порты
+
+**Группа B: Telegram — переписать telegram_node как тонкий мост**
+- W7: Удалить LLM-зависимости из telegram_node (LLMChat, MCPBridge — ВСЁ)
+- W8: Переписать telegram_node как чистый ROS2-мост (~80 строк)
+- W9: Интеграционные тесты: telegram → топики → dialogue
+
+**Группа C: Perception — переписать под UART-сенсоры**
+- W10: Удалить LLM-зависимости из perception (context_aggregator — весь LLM)
+- W11: Переписать perception как UART-мост (~200 строк)
+- W12: Интеграционные тесты: perception → топики → dialogue
 
 **Вне скоупа Фазы 6:**
-- Мерж PR #907 — делает пользователь после тестирования
-- Capability-фильтрация в fallback wrapper — P1 (ADR-0001 §2.6.2)
+- Прошивка сенсор-борда (отдельная задача, не Python)
+- Мерж PR #907 — делает пользователь
+- P1-фичи (capability-фильтрация и т.д.)
 
 </domain>
 
 <decisions>
 ## Implementation Decisions
 
-### D-01: Стратегия документации — единый источник правды
-- **Все архитектурные документы → `docs/adr/`** как каноничный источник (Architecture Decision Records)
-- **`docs/architecture/`** — только обзорные документы со ссылками на adr/ (НЕ дубликаты)
-- **Дубли для мержа:**
-  - `docs/architecture/minimax-tts-architecture.md` + `docs/adr/0003-minimax-tts-architecture.md` → смержить в `docs/adr/0003-minimax-tts-architecture.md`
-  - `docs/architecture/minimax-tts-integration-design.md` + `docs/adr/0004-minimax-tts-integration-design.md` → смержить в `docs/adr/0004-minimax-tts-integration-design.md`
-  - `docs/architecture/minimax-provider.md` (обзор) + `docs/adr/0002-minimax-provider.md` (ADR) → связать перекрёстными ссылками, сохранить оба (разные документы)
-- **Фрагменты ADR-0007:** `0007a/b/c` → смержить в финальный `0007-minimax-tts-integration-final.md`, фрагменты удалить
-- **Гайды MiniMax:** `MINIMAX.md` (LLM), `MINIMAX_TTS.md` (TTS), `MINIMAX_TTS_GETTING_STARTED.md` (quickstart), `api/MINIMAX_TTS.md` (API ref) — разные документы, НЕ дубли. Оставить.
+### D-01: Harness = чистый Python, тестируется без ROS2
+- Harness-порты (LLMProvider, ToolProvider, MemoryStore, Transport, SideEffectBus, Clock) — **чистый Python**, без зависимости от `rclpy`
+- Тесты harness — через `pytest` + `unittest.mock`, без поднятия ROS2
+- Ноды = тонкие ROS2-оболочки (30–300 строк), композируют harness-порты
+- **Причина:** возможность запускать и тестировать локально, без робота
 
-### D-02: ADR-соответствие — проверка пройдена
-- ✅ ADR-0001 M1–M10 все реализованы в `rob_box_harness/providers/minimax.py`
-- ✅ 5 портов: LLMProvider, ToolProvider, MemoryStore, SideEffectBus, Transport + Clock
-- ✅ Lifecycle: init() → run() → teardown() с идемпотентностью
-- ✅ ENV-only auth (`MINIMAX_API_KEY`), redaction, retry, capabilities
-- Расхождений между ADR и кодом не найдено
+### D-02: Порты переиспользуем, адаптеры переписываем
+- Порты из `rob_box_harness` (LLMProvider, ToolProvider, MemoryStore, Transport, etc.) — **сохраняем**, они правильные
+- Harness-адаптеры (dialog.py, telegram.py, persistent.py) — **переписываем**, они написаны под неверную архитектуру «parallel wrapper»
+- DialogueStateMachine (core/dialogue_state_machine.py) — адаптируем, базовая логика правильная
 
-### D-03: Два MiniMax-провайдера — не дубли
-- `rob_box_llm/providers/minimax.py` — production-grade upstream (LLMProvider контракт)
-- `rob_box_harness/providers/minimax.py` — тонкая harness-обёртка (+env-auth enforcement, +chat(), +retry)
-- `rob_box_harness/providers/minimax_tts.py` — TTS-провайдер (отдельный, не LLM)
-- Оставить как есть. Осознанная архитектура.
+### D-03: Dialogue = мозг (LLM живёт здесь)
+- `dialogue_node.py` — единственная нода с LLM
+- Telegram и Perception — **без LLM**, чистые мосты
+- Все инструменты, skills, memory, FAQ — внутри диалоговой ноды через harness-порты
 
-### D-04: Docker-интеграция harress
-- ❌ Сейчас `rob_box_harness` НЕ установлен ни в один Dockerfile
-- ✅ Нужно добавить в `docker/vision/voice_assistant/Dockerfile` (или `voice_base`)
-- Зависимость: `rob_box_llm>=0.2.1`, `PyYAML>=6.0` (из setup.py)
+### D-04: Telegram = тонкий ROS2-мост
+- `telegram_node.py` → ~80 строк: python-telegram-bot → ROS2 топики
+- **Без своего LLM!** Только пересылка сообщений в dialogue_node через топики
+- VPN в контейнере остаётся
 
-### D-05: Полная миграция нод на Harness (в рамках Фазы 6)
-- **DialogHarness** (W8–W9): `DialogueNode` (~2466 строк, 9% coverage) → `DialogHarness` + `AgentSession`
-  - LLM-клиент + fallback → `LLMProvider`
-  - 30 инструментов / 5 skills → `ToolExecutor` + `SkillRegistry`
-  - `DialogueManager` + состояния → `DialogueStateMachine`
-  - `voice_memory`, `faq_store` → `MemoryStore`
-- **PersistentHarness** (W10): унификация 6 нод через `HardwareLifecycle`, `StatePublisher`
-- **TelegramHarness** (W11): `LLMChat`(469)+`MCPBridge`(137)+`commands.py`(534)→ports+skills
-- **ROS2Transport** (W12): реальный Transport для ROS2
-- **SQLiteVoiceMemory** (W13): MemoryStore для persistent history
-- **Тесты** (W14–W17): DialogueNode 9→80%, TelegramNode 0→50%, MCP 70%+, E2E
+### D-05: Perception = UART-мост, без LLM
+- micro-ROS контейнер — **выкидываем**
+- Сенсор-борд получает свою прошивку (вне скоупа, не Python)
+- Perception нода = UART → ROS2 топики (~200 строк)
+- Никакого LLM в perception (context_aggregator, reflection — удаляются)
 
-### D-06: Docker-интеграция harress
-- ❌ Сейчас `rob_box_harness` НЕ установлен ни в один Dockerfile
-- ✅ W6: добавить в `docker/vision/voice_assistant/Dockerfile`
-- ✅ W7: проверить сборку
+### D-06: Старые ноды удаляются полностью
+- `dialogue_node.py` (2181 строк) → заменяется тонкой оболочкой
+- `telegram_node.py` (409 строк) → заменяется тонким мостом
+- `context_aggregator_node.py` (745 строк) + 4 другие perception-ноды → заменяются UART-мостом
+- Старый код не остаётся «на всякий случай» — это и есть смысл фазы
 
-### D-07: SPEC_CURRENT.md — обновить (W5)
-- Пометить P0 как ✅ Done
-- Отразить новую волновую структуру
-- Убрать гермесовские references (kanban create, etc.)
-
-### D-08: Мерж PR #907
-- Делает пользователь САМ после тестирования
-- Цель: `feature/harness-p0-foundation` → `develop`
-- Статус: MERGEABLE, OPEN
-
-### the agent's Discretion
-- Порядок волн внутри групп: A→B→C→D→E→F→G→H (зависимости)
-- W1–W5 можно параллельно (разные файлы)
-- W8 должен быть перед W9 (DialogHarness → DialogueStateMachine)
-- W12, W13 нужны для W8–W11 (порты используются харнесами)
-- W14–W17 — после реализации (W8–W13)
-- W21–W22 — последними (quality gates)
-- Конкретный дизайн адаптеров — на усмотрение агента в рамках ADR-0001
+### D-07: Все три группы — параллельными волнами
+- Dialogue (W1–W6), Telegram (W7–W9), Perception (W10–W12) — независимы
+- Можно выполнять параллельно (разные файлы, разные пакеты)
+- Интеграционные тесты (W6, W9, W12) — после своих групп
 
 </decisions>
 
-<canonical_refs>
-## Canonical References
+<interfaces>
+## Key Interfaces
 
-**Downstream agents MUST read these before planning or implementing.**
+### Harness Ports (reusable, already in rob_box_harness)
 
-### Архитектура и ADR
-- `docs/adr/0001-harness-architecture.md` — Главный ADR: Harness[StateT], 5 портов, lifecycle, P0/P1 граница
-- `docs/adr/0002-minimax-provider.md` — MiniMax LLM-провайдер (ADR, Accepted)
-- `docs/adr/0007-minimax-tts-integration-final.md` — MiniMax TTS интеграция (финальный)
-- `docs/adr/0009-harness-tts-contract.md` — TTSProvider контракт в harness
+```
+LLMProvider     — chat(), stream(), model info
+ToolProvider    — list_tools(), invoke(), register_tool()
+MemoryStore     — append_turn(), load_recent(), save_fact(), search_facts()
+Transport       — subscribe(), publish() (ROS2, fake for tests)
+SideEffectBus   — emit(Effect), on(type, handler)
+Clock           — now(), sleep()
+```
 
-### Код
-- `src/rob_box_harness/README.md` — Harness Framework API
-- `src/rob_box_harness/rob_box_harness/providers/README.md` — MiniMax LLM provider API
-- `src/rob_box_harness/setup.py` — Зависимости пакета
-- `src/rob_box_voice/rob_box_voice/dialogue_node.py` — Текущий dialogue_node (цель миграции)
+### Node Shells (to be written)
 
-### Документация
-- `SPEC_CURRENT.md` — Текущее состояние P0/P1 (источник истины)
-- `docs/guides/harness-quickstart.md` — How-to: создать свой харнес
-- `docs/guides/MINIMAX.md` — MiniMax LLM user-guide
-- `docs/guides/MINIMAX_TTS_GETTING_STARTED.md` — MiniMax TTS quickstart
+```
+DialogueShell(Node)      — pub/sub STT/VAD/dialogue, delegates to DialogCore(LLMProvider, ToolProvider, MemoryStore)
+TelegramBridge(Node)     — pub/sub STT/dialogue, delegates to python-telegram-bot
+PerceptionBridge(Node)   — pub/sub sensors, delegates to UART reader
+```
 
-### Docker
-- `docker/vision/voice_assistant/Dockerfile` — Целевой Dockerfile для harress
-- `docker/vision/voice_base/Dockerfile` — Альтернатива (базовый образ)
+### Topic Contract (unchanged)
 
-</canonical_refs>
+```
+/voice/stt/result        — String (recognised speech)
+/voice/dialogue/response — String (JSON: {ssml, speech_id, emotion})
+/voice/dialogue/state    — String (IDLE/LISTENING/DIALOGUE/SILENCED)
+/audio/vad               — Bool (voice activity detection)
+/sensors/data            — String (JSON: sensor readings) — NEW
+```
 
-<code_context>
-## Existing Code Insights
+</interfaces>
 
-### Reusable Assets
-- `rob_box_harness.Harness[StateT]` — базовый класс для всех харнесов
-- `rob_box_harness.run_harness()` — entry-point для запуска
-- `rob_box_harness.providers.minimax.MiniMaxProvider` — harness-обёртка с retry/chat()
-- `rob_box_harness.providers.dummy.DummyLLMProvider` — для тестов
-- `EchoHarness`, `UpperHarness` — примеры харнесов (reference implementation)
+<risks>
+## Risks
 
-### Established Patterns
-- Lifecycle: `__init__` → `init()` → `run()` → `teardown()` (идемпотентный)
-- Ports: ABC с явными методами (complete/stream/discover/execute/etc.)
-- Config: YAML + ENV, секреты ТОЛЬКО через env
-- Testing: pytest-asyncio, FakeTransport, DummyLLMProvider, RecordingBus
+| Risk | Mitigation |
+|------|-----------|
+| dialogue_node переписывается с нуля — может сломаться DJ-режим, barge-in, fallback | W6: интеграционные тесты до/после. Сохранить эталонные тестовые сценарии |
+| Telegram без своего LLM теряет «автономность» | Это осознанное решение. Telegram — мост, не мозг |
+| Perception без micro-ROS требует новой прошивки | Прошивка — вне скоупа. Perception нода шлёт сырые данные в топики |
+| Harness-порты могут не покрыть все use-case'ы dialogue_node | W1–W4: сначала порты, потом оболочка. Если порта не хватает — расширяем |
 
-### Integration Points
-- `docker/vision/voice_assistant/` — точка входа для Docker-интеграции
-- `dialogue_node.py` — текущая реализация, требует адаптеров без поломки
-- `rob_box_llm` — зависимость для LLMProvider
+</risks>
 
-### Docker-стандарты проекта
-- ❌ `COPY config/` в Dockerfile запрещён
-- ❌ `COPY scripts/` в Dockerfile запрещён
-- ✅ `network_mode: host`
-- ✅ volumes: `./config:/config:ro`
-</code_context>
+<verification>
+## Verification Gates
 
-<deferred>
-## Deferred Ideas (вне Фазы 6)
-
-- **Capability-фильтрация в fallback wrapper** — P1 (ADR-0001 §2.6.2)
-- **RedisStore** (альтернатива SQLiteVoiceMemory) — будущая фаза
-- **Multi-robot fleet координация** — Milestone 3+
-- **AI HAT+ интеграция** — hardware не закуплено
-
-</deferred>
+1. **W6 Gate:** `pytest src/rob_box_voice/test/ -k "dialogue" -v` — все диалоговые тесты проходят с новой оболочкой
+2. **W9 Gate:** `pytest src/rob_box_telegram/test/ -v` — телеграм-мост шлёт/принимает топики
+3. **W12 Gate:** `pytest src/rob_box_perception/test/ -v` — perception шлёт сенсорные данные
+4. **Final Gate:** `mypy --strict src/rob_box_harness/ && black --check && isort --check && flake8`
+5. **Final Gate:** диалоговые E2E тесты (wake word → STT → LLM → TTS) проходят без старых нод
+</verification>
