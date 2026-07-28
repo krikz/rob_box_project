@@ -255,6 +255,17 @@ class InMemoryStore(MemoryStore):
         self._event_profile: dict[str, Any] | None = None
         self._max_recent = max_recent
 
+    async def init(self) -> None:
+        """No-op for in-memory store.
+
+        Provided so the shell's ``store.init()`` fallback path doesn't
+        raise ``AttributeError`` when ``SQLiteVoiceMemory.init()`` is
+        unavailable (e.g., when the DB file path can't be created).
+        Concrete storage backends may use this to open connections /
+        run migrations; in-memory has nothing to do.
+        """
+        return None
+
     async def load_recent(
         self,
         scope: str,
