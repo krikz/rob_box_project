@@ -461,14 +461,22 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         We patch ``asyncio.run_coroutine_threadsafe`` to capture (and
         run) the coroutine synchronously. The production code schedules
-        onto python-telegram-bot's running loop from the ROS 2 worker
-        thread — the test mirrors that without needing a live loop.
+        onto ``self._telegram_loop`` (captured in ``_run_telegram``) from
+        the ROS 2 worker thread — the test mirrors that without needing
+        a live loop.
+
+        Regression for t_aad8e224: the previous implementation read
+        ``getattr(self._telegram_app, "_loop", None)``, which silently
+        failed when python-telegram-bot's private ``_loop`` attribute
+        was unavailable, dropping every TG reply.
         """
         self.node._telegram_app = MagicMock(name="TelegramApp")
         self.node._telegram_app.bot.send_message = AsyncMock()
-        # _loop must exist (production sets it on python-telegram-bot's
-        # Application); the bridge reads it via getattr(_, "_loop", None).
-        self.node._telegram_app._loop = asyncio.new_event_loop()
+        # The bridge reads ``self._telegram_loop`` (set inside
+        # ``_run_telegram``); the test simulates a fully-wired bot by
+        # attaching a live loop here. We intentionally do NOT set
+        # ``_telegram_app._loop`` — production code no longer reads it.
+        self.node._telegram_loop = asyncio.new_event_loop()
         self.node._active_chat_id = 4242
 
         callback = self._subscription_for("/voice/dialogue/response").callback
@@ -496,18 +504,19 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
             )
             callback(msg)
 
-        # The bridge scheduled onto the bot's _loop (production behavior).
-        self.assertIs(captured["loop"], self.node._telegram_app._loop)
+        # The bridge scheduled onto the loop it captured in _run_telegram.
+        self.assertIs(captured["loop"], self.node._telegram_loop)
         self.node._telegram_app.bot.send_message.assert_awaited_once_with(
             chat_id=4242, text="Здравствуйте!"
         )
-        self.node._telegram_app._loop.close()
+        self.node._telegram_loop.close()
 
     def test_dialogue_response_skipped_without_active_chat(self) -> None:
         """Without an active chat, the bridge must not call Telegram."""
 
         self.node._telegram_app = MagicMock()
         self.node._telegram_app.bot.send_message = AsyncMock()
+        self.node._telegram_loop = asyncio.new_event_loop()
         self.node._active_chat_id = None
 
         callback = self._subscription_for("/voice/dialogue/response").callback
@@ -516,13 +525,78 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         callback(msg)
 
         self.node._telegram_app.bot.send_message.assert_not_called()
+        self.node._telegram_loop.close()
+
+    def test_dialogue_response_skipped_without_loop(self) -> None:
+        """If ``_telegram_loop`` is missing (bot never started), drop msg.
+
+        Regression for t_aad8e224: the previous ``getattr(_, '_loop', None)``
+        silently swallowed the failure, so a missing loop looked identical
+        to a healthy bot to the operator. Production now guards against
+        a ``None`` loop and logs an explicit warning.
+        """
+        self.node._telegram_app = MagicMock()
+        self.node._telegram_app.bot.send_message = AsyncMock()
+        # Intentionally do NOT set ``_telegram_loop`` — simulate "bot
+        # thread has not yet captured a loop" (e.g. TELEGRAM_BOT_TOKEN
+        # missing, or startup still in progress).
+        self.node._active_chat_id = 4242
+
+        callback = self._subscription_for("/voice/dialogue/response").callback
+        with patch.object(self.node.get_logger(), "warning") as warn:
+            msg = _STD_STRING_CLS()
+            msg.data = json.dumps({"ssml": "<speak>drop me</speak>"})
+            callback(msg)
+
+        self.node._telegram_app.bot.send_message.assert_not_called()
+        self.assertEqual(warn.call_count, 1)
+        self.assertIn("loop=", warn.call_args.args[0])
+
+    def test_dialogue_response_survives_closed_loop(self) -> None:
+        """A closed loop must raise no exception — message is logged & dropped.
+
+        Regression for t_aad8e224 acceptance criteria: when the bot
+        crashes and ``_run_telegram_loop`` is between retries, the
+        captured loop is closed. ``asyncio.run_coroutine_threadsafe``
+        raises ``RuntimeError("Event loop is closed")`` — the bridge
+        must catch it, log, and continue running so the ROS 2 executor
+        does not die.
+        """
+        self.node._telegram_app = MagicMock()
+        self.node._telegram_app.bot.send_message = AsyncMock()
+        self.node._telegram_loop = asyncio.new_event_loop()
+        self.node._telegram_loop.close()  # simulate bot crash between retries
+        self.node._active_chat_id = 5151
+
+        callback = self._subscription_for("/voice/dialogue/response").callback
+
+        def _closed_loop_dispatch(coro, loop):
+            # Mimic asyncio.run_coroutine_threadsafe on a closed loop.
+            raise RuntimeError("Event loop is closed")
+
+        with patch("asyncio.run_coroutine_threadsafe",
+                   side_effect=_closed_loop_dispatch), \
+             patch.object(self.node.get_logger(), "error") as err:
+            msg = _STD_STRING_CLS()
+            msg.data = json.dumps({"ssml": "<speak>ping</speak>"})
+            callback(msg)  # MUST NOT RAISE
+
+        # Coroutine was constructed (1 call) but never scheduled onto
+        # the closed loop — AsyncMock's ``call_count`` tracks this.
+        self.node._telegram_app.bot.send_message.assert_called_once_with(
+            chat_id=5151, text="ping"
+        )
+        # ...and the error path logged the closed-loop reason.
+        self.assertEqual(err.call_count, 1)
+        err_msg = err.call_args.args[0]
+        self.assertIn("loop closed", err_msg)
 
     def test_dialogue_response_falls_back_to_raw_data(self) -> None:
         """Non-JSON payloads are forwarded verbatim (SSML stripped)."""
 
         self.node._telegram_app = MagicMock()
         self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._telegram_app._loop = asyncio.new_event_loop()
+        self.node._telegram_loop = asyncio.new_event_loop()
         self.node._active_chat_id = 7
 
         callback = self._subscription_for("/voice/dialogue/response").callback
@@ -546,11 +620,11 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
             msg.data = "<speak>просто текст</speak>"
             callback(msg)
 
-        self.assertIs(captured["loop"], self.node._telegram_app._loop)
+        self.assertIs(captured["loop"], self.node._telegram_loop)
         self.node._telegram_app.bot.send_message.assert_awaited_once_with(
             chat_id=7, text="просто текст"
         )
-        self.node._telegram_app._loop.close()
+        self.node._telegram_loop.close()
 
     def test_invalid_json_logs_warning_and_falls_back(self) -> None:
         """Malformed JSON must surface as a warning (not silently swallowed).
@@ -564,7 +638,7 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         """
         self.node._telegram_app = MagicMock()
         self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._telegram_app._loop = asyncio.new_event_loop()
+        self.node._telegram_loop = asyncio.new_event_loop()
         self.node._active_chat_id = 11
 
         callback = self._subscription_for("/voice/dialogue/response").callback
@@ -594,7 +668,7 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.node._telegram_app.bot.send_message.assert_awaited_once_with(
             chat_id=11, text="not-json-at-all{speak>foo</speak"
         )
-        self.node._telegram_app._loop.close()
+        self.node._telegram_loop.close()
 
     def test_no_active_chat_logs_warning(self) -> None:
         """Missing ``_active_chat_id`` must emit a warning, not be silent."""
