@@ -30,13 +30,14 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm
+RUN mkdir -p src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
 # ============================================================
 
 # Шаг 1: Копируем package.xml для rosdep (зависимости меняются редко)
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
 COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
@@ -49,9 +50,10 @@ COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools src/rob_box_harness src/rob_box_llm --ignore-src -r -y || true
+    rosdep install --from-paths src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools src/rob_box_harness src/rob_box_llm --ignore-src -r -y || true
 
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
+COPY src/rob_box_core/setup.py /ws/src/rob_box_core/
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
 COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
@@ -64,6 +66,7 @@ COPY src/rob_box_llm/setup.py /ws/src/rob_box_llm/
 COPY src/rob_box_llm/setup.cfg /ws/src/rob_box_llm/
 
 # Шаг 4: Копируем конфигурационные файлы и ресурсы
+COPY src/rob_box_core/resource /ws/src/rob_box_core/resource
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
 COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
 COPY src/rob_box_harness/resource /ws/src/rob_box_harness/resource
@@ -91,6 +94,7 @@ ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
 
 # Шаг 8: Копируем исходный код Python (меняется чаще всего - последний слой!)
+COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
 COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
 COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
@@ -127,7 +131,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
+    --packages-select rob_box_core rob_box_perception_msgs rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
