@@ -54,10 +54,20 @@ class TelegramNode(Node):
             {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"},
             ensure_ascii=False); self._response_pub.publish(m)
     def _on_response(self, msg: String) -> None:
-        try: payload = json.loads(msg.data)
-        except Exception: payload = {}
+        try:
+            payload = json.loads(msg.data)
+        except Exception as exc:
+            self.get_logger().warning(
+                f"Dropping /voice/dialogue/response: invalid JSON ({exc!r}); payload[:200]={msg.data[:200]!r}"
+            )
+            payload = {}
         text = payload.get("ssml", msg.data).replace("<speak>", "").replace("</speak>", "").strip()
-        if not (self._telegram_app and self._active_chat_id and text): return
+        if not (self._telegram_app and self._active_chat_id and text):
+            self.get_logger().warning(
+                "Dropping response, bot not ready / no active chat "
+                f"(app={bool(self._telegram_app)}, chat_id={self._active_chat_id}, text_len={len(text) if text else 0})"
+            )
+            return
         asyncio.run_coroutine_threadsafe(
             self._telegram_app.bot.send_message(chat_id=self._active_chat_id, text=text),
             getattr(self._telegram_app, "_loop", None))
@@ -83,7 +93,13 @@ class TelegramNode(Node):
         app.add_handler(MessageHandler(filters.VOICE, voice_message_handler))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
         await app.initialize(); await app.start()
-        await app.updater.start_polling(poll_interval=1.0, timeout=30)
+        try:
+            await app.updater.start_polling(poll_interval=1.0, timeout=30)
+        except Exception as exc:
+            self.get_logger().warning(
+                f"start_polling failed: {exc!r}; outer loop will retry"
+            )
+            raise
         try:
             while rclpy.ok(): await asyncio.sleep(1.0)
         finally:

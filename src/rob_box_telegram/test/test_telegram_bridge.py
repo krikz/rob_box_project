@@ -552,6 +552,70 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         )
         self.node._telegram_app._loop.close()
 
+    def test_invalid_json_logs_warning_and_falls_back(self) -> None:
+        """Malformed JSON must surface as a warning (not silently swallowed).
+
+        Regression test for t_7f2dab93: the previous behaviour silently
+        forwarded the raw ``msg.data`` payload as if it were valid JSON,
+        leaving the operator blind to upstream malformation. The fix
+        emits a ``warning`` log line that includes the offending payload
+        preview, while still falling back to the raw-data path so
+        downstream delivery is not broken.
+        """
+        self.node._telegram_app = MagicMock()
+        self.node._telegram_app.bot.send_message = AsyncMock()
+        self.node._telegram_app._loop = asyncio.new_event_loop()
+        self.node._active_chat_id = 11
+
+        callback = self._subscription_for("/voice/dialogue/response").callback
+
+        def _capture_dispatch(coro, loop):
+            run_loop = asyncio.new_event_loop()
+            try:
+                run_loop.run_until_complete(coro)
+            finally:
+                run_loop.close()
+            return MagicMock(name="ScheduledFuture")
+
+        with patch("asyncio.run_coroutine_threadsafe",
+                   side_effect=_capture_dispatch), \
+             patch.object(self.node.get_logger(), "warning") as warn:
+            msg = _STD_STRING_CLS()
+            msg.data = "not-json-at-all{speak>foo</speak"
+            callback(msg)
+
+        # At least one warning mentions "invalid JSON" and includes the payload.
+        self.assertEqual(warn.call_count, 1)
+        warning_msg = warn.call_args.args[0]
+        self.assertIn("invalid JSON", warning_msg)
+        self.assertIn("not-json-at-all", warning_msg)
+        # Behaviour parity: raw fallback path still forwards msg.data
+        # (SSML tags stripped), so existing happy-path semantics survive.
+        self.node._telegram_app.bot.send_message.assert_awaited_once_with(
+            chat_id=11, text="not-json-at-all{speak>foo</speak"
+        )
+        self.node._telegram_app._loop.close()
+
+    def test_no_active_chat_logs_warning(self) -> None:
+        """Missing ``_active_chat_id`` must emit a warning, not be silent."""
+        self.node._telegram_app = MagicMock()
+        self.node._telegram_app.bot.send_message = AsyncMock()
+        self.node._active_chat_id = None
+
+        callback = self._subscription_for("/voice/dialogue/response").callback
+        with patch.object(self.node.get_logger(), "warning") as warn:
+            msg = _STD_STRING_CLS()
+            msg.data = json.dumps({"ssml": "<speak>hello</speak>"})
+            callback(msg)
+
+        self.assertEqual(warn.call_count, 1)
+        warning_msg = warn.call_args.args[0]
+        self.assertTrue(
+            "bot not ready" in warning_msg or "no active chat" in warning_msg,
+            warning_msg,
+        )
+        self.node._telegram_app.bot.send_message.assert_not_called()
+
     def test_publish_tts_sends_ssml_envelope(self) -> None:
         """``publish_tts`` wraps the text in an SSML envelope."""
 
