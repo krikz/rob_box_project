@@ -258,7 +258,6 @@
 | `/detections` | `apriltag_msgs/...` | Vision oak-d → Main rtabmap | 5 |
 | `/camera/color/image_raw` | `sensor_msgs/Image` | Vision oak-d → telegram | 5 |
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | Main robot-state-pub → all | 50 |
-| `/device/snapshot` | `robot_sensor_hub_msg/DeviceSnapshot` | Main micro_ros → perception | 1 |
 | `/mcp/execute` | `std_msgs/String` | Vision dialogue/telegram → mcp_server | on-demand |
 | `/mcp/result` | `std_msgs/String` | mcp_server → dialogue/telegram | on-demand |
 | `/voice/stt/result` | `std_msgs/String` | Vision stt → dialogue, command, context_agg | on speech |
