@@ -27,10 +27,10 @@ files_reviewed_list:
   - src/rob_box_perception/rob_box_perception/utils/node_monitor.py
   - src/rob_box_perception/test/test_perception_bridge.py
 findings:
-  critical: 5
+  critical: 6
   warning: 13
   info: 7
-  total: 25
+  total: 26
 status: issues_found
 ---
 
@@ -57,6 +57,8 @@ The Phase 6 contract is **partially satisfied**:
 - ❌ `dialogue_node._build_memory` fallback path raises `AttributeError` — known bug, patched in tests
 
 **Test failures analysis** — the failing `test_health_monitor` assertions (`'✅ HEALTHY' != '⚠️  DEGRADED'`) and flake8 violations are caused by pre-existing code in `src/rob_box_perception/rob_box_perception/health_monitor.py` and `utils/{time_provider,event_detector,memory_manager}.py` — these files are **NOT in the Phase 6 file list** and are orthogonal to this PR. See the "Test Failures" section below.
+
+**micro-ROS cleanup incomplete** — Plan 06-04 SUMMARY claims "micro-ROS removed" but the claim is half-true: only the consumer code (`vision_stub_node.py`) was deleted. The CI build matrix still builds `micro-ros-agent`, the Dockerfile still exists at `docker/main/micro_ros_agent/`, the start script still exists at `docker/main/scripts/micro_ros_agent/`, `docker/main/docker-compose.yaml` still declares the service, the auto-merge gate still requires it (`G-Auto-merge to Main.yml`), and Grafana demo dashboards still plot metrics for the container. If micro-ROS is out of scope (custom MCU firmware is a separate project per Plan 06-04), all of these references are dead code and must be removed. See **CR-06** below.
 
 ---
 
@@ -213,6 +215,58 @@ def _build_llm(self) -> LLMProvider:
     return harness.llm  # or whatever the harness exposes
 ```
 Or, at minimum, document the shell as a Phase-6-P1 deliverable and flag the open issue in the PR description so reviewers know it's intentional.
+
+---
+
+### CR-06: Plan 06-04 claimed "micro-ROS removed" but CI / Dockerfile / Compose / Monitoring / Docs still reference it everywhere
+
+**Files (all currently in repo):**
+- `.github/workflows/G-Build Main Pi Services.yml:285-323, 540` — CI job `build-micro-ros-agent` + image tags
+- `.github/workflows/L-Build Main Pi Services.yml:190-456` — local build job + tag/push + summary echo
+- `.github/workflows/L-Build Single Service.yml:32, 143-146, 446, 508` — single-service build matrix entry
+- `.github/workflows/G-Auto-merge to Main.yml:56` — auto-merge gate checks `Main Pi services (micro-ros-agent, zenoh-router)`
+- `docker/main/micro_ros_agent/Dockerfile` (3778 bytes) — entire Dockerfile still present
+- `docker/main/scripts/micro_ros_agent/start_micro_ros_agent.sh` (3717 bytes) — start script still present
+- `docker/main/docker-compose.yaml:63-91` — service `micro-ros-agent:` with image, container_name, scripts mount, command, healthcheck
+- `docker/monitoring/DEMO_DASHBOARDS.md:62, 191` — docs list micro-ros-agent in containers list
+- `docker/monitoring/DASHBOARD_PREVIEW.md:129, 142` — preview docs mention `micro_ros_agent`
+- `docker/monitoring/NODE_MAPPING.md:115-116, 159, 233` — node topology + grep patterns
+- `docker/monitoring/VERIFICATION_SUMMARY.md:83` — verification mentions micro-ros-agent
+- `docker/monitoring/config/grafana/provisioning/dashboards/demo_3_perception.json:123` — Grafana panel `{container="micro-ros-agent"}`
+- `.planning/codebase/ARCHITECTURE.md:27, 66, 95` — architecture diagrams + tables list micro-ros-agent as Main Pi service
+
+**Issue:** Plan 06-04 SUMMARY.md says:
+
+> **micro-ROS removed** — custom MCU firmware is out of scope (separate project)
+
+The summary is **only half-true**: the consumer code (`src/rob_box_perception/rob_box_perception/vision_stub_node.py`, 160 LOC) was deleted, and `node_monitor.py` was updated to no longer expect `reflection_node`. But everything else — the container itself, the CI build pipeline that produces its image, the compose declaration, the Grafana dashboards that scrape its metrics, the auto-merge gate that requires it, and 5 documentation files — still treats micro-ROS as a live service.
+
+Consequences:
+- CI runs the `build-micro-ros-agent` job every PR and main-branch push, producing an unused image artifact (run #30374908619 shows it building in 13s — wasted compute).
+- `docker/main/docker-compose.yaml` would attempt to start `micro-ros-agent` on every Main Pi deploy (script mount, healthcheck `pgrep -f micro_ros_agent`), which is dead-code in production.
+- `G-Auto-merge to Main.yml:56` requires micro-ros-agent to be a passing Main Pi service, blocking auto-merge on a service that's already declared out of scope.
+- Grafana demo dashboard `demo_3_perception.json` has a panel querying `{container="micro-ros-agent"}` that will always return empty.
+- Architecture docs mislead readers about the actual deployment.
+
+**Fix (full kill):**
+1. `.github/workflows/G-Build Main Pi Services.yml` — delete the `build-micro-ros-agent` job (lines 285-323) and remove it from the matrix/needs (lines 540).
+2. `.github/workflows/L-Build Main Pi Services.yml` — delete the `build-micro-ros-agent` job (lines 190-456) and its references in tag/push and summary.
+3. `.github/workflows/L-Build Single Service.yml` — remove `micro-ros-agent` from the choices list (lines 32, 143-146, 446, 508).
+4. `.github/workflows/G-Auto-merge to Main.yml:56` — drop micro-ros-agent from the gate list (keep zenoh-router).
+5. `rm -rf docker/main/micro_ros_agent/`
+6. `rm -rf docker/main/scripts/micro_ros_agent/`
+7. `docker/main/docker-compose.yaml` — delete the `micro-ros-agent:` service block (lines 63-91), update `MICRO_ROS_AGENT_TAG` env removal if present.
+8. `docker/monitoring/DEMO_DASHBOARDS.md`, `DASHBOARD_PREVIEW.md`, `NODE_MAPPING.md`, `VERIFICATION_SUMMARY.md` — remove all micro-ros-agent mentions.
+9. `docker/monitoring/config/grafana/provisioning/dashboards/demo_3_perception.json` — remove the `{container="micro-ros-agent"}` panel.
+10. `.planning/codebase/ARCHITECTURE.md` — remove micro-ros-agent from diagrams and service tables.
+
+Verify no references remain:
+```bash
+grep -rn "micro_ros_agent\|micro-ros-agent\|micro_ros" --include="*.yml" --include="*.yaml" --include="Dockerfile*" --include="*.md" --include="*.json" .github docker src 2>&1
+```
+Should return zero matches.
+
+**Caveat:** Before deleting, confirm with the user that no other code path depends on micro-ROS. The Phase 6 summary's "separate project" claim implies it's truly out of scope; if a future plan re-introduces it, the references would need to come back. Until then, the half-removed state is misleading dead code.
 
 ---
 
