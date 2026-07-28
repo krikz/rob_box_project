@@ -60,7 +60,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import rclpy
-import yaml
 # (constants moved to block below the imports; see
 # "Concurrency primitives" right after the import block.)
 from agents import Agent, Runner, function_tool
@@ -86,15 +85,13 @@ from rob_box_core.ports import ToolContext, ToolDescriptor
 from rob_box_harness.executors import ROSMCPToolProvider
 
 from .core.dialogue_manager import DialogueManager, DialogueState
+from .core.llm_config import (
+    PROVIDERS,
+    ProviderOverrides,
+    resolve_provider_config,
+)
+from .core.voice_settings import make_voice_settings_tool
 from .utils.redact import redact_upstream_body
-
-try:
-    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
-
-    _VOICE_MEMORY_AVAILABLE = True
-except ImportError:
-    _VoiceMemory = None  # type: ignore[assignment,misc]
-    _VOICE_MEMORY_AVAILABLE = False
 
 try:
     from .core.faq_loader import load_faq_items as _load_faq_items
@@ -146,20 +143,13 @@ class DialogueNode(Node):
     """Voice dialogue agent built on OpenAI Agents SDK."""
 
     # ── Provider configs ────────────────────────────────────────────
-    PROVIDERS = {
-        "deepseek": {
-            "base_url": "https://api.deepseek.com/v1",
-            "model": "deepseek-v4-flash",
-            "fallback_model": "deepseek-v4-flash",  # lighter model on timeout/errors
-            "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
-        },
-        "mimo": {
-            "base_url": "https://api.xiaomimimo.com/v1",
-            "model": "mimo-v2.5-pro",
-            "fallback_model": "mimo-v2.5",  # lighter model on timeout/errors
-            "env_vars": ["MIMO_API_KEY", "LLM_API_KEY"],
-        },
-    }
+    # ── Provider registry ────────────────────────────────────────────────
+    # The default catalog (deepseek/mimo + env-var fallbacks) lives in
+    # :mod:`rob_box_voice.core.llm_config` as a pure module so it can
+    # be unit-tested without an rclpy runtime. This class re-exports
+    # it as ``PROVIDERS`` for backwards-compat with any external code
+    # that imports ``DialogueNode.PROVIDERS``.
+    PROVIDERS = PROVIDERS  # type: ignore[assignment]
 
     def __init__(self):
         super().__init__("dialogue_node")
@@ -397,124 +387,77 @@ class DialogueNode(Node):
             self.get_logger().warning(f"⚠️ Prompt '{filename}' not found: {exc}")
             return ""
 
-    def _resolve_api_key(self) -> str:
-        key = self.get_parameter("api_key").value
-        if key:
-            return key
-        for env in self.PROVIDERS.get(self._provider, {}).get("env_vars", []):
-            val = os.environ.get(env, "")
-            if val:
-                return val
-        raise RuntimeError(
-            f"API key not found for provider '{self._provider}'. "
-            f"Set one of: {self.PROVIDERS.get(self._provider, {}).get('env_vars', [])}"
+    # ── Provider resolution (thin wrappers over core.llm_config) ─────────
+    # The provider catalog and resolution logic live in
+    # :mod:`rob_box_voice.core.llm_config`. These wrappers exist only
+    # to bridge ROS2 parameter values into that pure helper. Tests for
+    # the underlying logic live in
+    # ``src/rob_box_voice/test/unit/core/test_llm_config.py``.
+
+    def _provider_overrides(self) -> ProviderOverrides:
+        """Collect ROS2 parameter overrides for the LLM provider config."""
+        return ProviderOverrides(
+            api_key=self.get_parameter("api_key").value,
+            base_url=self.get_parameter("base_url").value,
+            model=self.get_parameter("model").value,
+            fallback_model=self.get_parameter("fallback_model").value,
         )
+
+    def _resolve_provider_config(self) -> "ProviderConfig":  # type: ignore[name-defined]  # noqa: F821
+        """Resolve the full LLM provider config from ROS params + env.
+
+        Returns:
+            A :class:`rob_box_voice.core.llm_config.ProviderConfig` with
+            all four fields populated. Raises ``RuntimeError`` when no
+            API key is found in the parameter or any registered env var.
+        """
+        return resolve_provider_config(
+            provider=self._provider,
+            overrides=self._provider_overrides(),
+            env=os.environ,
+            error_on_missing_key=True,
+        )
+
+    def _resolve_api_key(self) -> str:
+        """Resolve the API key (overrides > env). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().api_key
 
     def _resolve_base_url(self) -> str:
-        val = self.get_parameter("base_url").value
-        return val or self.PROVIDERS.get(self._provider, {}).get("base_url", "")
+        """Resolve the base URL (overrides > registry). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().base_url
 
     def _resolve_model(self) -> str:
-        val = self.get_parameter("model").value
-        return val or self.PROVIDERS.get(self._provider, {}).get(
-            "model", "deepseek-v4-flash"
-        )
+        """Resolve the primary model (overrides > registry). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().model
 
     def _resolve_fallback_model(self) -> str:
-        """Resolve fallback model (lighter/faster) for timeout/error recovery."""
-        val = self.get_parameter("fallback_model").value
-        return val or self.PROVIDERS.get(self._provider, {}).get(
-            "fallback_model", "deepseek-v4-flash"
-        )
+        """Resolve the fallback model (overrides > registry). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().fallback_model
 
     def _init_voice_memory(self) -> None:
-        """Init VoiceMemory for persistent turn logging. Fails silently."""
-        if not _VOICE_MEMORY_AVAILABLE:
-            self.get_logger().warning(
-                "⚠️ VoiceMemory unavailable — turn logging disabled"
-            )
-            return
-        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        try:
-            self._voice_memory = _VoiceMemory(
-                db_path=db_path, ollama_base_url=ollama_url
-            )
-            stats = self._voice_memory.get_stats()
-            self.get_logger().info(
-                f"🧠 DialogueNode VoiceMemory: {db_path} "
-                f"(turns={stats['turn_count']}, sessions={stats['session_count']})"
-            )
-        except Exception as exc:
-            self.get_logger().error(f"❌ VoiceMemory init failed: {exc}")
-            self._voice_memory = None
+        """Init VoiceMemory for persistent turn logging. Fails silently.
+
+        Delegates to :func:`rob_box_voice.core.voice_memory_init.init_voice_memory`.
+        """
+        from .core.voice_memory_init import init_voice_memory
+        self._voice_memory = init_voice_memory(logger=self.get_logger())
 
     def _load_event_profile(self) -> Optional[Dict[str, Any]]:
-        """Load event FAQ mode configuration from YAML when enabled."""
-        if not self.get_parameter("faq_mode_enabled").value:
-            return None
+        """Load event FAQ mode configuration from YAML when enabled.
 
-        config_file = self.get_parameter("faq_event_config_file").value
-        if not config_file:
-            self.get_logger().warning(
-                "⚠️ FAQ mode enabled but faq_event_config_file is empty"
-            )
-            return None
-
-        config_path = Path(config_file).expanduser()
-        if not config_path.is_absolute():
-            config_path = config_path.resolve()
-        if not config_path.exists():
-            self.get_logger().warning(f"⚠️ FAQ event config not found: {config_path}")
-            return None
-
-        try:
-            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception as exc:
-            self.get_logger().error(f"❌ Failed to read FAQ event config: {exc}")
-            return None
-
-        event = payload.get("event", payload) if isinstance(payload, dict) else None
-        if not isinstance(event, dict):
-            self.get_logger().warning(
-                "⚠️ FAQ event config must be a mapping or contain 'event:' block"
-            )
-            return None
-
-        name = str(event.get("name", "")).strip()
-        faq_file = str(event.get("faq_file", "")).strip()
-        if not name or not faq_file:
-            self.get_logger().warning(
-                "⚠️ FAQ event config requires 'name' and 'faq_file'"
-            )
-            return None
-
-        faq_path = Path(faq_file).expanduser()
-        if not faq_path.is_absolute():
-            faq_path = (config_path.parent / faq_path).resolve()
-
-        date = str(event.get("date", "")).strip()
-        event_id = str(event.get("id", "")).strip() or self._slugify_event_id(
-            f"{name}-{date or faq_path.stem}"
+        Delegates to :func:`rob_box_voice.core.event_profile.load_event_profile`
+        so the YAML schema lives in one place (see ADR-0001 §2.7).
+        """
+        from .core.event_profile import load_event_profile
+        profile = load_event_profile(
+            enabled=self.get_parameter("faq_mode_enabled").value,
+            config_file=self.get_parameter("faq_event_config_file").value,
         )
-
-        return {
-            "event_id": event_id,
-            "name": name,
-            "organization": str(event.get("organization", "")).strip(),
-            "location": str(event.get("location", "")).strip(),
-            "date": date,
-            "description": str(event.get("description", "")).strip(),
-            "robot_role": str(
-                event.get("robot_role", "РОББОКС — ровер-помощник")
-            ).strip(),
-            "intro_identity": str(event.get("intro_identity", "")).strip(),
-            "faq_file": str(faq_path),
-        }
+        return profile.as_dict() if profile is not None else None
 
     def _slugify_event_id(self, value: str) -> str:
-        slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
-        return slug or "faq-event"
+        from .core.event_profile import slugify_event_id
+        return slugify_event_id(value)
 
     def _init_faq_store(self) -> None:
         """Load FAQ knowledge for the active event when FAQ mode is enabled."""
@@ -543,113 +486,40 @@ class DialogueNode(Node):
             self._faq_store = None
 
     def _render_event_instructions(self, base_instructions: str) -> str:
-        """Prepend active event context to agent instructions."""
-        if not self._event_profile:
-            return base_instructions
+        """Prepend active event context to agent instructions.
 
-        profile = self._event_profile
-        lines = [
-            "[EVENT MODE]",
-            f"Ты работаешь на мероприятии как {profile['robot_role']}.",
-            f"Мероприятие: {profile['name']}.",
-        ]
-        if profile.get("organization"):
-            lines.append(f"Организация: {profile['organization']}.")
-        if profile.get("location"):
-            lines.append(f"Локация: {profile['location']}.")
-        if profile.get("date"):
-            lines.append(f"Дата: {profile['date']}.")
-        if profile.get("description"):
-            lines.append(f"Описание: {profile['description']}")
-        if profile.get("intro_identity"):
-            lines.append(f"Самоидентификация: {profile['intro_identity']}")
-        if self._faq_store:
-            lines.append(
-                "Если вопрос касается мероприятия, FAQ, поступления, программы, локации или организационных деталей, "
-                "используй FAQ retrieval tool и говори по найденным данным."
-            )
-            lines.append(
-                "Если пользователь просит рэп, стих, шутку, историю, песню или другой перформанс про тему мероприятия, "
-                "сначала подними факты из FAQ и только потом стилизуй ответ."
-            )
-            lines.append(
-                "Если после FAQ нужен бит или музыка, сначала получи факты, потом при необходимости вызови handle_music, "
-                "и только после этого озвучивай ответ."
-            )
-        lines.append(
-            "Даже если исходный ответ в FAQ длинный, озвучивай короткую, понятную, разговорную версию: 1-3 предложения."
+        Delegates to :func:`rob_box_voice.core.event_profile.render_event_instructions`.
+        """
+        from .core.event_profile import render_event_instructions
+        return render_event_instructions(
+            self._event_profile,
+            base_instructions,
+            faq_store_available=bool(self._faq_store),
         )
-        lines.append(
-            "Если точного ответа в FAQ нет, честно скажи это и не выдумывай детали."
-        )
-        return "\n".join(lines) + "\n\n" + base_instructions
 
     def _build_event_faq_prefetch_context(
         self, user_input: str, limit: int = 3
     ) -> Optional[str]:
-        """Prefetch relevant FAQ facts for the current event-mode user turn."""
-        if not self._faq_store or not self._event_profile:
-            return None
+        """Prefetch relevant FAQ facts for the current event-mode user turn.
 
-        query = user_input.strip()
-        event_id = self._event_profile.get("event_id")
-        if not query or not event_id:
-            return None
-
-        try:
-            results = self._faq_store.search(
-                query=query,
-                event_id=event_id,
-                limit=limit,
-            )
-        except Exception as exc:
-            self.get_logger().warning(f"⚠️ Event FAQ prefetch failed: {exc}")
-            return None
-
-        self.get_logger().info(
-            f"📚 Event FAQ prefetch: {len(results)} matches for '{query[:80]}'"
+        Delegates to :func:`rob_box_voice.core.event_profile.build_event_faq_prefetch_context`.
+        """
+        from .core.event_profile import build_event_faq_prefetch_context
+        return build_event_faq_prefetch_context(
+            profile=self._event_profile,
+            faq_store=self._faq_store,
+            user_input=user_input,
+            limit=limit,
+            logger_obj=self.get_logger(),
         )
-        if not results:
-            return None
-
-        lines = [
-            "[EVENT FAQ PREFETCH]",
-            "FAQ для текущего запроса уже проверен. Для всех фактических утверждений о мероприятии опирайся сначала на данные ниже.",
-            "Если пользователь просит рэп, шутку, стих, историю, песню или другой стиль по теме мероприятия, сначала используй FAQ факты, а уже потом стилизуй ответ.",
-            "Если нужен бит или музыкальный фон, сначала используй факты ниже, затем при необходимости вызови handle_music, а потом озвучь ответ.",
-            "Если фактов ниже недостаточно, честно скажи, что точных деталей в FAQ не найдено, и не выдумывай их.",
-            "Найденные FAQ факты:",
-        ]
-        for index, item in enumerate(results, start=1):
-            lines.append(f"{index}. Вопрос: {item.get('question', '')}")
-            lines.append(f"   Ответ: {item.get('answer', '')}")
-            category = item.get("category")
-            if category:
-                lines.append(f"   Категория: {category}")
-            source = item.get("source")
-            if source:
-                lines.append(f"   Источник: {source}")
-        return "\n".join(lines)
 
     def _render_faq_skill_prompt(self, base_prompt: str) -> str:
-        """Prepend event details to the FAQ sub-agent prompt."""
-        if not self._event_profile:
-            return base_prompt
+        """Prepend event details to the FAQ sub-agent prompt.
 
-        profile = self._event_profile
-        lines = [
-            f"Активное мероприятие: {profile['name']}",
-            f"Роль робота: {profile['robot_role']}",
-        ]
-        if profile.get("organization"):
-            lines.append(f"Организация: {profile['organization']}")
-        if profile.get("location"):
-            lines.append(f"Локация: {profile['location']}")
-        if profile.get("date"):
-            lines.append(f"Дата: {profile['date']}")
-        if profile.get("description"):
-            lines.append(f"Описание: {profile['description']}")
-        return "\n".join(lines) + "\n\n" + base_prompt
+        Delegates to :func:`rob_box_voice.core.event_profile.render_faq_skill_prompt`.
+        """
+        from .core.event_profile import render_faq_skill_prompt
+        return render_faq_skill_prompt(self._event_profile, base_prompt)
 
     def _build_agent(self, model_override: str = "") -> None:
         """(Re)build the Agent — also called after fallback provider switch.
@@ -1048,17 +918,11 @@ class DialogueNode(Node):
             """Получить текущую позицию робота (x, y, theta) на карте. Используй перед миссиями для запоминания точки возврата."""
             return await _call("get_current_pose", {})
 
-        @function_tool
-        async def set_volume(action: str) -> str:
-            """Изменить громкость голоса.
-            action: 'louder' — громче, 'quieter' — тише, 'max' — максимум, 'normal' — норма.
-            """
-            return await _call("set_volume", {"action": action})
-
-        @function_tool
-        async def set_pitch(pitch: float) -> str:
-            """Установить высоту голоса 0.5-2.0."""
-            return await _call("set_pitch", {"pitch": pitch})
+        # Unified voice-settings tool (replaces separate set_volume /
+        # set_pitch). See :mod:`rob_box_voice.core.voice_settings` —
+        # dispatches to the legacy ``set_volume`` / ``set_pitch`` MCP
+        # calls based on ``action``.
+        voice_settings = make_voice_settings_tool(caller=_call)
 
         @function_tool
         async def execute_music_code(code: str, pattern_name: str = "p1") -> str:
@@ -1178,8 +1042,7 @@ class DialogueNode(Node):
             delete_waypoint,
             clear_waypoints,
             get_current_pose,
-            set_volume,
-            set_pitch,
+            voice_settings,
             search_samples,
             execute_music_code,
             stop_music,
@@ -1379,156 +1242,134 @@ class DialogueNode(Node):
         natural-language task string.  The skill runs its own focused LLM loop
         and returns a plain string result.
 
+        The actual construction loop lives in
+        :func:`rob_box_voice.core.skill_factory.build_skill_tools` so the
+        per-skill boilerplate (prompt-file / fallback / try-except / as_tool)
+        is defined ONCE in :file:`core/skill_factory.py` rather than duplicated
+        five times here (ADR-0001 §2.7.3 D8).
+
         Args:
             model: Shared OpenAIChatCompletionsModel instance to pass to each skill.
 
         Returns:
             List of FunctionTool objects (one per skill that loaded successfully).
         """
-        skill_tools = []
+        from .core.skill_factory import SkillFactorySpec, build_skill_tools
 
-        # ── MusicSkill ─────────────────────────────────────────────────────
-        try:
-            music_prompt = self._load_prompt_file("skills/music_skill_prompt.txt")
-            if not music_prompt:
-                music_prompt = "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
-            skill = MusicSkill(
-                adapter=self._mcp,
-                model=model,
-                prompt_template=music_prompt,
-                agent_max_turns=10,
-                max_tokens=2000,  # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
-                temperature=0.85,
-                # MiMo only supports tool_choice="auto" (others silently downgraded to auto).
-                # Thinking mode disabled via extra_body to ensure reliable tool calls.
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_music",
-                    tool_description=(
-                        "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
-                        "остановку музыки или изменение музыкального состояния. "
-                        "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ MusicSkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
-
-        # ── NavigationSkill ────────────────────────────────────────────────
-        try:
-            nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
-            if not nav_prompt:
-                nav_prompt = (
+        specs: list[SkillFactorySpec] = [
+            SkillFactorySpec(
+                display_name="MusicSkill",
+                skill_class=MusicSkill,
+                prompt_file="skills/music_skill_prompt.txt",
+                fallback_prompt=(
+                    "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
+                ),
+                tool_name="handle_music",
+                tool_description=(
+                    "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
+                    "остановку музыки или изменение музыкального состояния. "
+                    "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
+                ),
+                prompt_kwarg="prompt_template",  # MusicSkill does its own {renardo_ref} substitution
+                factory_kwargs={
+                    "agent_max_turns": 10,
+                    # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
+                    "max_tokens": 2000,
+                    "temperature": 0.85,
+                    # MiMo only supports tool_choice="auto" (others silently downgraded to auto).
+                    # Thinking mode disabled via extra_body to ensure reliable tool calls.
+                    "tool_choice": "auto",
+                },
+            ),
+            SkillFactorySpec(
+                display_name="NavigationSkill",
+                skill_class=NavigationSkill,
+                prompt_file="skills/navigation_skill_prompt.txt",
+                fallback_prompt=(
                     "Ты — модуль навигации РОББОКСА. Управляй движением робота."
-                )
-            skill = NavigationSkill(
-                adapter=self._mcp,
-                model=model,
-                prompt=nav_prompt,
-                name="NavigationSkill",
-                max_tokens=1000,
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_navigation",
-                    tool_description=(
-                        "Навигационный скилл: переместить робота в именованную точку, "
-                        "сохранить/удалить/список точек (вейпоинтов), "
-                        "картографирование (маппинг), направление движения."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ NavigationSkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ NavigationSkill build failed: {exc}")
-
-        # ── MemorySkill ────────────────────────────────────────────────────
-        try:
-            mem_prompt = self._load_prompt_file("skills/memory_skill_prompt.txt")
-            if not mem_prompt:
-                mem_prompt = (
+                ),
+                tool_name="handle_navigation",
+                tool_description=(
+                    "Навигационный скилл: переместить робота в именованную точку, "
+                    "сохранить/удалить/список точек (вейпоинтов), "
+                    "картографирование (маппинг), направление движения."
+                ),
+                factory_kwargs={"max_tokens": 1000, "tool_choice": "auto"},
+            ),
+            SkillFactorySpec(
+                display_name="MemorySkill",
+                skill_class=MemorySkill,
+                prompt_file="skills/memory_skill_prompt.txt",
+                fallback_prompt=(
                     "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
-                )
-            skill = MemorySkill(
-                adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill",
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_memory",
-                    tool_description=(
-                        "Модуль памяти: сохранить новую информацию или найти "
-                        "ранее сохранённые факты в долгосрочной памяти."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ MemorySkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ MemorySkill build failed: {exc}")
+                ),
+                tool_name="handle_memory",
+                tool_description=(
+                    "Модуль памяти: сохранить новую информацию или найти "
+                    "ранее сохранённые факты в долгосрочной памяти."
+                ),
+                factory_kwargs={"tool_choice": "auto"},
+            ),
+            SkillFactorySpec(
+                display_name="StatusSkill",
+                skill_class=StatusSkill,
+                prompt_file="skills/status_skill_prompt.txt",
+                fallback_prompt=(
+                    "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
+                ),
+                tool_name="handle_status",
+                tool_description=(
+                    "Модуль статуса: батарея, текущее время, статус робота, "
+                    "изменение громкости или высоты голоса."
+                ),
+                factory_kwargs={"tool_choice": "auto"},
+            ),
+        ]
 
-        # ── StatusSkill ────────────────────────────────────────────────────
-        try:
-            status_prompt = self._load_prompt_file("skills/status_skill_prompt.txt")
-            if not status_prompt:
-                status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
-            skill = StatusSkill(
-                adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill",
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_status",
-                    tool_description=(
-                        "Модуль статуса: батарея, текущее время, статус робота, "
-                        "изменение громкости или высоты голоса."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ StatusSkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ StatusSkill build failed: {exc}")
-
-        # ── FAQSkill ────────────────────────────────────────────────────────
+        # FAQSkill — only present when event-mode is active and a FAQStore
+        # was successfully built. Its prompt is rendered with active-event
+        # context (see ADR-0001 §2.7.4) and the constructor takes the
+        # FAQStore + event_id alongside the base kwargs.
         if self._faq_store and self._event_profile:
-            try:
-                event_id = self._event_profile.get(
-                    "event_id"
-                ) or self._slugify_event_id(
+            event_id = (
+                self._event_profile.get("event_id")
+                or self._slugify_event_id(
                     self._event_profile.get("name", "faq-event")
                 )
-                faq_prompt = self._load_prompt_file("skills/faq_skill_prompt.txt")
-                if not faq_prompt:
-                    faq_prompt = (
+            )
+            specs.append(
+                SkillFactorySpec(
+                    display_name="FAQSkill",
+                    skill_class=FAQSkill,
+                    prompt_file="skills/faq_skill_prompt.txt",
+                    fallback_prompt=(
                         "Ты — FAQ модуль РОББОКСА. Ищи точные ответы по мероприятию."
-                    )
-                skill = FAQSkill(
-                    store=self._faq_store,
-                    event_id=event_id,
-                    model=model,
-                    prompt=self._render_faq_skill_prompt(faq_prompt),
-                    name="FAQSkill",
-                    temperature=0.2,
-                    max_tokens=900,
-                    tool_choice="auto",
+                    ),
+                    tool_name="handle_faq",
+                    tool_description=(
+                        "FAQ мероприятия: поиск точных ответов по вопросам о событии, "
+                        "поступлении, локациях, расписании и других организационных деталях."
+                    ),
+                    factory_kwargs={
+                        "store": self._faq_store,
+                        "event_id": event_id,
+                        "temperature": 0.2,
+                        "max_tokens": 900,
+                        "tool_choice": "auto",
+                    },
+                    # FAQSkill's prompt is rendered with the active event
+                    # profile prepended — see render_faq_skill_prompt().
+                    prompt_render=self._render_faq_skill_prompt,
                 )
-                skill_tools.append(
-                    skill.as_tool(
-                        tool_name="handle_faq",
-                        tool_description=(
-                            "FAQ мероприятия: поиск точных ответов по вопросам о событии, поступлении, "
-                            "локациях, расписании и других организационных деталях."
-                        ),
-                    )
-                )
-                self.get_logger().info("✅ FAQSkill loaded")
-            except Exception as exc:
-                self.get_logger().error(f"❌ FAQSkill build failed: {exc}")
+            )
 
-        return skill_tools
+        return build_skill_tools(
+            specs,
+            adapter=self._mcp,
+            model=model,
+            prompt_loader=self._load_prompt_file,
+            logger=self.get_logger(),
+        )
 
     def _log_config(self) -> None:
         self.get_logger().info(f"  Provider : {self._provider}")
@@ -1741,11 +1582,8 @@ class DialogueNode(Node):
         self._spoken_texts = []
         self._tools_called = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
-        if self._voice_memory is not None:
-            try:
-                self._voice_memory.save_turn("user", user_input)
-            except Exception as exc:
-                self.get_logger().warning(f"⚠️ memory save_turn(user) failed: {exc}")
+        from .core.voice_memory_init import safe_save_turn
+        safe_save_turn(self._voice_memory, "user", user_input, logger=self.get_logger())
 
         try:
             faq_prefetch_context = self._build_event_faq_prefetch_context(user_input)
@@ -1820,13 +1658,10 @@ class DialogueNode(Node):
                     f"✅ Agent done. Tools: {sorted(tool_names_used)}. Response: {spoken[:80]}"
                 )
 
-            if self._voice_memory is not None and spoken:
-                try:
-                    self._voice_memory.save_turn("assistant", spoken)
-                except Exception as exc:
-                    self.get_logger().warning(
-                        f"⚠️ memory save_turn(assistant) failed: {exc}"
-                    )
+            if spoken:
+                safe_save_turn(
+                    self._voice_memory, "assistant", spoken, logger=self.get_logger()
+                )
 
             # In FAQ event mode history is intentionally NOT stored between turns.
             # Each question is answered from scratch using only the FAQ prefetch context.
