@@ -225,6 +225,15 @@ class DialogueNode(Node):
         sfx = String()
         sfx.data = "thinking"
         self._sound_trigger_pub.publish(sfx)
+        # Wake-word gate: when we cross from IDLE the wake-word itself
+        # has to drive IDLE → LISTENING, then the speech below drives
+        # LISTENING → DIALOGUE. Without the WAKE_WORD event the strip
+        # above hides the trigger from DialogCore's on_user_input and
+        # the DSM gets stuck in IDLE. (W6 integration tests caught
+        # this regression in the W5 shell rewrite.)
+        if state == DialogueStateKind.IDLE:
+            self._dsm.on_event(DialogueEvent.WAKE_WORD)
+            self._publish_state()
         self._dsm.on_event(DialogueEvent.STT_RESULT)
         self._publish_state()
         if self._dj.state.enabled:
