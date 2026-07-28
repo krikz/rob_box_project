@@ -395,13 +395,15 @@ class DialogHarness(Harness[DialogState]):
 
     @staticmethod
     def _strip_wake_word(text: str) -> str:
-        """Remove known wake words from the beginning of ``text``."""
-        import re
-        wake_pattern = re.compile(
-            r"^\s*(роббокс|роб бокс|робокс|робок|робот|robbox|rob box)[,.\s]*",
-            re.IGNORECASE,
-        )
-        return wake_pattern.sub("", text, count=1).strip()
+        """Remove known wake words from the beginning of ``text``.
+
+        Delegates to :func:`rob_box_voice.core.dialogue_text.strip_wake_word`
+        so the same logic is shared with the legacy ``DialogueNode``
+        (see ADR-0001 §2.7 — single source of truth for the
+        wake-word gate).
+        """
+        from rob_box_voice.core.dialogue_text import strip_wake_word
+        return strip_wake_word(text)
 
 
 def _dialog_post_process(text: str) -> str:

@@ -60,7 +60,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import rclpy
-import yaml
 # (constants moved to block below the imports; see
 # "Concurrency primitives" right after the import block.)
 from agents import Agent, Runner, function_tool
@@ -450,71 +449,21 @@ class DialogueNode(Node):
             self._voice_memory = None
 
     def _load_event_profile(self) -> Optional[Dict[str, Any]]:
-        """Load event FAQ mode configuration from YAML when enabled."""
-        if not self.get_parameter("faq_mode_enabled").value:
-            return None
+        """Load event FAQ mode configuration from YAML when enabled.
 
-        config_file = self.get_parameter("faq_event_config_file").value
-        if not config_file:
-            self.get_logger().warning(
-                "⚠️ FAQ mode enabled but faq_event_config_file is empty"
-            )
-            return None
-
-        config_path = Path(config_file).expanduser()
-        if not config_path.is_absolute():
-            config_path = config_path.resolve()
-        if not config_path.exists():
-            self.get_logger().warning(f"⚠️ FAQ event config not found: {config_path}")
-            return None
-
-        try:
-            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception as exc:
-            self.get_logger().error(f"❌ Failed to read FAQ event config: {exc}")
-            return None
-
-        event = payload.get("event", payload) if isinstance(payload, dict) else None
-        if not isinstance(event, dict):
-            self.get_logger().warning(
-                "⚠️ FAQ event config must be a mapping or contain 'event:' block"
-            )
-            return None
-
-        name = str(event.get("name", "")).strip()
-        faq_file = str(event.get("faq_file", "")).strip()
-        if not name or not faq_file:
-            self.get_logger().warning(
-                "⚠️ FAQ event config requires 'name' and 'faq_file'"
-            )
-            return None
-
-        faq_path = Path(faq_file).expanduser()
-        if not faq_path.is_absolute():
-            faq_path = (config_path.parent / faq_path).resolve()
-
-        date = str(event.get("date", "")).strip()
-        event_id = str(event.get("id", "")).strip() or self._slugify_event_id(
-            f"{name}-{date or faq_path.stem}"
+        Delegates to :func:`rob_box_voice.core.event_profile.load_event_profile`
+        so the YAML schema lives in one place (see ADR-0001 §2.7).
+        """
+        from .core.event_profile import load_event_profile
+        profile = load_event_profile(
+            enabled=self.get_parameter("faq_mode_enabled").value,
+            config_file=self.get_parameter("faq_event_config_file").value,
         )
-
-        return {
-            "event_id": event_id,
-            "name": name,
-            "organization": str(event.get("organization", "")).strip(),
-            "location": str(event.get("location", "")).strip(),
-            "date": date,
-            "description": str(event.get("description", "")).strip(),
-            "robot_role": str(
-                event.get("robot_role", "РОББОКС — ровер-помощник")
-            ).strip(),
-            "intro_identity": str(event.get("intro_identity", "")).strip(),
-            "faq_file": str(faq_path),
-        }
+        return profile.as_dict() if profile is not None else None
 
     def _slugify_event_id(self, value: str) -> str:
-        slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
-        return slug or "faq-event"
+        from .core.event_profile import slugify_event_id
+        return slugify_event_id(value)
 
     def _init_faq_store(self) -> None:
         """Load FAQ knowledge for the active event when FAQ mode is enabled."""
@@ -543,113 +492,40 @@ class DialogueNode(Node):
             self._faq_store = None
 
     def _render_event_instructions(self, base_instructions: str) -> str:
-        """Prepend active event context to agent instructions."""
-        if not self._event_profile:
-            return base_instructions
+        """Prepend active event context to agent instructions.
 
-        profile = self._event_profile
-        lines = [
-            "[EVENT MODE]",
-            f"Ты работаешь на мероприятии как {profile['robot_role']}.",
-            f"Мероприятие: {profile['name']}.",
-        ]
-        if profile.get("organization"):
-            lines.append(f"Организация: {profile['organization']}.")
-        if profile.get("location"):
-            lines.append(f"Локация: {profile['location']}.")
-        if profile.get("date"):
-            lines.append(f"Дата: {profile['date']}.")
-        if profile.get("description"):
-            lines.append(f"Описание: {profile['description']}")
-        if profile.get("intro_identity"):
-            lines.append(f"Самоидентификация: {profile['intro_identity']}")
-        if self._faq_store:
-            lines.append(
-                "Если вопрос касается мероприятия, FAQ, поступления, программы, локации или организационных деталей, "
-                "используй FAQ retrieval tool и говори по найденным данным."
-            )
-            lines.append(
-                "Если пользователь просит рэп, стих, шутку, историю, песню или другой перформанс про тему мероприятия, "
-                "сначала подними факты из FAQ и только потом стилизуй ответ."
-            )
-            lines.append(
-                "Если после FAQ нужен бит или музыка, сначала получи факты, потом при необходимости вызови handle_music, "
-                "и только после этого озвучивай ответ."
-            )
-        lines.append(
-            "Даже если исходный ответ в FAQ длинный, озвучивай короткую, понятную, разговорную версию: 1-3 предложения."
+        Delegates to :func:`rob_box_voice.core.event_profile.render_event_instructions`.
+        """
+        from .core.event_profile import render_event_instructions
+        return render_event_instructions(
+            self._event_profile,
+            base_instructions,
+            faq_store_available=bool(self._faq_store),
         )
-        lines.append(
-            "Если точного ответа в FAQ нет, честно скажи это и не выдумывай детали."
-        )
-        return "\n".join(lines) + "\n\n" + base_instructions
 
     def _build_event_faq_prefetch_context(
         self, user_input: str, limit: int = 3
     ) -> Optional[str]:
-        """Prefetch relevant FAQ facts for the current event-mode user turn."""
-        if not self._faq_store or not self._event_profile:
-            return None
+        """Prefetch relevant FAQ facts for the current event-mode user turn.
 
-        query = user_input.strip()
-        event_id = self._event_profile.get("event_id")
-        if not query or not event_id:
-            return None
-
-        try:
-            results = self._faq_store.search(
-                query=query,
-                event_id=event_id,
-                limit=limit,
-            )
-        except Exception as exc:
-            self.get_logger().warning(f"⚠️ Event FAQ prefetch failed: {exc}")
-            return None
-
-        self.get_logger().info(
-            f"📚 Event FAQ prefetch: {len(results)} matches for '{query[:80]}'"
+        Delegates to :func:`rob_box_voice.core.event_profile.build_event_faq_prefetch_context`.
+        """
+        from .core.event_profile import build_event_faq_prefetch_context
+        return build_event_faq_prefetch_context(
+            profile=self._event_profile,
+            faq_store=self._faq_store,
+            user_input=user_input,
+            limit=limit,
+            logger_obj=self.get_logger(),
         )
-        if not results:
-            return None
-
-        lines = [
-            "[EVENT FAQ PREFETCH]",
-            "FAQ для текущего запроса уже проверен. Для всех фактических утверждений о мероприятии опирайся сначала на данные ниже.",
-            "Если пользователь просит рэп, шутку, стих, историю, песню или другой стиль по теме мероприятия, сначала используй FAQ факты, а уже потом стилизуй ответ.",
-            "Если нужен бит или музыкальный фон, сначала используй факты ниже, затем при необходимости вызови handle_music, а потом озвучь ответ.",
-            "Если фактов ниже недостаточно, честно скажи, что точных деталей в FAQ не найдено, и не выдумывай их.",
-            "Найденные FAQ факты:",
-        ]
-        for index, item in enumerate(results, start=1):
-            lines.append(f"{index}. Вопрос: {item.get('question', '')}")
-            lines.append(f"   Ответ: {item.get('answer', '')}")
-            category = item.get("category")
-            if category:
-                lines.append(f"   Категория: {category}")
-            source = item.get("source")
-            if source:
-                lines.append(f"   Источник: {source}")
-        return "\n".join(lines)
 
     def _render_faq_skill_prompt(self, base_prompt: str) -> str:
-        """Prepend event details to the FAQ sub-agent prompt."""
-        if not self._event_profile:
-            return base_prompt
+        """Prepend event details to the FAQ sub-agent prompt.
 
-        profile = self._event_profile
-        lines = [
-            f"Активное мероприятие: {profile['name']}",
-            f"Роль робота: {profile['robot_role']}",
-        ]
-        if profile.get("organization"):
-            lines.append(f"Организация: {profile['organization']}")
-        if profile.get("location"):
-            lines.append(f"Локация: {profile['location']}")
-        if profile.get("date"):
-            lines.append(f"Дата: {profile['date']}")
-        if profile.get("description"):
-            lines.append(f"Описание: {profile['description']}")
-        return "\n".join(lines) + "\n\n" + base_prompt
+        Delegates to :func:`rob_box_voice.core.event_profile.render_faq_skill_prompt`.
+        """
+        from .core.event_profile import render_faq_skill_prompt
+        return render_faq_skill_prompt(self._event_profile, base_prompt)
 
     def _build_agent(self, model_override: str = "") -> None:
         """(Re)build the Agent — also called after fallback provider switch.
