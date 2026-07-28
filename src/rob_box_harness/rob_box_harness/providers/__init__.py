@@ -28,8 +28,25 @@ Sub-modules
 
 from __future__ import annotations
 
+from rob_box_harness.providers.deepseek import (
+    DEEPSEEK_API_KEY_ENV,
+    DEFAULT_BASE_URL as DEEPSEEK_DEFAULT_BASE_URL,
+    DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL,
+    DeepSeekProvider,
+    HarnessDeepSeekProvider,
+    RetryPolicy,
+    build_deepseek_provider,
+)
 from rob_box_harness.providers.dummy import DummyLLMProvider
 from rob_box_harness.providers.fake_llm import HarnessFakeLLMProvider
+from rob_box_harness.providers.mimo import (
+    DEFAULT_BASE_URL as MIMO_DEFAULT_BASE_URL,
+    DEFAULT_MODEL as MIMO_DEFAULT_MODEL,
+    MIMO_API_KEY_ENV,
+    HarnessMiMoProvider,
+    MimoProvider,
+    build_mimo_provider,
+)
 from rob_box_harness.providers.minimax import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -39,7 +56,6 @@ from rob_box_harness.providers.minimax import (
     HarnessMiniMaxProvider,
     MiniMaxProvider,
     MiniMaxRedactedLogFilter,
-    RetryPolicy,
     build_minimax_provider,
 )
 
@@ -57,4 +73,18 @@ __all__ = [
     "DEFAULT_THINKING_POLICY",
     "MINIMAX_MAX_IMAGE_BYTES",
     "MiniMaxRedactedLogFilter",
+    # DeepSeek (harness-side)
+    "DeepSeekProvider",
+    "HarnessDeepSeekProvider",
+    "build_deepseek_provider",
+    "DEEPSEEK_API_KEY_ENV",
+    "DEEPSEEK_DEFAULT_BASE_URL",
+    "DEEPSEEK_DEFAULT_MODEL",
+    # MiMo (harness-side)
+    "MimoProvider",
+    "HarnessMiMoProvider",
+    "build_mimo_provider",
+    "MIMO_API_KEY_ENV",
+    "MIMO_DEFAULT_BASE_URL",
+    "MIMO_DEFAULT_MODEL",
 ]
