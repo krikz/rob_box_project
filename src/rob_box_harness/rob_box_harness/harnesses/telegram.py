@@ -35,11 +35,13 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, Union, cast
 
 from rob_box_harness.config import HarnessConfig
+from rob_box_harness.effects import Effect, SendReplyEffect
 from rob_box_harness.harness import Harness
 from rob_box_harness.memory import Turn
 
@@ -83,6 +85,49 @@ class TelegramState:
 
 
 # ---------------------------------------------------------------------------
+# TelegramCommandContext + handler type aliases (P1.4 declarative API)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TelegramCommandContext:
+    """Per-call context passed to declarative handlers.
+
+    The new ``(ctx, args) → Effect`` signature (ADR §2.7.3, host
+    decision H.1) carries the chat_id / user_id / state the handler
+    needs without the harness threading positional args through a
+    state object — handlers stay pure functions of (ctx, args).
+
+    The legacy ``(args, state) → str`` signature is preserved for
+    back-compat with the 9 placeholder handlers shipped in this
+    file and the 28 regression tests that exercise them.
+    """
+
+    command: str
+    """The slash-command that triggered the handler, e.g. ``"/start"``."""
+
+    args: str
+    """Everything after the command (may be empty)."""
+
+    chat_id: str
+    """Telegram chat id, already projected from ``state.chat_id``."""
+
+    user_id: str
+    """Telegram user id, already projected from ``state.user_id``."""
+
+    state: TelegramState
+    """Full mutable state bag for handlers that need more than ctx fields."""
+
+
+# A declarative handler is ``async (ctx, args) -> Effect``. The
+# return type is ``Effect[Any]`` (not a subclass) so handlers may
+# emit any member of the effect union.
+DeclarativeHandler = Callable[[TelegramCommandContext, str], Awaitable[Effect[Any]]]
+DeclarativeSyncHandler = Callable[[TelegramCommandContext, str], Effect[Any]]
+DeclarativeHandlerLike = Union[DeclarativeHandler, DeclarativeSyncHandler]
+
+
+# ---------------------------------------------------------------------------
 # TelegramCommandRegistry
 # ---------------------------------------------------------------------------
 
@@ -92,70 +137,174 @@ class TelegramCommandRegistry:
 
     Mirrors the pattern from ``rob_box_telegram.commands`` (25 handlers)
     in a ROS-agnostic way. Commands are registered with a name
-    (e.g. ``"/start"``) and an async handler callable.
+    (e.g. ``"/start"``) and a handler callable.
 
-    Registration is eager (during ``init()``) so missing handlers
-    are caught at startup, not at first use.
+    Two registration styles are supported (ADR §2.7.3, host H.1 + H.4):
+
+    * **Legacy** ``register(name, (args, state) -> str)`` — used by
+      the 9 placeholder handlers in this file and exercised by the
+      28 tests in ``test_telegram_harness.py``. Kept for back-compat.
+    * **Declarative** ``@registry.command(name)`` decorating an
+      ``async (ctx, args) -> Effect`` function. The new behaviour;
+      see ``test_telegram_registry.py`` for the contract.
+
+    :meth:`dispatch` returns either the handler's ``Effect`` (new
+    API) or its ``str`` (legacy API). The :class:`TelegramHarness`
+    dispatches returned ``Effect`` instances through its configured
+    ``SideEffectBus`` and returns the string form (synthesised from
+    ``SendReplyEffect.text`` for the new path) to callers that
+    expect a string.
     """
 
     def __init__(self) -> None:
-        self._handlers: dict[str, Callable[..., Any]] = {}
+        self._handlers: dict[str, DeclarativeHandlerLike] = {}
+        # Legacy handlers keyed separately so we can tell a
+        # legacy (args, state) -> str from a declarative
+        # (ctx, args) -> Effect apart at dispatch time.
+        self._legacy: dict[str, Callable[..., Any]] = {}
+        self._metadata: dict[str, dict[str, Any]] = {}
+
+    # ----- registration ---------------------------------------------------
 
     def register(self, command: str, handler: Callable[..., Any]) -> None:
-        """Register a handler for a slash-command.
+        """Register a LEGACY handler ``(args, state) → str``.
 
-        Args:
-            command: Command name with leading slash, e.g. ``"/start"``.
-            handler: Async callable ``(args: str, state: TelegramState) → str``.
+        Kept for back-compat with the 9 placeholder handlers in
+        this module and the 28 regression tests. New code should
+        use :meth:`command` instead.
         """
-        if not command.startswith("/"):
-            command = f"/{command}"
-        self._handlers[command] = handler
-        logger.debug("TelegramCommandRegistry: registered '%s'", command)
+        command = _normalise_command(command)
+        self._legacy[command] = handler
+        self._handlers.pop(command, None)  # declarative wins if previously set
+        logger.debug("TelegramCommandRegistry: registered legacy '%s'", command)
+
+    def command(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+    ) -> Callable[[DeclarativeHandlerLike], DeclarativeHandlerLike]:
+        """Decorator for declarative handlers ``(ctx, args) → Effect``.
+
+        Usage::
+
+            @registry.command("/start", description="Greet the user")
+            async def start(ctx, args):
+                return SendReplyEffect(channel=ctx.chat_id, text="Hi!")
+        """
+        command = _normalise_command(name)
+
+        def _decorator(handler: DeclarativeHandlerLike) -> DeclarativeHandlerLike:
+            self._handlers[command] = handler
+            self._legacy.pop(command, None)  # legacy loses if previously set
+            self._metadata[command] = {
+                "description": description or "",
+                "decorated": True,
+            }
+            logger.debug("TelegramCommandRegistry: registered declarative '%s'", command)
+            return handler
+
+        return _decorator
+
+    def metadata(self, command: str) -> dict[str, Any]:
+        """Return metadata registered for ``command`` (description, flags)."""
+        command = _normalise_command(command)
+        return dict(self._metadata.get(command, {}))
+
+    # ----- dispatch -------------------------------------------------------
 
     async def dispatch(
         self,
         command: str,
         args: str,
         state: TelegramState,
-    ) -> str:
+    ) -> Union[Effect[Any], str]:
         """Execute the handler for ``command``.
 
-        Args:
-            command: Slash-command name.
-            args: Everything after the command (may be empty).
-            state: Current TelegramState for context.
+        Returns whatever the handler produced:
 
-        Returns:
-            Response text to send back to the user.
+        * an :class:`Effect` instance — the declarative handler
+          contract (P1.4 / H.1). The :class:`TelegramHarness`
+          dispatches it through ``self.effects`` and synthesises
+          a string reply for legacy callers.
+        * a ``str`` — the legacy handler contract (the 9
+          placeholders in this module still return strings, and
+          the 28 regression tests assert on strings). Returned
+          as-is.
+
+        On unknown command / legacy-handler exception the registry
+        returns a ``str`` so the existing regression tests continue
+        to work without modification. On declarative-handler
+        exception the registry returns a :class:`SendReplyEffect`
+        so the harness can dispatch it uniformly through the bus.
         """
-        handler = self._handlers.get(command)
-        if handler is None:
-            return f"Неизвестная команда: {command}. Используйте /help для списка команд."
+        command = _normalise_command(command)
 
-        try:
-            result = handler(args, state)
-            # Support both sync and async handlers
-            import asyncio
-            if asyncio.iscoroutine(result):
-                result = await result
-            return str(result) if result is not None else ""
-        except Exception:
-            logger.exception(
-                "TelegramCommandRegistry: handler '%s' failed",
-                command,
+        declarative = self._handlers.get(command)
+        if declarative is not None:
+            ctx = TelegramCommandContext(
+                command=command,
+                args=args,
+                chat_id=state.chat_id,
+                user_id=state.user_id,
+                state=state,
             )
-            return "Произошла ошибка при выполнении команды."
+            try:
+                result = declarative(ctx, args)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                # mypy can't narrow ``Awaitable[Effect[Any]] | Effect[Any]`` via
+                # ``iscoroutine`` alone, so narrow with cast. Both branches are
+                # covered by the check above.
+                return cast(Effect[Any], result)
+            except Exception:
+                logger.exception(
+                    "TelegramCommandRegistry: declarative handler '%s' failed",
+                    command,
+                )
+                return SendReplyEffect(
+                    channel=state.chat_id,
+                    text="Произошла ошибка при выполнении команды.",
+                )
+
+        legacy = self._legacy.get(command)
+        if legacy is not None:
+            try:
+                result = legacy(args, state)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return str(result) if result is not None else ""
+            except Exception:
+                logger.exception(
+                    "TelegramCommandRegistry: legacy handler '%s' failed",
+                    command,
+                )
+                return "Произошла ошибка при выполнении команды."
+
+        # Unknown command — for legacy compatibility return a plain
+        # string (the 9 placeholder handlers live in this category;
+        # tests in test_telegram_harness.py assert on substrings).
+        # The :class:`TelegramHarness` collapses the string into a
+        # ``SendReplyEffect`` at the bus boundary.
+        return f"Неизвестная команда: {command}. Используйте /help для списка команд."
 
     def commands(self) -> list[str]:
-        """Return all registered command names."""
-        return list(self._handlers.keys())
+        """Return all registered command names (declarative + legacy)."""
+        return sorted(set(self._handlers) | set(self._legacy))
 
     def __len__(self) -> int:
-        return len(self._handlers)
+        return len(self.commands())
 
     def __contains__(self, command: str) -> bool:
-        return command in self._handlers
+        command = _normalise_command(command)
+        return command in self._handlers or command in self._legacy
+
+
+def _normalise_command(command: str) -> str:
+    """Ensure ``command`` starts with ``/``."""
+    if not command.startswith("/"):
+        return f"/{command}"
+    return command
 
 
 # ---------------------------------------------------------------------------
@@ -191,15 +340,17 @@ class AuthMiddleware:
         """Revoke access from a user."""
         self._allowed.discard(user_id)
 
-    def wrap(self, handler: Callable[..., Any]) -> Callable[..., Any]:
+    def wrap(self, handler: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         """Wrap a handler with an auth check.
 
         Returns a callable that checks auth before delegating to
-        the original handler.
+        the original handler. The wrapped handler must be async
+        (matching the harness's ``await registry.dispatch(...)``
+        call site).
         """
         _check = self.check
 
-        async def _wrapper(*args: Any, **kwargs: Any) -> str:
+        async def _wrapper(*args: Any, **kwargs: Any) -> Any:
             user_id = kwargs.get("user_id", "")
             if not _check(str(user_id)):
                 return "⛔ Доступ запрещён. Обратитесь к администратору."
@@ -334,10 +485,6 @@ def _cmd_voice(args: str, state: TelegramState) -> str:
         return "🎤 Использование: /voice <текст для озвучивания>"
     return f"🔊 Голосовой запрос принят: «{args}» (заглушка — TTS в P1)"
 
-    async def _async_impl() -> str:
-        return f"Голосовой запрос: {args}"
-    return _async_impl()  # dummy; real impl calls TTS via side-effect bus
-
 
 def _cmd_led(args: str, state: TelegramState) -> str:
     """Handle /led — placeholder."""
@@ -392,17 +539,22 @@ class TelegramHarness(Harness[TelegramState]):
         """Wire command registry, auth middleware, and snapshot store."""
         await super().init()
 
-        # Command registry with placeholder handlers
-        self._registry = TelegramCommandRegistry()
-        self._registry.register("/start", _cmd_start)
-        self._registry.register("/help", _cmd_help)
-        self._registry.register("/status", _cmd_status)
-        self._registry.register("/photo", _cmd_photo)
-        self._registry.register("/voice", _cmd_voice)
-        self._registry.register("/led", _cmd_led)
-        self._registry.register("/sound", _cmd_sound)
-        self._registry.register("/navigate", _cmd_navigate)
-        self._registry.register("/stop", _cmd_stop)
+        # Command registry — preserve a registry the caller already
+        # injected (so test code can pre-populate declarative
+        # handlers). Otherwise build the default registry with the
+        # 9 placeholder handlers (kept for the regression suite).
+        existing = getattr(self, "_registry", None)
+        if existing is None:
+            self._registry = TelegramCommandRegistry()
+            self._registry.register("/start", _cmd_start)
+            self._registry.register("/help", _cmd_help)
+            self._registry.register("/status", _cmd_status)
+            self._registry.register("/photo", _cmd_photo)
+            self._registry.register("/voice", _cmd_voice)
+            self._registry.register("/led", _cmd_led)
+            self._registry.register("/sound", _cmd_sound)
+            self._registry.register("/navigate", _cmd_navigate)
+            self._registry.register("/stop", _cmd_stop)
 
         # Auth — allow all in dev mode, config-driven in production
         allowed = getattr(self.config, "telegram_allowed_users", None)
@@ -452,14 +604,19 @@ class TelegramHarness(Harness[TelegramState]):
                 "TelegramHarness: blocked user %s (not in allowed list)",
                 self.state.user_id,
             )
-            return "⛔ Доступ запрещён."
+            blocked = "⛔ Доступ запрещён."
+            await self.effects.dispatch(
+                SendReplyEffect(channel=self.state.chat_id, text=blocked)
+            )
+            return blocked
 
-        # Command dispatch
+        # Command dispatch (P1.4 / H.1)
         command = str(update.get("command", ""))
         if command:
             self.state.last_command = command
             args = str(update.get("args", ""))
-            return await self._registry.dispatch(command, args, self.state)
+            outcome = await self._registry.dispatch(command, args, self.state)
+            return await self._dispatch_outcome(outcome)
 
         # Text message → LLM chat
         text = str(update.get("text", ""))
@@ -484,12 +641,51 @@ class TelegramHarness(Harness[TelegramState]):
                         content=str(response.content),
                     ),
                 )
-                return str(response.content)
+                reply_text = str(response.content)
+                # Per ADR §2.10 / H.3: every external effect goes
+                # through the SideEffectBus. Text-message replies
+                # dispatch SendReplyEffect; legacy callers still see
+                # the reply string via the harness return value.
+                await self.effects.dispatch(
+                    SendReplyEffect(channel=self.state.chat_id, text=reply_text)
+                )
+                return reply_text
             except Exception:
                 logger.exception("TelegramHarness: LLM turn failed")
-                return "Извините, произошла ошибка. Попробуйте позже."
+                err_reply = "Извините, произошла ошибка. Попробуйте позже."
+                await self.effects.dispatch(
+                    SendReplyEffect(channel=self.state.chat_id, text=err_reply)
+                )
+                return err_reply
 
         return "no_action"
+
+    async def _dispatch_outcome(
+        self, outcome: Union[Effect[Any], str]
+    ) -> str:
+        """Dispatch a command-handler outcome and return its string form.
+
+        The harness is the single boundary where Effect → string
+        collapse happens (per ADR §2.10). Handlers emit ``Effect``
+        instances; the harness routes them through ``self.effects``
+        and surfaces the textual content to legacy callers (the
+        ROS2 ``telegram_node`` orchestrator that wraps this
+        harness). A ``SendReplyEffect`` returns its ``text``; any
+        other Effect type returns an empty string (the harness
+        stays out of routing logic — that lives in the bus).
+        """
+        if isinstance(outcome, Effect):
+            await self.effects.dispatch(outcome)
+            if isinstance(outcome, SendReplyEffect):
+                return outcome.text
+            return ""
+        # Legacy str contract — still useful for the 9 placeholder
+        # handlers; dispatch a synthetic SendReply so the user's
+        # message is delivered through the bus too.
+        await self.effects.dispatch(
+            SendReplyEffect(channel=self.state.chat_id, text=outcome)
+        )
+        return outcome
 
     # ── teardown ────────────────────────────────────────────────
 
@@ -503,6 +699,91 @@ __all__ = [
     "TelegramHarness",
     "TelegramState",
     "TelegramCommandRegistry",
+    "TelegramCommandContext",
     "AuthMiddleware",
     "SnapshotStore",
+    "add_telegram_handlers",
 ]
+
+
+# ---------------------------------------------------------------------------
+# python-telegram-bot integration (A5)
+# ---------------------------------------------------------------------------
+
+
+# Module-level indirection so tests can monkeypatch the
+# ``python-telegram-bot`` ``CommandHandler`` class without importing the
+# library. Defaults to ``None`` — production wires the real class via
+# :func:`_resolve_ptb_handler`.
+_PTB_COMMAND_HANDLER: Any = None
+
+
+def _resolve_ptb_handler() -> Any:
+    """Return the ``python-telegram-bot`` ``CommandHandler`` class.
+
+    Imported lazily so the harness module stays usable in environments
+    that don't install ``python-telegram-bot`` (most tests + the
+    voice-only pipelines). :class:`ImportError` is re-raised with a
+    human-readable hint.
+    """
+    global _PTB_COMMAND_HANDLER
+    if _PTB_COMMAND_HANDLER is not None:
+        return _PTB_COMMAND_HANDLER
+    try:
+        from telegram.ext import CommandHandler as _Cls
+    except ImportError as exc:  # pragma: no cover — exercised in bot runtime
+        raise ImportError(
+            "python-telegram-bot is required for add_telegram_handlers; "
+            "install with `pip install python-telegram-bot`"
+        ) from exc
+    _PTB_COMMAND_HANDLER = _Cls
+    return _Cls
+
+
+def add_telegram_handlers(
+    registry: TelegramCommandRegistry,
+    app: Any,
+) -> int:
+    """Register every command in ``registry`` with ``app``.
+
+    ``app`` is a ``telegram.ext.Application`` (or any duck-typed
+    object exposing ``add_handler(handler, group=0)``). The function
+    strips the leading ``/`` from each command name — python-telegram-bot
+    expects bare command strings — and returns the number of handlers
+    registered. Returns ``0`` for an empty registry.
+    """
+    handler_cls = _resolve_ptb_handler()
+    added = 0
+    for command in registry.commands():
+        bare = command.lstrip("/")
+        # Wrap the registry call in an adapter so python-telegram-bot's
+        # ``(update, context)`` signature reaches the declarative handler.
+        async def _adapter(update: Any, context: Any, *, _command: str = command) -> None:
+            chat_id = str(getattr(getattr(update, "effective_chat", None), "id", ""))
+            user_id = str(getattr(getattr(update, "effective_user", None), "id", ""))
+            args_text = " ".join(getattr(context, "args", []) or [])
+            state = TelegramState(chat_id=chat_id, user_id=user_id)
+            ctx = TelegramCommandContext(
+                command=_command,
+                args=args_text,
+                chat_id=chat_id,
+                user_id=user_id,
+                state=state,
+            )
+            handler = registry._handlers.get(_command)
+            if handler is None:
+                handler = registry._legacy.get(_command)
+            if handler is None:
+                return None
+            outcome = handler(ctx, args_text)
+            if hasattr(outcome, "__await__"):
+                outcome = await outcome
+            # ``outcome`` may be an Effect (declarative) or a str
+            # (legacy); the harness caller can dispatch it. We do
+            # nothing here so the harness's effect bus stays the
+            # single routing boundary.
+            return None
+
+        app.add_handler(handler_cls(bare, _adapter))
+        added += 1
+    return added
