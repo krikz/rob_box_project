@@ -193,7 +193,6 @@ ros2 launch rob_box_perception internal_dialogue.launch.py
 | `/voice/dialogue/response` | String | dialogue_node | Ответы робота |
 | `/rtabmap/localization_pose` | PoseStamped | rtabmap | Позиция на карте |
 | `/odom` | Odometry | ros2_control | Одометрия |
-| `/device/snapshot` | DeviceSnapshot | micro_ros_agent | Сенсоры ESP32 |
 | `/rosout` | Log | ROS2 Core | **Логи всех нод (ERROR/WARN)** |
 
 ### Исходящие (публикации)

@@ -124,7 +124,8 @@ class SensorFilter(Node):
 
 ## Building
 
-This package is automatically built in the `micro-ros-agent` Docker container.
+This package is **archived** — micro-ROS was removed in Phase 6 (Plan 06-04).
+The message definitions remain for reference but are no longer built.
 
 **Manual build:**
 ```bash
