@@ -38,7 +38,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_llm.errors import ProviderError
-from rob_box_llm.provider import LLMMessage, LLMResponse
+from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall
 
 
 # ---------------------------------------------------------------------------
@@ -53,14 +53,28 @@ class _FakeLLMMessage:
 
 
 class _FakeLLMProvider:
-    """Records every complete() call and returns a canned response."""
+    """Records every complete() call and returns a canned response.
+
+    The ``responses`` queue lets a test script the LLM's tool-call
+    behaviour: each ``complete()`` pops the next entry. Entries are
+    either an :class:`LLMResponse` (returned verbatim) or an
+    :class:`Exception` (raised). When the queue is empty the
+    provider falls back to ``response_text``.
+    """
 
     name = "fake_llm"
 
-    def __init__(self, response_text: str = "ok", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        response_text: str = "ok",
+        error: Exception | None = None,
+        responses: list[object] | None = None,
+    ) -> None:
         self.response_text = response_text
         self.error = error
-        self.calls: list[list[Any]] = []
+        self.responses: list[object] = list(responses or [])
+        # Records every complete() call as (messages, tools).
+        self.calls: list[tuple[list[Any], Any]] = []
 
     async def complete(
         self,
@@ -77,7 +91,14 @@ class _FakeLLMProvider:
             materialised = messages
         else:
             materialised = list(messages)
-        self.calls.append(materialised)
+        self.calls.append((materialised, tools))
+
+        if self.responses:
+            item = self.responses.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
         if self.error is not None:
             raise self.error
         return LLMResponse(
@@ -90,15 +111,67 @@ class _FakeLLMProvider:
 
 
 class _FakeToolProvider:
-    """Reports an empty tool manifest."""
+    """Reports a manifest and dispatches calls to ``handler_map``.
+
+    The default manifest advertises ``memory_context`` and
+    ``echo`` so tests can exercise the OpenAI wire format. Tests
+    can pass their own manifest via the constructor to override.
+    """
 
     name = "fake_tools"
 
+    def __init__(
+        self,
+        manifest: tuple[Any, ...] | None = None,
+        handler_map: dict[str, Any] | None = None,
+    ) -> None:
+        from rob_box_harness.tools import ToolSpec
+        self._manifest: tuple[Any, ...] = (
+            manifest
+            if manifest is not None
+            else (
+                ToolSpec(
+                    name="memory_context",
+                    description="Load recent conversation context.",
+                    parameters={
+                        "type": "object",
+                        "properties": {"limit": {"type": "integer"}},
+                    },
+                ),
+                ToolSpec(
+                    name="echo",
+                    description="Echo back the provided arguments.",
+                    parameters={
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                    },
+                ),
+            )
+        )
+        self._handler_map: dict[str, Any] = handler_map or {}
+        self.executed: list[Any] = []
+
     async def discover(self) -> tuple[Any, ...]:
-        return ()
+        return self._manifest
 
     async def execute(self, call: Any) -> Any:
-        return None
+        from rob_box_llm.provider import ToolResult
+        self.executed.append(call)
+        handler = self._handler_map.get(call.name)
+        if handler is None:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=f"unknown tool: {call.name}",
+                is_error=True,
+            )
+        result = handler(dict(call.arguments))
+        if hasattr(result, "__await__"):
+            result = await result
+        return ToolResult(
+            tool_call_id=call.id,
+            content=str(result),
+            is_error=False,
+        )
 
     async def aclose(self) -> None:
         return None
@@ -199,6 +272,40 @@ def test_construction_rejects_missing_llm(
         DialogCore(llm=None, tools=tools_provider, memory=memory, dsm=dsm)
 
 
+def test_construction_rejects_missing_tools(
+    llm: _FakeLLMProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """DialogCore must refuse to construct without a ToolProvider.
+
+    Without tools the model can never see ``memory_context`` and
+    issue #916 regresses.
+    """
+    with pytest.raises(TypeError):
+        DialogCore(llm=llm, tools=None, memory=memory, dsm=dsm)
+
+
+def test_construction_rejects_missing_memory(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    dsm: DialogueStateMachine,
+) -> None:
+    """DialogCore must refuse to construct without a MemoryStore."""
+    with pytest.raises(TypeError):
+        DialogCore(llm=llm, tools=tools_provider, memory=None, dsm=dsm)
+
+
+def test_construction_rejects_missing_dsm(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+) -> None:
+    """DialogCore must refuse to construct without a DSM."""
+    with pytest.raises(TypeError):
+        DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=None)
+
+
 # ---------------------------------------------------------------------------
 # process_input
 # ---------------------------------------------------------------------------
@@ -235,7 +342,7 @@ def test_process_input_includes_history_in_llm_messages(
         LLMMessage(role="assistant", content="earlier reply"),
     ]
     asyncio.run(core.process_input("now", history=history))
-    sent = llm.calls[0]
+    sent = llm.calls[0][0]  # (messages, tools) tuple — only need messages here
     # user msg, assistant msg, user msg
     assert len(sent) == 3
     assert sent[0].content == "earlier"
@@ -421,7 +528,7 @@ def test_history_trim_delegates_to_memory_store(
 
     # memory.load_recent must have been called for the trim delegation.
     assert memory.load_recent_calls, "DialogCore did not delegate to memory"
-    sent = llm.calls[0]
+    sent = llm.calls[0][0]
     # Two prior turns from memory + the new user message.
     assert len(sent) == 3
     assert sent[0].content == "earlier question"
@@ -446,9 +553,333 @@ def test_explicit_history_overrides_memory_trim(
     asyncio.run(core_obj.handle_wake_word(""))
     history = [LLMMessage(role="user", content="explicit")]
     asyncio.run(core_obj.process_input("now", history=history))
-    sent = llm.calls[0]
+    sent = llm.calls[0][0]
     assert len(sent) == 2
     assert sent[0].content == "explicit"
     assert sent[1].content == "now"
     # Explicit history → memory must NOT have been consulted.
     assert memory.load_recent_calls == []
+
+
+def test_history_none_without_trim_limit_yields_empty(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """history=None with no trim limit → empty list, no memory call."""
+    # No history_trim_limit → DialogCore returns [] without
+    # consulting memory.
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+    asyncio.run(core_obj.process_input("now", history=None))
+    assert memory.load_recent_calls == []
+    sent = llm.calls[0][0]
+    # Only the user turn we just appended.
+    assert len(sent) == 1
+    assert sent[0].content == "now"
+
+
+# ---------------------------------------------------------------------------
+# Tool-loop behaviour — issue #916
+# ---------------------------------------------------------------------------
+#
+# These tests cover the fix for krikz/rob_box_project#916: DialogCore
+# never forwarded ``tools=`` to ``LLMProvider.complete()``, so the
+# model never saw ``memory_context`` and memory-dependent scenarios
+# (barge_in_joke_then_memory Step 6) failed. The fix passes the
+# OpenAI-style tool schema on every complete() call and runs the
+# tool loop in-core until the model returns plain text.
+# ---------------------------------------------------------------------------
+
+
+def test_process_input_passes_tools_to_llm(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """DialogCore forwards tools.discover() to llm.complete().
+
+    Regression for issue #916: the model needs to *see* the tool
+    schema in order to ever invoke memory_context.
+    """
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert len(llm.calls) == 1
+    _messages, tools_passed = llm.calls[0]
+    tool_names = {t["function"]["name"] for t in tools_passed}
+    assert tool_names == {"memory_context", "echo"}
+
+
+def test_process_input_passes_openai_wire_shape(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Each tool dict is in the OpenAI Chat-Completions shape."""
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("hi", history=[]))
+
+    _messages, tools_passed = llm.calls[0]
+    assert tools_passed, "no tools passed at all"
+    for tool in tools_passed:
+        assert tool["type"] == "function"
+        func = tool["function"]
+        assert isinstance(func["name"], str) and func["name"]
+        assert "parameters" in func
+        assert func["parameters"]["type"] == "object"
+
+
+def test_process_input_records_tools_called_on_plain_reply(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """When the LLM returns plain text, tools_called is empty."""
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+    assert result.tools_called == []
+    assert result.spoken_text == "hello back"
+
+
+def test_process_input_runs_tool_loop_and_records_names(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Tool-loop happy path — reproduces barge_in_joke_then_memory Step 6.
+
+    The scripted LLM returns a tool_call on the first turn, then a
+    plain-text reply after seeing the tool result. DialogCore must
+    execute the tool, feed the result back, and report the tool
+    name on DialogResult.
+    """
+    # First call → ask for memory_context; second call → final answer.
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(
+                    id="call_1",
+                    name="memory_context",
+                    arguments={"limit": 5},
+                ),
+            ),
+        ),
+        LLMResponse(content="Мы обсуждали тему X", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    handler_calls: list[dict[str, object]] = []
+
+    async def memory_handler(args: dict[str, object]) -> str:
+        handler_calls.append(args)
+        return "recent turns: ..."
+    tools_provider._handler_map = {"memory_context": memory_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём мы говорили?", history=[]))
+
+    # Tool actually executed.
+    assert handler_calls == [{"limit": 5}]
+    assert len(tools_provider.executed) == 1
+
+    # LLM called twice — first with tools, then after the tool result.
+    assert len(llm.calls) == 2
+
+    # Final result surfaces the tool name and the model's reply.
+    assert result.spoken_text == "Мы обсуждали тему X"
+    assert result.tools_called == ["memory_context"]
+    assert result.error is None
+
+
+def test_process_input_tool_loop_dedupes_repeated_tool_names(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """tools_called is unique even when the model asks twice."""
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={"limit": 3}),
+                ToolCall(id="c2", name="echo", arguments={"text": "a"}),
+            ),
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c3", name="memory_context", arguments={"limit": 1}),
+            ),
+        ),
+        LLMResponse(content="final", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    async def memory_handler(args: dict[str, object]) -> str:
+        return "ctx"
+    tools_provider._handler_map = {
+        "memory_context": memory_handler,
+        "echo": echo,
+    }
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    # Ordered by first appearance; deduped across iterations.
+    assert result.tools_called == ["memory_context", "echo"]
+
+
+def test_process_input_tool_loop_caps_at_max_iterations(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A runaway tool loop is bounded by _MAX_TOOL_ITERATIONS.
+
+    Each scripted response asks for one more tool. After the cap is
+    hit DialogCore returns the last spoken text and stops issuing
+    further complete() calls.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    # 1 initial + cap more turns.
+    iterations = dc._MAX_TOOL_ITERATIONS + 1
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id=f"c{i}", name="echo",
+                                 arguments={"text": str(i)}),),
+        )
+        for i in range(iterations)
+    ]
+    llm.responses = scripted
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+
+    # Exactly 1 initial + cap retries = cap+1 complete() calls.
+    assert len(llm.calls) == dc._MAX_TOOL_ITERATIONS + 1
+    # No plain-text response was ever given → spoken_text is empty.
+    assert result.spoken_text == ""
+    # echo was the only tool invoked.
+    assert result.tools_called == ["echo"]
+
+
+def test_process_input_tool_loop_survives_tool_level_error(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """is_error=True from a handler does NOT abort the loop.
+
+    The LLM gets the error string as a tool message and can
+    correct itself on the next turn.
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={"limit": 5}),
+            ),
+        ),
+        # Second complete: LLM sees the error string and corrects.
+        LLMResponse(content="no memory found", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def broken_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="backend unavailable",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"memory_context": broken_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём?", history=[]))
+    assert result.error is None
+    assert result.spoken_text == "no memory found"
+    assert result.tools_called == ["memory_context"]
+
+
+def test_process_input_tool_loop_aborts_on_transport_error(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A transport-level ToolExecutionError is wrapped into result.error."""
+    from rob_box_harness.tools import ToolExecutionError
+
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={}),
+            ),
+        ),
+    ]
+
+    async def raise_exec(args: dict[str, object]) -> str:
+        raise ToolExecutionError("bridge down", provider="ros_mcp")
+    tools_provider._handler_map = {"memory_context": raise_exec}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём?", history=[]))
+    assert isinstance(result.error, ToolExecutionError)
+    assert result.spoken_text == ""
+    # Only the user turn made it to memory.
+    assert [t.role for t in memory.turns] == ["user"]
+
+
+def test_process_input_tool_loop_keeps_user_turn_once_on_error(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """User turn is persisted before the LLM call and never re-added on error."""
+    llm.responses = [ProviderError("network down")]
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hello", history=[]))
+    assert isinstance(result.error, ProviderError)
+    # Exactly one user turn in memory — no duplicate row.
+    assert len(memory.turns) == 1
+    assert memory.turns[0].role == "user"
+    assert memory.turns[0].content == "hello"

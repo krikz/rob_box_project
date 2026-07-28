@@ -22,6 +22,7 @@ the *orchestrator*, not a duplicate of the ports.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -31,8 +32,21 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_harness.memory import MemoryStore
-from rob_box_harness.tools import ToolProvider
-from rob_box_llm.provider import LLMMessage, LLMProvider, LLMResponse
+from rob_box_harness.tools import ToolProvider, ToolSpec
+from rob_box_llm.provider import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolResult
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+
+#: Hard cap on tool-loop iterations inside ``process_input``. Mirrors the
+#: legacy OpenAI Agents SDK ``max_turns`` ceiling so a runaway tool loop
+#: can't pin the dialogue thread forever. Five is enough for memory_context
+#: + a follow-up explanation, and short enough that a misbehaving tool
+#: fails loudly rather than running away.
+_MAX_TOOL_ITERATIONS: int = 5
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +70,10 @@ class DialogResult:
         The DSM state after processing (typically ``IDLE`` for a
         successful turn).
     tools_called:
-        Names of tools the LLM invoked (currently empty — the actual
-        tool loop is run by the upstream LLM provider, not by
-        DialogCore; reserved for future expansion).
+        Names of tools the LLM invoked during this turn — populated
+        by the in-core tool loop (see :meth:`DialogCore.process_input`
+        for the full contract). Empty when the model answered in
+        plain text or the tool loop did not run.
     error:
         ``None`` on success, otherwise the exception that aborted the
         turn. The shell logs this but does not raise it further.
@@ -106,9 +121,13 @@ class DialogCore:
 
         Args:
             llm: LLM client — required.
-            tools: Tool dispatch port — required (kept for symmetry
-                with the W3 plan even though the actual tool loop is
-                run by the upstream LLM provider for now).
+            tools: Tool dispatch port — required. DialogCore uses
+                ``tools.discover()`` to fetch the OpenAI-style schema
+                for ``llm.complete(messages, tools=...)`` and runs
+                the tool loop in-process when the LLM asks for a
+                tool call. Required even when the LLM never invokes
+                a tool, because the loop is the only way the model
+                can discover ``memory_context`` and friends.
             memory: Conversation + facts store — required.
             dsm: Dialogue state machine — required.
             user_id: Scope key used when calling the memory store.
@@ -168,9 +187,33 @@ class DialogCore:
         1. Classify the input via ``dsm.on_user_input``.
         2. Drive the DSM via ``dsm.on_event``.
         3. If we're in ``DIALOGUE`` state (i.e. the input was real
-           speech), persist the user turn, call the LLM, persist the
-           assistant turn.
+           speech), persist the user turn, call the LLM **with the
+           tool schemas discovered from** ``self._tools``, persist
+           the assistant turn, and run any follow-up tool loop the
+           LLM triggers until either the model returns a plain-text
+           reply or ``_MAX_TOOL_ITERATIONS`` is reached.
         4. Return the result.
+
+        Tool-loop contract
+        ------------------
+
+        We pass ``tools.discover()`` (translated to the OpenAI
+        Chat-Completions ``{"type": "function", ...}`` shape) on
+        every ``complete()`` call. When the LLM responds with
+        ``LLMResponse.tool_calls``:
+
+        * Each :class:`ToolCall` is executed via
+          ``self._tools.execute(call)``.
+        * The :class:`ToolResult` (success or function-level error)
+          is fed back as an ``LLMMessage(role="tool", ...)`` and
+          ``complete()`` is re-issued.
+        * ``result.tools_called`` accumulates the *unique* names of
+          tools that actually ran.
+
+        The loop is capped at ``_MAX_TOOL_ITERATIONS`` to keep a
+        runaway tool from pinning the dialogue thread. Tool
+        transport failures (raised :class:`ToolExecutionError`) are
+        wrapped into ``result.error`` the same way LLM errors are.
         """
         result = DialogResult()
 
@@ -196,9 +239,9 @@ class DialogCore:
                 await self._memory.append_turn(
                     self._user_id, Turn(role="user", content=text)
                 )
-                response = await self._llm.complete(messages)
-                spoken = _extract_text(response)
+                spoken, tools_called = await self._run_with_tools(messages)
                 result.spoken_text = spoken
+                result.tools_called = list(tools_called)
                 await self._memory.append_turn(
                     self._user_id, Turn(role="assistant", content=spoken)
                 )
@@ -214,6 +257,87 @@ class DialogCore:
             result.new_state = self._dsm.current_state
 
         return result
+
+    async def _run_with_tools(
+        self,
+        messages: list[LLMMessage],
+    ) -> tuple[str, list[str]]:
+        """Run the LLM tool loop and return ``(spoken_text, tools_called)``.
+
+        ``messages`` is the live message list — tool-result messages
+        are appended in-place so the LLM sees a coherent conversation
+        history on every follow-up turn. The list is intentionally
+        mutated rather than rebuilt: the upstream providers expect
+        an ordered list and rebuilding from scratch would lose the
+        interleaved tool/assistant ordering the wire format requires.
+
+        The loop terminates when:
+
+        * The model returns an empty ``tool_calls`` tuple (i.e. a
+          plain-text reply) — that's the final answer.
+        * ``_MAX_TOOL_ITERATIONS`` is reached — the last spoken
+          text is used verbatim, and a warning is logged so
+          operators can spot runaway loops in the wild.
+        * The provider raises — the exception propagates to the
+          ``except`` in :meth:`process_input`.
+
+        Tool-level errors (i.e. the handler returned ``is_error=True``)
+        are NOT loop-terminating: the LLM gets the error string as
+        a ``tool`` message and can correct itself. Only a
+        :class:`ToolExecutionError` (transport-level) aborts the
+        turn because that's a wiring problem, not a tool problem.
+        """
+        tool_schemas = await self._tools.discover()
+        openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
+
+        tools_called: list[str] = []
+        seen: set[str] = set()
+        response: LLMResponse = await self._llm.complete(
+            messages, tools=openai_tools
+        )
+
+        for _ in range(_MAX_TOOL_ITERATIONS):
+            if not response.tool_calls:
+                break
+
+            # Record unique tool names actually invoked.
+            for call in response.tool_calls:
+                if call.name not in seen:
+                    seen.add(call.name)
+                    tools_called.append(call.name)
+
+            # Append the assistant turn that contained the tool_calls
+            # (required by OpenAI Chat-Completions ordering rules).
+            messages.append(
+                LLMMessage(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
+
+            # Execute every requested tool call and feed results back.
+            for call in response.tool_calls:
+                tool_result = await self._tools.execute(call)
+                messages.append(
+                    LLMMessage(
+                        role="tool",
+                        content=tool_result.content,
+                        tool_call_id=tool_result.tool_call_id,
+                        tool_result=tool_result,
+                    )
+                )
+
+            response = await self._llm.complete(messages, tools=openai_tools)
+
+        else:  # for-else: loop exhausted without breaking
+            logging.getLogger(__name__).warning(
+                "DialogCore: tool loop hit _MAX_TOOL_ITERATIONS=%d; "
+                "returning the last spoken text as-is.",
+                _MAX_TOOL_ITERATIONS,
+            )
+
+        return response.content, tools_called
 
     async def _resolve_history(
         self,
@@ -308,50 +432,25 @@ class DialogCore:
 # ---------------------------------------------------------------------------
 
 
-def _extract_text(response: Any) -> str:
-    """Best-effort extraction of the assistant's reply text.
+def _tool_spec_to_openai(spec: ToolSpec) -> dict[str, Any]:
+    """Translate a :class:`ToolSpec` into the OpenAI Chat-Completions shape.
 
-    Different ``LLMProvider`` implementations may return either an
-    ``LLMResponse`` dataclass, an OpenAI-style dict, or a Pydantic
-    model. We handle the common cases so the shell can stay thin.
+    The upstream DeepSeek / OpenAI provider expects a list of
+    ``{"type": "function", "function": {"name", "description", "parameters"}}``
+    dicts. We pass :class:`ToolSpec.parameters` through unchanged — it
+    is already a JSON Schema fragment by contract.
+
+    Specs without a description or schema still serialise cleanly:
+    the fields are optional in the wire format.
     """
-    # 1. dataclass / object with `.content`
-    content = getattr(response, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        # OpenAI-style content parts — concatenate text parts.
-        parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                text = part.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-            elif isinstance(part, str):
-                parts.append(part)
-        if parts:
-            return "".join(parts)
-
-    # 2. dict-like
-    if isinstance(response, dict):
-        choices = response.get("choices") or []
-        if choices:
-            message = choices[0].get("message") or {}
-            text = message.get("content")
-            if isinstance(text, str):
-                return text
-            if isinstance(text, list):
-                parts = []
-                for part in text:
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        parts.append(part["text"])
-                    elif isinstance(part, str):
-                        parts.append(part)
-                if parts:
-                    return "".join(parts)
-
-    # 3. fallback: stringify
-    return str(response)
+    return {
+        "type": "function",
+        "function": {
+            "name": spec.name,
+            "description": spec.description,
+            "parameters": dict(spec.parameters),
+        },
+    }
 
 
 __all__ = ["DialogCore", "DialogResult"]
