@@ -196,3 +196,19 @@ $ poetry run -C src/rob_box_harness pytest test/test_minimax_tts.py -q
 ```
 
 Coverage на `rob_box_harness/tts/minimax_tts.py` — 95% (gate 85%). Все 64 теста harness-suite зелёные на момент написания ADR.
+
+## 8. Phase 6 Audit (2026-07-28)
+
+**Status:** ✅ VERIFIED
+
+- `HarnessMiniMaxTTSProvider` (src/rob_box_harness/rob_box_harness/tts/minimax_tts.py:204) implements the TTS contract as specified in §2:
+  - inherits `TTSProvider` (frozen contract)
+  - `synthesize` (line 376), `stream` (line 420), `aclose` (line 497) — all match §2.1 signature
+- Harness-side registry (src/rob_box_harness/rob_box_harness/tts/registry.py) matches §3 specification:
+  - `TTSProviderRegistry` class with `_builders: dict[str, TTSBuilder]`
+  - `register_builtin_tts_providers()` mirrors upstream pattern
+  - registry key is `"minimax"` (matches §3 canonical name)
+- TTS tests: **64/64 passing** (`pytest -p asyncio --asyncio-mode=auto src/rob_box_harness/test/test_minimax_tts.py`)
+- Integration test report (`docs/adr/0009-integration-test-report.md`): verified current and accurate — local run evidence stands
+
+No discrepancies found between ADR specification and implementation.

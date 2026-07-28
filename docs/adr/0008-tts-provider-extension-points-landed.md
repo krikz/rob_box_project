@@ -98,3 +98,26 @@ All checks passed!
 ```
 
 `__init__.py` имеет 16 pre-existing ruff warning'ов (не относятся к этой задаче — `TextPart` / `ImagePart` дублирующиеся импорты уже были до моих правок; мои правки добавили 0 новых warning'ов).
+
+## 7. Phase 6 Audit (2026-07-28)
+
+**Status:** ✅ VERIFIED
+
+All 5 extension points implemented in `src/rob_box_llm/rob_box_llm/tts_provider_base.py`:
+
+| # | Extension point | Line(s) | Status |
+|---|-----------------|---------|--------|
+| 1 | `capabilities` property → `TTSCapabilities` | 217 | ✅ |
+| 2 | `list_voices()` async method | 225 | ✅ |
+| 3 | `healthcheck()` async method | 229 | ✅ |
+| 4 | `_http_client_factory()` method | 191, 254 | ✅ |
+| 5 | `_build_request_payload()` method | 199, 241 | ✅ |
+
+**Inheritance chain:**
+- `BaseTTSProvider` (tts_provider_base.py:185) → ABC
+- `MiniMaxTTSProvider` (providers/minimax_tts.py:471, :549) → subclasses `BaseTTSProvider`
+- `TTSProviderRegistry._cache` → `dict[tuple[str, str], "BaseTTSProvider"]` (tts_provider_registry.py:97)
+- `TTSProviderFactory.create()` returns `"BaseTTSProvider"` (tts_provider_registry.py:105)
+- `register_builtin_tts_providers()` registers `"minimax"` builder (tts_provider_registry.py:128, :144)
+
+No discrepancies found between ADR specification and implementation.
