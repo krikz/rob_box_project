@@ -42,7 +42,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          pip install pytest-mock openai httpx
+          pip install openai httpx
 
       - name: Install ROS2 test dependencies
         run: |
