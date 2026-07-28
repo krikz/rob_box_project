@@ -281,55 +281,6 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
 
-  # micro-ROS Agent (ESP32 Sensor Hub communication)
-  build-micro-ros-agent:
-    needs: determine-tag
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up QEMU for multi-arch builds
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_PREFIX }}
-          tags: |
-            type=raw,value=micro-ros-agent-${{ needs.determine-tag.outputs.full_tag }}
-            type=raw,value=micro-ros-agent-${{ env.ROS_DISTRO }}-latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=micro-ros-agent-${{ env.ROS_DISTRO }}-
-
-      - name: Build and push micro-ros-agent
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/main/micro_ros_agent/Dockerfile
-          platforms: linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || 'ghcr.io/krikz/rob_box_base' }}:ros2-zenoh
-
   # ROS2 Control (VESC Motor Control)
   build-ros2-control:
     needs: determine-tag
@@ -537,7 +488,6 @@ jobs:
       - build-rtabmap
       - build-twist-mux
       - build-teleop
-      - build-micro-ros-agent
       - build-ros2-control
       - build-nav2
       - build-lslidar
