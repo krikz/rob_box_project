@@ -78,7 +78,7 @@ from .handlers.commands import (
 )
 from .handlers.messages import text_message_handler, voice_message_handler
 from .llm_chat import LLMChat
-from .mcp_bridge import MCPBridge
+from .mcp_bridge import MCPBridge, MCPBridgeToolProvider
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +197,7 @@ class TelegramNode(Node):
 
         # ── MCP Bridge ──────────────────────────────────────────────
         self.mcp_bridge = MCPBridge(execute_pub, ros_logger=self.get_logger())
+        self.tool_provider: MCPBridgeToolProvider = self.mcp_bridge.provider
 
         # ── LLM Chat ────────────────────────────────────────────────
         self.llm_chat = LLMChat(
@@ -247,6 +248,7 @@ class TelegramNode(Node):
         try:
             tools = json.loads(msg.data)
             if isinstance(tools, list):
+                self.mcp_bridge.update_tools(tools)
                 tool_names = sorted(
                     t.get("function", {}).get("name", t.get("name", "?")) for t in tools
                 )

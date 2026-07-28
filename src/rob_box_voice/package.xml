@@ -29,6 +29,8 @@
   <!-- tts_node imports the shared TTS contract/provider for MiniMax; the
        runtime ImportError fallback still keeps yandex/silero importable in
        minimal developer environments. -->
+  <exec_depend>rob_box_core</exec_depend>
+  <exec_depend>rob_box_harness</exec_depend>
   <exec_depend>rob_box_llm</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

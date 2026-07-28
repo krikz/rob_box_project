@@ -16,6 +16,8 @@ from PIL import Image
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from rob_box_core.ports import ToolProvider
+
 from ..auth import authorized
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
 
@@ -25,6 +27,22 @@ logger = logging.getLogger(__name__)
 def _node(context: ContextTypes.DEFAULT_TYPE):
     """Shortcut to get TelegramNode from bot_data."""
     return context.bot_data["node"]
+
+
+async def _invoke_tool(node: object, name: str, args: dict | None = None) -> str:
+    """Execute Telegram commands through the canonical ToolProvider port."""
+
+    provider = getattr(node, "tool_provider", None)
+    if not isinstance(provider, ToolProvider):
+        raise RuntimeError("TelegramNode.tool_provider is not configured")
+    result = await provider.invoke(name, args or {})
+    if result.error is not None:
+        return result.error
+    if isinstance(result.value, str):
+        return result.value
+    import json
+
+    return json.dumps(result.value, ensure_ascii=False, indent=2)
 
 
 # ─── /start ──────────────────────────────────────────────────────────────────
@@ -338,7 +356,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     node = _node(context)
     await update.message.reply_text("⏳ Запрашиваю статус...")
 
-    result = await node.mcp_bridge.execute_simple("get_robot_status")
+    result = await _invoke_tool(node, "get_robot_status")
     await update.message.reply_text(f"📊 *Статус робота:*\n\n{result}", parse_mode="Markdown")
 
 
@@ -349,7 +367,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def waypoints_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /waypoints — list saved waypoints."""
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("list_waypoints")
+    result = await _invoke_tool(node, "list_waypoints")
     await update.message.reply_text(f"📍 *Вейпоинты:*\n\n{result}", parse_mode="Markdown")
 
 
@@ -366,7 +384,7 @@ async def goto_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     node = _node(context)
     await update.message.reply_text(f"🚗 Еду к: _{target}_...", parse_mode="Markdown")
-    result = await node.mcp_bridge.execute_simple("navigate_to_waypoint", {"waypoint": target})
+    result = await _invoke_tool(node, "navigate_to_waypoint", {"waypoint": target})
     await update.message.reply_text(result)
 
 
@@ -377,7 +395,7 @@ async def goto_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /stop — stop navigation and movement."""
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("stop_navigation")
+    result = await _invoke_tool(node, "stop_navigation")
     await update.message.reply_text(f"⏹ {result}")
 
 
@@ -388,7 +406,7 @@ async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def pose_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /pose — get current robot position."""
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("get_current_pose")
+    result = await _invoke_tool(node, "get_current_pose")
     await update.message.reply_text(f"📍 {result}")
 
 
@@ -419,7 +437,7 @@ async def volume_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("set_volume", {"volume": level})
+    result = await _invoke_tool(node, "set_volume", {"volume": level})
     await update.message.reply_text(f"🔊 {result}")
 
 
@@ -435,7 +453,7 @@ async def animation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("play_animation", {"animation": name})
+    result = await _invoke_tool(node, "play_animation", {"animation": name})
     await update.message.reply_text(f"💡 {result}")
 
 
@@ -451,7 +469,7 @@ async def sound_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("play_sound", {"sound": name})
+    result = await _invoke_tool(node, "play_sound", {"sound": name})
     await update.message.reply_text(f"🔔 {result}")
 
 
@@ -465,10 +483,10 @@ async def map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     node = _node(context)
 
     if action == "start":
-        result = await node.mcp_bridge.execute_simple("start_mapping")
+        result = await _invoke_tool(node, "start_mapping")
         await update.message.reply_text(f"🗺 {result}")
     elif action in ("stop", "finish"):
-        result = await node.mcp_bridge.execute_simple("finish_mapping")
+        result = await _invoke_tool(node, "finish_mapping")
         await update.message.reply_text(f"🗺 {result}")
     else:
         await update.message.reply_text("Использование: /map start | /map stop")
@@ -487,9 +505,9 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     node = _node(context)
     if args_text.strip().lower() == "stop":
-        result = await node.mcp_bridge.execute_simple("stop_music")
+        result = await _invoke_tool(node, "stop_music")
     else:
-        result = await node.mcp_bridge.execute_simple("execute_music_code", {"code": args_text})
+        result = await _invoke_tool(node, "execute_music_code", {"code": args_text})
     await update.message.reply_text(f"🎵 {result}")
 
 
@@ -510,7 +528,7 @@ async def repl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("execute_music_code", {"code": args_text})
+    result = await _invoke_tool(node, "execute_music_code", {"code": args_text})
     await update.message.reply_text(f"🎵 {result}")
 
 
@@ -518,7 +536,7 @@ async def repl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def stopmusic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /stopmusic — stop all music on the robot."""
     node = _node(context)
-    result = await node.mcp_bridge.execute_simple("stop_music")
+    result = await _invoke_tool(node, "stop_music")
     await update.message.reply_text(f"⏹ {result}")
 
 
