@@ -39,137 +39,136 @@ from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import MagicMock
 
 # ── rclpy shim ─────────────────────────────────────────────────────────
-# Match the same rclpy-mock trick used by src/rob_box_voice/test/unit/node
-# so the file is loadable on a machine that has no ROS2 installed. The
-# shim is also installed by ``test/unit/node/conftest.py`` when pytest
-# discovers that directory first; doing it here too keeps
-# ``pytest src/rob_box_voice/test/test_dialogue_shell.py`` working in
-# isolation.
+# Always install a minimal rclpy/mock_node stub so this test file is
+# runnable without an rclpy runtime. The shell only exercises
+# ``Node.__init__``, ``create_publisher``, ``create_subscription``,
+# ``create_timer``, ``declare_parameter``/``get_parameter``,
+# ``get_logger``, and ``get_name`` — all of which are mocked here.
+# This keeps ``pytest src/rob_box_voice/test/test_dialogue_shell.py``
+# green on developer laptops and in CI containers that may or may
+# not have ROS2 installed, and avoids requiring ``rclpy.init()`` from
+# setUpClass (which would otherwise need a real ROS2 install).
+import types as _types  # noqa: E402
 
-try:
-    import rclpy  # noqa: F401 — real ROS2 runtime available
-except ModuleNotFoundError:
-    import types as _types  # noqa: E402
+class _FakeNode:
+    """Minimal stand-in for ``rclpy.node.Node`` used by the shell."""
 
-    class _FakeNode:
-        """Minimal stand-in for ``rclpy.node.Node`` used by the shell."""
+    def __init__(self, name, **kwargs):
+        self._name = name
+        self._logger = MagicMock()
+        self._logger.info = MagicMock()
+        self._logger.warning = MagicMock()
+        self._logger.error = MagicMock()
+        self._logger.debug = MagicMock()
+        self._publishers: Dict[str, MagicMock] = {}
+        self._subs: Dict[str, Callable[[Any], None]] = {}
+        self._params: Dict[str, Any] = {}
+        self._timers: List[Any] = []
 
-        def __init__(self, name, **kwargs):
-            self._name = name
-            self._logger = MagicMock()
-            self._logger.info = MagicMock()
-            self._logger.warning = MagicMock()
-            self._logger.error = MagicMock()
-            self._logger.debug = MagicMock()
-            self._publishers: Dict[str, MagicMock] = {}
-            self._subs: Dict[str, Callable[[Any], None]] = {}
-            self._params: Dict[str, Any] = {}
-            self._timers: List[Any] = []
+    def get_logger(self):
+        return self._logger
 
-        def get_logger(self):
-            return self._logger
+    def declare_parameter(self, name, default=None):
+        # rclpy returns a Parameter object; the shell reads .value.
+        # Store the default so subsequent get_parameter() works.
+        self._params.setdefault(name, default)
+        return MagicMock()
 
-        def declare_parameter(self, name, default=None):
-            # rclpy returns a Parameter object; the shell reads .value.
-            # Store the default so subsequent get_parameter() works.
-            self._params.setdefault(name, default)
-            return MagicMock()
+    def get_parameter(self, name):
+        class _Param:
+            def __init__(self, value):
+                self.value = value
 
-        def get_parameter(self, name):
-            class _Param:
-                def __init__(self, value):
-                    self.value = value
+        return _Param(self._params.get(name))
 
-            return _Param(self._params.get(name))
+    def create_publisher(self, msg_type, topic, depth, **kwargs):
+        pub = MagicMock()
+        pub.topic = topic
+        pub.published: List[Any] = []
+        original_publish = pub.publish
 
-        def create_publisher(self, msg_type, topic, depth, **kwargs):
-            pub = MagicMock()
-            pub.topic = topic
-            pub.published: List[Any] = []
-            original_publish = pub.publish
+        def _capture(msg):
+            pub.published.append(msg)
+            return original_publish(msg)
 
-            def _capture(msg):
-                pub.published.append(msg)
-                return original_publish(msg)
+        pub.publish = _capture
+        self._publishers[topic] = pub
+        return pub
 
-            pub.publish = _capture
-            self._publishers[topic] = pub
-            return pub
+    def create_subscription(
+        self,
+        msg_type,
+        topic,
+        callback,
+        qos,
+        callback_group=None,
+    ):
+        sub = MagicMock()
+        sub.topic = topic
+        sub.callback = callback
+        self._subs[topic] = callback
+        return sub
 
-        def create_subscription(
-            self,
-            msg_type,
-            topic,
-            callback,
-            qos,
-            callback_group=None,
-        ):
-            sub = MagicMock()
-            sub.topic = topic
-            sub.callback = callback
-            self._subs[topic] = callback
-            return sub
+    def create_timer(self, period, callback, callback_group=None):
+        timer = MagicMock()
+        timer.period = period
+        timer.callback = callback
+        self._timers.append(timer)
+        return timer
 
-        def create_timer(self, period, callback, callback_group=None):
-            timer = MagicMock()
-            timer.period = period
-            timer.callback = callback
-            self._timers.append(timer)
-            return timer
+    def get_name(self):
+        return self._name
 
-        def get_name(self):
-            return self._name
+_mock_rclpy = _types.ModuleType("rclpy")
 
-    _mock_rclpy = _types.ModuleType("rclpy")
+class _RCLPY_OK:
+    def __enter__(self):
+        return self
 
-    class _RCLPY_OK:
-        def __enter__(self):
-            return self
+    def __exit__(self, *args):
+        return False
 
-        def __exit__(self, *args):
-            return False
+_mock_rclpy.init = lambda *a, **kw: None
+_mock_rclpy.shutdown = lambda *a, **kw: None
+_mock_rclpy.ok = lambda: True
+sys.modules["rclpy"] = _mock_rclpy
 
-    _mock_rclpy.init = lambda *a, **kw: None
-    _mock_rclpy.shutdown = lambda *a, **kw: None
-    _mock_rclpy.ok = lambda: True
-    sys.modules["rclpy"] = _mock_rclpy
+_mock_rclpy_node = _types.ModuleType("rclpy.node")
+_mock_rclpy_node.Node = _FakeNode
+sys.modules["rclpy.node"] = _mock_rclpy_node
 
-    _mock_rclpy_node = _types.ModuleType("rclpy.node")
-    _mock_rclpy_node.Node = _FakeNode
-    sys.modules["rclpy.node"] = _mock_rclpy_node
+_cb = _types.ModuleType("rclpy.callback_groups")
+_cb.ReentrantCallbackGroup = type(
+    "ReentrantCallbackGroup", (), {}
+)
+sys.modules["rclpy.callback_groups"] = _cb
 
-    _cb = _types.ModuleType("rclpy.callback_groups")
-    _cb.ReentrantCallbackGroup = type(
-        "ReentrantCallbackGroup", (), {}
-    )
-    sys.modules["rclpy.callback_groups"] = _cb
+_qos = _types.ModuleType("rclpy.qos")
+_qos.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
+_qos.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE="RELIABLE")
+_qos.QoSProfile = lambda *a, **kw: MagicMock()
+sys.modules["rclpy.qos"] = _qos
 
-    _qos = _types.ModuleType("rclpy.qos")
-    _qos.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
-    _qos.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE="RELIABLE")
-    _qos.QoSProfile = lambda *a, **kw: MagicMock()
-    sys.modules["rclpy.qos"] = _qos
+_executors = _types.ModuleType("rclpy.executors")
+_executors.MultiThreadedExecutor = MagicMock
+sys.modules["rclpy.executors"] = _executors
 
-    _executors = _types.ModuleType("rclpy.executors")
-    _executors.MultiThreadedExecutor = MagicMock
-    sys.modules["rclpy.executors"] = _executors
+_std_msgs = _types.ModuleType("std_msgs")
+_std_msgs_msg = _types.ModuleType("std_msgs.msg")
 
-    _std_msgs = _types.ModuleType("std_msgs")
-    _std_msgs_msg = _types.ModuleType("std_msgs.msg")
+class _String:
+    def __init__(self):
+        self.data = ""
 
-    class _String:
-        def __init__(self):
-            self.data = ""
+_std_msgs_msg.String = _String
 
-    _std_msgs_msg.String = _String
+class _Bool:
+    def __init__(self):
+        self.data = False
 
-    class _Bool:
-        def __init__(self):
-            self.data = False
-
-    _std_msgs_msg.Bool = _Bool
-    sys.modules["std_msgs"] = _std_msgs
-    sys.modules["std_msgs.msg"] = _std_msgs_msg
+_std_msgs_msg.Bool = _Bool
+sys.modules["std_msgs"] = _std_msgs
+sys.modules["std_msgs.msg"] = _std_msgs_msg
 
 # Import the shell and its dependencies. ``rclpy`` (real or fake) is
 # already wired above; std_msgs is in place. The dialogue shell
