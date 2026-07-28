@@ -133,7 +133,7 @@ Plans:
 
 Plans:
 - [x] 06-01-PLAN.md — **Harness ports foundation** (Wave 1): DeepSeek+MiMo providers, ToolRegistry(34), DialogCore+DSM, MemoryStore waypoints/FAQ/EventProfile. Closed-out 2026-07-28 via safe-resume gate. Production commits: `06dbd5a8`, `43d0111d`, `0b7b66c7`, `900addaf`, `d8665a1c` (merged via `72bab30a`, `f324ae83`). Requirements: HARNESS-LLM-01, HARNESS-TOOL-02, HARNESS-DSM-03, HARNESS-MEMORY-04. Summary: `06-01-SUMMARY.md`.
-- [ ] 06-02-PLAN.md — **Dialogue shell rewrite** (Wave 2, depends on 06-01): `dialogue_node.py` → ~300 строк оболочка, композирующая DialogCore. Requirements: DIALOG-SHELL-05, DIALOG-TEST-06.
+- [x] 06-02-PLAN.md — **Dialogue shell rewrite** (Wave 2, depends on 06-01): `dialogue_node.py` 2181 → 357 строк оболочка, композирующая DialogCore + 13 integration tests. Closed-out 2026-07-28 via safe-resume gate. Production commits: W5 `2a0aee26` (shell rewrite), W6 `1eec45df` (integration tests); post-merge fix `f80cbeaf` (rclpy shim unconditional); SUMMARY `6245e064`. Merges: `18ff45ce`, `2f8335f5`. Requirements: DIALOG-SHELL-05, DIALOG-TEST-06. Summary: `06-02-SUMMARY.md`. 13/13 integration tests PASS in 0.64s, no regression in existing tests (24/24 PASS in 0.72s).
 - [ ] 06-03-PLAN.md — **Telegram bridge** (Wave 3): `telegram_node.py` → ~80 строк python-telegram-bot → ROS2 топики. Без LLM! Requirements: TG-LLM-REMOVE-07, TG-BRIDGE-08, TG-TEST-09.
 - [ ] 06-04-PLAN.md — **Perception bridge** (Wave 4): 5 perception нод → ~200 строк UART-мост. Без LLM! Requirements: PERC-LLM-REMOVE-10, PERC-BRIDGE-11, PERC-TEST-12.
 
@@ -147,4 +147,4 @@ Plans:
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
 | 03.1.1. Apply Research (P0 error handling) | 0/1 | Not started | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
-| 6. Harness P0 Finalization | 1/4 | ◆ In progress | 2026-07-28 (Plan 06-01 closed-out)
+| 6. Harness P0 Finalization | 2/4 | ◆ In progress | 2026-07-28 (Plans 06-01 + 06-02 closed-out) |
