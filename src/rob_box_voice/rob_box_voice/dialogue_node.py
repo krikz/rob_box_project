@@ -88,14 +88,6 @@ from .core.dialogue_manager import DialogueManager, DialogueState
 from .utils.redact import redact_upstream_body
 
 try:
-    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
-
-    _VOICE_MEMORY_AVAILABLE = True
-except ImportError:
-    _VoiceMemory = None  # type: ignore[assignment,misc]
-    _VOICE_MEMORY_AVAILABLE = False
-
-try:
     from .core.faq_loader import load_faq_items as _load_faq_items
     from .core.faq_store import FAQStore as _FAQStore
 
@@ -427,26 +419,12 @@ class DialogueNode(Node):
         )
 
     def _init_voice_memory(self) -> None:
-        """Init VoiceMemory for persistent turn logging. Fails silently."""
-        if not _VOICE_MEMORY_AVAILABLE:
-            self.get_logger().warning(
-                "⚠️ VoiceMemory unavailable — turn logging disabled"
-            )
-            return
-        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        try:
-            self._voice_memory = _VoiceMemory(
-                db_path=db_path, ollama_base_url=ollama_url
-            )
-            stats = self._voice_memory.get_stats()
-            self.get_logger().info(
-                f"🧠 DialogueNode VoiceMemory: {db_path} "
-                f"(turns={stats['turn_count']}, sessions={stats['session_count']})"
-            )
-        except Exception as exc:
-            self.get_logger().error(f"❌ VoiceMemory init failed: {exc}")
-            self._voice_memory = None
+        """Init VoiceMemory for persistent turn logging. Fails silently.
+
+        Delegates to :func:`rob_box_voice.core.voice_memory_init.init_voice_memory`.
+        """
+        from .core.voice_memory_init import init_voice_memory
+        self._voice_memory = init_voice_memory(logger=self.get_logger())
 
     def _load_event_profile(self) -> Optional[Dict[str, Any]]:
         """Load event FAQ mode configuration from YAML when enabled.
@@ -1617,11 +1595,8 @@ class DialogueNode(Node):
         self._spoken_texts = []
         self._tools_called = []
         self.get_logger().info(f"🤔 User: {user_input[:120]}")
-        if self._voice_memory is not None:
-            try:
-                self._voice_memory.save_turn("user", user_input)
-            except Exception as exc:
-                self.get_logger().warning(f"⚠️ memory save_turn(user) failed: {exc}")
+        from .core.voice_memory_init import safe_save_turn
+        safe_save_turn(self._voice_memory, "user", user_input, logger=self.get_logger())
 
         try:
             faq_prefetch_context = self._build_event_faq_prefetch_context(user_input)
@@ -1696,13 +1671,10 @@ class DialogueNode(Node):
                     f"✅ Agent done. Tools: {sorted(tool_names_used)}. Response: {spoken[:80]}"
                 )
 
-            if self._voice_memory is not None and spoken:
-                try:
-                    self._voice_memory.save_turn("assistant", spoken)
-                except Exception as exc:
-                    self.get_logger().warning(
-                        f"⚠️ memory save_turn(assistant) failed: {exc}"
-                    )
+            if spoken:
+                safe_save_turn(
+                    self._voice_memory, "assistant", spoken, logger=self.get_logger()
+                )
 
             # In FAQ event mode history is intentionally NOT stored between turns.
             # Each question is answered from scratch using only the FAQ prefetch context.
