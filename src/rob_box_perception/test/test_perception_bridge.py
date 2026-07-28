@@ -29,7 +29,7 @@ import time
 import types as _types
 import unittest
 from typing import Any, Callable, Dict, List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 # ── rclpy / std_msgs shim ────────────────────────────────────────────────
@@ -280,6 +280,7 @@ class TestPerceptionBridge(unittest.TestCase):
         self.node._uart = _FakeUART([json.dumps({"seq": 1})])
         self.node._read_sensors()
         self.sensor_pub.published.clear()
+        self.health_pub.published.clear()
 
         # Now run the health publisher via the registered callback to
         # mimic what rclpy.spin() would do.
@@ -391,16 +392,25 @@ class TestPerceptionBridge(unittest.TestCase):
         """No UART present → bridge stays inert, status=UNKNOWN."""
         self.node._uart = None  # stub mode
         self.node._read_sensors()
-        self.node._publish_health()
 
         self.assertEqual(len(self.sensor_pub.published), 0)
         self.assertEqual(self.node._ok_reads, 0)
         self.assertEqual(self.node._bad_reads, 0)
-        # /perception/health still emits one snapshot per tick.
+        # /perception/health receives the startup snapshot exactly once.
         self.assertEqual(len(self.health_pub.published), 1)
         snapshot = json.loads(self.health_pub.published[0].data)
         self.assertEqual(snapshot["status"], STATUS_UNKNOWN)
         self.assertTrue(snapshot["stub_mode"])
+
+    def test_stub_mode_registers_no_timers_and_publishes_one_health_snapshot(self) -> None:
+        """Stub mode must avoid periodic callbacks and emit one UNKNOWN snapshot."""
+        self.assertIsNone(self.node._sensor_timer)
+        self.assertIsNone(self.node._health_timer)
+        self.assertEqual(len(self.health_pub.published), 1)
+        snapshot = json.loads(self.health_pub.published[0].data)
+        self.assertEqual(snapshot["status"], STATUS_UNKNOWN)
+        self.assertTrue(snapshot["stub_mode"])
+        self.assertTrue(self.node.get_logger().warn.called)
 
     def test_non_monotonic_seq_warns_but_publishes(self) -> None:
         """Stale seq frames are flagged but do not halt publishing."""
@@ -429,13 +439,37 @@ class TestPerceptionBridge(unittest.TestCase):
         self.assertEqual(snapshot["status"], STATUS_DEGRADED)
 
     def test_timer_callbacks_registered_with_correct_periods(self) -> None:
-        """Bridge registers both timers with the configured periods."""
-        sensor_timer, health_timer = self.node._sensor_timer, self.node._health_timer
-        self.assertAlmostEqual(sensor_timer.period, SENSOR_READ_PERIOD)
-        self.assertAlmostEqual(health_timer.period, HEALTH_PERIOD)
-        # Each timer's stored callback is the corresponding method.
-        self.assertEqual(sensor_timer.callback.__name__, "_read_sensors")
-        self.assertEqual(health_timer.callback.__name__, "_publish_health")
+        """Bridge registers both timers with the configured periods in hardware mode."""
+        with patch(
+            "rob_box_perception.perception_bridge._open_uart",
+            return_value=_FakeUART(),
+        ):
+            node = PerceptionBridge()
+        try:
+            sensor_timer, health_timer = node._sensor_timer, node._health_timer
+            self.assertAlmostEqual(sensor_timer.period, SENSOR_READ_PERIOD)
+            self.assertAlmostEqual(health_timer.period, HEALTH_PERIOD)
+            # Each timer's stored callback is the corresponding method.
+            self.assertEqual(sensor_timer.callback.__name__, "_read_sensors")
+            self.assertEqual(health_timer.callback.__name__, "_publish_health")
+        finally:
+            node.destroy_node()
+
+    def test_hardware_mode_registers_both_timers(self) -> None:
+        """Hardware mode keeps the sensor and health timer scheduling."""
+        fake_uart = _FakeUART()
+        with patch(
+            "rob_box_perception.perception_bridge._open_uart",
+            return_value=fake_uart,
+        ):
+            node = PerceptionBridge()
+        try:
+            self.assertFalse(node._stub_mode)
+            self.assertAlmostEqual(node._sensor_timer.period, SENSOR_READ_PERIOD)
+            self.assertAlmostEqual(node._health_timer.period, HEALTH_PERIOD)
+            self.assertEqual(len(node._health_pub.published), 0)
+        finally:
+            node.destroy_node()
 
     def test_publishers_wired_to_correct_topics(self) -> None:
         """Publishers are bound to the spec'd topic names."""
@@ -445,17 +479,20 @@ class TestPerceptionBridge(unittest.TestCase):
     def test_destroy_node_cancels_timers_and_closes_uart(self) -> None:
         """Lifecycle: destroy_node cancels timers and closes the UART."""
         fake = _FakeUART([json.dumps({"seq": 1})])
-        self.node._uart = fake
-        # Bridge always opens in stub mode when no real UART is attached;
-        # flip the flag so destroy_node() actually closes our fake.
-        self.node._stub_mode = False
-        self.node._read_sensors()
-
-        self.node.destroy_node()
+        with patch(
+            "rob_box_perception.perception_bridge._open_uart",
+            return_value=fake,
+        ):
+            node = PerceptionBridge()
+        try:
+            # Drive a single read so the bridge touches the UART.
+            node._read_sensors()
+        finally:
+            node.destroy_node()
 
         self.assertTrue(fake.closed)
-        self.node._sensor_timer.cancel.assert_called()
-        self.node._health_timer.cancel.assert_called()
+        node._sensor_timer.cancel.assert_called()
+        node._health_timer.cancel.assert_called()
 
     def test_env_overrides_uart_path(self) -> None:
         """SENSOR_UART_PORT / SENSOR_UART_BAUD env vars are honored."""

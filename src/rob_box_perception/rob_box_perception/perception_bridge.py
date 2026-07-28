@@ -75,12 +75,20 @@ class PerceptionBridge(Node):
         self._status = STATUS_UNKNOWN
 
         # ---- Timers -------------------------------------------------------
-        self._sensor_timer = self.create_timer(
-            self._sensor_period, self._read_sensors
-        )
-        self._health_timer = self.create_timer(
-            self._health_period, self._publish_health
-        )
+        # A missing UART is an intentional development stub.  Avoid creating
+        # periodic callbacks in that mode: _read_sensors would be a no-op and
+        # repeated UNKNOWN health snapshots only add CPU/DDS overhead.
+        self._sensor_timer = None
+        self._health_timer = None
+        if self._stub_mode:
+            self._publish_health()
+        else:
+            self._sensor_timer = self.create_timer(
+                self._sensor_period, self._read_sensors
+            )
+            self._health_timer = self.create_timer(
+                self._health_period, self._publish_health
+            )
 
         self.get_logger().info(
             f"perception_bridge up (port={port} baud={baud} "
@@ -170,8 +178,10 @@ class PerceptionBridge(Node):
 
     def destroy_node(self) -> None:
         try:
-            self._sensor_timer.cancel()
-            self._health_timer.cancel()
+            if self._sensor_timer is not None:
+                self._sensor_timer.cancel()
+            if self._health_timer is not None:
+                self._health_timer.cancel()
         except Exception:
             pass
         try:
