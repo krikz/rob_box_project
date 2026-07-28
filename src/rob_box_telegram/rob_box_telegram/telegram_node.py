@@ -2,24 +2,29 @@
 """
 telegram_node.py — ROS 2 node bridging Telegram Bot API to the robot.
 
-Subscribes to camera topics, MCP results, and publishes TTS/cmd_vel.
+Subscribes to camera topics and publishes TTS/cmd_vel/STT input.
 Runs python-telegram-bot Application in a background asyncio thread.
 
-Architecture:
+Architecture (Phase 6 v2 / W7):
     Telegram (async, python-telegram-bot)  <->  TelegramNode (ROS 2)  <->  ROS 2 topics
+
+The Telegram node is now a *thin transport*: it forwards operator text
+and voice to ``/voice/stt/result`` so the unified DialogCore/harness
+pipeline (in ``dialogue_node``) can decide what to do with it. All
+LLM/MCP-bridge logic moved to the harness layer.
 
 Topics subscribed:
     /camera/camera/color/image_raw/compressed  (sensor_msgs/CompressedImage) — front camera
     /camera/camera/depth/image_rect_raw/compressedDepth (sensor_msgs/CompressedImage) — depth
     /ceiling_camera/image_raw/compressed (sensor_msgs/CompressedImage) — ceiling camera
     /rtabmap/grid_prob_map (nav_msgs/OccupancyGrid) — 2D SLAM map
-    /mcp/result (std_msgs/String) — MCP tool execution results
-    /mcp/tools  (std_msgs/String) — available MCP tool definitions
 
 Topics published:
     /voice/tts/request (std_msgs/String) — text-to-speech requests
     /cmd_vel_web (geometry_msgs/Twist) — movement commands (priority 50)
-    /mcp/execute (std_msgs/String) — MCP tool execution requests
+    /voice/stt/result (std_msgs/String) — operator text forwarded to the
+        unified dialogue pipeline. The harness layer (``dialogue_node``)
+        consumes this topic and routes it to DialogCore / LLM / tool calls.
 """
 
 import asyncio
@@ -77,16 +82,16 @@ from .handlers.commands import (
     waypoints_handler,
 )
 from .handlers.messages import text_message_handler, voice_message_handler
-from .llm_chat import LLMChat
-from .mcp_bridge import MCPBridge, MCPBridgeToolProvider
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramNode(Node):
-    """ROS 2 node for Telegram bot operator interface.
+    """ROS 2 node for the Telegram operator console.
 
-    Bridges Telegram Bot API ↔ ROS 2 topics for remote robot operation.
+    Bridges Telegram Bot API ↔ ROS 2 topics. After W7, the node no longer
+    owns any LLM or MCP-bridge logic: all command/text/voice inputs are
+    forwarded to ``/voice/stt/result`` for the unified dialogue pipeline.
     """
 
     def __init__(self):
@@ -100,10 +105,6 @@ class TelegramNode(Node):
         self.declare_parameter("camera_depth_topic", "/camera/camera/depth/image_rect_raw/compressedDepth")
         self.declare_parameter("camera_up_topic", "/ceiling_camera/image_raw/compressed")
         self.declare_parameter("camera_cache_ttl", 5.0)
-        self.declare_parameter("llm_provider", "deepseek")
-        self.declare_parameter("llm_model", "")  # Empty = use PROVIDERS default
-        self.declare_parameter("llm_max_history", 20)
-        self.declare_parameter("llm_temperature", 0.7)
         self.declare_parameter("voice_stt_method", "yandex")
         self.declare_parameter("voice_stt_language", "ru-RU")
         self.declare_parameter("telegram_poll_timeout", 30)
@@ -115,10 +116,6 @@ class TelegramNode(Node):
         self.camera_depth_topic: str = self.get_parameter("camera_depth_topic").value
         self.camera_up_topic: str = self.get_parameter("camera_up_topic").value
         camera_cache_ttl: float = self.get_parameter("camera_cache_ttl").value
-        llm_provider: str = self.get_parameter("llm_provider").value
-        llm_model: str = self.get_parameter("llm_model").value
-        llm_max_history: int = self.get_parameter("llm_max_history").value
-        llm_temperature: float = self.get_parameter("llm_temperature").value
         self.voice_stt_method: str = self.get_parameter("voice_stt_method").value
         self.voice_stt_language: str = self.get_parameter("voice_stt_language").value
         poll_timeout: int = self.get_parameter("telegram_poll_timeout").value
@@ -175,37 +172,15 @@ class TelegramNode(Node):
             transient_local_qos,
             callback_group=cb_group,
         )
-        self.create_subscription(
-            String,
-            "/mcp/result",
-            self._on_mcp_result,
-            reliable_qos,
-            callback_group=cb_group,
-        )
-        self.create_subscription(
-            String,
-            "/mcp/tools",
-            self._on_mcp_tools,
-            reliable_qos,
-            callback_group=cb_group,
-        )
 
         # ── Publishers ──────────────────────────────────────────────
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", reliable_qos)
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", reliable_qos)
-        execute_pub = self.create_publisher(String, "/mcp/execute", reliable_qos)
-
-        # ── MCP Bridge ──────────────────────────────────────────────
-        self.mcp_bridge = MCPBridge(execute_pub, ros_logger=self.get_logger())
-        self.tool_provider: MCPBridgeToolProvider = self.mcp_bridge.provider
-
-        # ── LLM Chat ────────────────────────────────────────────────
-        self.llm_chat = LLMChat(
-            provider=llm_provider,
-            model=llm_model or None,
-            max_history=llm_max_history,
-            temperature=llm_temperature,
-        )
+        # Unified dialogue input bus. Both text and transcribed voice are
+        # published here as plain text; downstream (DialogCore) decides
+        # whether to invoke LLM, run a tool, or short-circuit with a
+        # canned reply.
+        self.stt_pub = self.create_publisher(String, "/voice/stt/result", reliable_qos)
 
         # ── Telegram Bot ────────────────────────────────────────────
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -219,7 +194,7 @@ class TelegramNode(Node):
 
         self._start_telegram_bot(token)
 
-        self.get_logger().info("🤖 TelegramNode initialized")
+        self.get_logger().info("🤖 TelegramNode initialized (Phase 6 v2 — thin transport)")
 
     # ── ROS 2 Callbacks ─────────────────────────────────────────────
 
@@ -238,32 +213,6 @@ class TelegramNode(Node):
     def _on_map(self, msg: OccupancyGrid) -> None:
         """Store latest SLAM occupancy grid for /photo_map rendering."""
         self.latest_map_grid = msg
-
-    def _on_mcp_result(self, msg: String) -> None:
-        """Forward MCP result to the bridge for request correlation."""
-        self.mcp_bridge.on_result(msg)
-
-    def _on_mcp_tools(self, msg: String) -> None:
-        """Update LLM chat with available MCP tool definitions."""
-        try:
-            tools = json.loads(msg.data)
-            if isinstance(tools, list):
-                self.mcp_bridge.update_tools(tools)
-                tool_names = sorted(
-                    t.get("function", {}).get("name", t.get("name", "?")) for t in tools
-                )
-                # Log only when the tool set actually changes
-                prev_names = getattr(self, "_last_tool_names", None)
-                if tool_names != prev_names:
-                    self._last_tool_names = tool_names
-                    self.llm_chat.update_tools(tools)
-                    self.get_logger().info(
-                        f"🔧 MCP tools updated ({len(tools)}): {', '.join(tool_names)}"
-                    )
-                else:
-                    self.llm_chat.update_tools(tools)
-        except json.JSONDecodeError as e:
-            self.get_logger().warning(f"⚠️ Failed to parse MCP tools: {e}")
 
     # ── Publish helpers ─────────────────────────────────────────────
 
@@ -285,6 +234,20 @@ class TelegramNode(Node):
         msg.data = payload
         self.tts_pub.publish(msg)
         self.get_logger().info(f"TTS request: {text[:80]}")
+
+    def forward_to_stt(self, text: str) -> None:
+        """Forward operator text to ``/voice/stt/result`` for the dialogue pipeline.
+
+        After W7 every Telegram input (text, voice, slash-command, button
+        tap) lands here as plain text. ``dialogue_node`` is responsible
+        for wake-word gating, history retrieval, and tool execution.
+        """
+        if not text:
+            return
+        msg = String()
+        msg.data = text
+        self.stt_pub.publish(msg)
+        self.get_logger().debug(f"STT forward: {text[:80]}")
 
     # ── Telegram Bot Setup ──────────────────────────────────────────
 
@@ -361,7 +324,7 @@ class TelegramNode(Node):
         # ── Voice message handler ──────────────────────────────────
         app.add_handler(MessageHandler(filters.VOICE, voice_message_handler))
 
-        # ── Text message handler (LLM chat — must be last) ────────
+        # ── Text message handler (must be last) ────────────────────
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
         self.get_logger().info("Telegram bot handlers registered, starting polling...")
