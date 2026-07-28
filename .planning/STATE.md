@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 6
 status: in-progress
-last_updated: "2026-07-28T18:30:00.000Z"
+last_updated: "2026-07-28T18:35:00.000Z"
 progress:
   total_phases: 6
   completed_phases: 4
@@ -79,6 +79,7 @@ progress:
 - mypy not installed in dev container (verification gap, not blocking — code has full type hints and `py.typed`)
 - 5 pre-existing pytest collection errors due to `rob_box_core.ports` PYTHONPATH (env-level, not blocking)
 - 6 pre-existing failures in `TestStripWakeWord` and `test_wake_word_to_silence_cycle` (wake-word detection, unrelated to Plan 06-01/06-02)
+- 26 pre-existing failures in `test_memory.py::TestFAQ::test_*` and `test_memory.py::TestEventProfile::test_*` (async tests, env-limited — pytest-asyncio plugin conflicts with `launch_testing_ros_pytest_entrypoint` from ROS2 Humble; only fix is `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` which then breaks pytest-asyncio. Same tests reported as "26 skipped" in Plan 06-02 SUMMARY; pre-existing baseline, unrelated to Phase 6 work)
 
 ---
 *Updated: 2026-07-28T18:30Z (Plans 06-03 + 06-04 close-out; all 4 plans closed-out)*
