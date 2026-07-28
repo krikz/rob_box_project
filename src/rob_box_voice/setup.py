@@ -28,7 +28,11 @@ setup(
         (os.path.join('share', package_name, 'srv'),
             glob('srv/*.srv')),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        'rob_box_core>=0.1.0',
+        'rob_box_harness>=0.1.0',
+    ],
     zip_safe=True,
     maintainer='krikz',
     maintainer_email='kukoreken@rob-box.local',

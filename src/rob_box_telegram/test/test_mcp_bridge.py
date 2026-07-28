@@ -7,6 +7,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock
 
+from rob_box_core.ports import ToolTimeout
+
 # Mock ROS 2 modules not available in dev environment
 _std_msgs_mock = MagicMock()
 
@@ -22,7 +24,7 @@ _std_msgs_mock.msg.String = _StringMsg
 sys.modules.setdefault("std_msgs", _std_msgs_mock)
 sys.modules.setdefault("std_msgs.msg", _std_msgs_mock.msg)
 
-from rob_box_telegram.mcp_bridge import MCPBridge  # noqa: E402
+from rob_box_telegram.mcp_bridge import MCPBridge, MCPBridgeToolProvider  # noqa: E402
 
 
 class TestMCPBridge(unittest.IsolatedAsyncioTestCase):
@@ -77,10 +79,10 @@ class TestMCPBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["result"]["message"], "2 waypoints")
 
     async def test_execute_timeout(self):
-        """execute() should return timeout error if no result received."""
-        result = await self.bridge.execute("slow_tool", {})
-        self.assertFalse(result["result"]["success"])
-        self.assertIn("Timeout", result["result"]["message"])
+        """The canonical provider should translate transport timeout."""
+        provider = MCPBridgeToolProvider(self.bridge)
+        with self.assertRaises(ToolTimeout):
+            await provider.invoke("slow_tool", {})
 
     async def test_execute_simple(self):
         """execute_simple() should return message string."""
