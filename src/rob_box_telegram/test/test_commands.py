@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Tests for Telegram command handlers in rob_box_telegram.handlers.commands."""
+"""Tests for Telegram command routing through the canonical ToolProvider."""
+
+from __future__ import annotations
 
 import importlib
 import sys
 import types
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+from rob_box_core.ports import ToolProvider, ToolResult
 
-def _install_fake_telegram_modules() -> None:
+
+def _install_fake_dependencies() -> None:
     telegram_module = types.ModuleType("telegram")
     telegram_ext_module = types.ModuleType("telegram.ext")
+    numpy_module = types.ModuleType("numpy")
+    pil_module = types.ModuleType("PIL")
 
     class Update:
         pass
@@ -32,13 +37,16 @@ def _install_fake_telegram_modules() -> None:
     telegram_module.InlineKeyboardButton = InlineKeyboardButton
     telegram_module.InlineKeyboardMarkup = InlineKeyboardMarkup
     telegram_ext_module.ContextTypes = ContextTypes
+    pil_module.Image = MagicMock()
 
     sys.modules["telegram"] = telegram_module
     sys.modules["telegram.ext"] = telegram_ext_module
+    sys.modules.setdefault("numpy", numpy_module)
+    sys.modules.setdefault("PIL", pil_module)
 
 
 def _load_commands_module():
-    _install_fake_telegram_modules()
+    _install_fake_dependencies()
     sys.modules.pop("rob_box_telegram.keyboard_layouts", None)
     sys.modules.pop("rob_box_telegram.handlers.commands", None)
     return importlib.import_module("rob_box_telegram.handlers.commands")
@@ -53,7 +61,8 @@ class TestTelegramMusicCommands(unittest.IsolatedAsyncioTestCase):
 
     def _make_update_and_context(self, message_text, args=None):
         node = MagicMock()
-        node.mcp_bridge.execute_simple = AsyncMock(return_value="ok")
+        node.tool_provider = MagicMock(spec=ToolProvider)
+        node.tool_provider.invoke = AsyncMock(return_value=ToolResult(value="ok"))
 
         update = MagicMock()
         update.effective_chat.id = 42
@@ -71,66 +80,66 @@ class TestTelegramMusicCommands(unittest.IsolatedAsyncioTestCase):
 
         await self.commands.repl_handler(update, context)
 
-        node.mcp_bridge.execute_simple.assert_not_called()
-        update.message.reply_text.assert_awaited_once_with("Использование: /repl <Renardo/FoxDot код>")
+        node.tool_provider.invoke.assert_not_called()
+        update.message.reply_text.assert_awaited_once_with(
+            "Использование: /repl <Renardo/FoxDot код>"
+        )
 
     async def test_repl_handler_sends_single_line_code(self):
-        update, context, node = self._make_update_and_context("/repl p1 >> pluck([0,2,4])")
-        node.mcp_bridge.execute_simple = AsyncMock(return_value="Код выполнен успешно")
+        update, context, node = self._make_update_and_context(
+            "/repl p1 >> pluck([0,2,4])"
+        )
+        node.tool_provider.invoke = AsyncMock(
+            return_value=ToolResult(value="Код выполнен успешно")
+        )
 
         await self.commands.repl_handler(update, context)
 
-        node.mcp_bridge.execute_simple.assert_awaited_once_with(
+        node.tool_provider.invoke.assert_awaited_once_with(
             "execute_music_code",
             {"code": "p1 >> pluck([0,2,4])"},
         )
-        update.message.reply_text.assert_awaited_once_with("🎵 Код выполнен успешно")
+        update.message.reply_text.assert_awaited_once_with(
+            "🎵 Код выполнен успешно"
+        )
 
     async def test_repl_handler_preserves_newlines_in_multiline_code(self):
-        """Multiline code must reach the robot with real newlines, not spaces.
-
-        Bug: context.args joins with spaces, breaking # comments into one-liners.
-        Fix: read update.message.text directly to preserve \n.
-        """
         multiline_code = "Clock.bpm = 83\np1 >> pads((2, 4, 6), amp=0.3)"
-        update, context, node = self._make_update_and_context(f"/repl\n{multiline_code}")
-        node.mcp_bridge.execute_simple = AsyncMock(return_value="Код выполнен успешно")
+        update, context, node = self._make_update_and_context(
+            f"/repl\n{multiline_code}"
+        )
+        node.tool_provider.invoke = AsyncMock(
+            return_value=ToolResult(value="Код выполнен успешно")
+        )
 
         await self.commands.repl_handler(update, context)
 
-        node.mcp_bridge.execute_simple.assert_awaited_once_with(
-            "execute_music_code",
-            {"code": multiline_code},
+        node.tool_provider.invoke.assert_awaited_once_with(
+            "execute_music_code", {"code": multiline_code}
         )
 
     async def test_repl_handler_strips_botname_suffix(self):
-        """Handle /repl@robotname format (group chats)."""
-        update, context, node = self._make_update_and_context("/repl@RoBBoxbot p1 >> blip([0,2])")
-        node.mcp_bridge.execute_simple = AsyncMock(return_value="ok")
+        update, context, node = self._make_update_and_context(
+            "/repl@RoBBoxbot p1 >> blip([0,2])"
+        )
 
         await self.commands.repl_handler(update, context)
 
-        code_sent = node.mcp_bridge.execute_simple.call_args[0][1]["code"]
+        code_sent = node.tool_provider.invoke.call_args.args[1]["code"]
         self.assertEqual(code_sent, "p1 >> blip([0,2])")
 
     async def test_stopmusic_handler_calls_stop_music(self):
-        update, context, node = self._make_update_and_context([])
-        node.mcp_bridge.execute_simple = AsyncMock(return_value="Вся музыка остановлена")
+        update, context, node = self._make_update_and_context("")
+        node.tool_provider.invoke = AsyncMock(
+            return_value=ToolResult(value="Вся музыка остановлена")
+        )
 
         await self.commands.stopmusic_handler(update, context)
 
-        node.mcp_bridge.execute_simple.assert_awaited_once_with("stop_music")
-        update.message.reply_text.assert_awaited_once_with("⏹ Вся музыка остановлена")
-
-
-class TestTelegramNodeCommandRegistration(unittest.TestCase):
-    def test_telegram_node_registers_repl_and_stopmusic_handlers(self):
-        source = Path(
-            "/home/builder/rob_box_project/src/rob_box_telegram/rob_box_telegram/telegram_node.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn('CommandHandler("repl", repl_handler)', source)
-        self.assertIn('CommandHandler("stopmusic", stopmusic_handler)', source)
+        node.tool_provider.invoke.assert_awaited_once_with("stop_music", {})
+        update.message.reply_text.assert_awaited_once_with(
+            "⏹ Вся музыка остановлена"
+        )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ setup(
     ],
     install_requires=[
         "setuptools",
+        "rob_box_core>=0.1.0",
         # rob_box_harness depends on rob_box_llm because the LLMProvider
         # port is re-exported from there. Symlink / install rob_box_llm
         # into the same env (colcon handles this for ROS2 builds).

@@ -82,6 +82,8 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
 from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
+from rob_box_core.ports import ToolContext, ToolDescriptor
+from rob_box_harness.executors import ROSMCPToolProvider
 
 from .core.dialogue_manager import DialogueManager, DialogueState
 from .utils.redact import redact_upstream_body
@@ -312,9 +314,11 @@ class DialogueNode(Node):
 
         # ── MCP Adapter ──────────────────────────────────────────────
         self._mcp: Optional[LLMToolCallAdapter] = None
+        self.tool_provider: Optional[ROSMCPToolProvider] = None
         if self.get_parameter("enable_mcp_tools").value:
             try:
                 self._mcp = LLMToolCallAdapter(self)
+                self.tool_provider = ROSMCPToolProvider(self._mcp)
                 self.get_logger().info("✅ MCP adapter ready")
             except Exception as exc:
                 self.get_logger().error(f"❌ MCP adapter failed: {exc}")
@@ -725,13 +729,26 @@ class DialogueNode(Node):
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
             self._tools_called.append(tool_name)
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
+            provider = self.tool_provider
+            if provider is None:
+                raise RuntimeError("MCP ToolProvider is not configured")
+            if not any(tool.name == tool_name for tool in provider.list_tools()):
+                provider.register_tool(
+                    ToolDescriptor(
+                        name=tool_name,
+                        parameters={"type": "object", "properties": {}},
+                    )
+                )
+            result = await provider.invoke(
+                tool_name,
+                params,
+                ToolContext(timeout=timeout),
             )
-            if isinstance(result, dict):
-                return result.get("result", json.dumps(result, ensure_ascii=False))
-            return str(result)
+            if result.error is not None:
+                return result.error
+            if isinstance(result.value, str):
+                return result.value
+            return json.dumps(result.value, ensure_ascii=False)
 
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:
@@ -1187,13 +1204,26 @@ class DialogueNode(Node):
 
         async def _call(tool_name: str, params: dict, timeout: float = 10.0) -> str:
             self._tools_called.append(tool_name)
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: mcp.execute_tool_call_sync(tool_name, params, timeout=timeout),
+            provider = self.tool_provider
+            if provider is None:
+                raise RuntimeError("MCP ToolProvider is not configured")
+            if not any(tool.name == tool_name for tool in provider.list_tools()):
+                provider.register_tool(
+                    ToolDescriptor(
+                        name=tool_name,
+                        parameters={"type": "object", "properties": {}},
+                    )
+                )
+            result = await provider.invoke(
+                tool_name,
+                params,
+                ToolContext(timeout=timeout),
             )
-            if isinstance(result, dict):
-                return result.get("result", json.dumps(result, ensure_ascii=False))
-            return str(result)
+            if result.error is not None:
+                return result.error
+            if isinstance(result.value, str):
+                return result.value
+            return json.dumps(result.value, ensure_ascii=False)
 
         @function_tool
         async def speak_text(text: str, animation: str = "neutral") -> str:

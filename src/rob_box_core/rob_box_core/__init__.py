@@ -1,29 +1,24 @@
-"""rob_box_core — cross-cutting abstractions shared by every rob_box harness.
+"""rob_box_core — ROS-free contracts shared by the harness packages."""
 
-This package is deliberately ROS-free at its core so the same code can be
-unit-tested without bringing up rclpy. ROS-specific helpers (logger adapter,
-param guard, lifecycle) live in submodules and stay optional.
-
-Public surface:
-    Clock / SystemClock / MockClock — time injection for tests
-    MemoryStore / InMemoryStore / Turn / Fact / MemoryHit — persistence port
-    DialogueState / DialogueStateMachine / IllegalTransitionError — state
-        machine port (P0.3 — additive wrapper around the existing
-        ``DialogueManager``; see ``docs/refactoring-plan.md``)
-"""
-
-from rob_box_core.clock import Clock, SystemClock, MockClock
-from rob_box_core.memory import (
-    Fact,
-    InMemoryStore,
-    MemoryHit,
-    MemoryStore,
-    Turn,
-)
+from rob_box_core.clock import Clock, MockClock, SystemClock
 from rob_box_core.dialogue_state import (
     DialogueState,
     DialogueStateMachine,
     IllegalTransitionError,
+)
+from rob_box_core.memory import Fact, InMemoryStore, MemoryHit, MemoryStore, Turn
+from rob_box_core.ports import (
+    ToolContext,
+    ToolDescriptor,
+    ToolNotFound,
+    ToolNotFoundError,
+    ToolProvider,
+    ToolProviderError,
+    ToolResult,
+    ToolTimeout,
+    ToolTimeoutError,
+    ToolValidationError,
+    ValidationResult,
 )
 
 __all__ = [
@@ -38,6 +33,17 @@ __all__ = [
     "DialogueState",
     "DialogueStateMachine",
     "IllegalTransitionError",
+    "ToolProvider",
+    "ToolDescriptor",
+    "ToolResult",
+    "ToolContext",
+    "ValidationResult",
+    "ToolProviderError",
+    "ToolNotFound",
+    "ToolNotFoundError",
+    "ToolTimeout",
+    "ToolTimeoutError",
+    "ToolValidationError",
 ]
 
 __version__ = "0.1.0"
