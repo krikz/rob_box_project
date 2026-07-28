@@ -37,7 +37,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_harness.memory import InMemoryStore, MemoryStore, SQLiteVoiceMemory
-from rob_box_harness.providers import DeepSeekProvider
+from rob_box_harness.providers import build_deepseek_provider
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 
 from rob_box_voice.core.dialogue_text import (
@@ -173,13 +173,15 @@ class DialogueNode(Node):
             self._loop.run_until_complete(store.init())
             return store
     def _build_llm(self) -> Any:
-        return DeepSeekProvider(
-            api_key=self.get_parameter("api_key").value
-            or os.environ.get("DEEPSEEK_API_KEY", ""),
+        # Delegate to the harness factory so the shell doesn't own
+        # provider-class knowledge (Phase 6 thin-shell contract).
+        # ``temperature`` / ``max_tokens`` are passed to ``.chat()``
+        # rather than the constructor — see test_dialogue_shell.py
+        # for the override pattern used by tests.
+        return build_deepseek_provider(
+            api_key=self.get_parameter("api_key").value or None,
             base_url=self.get_parameter("base_url").value or None,
             model=self.get_parameter("model").value or None,
-            temperature=float(self.get_parameter("temperature").value),
-            max_tokens=int(self.get_parameter("max_tokens").value),
         )
     def _build_tool_provider(self) -> ToolProvider:
         if not self.get_parameter("enable_mcp_tools").value:
