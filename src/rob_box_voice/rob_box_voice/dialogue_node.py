@@ -85,6 +85,11 @@ from rob_box_core.ports import ToolContext, ToolDescriptor
 from rob_box_harness.executors import ROSMCPToolProvider
 
 from .core.dialogue_manager import DialogueManager, DialogueState
+from .core.llm_config import (
+    PROVIDERS,
+    ProviderOverrides,
+    resolve_provider_config,
+)
 from .utils.redact import redact_upstream_body
 
 try:
@@ -137,20 +142,13 @@ class DialogueNode(Node):
     """Voice dialogue agent built on OpenAI Agents SDK."""
 
     # ── Provider configs ────────────────────────────────────────────
-    PROVIDERS = {
-        "deepseek": {
-            "base_url": "https://api.deepseek.com/v1",
-            "model": "deepseek-v4-flash",
-            "fallback_model": "deepseek-v4-flash",  # lighter model on timeout/errors
-            "env_vars": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
-        },
-        "mimo": {
-            "base_url": "https://api.xiaomimimo.com/v1",
-            "model": "mimo-v2.5-pro",
-            "fallback_model": "mimo-v2.5",  # lighter model on timeout/errors
-            "env_vars": ["MIMO_API_KEY", "LLM_API_KEY"],
-        },
-    }
+    # ── Provider registry ────────────────────────────────────────────────
+    # The default catalog (deepseek/mimo + env-var fallbacks) lives in
+    # :mod:`rob_box_voice.core.llm_config` as a pure module so it can
+    # be unit-tested without an rclpy runtime. This class re-exports
+    # it as ``PROVIDERS`` for backwards-compat with any external code
+    # that imports ``DialogueNode.PROVIDERS``.
+    PROVIDERS = PROVIDERS  # type: ignore[assignment]
 
     def __init__(self):
         super().__init__("dialogue_node")
@@ -388,35 +386,52 @@ class DialogueNode(Node):
             self.get_logger().warning(f"⚠️ Prompt '{filename}' not found: {exc}")
             return ""
 
-    def _resolve_api_key(self) -> str:
-        key = self.get_parameter("api_key").value
-        if key:
-            return key
-        for env in self.PROVIDERS.get(self._provider, {}).get("env_vars", []):
-            val = os.environ.get(env, "")
-            if val:
-                return val
-        raise RuntimeError(
-            f"API key not found for provider '{self._provider}'. "
-            f"Set one of: {self.PROVIDERS.get(self._provider, {}).get('env_vars', [])}"
+    # ── Provider resolution (thin wrappers over core.llm_config) ─────────
+    # The provider catalog and resolution logic live in
+    # :mod:`rob_box_voice.core.llm_config`. These wrappers exist only
+    # to bridge ROS2 parameter values into that pure helper. Tests for
+    # the underlying logic live in
+    # ``src/rob_box_voice/test/unit/core/test_llm_config.py``.
+
+    def _provider_overrides(self) -> ProviderOverrides:
+        """Collect ROS2 parameter overrides for the LLM provider config."""
+        return ProviderOverrides(
+            api_key=self.get_parameter("api_key").value,
+            base_url=self.get_parameter("base_url").value,
+            model=self.get_parameter("model").value,
+            fallback_model=self.get_parameter("fallback_model").value,
         )
+
+    def _resolve_provider_config(self) -> "ProviderConfig":  # type: ignore[name-defined]  # noqa: F821
+        """Resolve the full LLM provider config from ROS params + env.
+
+        Returns:
+            A :class:`rob_box_voice.core.llm_config.ProviderConfig` with
+            all four fields populated. Raises ``RuntimeError`` when no
+            API key is found in the parameter or any registered env var.
+        """
+        return resolve_provider_config(
+            provider=self._provider,
+            overrides=self._provider_overrides(),
+            env=os.environ,
+            error_on_missing_key=True,
+        )
+
+    def _resolve_api_key(self) -> str:
+        """Resolve the API key (overrides > env). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().api_key
 
     def _resolve_base_url(self) -> str:
-        val = self.get_parameter("base_url").value
-        return val or self.PROVIDERS.get(self._provider, {}).get("base_url", "")
+        """Resolve the base URL (overrides > registry). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().base_url
 
     def _resolve_model(self) -> str:
-        val = self.get_parameter("model").value
-        return val or self.PROVIDERS.get(self._provider, {}).get(
-            "model", "deepseek-v4-flash"
-        )
+        """Resolve the primary model (overrides > registry). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().model
 
     def _resolve_fallback_model(self) -> str:
-        """Resolve fallback model (lighter/faster) for timeout/error recovery."""
-        val = self.get_parameter("fallback_model").value
-        return val or self.PROVIDERS.get(self._provider, {}).get(
-            "fallback_model", "deepseek-v4-flash"
-        )
+        """Resolve the fallback model (overrides > registry). Thin wrapper over core.llm_config."""
+        return self._resolve_provider_config().fallback_model
 
     def _init_voice_memory(self) -> None:
         """Init VoiceMemory for persistent turn logging. Fails silently.
