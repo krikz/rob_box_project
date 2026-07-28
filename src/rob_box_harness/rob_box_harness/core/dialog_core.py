@@ -206,10 +206,13 @@ class DialogCore:
                 result.error = exc
                 # Still persist the user turn so the conversation
                 # history isn't lost when the LLM errors.
-                if not any(t.content == text for t in self._memory.turns):
-                    await self._memory.append_turn(
-                        self._user_id, Turn(role="user", content=text)
-                    )
+                # ``append_turn`` is documented idempotent (SQLiteVoiceMemory
+                # enforces a 5-second dedup window; InMemoryStore is append-only
+                # but the user turn was NOT appended yet on this path because
+                # the append above happens after the LLM call).
+                await self._memory.append_turn(
+                    self._user_id, Turn(role="user", content=text)
+                )
             # End-of-dialogue: drive the state machine back to IDLE.
             self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             result.new_state = self._dsm.current_state
