@@ -380,6 +380,26 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 return
             except (RateLimitError, TimeoutError) as exc:
                 last_exc = exc
+                # Best-effort release of the failed inner stream's
+                # HTTP response body. The async generator was created
+                # above (``self._inner.stream(...)``) and ``__anext__``
+                # raised before we drained it; without ``aclose()`` the
+                # underlying HTTP body sits in the openai SDK pool
+                # until GC — a connection-pool leak per retry. We
+                # guard with ``hasattr`` because ``AsyncIterator`` is
+                # the declared return type, and not every test double
+                # implements ``aclose``. Same best-effort pattern as
+                # ``Harness.teardown`` (ADR-0001 §2.6.1 M10).
+                aclose = getattr(inner_stream, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception as close_exc:  # noqa: BLE001
+                        _log.debug(
+                            "minimax.stream: aclose() on failed attempt raised %r; "
+                            "ignoring (best-effort cleanup)",
+                            close_exc,
+                        )
                 if attempts >= self._retry.max_attempts:
                     raise
                 delay = self._retry.delay_for(attempts)
