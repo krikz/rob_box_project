@@ -44,6 +44,19 @@ def generate_launch_description():
         description='TTS provider override for tts_node'
     )
 
+    # W5a: tool-provider backend selector. ``ros_mcp`` is the default
+    # production path (LLMToolCallAdapter → ROSMCPToolProvider with the
+    # 34-manifest ToolRegistry). ``fake`` swaps in FakeToolProvider for
+    # smoke tests; ``none`` disables tools entirely (chat-only deploy).
+    # The operator can also flip this in voice_assistant.yaml's
+    # ``dialogue_node.tool_provider`` key without re-launching the stack.
+    tool_provider_arg = DeclareLaunchArgument(
+        'tool_provider',
+        default_value='ros_mcp',
+        choices=['ros_mcp', 'fake', 'none'],
+        description='Tool provider backend for dialogue_node (W5a)',
+    )
+
     # Конфигурация
     config_file = LaunchConfiguration('config_file')
     namespace = LaunchConfiguration('namespace')
@@ -96,7 +109,10 @@ def generate_launch_description():
         executable='dialogue_node',
         name='dialogue_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[
+            config_file,
+            {'tool_provider': LaunchConfiguration('tool_provider')},
+        ],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -193,6 +209,7 @@ def generate_launch_description():
         config_file_arg,
         namespace_arg,
         provider_arg,
+        tool_provider_arg,
         audio_node,
         led_node,
         animation_node,

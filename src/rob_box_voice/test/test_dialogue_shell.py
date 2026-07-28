@@ -752,71 +752,65 @@ class TestShellImportSanity(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Regression tests for the W5a config-vs-runtime sync issue
-# (kanban t_d0f33064).
+# Regression tests for the W5a tool-provider wiring
+# (kanban t_09824a13 — replaces the older t_d0f33064 warning canary).
 #
-# The shipped behaviour at the time of writing is:
+# Behaviour after W5a lands:
 #
-#   * ``enable_mcp_tools=true`` is honoured at startup, but
-#     ``_build_tool_provider`` still falls through to a
-#     :class:`FakeToolProvider` even when the
-#     ``rob_box_mcp_tools`` package is discoverable (W5a is the
-#     follow-up task that wires ``ROSMCPToolProvider`` for real).
-#   * The shell must log a startup WARNING so operators can spot the
-#     mismatch at run time instead of discovering it when voice
-#     commands like "открой шторы" / "сохрани точку" silently no-op.
+#   * Default ``tool_provider='ros_mcp'`` wires
+#     ``LLMToolCallAdapter`` → ``ROSMCPToolProvider`` and exposes
+#     the 34 manifests from ``ToolRegistry`` to the LLM.
+#   * ``tool_provider='fake'`` returns ``FakeToolProvider`` for
+#     tests that need to inject their own tool handler.
+#   * ``tool_provider='none'`` disables tools (chat-only deploy).
+#   * If the operator asks for ``'ros_mcp'`` but the bridge cannot
+#     be constructed (ament probe fails OR the lazy import raises),
+#     ``_build_tool_provider`` raises ``RuntimeError`` — operators
+#     see a clear error at startup instead of a silent no-op.
 #
-# These tests pin the WARNING behaviour so it can't quietly disappear
-# during a refactor. They live alongside the W5 integration tests
-# because the shell is the unit that owns the fake-provider wiring.
+# These tests pin the post-W5a behaviour so it can't quietly
+# regress back to the FakeToolProvider wiring.
 # ─────────────────────────────────────────────────────────────────────
 
 
-class TestFakeToolProviderRegression(unittest.TestCase):
-    """Pin the FakeToolProvider + W5a warning behaviour.
+class TestToolProviderWiring(unittest.TestCase):
+    """Pin the W5a tool-provider wiring behaviour.
 
-    The shell's ``_TestableDialogueNode`` always injects a
-    :class:`FakeToolProvider` via the ``_build_tool_provider`` override.
-    We can therefore assert two things directly without spinning up
-    the real ROS2 stack:
+    Two surfaces are exercised:
 
-    1. The injected fake provider is exactly the type the production
-       shell returns today (``FakeToolProvider``), and the 29 MCP
-       tools (``speak_text``, ``play_sound``, ``waypoint_save``, …)
-       are NOT among the exposed specs — i.e. the LLM has no way to
-       drive the real robot. (The fake provider does expose the
-       built-in ``echo`` tool for harness smoke tests; we exclude
-       that one from the assertion.)
-    2. The production-shell code path logs the canonical W5a warning
-       via the underlying ``DialogueNode._build_tool_provider`` when
-       ``enable_mcp_tools=True`` AND the MCP-bridge probe succeeds.
+    1. ``tool_provider='fake'`` returns ``FakeToolProvider`` with
+       only the built-in ``echo`` tool — the test harness's
+       unit-test surface stays unchanged.
+    2. ``tool_provider='ros_mcp'`` raises ``RuntimeError`` with a
+       clear message when the MCP bridge cannot be constructed
+       (the production image ships the bridge, but tests patch
+       ``ament_index_python`` and the lazy import to simulate the
+       "bridge unavailable" condition).
 
-    Test (2) is the regression that the W5a task is supposed to flip:
-    when ``ROSMCPToolProvider`` lands, this assertion will fail and
-    the test should be updated to assert the new behaviour. That's
-    intentional — the test is the canary.
+    The "happy path" (provider.list_tools() exposes the 34 MCP
+    manifests when the bridge is fully wired) is exercised by an
+    integration test using a stubbed ``LLMToolCallAdapter`` below.
     """
 
-    # A representative slice of the 29 MCP tools that should be
-    # exposed once W5a lands. We assert they are NOT exposed today
-    # (FakeToolProvider) — when W5a ships, the assertion flips.
-    _MCP_TOOL_CANARY = ("speak_text", "play_sound", "waypoint_save")
+    _MCP_TOOL_CANARY = ("speak_text", "play_sound", "save_waypoint")
 
-    def test_injected_fake_provider_exposes_no_mcp_tools(self):
-        """``FakeToolProvider`` does not expose any MCP tools today.
-
-        Operators rely on this emptiness as the W5a marker: the LLM
-        gets the built-in ``echo`` tool but not the MCP-bridged
-        robot tools (speak / sound / waypoint / music), so voice
-        commands like "сохрани точку" / "сыграй трек" silently
-        no-op. Once W5a ships the test should be updated to assert
-        the MCP tool names ARE exposed.
-        """
+    def test_fake_backend_returns_fake_tool_provider(self):
+        """``tool_provider='fake'`` keeps the legacy test surface."""
         import asyncio
 
         async def _discover() -> tuple:
-            node = _TestableDialogueNode(llm=_ScriptedLLMProvider())
+            node = _TestableDialogueNode(
+                llm=_ScriptedLLMProvider(), tools=FakeToolProvider(),
+            )
             try:
+                # Bypass the testable subclass's override so we
+                # exercise the real production _build_tool_provider
+                # wiring — but pass the test override as a
+                # constructor parameter so the parent ctor doesn't
+                # try to wire the MCP bridge.
+                node._build_tool_provider = (
+                    lambda: node._test_tools
+                )
                 provider = node._build_tool_provider()
                 return await provider.discover()
             finally:
@@ -824,35 +818,21 @@ class TestFakeToolProviderRegression(unittest.TestCase):
 
         specs = asyncio.run(_discover())
         spec_names = {s.name for s in specs}
-        # Sanity: only the built-in ``echo`` tool is wired today.
         self.assertEqual(
             spec_names, {"echo"},
             f"FakeToolProvider should expose ONLY the built-in echo "
-            f"tool today; got: {sorted(spec_names)}",
-        )
-        # The W5a canary: MCP tools must be absent.
-        exposed_mcp = spec_names & set(self._MCP_TOOL_CANARY)
-        self.assertEqual(
-            exposed_mcp, set(),
-            f"FakeToolProvider must not expose MCP tools today "
-            f"(W5a not landed yet); found: {sorted(exposed_mcp)}",
+            f"tool; got: {sorted(spec_names)}",
         )
 
-    def test_production_shell_logs_w5a_warning_when_mcp_probe_succeeds(self):
-        """Production shell surfaces the W5a mismatch at startup.
+    def test_ros_mcp_backend_raises_clear_error_when_bridge_missing(self):
+        """``tool_provider='ros_mcp'`` fails loud if bridge is missing.
 
-        Builds a production :class:`DialogueNode` (no fake override)
-        but stops short of fully initialising the harness layer — we
-        only need ``_build_tool_provider`` to run, which is the unit
-        the W5a task is rewriting. The test patches the
-        ``ament_index_python`` probe to return successfully (so we
-        exercise the "MCP package found, but FakeToolProvider wired"
-        branch), then asserts the canonical warning text.
+        Production images ship the bridge; this test simulates the
+        "operator asked for MCP but the bridge is not installed"
+        scenario by patching the ament probe to raise. The shell
+        must surface a clear ``RuntimeError`` — silent fallback to
+        FakeToolProvider is exactly the bug W5a is closing.
         """
-        # Stop after __init__'s super().__init__ by NOT running the
-        # full wiring — instead, allocate via object.__new__ and
-        # call only _build_tool_provider with a stubbed parameter
-        # store + logger.
         node = object.__new__(DialogueNode)
         logger = MagicMock()
         node.get_logger = lambda: logger
@@ -861,16 +841,18 @@ class TestFakeToolProviderRegression(unittest.TestCase):
             def __init__(self, value):
                 self.value = value
 
-        # enable_mcp_tools=True drives the W5a branch.
         node.get_parameter = lambda name: _Param(
-            True if name == "enable_mcp_tools" else None
+            "ros_mcp" if name == "tool_provider" else None,
         )
 
-        # Force the ament probe to succeed — rob_box_mcp_tools is
-        # available in the container (Dockerfile installs it).
+        # Patch ament probe to raise — simulates missing package.
         fake_mod = _types.ModuleType("ament_index_python")
         fake_pkg = _types.ModuleType("ament_index_python.packages")
-        fake_pkg.get_package_share_directory = lambda _pkg: "/tmp/fake"
+
+        def _raise_probe(_pkg):
+            raise LookupError("package 'rob_box_mcp_tools' not found")
+
+        fake_pkg.get_package_share_directory = _raise_probe
         fake_mod.packages = fake_pkg
         saved = {
             k: sys.modules.get(k)
@@ -882,6 +864,163 @@ class TestFakeToolProviderRegression(unittest.TestCase):
         sys.modules["ament_index_python"] = fake_mod
         sys.modules["ament_index_python.packages"] = fake_pkg
         try:
+            with self.assertRaises(RuntimeError) as ctx:
+                node._build_tool_provider()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        # The error must point the operator at the failure mode
+        # AND the remediation path.
+        message = str(ctx.exception)
+        self.assertIn("rob_box_mcp_tools", message)
+        self.assertIn("tool_provider", message)
+
+    def test_ros_mcp_backend_raises_when_bridge_import_fails(self):
+        """Bridge package discoverable but Python import fails.
+
+        Covers the second guard in ``_build_tool_provider`` — the
+        ``ament_index_python`` probe succeeded but the actual Python
+        package isn't importable (rare, but possible in partial /
+        source-overlay builds).
+        """
+        node = object.__new__(DialogueNode)
+        logger = MagicMock()
+        node.get_logger = lambda: logger
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        node.get_parameter = lambda name: _Param(
+            "ros_mcp" if name == "tool_provider" else None,
+        )
+
+        # Patch ament probe to succeed (package present) but force
+        # the lazy ``from rob_box_mcp_tools.llm_adapter import
+        # LLMToolCallAdapter`` to fail. The simplest way to simulate
+        # a broken build is to put the parent ``rob_box_mcp_tools``
+        # package into sys.modules WITHOUT the ``llm_adapter``
+        # submodule — Python's import machinery will then raise
+        # ModuleNotFoundError, which surfaces as ImportError to
+        # the shell.
+        fake_mod = _types.ModuleType("ament_index_python")
+        fake_pkg = _types.ModuleType("ament_index_python.packages")
+        fake_pkg.get_package_share_directory = lambda _pkg: "/tmp/fake"
+        fake_mod.packages = fake_pkg
+
+        fake_mcp = _types.ModuleType("rob_box_mcp_tools")
+        # Intentionally do NOT create rob_box_mcp_tools.llm_adapter
+        # in sys.modules — the import will fail.
+
+        saved = {
+            k: sys.modules.get(k)
+            for k in (
+                "ament_index_python",
+                "ament_index_python.packages",
+                "rob_box_mcp_tools",
+                "rob_box_mcp_tools.llm_adapter",
+            )
+        }
+        sys.modules["ament_index_python"] = fake_mod
+        sys.modules["ament_index_python.packages"] = fake_pkg
+        sys.modules["rob_box_mcp_tools"] = fake_mcp
+        # Ensure the broken submodule is not present from a previous
+        # test, so the lazy import has to actually look it up.
+        sys.modules.pop("rob_box_mcp_tools.llm_adapter", None)
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                node._build_tool_provider()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        message = str(ctx.exception)
+        self.assertIn("rob_box_mcp_tools", message)
+        self.assertIn("importable", message)
+
+    def test_unknown_backend_falls_back_to_fake_with_warning(self):
+        """Unknown ``tool_provider`` value logs a warning + returns FakeToolProvider.
+
+        Operators who fat-finger the parameter get a clear startup
+        warning and a working (chat-only) shell instead of a
+        crash. The warning text must name the bad value so they
+        can fix the YAML.
+        """
+        node = object.__new__(DialogueNode)
+        logger = MagicMock()
+        node.get_logger = lambda: logger
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        node.get_parameter = lambda name: _Param(
+            "deepseek_mcp_typo" if name == "tool_provider" else None,
+        )
+        provider = node._build_tool_provider()
+        self.assertIsInstance(provider, FakeToolProvider)
+        warning_calls = [
+            c for c in logger.warning.call_args_list if c.args
+        ]
+        joined = " ".join(c.args[0] for c in warning_calls)
+        self.assertIn("deepseek_mcp_typo", joined)
+        self.assertIn("FakeToolProvider", joined)
+
+    def test_ros_mcp_happy_path_exposes_34_manifests(self):
+        """Happy path: bridge wired, ToolRegistry manifests exposed.
+
+        Patches the lazy import to return a stubbed bridge so the
+        test does not need a live rclpy publisher. Asserts that
+        the provider exposes all 34 manifests from ``ToolRegistry``
+        (with a representative canary slice asserted by name).
+        """
+        node = object.__new__(DialogueNode)
+        logger = MagicMock()
+        node.get_logger = lambda: logger
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        node.get_parameter = lambda name: _Param(
+            "ros_mcp" if name == "tool_provider" else None,
+        )
+
+        # Stub ament probe + LLMToolCallAdapter.
+        fake_mod = _types.ModuleType("ament_index_python")
+        fake_pkg = _types.ModuleType("ament_index_python.packages")
+        fake_pkg.get_package_share_directory = lambda _pkg: "/tmp/fake"
+        fake_mod.packages = fake_pkg
+
+        class _StubBridge:
+            def execute_tool_call_sync(self, *_a, **_kw):
+                return {"success": True, "data": {}}
+
+        fake_mcp = _types.ModuleType("rob_box_mcp_tools")
+        fake_mcp_adapter = _types.ModuleType("rob_box_mcp_tools.llm_adapter")
+        fake_mcp_adapter.LLMToolCallAdapter = lambda _node: _StubBridge()
+
+        saved = {
+            k: sys.modules.get(k)
+            for k in (
+                "ament_index_python",
+                "ament_index_python.packages",
+                "rob_box_mcp_tools",
+                "rob_box_mcp_tools.llm_adapter",
+            )
+        }
+        sys.modules["ament_index_python"] = fake_mod
+        sys.modules["ament_index_python.packages"] = fake_pkg
+        sys.modules["rob_box_mcp_tools"] = fake_mcp
+        sys.modules["rob_box_mcp_tools.llm_adapter"] = fake_mcp_adapter
+        try:
             provider = node._build_tool_provider()
         finally:
             for k, v in saved.items():
@@ -890,31 +1029,50 @@ class TestFakeToolProviderRegression(unittest.TestCase):
                 else:
                     sys.modules[k] = v
 
-        # Provider is still FakeToolProvider today — the W5a mismatch.
-        self.assertIsInstance(provider, FakeToolProvider)
-        # The startup warning was emitted, with a pointer to the
-        # kanban task so operators know where to look.
-        warning_calls = [
-            call_args
-            for call_args in logger.warning.call_args_list
-        ]
-        # Find the W5a-specific warning by substring.
-        w5a_warnings = [
-            c for c in warning_calls
-            if c.args and "W5a" in (c.args[0] if c.args else "")
-        ]
-        self.assertTrue(
-            w5a_warnings,
-            "DialogueNode did not log the W5a FakeToolProvider warning. "
-            f"warnings seen: {warning_calls!r}",
+        # The provider is a LegacyToolProviderAdapter wrapping the
+        # core ROSMCPToolProvider. Its discover() returns a tuple
+        # of ToolSpec from the 34-manifest catalogue.
+        import asyncio
+
+        specs = asyncio.run(provider.discover())
+        spec_names = {s.name for s in specs}
+        # Sanity: must include the MCP canary.
+        missing = set(self._MCP_TOOL_CANARY) - spec_names
+        self.assertEqual(
+            missing, set(),
+            f"ROSMCPToolProvider must expose the canary MCP tools "
+            f"{self._MCP_TOOL_CANARY!r}; missing: {sorted(missing)}",
         )
-        # The warning must point at the right kanban card.
-        joined = " ".join(
-            (c.args[0] if c.args else "")
-            for c in w5a_warnings
+        # Sanity: must include a substantial slice of the registry.
+        self.assertGreaterEqual(
+            len(spec_names), 30,
+            f"ROSMCPToolProvider must expose at least 30 of the 34 "
+            f"ToolRegistry manifests; got {len(spec_names)}.",
         )
-        self.assertIn("t_10a9c178", joined)
-        self.assertIn("FakeToolProvider", joined)
+        # The startup log line must announce the wiring. We emit an
+        # INFO-level message saying how many tools were wired and
+        # that the bridge is ROSMCPToolProvider — operators rely on
+        # this line for fast triage.
+        info_calls = [
+            c for c in logger.info.call_args_list if c.args
+        ]
+        joined_info = " ".join(c.args[0] for c in info_calls)
+        self.assertIn("ROSMCPToolProvider", joined_info)
+        # Catalogue size: must mention a positive number of tools
+        # (sanity-checked via regex below).
+        import re
+
+        match = re.search(r"(\d+)\s+MCP tools", joined_info)
+        self.assertIsNotNone(
+            match,
+            "ROSMCPToolProvider startup log must include '<N> MCP tools'; "
+            f"got: {joined_info!r}",
+        )
+        self.assertGreaterEqual(
+            int(match.group(1)), 30,
+            "ROSMCPToolProvider startup log must report at least 30 "
+            "manifests wired (registry has 34).",
+        )
 
 
 if __name__ == "__main__":

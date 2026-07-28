@@ -36,6 +36,8 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateKind,
     DialogueStateMachine,
 )
+from rob_box_harness.core.tool_registry import ToolRegistry
+from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
 from rob_box_harness.memory import InMemoryStore, MemoryStore, SQLiteVoiceMemory
 from rob_box_harness.providers import build_deepseek_provider
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
@@ -146,6 +148,14 @@ class DialogueNode(Node):
         self.declare_parameter("verbose_llm", True)
         self.declare_parameter("history_excluded_tools", ["handle_navigation"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
+        # W5a: select the tool-provider backend. ``ros_mcp`` is the
+        # production path (LLMToolCallAdapter → ROSMCPToolProvider);
+        # ``fake`` swaps in FakeToolProvider for unit tests; ``none``
+        # disables tools entirely. Tests override this via launch /
+        # YAML so the W5a assertion (provider.list_tools() > 0) can
+        # be exercised deterministically without spinning up rclpy
+        # publishers.
+        self.declare_parameter("tool_provider", "ros_mcp")
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
@@ -190,29 +200,111 @@ class DialogueNode(Node):
             model=self.get_parameter("model").value or None,
         )
     def _build_tool_provider(self) -> ToolProvider:
-        if not self.get_parameter("enable_mcp_tools").value:
+        # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
+        # is the default ``"ros_mcp"``. The previous version silently
+        # fell through to FakeToolProvider, leaving voice commands
+        # like "открой шторы" / "сохрани точку" as no-ops because the
+        # LLM saw an empty tool registry. The new path:
+        #
+        # 1. Probe the ``rob_box_mcp_tools`` package (ament_index) so
+        #    we know the bridge is buildable on this image.
+        # 2. Lazy-import ``LLMToolCallAdapter`` from
+        #    ``rob_box_mcp_tools`` (no static ``exec_depend`` on the
+        #    voice package — the import only fires when the operator
+        #    asks for MCP).
+        # 3. Construct the bridge + ``ROSMCPToolProvider`` and feed
+        #    it the 34 manifests from ``ToolRegistry``.
+        # 4. Wrap with ``LegacyToolProviderAdapter`` so the legacy
+        #    ``discover/execute`` contract that ``DialogCore`` accepts
+        #    is satisfied.
+        # 5. Assert ``list_tools()`` is non-empty — silent regression
+        #    guard against the W5a mismatch re-appearing.
+        backend = str(self.get_parameter("tool_provider").value or "ros_mcp")
+        if backend == "fake" or backend == "none":
+            self.get_logger().info(
+                f"⚙️ tool_provider={backend}: using FakeToolProvider "
+                "(0 MCP tools, LLM chat-only)."
+            )
             return FakeToolProvider()
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            get_package_share_directory("rob_box_mcp_tools")
-        except Exception:
+        if backend != "ros_mcp":
             self.get_logger().warning(
-                "⚠️ MCP bridge unavailable; FakeToolProvider")
+                f"⚠️ Unknown tool_provider backend {backend!r}; "
+                "expected one of 'ros_mcp', 'fake', 'none'. "
+                "Falling back to FakeToolProvider (LLM chat-only)."
+            )
             return FakeToolProvider()
-        # The rob_box_mcp_tools package is installed and discoverable,
-        # but the real MCP bridge wiring is not yet in place. Until W5a
-        # (kanban t_10a9c178) lands, the shell returns FakeToolProvider
-        # even though the operator asked for tools. Surface this so the
-        # mismatch is visible at startup — otherwise voice commands
-        # like "открой шторы" / "сохрани точку" silently no-op because
-        # the LLM sees a tool registry with 0 entries.
-        self.get_logger().warning(
-            "⚠️ enable_mcp_tools=true but FakeToolProvider is wired: "
-            "29 MCP tools (speak_text, play_sound, waypoint_save, music, "
-            "…) are NOT exposed to the LLM. Known issue — see W5a "
-            "(kanban t_10a9c178) for the ROSMCPToolProvider landing."
+        # Probe rob_box_mcp_tools so we surface a clear error if the
+        # image was built without the bridge — better than letting
+        # the ImportError surface deep inside the LLM tool loop.
+        try:
+            from ament_index_python.packages import (
+                get_package_share_directory as _ament_probe,
+            )
+            _ament_probe("rob_box_mcp_tools")
+        except Exception as exc:  # noqa: BLE001 — startup probe
+            raise RuntimeError(
+                "tool_provider='ros_mcp' requires the rob_box_mcp_tools "
+                f"ROS package to be installed; ament_index probe failed: "
+                f"{exc!r}. Either install the package, rebuild the "
+                "Docker image with --packages-up-to rob_box_voice, or "
+                "set the tool_provider launch arg to 'fake'/'none' for "
+                "a chat-only deployment."
+            ) from exc
+        # Lazy import — rob_box_voice does not statically depend on
+        # rob_box_mcp_tools (no <exec_depend>); the import only
+        # fires here when the operator asked for MCP tools.
+        try:
+            from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
+        except ImportError as exc:
+            raise RuntimeError(
+                "tool_provider='ros_mcp' requires the Python package "
+                "'rob_box_mcp_tools' to be importable. The ament "
+                "probe above succeeded, but `import "
+                f"rob_box_mcp_tools.llm_adapter` failed: {exc!r}. "
+                "Check that the install image includes rob_box_mcp_tools."
+            ) from exc
+        bridge = LLMToolCallAdapter(self)
+        provider = ROSMCPToolProvider(bridge)
+        # Feed the 34 manifests from the harness-side catalog. The
+        # provider's update_tools() expects the OpenAI-style envelope
+        # ({type: function, function: {name, description,
+        # parameters}}); build it from ToolRegistry.list_tools()
+        # so the LLM-facing surface is the single source of truth.
+        registry = ToolRegistry()
+        provider.update_tools(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "parameters": dict(spec.parameters),
+                    },
+                }
+                for spec in registry.list_tools()
+            ]
         )
-        return FakeToolProvider()
+        # Silent regression guard: if the bridge came up but the
+        # manifest is empty, the LLM would silently no-op every
+        # tool request. Surface a loud error instead so operators
+        # notice the wiring mismatch at startup.
+        catalogue = provider.list_tools()
+        if not catalogue:
+            raise RuntimeError(
+                "ROSMCPToolProvider came up with an empty tool "
+                "catalogue (0 tools). The 34-manifest ToolRegistry "
+                "did not register correctly. Refusing to start — "
+                "voice commands would silently no-op."
+            )
+        self.get_logger().info(
+            f"✅ tool_provider='ros_mcp': {len(catalogue)} MCP tools "
+            f"wired via LLMToolCallAdapter → ROSMCPToolProvider "
+            f"(first: {catalogue[0].name!r})."
+        )
+        # DialogCore consumes the legacy ``discover/execute`` port
+        # contract; adapt the core provider so the harness's
+        # orchestration layer stays unchanged.
+        return adapt_tool_provider(provider)
     def _on_vad(self, msg: Bool) -> None:
         if msg.data and not self._vad_speech_detected:
             self._vad_speech_detected = True

@@ -130,6 +130,16 @@
       streaming: false             # Потоковый вывод LLM (false = один JSON ответ)
       sentence_split: true        # Разбивать на предложения для TTS
 
+      # W5a: tool-provider backend. Default ``ros_mcp`` wires
+      # LLMToolCallAdapter → ROSMCPToolProvider with the 34-manifest
+      # ToolRegistry so the LLM can actually drive the robot
+      # (``speak_text``, ``play_sound``, ``save_waypoint``, …).
+      # Override to ``fake`` for unit-test deployments that
+      # need a hand-injected FakeToolProvider; ``none`` disables
+      # tools entirely (chat-only). The launch-file
+      # ``tool_provider:=`` arg wins over this YAML key.
+      tool_provider: "ros_mcp"    # "ros_mcp" | "fake" | "none"
+
     # ========== Sound Node ==========
     sound_node:
       # Пути
