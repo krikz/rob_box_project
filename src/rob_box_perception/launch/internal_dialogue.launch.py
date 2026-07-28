@@ -11,7 +11,18 @@ Launches:
 2. context_aggregator - aggregates subscribed topics into /perception/context_update
 3. health_monitor - watches /rosout, publishes status on /voice/sound/trigger
 
-Data flow:
+Data flow (current — Phase 6 v2):
+  [Sensor board (UART)] -> perception_bridge -> /sensors/data (orphan publisher, Phase 7+ wiring)
+                          perception_bridge -> /perception/health (orphan publisher)
+  [9 ROS2 topics] -------> context_aggregator -> /perception/context_update
+                          (vision, pose, odom, joint_states, rosout,
+                           voice/stt/result, voice/dialogue/response,
+                           voice/command/intent, voice/command/feedback)
+                                                                          |
+                                                                          v
+                                              /perception/context_update -> mcp_server.py (harness MCP-bridge) -> DialogCore -> LLM
+
+Data flow (target — Phase 7+, после готовности sensor board firmware):
   [Sensor board (UART)] -> perception_bridge -> /sensors/data \
                                                             >-> context_aggregator
   [Other ROS2 topics] ------------------------------> /       \
