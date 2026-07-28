@@ -172,7 +172,15 @@
       provider: "mimo"  # qwen | mimo | deepseek | openai | ollama
       model: "mimo-v2.5-pro"  # Overrides PROVIDERS default
       enable_fallback: false  # ОТКЛЮЧЕНО: нет доступа к Qwen
-      enable_mcp_tools: true  # ВНИМАНИЕ! Может включать reasoning mode в DeepSeek
+      enable_mcp_tools: true
+      # ⚠️ KNOWN ISSUE: this flag is honored at startup, but
+      # dialogue_node._build_tool_provider still falls through to
+      # FakeToolProvider (0 tools exposed) until W5a lands (see
+      # kanban t_10a9c178 — "Wire real ToolProvider в dialogue_node").
+      # At runtime DialogueNode logs a startup warning that explains the
+      # gap; do not flip this to false without reading that task — the
+      # flag is intentionally left on so the W5a merge automatically
+      # activates MCP tools without re-touching the config.
 
       # Qwen API
       qwen:

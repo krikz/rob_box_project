@@ -751,5 +751,171 @@ class TestShellImportSanity(unittest.TestCase):
         self.assertTrue(issubclass(DialogueNode, _Node))
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Regression tests for the W5a config-vs-runtime sync issue
+# (kanban t_d0f33064).
+#
+# The shipped behaviour at the time of writing is:
+#
+#   * ``enable_mcp_tools=true`` is honoured at startup, but
+#     ``_build_tool_provider`` still falls through to a
+#     :class:`FakeToolProvider` even when the
+#     ``rob_box_mcp_tools`` package is discoverable (W5a is the
+#     follow-up task that wires ``ROSMCPToolProvider`` for real).
+#   * The shell must log a startup WARNING so operators can spot the
+#     mismatch at run time instead of discovering it when voice
+#     commands like "открой шторы" / "сохрани точку" silently no-op.
+#
+# These tests pin the WARNING behaviour so it can't quietly disappear
+# during a refactor. They live alongside the W5 integration tests
+# because the shell is the unit that owns the fake-provider wiring.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFakeToolProviderRegression(unittest.TestCase):
+    """Pin the FakeToolProvider + W5a warning behaviour.
+
+    The shell's ``_TestableDialogueNode`` always injects a
+    :class:`FakeToolProvider` via the ``_build_tool_provider`` override.
+    We can therefore assert two things directly without spinning up
+    the real ROS2 stack:
+
+    1. The injected fake provider is exactly the type the production
+       shell returns today (``FakeToolProvider``), and the 29 MCP
+       tools (``speak_text``, ``play_sound``, ``waypoint_save``, …)
+       are NOT among the exposed specs — i.e. the LLM has no way to
+       drive the real robot. (The fake provider does expose the
+       built-in ``echo`` tool for harness smoke tests; we exclude
+       that one from the assertion.)
+    2. The production-shell code path logs the canonical W5a warning
+       via the underlying ``DialogueNode._build_tool_provider`` when
+       ``enable_mcp_tools=True`` AND the MCP-bridge probe succeeds.
+
+    Test (2) is the regression that the W5a task is supposed to flip:
+    when ``ROSMCPToolProvider`` lands, this assertion will fail and
+    the test should be updated to assert the new behaviour. That's
+    intentional — the test is the canary.
+    """
+
+    # A representative slice of the 29 MCP tools that should be
+    # exposed once W5a lands. We assert they are NOT exposed today
+    # (FakeToolProvider) — when W5a ships, the assertion flips.
+    _MCP_TOOL_CANARY = ("speak_text", "play_sound", "waypoint_save")
+
+    def test_injected_fake_provider_exposes_no_mcp_tools(self):
+        """``FakeToolProvider`` does not expose any MCP tools today.
+
+        Operators rely on this emptiness as the W5a marker: the LLM
+        gets the built-in ``echo`` tool but not the MCP-bridged
+        robot tools (speak / sound / waypoint / music), so voice
+        commands like "сохрани точку" / "сыграй трек" silently
+        no-op. Once W5a ships the test should be updated to assert
+        the MCP tool names ARE exposed.
+        """
+        import asyncio
+
+        async def _discover() -> tuple:
+            node = _TestableDialogueNode(llm=_ScriptedLLMProvider())
+            try:
+                provider = node._build_tool_provider()
+                return await provider.discover()
+            finally:
+                node.close()
+
+        specs = asyncio.run(_discover())
+        spec_names = {s.name for s in specs}
+        # Sanity: only the built-in ``echo`` tool is wired today.
+        self.assertEqual(
+            spec_names, {"echo"},
+            f"FakeToolProvider should expose ONLY the built-in echo "
+            f"tool today; got: {sorted(spec_names)}",
+        )
+        # The W5a canary: MCP tools must be absent.
+        exposed_mcp = spec_names & set(self._MCP_TOOL_CANARY)
+        self.assertEqual(
+            exposed_mcp, set(),
+            f"FakeToolProvider must not expose MCP tools today "
+            f"(W5a not landed yet); found: {sorted(exposed_mcp)}",
+        )
+
+    def test_production_shell_logs_w5a_warning_when_mcp_probe_succeeds(self):
+        """Production shell surfaces the W5a mismatch at startup.
+
+        Builds a production :class:`DialogueNode` (no fake override)
+        but stops short of fully initialising the harness layer — we
+        only need ``_build_tool_provider`` to run, which is the unit
+        the W5a task is rewriting. The test patches the
+        ``ament_index_python`` probe to return successfully (so we
+        exercise the "MCP package found, but FakeToolProvider wired"
+        branch), then asserts the canonical warning text.
+        """
+        # Stop after __init__'s super().__init__ by NOT running the
+        # full wiring — instead, allocate via object.__new__ and
+        # call only _build_tool_provider with a stubbed parameter
+        # store + logger.
+        node = object.__new__(DialogueNode)
+        logger = MagicMock()
+        node.get_logger = lambda: logger
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        # enable_mcp_tools=True drives the W5a branch.
+        node.get_parameter = lambda name: _Param(
+            True if name == "enable_mcp_tools" else None
+        )
+
+        # Force the ament probe to succeed — rob_box_mcp_tools is
+        # available in the container (Dockerfile installs it).
+        fake_mod = _types.ModuleType("ament_index_python")
+        fake_pkg = _types.ModuleType("ament_index_python.packages")
+        fake_pkg.get_package_share_directory = lambda _pkg: "/tmp/fake"
+        fake_mod.packages = fake_pkg
+        saved = {
+            k: sys.modules.get(k)
+            for k in (
+                "ament_index_python",
+                "ament_index_python.packages",
+            )
+        }
+        sys.modules["ament_index_python"] = fake_mod
+        sys.modules["ament_index_python.packages"] = fake_pkg
+        try:
+            provider = node._build_tool_provider()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        # Provider is still FakeToolProvider today — the W5a mismatch.
+        self.assertIsInstance(provider, FakeToolProvider)
+        # The startup warning was emitted, with a pointer to the
+        # kanban task so operators know where to look.
+        warning_calls = [
+            call_args
+            for call_args in logger.warning.call_args_list
+        ]
+        # Find the W5a-specific warning by substring.
+        w5a_warnings = [
+            c for c in warning_calls
+            if c.args and "W5a" in (c.args[0] if c.args else "")
+        ]
+        self.assertTrue(
+            w5a_warnings,
+            "DialogueNode did not log the W5a FakeToolProvider warning. "
+            f"warnings seen: {warning_calls!r}",
+        )
+        # The warning must point at the right kanban card.
+        joined = " ".join(
+            (c.args[0] if c.args else "")
+            for c in w5a_warnings
+        )
+        self.assertIn("t_10a9c178", joined)
+        self.assertIn("FakeToolProvider", joined)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -193,9 +193,19 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 "⚠️ MCP bridge unavailable; FakeToolProvider")
             return FakeToolProvider()
-        # W7 will own the real MCP bridge wiring; until then the shell
-        # composes against a FakeToolProvider so smoke tests don't burn
-        # API quota on agents with no-op tool calls.
+        # The rob_box_mcp_tools package is installed and discoverable,
+        # but the real MCP bridge wiring is not yet in place. Until W5a
+        # (kanban t_10a9c178) lands, the shell returns FakeToolProvider
+        # even though the operator asked for tools. Surface this so the
+        # mismatch is visible at startup — otherwise voice commands
+        # like "открой шторы" / "сохрани точку" silently no-op because
+        # the LLM sees a tool registry with 0 entries.
+        self.get_logger().warning(
+            "⚠️ enable_mcp_tools=true but FakeToolProvider is wired: "
+            "29 MCP tools (speak_text, play_sound, waypoint_save, music, "
+            "…) are NOT exposed to the LLM. Known issue — see W5a "
+            "(kanban t_10a9c178) for the ROSMCPToolProvider landing."
+        )
         return FakeToolProvider()
     def _on_vad(self, msg: Bool) -> None:
         if msg.data and not self._vad_speech_detected:
