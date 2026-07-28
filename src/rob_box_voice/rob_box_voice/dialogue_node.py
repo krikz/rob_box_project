@@ -164,13 +164,19 @@ class DialogueNode(Node):
         try:
             store: MemoryStore = SQLiteVoiceMemory(
                 db_path=self.get_parameter("sqlite_db_path").value)
-            self._loop.run_until_complete(store.init())
+            future = asyncio.run_coroutine_threadsafe(store.init(), self._loop)
+            future.result(timeout=5.0)
             return store
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ SQLiteVoiceMemory init failed ({exc}); InMemoryStore")
             store = InMemoryStore()
-            self._loop.run_until_complete(store.init())
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    store.init(), self._loop)
+                future.result(timeout=3.0)
+            except Exception:
+                pass
             return store
     def _build_llm(self) -> Any:
         # Delegate to the harness factory so the shell doesn't own
