@@ -187,38 +187,6 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
-  build-micro-ros-agent:
-    needs: prepare
-    runs-on: self-hosted
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Build micro-ros-agent
-        run: |
-          SERVICE="micro_ros_agent"
-          GHCR_TAG="${IMAGE_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
-
   build-ros2-control:
     needs: prepare
     runs-on: self-hosted
@@ -359,7 +327,6 @@ jobs:
       - build-rtabmap
       - build-twist-mux
       - build-teleop
-      - build-micro-ros-agent
       - build-ros2-control
       - build-nav2
       - build-lslidar
@@ -390,7 +357,6 @@ jobs:
           tag_and_push "${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:nav2-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:lslidar-${ROS_DISTRO}-${DOCKER_TAG}"
@@ -432,7 +398,6 @@ jobs:
       - build-rtabmap
       - build-twist-mux
       - build-teleop
-      - build-micro-ros-agent
       - build-ros2-control
       - build-nav2
       - build-lslidar
@@ -453,7 +418,6 @@ jobs:
           echo "  ✅ rtabmap"
           echo "  ✅ twist-mux"
           echo "  ✅ teleop"
-          echo "  ✅ micro-ros-agent"
           echo "  ✅ ros2-control"
           echo "  ✅ nav2"
           echo "  ✅ lslidar"
