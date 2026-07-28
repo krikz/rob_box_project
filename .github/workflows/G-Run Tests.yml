@@ -41,8 +41,13 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          pip install openai httpx
+          sudo python3 -m pip install --upgrade pip
+          sudo pip install openai httpx
+          # Nuke any user-site pytest that shadows system package
+          pip uninstall -y pytest pytest-cov pytest-mock 2>/dev/null || true
+          rm -rf ~/.local/lib/python3.10/site-packages/_pytest* 2>/dev/null || true
+          rm -rf ~/.local/lib/python3.10/site-packages/pytest* 2>/dev/null || true
+          python3 -c "import pytest; print(f'pytest: {pytest.__version__}, path: {pytest.__file__}')"
 
       - name: Install ROS2 test dependencies
         run: |
