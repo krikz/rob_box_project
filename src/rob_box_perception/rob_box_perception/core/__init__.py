@@ -1,5 +1,7 @@
-from .event_detector import EventDetector, EventChange
-from .prompt_formatter import PromptFormatter
-from .memory_manager import MemoryManager
+"""Core utilities for the perception package.
 
-__all__ = ["EventDetector", "EventChange", "PromptFormatter", "MemoryManager"]
+After W10 the perception package is LLM-free, so this layer only
+exposes pure-Python event detection and short-term memory helpers.
+``PromptFormatter`` was deleted in W10 along with the summarization
+pipeline that used it; this ``__init__`` is no longer published.
+"""
