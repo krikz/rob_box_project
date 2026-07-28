@@ -49,6 +49,13 @@ Ports:
     MemoryStore, InMemoryStore, Turn, Fact,
     SideEffectBus, NoopBus, RecordingBus, CompositeBus, Effect,
     EffectContext, LogEffect, EchoEffect
+  * :class:`SendReplyEffect` / :class:`SpeakEffect` /
+    :class:`PlaySoundEffect` / :class:`SetLEDEffect` /
+    :class:`MoveEffect` / :class:`TelegramBus` /
+    :class:`TelegramFilteredBus` — telegram-side extensions (P1.4).
+  * :class:`SnapshotStore` / :class:`InMemorySnapshotStore` /
+    :func:`parse_telegram_update` — port for camera/frame caches
+    plus update-parsing helper (P1.4).
 
 Built-in providers (for tests / smoke):
     DummyLLMProvider, HarnessFakeLLMProvider (= FakeLLMProvider)
@@ -78,9 +85,19 @@ from rob_box_harness.effects import (
     Effect,
     EffectContext,
     LogEffect,
+    MoveEffect,
     NoopBus,
+    PlaySoundEffect,
     RecordingBus,
+    SendReplyEffect,
+    SetLEDEffect,
     SideEffectBus,
+    SpeakEffect,
+    TelegramBus,
+    TelegramChannel,
+    effect_kind,
+    from_dict,
+    to_dict,
 )
 from rob_box_harness.errors import (
     ConfigError,
@@ -107,6 +124,12 @@ from rob_box_harness.runner import (
     run_harness_sync,
 )
 from rob_box_harness.snapshot import SessionSnapshot
+from rob_box_harness.snapshot_store import (
+    InMemorySnapshotStore,
+    SnapshotEntry,
+    SnapshotStore,
+    parse_telegram_update,
+)
 from rob_box_harness.tools import (
     FakeToolProvider,
     ToolExecutionError,
@@ -178,6 +201,17 @@ __all__ = [
     "EffectContext",
     "LogEffect",
     "EchoEffect",
+    "SendReplyEffect",
+    "SpeakEffect",
+    "PlaySoundEffect",
+    "SetLEDEffect",
+    "MoveEffect",
+    "TelegramBus",
+    "TelegramChannel",
+    "SnapshotStore",
+    "SnapshotEntry",
+    "InMemorySnapshotStore",
+    "parse_telegram_update",
     # Built-in dummy providers
     "DummyLLMProvider",
     "HarnessFakeLLMProvider",
