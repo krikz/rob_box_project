@@ -63,6 +63,7 @@ from rob_box_llm.errors import (
 )
 from rob_box_llm.provider import (
     ImagePart,
+    LLMChunk,
     LLMMessage,
     LLMResponse,
     LLMSettings,
@@ -863,6 +864,238 @@ async def test_stream_retries_on_initial_429(monkeypatch: pytest.MonkeyPatch) ->
     assert [c.content_delta for c in chunks] == ["He", "llo", ""]
     assert attempts["n"] == 2
     assert sleeps == [0.1]
+
+
+@pytest.mark.asyncio
+async def test_stream_retry_closes_failed_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """W-1: when the initial ``__anext__`` on a freshly-opened inner
+    stream raises a transient error, the failed stream MUST be
+    ``aclose()``-d before the next attempt opens a new one. Otherwise
+    the underlying HTTP body sits in the openai SDK's pool until GC
+    — a connection-pool leak per retry.
+
+    Reference: ADR-0001 §2.6.1 M10 (``aclose()`` корректно закрывает
+    HTTP-клиент, особенно при streaming).
+    """
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=3, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    # Event log lets us assert ordering between ``aclose`` of the
+    # failed attempt and ``create`` of the next attempt, without
+    # relying on wall-clock ordering.
+    events: list[str] = []
+    aclose_call_count = {"n": 0}
+
+    # Wrap the upstream async generator so its ``aclose`` records the
+    # call. ``async_generator.aclose`` is read-only in CPython, but
+    # we don't need to override it: we only need to OBSERVE that
+    # ``aclose`` was awaited. We do that by patching the provider's
+    # ``aclose`` after the upstream generator is created.
+    #
+    # Concretely: when the harness provider catches a transient error
+    # on ``inner_stream.__anext__``, it calls ``inner_stream.aclose()``.
+    # The upstream generator (returned by
+    # ``MiniMaxProvider.stream()``) is an ``async_generator`` — its
+    # ``aclose`` is a built-in method. We can't replace it. But we CAN
+    # check whether the harness provider called ``aclose`` at all by
+    # substituting our own ``AsyncIterator`` wrapper as the
+    # ``stream_obj`` returned from the SDK call. The upstream
+    # ``stream()`` then does ``async for event in stream_obj`` — so we
+    # can intercept the wrapper's ``aclose``.
+    #
+    # Since the harness provider sees ``inner_stream`` = the upstream
+    # generator (whose aclose we cannot patch), we instead patch
+    # ``MiniMaxProvider.stream`` directly so we can hand the harness
+    # provider a wrapper we own. This still exercises the W-1 path:
+    # the harness provider's ``except`` branch must call ``aclose``
+    # on whatever object it received from ``self._inner.stream()``.
+    inner_streams: list[Any] = []
+
+    class _TrackedStream:
+        """Wraps an inner async iterator so we can intercept ``aclose()``.
+
+        The harness provider calls ``inner_stream.aclose()`` in its
+        ``except (RateLimitError, TimeoutError)`` branch (W-1). We
+        count and order these calls so the test can assert that
+        ``aclose`` ran exactly once and BEFORE the second attempt
+        opened.
+        """
+
+        def __init__(self, inner: AsyncIterator[_ResponseObj]) -> None:
+            self._inner = inner
+            self.closed = False
+
+        def __aiter__(self) -> _TrackedStream:
+            return self
+
+        async def __anext__(self) -> _ResponseObj:
+            return await self._inner.__anext__()
+
+        async def aclose(self) -> None:
+            self.closed = True
+            aclose_call_count["n"] += 1
+            events.append("aclose[1]")
+            inner_aclose = getattr(self._inner, "aclose", None)
+            if inner_aclose is not None:
+                await inner_aclose()
+
+    # We replace ``p._inner.stream`` with a plain (sync) function
+    # that returns an AsyncIterator directly. Because
+    # ``MiniMaxProvider.stream`` is declared ``async def`` (and is an
+    # async GENERATOR function — its body has ``yield``), the bound
+    # method, when called, normally returns an AsyncGenerator. The
+    # harness provider does:
+    #
+    #     inner_stream = self._inner.stream(messages, ...)
+    #     first_chunk = await inner_stream.__anext__()
+    #
+    # It treats the result as an AsyncIterator. We install our own
+    # function on the instance's ``__dict__``, which shadows the
+    # bound method on the class, and returns a ``_TrackedStream``
+    # directly (no async/await, no yield). This is the cleanest way
+    # to observe ``aclose`` on the wrapper without monkey-patching
+    # ``async_generator.aclose`` (which is read-only in CPython).
+    attempts = {"n": 0}
+
+    def patched_stream(
+        messages: Any, *, tools: Any = (), settings: Any = None
+    ) -> Any:
+        attempts["n"] += 1
+        events.append(f"inner_stream[{attempts['n']}]")
+        if attempts["n"] == 1:
+            async def _failing_gen() -> AsyncIterator[_ResponseObj]:
+                events.append("first-anext-raises")
+                raise RateLimitError(
+                    "rate-limited mid-open", provider="minimax"
+                )
+                yield  # pragma: no cover — async generator marker
+
+            return _TrackedStream(_failing_gen())
+
+        async def _ok_gen() -> AsyncIterator[LLMChunk]:
+            yield LLMChunk(content_delta="OK")
+            yield LLMChunk(content_delta="", finish_reason="stop")
+
+        return _ok_gen()
+
+    # Bind as an instance attribute, NOT a class attribute. Python
+    # looks up ``p._inner.stream`` via the instance dict first.
+    p._inner.__dict__["stream"] = patched_stream  # type: ignore[method-assign]
+
+    chunks: list[Any] = []
+    async for chunk in p.stream([LLMMessage(role="user", content="hi")]):
+        chunks.append(chunk)
+
+    # The retry happened (2 attempts), the second attempt's chunks
+    # surfaced to the caller, and the backoff slept exactly once.
+    assert [c.content_delta for c in chunks] == ["OK", ""]
+    assert attempts["n"] == 2
+    assert sleeps == [0.1]
+
+    # W-1 contract: the failed first attempt's aclose() was called
+    # exactly once.
+    assert aclose_call_count["n"] == 1, (
+        f"expected aclose() on the failed first attempt, "
+        f"got count={aclose_call_count['n']}; events={events!r}"
+    )
+
+    # W-1 contract: aclose() of the failed inner stream happened
+    # BEFORE the second inner stream was opened. Without this
+    # ordering the HTTP body from the first attempt leaks until the
+    # next pool checkout.
+    assert events.index("aclose[1]") < events.index("inner_stream[2]"), (
+        f"aclose of failed attempt must precede opening of next attempt; "
+        f"events={events!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_retry_swallows_aclose_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """W-1 robustness: if the failed attempt's ``aclose()`` itself
+    raises (e.g. transport already torn down), the retry must still
+    proceed and the original transient error must still surface if
+    retries are exhausted.
+
+    Companion test to ``test_stream_retry_closes_failed_attempt``:
+    this one proves the W-1 fix is *best-effort* — a broken aclose
+    doesn't break the retry path, it just gets logged at DEBUG.
+    """
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=2, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    # Track that aclose WAS attempted on the failed first attempt.
+    # Without the W-1 fix this counter stays at 0, so the assertion
+    # below fails — guarding against accidental regressions where
+    # someone removes the aclose call entirely (which would also
+    # pass the original test, but is exactly the leak we want to
+    # prevent).
+    aclose_attempted = {"n": 0}
+
+    class _BrokenCloseStream:
+        """A stream whose ``aclose`` itself raises. Used to verify
+        that the provider's best-effort cleanup swallows the error
+        and lets the retry proceed."""
+
+        def __init__(self, inner: AsyncIterator[_ResponseObj]) -> None:
+            self._inner = inner
+
+        def __aiter__(self) -> _BrokenCloseStream:
+            return self
+
+        async def __anext__(self) -> _ResponseObj:
+            return await self._inner.__anext__()
+
+        async def aclose(self) -> None:
+            aclose_attempted["n"] += 1
+            raise RuntimeError("transport already closed")
+
+    attempts = {"n": 0}
+
+    def patched_stream(
+        messages: Any, *, tools: Any = (), settings: Any = None
+    ) -> Any:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            async def _failing_gen() -> AsyncIterator[_ResponseObj]:
+                raise RateLimitError(
+                    "rate-limited", provider="minimax"
+                )
+                yield  # pragma: no cover
+
+            return _BrokenCloseStream(_failing_gen())
+
+        async def _ok_gen() -> AsyncIterator[LLMChunk]:
+            yield LLMChunk(content_delta="OK")
+            yield LLMChunk(content_delta="", finish_reason="stop")
+
+        return _ok_gen()
+
+    p._inner.__dict__["stream"] = patched_stream  # type: ignore[method-assign]
+
+    # The broken aclose() must NOT prevent the retry: we still see the
+    # second attempt's chunks and only one sleep (one retry).
+    chunks: list[Any] = []
+    async for chunk in p.stream([LLMMessage(role="user", content="hi")]):
+        chunks.append(chunk)
+    assert [c.content_delta for c in chunks] == ["OK", ""]
+    assert attempts["n"] == 2
+    assert sleeps == [0.1]
+    # The harness provider MUST have attempted to aclose() the failed
+    # stream — proving the W-1 path is wired up. The fact that the
+    # aclose itself raised is irrelevant: the best-effort wrapper
+    # swallows the exception.
+    assert aclose_attempted["n"] == 1, (
+        f"expected aclose() attempt on failed first attempt, "
+        f"got {aclose_attempted['n']} — W-1 fix is missing"
+    )
 
 
 # ---------------------------------------------------------------------------
