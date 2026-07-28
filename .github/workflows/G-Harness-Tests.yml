@@ -105,7 +105,8 @@ jobs:
           pytest -m 'not network' -v \
             --junitxml=test-results/harness-unit/junit.xml \
             --cov-report=xml:coverage-reports/harness-unit-coverage.xml \
-            --cov-report=html:coverage-reports/harness-unit-html
+            --cov-report=html:coverage-reports/harness-unit-html \
+            --cov-fail-under=70
 
       - name: Verify no outbound network (sanity)
         if: always()
@@ -208,7 +209,8 @@ jobs:
           set -euo pipefail
           # В integration-режиме хотим гонять и network-, и integration-маркеры.
           pytest -m 'network or integration' -v \
-            --junitxml=test-results/harness-integration/junit.xml
+            --junitxml=test-results/harness-integration/junit.xml \
+            --cov-fail-under=40
 
       - name: Upload integration test results
         if: always()
