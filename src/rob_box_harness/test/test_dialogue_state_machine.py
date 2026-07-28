@@ -18,6 +18,11 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 
 
+def _now() -> float:
+    """Test-side clock helper (mirror of the production one)."""
+    return time.time()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -328,3 +333,144 @@ class TestFullSessionFlow:
         dsm.on_user_input("нет, лучше расскажи историю", state)
         dsm.on_event(DialogueEvent.STT_RESULT, state)
         assert dsm.state == DialogueStateKind.DIALOGUE
+
+
+class TestCurrentStateAlias:
+    """``current_state`` is the W3 plan §3 property — must mirror ``state``."""
+
+    def test_current_state_initial_matches_state(self) -> None:
+        dsm = _make_dsm()
+        assert dsm.current_state == dsm.state == DialogueStateKind.IDLE
+
+    def test_current_state_tracks_state_after_transition(self) -> None:
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.WAKE_WORD)
+        assert dsm.current_state == DialogueStateKind.LISTENING
+        assert dsm.current_state is dsm.state
+
+
+class TestTransitionValidator:
+    """``transition(new_state)`` is the W3 plan §3 direct-transition API."""
+
+    def test_transition_idle_to_listening_is_allowed(self) -> None:
+        dsm = _make_dsm()
+        new_state = dsm.transition(DialogueStateKind.LISTENING)
+        assert new_state == DialogueStateKind.LISTENING
+        assert dsm.current_state == DialogueStateKind.LISTENING
+
+    def test_transition_listening_to_dialogue_is_allowed(self) -> None:
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.WAKE_WORD)
+        dsm.transition(DialogueStateKind.DIALOGUE)
+        assert dsm.current_state == DialogueStateKind.DIALOGUE
+
+    def test_transition_dialogue_to_silenced_is_allowed(self) -> None:
+        dsm = _make_dsm()
+        dsm.transition(DialogueStateKind.LISTENING)
+        dsm.transition(DialogueStateKind.DIALOGUE)
+        dsm.transition(DialogueStateKind.SILENCED)
+        assert dsm.current_state == DialogueStateKind.SILENCED
+
+    def test_transition_silenced_to_idle_is_allowed(self) -> None:
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.SILENCE_COMMAND)
+        dsm.transition(DialogueStateKind.IDLE)
+        assert dsm.current_state == DialogueStateKind.IDLE
+
+    def test_transition_idle_to_dialogue_is_rejected(self) -> None:
+        """Cannot skip LISTENING — must match the on_event graph."""
+        dsm = _make_dsm()
+        with pytest.raises(ValueError, match="Illegal dialogue transition"):
+            dsm.transition(DialogueStateKind.DIALOGUE)
+
+    def test_transition_silenced_to_listening_is_rejected(self) -> None:
+        """Cannot barge-in from SILENCED — must go through IDLE."""
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.SILENCE_COMMAND)
+        with pytest.raises(ValueError, match="Illegal dialogue transition"):
+            dsm.transition(DialogueStateKind.LISTENING)
+
+    def test_transition_force_skips_validation(self) -> None:
+        """``force=True`` bypasses the graph — for rescue paths only."""
+        dsm = _make_dsm()
+        dsm.transition(DialogueStateKind.DIALOGUE, force=True)
+        assert dsm.current_state == DialogueStateKind.DIALOGUE
+
+    def test_transition_rejects_non_enum(self) -> None:
+        dsm = _make_dsm()
+        with pytest.raises(TypeError, match="DialogueStateKind"):
+            dsm.transition("LISTENING")  # type: ignore[arg-type]
+
+    def test_transition_to_same_state_is_noop(self) -> None:
+        """No-op transitions must not raise (target == current)."""
+        dsm = _make_dsm()
+        # IDLE → IDLE: not in the allowed set, but same-state stays put.
+        dsm.transition(DialogueStateKind.IDLE)
+        assert dsm.current_state == DialogueStateKind.IDLE
+
+    def test_transition_resets_silence_timer(self) -> None:
+        """Going to SILENCED resets the silenced_at clock."""
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.SILENCE_COMMAND)
+        first_silenced_at = dsm._silenced_at  # type: ignore[attr-defined]
+        time.sleep(0.01)
+        dsm.transition(DialogueStateKind.IDLE)
+        dsm.transition(DialogueStateKind.SILENCED)
+        assert dsm._silenced_at > first_silenced_at  # type: ignore[attr-defined]
+
+
+class TestActivityTimeout:
+    """``check_inactivity_timeout`` implements W3 plan §3 'LISTENING → IDLE'."""
+
+    def test_initial_activity_marked(self) -> None:
+        dsm = _make_dsm()
+        assert dsm.last_activity_at > 0.0
+
+    def test_on_event_updates_last_activity(self) -> None:
+        dsm = _make_dsm()
+        first = dsm.last_activity_at
+        time.sleep(0.005)
+        dsm.on_event(DialogueEvent.WAKE_WORD)
+        assert dsm.last_activity_at > first
+
+    def test_check_inactivity_timeout_listening_to_idle(self) -> None:
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.WAKE_WORD)
+        assert dsm.current_state == DialogueStateKind.LISTENING
+        # Force the clock to look old.
+        dsm._last_activity_at = _now() - 10.0  # type: ignore[attr-defined]
+        changed = dsm.check_inactivity_timeout(timeout=5.0)
+        assert changed is True
+        assert dsm.current_state == DialogueStateKind.IDLE
+
+    def test_check_inactivity_timeout_within_window_is_false(self) -> None:
+        dsm = _make_dsm()
+        dsm.on_event(DialogueEvent.WAKE_WORD)
+        changed = dsm.check_inactivity_timeout(timeout=300.0)
+        assert changed is False
+        assert dsm.current_state == DialogueStateKind.LISTENING
+
+    def test_check_inactivity_timeout_in_idle_is_false(self) -> None:
+        """Only LISTENING is dropped by this method."""
+        dsm = _make_dsm()
+        # IDLE state — must not be touched by the inactivity check.
+        changed = dsm.check_inactivity_timeout(timeout=0.0)
+        assert changed is False
+        assert dsm.current_state == DialogueStateKind.IDLE
+
+    def test_check_inactivity_timeout_in_dialogue_is_false(self) -> None:
+        """DIALOGUE has its own DIALOGUE_END path, not inactivity."""
+        dsm = _make_dsm()
+        dsm.transition(DialogueStateKind.LISTENING)
+        dsm.transition(DialogueStateKind.DIALOGUE)
+        dsm._last_activity_at = _now() - 10.0  # type: ignore[attr-defined]
+        changed = dsm.check_inactivity_timeout(timeout=0.001)
+        assert changed is False
+        assert dsm.current_state == DialogueStateKind.DIALOGUE
+
+    def test_mark_activity_updates_timestamp(self) -> None:
+        dsm = _make_dsm()
+        first = dsm.last_activity_at
+        time.sleep(0.005)
+        dsm.mark_activity()
+        assert dsm.last_activity_at > first
