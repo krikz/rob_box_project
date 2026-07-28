@@ -90,6 +90,7 @@ from .core.llm_config import (
     ProviderOverrides,
     resolve_provider_config,
 )
+from .core.voice_settings import make_voice_settings_tool
 from .utils.redact import redact_upstream_body
 
 try:
@@ -917,17 +918,11 @@ class DialogueNode(Node):
             """Получить текущую позицию робота (x, y, theta) на карте. Используй перед миссиями для запоминания точки возврата."""
             return await _call("get_current_pose", {})
 
-        @function_tool
-        async def set_volume(action: str) -> str:
-            """Изменить громкость голоса.
-            action: 'louder' — громче, 'quieter' — тише, 'max' — максимум, 'normal' — норма.
-            """
-            return await _call("set_volume", {"action": action})
-
-        @function_tool
-        async def set_pitch(pitch: float) -> str:
-            """Установить высоту голоса 0.5-2.0."""
-            return await _call("set_pitch", {"pitch": pitch})
+        # Unified voice-settings tool (replaces separate set_volume /
+        # set_pitch). See :mod:`rob_box_voice.core.voice_settings` —
+        # dispatches to the legacy ``set_volume`` / ``set_pitch`` MCP
+        # calls based on ``action``.
+        voice_settings = make_voice_settings_tool(caller=_call)
 
         @function_tool
         async def execute_music_code(code: str, pattern_name: str = "p1") -> str:
@@ -1047,8 +1042,7 @@ class DialogueNode(Node):
             delete_waypoint,
             clear_waypoints,
             get_current_pose,
-            set_volume,
-            set_pitch,
+            voice_settings,
             search_samples,
             execute_music_code,
             stop_music,
@@ -1248,156 +1242,134 @@ class DialogueNode(Node):
         natural-language task string.  The skill runs its own focused LLM loop
         and returns a plain string result.
 
+        The actual construction loop lives in
+        :func:`rob_box_voice.core.skill_factory.build_skill_tools` so the
+        per-skill boilerplate (prompt-file / fallback / try-except / as_tool)
+        is defined ONCE in :file:`core/skill_factory.py` rather than duplicated
+        five times here (ADR-0001 §2.7.3 D8).
+
         Args:
             model: Shared OpenAIChatCompletionsModel instance to pass to each skill.
 
         Returns:
             List of FunctionTool objects (one per skill that loaded successfully).
         """
-        skill_tools = []
+        from .core.skill_factory import SkillFactorySpec, build_skill_tools
 
-        # ── MusicSkill ─────────────────────────────────────────────────────
-        try:
-            music_prompt = self._load_prompt_file("skills/music_skill_prompt.txt")
-            if not music_prompt:
-                music_prompt = "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
-            skill = MusicSkill(
-                adapter=self._mcp,
-                model=model,
-                prompt_template=music_prompt,
-                agent_max_turns=10,
-                max_tokens=2000,  # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
-                temperature=0.85,
-                # MiMo only supports tool_choice="auto" (others silently downgraded to auto).
-                # Thinking mode disabled via extra_body to ensure reliable tool calls.
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_music",
-                    tool_description=(
-                        "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
-                        "остановку музыки или изменение музыкального состояния. "
-                        "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ MusicSkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ MusicSkill build failed: {exc}")
-
-        # ── NavigationSkill ────────────────────────────────────────────────
-        try:
-            nav_prompt = self._load_prompt_file("skills/navigation_skill_prompt.txt")
-            if not nav_prompt:
-                nav_prompt = (
+        specs: list[SkillFactorySpec] = [
+            SkillFactorySpec(
+                display_name="MusicSkill",
+                skill_class=MusicSkill,
+                prompt_file="skills/music_skill_prompt.txt",
+                fallback_prompt=(
+                    "Ты — музыкальный модуль РОББОКСА. Используй Renardo для создания музыки."
+                ),
+                tool_name="handle_music",
+                tool_description=(
+                    "Музыкальный скилл: запрос на игру музыки, мелодии, вайба, "
+                    "остановку музыки или изменение музыкального состояния. "
+                    "ТАКЖЕ: все DJ-переходы и DJ-режим (execute_music_code, set_dj_mode)."
+                ),
+                prompt_kwarg="prompt_template",  # MusicSkill does its own {renardo_ref} substitution
+                factory_kwargs={
+                    "agent_max_turns": 10,
+                    # 500 was cutting off tool-call JSON mid-argument → 11 retries × 22s
+                    "max_tokens": 2000,
+                    "temperature": 0.85,
+                    # MiMo only supports tool_choice="auto" (others silently downgraded to auto).
+                    # Thinking mode disabled via extra_body to ensure reliable tool calls.
+                    "tool_choice": "auto",
+                },
+            ),
+            SkillFactorySpec(
+                display_name="NavigationSkill",
+                skill_class=NavigationSkill,
+                prompt_file="skills/navigation_skill_prompt.txt",
+                fallback_prompt=(
                     "Ты — модуль навигации РОББОКСА. Управляй движением робота."
-                )
-            skill = NavigationSkill(
-                adapter=self._mcp,
-                model=model,
-                prompt=nav_prompt,
-                name="NavigationSkill",
-                max_tokens=1000,
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_navigation",
-                    tool_description=(
-                        "Навигационный скилл: переместить робота в именованную точку, "
-                        "сохранить/удалить/список точек (вейпоинтов), "
-                        "картографирование (маппинг), направление движения."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ NavigationSkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ NavigationSkill build failed: {exc}")
-
-        # ── MemorySkill ────────────────────────────────────────────────────
-        try:
-            mem_prompt = self._load_prompt_file("skills/memory_skill_prompt.txt")
-            if not mem_prompt:
-                mem_prompt = (
+                ),
+                tool_name="handle_navigation",
+                tool_description=(
+                    "Навигационный скилл: переместить робота в именованную точку, "
+                    "сохранить/удалить/список точек (вейпоинтов), "
+                    "картографирование (маппинг), направление движения."
+                ),
+                factory_kwargs={"max_tokens": 1000, "tool_choice": "auto"},
+            ),
+            SkillFactorySpec(
+                display_name="MemorySkill",
+                skill_class=MemorySkill,
+                prompt_file="skills/memory_skill_prompt.txt",
+                fallback_prompt=(
                     "Ты — модуль памяти РОББОКСА. Управляй долгосрочной памятью."
-                )
-            skill = MemorySkill(
-                adapter=self._mcp, model=model, prompt=mem_prompt, name="MemorySkill",
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_memory",
-                    tool_description=(
-                        "Модуль памяти: сохранить новую информацию или найти "
-                        "ранее сохранённые факты в долгосрочной памяти."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ MemorySkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ MemorySkill build failed: {exc}")
+                ),
+                tool_name="handle_memory",
+                tool_description=(
+                    "Модуль памяти: сохранить новую информацию или найти "
+                    "ранее сохранённые факты в долгосрочной памяти."
+                ),
+                factory_kwargs={"tool_choice": "auto"},
+            ),
+            SkillFactorySpec(
+                display_name="StatusSkill",
+                skill_class=StatusSkill,
+                prompt_file="skills/status_skill_prompt.txt",
+                fallback_prompt=(
+                    "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
+                ),
+                tool_name="handle_status",
+                tool_description=(
+                    "Модуль статуса: батарея, текущее время, статус робота, "
+                    "изменение громкости или высоты голоса."
+                ),
+                factory_kwargs={"tool_choice": "auto"},
+            ),
+        ]
 
-        # ── StatusSkill ────────────────────────────────────────────────────
-        try:
-            status_prompt = self._load_prompt_file("skills/status_skill_prompt.txt")
-            if not status_prompt:
-                status_prompt = "Ты — модуль статуса РОББОКСА. Предоставляй информацию о состоянии робота."
-            skill = StatusSkill(
-                adapter=self._mcp, model=model, prompt=status_prompt, name="StatusSkill",
-                tool_choice="auto",
-            )
-            skill_tools.append(
-                skill.as_tool(
-                    tool_name="handle_status",
-                    tool_description=(
-                        "Модуль статуса: батарея, текущее время, статус робота, "
-                        "изменение громкости или высоты голоса."
-                    ),
-                )
-            )
-            self.get_logger().info("✅ StatusSkill loaded")
-        except Exception as exc:
-            self.get_logger().error(f"❌ StatusSkill build failed: {exc}")
-
-        # ── FAQSkill ────────────────────────────────────────────────────────
+        # FAQSkill — only present when event-mode is active and a FAQStore
+        # was successfully built. Its prompt is rendered with active-event
+        # context (see ADR-0001 §2.7.4) and the constructor takes the
+        # FAQStore + event_id alongside the base kwargs.
         if self._faq_store and self._event_profile:
-            try:
-                event_id = self._event_profile.get(
-                    "event_id"
-                ) or self._slugify_event_id(
+            event_id = (
+                self._event_profile.get("event_id")
+                or self._slugify_event_id(
                     self._event_profile.get("name", "faq-event")
                 )
-                faq_prompt = self._load_prompt_file("skills/faq_skill_prompt.txt")
-                if not faq_prompt:
-                    faq_prompt = (
+            )
+            specs.append(
+                SkillFactorySpec(
+                    display_name="FAQSkill",
+                    skill_class=FAQSkill,
+                    prompt_file="skills/faq_skill_prompt.txt",
+                    fallback_prompt=(
                         "Ты — FAQ модуль РОББОКСА. Ищи точные ответы по мероприятию."
-                    )
-                skill = FAQSkill(
-                    store=self._faq_store,
-                    event_id=event_id,
-                    model=model,
-                    prompt=self._render_faq_skill_prompt(faq_prompt),
-                    name="FAQSkill",
-                    temperature=0.2,
-                    max_tokens=900,
-                    tool_choice="auto",
+                    ),
+                    tool_name="handle_faq",
+                    tool_description=(
+                        "FAQ мероприятия: поиск точных ответов по вопросам о событии, "
+                        "поступлении, локациях, расписании и других организационных деталях."
+                    ),
+                    factory_kwargs={
+                        "store": self._faq_store,
+                        "event_id": event_id,
+                        "temperature": 0.2,
+                        "max_tokens": 900,
+                        "tool_choice": "auto",
+                    },
+                    # FAQSkill's prompt is rendered with the active event
+                    # profile prepended — see render_faq_skill_prompt().
+                    prompt_render=self._render_faq_skill_prompt,
                 )
-                skill_tools.append(
-                    skill.as_tool(
-                        tool_name="handle_faq",
-                        tool_description=(
-                            "FAQ мероприятия: поиск точных ответов по вопросам о событии, поступлении, "
-                            "локациях, расписании и других организационных деталях."
-                        ),
-                    )
-                )
-                self.get_logger().info("✅ FAQSkill loaded")
-            except Exception as exc:
-                self.get_logger().error(f"❌ FAQSkill build failed: {exc}")
+            )
 
-        return skill_tools
+        return build_skill_tools(
+            specs,
+            adapter=self._mcp,
+            model=model,
+            prompt_loader=self._load_prompt_file,
+            logger=self.get_logger(),
+        )
 
     def _log_config(self) -> None:
         self.get_logger().info(f"  Provider : {self._provider}")
