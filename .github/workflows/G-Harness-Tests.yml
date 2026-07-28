@@ -81,16 +81,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-mock
-          # rob_box_llm, rob_box_core and rob_box_voice MUST be installed FIRST —
-          # rob_box_harness depends on them.
+          # rob_box_core MUST be installed FIRST — rob_box_harness depends on it.
+          # rob_box_voice also depends on rob_box_harness (circular), so
+          # install it AFTER rob_box_harness to break the cycle.
           if [ -d src/rob_box_core ]; then
             pip install -e src/rob_box_core
           fi
-          if [ -d src/rob_box_voice ]; then
-            pip install -e src/rob_box_voice
-          fi
           if [ -d src/rob_box_llm ]; then
             pip install -e src/rob_box_llm
+          fi
+          # Install rob_box_harness first
+          pip install -e src/rob_box_harness --no-deps
+          # Then install rob_box_voice (and its harness dep is now satisfied)
+          if [ -d src/rob_box_voice ]; then
+            pip install -e src/rob_box_voice --no-deps
+            pip install -e src/rob_box_voice  # now resolves deps
           fi
           pip install -e src/rob_box_harness
 
@@ -193,16 +198,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-mock
-          # rob_box_llm, rob_box_core and rob_box_voice MUST be installed FIRST —
-          # rob_box_harness depends on them.
+          # rob_box_core MUST be installed FIRST — rob_box_harness depends on it.
+          # rob_box_voice also depends on rob_box_harness (circular), so
+          # install it AFTER rob_box_harness to break the cycle.
           if [ -d src/rob_box_core ]; then
             pip install -e src/rob_box_core
           fi
-          if [ -d src/rob_box_voice ]; then
-            pip install -e src/rob_box_voice
-          fi
           if [ -d src/rob_box_llm ]; then
             pip install -e src/rob_box_llm
+          fi
+          # Install rob_box_harness first
+          pip install -e src/rob_box_harness --no-deps
+          # Then install rob_box_voice (and its harness dep is now satisfied)
+          if [ -d src/rob_box_voice ]; then
+            pip install -e src/rob_box_voice --no-deps
+            pip install -e src/rob_box_voice  # now resolves deps
           fi
           pip install -e src/rob_box_harness
 
