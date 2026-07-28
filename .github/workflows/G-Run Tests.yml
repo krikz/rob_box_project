@@ -39,7 +39,8 @@ jobs:
           path: |
             ${{ github.workspace }}/test_ws/build
             ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+          key: colcon-humble-v2-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+                      colcon-humble-v2-
           restore-keys: |
             colcon-humble-${{ runner.os }}-
 
@@ -146,7 +147,8 @@ jobs:
           path: |
             ${{ github.workspace }}/test_ws/build
             ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+          key: colcon-humble-v2-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+                      colcon-humble-v2-
           restore-keys: |
             colcon-humble-${{ runner.os }}-
 
