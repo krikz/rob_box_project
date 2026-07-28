@@ -40,7 +40,6 @@ class NodeAvailabilityMonitor:
             "/stt_node",
             "/tts_node",
             "/dialogue_node",
-            "/reflection_node",
             "/context_aggregator",
             "/camera",               # OAK-D camera node (oak-d container)
             "/lslidar_driver_node",  # LS LiDAR driver node (lslidar container)
