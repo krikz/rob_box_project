@@ -2,18 +2,21 @@
 """Integration tests for the Telegram <-> ROS 2 bridge (Phase 6 v2 / W9).
 
 After W8 ``rob_box_telegram.telegram_node.TelegramNode`` is a thin ROS 2
-bridge that shuttles messages between the Telegram Bot API and three ROS 2
-topics:
+input bridge that forwards Telegram messages into the dialogue pipeline and
+keeps camera frames available to Telegram handlers:
 
     Telegram user --text/voice--> /voice/stt/result         (dialogue in)
-    dialogue_node              -> /voice/dialogue/response  (dialogue out)
     CompressedImage topics      -> in-memory CameraCache     (camera frames)
+
+The node deliberately does not subscribe to ``/voice/dialogue/response``:
+that topic is the dialogue-to-TTS output and consuming it here creates an
+output echo path back into Telegram.
 
 These tests cover the W9 acceptance criteria from
 ``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
 
     1. Telegram message -> published to /voice/stt/result
-    2. /voice/dialogue/response -> Telegram reply sent
+    2. Telegram node does not subscribe to the dialogue/TTS response topic
     3. Camera image -> forwarded to appropriate topic (CameraCache update)
     4. Telegram bot starts (mock Application builder)
     5. VPN connectivity (skipped — no container in CI; see skipVPN)
@@ -454,260 +457,14 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(published, _STD_STRING_CLS)
         self.assertEqual(published.data, "Привет, робот!")
 
-    # ── Test 2: /voice/dialogue/response → Telegram reply sent ────────
+    def test_node_does_not_subscribe_to_dialogue_response(self) -> None:
+        """Telegram is input-only and must not consume dialogue/TTS output."""
 
-    def test_dialogue_response_triggers_telegram_reply(self) -> None:
-        """Subscribed callback must forward SSML back to the active chat.
+        topics = {sub.topic for sub in self.node._created_subscriptions}
 
-        We patch ``asyncio.run_coroutine_threadsafe`` to capture (and
-        run) the coroutine synchronously. The production code schedules
-        onto ``self._telegram_loop`` (captured in ``_run_telegram``) from
-        the ROS 2 worker thread — the test mirrors that without needing
-        a live loop.
+        self.assertNotIn("/voice/dialogue/response", topics)
 
-        Regression for t_aad8e224: the previous implementation read
-        ``getattr(self._telegram_app, "_loop", None)``, which silently
-        failed when python-telegram-bot's private ``_loop`` attribute
-        was unavailable, dropping every TG reply.
-        """
-        self.node._telegram_app = MagicMock(name="TelegramApp")
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        # The bridge reads ``self._telegram_loop`` (set inside
-        # ``_run_telegram``); the test simulates a fully-wired bot by
-        # attaching a live loop here. We intentionally do NOT set
-        # ``_telegram_app._loop`` — production code no longer reads it.
-        self.node._telegram_loop = asyncio.new_event_loop()
-        self.node._active_chat_id = 4242
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-
-        captured: dict = {}
-
-        def _capture_dispatch(coro, loop):
-            captured["coro"] = coro
-            captured["loop"] = loop
-            # Run the coroutine to completion on a fresh loop so the
-            # AsyncMock send_message is actually awaited.
-            run_loop = asyncio.new_event_loop()
-            try:
-                run_loop.run_until_complete(coro)
-            finally:
-                run_loop.close()
-            return MagicMock(name="ScheduledFuture")
-
-        with patch(
-            "asyncio.run_coroutine_threadsafe", side_effect=_capture_dispatch
-        ):
-            msg = _STD_STRING_CLS()
-            msg.data = json.dumps(
-                {"ssml": "<speak>Здравствуйте!</speak>", "speech_id": "abc"}
-            )
-            callback(msg)
-
-        # The bridge scheduled onto the loop it captured in _run_telegram.
-        self.assertIs(captured["loop"], self.node._telegram_loop)
-        self.node._telegram_app.bot.send_message.assert_awaited_once_with(
-            chat_id=4242, text="Здравствуйте!"
-        )
-        self.node._telegram_loop.close()
-
-    def test_dialogue_response_skipped_without_active_chat(self) -> None:
-        """Without an active chat, the bridge must not call Telegram."""
-
-        self.node._telegram_app = MagicMock()
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._telegram_loop = asyncio.new_event_loop()
-        self.node._active_chat_id = None
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-        msg = _STD_STRING_CLS()
-        msg.data = json.dumps({"ssml": "<speak>тишина</speak>"})
-        callback(msg)
-
-        self.node._telegram_app.bot.send_message.assert_not_called()
-        self.node._telegram_loop.close()
-
-    def test_dialogue_response_skipped_without_loop(self) -> None:
-        """If ``_telegram_loop`` is missing (bot never started), drop msg.
-
-        Regression for t_aad8e224: the previous ``getattr(_, '_loop', None)``
-        silently swallowed the failure, so a missing loop looked identical
-        to a healthy bot to the operator. Production now guards against
-        a ``None`` loop and logs an explicit warning.
-        """
-        self.node._telegram_app = MagicMock()
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        # Intentionally do NOT set ``_telegram_loop`` — simulate "bot
-        # thread has not yet captured a loop" (e.g. TELEGRAM_BOT_TOKEN
-        # missing, or startup still in progress).
-        self.node._active_chat_id = 4242
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-        with patch.object(self.node.get_logger(), "warning") as warn:
-            msg = _STD_STRING_CLS()
-            msg.data = json.dumps({"ssml": "<speak>drop me</speak>"})
-            callback(msg)
-
-        self.node._telegram_app.bot.send_message.assert_not_called()
-        self.assertEqual(warn.call_count, 1)
-        self.assertIn("loop=", warn.call_args.args[0])
-
-    def test_dialogue_response_survives_closed_loop(self) -> None:
-        """A closed loop must raise no exception — message is logged & dropped.
-
-        Regression for t_aad8e224 acceptance criteria: when the bot
-        crashes and ``_run_telegram_loop`` is between retries, the
-        captured loop is closed. ``asyncio.run_coroutine_threadsafe``
-        raises ``RuntimeError("Event loop is closed")`` — the bridge
-        must catch it, log, and continue running so the ROS 2 executor
-        does not die.
-        """
-        self.node._telegram_app = MagicMock()
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._telegram_loop = asyncio.new_event_loop()
-        self.node._telegram_loop.close()  # simulate bot crash between retries
-        self.node._active_chat_id = 5151
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-
-        def _closed_loop_dispatch(coro, loop):
-            # Mimic asyncio.run_coroutine_threadsafe on a closed loop.
-            raise RuntimeError("Event loop is closed")
-
-        with patch("asyncio.run_coroutine_threadsafe",
-                   side_effect=_closed_loop_dispatch), \
-             patch.object(self.node.get_logger(), "error") as err:
-            msg = _STD_STRING_CLS()
-            msg.data = json.dumps({"ssml": "<speak>ping</speak>"})
-            callback(msg)  # MUST NOT RAISE
-
-        # Coroutine was constructed (1 call) but never scheduled onto
-        # the closed loop — AsyncMock's ``call_count`` tracks this.
-        self.node._telegram_app.bot.send_message.assert_called_once_with(
-            chat_id=5151, text="ping"
-        )
-        # ...and the error path logged the closed-loop reason.
-        self.assertEqual(err.call_count, 1)
-        err_msg = err.call_args.args[0]
-        self.assertIn("loop closed", err_msg)
-
-    def test_dialogue_response_falls_back_to_raw_data(self) -> None:
-        """Non-JSON payloads are forwarded verbatim (SSML stripped)."""
-
-        self.node._telegram_app = MagicMock()
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._telegram_loop = asyncio.new_event_loop()
-        self.node._active_chat_id = 7
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-
-        captured: dict = {}
-
-        def _capture_dispatch(coro, loop):
-            captured["coro"] = coro
-            captured["loop"] = loop
-            run_loop = asyncio.new_event_loop()
-            try:
-                run_loop.run_until_complete(coro)
-            finally:
-                run_loop.close()
-            return MagicMock(name="ScheduledFuture")
-
-        with patch(
-            "asyncio.run_coroutine_threadsafe", side_effect=_capture_dispatch
-        ):
-            msg = _STD_STRING_CLS()
-            msg.data = "<speak>просто текст</speak>"
-            callback(msg)
-
-        self.assertIs(captured["loop"], self.node._telegram_loop)
-        self.node._telegram_app.bot.send_message.assert_awaited_once_with(
-            chat_id=7, text="просто текст"
-        )
-        self.node._telegram_loop.close()
-
-    def test_invalid_json_logs_warning_and_falls_back(self) -> None:
-        """Malformed JSON must surface as a warning (not silently swallowed).
-
-        Regression test for t_7f2dab93: the previous behaviour silently
-        forwarded the raw ``msg.data`` payload as if it were valid JSON,
-        leaving the operator blind to upstream malformation. The fix
-        emits a ``warning`` log line that includes the offending payload
-        preview, while still falling back to the raw-data path so
-        downstream delivery is not broken.
-        """
-        self.node._telegram_app = MagicMock()
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._telegram_loop = asyncio.new_event_loop()
-        self.node._active_chat_id = 11
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-
-        def _capture_dispatch(coro, loop):
-            run_loop = asyncio.new_event_loop()
-            try:
-                run_loop.run_until_complete(coro)
-            finally:
-                run_loop.close()
-            return MagicMock(name="ScheduledFuture")
-
-        with patch("asyncio.run_coroutine_threadsafe",
-                   side_effect=_capture_dispatch), \
-             patch.object(self.node.get_logger(), "warning") as warn:
-            msg = _STD_STRING_CLS()
-            msg.data = "not-json-at-all{speak>foo</speak"
-            callback(msg)
-
-        # At least one warning mentions "invalid JSON" and includes the payload.
-        self.assertEqual(warn.call_count, 1)
-        warning_msg = warn.call_args.args[0]
-        self.assertIn("invalid JSON", warning_msg)
-        self.assertIn("not-json-at-all", warning_msg)
-        # Behaviour parity: raw fallback path still forwards msg.data
-        # (SSML tags stripped), so existing happy-path semantics survive.
-        self.node._telegram_app.bot.send_message.assert_awaited_once_with(
-            chat_id=11, text="not-json-at-all{speak>foo</speak"
-        )
-        self.node._telegram_loop.close()
-
-    def test_no_active_chat_logs_warning(self) -> None:
-        """Missing ``_active_chat_id`` must emit a warning, not be silent."""
-        self.node._telegram_app = MagicMock()
-        self.node._telegram_app.bot.send_message = AsyncMock()
-        self.node._active_chat_id = None
-
-        callback = self._subscription_for("/voice/dialogue/response").callback
-        with patch.object(self.node.get_logger(), "warning") as warn:
-            msg = _STD_STRING_CLS()
-            msg.data = json.dumps({"ssml": "<speak>hello</speak>"})
-            callback(msg)
-
-        self.assertEqual(warn.call_count, 1)
-        warning_msg = warn.call_args.args[0]
-        self.assertTrue(
-            "bot not ready" in warning_msg or "no active chat" in warning_msg,
-            warning_msg,
-        )
-        self.node._telegram_app.bot.send_message.assert_not_called()
-
-    def test_publish_tts_sends_ssml_envelope(self) -> None:
-        """``publish_tts`` wraps the text in an SSML envelope."""
-
-        self.node._telegram_app = MagicMock()
-        self.node._active_chat_id = 99
-        response_pub = self._publisher_for("/voice/dialogue/response")
-
-        self.node.publish_tts("привет")
-
-        self.assertEqual(response_pub.publish.call_count, 1)
-        msg = response_pub.publish.call_args.args[0]
-        self.assertIsInstance(msg, _STD_STRING_CLS)
-        payload = json.loads(msg.data)
-        self.assertEqual(payload["ssml"], "<speak>привет</speak>")
-        self.assertEqual(payload["emotion"], "neutral")
-        self.assertIn("speech_id", payload)
-
-    # ── Test 3: Camera image → forwarded to appropriate topic ─────────
+    # ── Test 2: Camera image → forwarded to appropriate topic ─────────
 
     def test_camera_image_forwarded_to_cache(self) -> None:
         """Each camera subscription must cache the latest compressed frame."""
