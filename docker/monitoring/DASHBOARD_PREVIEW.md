@@ -125,11 +125,6 @@
 │  • usb_cam: Frame published @ 640x480                       │
 │  • ceiling_camera: Compressed image transport               │
 ├─────────────────────────────────────────────────────────────┤
-│  micro-ROS Agent (ESP32 Sensor Hub) [LOGS - 10 rows]        │
-│  • micro_ros_agent: Serial connection @115200               │
-│  • IMU data received: ax=0.1 ay=-0.05 az=9.8                │
-│  • ToF sensors: front=1.2m, rear=0.8m                       │
-├─────────────────────────────────────────────────────────────┤
 │  Perception System [LOGS - 12 rows]                         │
 │  • health_monitor: System status: HEALTHY                   │
 │  • context_aggregator: Context updated @ 2Hz                │
@@ -139,7 +134,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Контейнеры:** oak-d, ceiling-camera, micro-ros-agent, perception  
+**Контейнеры:** oak-d, ceiling-camera, perception  
 **Ноды:** ~10 ROS 2 нод
 
 ---
