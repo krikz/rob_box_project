@@ -73,9 +73,9 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
-          # Create workspace in runner's working directory
+          # Create workspace — exclude vendor submodules (not our code to lint)
           mkdir -p ${{ github.workspace }}/test_ws/src
-          cp -r src/* ${{ github.workspace }}/test_ws/src/
+          rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
 
           # Build packages (use --packages-up-to to include dependencies)
           cd ${{ github.workspace }}/test_ws
