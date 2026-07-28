@@ -2,21 +2,27 @@
 """
 handlers/commands.py — Telegram command handlers (/start, /photo, /say, /status, etc.)
 
-All handlers receive `context.bot_data["node"]` — our TelegramNode instance
-which provides access to ROS 2 publishers, MCP bridge, camera cache, and LLM chat.
+After Phase 6 v2 / W7 this module is a *thin transport*:
+
+* Photo / camera handlers (read from the cached frames in TelegramNode) stay
+  here because they are direct ROS callbacks — no LLM, no tool bridge.
+* Status / navigation / volume / music / mapping handlers used to call the
+  ToolProvider through ``_invoke_tool``. They now forward the command
+  intent to ``/voice/stt/result`` so the unified DialogCore/harness
+  pipeline (``dialogue_node``) can decide what to do with it.
+
+All handlers receive ``context.bot_data["node"]`` — our TelegramNode
+instance which exposes ROS 2 publishers and the camera cache.
 """
 
 import io
 import logging
-import struct
 
 import numpy as np
 from PIL import Image
 
 from telegram import Update
 from telegram.ext import ContextTypes
-
-from rob_box_core.ports import ToolProvider
 
 from ..auth import authorized
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
@@ -29,23 +35,12 @@ def _node(context: ContextTypes.DEFAULT_TYPE):
     return context.bot_data["node"]
 
 
-async def _invoke_tool(node: object, name: str, args: dict | None = None) -> str:
-    """Execute Telegram commands through the canonical ToolProvider port."""
-
-    provider = getattr(node, "tool_provider", None)
-    if not isinstance(provider, ToolProvider):
-        raise RuntimeError("TelegramNode.tool_provider is not configured")
-    result = await provider.invoke(name, args or {})
-    if result.error is not None:
-        return result.error
-    if isinstance(result.value, str):
-        return result.value
-    import json
-
-    return json.dumps(result.value, ensure_ascii=False, indent=2)
+def _forward(node, text: str) -> None:
+    """Forward a command intent to the unified dialogue pipeline."""
+    node.forward_to_stt(text)
 
 
-# ─── /start ──────────────────────────────────────────────────────────────────
+# ─── /start ──────────────────────────────────────────────────────────────
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,7 +73,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
-# ─── /myid ───────────────────────────────────────────────────────────────────
+# ─── /myid ───────────────────────────────────────────────────────────────
 
 
 async def myid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,7 +82,7 @@ async def myid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(f"🆔 Ваш chat ID: `{chat_id}`", parse_mode="Markdown")
 
 
-# ─── /help ───────────────────────────────────────────────────────────────────
+# ─── /help ───────────────────────────────────────────────────────────────
 
 
 @authorized
@@ -130,7 +125,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-# ─── /menu ───────────────────────────────────────────────────────────────────
+# ─── /menu ───────────────────────────────────────────────────────────────
 
 
 @authorized
@@ -139,7 +134,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("📱 Быстрое меню:", reply_markup=MAIN_MENU_KEYBOARD)
 
 
-# ─── /photo ──────────────────────────────────────────────────────────────────
+# ─── /photo ──────────────────────────────────────────────────────────────
 
 
 @authorized
@@ -180,7 +175,7 @@ async def photo_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
-# ─── вспомогательные функции ──────────────────────────────────────────────────────────────────────────────
+# ─── вспомогательные функции ──────────────────────────────────────────────
 
 
 def _depth_compressed_to_jpeg(data: bytes) -> bytes:
@@ -258,7 +253,7 @@ def _occupancy_grid_to_png(grid) -> bytes:
     return buf.getvalue()
 
 
-# ─── /photo_depth ──────────────────────────────────────────────────────────────────────────────
+# ─── /photo_depth ────────────────────────────────────────────────────────
 
 
 @authorized
@@ -289,7 +284,7 @@ async def photo_depth_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
-# ─── /photo_map ───────────────────────────────────────────────────────────────────────────────
+# ─── /photo_map ──────────────────────────────────────────────────────────
 
 
 @authorized
@@ -318,7 +313,7 @@ async def photo_map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
 
-# ─── /say ────────────────────────────────────────────────────────────────────
+# ─── /say ────────────────────────────────────────────────────────────────
 
 
 @authorized
@@ -334,7 +329,7 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
 
 
-# ─── /playvoice ──────────────────────────────────────────────────────────────
+# ─── /playvoice ──────────────────────────────────────────────────────────
 
 
 @authorized
@@ -347,70 +342,86 @@ async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
 
-# ─── /status ─────────────────────────────────────────────────────────────────
+# ─── Tool-bridged commands (W7: forward intents to /voice/stt/result) ──
+#
+# These handlers used to invoke the ToolProvider (status, waypoints, goto,
+# pose, volume, etc.). After W7 the Telegram node is a thin transport, so
+# the slash-command text is forwarded to /voice/stt/result and the unified
+# dialogue pipeline picks it up. The user gets an immediate ACK so the
+# conversation does not feel broken while the harness reacts.
+
+
+async def _forward_and_ack(update: Update, node, intent: str, ack: str) -> None:
+    """Forward ``intent`` to the dialogue pipeline and reply with ``ack``.
+
+    The ACK keeps the operator informed while the harness reacts on the
+    other side of ``/voice/stt/result``.
+    """
+    _forward(node, intent)
+    await update.message.reply_text(ack)
+
+
+# ─── /status ─────────────────────────────────────────────────────────────
 
 
 @authorized
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /status — show robot telemetry."""
+    """Handle /status — forward the intent to the dialogue pipeline."""
     node = _node(context)
-    await update.message.reply_text("⏳ Запрашиваю статус...")
-
-    result = await _invoke_tool(node, "get_robot_status")
-    await update.message.reply_text(f"📊 *Статус робота:*\n\n{result}", parse_mode="Markdown")
+    await _forward_and_ack(update, node, "/status", "📤 Запрос статуса отправлен...")
 
 
-# ─── /waypoints ──────────────────────────────────────────────────────────────
+# ─── /waypoints ──────────────────────────────────────────────────────────
 
 
 @authorized
 async def waypoints_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /waypoints — list saved waypoints."""
+    """Handle /waypoints — forward the intent to the dialogue pipeline."""
     node = _node(context)
-    result = await _invoke_tool(node, "list_waypoints")
-    await update.message.reply_text(f"📍 *Вейпоинты:*\n\n{result}", parse_mode="Markdown")
+    await _forward_and_ack(update, node, "/waypoints", "📤 Запрос списка вейпоинтов отправлен...")
 
 
-# ─── /goto ───────────────────────────────────────────────────────────────────
+# ─── /goto ───────────────────────────────────────────────────────────────
 
 
 @authorized
 async def goto_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /goto <waypoint> — navigate to a waypoint."""
+    """Handle /goto <waypoint> — forward the intent to the dialogue pipeline."""
     target = " ".join(context.args) if context.args else ""
     if not target:
         await update.message.reply_text("Использование: /goto <имя вейпоинта>")
         return
 
     node = _node(context)
-    await update.message.reply_text(f"🚗 Еду к: _{target}_...", parse_mode="Markdown")
-    result = await _invoke_tool(node, "navigate_to_waypoint", {"waypoint": target})
-    await update.message.reply_text(result)
+    await _forward_and_ack(
+        update,
+        node,
+        f"/goto {target}",
+        f"🚗 Еду к: _{target}_... (intent forwarded)",
+    )
 
 
-# ─── /stop ───────────────────────────────────────────────────────────────────
+# ─── /stop ───────────────────────────────────────────────────────────────
 
 
 @authorized
 async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stop — stop navigation and movement."""
+    """Handle /stop — forward the intent to the dialogue pipeline."""
     node = _node(context)
-    result = await _invoke_tool(node, "stop_navigation")
-    await update.message.reply_text(f"⏹ {result}")
+    await _forward_and_ack(update, node, "/stop", "⏹ Команда остановки отправлена...")
 
 
-# ─── /pose ───────────────────────────────────────────────────────────────────
+# ─── /pose ───────────────────────────────────────────────────────────────
 
 
 @authorized
 async def pose_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /pose — get current robot position."""
+    """Handle /pose — forward the intent to the dialogue pipeline."""
     node = _node(context)
-    result = await _invoke_tool(node, "get_current_pose")
-    await update.message.reply_text(f"📍 {result}")
+    await _forward_and_ack(update, node, "/pose", "📤 Запрос позиции отправлен...")
 
 
-# ─── /control ────────────────────────────────────────────────────────────────
+# ─── /control ────────────────────────────────────────────────────────────
 
 
 @authorized
@@ -419,12 +430,12 @@ async def control_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("🎮 Пульт управления:", reply_markup=MOVEMENT_KEYBOARD)
 
 
-# ─── /volume ─────────────────────────────────────────────────────────────────
+# ─── /volume ─────────────────────────────────────────────────────────────
 
 
 @authorized
 async def volume_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /volume <0-100> — set robot volume."""
+    """Handle /volume <0-100> — forward the intent to the dialogue pipeline."""
     if not context.args:
         await update.message.reply_text("Использование: /volume <0-100>")
         return
@@ -437,67 +448,77 @@ async def volume_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     node = _node(context)
-    result = await _invoke_tool(node, "set_volume", {"volume": level})
-    await update.message.reply_text(f"🔊 {result}")
+    await _forward_and_ack(
+        update,
+        node,
+        f"/volume {level}",
+        f"🔊 Запрошено: громкость {level}",
+    )
 
 
-# ─── /animation ──────────────────────────────────────────────────────────────
+# ─── /animation ──────────────────────────────────────────────────────────
 
 
 @authorized
 async def animation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /animation <name> — play LED animation."""
+    """Handle /animation <name> — forward the intent to the dialogue pipeline."""
     name = " ".join(context.args) if context.args else ""
     if not name:
         await update.message.reply_text("Использование: /animation <имя анимации>")
         return
 
     node = _node(context)
-    result = await _invoke_tool(node, "play_animation", {"animation": name})
-    await update.message.reply_text(f"💡 {result}")
+    await _forward_and_ack(
+        update,
+        node,
+        f"/animation {name}",
+        f"💡 Анимация: {name}",
+    )
 
 
-# ─── /sound ──────────────────────────────────────────────────────────────────
+# ─── /sound ──────────────────────────────────────────────────────────────
 
 
 @authorized
 async def sound_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /sound <name> — play sound effect."""
+    """Handle /sound <name> — forward the intent to the dialogue pipeline."""
     name = " ".join(context.args) if context.args else ""
     if not name:
         await update.message.reply_text("Использование: /sound <имя звука>")
         return
 
     node = _node(context)
-    result = await _invoke_tool(node, "play_sound", {"sound": name})
-    await update.message.reply_text(f"🔔 {result}")
+    await _forward_and_ack(
+        update,
+        node,
+        f"/sound {name}",
+        f"🔔 Звук: {name}",
+    )
 
 
-# ─── /map ────────────────────────────────────────────────────────────────────
+# ─── /map ────────────────────────────────────────────────────────────────
 
 
 @authorized
 async def map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /map start|stop — control SLAM mapping."""
+    """Handle /map start|stop — forward the intent to the dialogue pipeline."""
     action = context.args[0] if context.args else ""
     node = _node(context)
 
     if action == "start":
-        result = await _invoke_tool(node, "start_mapping")
-        await update.message.reply_text(f"🗺 {result}")
+        await _forward_and_ack(update, node, "/map start", "🗺 Картографирование запускается...")
     elif action in ("stop", "finish"):
-        result = await _invoke_tool(node, "finish_mapping")
-        await update.message.reply_text(f"🗺 {result}")
+        await _forward_and_ack(update, node, "/map stop", "🗺 Картографирование завершается...")
     else:
         await update.message.reply_text("Использование: /map start | /map stop")
 
 
-# ─── /music ──────────────────────────────────────────────────────────────────
+# ─── /music ──────────────────────────────────────────────────────────────
 
 
 @authorized
 async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /music <code> or /music stop."""
+    """Handle /music <code> or /music stop — forward the intent to the dialogue pipeline."""
     args_text = " ".join(context.args) if context.args else ""
     if not args_text:
         await update.message.reply_text("Использование:\n/music <код>\n/music stop")
@@ -505,18 +526,23 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     node = _node(context)
     if args_text.strip().lower() == "stop":
-        result = await _invoke_tool(node, "stop_music")
+        await _forward_and_ack(update, node, "/music stop", "⏹ Останавливаю музыку...")
     else:
-        result = await _invoke_tool(node, "execute_music_code", {"code": args_text})
-    await update.message.reply_text(f"🎵 {result}")
+        await _forward_and_ack(
+            update,
+            node,
+            f"/music {args_text}",
+            "🎵 Запрос на воспроизведение отправлен...",
+        )
 
 
 @authorized
 async def repl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /repl <code> — send Renardo/FoxDot code directly to the robot.
+    """Handle /repl <code> — forward the intent to the dialogue pipeline.
 
-    Uses raw message text to preserve newlines, since context.args splits by whitespace
-    and would collapse multiline code into a single line, breaking Python comments (#).
+    Uses raw message text to preserve newlines, since context.args splits
+    by whitespace and would collapse multiline code into a single line,
+    breaking Python comments (#).
     """
     import re
 
@@ -528,25 +554,27 @@ async def repl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     node = _node(context)
-    result = await _invoke_tool(node, "execute_music_code", {"code": args_text})
-    await update.message.reply_text(f"🎵 {result}")
+    await _forward_and_ack(update, node, f"/repl {args_text}", "🎵 Код отправлен...")
 
 
 @authorized
 async def stopmusic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stopmusic — stop all music on the robot."""
+    """Handle /stopmusic — forward the intent to the dialogue pipeline."""
     node = _node(context)
-    result = await _invoke_tool(node, "stop_music")
-    await update.message.reply_text(f"⏹ {result}")
+    await _forward_and_ack(update, node, "/stopmusic", "⏹ Останавливаю музыку...")
 
 
-# ─── /clear ──────────────────────────────────────────────────────────────────
+# ─── /clear ──────────────────────────────────────────────────────────────
 
 
 @authorized
 async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /clear — clear LLM chat history."""
+    """Handle /clear — clear LLM chat history.
+
+    After W7 the chat history lives in the dialogue pipeline (DialogCore),
+    not in the Telegram node. Forward the intent as plain text so the
+    dialogue manager can drop the session.
+    """
     node = _node(context)
-    chat_id = update.effective_chat.id
-    node.llm_chat.clear_session(chat_id)
-    await update.message.reply_text("🧹 История чата очищена.")
+    _forward(node, "/clear")
+    await update.message.reply_text("🧹 Запрос на очистку истории отправлен.")
