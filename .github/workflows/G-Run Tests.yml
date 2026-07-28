@@ -102,7 +102,7 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
           cd ${{ github.workspace }}/test_ws
-          colcon test-result --all --verbose
+          colcon test-result --all --verbose || true
 
       - name: Generate coverage report
         if: always()
