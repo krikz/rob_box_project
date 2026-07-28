@@ -33,6 +33,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Cache colcon build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/test_ws/build
+            ${{ github.workspace }}/test_ws/install
+          key: colcon-humble-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+          restore-keys: |
+            colcon-humble-${{ runner.os }}-
+
 
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
@@ -130,6 +140,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Cache colcon build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/test_ws/build
+            ${{ github.workspace }}/test_ws/install
+          key: colcon-humble-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+          restore-keys: |
+            colcon-humble-${{ runner.os }}-
+
 
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
