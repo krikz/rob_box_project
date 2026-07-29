@@ -170,9 +170,10 @@
     # ===== Dialogue Node (LLM) =====
     dialogue_node:
       # 2026-07-29: switched from mimo (budget exhausted) to deepseek
+      # NOTE: deepseek-chat is deprecated (2026-Q3). Use deepseek-v4-flash.
       llm_provider: "deepseek"  # Supported provider for the W5 dialogue shell
       base_url: "https://api.deepseek.com"
-      model: "deepseek-chat"  # DeepSeek main model
+      model: "deepseek-v4-flash"  # deepseek-chat is deprecated
       enable_fallback: false  # ОТКЛЮЧЕНО: нет доступа к Qwen
       enable_mcp_tools: true
       # ⚠️ KNOWN ISSUE: this flag is honored at startup, but

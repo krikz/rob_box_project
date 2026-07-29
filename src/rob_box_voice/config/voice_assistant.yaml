@@ -115,9 +115,10 @@
 
       # LLM
       # 2026-07-29: switched from mimo (budget exhausted) to deepseek
+      # NOTE: deepseek-chat is deprecated (2026-Q3). Use deepseek-v4-flash.
       llm_provider: "deepseek"     # Supported provider for the W5 dialogue shell
       base_url: "https://api.deepseek.com"
-      model: "deepseek-chat"       # DeepSeek main model
+      model: "deepseek-v4-flash"   # deepseek-chat is deprecated
       system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 
       # История
