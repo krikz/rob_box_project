@@ -438,7 +438,11 @@ class DialogueNode(Node):
                 )
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
-                self._publish_state()
+            # DialogCore completes the DIALOGUE → IDLE transition itself.
+            # Publish the resulting state even when no transition is needed
+            # here; otherwise the ROS state topic remains stuck at the
+            # earlier DIALOGUE notification and scenario runners wait forever.
+            self._publish_state()
     def _handle_result(self, result: DialogResult) -> None:
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")

@@ -183,6 +183,7 @@ from rob_box_harness.core.dialogue_state_machine import (  # noqa: E402
 from rob_box_harness.memory import InMemoryStore  # noqa: E402
 from rob_box_harness.providers import DummyLLMProvider, HarnessFakeLLMProvider  # noqa: E402
 from rob_box_harness.tools import FakeToolProvider  # noqa: E402
+from rob_box_llm.provider import LLMResponse, ToolCall  # noqa: E402
 
 # Import the shell last so all rclpy mocks are registered before the
 # module touches them.
@@ -205,13 +206,13 @@ class _ScriptedLLMProvider(DummyLLMProvider):
 
     name = "scripted_llm"
 
-    def __init__(self, scripted: Optional[List[str]] = None) -> None:
+    def __init__(self, scripted: Optional[List[Any]] = None) -> None:
         super().__init__()
-        self._scripted: List[str] = list(scripted or [])
+        self._scripted: List[Any] = list(scripted or [])
         self._idx: int = 0
 
-    def push(self, response: str) -> None:
-        """Append a one-off reply to the queue."""
+    def push(self, response: Any) -> None:
+        """Append a one-off text or structured LLM response to the queue."""
         self._scripted.append(response)
 
     async def complete(
@@ -223,11 +224,13 @@ class _ScriptedLLMProvider(DummyLLMProvider):
         **_kwargs: Any,
     ) -> Any:
         self.call_count += 1
-        from rob_box_llm.provider import LLMResponse
 
         if self._idx < len(self._scripted):
-            text = self._scripted[self._idx]
+            response = self._scripted[self._idx]
             self._idx += 1
+            if isinstance(response, LLMResponse):
+                return response
+            text = str(response)
             return LLMResponse(content=text, finish_reason="stop")
         # Defer to base behaviour for everything else
         return await super().complete(messages, tools=tools, settings=settings)
@@ -490,6 +493,66 @@ class TestDialogueShell(unittest.TestCase):
         self.assertGreaterEqual(len(responses), 1)
         text = _response_text(responses[-1])
         self.assertIn("Готов к работе!", text)
+
+    # ── Regression: completed turn must publish IDLE ───────────────────
+    # Issue: krikz/rob_box_project#918 — after a tool call the dialogue
+    # state machine returns to IDLE internally, but the ROS state topic
+    # was not republished, so scenario_runner's ``wait_for_idle`` polled
+    # the last ``DIALOGUE`` notification for 45 s and timed out.
+    #
+    # DialogCore now drives DIALOGUE → IDLE on its own; the shell must
+    # publish the resulting state regardless of whether the legacy
+    # ``if DIALOGUE: on_event(DIALOGUE_END)`` path fired.
+
+    def test_completed_turn_publishes_idle_state(self):
+        """A completed turn publishes the final DIALOGUE → IDLE transition."""
+        from rob_box_harness.core.dialogue_state_machine import (
+            DialogueEvent as _DE,
+        )
+        self.node._dsm.on_event(_DE.WAKE_WORD)
+        self.llm.push("Готово")
+
+        self.node._on_stt(_make_string("как дела?"))
+        self._drive_turn()
+
+        published_states = [p.data for p in self.node._state_pub.published]
+        self.assertEqual(published_states[-1], "IDLE")
+
+    def test_tool_call_turn_publishes_idle_state(self):
+        """A tool-call turn (issue #918) must also publish the final IDLE.
+
+        DialogCore now drives the full ``DIALOGUE → IDLE`` transition
+        internally; the shell must publish the resulting state even
+        when no additional ``DIALOGUE_END`` event is needed in the
+        finally clause. Without the fix, scenario_runner
+        ``wait_for_idle`` polls the stale ``DIALOGUE`` notification
+        for 45 s and times out.
+        """
+        from rob_box_harness.core.dialogue_state_machine import (
+            DialogueEvent as _DE,
+            DialogueStateKind,
+        )
+
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(ToolCall(id="call-1", name="echo", arguments={"text": "ok"}),),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="Готово", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(_DE.WAKE_WORD)
+            node._on_stt(_make_string("как дела?"))
+            node.drive_one_turn()
+
+            self.assertEqual(llm.call_count, 2)
+            self.assertEqual(node._dsm.current_state, DialogueStateKind.IDLE)
+            published_states = [p.data for p in node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            node.close()
 
     # ── 3. Silence command → state SILENCED ──────────────────────────
 
