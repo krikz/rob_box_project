@@ -114,8 +114,9 @@
       max_question_time: 20.0     # максимальное время накопления вопроса
 
       # LLM
-      llm_provider: "mimo"        # "deepseek", "mimo" или "local" (Ollama)
-      model: "mimo-v2.5-pro"      # Или "mimo-v2.5" для fallback
+      # 2026-07-29: switched from mimo (budget exhausted) to deepseek
+      llm_provider: "deepseek"     # "deepseek", "mimo" или "local" (Ollama)
+      model: "deepseek-chat"       # DeepSeek main model
       system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 
       # История
