@@ -317,6 +317,60 @@ def test_complete_swallows_bad_tool_json():
     assert resp.tool_calls[0].arguments == {}
 
 
+def test_complete_round_trips_assistant_tool_calls_with_frozen_arguments():
+    """Issue #917 regression: ``ToolCall.arguments`` is a ``MappingProxyType``
+    after ``__post_init__`` (immutability invariant), but
+    ``_json_dumps`` must still serialise it when the caller feeds the
+    previous assistant turn back into the model — exactly what
+    ``dialog_core._run_with_tools`` does on every tool-loop iteration.
+    Before the fix this raised
+    ``TypeError: Object of type MappingProxyType is not JSON serializable``
+    and broke the entire tool loop.
+    """
+    from rob_box_llm.provider import ToolCall
+    from rob_box_llm.providers.deepseek import _json_dumps
+
+    # Sanity: ``ToolCall.__post_init__`` does freeze the dict view.
+    tc = ToolCall(id="call_1", name="play_sound", arguments={"name": "beep"})
+    from types import MappingProxyType
+    assert isinstance(tc.arguments, MappingProxyType)
+
+    # 1. Unit-level: the helper itself unwraps proxy → dict.
+    assert _json_dumps(tc.arguments) == '{"name": "beep"}'
+
+    # 2. Integration-level: feeding an assistant tool-turn back into
+    # ``complete()`` must not raise and must hand the SDK a JSON string
+    # for ``function.arguments`` (OpenAI wire format).
+    p, c = _make_deepseek()
+    c.chat.completions.next_response = _ok_response("done", finish_reason="stop")
+
+    messages = [
+        LLMMessage(role="user", content="play sound"),
+        LLMMessage(
+            role="assistant",
+            content="",
+            tool_calls=(tc,),
+        ),
+    ]
+    resp = asyncio.run(p.complete(messages))
+    assert resp.content == "done"
+
+    sent = c.chat.completions.calls[0]["messages"]
+    sent_tc = sent[1]["tool_calls"][0]
+    assert sent_tc["function"]["arguments"] == '{"name": "beep"}'
+
+
+def test_json_dumps_unwraps_top_level_mapping_proxy():
+    """Issue #917 regression: even when a caller hands a ``MappingProxyType``
+    directly (not wrapped in ``ToolCall``), the helper must serialise it.
+    """
+    from rob_box_llm.providers.deepseek import _json_dumps
+    from types import MappingProxyType
+
+    proxy = MappingProxyType({"foo": "bar", "n": 1})
+    assert _json_dumps(proxy) == '{"foo": "bar", "n": 1}'
+
+
 # ---------------------------------------------------------------------------
 # Error mapping
 # ---------------------------------------------------------------------------

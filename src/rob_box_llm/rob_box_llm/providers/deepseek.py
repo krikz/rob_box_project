@@ -132,7 +132,19 @@ def _to_openai_messages(messages: Iterable[LLMMessage]) -> list[dict[str, Any]]:
 
 def _json_dumps(obj: Any) -> str:  # local to avoid hard json dep at module load
     import json
+    from types import MappingProxyType
 
+    # ``ToolCall.arguments`` is frozen into a ``MappingProxyType`` in
+    # ``provider.ToolCall.__post_init__`` so the dataclass stays truly
+    # immutable. ``json.dumps`` does not know how to serialise proxy
+    # views (it raises ``TypeError: Object of type MappingProxyType is
+    # not JSON serializable``), so unwrap to a plain ``dict`` first.
+    # Same applies to any other read-only mapping view that might arrive
+    # (e.g. ``types.MappingProxyType`` returned by ``Mapping`` subclasses
+    # in tests). Nested proxies are handled by ``json.dumps`` itself
+    # because the unwrap creates a fully mutable plain-dict tree.
+    if isinstance(obj, MappingProxyType):
+        obj = dict(obj)
     return json.dumps(obj, ensure_ascii=False)
 
 
