@@ -11,11 +11,10 @@
       - "handle_navigation"
       - "handle_music"
 
-    # LLM model override — FLAT, доходит до dialogue_node напрямую
-    # 2026-07-29: switched from mimo (budget exhausted) to deepseek
-    provider: "deepseek"
-    model: "deepseek-chat"
-    fallback_model: "deepseek-chat"  # DeepSeek has one main model
+    # LLM settings (dialogue_node) — задаются ВСЕГДА через namespace
+    # dialogue_node, иначе FLAT override применяется ко ВСЕМ нодам
+    # (включая tts_node) и ломает их (tts_node ожидает yandex/silero/minimax).
+    # Поэтому provider/model/fallback_model убираем с FLAT уровня.
     enable_fallback: false  # set to true to auto-switch to fallback_model on timeout
 
     # ===== Audio Node =====
