@@ -163,6 +163,32 @@ def descriptor_from_function_tool(tool: Any) -> ToolDescriptor:
     )
 
 
+def _matches_json_type(value: Any, expected: str) -> bool:
+    """Return True if *value* matches the JSON Schema primitive *expected*.
+
+    Falls back to permissive ``True`` for unknown type strings (forward-compat
+    with future JSON Schema releases or vendor-specific extensions).
+    """
+
+    table: dict[str, tuple[type[Any], ...]] = {
+        "string": (str,),
+        "integer": (int,),
+        "number": (int, float),
+        "boolean": (bool,),
+        "array": (list,),
+        "object": (dict,),
+    }
+    expected_types = table.get(expected)
+    if expected_types is None:
+        return True
+    if expected in {"integer", "number"} and isinstance(value, bool):
+        # ``bool`` is a subclass of ``int`` in Python — reject bool where
+        # integer/number is requested so ``text=42`` (or ``flag="yes"``) is
+        # caught at validation time instead of as an opaque bridge error.
+        return False
+    return isinstance(value, expected_types)
+
+
 def _validate_json_schema(
     schema: Mapping[str, Any],
     args: Mapping[str, Any],
@@ -174,6 +200,13 @@ def _validate_json_schema(
             if key not in args:
                 errors.append(f"missing required argument: {key}")
     properties = schema.get("properties", {})
+    if isinstance(properties, Mapping):
+        for key, value in args.items():
+            field_schema = properties.get(key)
+            if isinstance(field_schema, Mapping):
+                expected = field_schema.get("type")
+                if isinstance(expected, str) and not _matches_json_type(value, expected):
+                    errors.append(f"{key} must be {expected}")
     if schema.get("additionalProperties") is False and isinstance(properties, Mapping):
         for key in args:
             if key not in properties:
