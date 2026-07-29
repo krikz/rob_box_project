@@ -751,6 +751,85 @@ class TestShellImportSanity(unittest.TestCase):
         self.assertTrue(issubclass(DialogueNode, _Node))
 
 
+class TestLLMProviderWiring(unittest.TestCase):
+    """Regression coverage for issue #925 provider routing."""
+
+    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
+        """The legacy ``llm_provider`` config must never fall through to OpenAI."""
+        from unittest.mock import patch
+
+        node = object.__new__(DialogueNode)
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        values = {
+            "llm_provider": "deepseek",
+            "api_key": "test-key",
+            "base_url": "",
+            "model": "",
+        }
+        node.get_parameter = lambda name: _Param(values.get(name))
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as factory:
+            sentinel = object()
+            factory.return_value = sentinel
+            provider = node._build_llm()
+
+        self.assertIs(provider, sentinel)
+        factory.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+        )
+
+    def test_unknown_llm_provider_fails_before_any_client_is_built(self):
+        """A typo must fail loudly instead of sending credentials to OpenAI."""
+        node = object.__new__(DialogueNode)
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        values = {
+            "llm_provider": "openai",
+            "api_key": "test-key",
+            "base_url": "",
+            "model": "",
+        }
+        node.get_parameter = lambda name: _Param(values.get(name))
+
+        with self.assertRaisesRegex(ValueError, "llm_provider.*deepseek"):
+            node._build_llm()
+
+    def test_both_voice_configs_route_dialogue_to_deepseek(self):
+        """Source and Docker configs expose the same parameters to DialogueNode."""
+        from pathlib import Path
+
+        import yaml
+
+        repo_root = Path(__file__).resolve().parents[3]
+        paths = (
+            repo_root / "src/rob_box_voice/config/voice_assistant.yaml",
+            repo_root / "docker/vision/config/voice_assistant/voice_assistant.yaml",
+        )
+        expected = {
+            "llm_provider": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+        }
+
+        for path in paths:
+            with self.subTest(path=str(path)):
+                config = yaml.safe_load(path.read_text(encoding="utf-8"))
+                dialogue = config["/**"]["ros__parameters"]["dialogue_node"]
+                for key, value in expected.items():
+                    self.assertEqual(dialogue.get(key), value)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Regression tests for the W5a tool-provider wiring
 # (kanban t_09824a13 — replaces the older t_d0f33064 warning canary).

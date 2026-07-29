@@ -170,8 +170,9 @@
     # ===== Dialogue Node (LLM) =====
     dialogue_node:
       # 2026-07-29: switched from mimo (budget exhausted) to deepseek
-      provider: "deepseek"  # qwen | mimo | deepseek | openai | ollama
-      model: "deepseek-chat"  # Overrides PROVIDERS default
+      llm_provider: "deepseek"  # Supported provider for the W5 dialogue shell
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-chat"  # DeepSeek main model
       enable_fallback: false  # ОТКЛЮЧЕНО: нет доступа к Qwen
       enable_mcp_tools: true
       # ⚠️ KNOWN ISSUE: this flag is honored at startup, but
@@ -192,11 +193,13 @@
         max_tokens: 500
         stream: true
 
-      # DeepSeek API
+      # DeepSeek API details. These nested values document tuning defaults;
+      # llm_provider/base_url/model above are the parameters consumed directly
+      # by DialogueNode.
       deepseek:
         api_key: ""  # Используется DEEPSEEK_API_KEY из переменных окружения
         base_url: "https://api.deepseek.com"
-        model: "deepseek-v4-flash"
+        model: "deepseek-chat"
         temperature: 0.7
         max_tokens: 500  # Увеличено для творческих задач (рэп, стихи)
         stream: true

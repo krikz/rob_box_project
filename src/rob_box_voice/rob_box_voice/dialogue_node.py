@@ -39,7 +39,11 @@ from rob_box_harness.core.dialogue_state_machine import (
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
 from rob_box_harness.memory import InMemoryStore, MemoryStore, SQLiteVoiceMemory
-from rob_box_harness.providers import build_deepseek_provider
+from rob_box_harness.providers import (
+    DEEPSEEK_DEFAULT_BASE_URL,
+    DEEPSEEK_DEFAULT_MODEL,
+    build_deepseek_provider,
+)
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 
 from rob_box_voice.core.dialogue_text import (
@@ -132,7 +136,7 @@ class DialogueNode(Node):
         self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
         self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
     def _declare_params(self) -> None:
-        self.declare_parameter("provider", "deepseek")
+        self.declare_parameter("llm_provider", "deepseek")
         self.declare_parameter("api_key", "")
         self.declare_parameter("base_url", "")
         self.declare_parameter("model", "")
@@ -189,15 +193,27 @@ class DialogueNode(Node):
                 pass
             return store
     def _build_llm(self) -> Any:
-        # Delegate to the harness factory so the shell doesn't own
-        # provider-class knowledge (Phase 6 thin-shell contract).
-        # ``temperature`` / ``max_tokens`` are passed to ``.chat()``
-        # rather than the constructor — see test_dialogue_shell.py
-        # for the override pattern used by tests.
+        # Keep the provider selector explicit.  ``AsyncOpenAI`` defaults to
+        # api.openai.com when ``base_url`` is omitted, so silently accepting an
+        # unknown provider can leak a DeepSeek key to the wrong endpoint.
+        provider_name = str(
+            self.get_parameter("llm_provider").value or "deepseek"
+        ).strip().lower()
+        if provider_name != "deepseek":
+            raise ValueError(
+                f"Unsupported llm_provider={provider_name!r}; "
+                "this dialogue shell currently supports only 'deepseek'"
+            )
+
+        # Resolve the endpoint here instead of relying on SDK defaults.  This
+        # makes the production route visible and testable at the ROS shell
+        # boundary, where YAML parameters enter the application.
+        base_url = str(self.get_parameter("base_url").value or "").strip()
+        model = str(self.get_parameter("model").value or "").strip()
         return build_deepseek_provider(
             api_key=self.get_parameter("api_key").value or None,
-            base_url=self.get_parameter("base_url").value or None,
-            model=self.get_parameter("model").value or None,
+            base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
+            model=model or DEEPSEEK_DEFAULT_MODEL,
         )
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``

@@ -115,7 +115,8 @@
 
       # LLM
       # 2026-07-29: switched from mimo (budget exhausted) to deepseek
-      llm_provider: "deepseek"     # "deepseek", "mimo" или "local" (Ollama)
+      llm_provider: "deepseek"     # Supported provider for the W5 dialogue shell
+      base_url: "https://api.deepseek.com"
       model: "deepseek-chat"       # DeepSeek main model
       system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 
