@@ -101,7 +101,30 @@ def _install_all_mocks():
     sys.modules.setdefault("pyaudio", MagicMock())
 
     # ── grpc ──────────────────────────────────────────────────────────────
-    sys.modules.setdefault("grpc", MagicMock())
+    # Use a real-ish stub: MagicMock for everything *except* ``RpcError``,
+    # which must be a real ``BaseException`` subclass so that
+    # ``except grpc.RpcError as e:`` in production code actually catches
+    # raised errors. Without this, ``except grpc.RpcError as e:`` raises
+    # ``TypeError: catching classes that do not inherit from BaseException``
+    # because MagicMock instances are not BaseException subclasses.
+    grpc_mock = MagicMock()
+
+    class _FakeRpcError(Exception):
+        """Stand-in for ``grpc.RpcError`` (must inherit BaseException)."""
+
+        def __init__(self, code=None, details=""):
+            self._code = code
+            self._details = details
+            super().__init__(f"{code} - {details}" if code else details)
+
+        def code(self):
+            return self._code
+
+        def details(self):
+            return self._details
+
+    grpc_mock.RpcError = _FakeRpcError
+    sys.modules.setdefault("grpc", grpc_mock)
 
     # ── torch (Silero uses it lazily) ─────────────────────────────────────
     sys.modules.setdefault("torch", MagicMock())

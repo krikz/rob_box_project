@@ -193,6 +193,15 @@ except ImportError:
     YANDEX_GRPC_AVAILABLE = False
     print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Silero fallback.")
 
+# Yandex gRPC ``UtteranceSynthesis`` enforces a per-request text-length cap
+# (см. https://cloud.yandex.ru/docs/speechkit/tts/limits — 2500 символов
+# на одну ``UtteranceSynthesis`` RPC для API v3). Длинные анекдоты /
+# рассказы от LLM (>2.4k символов) вызывают ``INVALID_ARGUMENT - Too long
+# text``. Решение: разбивать текст на чанки по границам предложений
+# (``.`` ``!`` ``?`` ``\n``) до ``YANDEX_MAX_CHUNK_CHARS`` и слать каждый
+# чанк отдельной gRPC-сессией; аудио склеивается без пауз.
+YANDEX_MAX_CHUNK_CHARS: int = 2400
+
 
 # ── Concurrency primitives (BLK-9 follow-up) ────────────────────────────────
 # Synthesis executor — bounded ``ThreadPoolExecutor`` whose size is driven
@@ -1181,29 +1190,207 @@ class TTSNode(Node):
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
 
+    @staticmethod
+    def _chunk_text(
+        text: str,
+        max_chars: int = YANDEX_MAX_CHUNK_CHARS,
+        sentence_separators: str = ".!?\n",
+    ) -> list[str]:
+        """Разбить длинный текст на чанки для Yandex gRPC ``UtteranceSynthesis``.
+
+        Yandex API v3 принимает ≤2500 символов на один запрос
+        (см. https://cloud.yandex.ru/docs/speechkit/tts/limits). Чтобы
+        рассказы / длинные анекдоты (>2400 символов) не падали с
+        ``INVALID_ARGUMENT - Too long text``, текст нарезается по
+        границам предложений (``.`` ``!`` ``?`` ``\\n``), и только если
+        *одно* предложение длиннее ``max_chars`` — по границам слов
+        (whitespace).
+
+        Алгоритм:
+
+        1. Если ``len(text) <= max_chars`` → вернуть ``[text]``.
+        2. Greedy-проход: идём по ``text`` и копим чанк. Граница
+           предложения (``sep_chars`` после непустого фрагмента)
+           закрывает чанк, если текущая длина ≤ ``max_chars``.
+        3. Если границы предложений не нашлись / одно предложение
+           длиннее лимита → разбиваем по whitespace.
+        4. Никогда не возвращаем чанк длиннее ``max_chars``.
+
+        Args:
+            text: Исходный текст (после ``normalize_for_tts``).
+            max_chars: Лимит на длину чанка (по умолчанию
+                :data:`YANDEX_MAX_CHUNK_CHARS`).
+            sentence_separators: Символы-разделители предложений.
+
+        Returns:
+            list[str] — фрагменты, объединение которых даёт исходный
+            текст. Каждый ≤ ``max_chars``. Пустой вход → ``[]``.
+
+        Examples:
+            >>> TTSNode._chunk_text("Короткий текст.")
+            ['Короткий текст.']
+            >>> chunks = TTSNode._chunk_text("А. " * 2000, max_chars=100)
+            >>> all(len(c) <= 100 for c in chunks)
+            True
+        """
+        if not text:
+            return []
+        text = text.strip()
+        if not text:
+            return []
+        if len(text) <= max_chars:
+            return [text]
+
+        # Walk character-by-character, prefer sentence boundaries.
+        sep_set = set(sentence_separators)
+        chunks: list[str] = []
+        current = ""
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            current += ch
+            # Close at sentence boundary only if we're under the limit.
+            if ch in sep_set and len(current) > 0 and len(current) < max_chars:
+                # Look ahead: if the rest of the text alone fits, don't
+                # bother appending more to this chunk.
+                remaining = text[i + 1:].lstrip()
+                if len(remaining) <= max_chars - len(current):
+                    current += text[i + 1:]
+                    i = n
+                    chunks.append(current.strip())
+                    current = ""
+                    break
+                if len(current) >= max_chars * 0.4:
+                    # Reasonable sentence — close the chunk.
+                    chunks.append(current.strip())
+                    current = ""
+            elif len(current) >= max_chars:
+                # Sentence didn't end in time — force a word-level split.
+                # Try to back off to the last whitespace within `current`.
+                last_space = current.rfind(" ")
+                if last_space > max_chars * 0.5:
+                    head = current[:last_space].strip()
+                    tail = current[last_space + 1:]
+                    if head:
+                        chunks.append(head)
+                    current = tail
+                else:
+                    # No whitespace in the second half — hard slice.
+                    chunks.append(current[:-1].strip())
+                    current = current[-1]
+                # If even this single segment exceeds the limit (one
+                # absurdly long "word"), accept it; Yandex will reject
+                # and we'll fall back to Silero for the whole text.
+                if len(current) > max_chars:
+                    chunks.append(current.strip())
+                    current = ""
+            i += 1
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        # Filter empty strings (defensive — should not happen).
+        chunks = [c for c in chunks if c]
+        if not chunks:
+            return [text] if text else []
+        return chunks
+
     def _synthesize_yandex(self, text: str, ssml_attributes: dict = None) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
 
+        Если текст длиннее :data:`YANDEX_MAX_CHUNK_CHARS`, разбивает его
+        на чанки (:meth:`_chunk_text`) и отправляет каждый чанк
+        отдельным gRPC ``UtteranceSynthesis`` RPC. Аудио склеивается
+        без пауз (см. issue #931). Один ``speech_id`` обслуживает все
+        чанки — вызывающий код публикует ``finished`` event ровно
+        один раз после возврата.
+
         Args:
-            text: Текст для синтеза
-            ssml_attributes: Словарь с атрибутами SSML (pitch, rate)
+            text: Текст для синтеза.
+            ssml_attributes: Словарь с атрибутами SSML (pitch, rate).
+
+        Returns:
+            np.ndarray: float32 mono samples в диапазоне -1..1,
+            объединение аудио всех чанков.
+
+        Raises:
+            Exception: при любой gRPC-ошибке. Если ошибка случилась на
+            *любом* чанке, пробрасываем наверх — caller решает, падать
+            ли в Silero fallback для всего текста.
         """
         if not self.yandex_stub:
             raise Exception("Yandex gRPC stub не инициализирован")
 
-        # Применяем SSML атрибуты если есть
         if ssml_attributes is None:
             ssml_attributes = {}
 
-        # Скорость речи: берем из SSML или используем параметр ноды
         speech_rate = ssml_attributes.get("rate", self.yandex_speed)
 
-        # Pitch для Yandex не поддерживается напрямую через hints,
-        # но мы можем логировать для будущей реализации
         if "pitch" in ssml_attributes:
-            self.get_logger().info(f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)")
+            self.get_logger().info(
+                f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)"
+            )
 
-        # Создаём запрос как в оригинальном ROBBOX коде
+        chunks = self._chunk_text(text, max_chars=YANDEX_MAX_CHUNK_CHARS)
+        if len(chunks) > 1:
+            self.get_logger().info(
+                f"🪓 Текст {len(text)} chars > {YANDEX_MAX_CHUNK_CHARS} "
+                f"→ разбит на {len(chunks)} чанков"
+            )
+
+        audio_segments: list[np.ndarray] = []
+        per_chunk_rates: list[int] = []
+
+        for chunk_idx, chunk_text in enumerate(chunks):
+            if not chunk_text.strip():
+                continue
+            t0 = time.monotonic()
+            try:
+                segment, seg_rate = self._synthesize_yandex_single(
+                    chunk_text, speech_rate
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"⚠️  Yandex gRPC chunk {chunk_idx + 1}/{len(chunks)} "
+                    f"failed ({len(chunk_text)} chars): {exc}"
+                )
+                raise
+
+            dt_ms = (time.monotonic() - t0) * 1000.0
+            self.get_logger().info(
+                f"🎙️  Yandex chunk {chunk_idx + 1}/{len(chunks)}: "
+                f"{len(segment)} samples @ {seg_rate} Hz "
+                f"({len(chunk_text)} chars, {dt_ms:.0f} ms)"
+            )
+            audio_segments.append(segment)
+            per_chunk_rates.append(seg_rate)
+
+        if not audio_segments:
+            raise Exception("Yandex TTS: ни один chunk не вернул аудио")
+
+        audio_np = (
+            np.concatenate(audio_segments) if len(audio_segments) > 1 else audio_segments[0]
+        )
+        actual_sample_rate = per_chunk_rates[-1] if per_chunk_rates else 22050
+
+        self.get_logger().info(
+            f"✅ Yandex gRPC v3 (ROBBOX original!): {len(audio_np)} samples, "
+            f"source {actual_sample_rate} Hz, speed={speech_rate}, "
+            f"{len(audio_segments)} chunk(s)"
+        )
+
+        return audio_np
+
+    def _synthesize_yandex_single(
+        self, text: str, speech_rate: float
+    ) -> tuple[np.ndarray, int]:
+        """Один gRPC ``UtteranceSynthesis`` → ``(audio_np, sample_rate)``.
+
+        Helper для :meth:`_synthesize_yandex` (multi-chunk loop). Не
+        предполагается вызывать напрямую извне — публичный контракт
+        остаётся через ``_synthesize_yandex``.
+        """
         request = tts_pb2.UtteranceSynthesisRequest(
             text=text,
             output_audio_spec=tts_pb2.AudioFormatOptions(
@@ -1211,18 +1398,16 @@ class TTSNode(Node):
             ),
             hints=[
                 tts_pb2.Hints(voice=self.yandex_voice),  # anton!
-                tts_pb2.Hints(speed=speech_rate),  # Используем rate из SSML или параметр
+                tts_pb2.Hints(speed=speech_rate),
             ],
             loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
         )
 
         try:
-            # Отправляем запрос с авторизацией
             responses = self.yandex_stub.UtteranceSynthesis(
                 request, metadata=(("authorization", f"Api-Key {self.yandex_api_key}"),)
             )
 
-            # Собираем аудио данные из стрима
             audio_data = b""
             for response in responses:
                 audio_data += response.audio_chunk.data
@@ -1231,14 +1416,9 @@ class TTSNode(Node):
                 raise Exception("Пустой ответ от Yandex TTS")
 
             # ВАЖНО! Для оригинального звука ROBBOX:
-            # Вариант 1 (оригинал): читаем сырые PCM с заголовком WAV (np.frombuffer)
-            # Вариант 2 (новый): читаем правильно с декодированием WAV (soundfile)
-            # Сейчас используем Вариант 1 для совместимости с оригиналом
-
-            # Декодируем СЫРЫЕ байты (включая WAV заголовок!) как PCM
+            # читаем сырые байты (включая WAV заголовок!) как PCM
             audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
 
-            # Для логов определим реальную частоту из WAV заголовка
             try:
                 with io.BytesIO(audio_data) as wav_file:
                     with wave.open(wav_file, "rb") as wav:
@@ -1246,12 +1426,7 @@ class TTSNode(Node):
             except Exception:  # noqa: E722
                 actual_sample_rate = 22050  # fallback
 
-            self.get_logger().info(
-                f"✅ Yandex gRPC v3 (ROBBOX original!): {len(audio_np)} samples, "
-                f"source {actual_sample_rate} Hz, speed={speech_rate}"
-            )
-
-            return audio_np
+            return audio_np, actual_sample_rate
 
         except grpc.RpcError as e:
             raise Exception(f"Yandex gRPC error: {e.code()} - {e.details()}")
