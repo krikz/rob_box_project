@@ -108,6 +108,21 @@ class DialogueNode(Node):
             String, "/voice/sound/trigger", 10)
         self._tts_control_pub = self.create_publisher(
             String, "/voice/tts/control", 10)
+        # Music safety-net hook (issue #935): when the dialog ends and the
+        # LLM forgot to call stop_music(), we still want playback to stop.
+        # We publish a JSON payload on /mcp/music_cleanup so the MCP server
+        # runs ``MusicManager.stop_music_on_session_end()`` for us.
+        try:
+            self._music_cleanup_pub = self.create_publisher(
+                String, "/mcp/music_cleanup", 10)
+            self.get_logger().info(
+                "🎵 [dialogue_node] Publisher на /mcp/music_cleanup готов (issue #935)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._music_cleanup_pub = None
+            self.get_logger().warning(
+                f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
+            )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
         self.create_subscription(
@@ -392,6 +407,11 @@ class DialogueNode(Node):
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 self._publish_state()
+                # Issue #935: signal mcp_server to clean up any music that
+                # the LLM forgot to stop after rap/poem/spoken-word.
+                # Idempotent — only logs/acts when music is actually
+                # playing (no-op on silent turns).
+                self._publish_music_cleanup()
     def _handle_result(self, result: DialogResult) -> None:
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
@@ -411,6 +431,26 @@ class DialogueNode(Node):
         msg = String()
         msg.data = build_ssml_payload(text, animation)
         self._response_pub.publish(msg)
+
+    def _publish_music_cleanup(self, reason: str = "dialogue_end") -> None:
+        """Issue #935 — signal mcp_server to auto-stop any active music.
+
+        Best-effort: if the publisher was never created (e.g. mcp_server
+        not running in this container), this is a silent no-op. mcp_server
+        decides what to do — currently it logs and calls
+        ``MusicManager.stop_music_on_session_end()``.
+        """
+        if getattr(self, "_music_cleanup_pub", None) is None:
+            return
+        try:
+            payload = json.dumps({"reason": reason})
+            msg = String()
+            msg.data = payload
+            self._music_cleanup_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
+            )
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):
             self._publish_response(chunk)

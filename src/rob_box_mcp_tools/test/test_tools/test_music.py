@@ -8,6 +8,7 @@ test_music.py - Unit тесты для инструментов управлен
 """
 
 import sys
+import time
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -54,6 +55,13 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._renardo_available = renardo_available
     mgr._renardo_last_error = None
     mgr._renardo_context = {}
+    # issue #935 — music session lifecycle (must match __init__ defaults
+    # to keep tests faithful; see ``MusicManager.__init__``)
+    mgr._auto_stop_ttl_seconds = 300
+    mgr._music_session_active_since = None
+    mgr._last_music_activity_at = None
+    mgr._last_stop_at = None
+    mgr._auto_stop_count = 0
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
 
@@ -160,6 +168,12 @@ class TestMusicManagerSCCheck:
         mgr._current_preset = None
         mgr._renardo_available = False
         mgr._renardo_context = {}
+        # issue #935 — music session lifecycle defaults
+        mgr._auto_stop_ttl_seconds = 300
+        mgr._music_session_active_since = None
+        mgr._last_music_activity_at = None
+        mgr._last_stop_at = None
+        mgr._auto_stop_count = 0
         return mgr
 
     def test_sc_running_returns_true(self):
@@ -615,3 +629,220 @@ class TestGetMusicStateTool:
         assert result.success is True
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — music session lifecycle / safety-net (issue #935)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicSessionLifecycle:
+    """Тесты session lifecycle + safety-net (issue #935):
+
+    * ``get_state`` exposes lifecycle fields (timestamps, ttl, counter)
+    * ``execute_code`` stamps ``_last_music_activity_at`` (and starts a session
+      on the first pattern)
+    * ``stop_pattern`` / ``stop_all`` reset / close the session correctly
+    * ``auto_stop_idle_music`` no-ops when nothing is active, no-ops when the
+      idle interval is below the configured TTL, and **does** call
+      ``stop_all`` (incrementing the counter) once the TTL is exceeded
+    * ``stop_music_on_session_end`` is idempotent and reports what was active
+    """
+
+    # ----- get_state lifecycle fields ---------------------------------------
+
+    def test_get_state_exposes_lifecycle_fields(self):
+        mgr = _make_manager(sc_running=True, renardo_available=False)
+        state = mgr.get_state()
+        # default-from-__init__ values
+        assert state["music_session_active_since"] is None
+        assert state["last_music_activity_at"] is None
+        assert state["last_stop_at"] is None
+        assert state["auto_stop_ttl_seconds"] == 300
+        assert state["auto_stop_count"] == 0
+        # nothing is active yet → no idle window
+        assert state["idle_seconds"] is None
+        assert state["active_patterns"] == []
+
+    # ----- execute_code stamps lifecycle ------------------------------------
+
+    def test_execute_code_stamps_last_activity(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # No session yet → after execute_code, both timestamps populated.
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert result["success"] is True
+        assert mgr._music_session_active_since is not None
+        assert mgr._last_music_activity_at is not None
+        # session start == first activity (monotonic)
+        assert (
+            mgr._music_session_active_since <= mgr._last_music_activity_at
+        )
+
+    def test_execute_code_without_pattern_does_not_open_session(self):
+        """Clock.bpm = N (no pattern_name) should not start a music session."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("Clock.bpm = 120")
+        assert result["success"] is True
+        # No active patterns, so session should NOT be opened.
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+
+    def test_execute_code_continues_existing_session(self):
+        """Second execute keeps session_open but bumps last_activity."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+            first_session = mgr._music_session_active_since
+            first_activity = mgr._last_music_activity_at
+            # Execute again — same session, but activity bumped.
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        assert mgr._music_session_active_since == first_session
+        assert mgr._last_music_activity_at >= first_activity
+
+    # ----- stop_all resets session ------------------------------------------
+
+    def test_stop_all_resets_session(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert mgr._music_session_active_since is not None
+        mgr.stop_all()
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+        assert mgr._last_stop_at is not None
+
+    def test_stop_pattern_partial_does_not_reset_session(self):
+        """stop_pattern leaves lifecycle intact until ALL patterns are gone."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        session_before = mgr._music_session_active_since
+        activity_before = mgr._last_music_activity_at
+        mgr.stop_pattern("p1")
+        # session & activity should still be set — p2 is still active
+        assert mgr._music_session_active_since == session_before
+        assert mgr._last_music_activity_at == activity_before
+        assert "p1" not in mgr._active_patterns
+        assert "p2" in mgr._active_patterns
+
+    # ----- auto_stop_idle_music --------------------------------------------
+
+    def test_auto_stop_is_noop_when_inactive(self):
+        mgr = _make_manager()
+        # Nothing is playing → must NOT increment counter / touch state.
+        result = mgr.auto_stop_idle_music()
+        assert result["stopped"] is False
+        assert result["active_patterns"] == []
+        assert result["auto_stop_count"] == 0
+        assert result["idle_seconds"] is None
+
+    def test_auto_stop_is_noop_when_within_ttl(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        # 10 s idle, ttl 300 s → no auto-stop.
+        result = mgr.auto_stop_idle_music(ttl_seconds=300, now=time.monotonic() + 10)
+        assert result["stopped"] is False
+        assert mgr._auto_stop_count == 0
+
+    def test_auto_stop_stops_when_ttl_exceeded(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert "p1" in mgr._active_patterns
+        # Inject a future "now" so idle = ttl+10.
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=time.monotonic() + 310
+        )
+        assert result["stopped"] is True
+        assert mgr._auto_stop_count == 1
+        assert mgr._active_patterns == set()
+        assert mgr._music_session_active_since is None
+
+    def test_auto_stop_count_increments_on_repeat(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # Round 1: trigger an auto-stop, then re-arm by adding a pattern.
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        now_offset = 0.0
+        t0 = time.monotonic() + now_offset
+        mgr._last_music_activity_at = t0
+        result1 = mgr.auto_stop_idle_music(ttl_seconds=1, now=t0 + 10)
+        assert result1["stopped"] is True
+        assert mgr._auto_stop_count == 1
+        # Round 2: re-create a session and trigger again.
+        with patch("builtins.exec"):
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        t1 = time.monotonic()
+        result2 = mgr.auto_stop_idle_music(ttl_seconds=1, now=t1 + 10)
+        assert result2["stopped"] is True
+        assert mgr._auto_stop_count == 2
+
+    def test_auto_stop_default_ttl_matches_env_or_300(self):
+        """The default TTL constant must be 300 seconds when env unset."""
+        mgr = _make_manager()
+        mgr._auto_stop_ttl_seconds = 300
+        assert mgr._auto_stop_ttl_seconds == 300
+
+    def test_auto_stop_returns_diagnostic_fields(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=time.monotonic() + 999
+        )
+        # Returning all keys makes it easy for DialogueCore to log without
+        # touching internals.
+        for key in (
+            "stopped", "idle_seconds", "ttl_seconds",
+            "active_patterns", "auto_stop_count", "stop_result",
+        ):
+            assert key in result, f"missing key: {key}"
+        assert result["stopped"] is True
+        assert isinstance(result["idle_seconds"], float)
+        assert result["idle_seconds"] >= 300.0
+
+    # ----- stop_music_on_session_end ---------------------------------------
+
+    def test_session_end_hook_noop_when_silent(self):
+        mgr = _make_manager()
+        result = mgr.stop_music_on_session_end()
+        assert result["was_active"] is False
+        assert result["stopped_patterns"] == []
+        assert "Нет активной" in result["message"]
+
+    def test_session_end_hook_stops_active_music(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        result = mgr.stop_music_on_session_end()
+        assert result["was_active"] is True
+        assert set(result["stopped_patterns"]) == {"p1", "p2"}
+        # Message describes auto-stop (mixed RU/EN keywords).
+        msg_lower = result["message"].lower()
+        assert "stop_music" in msg_lower or "стоп" in msg_lower
+        # Lifecycle is fully closed.
+        assert mgr._active_patterns == set()
+        assert mgr._music_session_active_since is None
+        assert mgr._last_stop_at is not None
+
+    def test_session_end_hook_is_idempotent(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        first = mgr.stop_music_on_session_end()
+        second = mgr.stop_music_on_session_end()
+        assert first["was_active"] is True
+        assert second["was_active"] is False
+        assert second == {
+            "was_active": False,
+            "stopped_patterns": [],
+            "message": "Нет активной музыки для остановки",
+        }

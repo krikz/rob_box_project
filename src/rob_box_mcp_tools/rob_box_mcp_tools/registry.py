@@ -15,10 +15,60 @@ import json
 
 
 class MCPToolRegistry:
-    """Реестр MCP инструментов."""
+    """Реестр инструментов MCP-сервера.
 
-    def __init__(self):
+    Помимо регистрации и поиска, нормализует устаревшие/альтернативные
+    имена параметров (``aliases``) перед валидацией. Например, для
+    инструмента ``set_vibe_preset`` принимается и ``preset_name``, и
+    ``preset`` (issue #935 — LLM иногда путал их, и сервер падал с
+    "Отсутствует обязательный параметр: preset_name"). Алиасы объявляются
+    через ``MCPTool.aliases`` (по умолчанию пустой dict).
+    """
+
+    def __init__(self) -> None:
         self._tools: Dict[str, MCPTool] = {}
+
+    # ------------------------------------------------------------------
+    # Parameter alias normalization — issue #935
+    # ------------------------------------------------------------------
+
+    #: Алиасы, которые применяются к **любому** инструменту. Полезно как
+    #: «escape hatch», когда старая LLM-промпт использует устаревшее
+    #: имя параметра, а менять schema нельзя (рассылаем LLM-агенту).
+    GLOBAL_PARAM_ALIASES: Dict[str, Dict[str, str]] = {
+        # tool_name: {alias_param: canonical_param}
+        "set_vibe_preset": {"preset": "preset_name"},
+    }
+
+    def normalize_params(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+        """Перевести альтернативные имена параметров в канонические.
+
+        Делается **до** ``validate_parameters`` чтобы сервер не отвергал
+        корректный запрос только потому, что LLM использовал старое имя.
+        Канонические имена имеют приоритет; алиас применяется только когда
+        канонический параметр ещё не передан.
+        """
+        tool = self._tools.get(tool_name)
+        alias_map: Dict[str, str] = {}
+        if tool is not None:
+            aliases = getattr(tool, "aliases", None)
+            if isinstance(aliases, dict):
+                alias_map.update(aliases)
+        alias_map.update(self.GLOBAL_PARAM_ALIASES.get(tool_name, {}))
+        if not alias_map:
+            return kwargs
+        normalized = dict(kwargs)
+        for alias_name, canonical_name in alias_map.items():
+            if (
+                alias_name in normalized
+                and canonical_name not in normalized
+            ):
+                normalized[canonical_name] = normalized.pop(alias_name)
+            elif alias_name in normalized and canonical_name in normalized:
+                # Both present — drop the alias to keep canonical value
+                # authoritative (avoids 'multiple values' surprises).
+                normalized.pop(alias_name, None)
+        return normalized
 
     def register(self, tool: MCPTool) -> None:
         """
@@ -102,14 +152,18 @@ class MCPToolRegistry:
         if tool is None:
             return MCPToolResult(success=False, error=f"Инструмент '{tool_name}' не найден")
 
+        # Normalize parameter aliases (issue #935) so the legacy ``preset``
+        # name still routes to ``preset_name`` instead of failing validation.
+        normalized_kwargs = self.normalize_params(tool_name, **kwargs)
+
         # Валидация параметров
-        valid, error_msg = tool.validate_parameters(**kwargs)
+        valid, error_msg = tool.validate_parameters(**normalized_kwargs)
         if not valid:
             return MCPToolResult(success=False, error=f"Ошибка валидации параметров: {error_msg}")
 
         # Выполнение инструмента
         try:
-            return tool.execute(**kwargs)
+            return tool.execute(**normalized_kwargs)
         except Exception as e:
             error_msg = f"Ошибка выполнения инструмента '{tool_name}': {str(e)}"
             if tool.node:

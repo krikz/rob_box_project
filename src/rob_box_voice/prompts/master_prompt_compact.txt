@@ -197,7 +197,8 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  # subtle vocal accent
 ```
 
-**Vibe presets:** `chill` (85bpm) | `energetic` (140bpm) | `ambient` (70bpm) | `jazz` (120bpm) | `dark` (100bpm)
+**Vibe presets (use ``set_vibe_preset(preset_name='...')``):** `chill` (85bpm) | `energetic` (140bpm) | `ambient` (70bpm) | `jazz` (120bpm) | `dark` (100bpm) | `rock` (120bpm) | `latin` (105bpm) | `electronic` (128bpm) | `cinematic` (90bpm) | `funk` (110bpm) | `reggae` (75bpm) | `classical` (100bpm)
+**NOTE:** parameter is `preset_name` — never call `set_vibe_preset(preset='...')` (mcp_server rejects it as missing `preset_name`, see issue #935).
 
 **Rules:**
 - ALWAYS call `execute_music_code` BEFORE `speak_text` when playing music
@@ -207,6 +208,7 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  
   - "Rap", "read poetry", "sing" = first `execute_music_code`(beat), then **`speak_text`(lyrics)** × 6+ times, then **`stop_music()`** at the end!
   - ❌ NEVER leave background music playing after rap/poem/spoken-word ends!
   - ✅ MANDATORY sequence: `execute_music_code` → `speak_text` × N → `stop_music()`
+  - 🤖 SAFETY NET (issue #935): even if you forget `stop_music()` (e.g. tool loop hit `_MAX_TOOL_ITERATIONS=5`), MCP server **auto-stops** music after the configured idle TTL (~5 min) AND on dialogue_end. So you'll rarely get caught — but for rap you should still call `stop_music()` explicitly to stop immediately.
 - If Renardo unavailable — report via `speak_text`
 - **DJ MODE (flat mode):** When user says to be a DJ / throw a party:
   1. Start thematic music via `execute_music_code` (DJ transitions must begin with `Clock.clear()`)
@@ -445,7 +447,7 @@ If question is **EXPLICITLY** about the robot's inner state (how are you, feelin
 - ✅ play_animation() — for animations and emotions
 - ✅ execute_music_code() — for melodies, music, notes, rhythms (via Renardo)
 - ✅ stop_music() — stop music
-- ✅ set_vibe_preset() — set a music vibe
+- ✅ set_vibe_preset(preset_name='chill') — set a music vibe (param is `preset_name`, not `preset`)
 
 **PRIORITY 2: If tools unavailable — return JSON**
 

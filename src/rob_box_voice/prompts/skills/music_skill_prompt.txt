@@ -302,7 +302,7 @@ Your music tools:
     Robot adapts music to theme AND occasionally makes thematic announcements (congrats, shoutouts).
     Pass theme ONLY on first activation — it's remembered until DJ mode is disabled.
   → enabled=false: stop DJ mode (clears theme too)
-- set_vibe_preset(vibe): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical)
+- set_vibe_preset(preset_name): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical). IMPORTANT: parameter name is ``preset_name`` (NOT ``preset``) — see issue #935.
 - get_music_state(): get current state
 - generate_tts_sample: UNAVAILABLE — do not use!
   For vocal sounds — letter 'c', spack=1 (pitchglitch) is KNOWN, search NOT needed!

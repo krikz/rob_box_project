@@ -229,15 +229,19 @@ class MusicSkill(BaseSkill):
             return await _call("stop_music", params)
 
         @function_tool
-        async def set_vibe_preset(preset: str) -> str:
+        async def set_vibe_preset(preset_name: str) -> str:
             """Apply a vibe preset that configures BPM, scale, and root key.
 
             Args:
-                preset: One of 'chill', 'energetic', 'ambient', 'jazz', 'dark',
-                        'rock', 'latin', 'electronic', 'cinematic', 'funk',
-                        'reggae', 'classical'.
+                preset_name: One of 'chill', 'energetic', 'ambient', 'jazz',
+                             'dark', 'rock', 'latin', 'electronic', 'cinematic',
+                             'funk', 'reggae', 'classical'. Must be passed as
+                             ``preset_name`` (NOT ``preset`` — issue #935: prior
+                             ``preset`` naming made the LLM think the MCP tool
+                             expected ``preset`` and got rejected with
+                             "Отсутствует обязательный параметр: preset_name").
             """
-            return await _call("set_vibe_preset", {"preset_name": preset})
+            return await _call("set_vibe_preset", {"preset_name": preset_name})
 
         @function_tool
         async def get_music_state() -> str:

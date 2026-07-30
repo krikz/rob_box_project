@@ -282,13 +282,22 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
             description="Stop all music / DJ playback.",
             parameters={"type": "object", "properties": {}},
         ),
+        # Canonical name is ``preset_name`` to match the MCP ``SetVibePresetTool``
+        # schema (see rob_box_mcp_tools/tools/music.py) — the previous ``preset``
+        # alias caused `mcp_server` validation errors in issue #935.
         ToolSpec(
             name="set_vibe_preset",
-            description="Apply a named vibe preset (tempo, scale, sound set).",
+            description=(
+                "Apply a named vibe preset (tempo, scale, root key). "
+                "Preset values: chill (85bpm), energetic (140bpm), ambient (70bpm), "
+                "jazz (120bpm), dark (100bpm), rock (120bpm), latin (105bpm), "
+                "electronic (128bpm), cinematic (90bpm), funk (110bpm), "
+                "reggae (75bpm), classical (100bpm)."
+            ),
             parameters={
                 "type": "object",
-                "properties": {"preset": _TEXT_PROPERTY},
-                "required": ["preset"],
+                "properties": {"preset_name": _TEXT_PROPERTY},
+                "required": ["preset_name"],
             },
         ),
         ToolSpec(

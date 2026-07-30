@@ -152,8 +152,107 @@ class MCPServer(Node):
         # Публикуем список инструментов сразу при старте
         self.publish_tools()
 
+        # --------------------------------------------------------------
+        # Music session safety-net — issue #935
+        # --------------------------------------------------------------
+        # Two redundant mechanisms so the robot stops playing music when
+        # the LLM forgets (e.g. the tool-loop is exhausted at
+        # ``_MAX_TOOL_ITERATIONS=5``).  Either of them is sufficient on
+        # its own; both together = belt-and-braces.
+        #
+        # (1) Periodic watchdog timer runs ``auto_stop_idle_music`` every
+        #     ``_MUSIC_WATCHDOG_PERIOD_S`` seconds (default 5s).
+        # (2) ``/mcp/music_cleanup`` topic subscription lets the
+        #     dialogue_node push a single-shot "dialogue ended" message
+        #     that triggers ``stop_music_on_session_end`` immediately.
+        try:
+            self._music_watchdog_period_s: float = float(
+                os.environ.get("MUSIC_WATCHDOG_PERIOD_S", "5.0")
+            )
+        except (TypeError, ValueError):
+            self._music_watchdog_period_s = 5.0
+        self._music_watchdog_enabled: bool = (
+            os.environ.get("MUSIC_WATCHDOG_ENABLED", "true").lower()
+            in ("1", "true", "yes", "on")
+        )
+        # Subscribe to /mcp/music_cleanup — payload is JSON like
+        # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
+        # payload defaults to dialogue_end.
+        try:
+            self._music_cleanup_sub = self.create_subscription(
+                String,
+                "/mcp/music_cleanup",
+                self._on_music_cleanup,
+                qos_profile,
+            )
+            self.get_logger().info("🎵 Подписан на /mcp/music_cleanup (issue #935)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /mcp/music_cleanup: {exc}"
+            )
+
+        if self._music_watchdog_enabled:
+            period = max(0.1, self._music_watchdog_period_s)
+            try:
+                self._music_watchdog_timer = self.create_timer(
+                    period, self._run_music_watchdog
+                )
+                self.get_logger().info(
+                    f"🎵 Music watchdog timer запущен (period={period}s, "
+                    f"ttl={self._music_manager._auto_stop_ttl_seconds if self._music_manager else '?'}s)"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"⚠️ Не удалось запустить watchdog timer: {exc}"
+                )
+
         self.get_logger().info(f"🛠️ MCP Server запущен с {len(self.registry)} инструментами")
         self.get_logger().info(f"   Инструменты: {', '.join(self.registry.list_tools())}")
+
+    # ------------------------------------------------------------------
+    # Music cleanup hooks — safety-net (issue #935)
+    # ------------------------------------------------------------------
+    def _on_music_cleanup(self, msg: "String") -> None:
+        """Topic callback: force-stop music on dialogue/shutdown events.
+
+        Triggered by messages on ``/mcp/music_cleanup`` published by
+        :class:`dialogue_node` when the dialogue ends. Payload is JSON;
+        an empty/non-JSON string defaults to ``reason="dialogue_end"``.
+        """
+        if not getattr(self, "_music_manager", None):
+            return
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError):
+            payload = {}
+        reason = str(payload.get("reason", "dialogue_end")) if isinstance(payload, dict) else "dialogue_end"
+        result = self._music_manager.stop_music_on_session_end()
+        if result.get("was_active"):
+            self.get_logger().warning(
+                f"🎵 [{reason}] Авто-стоп {len(result.get('stopped_patterns', []))} "
+                f"активных паттернов (issue #935). msg={result.get('message')}"
+            )
+
+    def _run_music_watchdog(self) -> None:
+        """Timer callback: auto-stop idle music when TTL is exceeded."""
+        manager = getattr(self, "_music_manager", None)
+        if manager is None:
+            return
+        try:
+            result = manager.auto_stop_idle_music()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Music watchdog failed: {exc}"
+            )
+            return
+        if result.get("stopped"):
+            patterns = result.get("active_patterns", [])
+            idle = result.get("idle_seconds", "?")
+            ttl = result.get("ttl_seconds", "?")
+            self.get_logger().warning(
+                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов после "
+                f"{idle:.1f}s (ttl={ttl:.0f}s). Issue #935."
+            )
 
     def _init_waypoint_store(self) -> WaypointStore:
         """Инициализация WaypointStore (SQLite для вейпоинтов)."""
@@ -254,6 +353,12 @@ class MCPServer(Node):
             )
             return
 
+        # Expose the manager so the watchdog / DialogueNode can hook into
+        # session cleanup. Issue #935: when the dialog finishes without
+        # ``stop_music``, an external safety-net (the dialog-end hook below)
+        # calls ``music_manager.stop_music_on_session_end()`` to stop
+        # playback automatically.
+        self._music_manager: Optional[MusicManager] = music_manager
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))

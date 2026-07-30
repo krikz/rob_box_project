@@ -21,6 +21,7 @@ import re
 import socket
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -92,6 +93,28 @@ class MusicManager:
         self._renardo_available: Optional[bool] = None
         #: Последняя ошибка инициализации renardo для диагностики
         self._renardo_last_error: Optional[str] = None
+        # ------------------------------------------------------------------
+        # Music session lifecycle tracking — issue #935
+        # Tracks wall-clock timestamps for "music session" so a safety-net
+        # watchdog can auto-stop music when the LLM forgets to call
+        # ``stop_music`` after a rap/poem/spoken-word sequence, e.g. when
+        # ``_MAX_TOOL_ITERATIONS=5`` is hit and the loop returns the last
+        # spoken text without flushing stop_music.
+        # ------------------------------------------------------------------
+        # default 5 min — overridable via MUSIC_AUTO_STOP_TTL_SECONDS env
+        default_ttl = 300
+        try:
+            env_ttl = int(os.environ.get("MUSIC_AUTO_STOP_TTL_SECONDS", str(default_ttl)))
+            self._auto_stop_ttl_seconds: int = max(1, env_ttl)
+        except (TypeError, ValueError):
+            self._auto_stop_ttl_seconds = default_ttl
+        # wall-clock timestamps — None until the first music activity in
+        # the session. Stored as float seconds since epoch.
+        self._music_session_active_since: Optional[float] = None
+        self._last_music_activity_at: Optional[float] = None
+        self._last_stop_at: Optional[float] = None
+        # stats — surfaced via get_state() for the DialogCore safety-net
+        self._auto_stop_count: int = 0
         self._initialize_renardo()
 
     # ------------------------------------------------------------------
@@ -365,6 +388,16 @@ class MusicManager:
             self._pattern_history[pattern_name] = code
             self._active_patterns.add(pattern_name)
 
+        # Stamp music-session lifecycle (issue #935). Only mark activity when
+        # at least one pattern was started in this call (i.e. we're not in an
+        # idempotent no-op).
+        if pattern_name and pattern_name in self._active_patterns:
+            now = time.monotonic()
+            self._last_music_activity_at = now
+            # session_open: only start a "session" on the *first* pattern this run.
+            if self._music_session_active_since is None:
+                self._music_session_active_since = now
+
         return {"success": True, "message": "Код выполнен успешно", "code": code}
 
     def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
@@ -380,14 +413,31 @@ class MusicManager:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
         stop_code = f"{pattern_name}.stop()"
+        stop_error: Optional[str] = None
 
         if self._renardo_available and self._check_supercollider():
             try:
                 exec(stop_code, self._renardo_context)  # noqa: S102
-            except Exception as exc:
-                return {"success": False, "error": f"Ошибка остановки паттерна: {exc}"}
+            except Exception as exc:  # noqa: BLE001
+                # Renardo may not know this player (e.g. we never started it),
+                # or SC is degraded. Log and continue: we still want to drop
+                # the pattern from our internal active set so the watchdog
+                # sees that the session is over (issue #935 safety-net).
+                stop_error = f"Ошибка остановки паттерна: {exc}"
 
         self._active_patterns.discard(pattern_name)
+        # Auto-close the music session if there are no patterns left (issue #935).
+        if not self._active_patterns:
+            self._last_stop_at = time.monotonic()
+        if stop_error:
+            return {
+                "success": False,
+                "error": stop_error,
+                "warning": (
+                    "Паттерн исключён из active_patterns (issue #935 safety-net) "
+                    f"несмотря на ошибку Renardo: {pattern_name}."
+                ),
+            }
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
     def stop_all(self) -> Dict[str, Any]:
@@ -402,6 +452,10 @@ class MusicManager:
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
+        # Track Clock.clear() failures so we can warn the operator while
+        # still tearing down our internal session state (issue #935).
+        clock_error: Optional[str] = None
+
         if self._renardo_available and self._check_supercollider():
             # Шаг 1: остановить все плееры которые есть в контексте
             player_names = (
@@ -422,8 +476,12 @@ class MusicManager:
             # Шаг 2: очистить Clock
             try:
                 exec("Clock.clear()", self._renardo_context)  # noqa: S102
-            except Exception as exc:
-                return {"success": False, "error": f"Ошибка остановки Clock: {exc}"}
+            except Exception as exc:  # noqa: BLE001
+                # Clock.clear() failure is non-fatal for our internal state —
+                # the patterns are still held in Renardo's namespace, but
+                # ``/g_freeAll`` below terminates the live synths and we
+                # still need to reset our own lifecycle fields. Issue #935.
+                clock_error = f"Clock.clear() failed: {exc}"
 
             # Шаг 3: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
             osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
@@ -434,6 +492,21 @@ class MusicManager:
                 pass  # если SC недоступен — не страшно, Clock уже очищен
 
         self._active_patterns.clear()
+        self._last_stop_at = time.monotonic()
+        # Reset session only when the *whole* session is over so a partial
+        # ``stop_pattern``-then-restart sequence doesn't lose the timer
+        # (issue #935 — keeps audit trail of when music was active).
+        self._music_session_active_since = None
+        self._last_music_activity_at = None
+        if clock_error:
+            return {
+                "success": False,
+                "error": clock_error,
+                "warning": (
+                    "Внутреннее состояние всё равно сброшено (issue #935 "
+                    "safety-net): active_patterns=[], session_active=None."
+                ),
+            }
         return {"success": True, "message": "Вся музыка остановлена"}
 
     def set_vibe_preset(self, preset_name: str) -> Dict[str, Any]:
@@ -494,6 +567,106 @@ class MusicManager:
             "pattern_history": dict(self._pattern_history),
             "active_patterns": list(self._active_patterns),
             "renardo_last_error": getattr(self, "_renardo_last_error", None),
+            # ---- music session lifecycle (issue #935) ----
+            # ``music_session_active_since`` is monotonic seconds since first
+            # ``execute_code`` after the most recent ``stop_all``. ``None``
+            # when no music session is currently open.
+            # ``last_music_activity_at`` is the most recent timestamp that a
+            # pattern was started/restarted. ``auto_stop_ttl_seconds`` is the
+            # configured idle threshold used by ``auto_stop_idle_music``.
+            "music_session_active_since": self._music_session_active_since,
+            "last_music_activity_at": self._last_music_activity_at,
+            "last_stop_at": self._last_stop_at,
+            "auto_stop_ttl_seconds": self._auto_stop_ttl_seconds,
+            "auto_stop_count": self._auto_stop_count,
+            "idle_seconds": (
+                time.monotonic() - self._last_music_activity_at
+                if self._last_music_activity_at is not None
+                else None
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # Music session cleanup — safety-net for issue #935
+    # ------------------------------------------------------------------
+    def auto_stop_idle_music(
+        self,
+        ttl_seconds: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Auto-stop music if no activity for ``ttl_seconds``.
+
+        The DialogCore / watchdog should call this periodically (e.g. once
+        per second, or once per turn boundary). If music is currently
+        active AND the time since the last ``execute_code`` exceeds the
+        configured TTL, this method calls ``stop_all()`` and increments
+        ``auto_stop_count`` for diagnostics. It is **safe to call
+        arbitrarily often**: when there is no music session, or the TTL
+        has not been exceeded, it is a no-op.
+
+        Args:
+            ttl_seconds: Idle threshold (default: ``self._auto_stop_ttl_seconds``).
+            now: Override for ``time.monotonic()`` (used in tests).
+
+        Returns:
+            dict with keys ``stopped`` (bool), ``idle_seconds`` (float | None),
+            ``ttl_seconds`` (float), ``active_patterns`` (list[str]),
+            ``auto_stop_count`` (int).
+        """
+        ttl = self._auto_stop_ttl_seconds if ttl_seconds is None else float(ttl_seconds)
+        now_m = time.monotonic() if now is None else float(now)
+        result: Dict[str, Any] = {
+            "stopped": False,
+            "idle_seconds": None,
+            "ttl_seconds": ttl,
+            "active_patterns": list(self._active_patterns),
+            "auto_stop_count": self._auto_stop_count,
+        }
+        # Fast path: nothing playing → don't even compute idle time.
+        if not self._active_patterns or self._last_music_activity_at is None:
+            return result
+        idle = now_m - self._last_music_activity_at
+        result["idle_seconds"] = idle
+        if idle < ttl:
+            return result
+        # Auto-stop — call the existing stop_all() so the closure logic
+        # (3-stage clean: per-player stop + Clock.clear() + /g_freeAll)
+        # is reused as-is.
+        stop_result = self.stop_all()
+        result["stopped"] = True
+        result["stop_result"] = stop_result
+        self._auto_stop_count += 1
+        result["auto_stop_count"] = self._auto_stop_count
+        return result
+
+    def stop_music_on_session_end(self) -> Dict[str, Any]:
+        """Force-stop all music when the dialogue ends.
+
+        Convenience hook for DialogCore / dialogue_node to call on
+        DIALOGUE_END. Always returns a dict describing whether anything
+        was stopped (issue #935: dialog "виходит" без stop_music → музыка
+        зацикливается — теперь dialog-end hook автоматически чистит).
+
+        Returns:
+            dict with keys ``was_active`` (bool), ``stopped_patterns``
+            (list[str]), ``message`` (str).
+        """
+        if not self._active_patterns:
+            return {
+                "was_active": False,
+                "stopped_patterns": [],
+                "message": "Нет активной музыки для остановки",
+            }
+        stopped = list(self._active_patterns)
+        result = self.stop_all()
+        return {
+            "was_active": True,
+            "stopped_patterns": stopped,
+            "stop_result": result,
+            "message": (
+                f"Диалог завершился с активной музыкой ({len(stopped)} паттернов). "
+                f"Автоматический stop_music сработал (issue #935)."
+            ),
         }
 
 
