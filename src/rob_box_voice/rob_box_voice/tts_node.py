@@ -193,14 +193,34 @@ except ImportError:
     YANDEX_GRPC_AVAILABLE = False
     print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Silero fallback.")
 
-# Yandex gRPC ``UtteranceSynthesis`` enforces a per-request text-length cap
-# (см. https://cloud.yandex.ru/docs/speechkit/tts/limits — 2500 символов
-# на одну ``UtteranceSynthesis`` RPC для API v3). Длинные анекдоты /
-# рассказы от LLM (>2.4k символов) вызывают ``INVALID_ARGUMENT - Too long
-# text``. Решение: разбивать текст на чанки по границам предложений
-# (``.`` ``!`` ``?`` ``\n``) до ``YANDEX_MAX_CHUNK_CHARS`` и слать каждый
-# чанк отдельной gRPC-сессией; аудио склеивается без пауз.
-YANDEX_MAX_CHUNK_CHARS: int = 2400
+# Per-provider TTS chunking + retry-halve (issue #933).
+#
+# Yandex gRPC v3 (issue #931) и Silero v5 (issue #933) оба падают на
+# длинных текстах: Yandex ≈291 chars, Silero ≈1005 chars. MiniMax HTTP
+# T2A v2 принимает длинные тексты без проблем.
+#
+# Per Подходы 1+2 issue #933:
+# 1. ``CHUNK_LIMITS`` — per-provider max chunk size (yandex=700,
+#    silero=800, minimax=5000).
+# 2. ``synthesize_with_retry`` — retry-halve: при ``TooLongError`` режет
+#    chunk пополам (whitespace-safe) и ретраит, max 3 попытки.
+#
+# Модуль pure-Python, без зависимостей (ROS, numpy, grpc) — чтобы его
+# можно было тестировать ``pytest`` без тяжелых dev-deps (torch, grpc,
+# rclpy). Сам ``tts_node.py`` его импортирует.
+from .tts_chunking import (
+    CHUNK_LIMITS,
+    DEFAULT_MAX_RETRIES,
+    MIN_CHUNK_CHARS,
+    TooLongError,
+    get_chunk_limit,
+    split_text,
+    synthesize_with_retry,
+)
+
+# Backward-compat alias для существующих тестов / внешних вызовов.
+# Реальный лимит теперь хранится в self.chunk_max_chars_yandex.
+YANDEX_MAX_CHUNK_CHARS: int = CHUNK_LIMITS["yandex_grpc_v3"]
 
 
 # ── Concurrency primitives (BLK-9 follow-up) ────────────────────────────────
