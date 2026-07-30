@@ -722,6 +722,17 @@ class TTSNode(Node):
             # spawn unbounded `threading.Thread(target=..., daemon=True)`
             # under bursty input.  Overflow is rejected via _synthesis_slots
             # and logged here rather than queued forever.
+            #
+            # NB: ``speech_id`` is passed once — earlier revisions duplicated
+            # it (once as the ``speech_id`` kwarg to ``_submit_synthesis``,
+            # once as the trailing ``*args`` element).  Python happily
+            # drops the duplicate into ``*args`` last position where
+            # ``_run_synthesis_worker`` already has ``speech_id=None`` as a
+            # default, so the duplicate was a no-op (verified by direct
+            # call inspection).  But it was confusing and forward-fragile:
+            # if the worker signature ever gains a new parameter, the
+            # silent shadowing would shift argument positions without a
+            # TypeError.  Keep the call site canonical.
             self._submit_synthesis(
                 self._run_synthesis_worker,
                 speech_id,
@@ -729,7 +740,6 @@ class TTSNode(Node):
                 text,
                 dialogue_id,
                 ssml_attributes,
-                speech_id,
             )
 
         except json.JSONDecodeError as e:
