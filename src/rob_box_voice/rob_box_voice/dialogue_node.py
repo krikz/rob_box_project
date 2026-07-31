@@ -395,15 +395,21 @@ class DialogueNode(Node):
         self._effects.handle_tts_finished(msg.data or "")
         if self._pending_music_cleanup:
             self.get_logger().info("🎵 TTS finished — scheduling deferred cleanup in 1s")
-            if hasattr(self, '_cleanup_defer_handle') and self._cleanup_defer_handle:
-                self._cleanup_defer_handle.cancel()
-            self._cleanup_defer_handle = self._loop.call_later(
-                1.0, self._publish_deferred_cleanup
-            )
+            self._schedule_deferred_cleanup()
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
+    def _schedule_deferred_cleanup(self) -> None:
+        """Schedule deferred music cleanup after 1.0s TTS silence."""
+        async def _deferred():
+            await asyncio.sleep(1.0)
+            self._publish_deferred_cleanup()
+        if hasattr(self, '_cleanup_defer_task') and self._cleanup_defer_task:
+            self._cleanup_defer_task.cancel()
+        self._cleanup_defer_task = asyncio.run_coroutine_threadsafe(
+            _deferred(), self._loop
+        )
     def _publish_deferred_cleanup(self) -> None:
-        """Timer callback: publish deferred music cleanup."""
+        """Publish deferred music cleanup."""
         self.get_logger().info("🎵 deferred cleanup timer fired")
         if self._pending_music_cleanup:
             self._pending_music_cleanup = False
