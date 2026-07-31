@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import threading
-import time
 from typing import Any, List, Optional
 
 import rclpy
@@ -142,7 +141,6 @@ class DialogueNode(Node):
         # while TTS is still speaking (rap, poetry).  Cleanup is published
         # only after the *last* TTS chunk finishes.
         self._pending_music_cleanup: bool = False
-        self._last_tts_finish_at: float | None = None
 
         self._dj = DJModeController(
             hook=DJHook(
@@ -397,38 +395,14 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
-        self._last_tts_finish_at = time.monotonic()
-        if self._pending_music_cleanup:
-            self.get_logger().info("🎵 TTS finished — scheduling deferred cleanup in 1s")
-            self._schedule_deferred_cleanup()
+        # No timer — cleanup happens on next dialogue start via _dispatch_turn
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
-    def _schedule_deferred_cleanup(self) -> None:
-        """Schedule deferred music cleanup after 1.0s TTS silence."""
-        async def _deferred():
-            await asyncio.sleep(3.0)
-            self._publish_deferred_cleanup()
-        if hasattr(self, '_cleanup_defer_task') and self._cleanup_defer_task:
-            self._cleanup_defer_task.cancel()
-        self._cleanup_defer_task = asyncio.run_coroutine_threadsafe(
-            _deferred(), self._loop
-        )
-    def _publish_deferred_cleanup(self) -> None:
-        """Publish deferred music cleanup."""
-        self.get_logger().info("🎵 deferred cleanup timer fired")
-        if self._pending_music_cleanup:
-            # If TTS finished in the last 5s, reschedule — new chunks
-            # may have started after scheduling but before our timer.
-            now = time.monotonic()
-            if self._last_tts_finish_at and (now - self._last_tts_finish_at) < 15.0:
-                self.get_logger().info(
-                    f"🎵 TTS active {now - self._last_tts_finish_at:.1f}s ago — rescheduling"
-                )
-                self._schedule_deferred_cleanup()
-                return
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="tts_finished")
     def _dispatch_turn(self, user_input: str) -> None:
+        # Stop music from previous dialogue before starting new one
+        if self._pending_music_cleanup:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="new_dialogue")
         asyncio.run_coroutine_threadsafe(self._run_turn(user_input), self._loop)
 
     async def _run_turn(self, user_input: str) -> None:
