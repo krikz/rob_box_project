@@ -46,7 +46,7 @@ from rob_box_llm.provider import LLMMessage, LLMProvider, LLMResponse, ToolCall,
 #: can't pin the dialogue thread forever. Five is enough for memory_context
 #: + a follow-up explanation, and short enough that a misbehaving tool
 #: fails loudly rather than running away.
-_MAX_TOOL_ITERATIONS: int = 5
+_MAX_TOOL_ITERATIONS: int = 8
 
 
 # ---------------------------------------------------------------------------

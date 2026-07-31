@@ -1806,9 +1806,12 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
+        # LLM иногда шлёт transition_seconds вместо next_transition_sec
+        if transition_seconds is not None and next_transition_sec is None:
+            next_transition_sec = transition_seconds
         payload: dict = {"enabled": enabled}
         if next_transition_sec is not None:
             payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
