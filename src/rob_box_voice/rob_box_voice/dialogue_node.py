@@ -141,6 +141,7 @@ class DialogueNode(Node):
         # while TTS is still speaking (rap, poetry).  Cleanup is published
         # only after the *last* TTS chunk finishes.
         self._pending_music_cleanup: bool = False
+        self._last_tts_finish_at: float | None = None
 
         self._dj = DJModeController(
             hook=DJHook(
@@ -395,6 +396,7 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
+        self._last_tts_finish_at = time.monotonic()
         if self._pending_music_cleanup:
             self.get_logger().info("🎵 TTS finished — scheduling deferred cleanup in 1s")
             self._schedule_deferred_cleanup()
@@ -414,6 +416,15 @@ class DialogueNode(Node):
         """Publish deferred music cleanup."""
         self.get_logger().info("🎵 deferred cleanup timer fired")
         if self._pending_music_cleanup:
+            # If TTS finished in the last 5s, reschedule — new chunks
+            # may have started after scheduling but before our timer.
+            now = time.monotonic()
+            if self._last_tts_finish_at and (now - self._last_tts_finish_at) < 5.0:
+                self.get_logger().info(
+                    f"🎵 TTS active {now - self._last_tts_finish_at:.1f}s ago — rescheduling"
+                )
+                self._schedule_deferred_cleanup()
+                return
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="tts_finished")
     def _dispatch_turn(self, user_input: str) -> None:
