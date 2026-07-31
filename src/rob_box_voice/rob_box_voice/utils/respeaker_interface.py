@@ -2,17 +2,29 @@
 ReSpeaker Interface - wrapper для работы с ReSpeaker Mic Array v2.0
 """
 
+import logging
 import usb.core
 import usb.util
 from typing import Optional, Tuple
 import time
 
+_log = logging.getLogger(__name__)
+
 # Pixel ring для LED индикации
+# Optional dependency: `pixel_ring` (ReSpeaker 4-Mic Array LED control) requires
+# the `spidev` kernel binding, which is unavailable in many deployment environments
+# (containers without /dev/spidev, non-Pi hosts). When missing, we degrade gracefully
+# to INFO so the LED ring is silently disabled while the rest of the audio stack
+# keeps running.
 try:
     from pixel_ring import usb_pixel_ring_v2
     PIXEL_RING_AVAILABLE = True
 except (ImportError, IOError) as e:
-    print(f"pixel_ring not available: {e}")
+    _log.info(
+        "pixel_ring not available on this platform "
+        "(ReSpeaker LED functions disabled, but software animation continues): %s",
+        e,
+    )
     PIXEL_RING_AVAILABLE = False
 
 
