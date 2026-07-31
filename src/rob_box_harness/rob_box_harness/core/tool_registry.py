@@ -92,7 +92,22 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "type": "object",
                 "properties": {
                     "text": _TEXT_PROPERTY,
-                    "animation": {"type": "string", "description": "Animation name."},
+                    "animation": {
+                        "type": "string",
+                        "description": (
+                            "LED matrix animation to play while speaking. "
+                            "Choose one that matches the emotional tone or context. "
+                            "Aliases are auto-normalized: neutral→idle, excited→happy, confused→thinking."
+                        ),
+                        "enum": [
+                            "idle", "talking", "wakeup", "sleep",
+                            "happy", "sad", "angry", "surprised", "thinking", "victory",
+                            "error", "low_battery", "charging",
+                            "police_lights", "ambulance", "fire_truck", "road_service",
+                            "turn_left", "turn_right", "accelerating", "braking",
+                            "neutral", "excited", "confused",
+                        ],
+                    },
                 },
                 "required": ["text"],
             },

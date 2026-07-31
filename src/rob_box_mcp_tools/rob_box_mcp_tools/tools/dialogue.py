@@ -88,22 +88,14 @@ class SpeakTextTool(MCPTool):
             MCPToolParameter(
                 name="animation",
                 type="string",
-                description="Анимация для отображения на LED матрице во время речи. Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; специальные: police_lights, fire_truck, thinking, и т.д.). Псевдонимы нормализуются: neutral→idle, excited→happy, confused→thinking",
+                description=(
+                    "Анимация для отображения на LED матрице во время речи. "
+                    "Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; "
+                    "специальные: police_lights, fire_truck, thinking, и т.д.). "
+                    "Псевдонимы нормализуются: neutral→idle, excited→happy, confused→thinking, talk→talking. "
+                    "Если указано неизвестное значение — будет warning в лог и анимация останется без изменений."
+                ),
                 required=False,
-                enum=[
-                    # Базовые состояния
-                    "idle", "talking", "wakeup", "sleep",
-                    # Эмоциональные
-                    "happy", "sad", "angry", "surprised", "thinking", "victory",
-                    # Системные
-                    "error", "low_battery", "charging",
-                    # Транспортные спецсигналы
-                    "police_lights", "ambulance", "fire_truck", "road_service",
-                    # Движение
-                    "turn_left", "turn_right", "accelerating", "braking",
-                    # Псевдонимы (нормализуются в execute через animation_map)
-                    "neutral", "excited", "confused",
-                ],
             ),
         ]
 
@@ -199,8 +191,24 @@ class SpeakTextTool(MCPTool):
             "smiling": "happy",
             "dancing": "excited",
             "singing": "happy",
+            # LLM часто пишет "talk" вместо "talking"
+            "talk": "talking",
+        }
+        # Множество реально существующих анимаций (без алиасов)
+        _KNOWN_ANIMATIONS = {
+            "idle", "talking", "wakeup", "sleep",
+            "happy", "sad", "angry", "surprised", "thinking", "victory",
+            "error", "low_battery", "charging",
+            "police_lights", "ambulance", "fire_truck", "road_service",
+            "turn_left", "turn_right", "accelerating", "braking",
         }
         animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
+        if animation not in _KNOWN_ANIMATIONS:
+            self.log_warning(
+                f"⚠️ Неизвестная анимация '{animation}' — "
+                f"использую 'talking' (робот же говорит), текст будет произнесён"
+            )
+            animation = "talking"
 
         # Определяем pitch для голоса на основе анимации (только для эмоциональных)
         pitch_map = {
