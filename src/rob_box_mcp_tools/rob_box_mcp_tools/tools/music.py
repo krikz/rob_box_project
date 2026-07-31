@@ -84,10 +84,10 @@ class MusicManager:
 
     #: ``ROB_BOX_MUSIC_REQUIRE_HEALTHY=1`` → degraded sclang runtime blocks
     #: ``execute_music_code`` / ``set_vibe_preset`` instead of letting the LLM
-    #: fight a broken Renardo stack. Defaults to "1" so by default we fail
-    #: fast (issue G-MUSIC from architect review v3).
-    #: Set to ``0`` to restore the legacy "degraded but usable" behaviour.
-    REQUIRE_HEALTHY_DEFAULT = True
+    #: fight a broken Renardo stack. Defaults to ``False`` — music tools work
+    #: in degraded mode (non-critical SynthDef parse errors don't block).
+    #: Set to ``1`` to fail-fast on any sclang startup error.
+    REQUIRE_HEALTHY_DEFAULT = False
     #: Critical SynthDefs the music subsystem depends on. Mirrors the list
     #: used by ``start_voice_assistant.sh`` — keep them in sync.
     DEFAULT_CRITICAL_SYNTHS: Tuple[str, ...] = (

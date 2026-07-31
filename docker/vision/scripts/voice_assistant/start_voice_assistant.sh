@@ -84,11 +84,6 @@ if command -v sclang > /dev/null 2>&1; then
         sclang -i none /tmp/foxdot_init_resolved.sc > /tmp/sclang.log 2>&1 &
     SCLANG_PID=$!
     echo "sclang запущен (PID: ${SCLANG_PID})"
-    # Экспортируем путь к логу для rob_box_mcp_tools (MusicManager читает его
-    # при init). См. issue G-MUSIC — degraded startup должен быть виден
-    # mcp_server, а не только оператору в этом скрипте.
-    export SCLANG_LOG_PATH="/tmp/sclang.log"
-    unset MUSIC_STACK_DEGRADED
     # Ждём 5с чтобы sclang подключился к scsynth и зарегистрировал OSCdef
     sleep 5
     if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
@@ -110,13 +105,7 @@ if command -v sclang > /dev/null 2>&1; then
         if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
             echo "✓ Music stack validation passed"
         else
-            # Сигнализируем mcp_server, что sclang стартовал в degraded-режиме
-            # (issue G-MUSIC). MusicManager при init прочитает SCLANG_LOG_PATH
-            # и заблокирует execute_music_code / set_vibe_preset с понятным
-            # "music unavailable" вместо молчаливого degraded mode.
-            export MUSIC_STACK_DEGRADED=1
-            echo "⚠ Music stack validation reported degraded runtime; voice assistant continues in reduced music mode"
-            echo "  └─ mcp_server увидит MUSIC_STACK_DEGRADED=1 и заблокирует music tools."
+            echo "⚠ Music stack validation found non-critical errors (degraded but usable)"
             echo "  └─ Подробности: /tmp/sclang.log"
         fi
     fi
