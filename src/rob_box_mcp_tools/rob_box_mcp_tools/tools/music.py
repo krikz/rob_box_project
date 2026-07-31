@@ -1688,98 +1688,56 @@ class SearchSamplesTool(MCPTool):
         case: str = "lower",
     ) -> MCPToolResult:
         """Search samples by keyword."""
-        samples_root = self._samples_path
-        if not samples_root.exists():
+        from rob_box_voice.core.sample_search import search_renardo_samples
+
+        result = search_renardo_samples(self._samples_path, query, pack, case)
+
+        if "error" in result:
+            hint = result.get("hint", "")
+            available = result.get("available_packs")
+            detail = f" Доступны: {available}" if available else ""
             return MCPToolResult(
                 success=False,
-                error=f"Директория сэмплов не найдена: {samples_root}",
+                error=f"{result['error']}.{detail} {hint}".strip(),
             )
 
-        pack_path = samples_root / pack
-        if not pack_path.exists():
-            available = [d.name for d in samples_root.iterdir() if d.is_dir()]
-            return MCPToolResult(
-                success=False,
-                error=f"Пак '{pack}' не найден. Доступны: {available}",
-            )
-
-        exts = {".wav", ".aif", ".aiff", ".mp3"}
-
-        # Calculate spack index (0-based position in sorted pack list)
-        all_packs = sorted([d.name for d in samples_root.iterdir() if d.is_dir()])
-        spack_num = all_packs.index(pack) if pack in all_packs else 0
-        spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
-
-        # query="*" → compact overview of letters and counts
-        if query.strip() == "*":
-            overview: Dict[str, int] = {}
-            for folder in sorted(pack_path.iterdir()):
-                if not folder.is_dir() or folder.name.startswith("."):
-                    continue
-                sub = folder / case
-                if not sub.exists():
-                    sub = folder
-                count = sum(
-                    1 for f in sub.iterdir()
-                    if f.is_file() and f.suffix.lower() in exts
-                )
-                if count:
-                    overview[folder.name] = count
+        if "letters" in result:
+            letters = result["letters"]
             return MCPToolResult(
                 success=True,
-                data={
-                    "pack": pack,
-                    "case": case,
-                    "letters": overview,
-                },
-                message=f"Пак '{pack}': {len(overview)} букв, всего сэмплов: {sum(overview.values())}",
+                data=result,
+                message=(
+                    f"Пак '{pack}': {len(letters)} букв, "
+                    f"всего сэмплов: {result.get('total_samples', sum(letters.values()))}"
+                ),
             )
 
-        # Keyword search
-        q = query.lower().strip()
-        results: List[Dict[str, Any]] = []
-        for folder in sorted(pack_path.iterdir()):
-            if not folder.is_dir() or folder.name.startswith("."):
-                continue
-            sub = folder / case
-            if not sub.exists():
-                sub = folder
-            files = sorted(
-                [f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts]
-            )
-            for idx, f in enumerate(files):
-                if q in f.name.lower():
-                    play_letter = folder.name.upper() if case == "upper" else folder.name
-                    results.append({
-                        "letter": play_letter,
-                        "sample_index": idx,
-                        "spack": spack_num,
-                        "filename": f.name,
-                        "play_code": f'd1 >> play("{play_letter}", sample={idx}{spack_suffix})',
-                    })
-            if len(results) >= 30:
-                break
+        found = result.get("found", 0)
+        results_list = result.get("results", [])
 
-        if not results:
+        if found == 0:
             return MCPToolResult(
                 success=True,
-                data={"query": query, "pack": pack, "found": 0},
-                message=f"По запросу '{query}' в паке '{pack}' ничего не найдено. Попробуй: kick, snare, hat, bass, synth, '*'.",
+                data=result,
+                message=(
+                    f"По запросу '{query}' в паке '{pack}' ничего не найдено. "
+                    "Попробуй: kick, snare, hat, bass, synth, '*'."
+                ),
             )
 
-        self.log_info(f"[search_samples] query={query!r} pack={pack} → {len(results)} results")
+        self.log_info(
+            f"[search_samples] query={query!r} pack={pack} → {found} results"
+        )
+        play_codes = [r["play_code"] for r in results_list[:5]]
+        suffix = f" ... и ещё {found - 5}" if found > 5 else ""
         return MCPToolResult(
             success=True,
-            data={
-                "query": query,
-                "pack": pack,
-                "case": case,
-                "found": len(results),
-                "results": results,
-            },
-            message=f"Найдено {len(results)} сэмплов по запросу '{query}': "
-                     + ", ".join(r["play_code"] for r in results[:5])
-                     + (f" ... и ещё {len(results) - 5}" if len(results) > 5 else ""),
+            data=result,
+            message=(
+                f"Найдено {found} сэмплов по запросу '{query}': "
+                + ", ".join(play_codes)
+                + suffix
+            ),
         )
 
 

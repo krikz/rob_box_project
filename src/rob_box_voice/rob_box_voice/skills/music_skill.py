@@ -113,94 +113,26 @@ class MusicSkill(BaseSkill):
             Returns:
                 JSON with found results: letter, sample_index, filename, play_code.
             """
-            if not samples_root.exists():
-                return json.dumps(
-                    {"error": f"Samples dir not found: {samples_root}",
-                     "hint": "Mount RENARDO_SAMPLES_PATH volume in Docker"},
-                    ensure_ascii=False,
+            from rob_box_voice.core.sample_search import search_renardo_samples
+
+            result = search_renardo_samples(samples_root, query, pack, case)
+
+            # Enrich with hints for the LLM before serialising
+            if "error" in result:
+                if "available_packs" not in result and "hint" not in result:
+                    result["hint"] = "Mount RENARDO_SAMPLES_PATH volume in Docker"
+            elif "letters" in result:
+                # overview mode
+                result["hint"] = (
+                    'Search by word: search_samples("kick") or '
+                    'search_samples("synth", pack="1_pitchglitch_samples")'
+                )
+            elif result.get("found", 0) == 0:
+                result["hint"] = (
+                    'Try: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*"'
                 )
 
-            pack_path = samples_root / pack
-            if not pack_path.exists():
-                available = [d.name for d in samples_root.iterdir() if d.is_dir()]
-                return json.dumps(
-                    {"error": f"Pack '{pack}' not found", "available_packs": available},
-                    ensure_ascii=False,
-                )
-
-            exts = {".wav", ".aif", ".aiff", ".mp3"}
-
-            # Calculate spack index (0-based position in sorted pack list)
-            all_packs = sorted([d.name for d in samples_root.iterdir() if d.is_dir()])
-            spack_num = all_packs.index(pack) if pack in all_packs else 0
-            spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
-
-            # query="*" → compact overview of letters and counts
-            if query.strip() == "*":
-                overview = {}
-                for folder in sorted(pack_path.iterdir()):
-                    if not folder.is_dir() or folder.name.startswith("."):
-                        continue
-                    sub = folder / case
-                    if not sub.exists():
-                        sub = folder
-                    count = sum(1 for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts)
-                    if count:
-                        overview[folder.name] = count
-                return json.dumps(
-                    {
-                        "pack": pack,
-                        "case": case,
-                        "letters": overview,
-                        "hint": 'Search by word: search_samples("kick") or search_samples("synth", pack="1_pitchglitch_samples")',
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-
-            # Keyword search
-            q = query.lower().strip()
-            results = []
-            for folder in sorted(pack_path.iterdir()):
-                if not folder.is_dir() or folder.name.startswith("."):
-                    continue
-                sub = folder / case
-                if not sub.exists():
-                    sub = folder
-                files = sorted(
-                    [f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts]
-                )
-                for idx, f in enumerate(files):
-                    if q in f.name.lower():
-                        play_letter = folder.name.upper() if case == "upper" else folder.name
-                        results.append(
-                            {
-                                "letter": play_letter,
-                                "sample_index": idx,
-                                "spack": spack_num,
-                                "filename": f.name,
-                                "play_code": f'd1 >> play("{play_letter}", sample={idx}{spack_suffix})',
-                            }
-                        )
-                if len(results) >= 30:
-                    break
-
-            if not results:
-                return json.dumps(
-                    {
-                        "query": query,
-                        "pack": pack,
-                        "found": 0,
-                        "hint": 'Try: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*"',
-                    },
-                    ensure_ascii=False,
-                )
-
-            return json.dumps(
-                {"query": query, "pack": pack, "case": case, "found": len(results), "results": results},
-                ensure_ascii=False,
-                indent=2,
-            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
 
         # ── MCP-backed music tools ─────────────────────────────────────────
 
