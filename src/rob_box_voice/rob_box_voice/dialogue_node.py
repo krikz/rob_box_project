@@ -393,18 +393,18 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
-        # Issue #935 v2: if music cleanup was deferred, reset a short
-        # timer. When the timer fires (1s of TTS silence), publish cleanup.
         if self._pending_music_cleanup:
-            if hasattr(self, '_cleanup_defer_timer') and self._cleanup_defer_timer:
-                self._cleanup_defer_timer.cancel()
-            self._cleanup_defer_timer = self.create_timer(
+            self.get_logger().info("🎵 TTS finished — scheduling deferred cleanup in 1s")
+            if hasattr(self, '_cleanup_defer_handle') and self._cleanup_defer_handle:
+                self._cleanup_defer_handle.cancel()
+            self._cleanup_defer_handle = self._loop.call_later(
                 1.0, self._publish_deferred_cleanup
             )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
     def _publish_deferred_cleanup(self) -> None:
         """Timer callback: publish deferred music cleanup."""
+        self.get_logger().info("🎵 deferred cleanup timer fired")
         if self._pending_music_cleanup:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="tts_finished")
