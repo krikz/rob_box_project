@@ -63,12 +63,12 @@
       # Per-provider max chunk size (chars). Long LLM responses (>1000 chars)
       # are split into chunks and synthesized separately. Per-provider defaults
       # подобраны эмпирически (issue #933 observation table):
-      #   yandex = 700  (Yandex gRPC v3 падает на ~291 chars; halve → 350→175 OK)
+      #   yandex = 250  (API v3 hard limit ≤250 chars или 24s аудио; #937)
       #   silero = 800  (Silero v5 падает на ~1005 chars; halve → 400→200 OK)
       #   minimax = 5000  (HTTP T2A v2 принимает длинные тексты)
       # chunk_max_retries: сколько halved retries до TooLongError (default 3).
       # chunk_min_chars: ниже этой длины retry-halve не дробит (default 50).
-      chunk_max_chars_yandex: 700
+      chunk_max_chars_yandex: 250
       chunk_max_chars_silero: 800
       chunk_max_chars_minimax: 5000
       chunk_max_retries: 3

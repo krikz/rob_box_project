@@ -1,5 +1,8 @@
 """Unit tests for FoxDot / SuperCollider music stack validation helpers."""
 
+import os
+from pathlib import Path
+
 import pytest
 
 from rob_box_voice.core.music_stack_validation import (
@@ -7,6 +10,7 @@ from rob_box_voice.core.music_stack_validation import (
     contains_merge_conflict_markers,
     format_music_stack_report,
     is_plugin_dependent_synthdef,
+    load_sclang_health,
 )
 from rob_box_voice.core.renardo_synthdef_patches import (
     patch_organ_scd_content,
@@ -210,13 +214,13 @@ def test_patch_tb303_scd_content_replaces_upstream_source_with_stable_anti_click
     assert "RLPF.ar" in patched
     assert "0.01, sus, dec" not in patched
 
-
 def test_apply_renardo_synthdef_patches_patches_tb303_file_in_place(tmp_path):
     tb303_file = tmp_path / "tb303.scd"
     tb303_file.write_text(
         """SynthDef.new(\\tb303, {.
     |atk=0.1, sus=0, dec=1|
     volEnv = EnvGen.ar(Env.new([10e-10, 1, 1, 10e-10], [0.01, sus, dec], 'exp'));
+    filEnv = EnvGen.ar(Env.new([10e-10, 1, 10e-10], [0.01, dec], 'exp'));
 }).add;
 """,
         encoding="utf-8",
@@ -228,3 +232,90 @@ def test_apply_renardo_synthdef_patches_patches_tb303_file_in_place(tmp_path):
     assert patched_files == ["tb303.scd"]
     assert "LeakDC.ar" in patched
     assert "atk.max(0.02)" in patched
+
+
+# ---------------------------------------------------------------------------
+# load_sclang_health — filesystem-backed helper (issue G-MUSIC)
+# ---------------------------------------------------------------------------
+
+
+def test_load_sclang_health_returns_unhealthy_when_log_missing(tmp_path, monkeypatch):
+    """Missing log → unhealthy with the path in fatal_errors (not silent)."""
+
+    log_path = tmp_path / "absent.log"
+    monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+    status = load_sclang_health()
+
+    assert status.is_healthy is False
+    assert status.oscdef_registered is False
+    assert status.fatal_errors
+    assert any(str(log_path) in err for err in status.fatal_errors)
+
+
+def test_load_sclang_health_returns_unhealthy_for_degraded_log(tmp_path, monkeypatch):
+    """Real-world failure mode: log file exists but contains syntax errors."""
+
+    log_path = tmp_path / "sclang.log"
+    log_path.write_text(
+        "\n".join([
+            "Booting sclang...",
+            "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+            "ERROR: syntax error, unexpected '.', expecting '}'",
+            "ERROR: Command line parse failed",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+    status = load_sclang_health(critical_synths=["strings"])
+
+    assert status.is_healthy is False
+    assert status.oscdef_registered is True
+    assert any("syntax error" in err for err in status.fatal_errors)
+    assert "strings" in status.missing_synths
+
+
+def test_load_sclang_health_returns_healthy_when_log_clean(tmp_path, monkeypatch):
+    """All critical synths preloaded, no fatal errors → healthy."""
+
+    log_path = tmp_path / "sclang.log"
+    log_path.write_text(
+        "\n".join([
+            "Booting sclang...",
+            "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+            "SynthDef preload ok: strings",
+            "SynthDef preload ok: wobblebass",
+            "SynthDef preload ok: warmpad",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+    status = load_sclang_health(
+        critical_synths=["strings", "wobblebass", "warmpad"],
+    )
+
+    assert status.is_healthy is True
+    assert status.oscdef_registered is True
+    assert status.missing_synths == ()
+    assert status.fatal_errors == ()
+
+
+def test_load_sclang_health_explicit_log_path_overrides_env(tmp_path, monkeypatch):
+    """``log_path`` arg wins over SCLANG_LOG_PATH env."""
+
+    env_log = tmp_path / "env.log"
+    explicit_log = tmp_path / "explicit.log"
+    env_log.write_text("ERROR: syntax error, unexpected BINOP", encoding="utf-8")
+    explicit_log.write_text(
+        "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCLANG_LOG_PATH", str(env_log))
+
+    status = load_sclang_health(log_path=explicit_log)
+
+    assert status.is_healthy is True

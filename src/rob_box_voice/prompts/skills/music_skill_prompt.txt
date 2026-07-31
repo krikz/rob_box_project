@@ -183,7 +183,12 @@ Do not combine tb303 with another tb303 line, and do not combine tb303 with `cru
 For a safer acid bass, use one tb303 line only with `atk>=0.02` and `sus>=0.08`; if you need a denser low end, prefer `retrobass` or `wobblebass`.
 
 
-🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):
+🎤 SPEECH TOOL BOUNDARY:
+This music skill does not call `speak_text()`, but the outer orchestrator may call it after music actions.
+**`speak_text.animation` enum (use ONLY one of these values):** `idle`, `talking`, `wakeup`, `sleep`, `happy`, `sad`, `angry`, `surprised`, `thinking`, `victory`, `error`, `low_battery`, `charging`, `police_lights`, `ambulance`, `fire_truck`, `road_service`, `turn_left`, `turn_right`, `accelerating`, `braking`, `neutral`, `excited`, `confused`.
+Never use music or vocal style names such as `hiphop`, `rap`, or `sing` as animation values.
+
+
 Use the DJ persona / party theme as MUSICAL direction only.
 This skill does NOT speak to the crowd — the outer orchestrator handles all MC phrases.
 

@@ -47,6 +47,8 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
 
 def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) -> MusicManager:
     """Create a MusicManager with patched infrastructure."""
+    from rob_box_voice.core.music_stack_validation import MusicStackStatus
+
     mgr = MusicManager.__new__(MusicManager)
     mgr._max_amp = 0.7
     mgr._pattern_history = {}
@@ -55,6 +57,17 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._renardo_available = renardo_available
     mgr._renardo_last_error = None
     mgr._renardo_context = {}
+    # issue G-MUSIC — music-stack health (must match __init__ defaults).
+    # Tests that need a degraded manager should overwrite _music_stack_status
+    # and/or _require_healthy directly.
+    mgr._music_stack_status = MusicStackStatus(
+        is_healthy=True,
+        oscdef_registered=True,
+        missing_synths=(),
+        fatal_errors=(),
+    )
+    mgr._require_healthy = True
+    mgr._critical_synths = MusicManager.DEFAULT_CRITICAL_SYNTHS
     # issue #935 — music session lifecycle (must match __init__ defaults
     # to keep tests faithful; see ``MusicManager.__init__``)
     mgr._auto_stop_ttl_seconds = 300
@@ -451,6 +464,164 @@ class TestMusicManagerGetState:
 
         assert state["renardo_available"] is True
         mgr._initialize_renardo.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — degraded sclang runtime (issue G-MUSIC)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerDegradedStack:
+    """Tests for the G-MUSIC fail-fast behaviour when sclang reports
+    syntax errors during startup. The acceptance criterion is: mcp_server
+    must answer "music unavailable" instead of letting the LLM fight a
+    broken Renardo stack.
+    """
+
+    @staticmethod
+    def _mark_degraded(mgr, *, require_healthy: bool = True) -> None:
+        """Simulate a degraded sclang startup log snapshot.
+
+        Note: we leave ``_renardo_available`` alone unless the caller
+        explicitly overrides it — that lets us test the degraded-guard
+        independently from the renardo-init guard.
+        """
+        from rob_box_voice.core.music_stack_validation import MusicStackStatus
+
+        mgr._music_stack_status = MusicStackStatus(
+            is_healthy=False,
+            oscdef_registered=True,
+            missing_synths=("strings",),
+            fatal_errors=(
+                "ERROR: syntax error, unexpected '.', expecting '}'",
+            ),
+        )
+        mgr._require_healthy = require_healthy
+
+    def test_execute_code_is_blocked_when_stack_is_degraded(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        self._mark_degraded(mgr)
+
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+
+        assert result["success"] is False
+        assert "Музыка недоступна" in result["error"]
+        assert "syntax error" in result["error"]
+        # exec must not be called — we never want to talk to Renardo
+        # while sclang itself is in degraded mode.
+        exec_mock.assert_not_called()
+
+    def test_set_vibe_preset_is_blocked_when_stack_is_degraded(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        self._mark_degraded(mgr)
+
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.set_vibe_preset("chill")
+
+        assert result["success"] is False
+        assert "Музыка недоступна" in result["error"]
+        assert "warning" in result
+        exec_mock.assert_not_called()
+
+    def test_stop_pattern_returns_unavailable_but_clears_active_set(self):
+        """In degraded mode we still drop the pattern from active_patterns
+        so the safety-net watchdog (issue #935) sees an empty session."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._active_patterns = {"p1"}
+        self._mark_degraded(mgr)
+
+        result = mgr.stop_pattern("p1")
+
+        assert "p1" not in mgr._active_patterns
+        assert result["success"] is False
+        assert "degraded" in result["error"].lower() or "Музыка недоступна" in result["error"]
+
+    def test_stop_all_returns_unavailable_but_clears_active_set(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._active_patterns = {"p1", "p2"}
+        self._mark_degraded(mgr)
+
+        result = mgr.stop_all()
+
+        assert mgr._active_patterns == set()
+        assert result["success"] is False
+        assert "Музыка недоступна" in result["error"]
+
+    def test_require_healthy_false_lets_degraded_stack_execute(self):
+        """Operator opt-out: ROB_BOX_MUSIC_REQUIRE_HEALTHY=0 → degraded
+        mode does NOT block the LLM from calling execute_code. This is
+        useful for debugging a known-broken stack or running with a
+        patched Renardo.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        self._mark_degraded(mgr, require_healthy=False)
+
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+
+        # Guard explicitly disabled → degraded-guard does NOT short-circuit.
+        # exec runs (mocked); we only care that the error message is NOT
+        # the G-MUSIC one.
+        assert result["success"] is True
+        assert "Музыка недоступна" not in result.get("error", "")
+        exec_mock.assert_called_once()
+
+    def test_get_state_surfaces_music_stack_health(self):
+        """The LLM can read get_music_state and see the failure reason."""
+        mgr = _make_manager(sc_running=False, renardo_available=False)
+        self._mark_degraded(mgr)
+
+        state = mgr.get_state()
+
+        assert state["music_stack_healthy"] is False
+        assert state["music_stack_require_healthy"] is True
+        assert any("syntax error" in err for err in state["music_stack_fatal_errors"])
+        assert "strings" in state["music_stack_missing_synths"]
+
+    def test_evaluate_music_stack_health_clears_renardo_when_degraded(self, tmp_path, monkeypatch):
+        """Integration: end-to-end degraded snapshot from a real log file."""
+        log_path = tmp_path / "sclang.log"
+        log_path.write_text(
+            "\n".join([
+                "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+                "ERROR: syntax error, unexpected '.', expecting '}'",
+                "ERROR: Command line parse failed",
+            ]),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        status = mgr._evaluate_music_stack_health()
+
+        assert status.is_healthy is False
+        assert mgr._renardo_available is False
+        assert not mgr.is_music_stack_healthy()
+
+    def test_evaluate_music_stack_health_keeps_renardo_when_healthy(self, tmp_path, monkeypatch):
+        # Narrow the critical-synths list so a 2-synth log counts as healthy.
+        log_path = tmp_path / "sclang.log"
+        log_path.write_text(
+            "\n".join([
+                "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+                "SynthDef preload ok: strings",
+                "SynthDef preload ok: wobblebass",
+            ]),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._critical_synths = ("strings", "wobblebass")
+        status = mgr._evaluate_music_stack_health()
+
+        assert status.is_healthy is True
+        # We don't promise renardo_available stays True — that flag is
+        # the result of the heavier _initialize_renardo() flow — but
+        # the degraded-mode path must not flip it to False.
+        assert mgr._renardo_available is True
 
 
 # ---------------------------------------------------------------------------

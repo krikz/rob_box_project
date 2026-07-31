@@ -25,6 +25,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from rob_box_voice.core.music_stack_validation import (
+    MusicStackStatus,
+    load_sclang_health,
+)
 from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -78,7 +82,36 @@ class MusicManager:
     SC_HOST: str = "127.0.0.1"
     SC_PORT: int = 57110
 
-    def __init__(self, max_amp: float = 0.7) -> None:
+    #: ``ROB_BOX_MUSIC_REQUIRE_HEALTHY=1`` → degraded sclang runtime blocks
+    #: ``execute_music_code`` / ``set_vibe_preset`` instead of letting the LLM
+    #: fight a broken Renardo stack. Defaults to "1" so by default we fail
+    #: fast (issue G-MUSIC from architect review v3).
+    #: Set to ``0`` to restore the legacy "degraded but usable" behaviour.
+    REQUIRE_HEALTHY_DEFAULT = True
+    #: Critical SynthDefs the music subsystem depends on. Mirrors the list
+    #: used by ``start_voice_assistant.sh`` — keep them in sync.
+    DEFAULT_CRITICAL_SYNTHS: Tuple[str, ...] = (
+        "strings",
+        "wobblebass",
+        "pianovel",
+        "warmpad",
+        "retrobass",
+        "supersawlead",
+        "imperialbrass",
+        "marchstrings",
+        "strangerpulsepad",
+        "strangerarp",
+        "strangerbrass",
+    )
+
+    def __init__(
+        self,
+        max_amp: float = 0.7,
+        *,
+        critical_synths: Optional[List[str]] = None,
+        require_healthy: Optional[bool] = None,
+        sclang_log_path: Optional[str] = None,
+    ) -> None:
         #: максимальная амплитуда для любого паттерна (0.0-1.0)
         self._max_amp: float = max(0.0, min(1.0, max_amp))
         #: pattern_name -> последний выполненный код
@@ -93,6 +126,38 @@ class MusicManager:
         self._renardo_available: Optional[bool] = None
         #: Последняя ошибка инициализации renardo для диагностики
         self._renardo_last_error: Optional[str] = None
+        #: Music-stack health snapshot (from ``load_sclang_health``). When
+        #: ``is_healthy is False``, ``execute_music_code`` / ``set_vibe_preset``
+        #: short-circuit with a clear "music unavailable" error so the LLM
+        #: doesn't keep retrying against a broken Renardo/FoxDot upstream.
+        self._music_stack_status: MusicStackStatus = MusicStackStatus(
+            is_healthy=True,
+            oscdef_registered=True,
+            missing_synths=(),
+            fatal_errors=(),
+        )
+        #: When True, ``execute_code`` / ``set_vibe_preset`` reject calls when
+        #: ``_music_stack_status.is_healthy`` is False. Set False only for
+        #: tests / dev environments where we explicitly want degraded mode.
+        if require_healthy is None:
+            env_flag = os.environ.get("ROB_BOX_MUSIC_REQUIRE_HEALTHY")
+            if env_flag is None:
+                self._require_healthy: bool = self.REQUIRE_HEALTHY_DEFAULT
+            else:
+                self._require_healthy: bool = env_flag.strip().lower() not in {"0", "false", "no", "off"}
+        else:
+            self._require_healthy = bool(require_healthy)
+        #: Critical SynthDef set used by the boot-time health check.
+        if critical_synths is None:
+            env_synths = os.environ.get("ROB_BOX_MUSIC_CRITICAL_SYNTHS")
+            if env_synths:
+                self._critical_synths: Tuple[str, ...] = tuple(
+                    name.strip() for name in env_synths.split(",") if name.strip()
+                )
+            else:
+                self._critical_synths = self.DEFAULT_CRITICAL_SYNTHS
+        else:
+            self._critical_synths = tuple(critical_synths)
         # ------------------------------------------------------------------
         # Music session lifecycle tracking — issue #935
         # Tracks wall-clock timestamps for "music session" so a safety-net
@@ -115,6 +180,14 @@ class MusicManager:
         self._last_stop_at: Optional[float] = None
         # stats — surfaced via get_state() for the DialogCore safety-net
         self._auto_stop_count: int = 0
+        # ------------------------------------------------------------------
+        # Music stack health (issue G-MUSIC, architect review v3)
+        # ------------------------------------------------------------------
+        # If sclang already wrote a startup log and it's degraded, refuse to
+        # initialize Renardo and surface a clear "music unavailable" error.
+        # We do this BEFORE calling _initialize_renardo() so a broken
+        # upstream .scd file cannot manifest as silent exec errors later.
+        self._evaluate_music_stack_health(sclang_log_path=sclang_log_path)
         self._initialize_renardo()
 
     # ------------------------------------------------------------------
@@ -233,6 +306,73 @@ class MusicManager:
         return bool(self._renardo_available)
 
     # ------------------------------------------------------------------
+    # Music-stack health (issue G-MUSIC, architect review v3)
+    # ------------------------------------------------------------------
+
+    def _evaluate_music_stack_health(
+        self,
+        sclang_log_path: Optional[str] = None,
+    ) -> MusicStackStatus:
+        """Snapshot sclang health from the startup log and mark the manager.
+
+        When ``is_healthy is False`` AND ``_require_healthy`` is True, this
+        will also clear ``_renardo_available`` (without touching
+        ``_renardo_last_error``) so downstream tools see consistent state.
+
+        Args:
+            sclang_log_path: Override log location. Falls back to
+                ``SCLANG_LOG_PATH`` env var, then ``/tmp/sclang.log``.
+
+        Returns:
+            The :class:`MusicStackStatus` that was applied.
+        """
+
+        status = load_sclang_health(
+            sclang_log_path,
+            critical_synths=list(self._critical_synths),
+        )
+        self._music_stack_status = status
+
+        if not status.is_healthy and self._require_healthy:
+            # Mark Renardo as unavailable WITHOUT clearing the existing
+            # last_error (which might be informative for diagnostics). The
+            # operator should see both "music stack degraded" AND any
+            # subsequent renardo init failure that follows.
+            self._renardo_available = False
+
+        return status
+
+    def is_music_stack_healthy(self) -> bool:
+        """True if the sclang startup log was healthy at the last check."""
+
+        return bool(self._music_stack_status.is_healthy)
+
+    def music_stack_unavailable_error(self) -> Dict[str, str]:
+        """Build a stable error payload for ``music unavailable`` replies.
+
+        Used by ``execute_code`` / ``set_vibe_preset`` / ``stop_music`` so
+        the LLM gets a single, recognizable error message rather than
+        a different string for each entry-point.
+        """
+
+        status = self._music_stack_status
+        details: List[str] = []
+        if status.fatal_errors:
+            details.append("; ".join(status.fatal_errors[:3]))
+        if status.missing_synths:
+            details.append(f"missing SynthDefs: {', '.join(status.missing_synths)}")
+        detail_str = (" — " + "; ".join(details)) if details else ""
+        log_path = os.environ.get("SCLANG_LOG_PATH", "/tmp/sclang.log")
+        return {
+            "success": False,
+            "error": (
+                "Музыка недоступна: sclang стартовал в degraded-режиме "
+                "(syntax error в startup-логе Renardo/FoxDot)"
+                f"{detail_str}. См. {log_path}."
+            ),
+        }
+
+    # ------------------------------------------------------------------
     # SuperCollider check
     # ------------------------------------------------------------------
 
@@ -326,6 +466,13 @@ class MusicManager:
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
 
+        # Issue G-MUSIC: short-circuit before sending anything to Renardo if
+        # the sclang startup log shows the music stack is degraded. This
+        # prevents the LLM from retrying code that will keep failing because
+        # of an upstream-renardo syntax error in a .scd file.
+        if self._require_healthy and not self.is_music_stack_healthy():
+            return self.music_stack_unavailable_error()
+
         if not self._check_supercollider():
             return {
                 "success": False,
@@ -406,6 +553,11 @@ class MusicManager:
         Не требует наличия паттерна в истории — LLM может вызвать stop для
         любого player (d1, p1, ...) даже если execute_code не сохранял по имени.
 
+        Issue G-MUSIC: even when the sclang startup is degraded we still drop
+        ``pattern_name`` from ``_active_patterns`` (no live SC nodes to worry
+        about), but we tell the caller that music is unavailable so the LLM
+        can short-circuit further tool calls.
+
         Args:
             pattern_name: Имя паттерна/плеера (d1, p1, bass и т.д.).
 
@@ -414,8 +566,9 @@ class MusicManager:
         """
         stop_code = f"{pattern_name}.stop()"
         stop_error: Optional[str] = None
+        degraded = self._require_healthy and not self.is_music_stack_healthy()
 
-        if self._renardo_available and self._check_supercollider():
+        if not degraded and self._renardo_available and self._check_supercollider():
             try:
                 exec(stop_code, self._renardo_context)  # noqa: S102
             except Exception as exc:  # noqa: BLE001
@@ -438,6 +591,15 @@ class MusicManager:
                     f"несмотря на ошибку Renardo: {pattern_name}."
                 ),
             }
+        if degraded:
+            return {
+                "success": False,
+                "error": (
+                    "Музыка недоступна — Renardo в degraded-режиме. "
+                    f"Локальное состояние для '{pattern_name}' всё равно очищено "
+                    "чтобы не блокировать watchdog."
+                ),
+            }
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
     def stop_all(self) -> Dict[str, Any]:
@@ -455,8 +617,9 @@ class MusicManager:
         # Track Clock.clear() failures so we can warn the operator while
         # still tearing down our internal session state (issue #935).
         clock_error: Optional[str] = None
+        degraded = self._require_healthy and not self.is_music_stack_healthy()
 
-        if self._renardo_available and self._check_supercollider():
+        if not degraded and self._renardo_available and self._check_supercollider():
             # Шаг 1: остановить все плееры которые есть в контексте
             player_names = (
                 [f"d{i}" for i in range(1, 10)]
@@ -507,6 +670,15 @@ class MusicManager:
                     "safety-net): active_patterns=[], session_active=None."
                 ),
             }
+        if degraded:
+            return {
+                "success": False,
+                "error": (
+                    "Музыка недоступна — Renardo в degraded-режиме. "
+                    "Локальное состояние (active_patterns, session_active) "
+                    "всё равно сброшено (issue #935 safety-net)."
+                ),
+            }
         return {"success": True, "message": "Вся музыка остановлена"}
 
     def set_vibe_preset(self, preset_name: str) -> Dict[str, Any]:
@@ -529,6 +701,18 @@ class MusicManager:
 
         preset = self.VIBE_PRESETS[preset_name]
         self._current_preset = preset_name
+
+        # Issue G-MUSIC: in degraded mode there's no point sending
+        # ``Clock.bpm = …`` / ``Scale.default = …`` to Renardo — sclang
+        # may not even have compiled the required SynthDefs. Refuse and
+        # tell the operator / LLM to fall back to speech-only mode.
+        if self._require_healthy and not self.is_music_stack_healthy():
+            err = self.music_stack_unavailable_error()
+            err["warning"] = (
+                "Пресет не применён — Renardo в degraded-режиме. "
+                "Проверьте /tmp/sclang.log и сообщите оператору."
+            )
+            return err
 
         if self._renardo_available and self._check_supercollider():
             # Root.default принимает целое число (полутонов от C) или строку "C"
@@ -567,6 +751,14 @@ class MusicManager:
             "pattern_history": dict(self._pattern_history),
             "active_patterns": list(self._active_patterns),
             "renardo_last_error": getattr(self, "_renardo_last_error", None),
+            # Music-stack health snapshot — surfaced so the LLM can see
+            # ``music_stack_healthy: false`` and avoid retrying calls that
+            # will be rejected by ``execute_music_code`` / ``set_vibe_preset``.
+            "music_stack_healthy": self._music_stack_status.is_healthy,
+            "music_stack_oscdef_registered": self._music_stack_status.oscdef_registered,
+            "music_stack_missing_synths": list(self._music_stack_status.missing_synths),
+            "music_stack_fatal_errors": list(self._music_stack_status.fatal_errors),
+            "music_stack_require_healthy": self._require_healthy,
             # ---- music session lifecycle (issue #935) ----
             # ``music_session_active_since`` is monotonic seconds since first
             # ``execute_code`` after the most recent ``stop_all``. ``None``

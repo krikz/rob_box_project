@@ -234,6 +234,15 @@ services:
     # combined RSS of all 9 nodes + PyTorch + Silero v5 > 2 GiB under
     # bursty dialogue traffic.  Bumping to 4 GiB gives ~1 GiB headroom
     # for Silero v5 load (and any one respawn transient).
+    #
+    # Gap G-933-B (PR #933 follow-up, t_5ef52557): since 2026-07-31 the
+    # tts_node warm-loads Silero at __init__ in a background daemon thread,
+    # so the model is resident for the entire container lifetime while
+    # Yandex is primary.  Net RSS effect vs old lazy-load: roughly the
+    # same peak (model is ~150-200 MB either way) but the user no longer
+    # hears the cold-load pause on first fallback.  The 4 GiB ceiling
+    # comfortably holds Yandex gRPC client (negligible) + warm Silero
+    # (~200 MB) + the other 8 nodes; no further increase needed.
     memswap_limit: 4.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:

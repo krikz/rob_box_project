@@ -9,7 +9,7 @@ Per-provider TTS chunking + retry-halve (issue #933).
 
 Решение (per Подходы 1+2 issue #933):
 1. ``CHUNK_LIMITS`` — per-provider max chunk size, настраивается через ROS/YAML.
-   Defaults: yandex=700, silero=800, minimax=5000.
+   Defaults: yandex=250, silero=800, minimax=5000.
 2. ``split_text`` — sentence-boundary split (``.!?…\\n``), word-level fallback.
 3. ``synthesize_with_retry`` — retry-halve: при ``TooLongError`` режет chunk
    пополам и ретраит, max 3 попытки. Когда ``len(text) < MIN_CHUNK_CHARS`` —
@@ -32,14 +32,15 @@ from typing import Callable, Iterable, List, Sequence, Tuple
 
 
 # Per-provider max chunk size (chars). При превышении — split_text() + retry-halve.
-# Defaults выбраны эмпирически (issue #933, observation table):
-#   yandex_grpc_v3: 700 (text ≤700 chars обычно OK; >700 → halve до ≤350 → 175)
+# Defaults подтверждены эмпирически + официальной документацией (issue #937):
+#   yandex_grpc_v3: 250 (API v3 hard limit ≤250 chars или 24s аудио;
+#                        Gemini docs + e2e v3: 295 chars → INVALID_ARGUMENT)
 #   silero_v5:      800 (silero stable до ~800; >1000 уже "Synthesis error")
 #   minimax:        5000 (HTTP T2A v2 принимает длинные тексты)
 #
 # W5: ROS-параметры / YAML могут переопределить эти дефолты.
 CHUNK_LIMITS: dict[str, int] = {
-    "yandex_grpc_v3": 700,
+    "yandex_grpc_v3": 250,
     "silero_v5": 800,
     "minimax": 5000,
 }
@@ -285,14 +286,15 @@ def synthesize_with_retry(
     # Stage 1: split на уровне max_chars (если text > max_chars)
     initial_chunks = split_text(text, max_chars=max_chars)
 
-    # Recursive halving — будем работать как над списком чанков: если
-    # один из них fails — режем его пополам и заменяем в списке.
-    pending: List[str] = list(initial_chunks)
+    # Keep retry depth per pending branch. A failure in one sibling chunk must
+    # not consume the retry budget of another sibling.
+    pending: List[Tuple[str, int]] = [
+        (chunk, 0) for chunk in initial_chunks
+    ]
     out_audio: List[object] = []
-    retries_used = 0
 
     while pending:
-        chunk = pending.pop(0)
+        chunk, retries_used = pending.pop(0)
         try:
             audio = synthesize_fn(chunk)
         except Exception as exc:  # noqa: BLE001 — callback решает какой класс
@@ -320,10 +322,10 @@ def synthesize_with_retry(
                     f"[{provider}] safe-halve produced empty side "
                     f"(chunk={len(chunk)}, cut={cut})"
                 ) from exc
-            retries_used += 1
+            child_retries = retries_used + 1
             # head идёт раньше (порядок важен — точность синтеза).
-            pending.insert(0, tail)
-            pending.insert(0, head)
+            pending.insert(0, (tail, child_retries))
+            pending.insert(0, (head, child_retries))
             continue
         out_audio.append(audio)
 

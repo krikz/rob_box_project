@@ -78,19 +78,9 @@ def test_yandex_max_chunk_chars_constant_exists() -> None:
     # Expect int annotation or constant
     code = ast.unparse(node)
     assert "YANDEX_MAX_CHUNK_CHARS" in code
-    # Either an annotated int or a bare int — value should be ≤ 2500.
-    # Real value is 2400, leaving 100-char headroom from the 2500 hard cap.
-    tree = ast.parse(src)
-    val = None
-    for n in tree.body:
-        if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == "YANDEX_MAX_CHUNK_CHARS":
-            val = n.value.value if isinstance(n.value, ast.Constant) else None
-        elif isinstance(n, ast.Assign):
-            for t in n.targets:
-                if isinstance(t, ast.Name) and t.id == "YANDEX_MAX_CHUNK_CHARS":
-                    if isinstance(n.value, ast.Constant):
-                        val = n.value.value
-    assert isinstance(val, int) and 1 <= val <= 2500, f"YANDEX_MAX_CHUNK_CHARS={val!r} must be in [1, 2500]"
+    # Either an annotated int or a provider limit expression; runtime value is
+    # asserted by test_tts_chunking.py.
+    assert isinstance(node, (ast.AnnAssign, ast.Assign))
 
 
 def test_chunk_text_is_static_method() -> None:
@@ -101,36 +91,21 @@ def test_chunk_text_is_static_method() -> None:
     assert "staticmethod" in decos, f"_chunk_text must be @staticmethod, got {decos}"
 
 
-def test_synthesize_yandex_uses_chunking_helper() -> None:
-    """``_synthesize_yandex`` must call ``_chunk_text`` and route per-chunk through
-    a single-RPC helper. The single-RPC helper (``_synthesize_yandex_single``)
-    must NOT call ``_chunk_text`` (avoid infinite recursion)."""
+def test_synthesize_yandex_uses_retry_helper() -> None:
+    """Yandex hot-path must use retry-halving around its single-RPC helper."""
     src = _parse_module(_TTS_NODE)
     yandex = _find_class_member(src, "TTSNode", "_synthesize_yandex")
     yandex_src = ast.unparse(yandex)
 
-    # Must invoke chunking helper
-    assert "_chunk_text(" in yandex_src, "_synthesize_yandex must call _chunk_text"
+    assert "synthesize_with_retry(" in yandex_src
+    assert "_synthesize_yandex_single" in yandex_src
+    assert "chunk_max_chars_yandex" in yandex_src
+    assert "np.concatenate" in yandex_src or "concatenate" in yandex_src
 
-    # Must loop over chunks — i.e. a `for` over the chunk list.
-    assert "for " in yandex_src and "_synthesize_yandex_single" in yandex_src, (
-        "_synthesize_yandex must loop over chunks calling _synthesize_yandex_single"
-    )
-
-    # Must concatenate audio segments (multi-chunk path)
-    assert "np.concatenate" in yandex_src or "concatenate" in yandex_src, (
-        "_synthesize_yandex must concatenate multi-chunk audio segments"
-    )
-
-    # Single-RPC helper must NOT recursively call _chunk_text
     single = _find_class_member(src, "TTSNode", "_synthesize_yandex_single")
     single_src = ast.unparse(single)
-    assert "_chunk_text" not in single_src, (
-        "_synthesize_yandex_single must not re-chunk (would infinite-loop or double-split)"
-    )
-
-    # Single-RPC helper still issues exactly one gRPC call
-    assert "UtteranceSynthesis(" in single_src, "_synthesize_yandex_single must call UtteranceSynthesis"
+    assert "synthesize_with_retry" not in single_src
+    assert "UtteranceSynthesis(" in single_src
 
 
 def test_fallback_to_silero_preserved() -> None:
@@ -353,13 +328,21 @@ class _FakeYandexStub:
 
 def _build_node(stub):
     """Build a TTSNode instance bypassing __init__ (no rclpy available)."""
-    from rob_box_voice.tts_node import TTSNode
+    from rob_box_voice.tts_node import (
+        DEFAULT_MAX_RETRIES,
+        MIN_CHUNK_CHARS,
+        TTSNode,
+        YANDEX_MAX_CHUNK_CHARS,
+    )
 
     node = TTSNode.__new__(TTSNode)
     node.yandex_stub = stub
     node.yandex_voice = "anton"
     node.yandex_speed = 1.0
     node.yandex_api_key = "test-key"
+    node.chunk_max_chars_yandex = YANDEX_MAX_CHUNK_CHARS
+    node.chunk_max_retries = DEFAULT_MAX_RETRIES
+    node.chunk_min_chars = MIN_CHUNK_CHARS
 
     class _Logger:
         def info(self, *a, **kw):
@@ -414,6 +397,41 @@ def test_long_text_multi_chunk_concatenated(_import_chunk_text):
     assert audio.ndim == 1
     assert audio.dtype == np.float32
     assert len(audio) > 0
+
+
+def test_synthesize_yandex_retries_too_long_chunk(_import_chunk_text):
+    """Yandex INVALID_ARGUMENT must halve the rejected chunk before fallback."""
+    from rob_box_voice.tts_node import TTSNode
+
+    class ThresholdStub(_FakeYandexStub):
+        def __init__(self, max_chars: int):
+            super().__init__()
+            self.max_chars = max_chars
+            self.attempts: list[str] = []
+
+        def UtteranceSynthesis(self, request, metadata=None):
+            self.attempts.append(request.text)
+            if len(request.text) > self.max_chars:
+                raise Exception(
+                    "Yandex gRPC error: INVALID_ARGUMENT - Too long text"
+                )
+            return super().UtteranceSynthesis(request, metadata)
+
+    stub = ThresholdStub(max_chars=180)
+    node = _build_node(stub)
+    node.chunk_max_chars_yandex = 700
+    node.chunk_max_retries = 3
+    node.chunk_min_chars = 50
+    text = ("Retry this phrase. " * 15).strip()
+    assert 180 < len(text) < node.chunk_max_chars_yandex
+
+    audio = TTSNode._synthesize_yandex(node, text)  # type: ignore[arg-type]
+
+    assert len(stub.attempts) == 3
+    assert stub.attempts[0] == text
+    assert all(len(chunk) <= 180 for chunk in stub.attempts[1:])
+    assert isinstance(audio, np.ndarray)
+    assert audio.dtype == np.float32
 
 
 def test_chunk_failure_propagates_for_silero_fallback(_import_chunk_text):

@@ -328,6 +328,16 @@ class TTSNode(Node):
         self.declare_parameter("synthesis_max_workers", SYNTHESIS_MAX_WORKERS_DEFAULT)  # 1..4
         self.declare_parameter("synthesis_max_queue", SYNTHESIS_MAX_QUEUE_DEFAULT)  # pending tasks cap before drop
 
+        # Per-provider TTS chunking + retry-halve (issue #933).
+        self.declare_parameter(
+            "chunk_max_chars_yandex", CHUNK_LIMITS["yandex_grpc_v3"]
+        )
+        self.declare_parameter(
+            "chunk_max_chars_silero", CHUNK_LIMITS["silero_v5"]
+        )
+        self.declare_parameter("chunk_max_retries", DEFAULT_MAX_RETRIES)
+        self.declare_parameter("chunk_min_chars", MIN_CHUNK_CHARS)
+
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
         self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0 = нормальная скорость)
@@ -356,6 +366,20 @@ class TTSNode(Node):
         self.silero_put_yo = self.get_parameter("silero_put_yo").value
         self.silero_put_stress_homo = self.get_parameter("silero_put_stress_homo").value
         self.silero_put_yo_homo = self.get_parameter("silero_put_yo_homo").value
+
+        # Per-provider chunk limits and retry policy.
+        self.chunk_max_chars_yandex = max(
+            1, int(self.get_parameter("chunk_max_chars_yandex").value)
+        )
+        self.chunk_max_chars_silero = max(
+            1, int(self.get_parameter("chunk_max_chars_silero").value)
+        )
+        self.chunk_max_retries = max(
+            1, int(self.get_parameter("chunk_max_retries").value)
+        )
+        self.chunk_min_chars = max(
+            1, int(self.get_parameter("chunk_min_chars").value)
+        )
 
         # MiniMax (lazy init — только при provider="minimax")
         self.minimax_api_key = self.get_parameter("minimax_api_key").value or os.getenv("MINIMAX_API_KEY", "")
@@ -408,10 +432,62 @@ class TTSNode(Node):
         self.silero_loading = False
         self.device = torch.device("cpu")
 
-        # Если provider='silero' - загружаем сразу
+        # Warm-load coordination (gap G-933-B): when Yandex is the primary
+        # provider, Silero is just a fallback. Cold-loading the ~10 MB
+        # torch.package on the first Yandex→Silero fallback triggers a
+        # 2-3 s pause while the user hears silence ("UX illusion of hang").
+        #
+        # To avoid that, after Silero is *selected* as a fallback we kick
+        # off a background warm-load via a bounded
+        # ``ThreadPoolExecutor`` that loads the model up-front and sets
+        # ``self._silero_loaded`` once it's done.  The synchronous synth
+        # path (``_synthesize_and_play``) waits up to 1.5 s on the event
+        # before falling back to skipping playback for that one chunk —
+        # by then the model is normally hot and subsequent fallbacks cost
+        # ~0 s of additional latency.
+        #
+        # Why a bounded executor and not a bare ``threading.Thread``:
+        # BLK-9 (test_no_daemon_threads) forbids ``threading.Thread(...)``
+        # / ``daemon=True`` in production code — the regression guard
+        # was added because PR #907 BLK-9 left a bare daemon thread
+        # behind that could leak under burst load.  We use a
+        # ``ThreadPoolExecutor(max_workers=1)`` sized exactly for the
+        # one warm-load job so the pattern is consistent with the rest
+        # of tts_node and survives the regression test.
+        #
+        # Lifecycle:
+        # * ``_silero_loaded`` is initialised to a CLEARED ``Event`` —
+        #   the wait returns False if the executor never had a chance
+        #   to run (e.g. unit-test subclass override).
+        # * Set in the worker once ``_load_silero_model`` finishes
+        #   (success OR failure — failure is signalled so the hot-path
+        #   doesn't busy-loop waiting for a model that will never load).
+        # * The hot-path wait timeout is intentionally short (< typical
+        #   2.7 s cold-load) — on timeout we skip this chunk rather than
+        #   load synchronously, which would be no better than before.
+        self._silero_loaded = threading.Event()
+        self._silero_warm_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._silero_warm_future: concurrent.futures.Future | None = None
+        self._silero_load_outcome: str | None = None  # "ok" | "fail" | None
+        self._silero_load_lock = threading.Lock()
+        # Track who actually requested warm-load so we don't double-spawn
+        # when ``__init__`` decides provider=silero (which already does
+        # synchronous load) and the warm-load step is redundant.
+        self._silero_warm_requested = False
+
+        # Если provider='silero' - загружаем сразу (synchronous; primary mode)
         if self.provider == "silero":
             self.get_logger().info("🔄 Provider=silero → загрузка Silero TTS...")
             self._load_silero_model()
+            # Mark as loaded regardless of outcome so the hot-path wait
+            # doesn't hang on a never-completed background job.
+            self._silero_load_outcome = "ok" if self.silero_model is not None else "fail"
+            self._silero_loaded.set()
+        else:
+            # provider=yandex (or minimax) — Silero is a *fallback*.
+            # Kick off the background warm-load so the first fallback
+            # doesn't pay the 2-3 s cold-load cost.
+            self._start_silero_warm_load()
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
         self.yandex_channel = None
@@ -578,7 +654,17 @@ class TTSNode(Node):
             self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def _load_silero_model(self):
-        """Загрузить Silero TTS модель (lazy loading)."""
+        """Загрузить Silero TTS модель (lazy loading).
+
+        Этот метод безопасно вызывать одновременно из нескольких потоков —
+        внутренний ``silero_loading`` флаг отсекает параллельные попытки.
+        После завершения (успех или ошибка) **вызывающий обязан**
+        проставить ``self._silero_loaded.set()`` — иначе hot-path
+        ``_synthesize_and_play`` будет ждать вечно.  Когда метод вызывается
+        из синхронного пути (``provider=silero`` в ``__init__``), это
+        делает ``__init__``; когда из background warm-load — обёртка
+        ``_silero_warm_loader``.
+        """
         if self.silero_model is not None:
             return  # Уже загружена
 
@@ -628,6 +714,84 @@ class TTSNode(Node):
             self.silero_model = None
         finally:
             self.silero_loading = False
+
+    # ── Warm-load (gap G-933-B) ──────────────────────────────────────────────
+    #
+    # Эти методы оркестрируют фоновую предзагрузку Silero в ``__init__``,
+    # когда Silero — только fallback.  Цель: первый Yandex→Silero fallback
+    # не должен платить 2-3 с за загрузку torch.package (silero_model
+    # применяется apply_tts сразу).
+    #
+    # Используем ``ThreadPoolExecutor(max_workers=1)`` вместо
+    # ``threading.Thread(daemon=True)`` чтобы не нарушать BLK-9
+    # regression-guard (test_no_daemon_threads).  Executor дренируется
+    # через ``destroy_node`` → ``shutdown_silero_warm_executor`` ниже;
+    # см. также shutdown_synthesis_executor, который уже
+    # задокументирован в этом модуле.
+    SILERO_WARM_MAX_WORKERS: int = 1  # one job per node lifetime
+
+    def _start_silero_warm_load(self) -> None:
+        """Запустить фоновый warm-load Silero (no-op если уже запущен)."""
+        with self._silero_load_lock:
+            if self._silero_warm_requested:
+                return
+            self._silero_warm_requested = True
+            self.get_logger().info("🌡️ Silero v5 warming in background...")
+            self._silero_warm_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.SILERO_WARM_MAX_WORKERS,
+                thread_name_prefix="silero-warm-load",
+            )
+            self._silero_warm_future = self._silero_warm_executor.submit(
+                self._silero_warm_loader
+            )
+
+    def _silero_warm_loader(self) -> None:
+        """Background entry-point: грузит модель и снимает ``_silero_loaded``.
+
+        Всегда выставляет ``_silero_loaded`` (включая при ошибке) — иначе
+        hot-path ждал бы бесконечно.  ``_silero_load_outcome`` хранит
+        ``"ok"``/``"fail"`` для диагностики.
+        """
+        try:
+            self._load_silero_model()
+            outcome = "ok" if self.silero_model is not None else "fail"
+        except Exception as e:  # noqa: BLE001 — last-resort safety net
+            # ``_load_silero_model`` уже логирует и ловит свои ошибки,
+            # но защитимся от неожиданного (например, KeyboardInterrupt
+            # не проскочит, но SystemExit или import-time fault — может).
+            self.get_logger().error(
+                f"❌ Unexpected error in Silero warm-load thread: {e}"
+            )
+            outcome = "fail"
+        finally:
+            with self._silero_load_lock:
+                self._silero_load_outcome = outcome
+            # Всегда сигналим — это не даёт hot-path'у зависнуть.
+            self._silero_loaded.set()
+
+    def shutdown_silero_warm_executor(self, wait: bool = False) -> None:
+        """Drain the warm-load executor on node teardown.
+
+        Mirrors ``shutdown_synthesis_executor`` semantics: ``wait=False``
+        so ROS teardown is fast (the warm-load itself is idempotent —
+        if it's mid-flight when the node dies, the next node to start
+        will re-load from scratch on first fallback).  Safe to call
+        multiple times — a second invocation is a no-op.
+        """
+        executor = self._silero_warm_executor
+        if executor is None:
+            return
+        # Drop our reference first so concurrent warm-load completions
+        # don't try to write into a shut-down executor.
+        with self._silero_load_lock:
+            self._silero_warm_executor = None
+            self._silero_warm_future = None
+        try:
+            executor.shutdown(wait=wait)
+        except Exception as e:  # noqa: BLE001 — diagnostics only
+            self.get_logger().warn(
+                f"⚠️  Silero warm-load executor shutdown raised: {e}"
+            )
 
     def control_callback(self, msg: String):
         """Обработка control commands (STOP)."""
@@ -996,10 +1160,56 @@ class TTSNode(Node):
 
             # Fallback на Silero если Yandex не сработал
             if audio_np is None:
-                # Загружаем Silero при первом использовании (lazy loading)
+                # Warm-load (gap G-933-B): ждём пока background warm-load
+                # закончит поднимать модель (timeout 1.5 с).  Если warm-load
+                # ещё идёт и не успеет к таймауту — skip playback для этого
+                # chunk'а, чтобы hot-path не завис на 2-3 с и пользователь
+                # не слышал тишину (UX illusion of hang).
+                #
+                # Поведение по очерёдности событий:
+                # * warm-load OK + событие уже set → ждём 0 с, идём дальше
+                # * warm-load OK + событие ещё не set → ждём до 1.5 с (обычно
+                #   < 0.1 с, т.к. мы стартовали warm-load в __init__)
+                # * warm-load FAIL → событие всё равно set, проверяем
+                #   silero_model is None ниже и делаем skip с warn
+                # * warm-load ещё не запущен (тест / нестандартный init)
+                #   → событие не set → timeout → skip chunk
+                _warm_wait_s = 1.5
+                _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
+                if not _warmed_in_time:
+                    self.get_logger().warn(
+                        f"⏳ Silero still warming up after {_warm_wait_s}s — "
+                        f"skipping playback for this chunk to avoid UX hang. "
+                        f"Subsequent fallbacks should hit the warm model."
+                    )
+                    # Не возвращаемся «молча»: явно сообщаем downstream, что
+                    # этот chunk не отыграли (caller'ы могут почистить
+                    # barge-in state). Публикуем finished с пометкой skipped.
+                    self.processing_dialogue_id = None
+                    try:
+                        self.publish_state("tts_silero_warming")
+                        if dialogue_id:
+                            _fin = String()
+                            _fin.data = f"silero_warming:{dialogue_id}"
+                            self.finished_pub.publish(_fin)
+                    except Exception:  # noqa: BLE001 — diagnostics only
+                        pass
+                    return
+
+                # Загружаем Silero при первом использовании (legacy lazy path).
+                # После warm-load silero_model чаще всего уже не None, но
+                # если warm-load упал (например, нет сети для torch.hub)
+                # — даём синхронному пути один последний шанс.
                 if self.silero_model is None:
                     self.get_logger().warn("⚠️  Silero модель не загружена, загружаю сейчас...")
                     self._load_silero_model()
+                    # После синхронной попытки — обновим outcome и event,
+                    # чтобы следующие fallbacks не пытались ждать зря.
+                    if self.silero_model is None:
+                        self._silero_load_outcome = "fail"
+                    else:
+                        self._silero_load_outcome = "ok"
+                    self._silero_loaded.set()
 
                 if self.silero_model is None:
                     raise Exception("Silero fallback недоступен - не удалось загрузить модель!")
@@ -1011,31 +1221,7 @@ class TTSNode(Node):
                 if ssml_attributes:
                     self.get_logger().info(f"🎵 SSML атрибуты для Silero: {ssml_attributes}")
 
-                # Оборачиваем нормализованный text в SSML для Silero.
-                # ВАЖНО: всегда используем нормализованный `text`, а не оригинальный `ssml`.
-                # `ssml` приходит от dialogue.py уже обёрнутым в <speak>...</speak>,
-                # но содержит цифры/латиницу/emoji, которые Silero не умеет читать.
-                # Восстанавливаем SSML-атрибуты из оригинала (pitch если был).
-                _prosody_attrs = ""
-                _pitch_m = re.search(r"<prosody[^>]*pitch=['\"]([^'\"]+)['\"]", ssml)
-                if _pitch_m:
-                    _prosody_attrs = f' pitch="{_pitch_m.group(1)}"'
-                if _prosody_attrs:
-                    ssml_text = f"<speak><prosody{_prosody_attrs}>{text}</prosody></speak>"
-                else:
-                    ssml_text = f'<speak><prosody pitch="medium">{text}</prosody></speak>'
-
-                # Используем новые флаги v5 для расстановки ударений
-                audio = self.silero_model.apply_tts(
-                    ssml_text=ssml_text,
-                    speaker=self.silero_speaker,
-                    sample_rate=self.silero_sample_rate,
-                    put_accent=self.silero_put_accent,
-                    put_yo=self.silero_put_yo,
-                    put_stress_homo=self.silero_put_stress_homo,
-                    put_yo_homo=self.silero_put_yo_homo,
-                )
-                audio_np = audio.numpy()
+                audio_np = self._synthesize_silero(text, ssml_attributes)
                 sample_rate = self.silero_sample_rate  # 48000 Hz (v5)
                 self.get_logger().info(
                     f"✅ Silero v5 fallback успешен: {len(audio_np)} samples @ {sample_rate} Hz "
@@ -1210,6 +1396,53 @@ class TTSNode(Node):
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
 
+    def _synthesize_silero(
+        self, text: str, ssml_attributes: dict | None = None
+    ) -> np.ndarray:
+        """Synthesize Silero chunks with provider-specific retry-halving."""
+        if self.silero_model is None:
+            raise Exception("Silero TTS model не инициализирована")
+
+        ssml_attributes = ssml_attributes or {}
+        pitch = ssml_attributes.get("pitch", "medium")
+
+        def synthesize_chunk(chunk_text: str) -> np.ndarray:
+            ssml_text = (
+                f'<speak><prosody pitch="{pitch}">'
+                f"{chunk_text}</prosody></speak>"
+            )
+            audio = self.silero_model.apply_tts(
+                ssml_text=ssml_text,
+                speaker=self.silero_speaker,
+                sample_rate=self.silero_sample_rate,
+                put_accent=self.silero_put_accent,
+                put_yo=self.silero_put_yo,
+                put_stress_homo=self.silero_put_stress_homo,
+                put_yo_homo=self.silero_put_yo_homo,
+            )
+            return audio.numpy()
+
+        audio_segments = synthesize_with_retry(
+            text,
+            "silero_v5",
+            synthesize_chunk,
+            max_chars=self.chunk_max_chars_silero,
+            max_retries=self.chunk_max_retries,
+            min_chunk_chars=self.chunk_min_chars,
+            is_too_long=lambda exc: (
+                "length" in str(exc).lower()
+                or "generate" in str(exc).lower()
+                or "too long" in str(exc).lower()
+            ),
+        )
+        if not audio_segments:
+            raise Exception("Silero TTS: ни один chunk не вернул аудио")
+        return (
+            np.concatenate(audio_segments)
+            if len(audio_segments) > 1
+            else audio_segments[0]
+        )
+
     @staticmethod
     def _chunk_text(
         text: str,
@@ -1352,42 +1585,25 @@ class TTSNode(Node):
                 f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)"
             )
 
-        chunks = self._chunk_text(text, max_chars=YANDEX_MAX_CHUNK_CHARS)
-        if len(chunks) > 1:
-            self.get_logger().info(
-                f"🪓 Текст {len(text)} chars > {YANDEX_MAX_CHUNK_CHARS} "
-                f"→ разбит на {len(chunks)} чанков"
-            )
-
-        audio_segments: list[np.ndarray] = []
-        per_chunk_rates: list[int] = []
-
-        for chunk_idx, chunk_text in enumerate(chunks):
-            if not chunk_text.strip():
-                continue
-            t0 = time.monotonic()
-            try:
-                segment, seg_rate = self._synthesize_yandex_single(
-                    chunk_text, speech_rate
-                )
-            except Exception as exc:
-                self.get_logger().warn(
-                    f"⚠️  Yandex gRPC chunk {chunk_idx + 1}/{len(chunks)} "
-                    f"failed ({len(chunk_text)} chars): {exc}"
-                )
-                raise
-
-            dt_ms = (time.monotonic() - t0) * 1000.0
-            self.get_logger().info(
-                f"🎙️  Yandex chunk {chunk_idx + 1}/{len(chunks)}: "
-                f"{len(segment)} samples @ {seg_rate} Hz "
-                f"({len(chunk_text)} chars, {dt_ms:.0f} ms)"
-            )
-            audio_segments.append(segment)
-            per_chunk_rates.append(seg_rate)
-
-        if not audio_segments:
+        audio_results = synthesize_with_retry(
+            text,
+            "yandex_grpc_v3",
+            lambda chunk_text: self._synthesize_yandex_single(
+                chunk_text, speech_rate
+            ),
+            max_chars=self.chunk_max_chars_yandex,
+            max_retries=self.chunk_max_retries,
+            min_chunk_chars=self.chunk_min_chars,
+            is_too_long=lambda exc: (
+                "invalid_argument" in str(exc).lower()
+                and "too long" in str(exc).lower()
+            ),
+        )
+        if not audio_results:
             raise Exception("Yandex TTS: ни один chunk не вернул аудио")
+
+        audio_segments = [segment for segment, _ in audio_results]
+        per_chunk_rates = [sample_rate for _, sample_rate in audio_results]
 
         audio_np = (
             np.concatenate(audio_segments) if len(audio_segments) > 1 else audio_segments[0]
