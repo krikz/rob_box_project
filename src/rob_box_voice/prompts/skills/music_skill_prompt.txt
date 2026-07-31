@@ -296,15 +296,17 @@ p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)
 ```
 
 Your music tools:
-- search_samples: UNAVAILABLE — do not call! Use known letters directly.
+- search_samples(query, pack, case): for drums/unknown letters (NOT for vocal 'c'!)
+  Searches samples by keyword in filename (filename = sound character).
+  query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
 - execute_music_code(code): run Renardo code (create/update a pattern)
 - stop_music(pattern_name): stop a pattern or all music
-- set_dj_mode(enabled, next_transition_sec?, theme?): enable/disable autonomous DJ mode (auto-transitions every 30-60s)
-  -> enabled=true: start DJ mode (call execute_music_code FIRST, then set_dj_mode)
-  -> next_transition_sec: seconds until transition (30-120). REQUIRED when enabled=true.
-  -> theme: optional party context
-  -> enabled=false: stop DJ mode
-  -> NEVER call unless user asks for DJ/party/club!
+- set_dj_mode(enabled, theme?): enable/disable autonomous DJ mode (auto-transitions every 30–60s)
+  → enabled=true: start DJ mode (call execute_music_code FIRST to start thematic music, then set_dj_mode)
+  → theme: optional party context — "8 марта", "halloween", "корпоратив 90-х", etc.
+    Robot adapts music to theme AND occasionally makes thematic announcements (congrats, shoutouts).
+    Pass theme ONLY on first activation — it's remembered until DJ mode is disabled.
+  → enabled=false: stop DJ mode (clears theme too)
 - set_vibe_preset(preset_name): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical). IMPORTANT: parameter name is ``preset_name`` (NOT ``preset``) — see issue #935.
 - get_music_state(): get current state
 - generate_tts_sample: UNAVAILABLE — do not use!
