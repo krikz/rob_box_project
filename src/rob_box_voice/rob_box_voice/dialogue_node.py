@@ -353,8 +353,12 @@ class DialogueNode(Node):
                 self._dsm.on_event(DialogueEvent.UNSILENCE)
                 self._publish_state()
             return
-        if (state == DialogueStateKind.IDLE
-                and not has_wake_word(text_lower, self._wake_words)):
+        # Universal wake-word gate — only direct address to robot can
+        # start or interrupt a dialogue. This prevents false barge-in
+        # from background noise, TV, or the robot's own TTS echo.
+        # (Regression fix: was incorrectly gated on state==IDLE only.)
+        if not has_wake_word(text_lower, self._wake_words):
+            self.get_logger().debug(f"🔇 Ignored (no wake word): {text[:60]}")
             return
         clean = strip_wake_word(text, self._wake_words)
         if not clean:
