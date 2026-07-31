@@ -266,3 +266,117 @@ class MemoryContextTool(MCPTool):
         except Exception as e:
             self.log_error(f"[memory_context] Error: {e}")
             return MCPToolResult(success=False, data=None, message=f"Ошибка получения контекста: {e}")
+
+
+# ---------------------------------------------------------------------------
+# FaqSearchTool — event FAQ retrieval
+# ---------------------------------------------------------------------------
+
+
+class FaqSearchTool(MCPTool):
+    """Search the active event's FAQ for answers to visitor questions.
+
+    Uses ``node.faq_store`` (a :class:`FAQStore` instance set on MCPServer
+    during ``_init_faq_store``). When event mode is not active or the FAQ
+    file was not loaded, returns a clear "FAQ not available" message so the
+    LLM can fall back gracefully.
+    """
+
+    @property
+    def name(self) -> str:
+        return "faq_search"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Поиск по FAQ активного мероприятия. "
+            "Используй когда пользователь спрашивает о программе, локации, "
+            "поступлении, организации или других деталях мероприятия. "
+            "Возвращает вопрос-ответные пары из загруженного FAQ-файла."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description="Поисковый запрос — вопрос или ключевые слова о мероприятии.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="limit",
+                type="integer",
+                description="Максимальное количество результатов (по умолчанию 3, максимум 10).",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self):
+        from ..base import ToolExecutionType
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, query: str, limit: int = 3) -> MCPToolResult:
+        faq_store = getattr(self.node, "faq_store", None)
+        if faq_store is None:
+            return MCPToolResult(
+                success=False,
+                error="FAQ-хранилище не инициализировано. Режим мероприятия не активен или FAQ-файл не загружен.",
+            )
+
+        event_profile = getattr(self.node, "event_profile", None)
+        event_id = None
+        if event_profile is not None:
+            event_id = getattr(event_profile, "event_id", None)
+
+        if not event_id:
+            return MCPToolResult(
+                success=False,
+                error="Не задан event_id — профиль мероприятия не загружен.",
+            )
+
+        limit = max(1, min(int(limit), 10))
+        try:
+            results = faq_store.search(query=query.strip(), event_id=event_id, limit=limit)
+        except Exception as exc:
+            self.log_error(f"[faq_search] search failed: {exc}")
+            return MCPToolResult(
+                success=False,
+                error=f"Ошибка поиска по FAQ: {exc}",
+            )
+
+        if not results:
+            return MCPToolResult(
+                success=True,
+                data={"query": query, "event_id": event_id, "found": 0},
+                message=f"По запросу '{query}' в FAQ мероприятия ничего не найдено.",
+            )
+
+        self.log_info(f"[faq_search] query={query!r} event={event_id} → {len(results)} matches")
+        formatted = []
+        for r in results:
+            formatted.append({
+                "question": r.get("question", ""),
+                "answer": r.get("answer", ""),
+                "category": r.get("category", ""),
+            })
+
+        return MCPToolResult(
+            success=True,
+            data={
+                "query": query,
+                "event_id": event_id,
+                "found": len(results),
+                "results": formatted,
+            },
+            message=f"Найдено {len(results)} совпадений в FAQ мероприятия.",
+        )

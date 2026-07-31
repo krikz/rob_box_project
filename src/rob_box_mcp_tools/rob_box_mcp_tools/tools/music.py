@@ -23,6 +23,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from rob_box_voice.core.music_stack_validation import (
@@ -1602,6 +1603,184 @@ class DeleteTrackTool(MCPTool):
         if result["success"]:
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
+
+
+# ---------------------------------------------------------------------------
+# SearchSamplesTool — filesystem search over Renardo sample packs
+# ---------------------------------------------------------------------------
+
+# Default samples path (same as MusicSkill._DEFAULT_SAMPLES_PATH)
+_SEARCH_SAMPLES_DEFAULT_PATH = os.environ.get(
+    "RENARDO_SAMPLES_PATH",
+    "/root/.config/renardo/samples",
+)
+
+
+class SearchSamplesTool(MCPTool):
+    """Search Renardo sample packs by keyword in filename.
+
+    Returns letter, sample_index, and ready-to-use play_code for ``d1 >> play(...)``.
+    Ported from ``MusicSkill.search_samples`` (filesystem-based, no Renardo runtime needed).
+    """
+
+    def __init__(self, node, samples_path: Optional[str] = None) -> None:
+        super().__init__(node)
+        self._samples_path = Path(samples_path or _SEARCH_SAMPLES_DEFAULT_PATH)
+
+    @property
+    def name(self) -> str:
+        return "search_samples"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Поиск Renardo-сэмплов по ключевому слову в имени файла. "
+            "Возвращает букву, sample_index и готовый play_code. "
+            "Используй когда нужно найти неизвестную букву/индекс сэмпла. "
+            "query='*' — обзор всех доступных букв и количества сэмплов в паке."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description=(
+                    "Ключевое слово: kick, snare, hat, bass, synth, vocal, glitch, dist, loop. "
+                    "'*' — компактный обзор всех букв."
+                ),
+                required=True,
+            ),
+            MCPToolParameter(
+                name="pack",
+                type="string",
+                description=(
+                    "Имя пакета: '0_foxdot_default' (стандартный) или "
+                    "'1_pitchglitch_samples' (расширенный, включает вокал/FX)."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="case",
+                type="string",
+                description="Регистр буквы: 'lower' или 'upper'.",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self,
+        query: str,
+        pack: str = "0_foxdot_default",
+        case: str = "lower",
+    ) -> MCPToolResult:
+        """Search samples by keyword."""
+        samples_root = self._samples_path
+        if not samples_root.exists():
+            return MCPToolResult(
+                success=False,
+                error=f"Директория сэмплов не найдена: {samples_root}",
+            )
+
+        pack_path = samples_root / pack
+        if not pack_path.exists():
+            available = [d.name for d in samples_root.iterdir() if d.is_dir()]
+            return MCPToolResult(
+                success=False,
+                error=f"Пак '{pack}' не найден. Доступны: {available}",
+            )
+
+        exts = {".wav", ".aif", ".aiff", ".mp3"}
+
+        # Calculate spack index (0-based position in sorted pack list)
+        all_packs = sorted([d.name for d in samples_root.iterdir() if d.is_dir()])
+        spack_num = all_packs.index(pack) if pack in all_packs else 0
+        spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
+
+        # query="*" → compact overview of letters and counts
+        if query.strip() == "*":
+            overview: Dict[str, int] = {}
+            for folder in sorted(pack_path.iterdir()):
+                if not folder.is_dir() or folder.name.startswith("."):
+                    continue
+                sub = folder / case
+                if not sub.exists():
+                    sub = folder
+                count = sum(
+                    1 for f in sub.iterdir()
+                    if f.is_file() and f.suffix.lower() in exts
+                )
+                if count:
+                    overview[folder.name] = count
+            return MCPToolResult(
+                success=True,
+                data={
+                    "pack": pack,
+                    "case": case,
+                    "letters": overview,
+                },
+                message=f"Пак '{pack}': {len(overview)} букв, всего сэмплов: {sum(overview.values())}",
+            )
+
+        # Keyword search
+        q = query.lower().strip()
+        results: List[Dict[str, Any]] = []
+        for folder in sorted(pack_path.iterdir()):
+            if not folder.is_dir() or folder.name.startswith("."):
+                continue
+            sub = folder / case
+            if not sub.exists():
+                sub = folder
+            files = sorted(
+                [f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts]
+            )
+            for idx, f in enumerate(files):
+                if q in f.name.lower():
+                    play_letter = folder.name.upper() if case == "upper" else folder.name
+                    results.append({
+                        "letter": play_letter,
+                        "sample_index": idx,
+                        "spack": spack_num,
+                        "filename": f.name,
+                        "play_code": f'd1 >> play("{play_letter}", sample={idx}{spack_suffix})',
+                    })
+            if len(results) >= 30:
+                break
+
+        if not results:
+            return MCPToolResult(
+                success=True,
+                data={"query": query, "pack": pack, "found": 0},
+                message=f"По запросу '{query}' в паке '{pack}' ничего не найдено. Попробуй: kick, snare, hat, bass, synth, '*'.",
+            )
+
+        self.log_info(f"[search_samples] query={query!r} pack={pack} → {len(results)} results")
+        return MCPToolResult(
+            success=True,
+            data={
+                "query": query,
+                "pack": pack,
+                "case": case,
+                "found": len(results),
+                "results": results,
+            },
+            message=f"Найдено {len(results)} сэмплов по запросу '{query}': "
+                     + ", ".join(r["play_code"] for r in results[:5])
+                     + (f" ... и ещё {len(results) - 5}" if len(results) > 5 else ""),
+        )
 
 
 class SetDjModeTool(MCPTool):

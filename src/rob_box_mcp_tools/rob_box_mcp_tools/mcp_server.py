@@ -65,14 +65,19 @@ from .tools import (
     LoadTrackTool,
     DeleteTrackTool,
     SetDjModeTool,
+    SearchSamplesTool,
 )
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
+    from rob_box_voice.core.faq_store import FAQStore as _FAQStore
+    from rob_box_voice.core.event_profile import load_event_profile as _load_event_profile
 except ImportError:
     _VoiceMemory = None  # type: ignore[assignment,misc]
+    _FAQStore = None
+    _load_event_profile = None
 
 
 class MCPServer(Node):
@@ -94,6 +99,11 @@ class MCPServer(Node):
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
         self._init_voice_memory()
+
+        # FAQ store + event profile (event mode)
+        self.faq_store = None
+        self.event_profile = None
+        self._init_faq_store()
 
         # WaypointStore — SQLite CRUD для вейпоинтов (одна БД с VoiceMemory)
         self.waypoint_store = self._init_waypoint_store()
@@ -329,6 +339,9 @@ class MCPServer(Node):
         self.registry.register(PlaySoundTool(self))
         self.registry.register(GetSoundInfoTool(self))
 
+        # FAQ / Event tools
+        self.registry.register(FaqSearchTool(self))
+
         # Dialogue tools (критично для агентного диалога!)
         self.registry.register(SpeakTextTool(self))
         self.registry.register(ListenForResponseTool(self))
@@ -364,6 +377,7 @@ class MCPServer(Node):
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
         self.registry.register(SetDjModeTool(self))
+        self.registry.register(SearchSamplesTool(self))
 
         try:
             track_library = TrackLibrary()
@@ -404,6 +418,46 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ Ошибка инициализации VoiceMemory: {exc}")
             self.voice_memory = None
+
+    def _init_faq_store(self) -> None:
+        """Инициализация FAQStore и загрузка event profile (режим мероприятия)."""
+        if _FAQStore is None or _load_event_profile is None:
+            self.get_logger().info(
+                "ℹ️ FAQ-модуль не загружен — faq_search будет возвращать 'недоступен'."
+            )
+            return
+
+        import os
+
+        faq_mode_enabled = os.getenv("FAQ_MODE_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+        faq_config_file = os.getenv("FAQ_EVENT_CONFIG_FILE", "/config/event.yaml")
+
+        if not faq_mode_enabled:
+            self.get_logger().info("ℹ️ FAQ mode disabled (FAQ_MODE_ENABLED != 1)")
+            return
+
+        try:
+            profile = _load_event_profile(enabled=True, config_file=faq_config_file)
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ Не удалось загрузить event profile: {exc}")
+            return
+
+        if profile is None:
+            self.get_logger().info("ℹ️ Event profile not loaded — faq_search disabled")
+            return
+
+        self.event_profile = profile
+
+        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        try:
+            self.faq_store = _FAQStore(db_path=db_path)
+            self.get_logger().info(
+                f"📚 FAQStore инициализирован: event={profile.event_id} "
+                f"({profile.name}), faq_file={profile.faq_file}"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"❌ Ошибка инициализации FAQStore: {exc}")
+            self.faq_store = None
 
     def publish_tools(self):
         """Публикация списка доступных инструментов в OpenAI Tool Calls формате."""

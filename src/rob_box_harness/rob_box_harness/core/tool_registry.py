@@ -258,12 +258,13 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
         ),
         ToolSpec(
             name="search_samples",
-            description="Search the local music sample library by query.",
+            description="Search Renardo sample packs by keyword in filename. Returns letter, sample_index, and ready-to-use play_code.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": _TEXT_PROPERTY,
-                    "limit": _INT_PROPERTY,
+                    "query": {"type": "string", "description": "Keyword: kick, snare, hat, bass, synth, vocal, glitch. Use '*' for overview."},
+                    "pack": {"type": "string", "description": "Sample pack: 0_foxdot_default (standard) or 1_pitchglitch_samples (extended)."},
+                    "case": {"type": "string", "description": "Letter case: lower or upper."},
                 },
                 "required": ["query"],
             },

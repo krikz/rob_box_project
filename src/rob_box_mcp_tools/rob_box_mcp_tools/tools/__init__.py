@@ -68,4 +68,12 @@ __all__ = [
     "SetVibePresetTool",
     "GetMusicStateTool",
     "SetDjModeTool",
+    "SearchSamplesTool",
+    # Track library tools
+    "SaveTrackTool",
+    "ListTracksTool",
+    "LoadTrackTool",
+    "DeleteTrackTool",
+    # FAQ / Event tools
+    "FaqSearchTool",
 ]
