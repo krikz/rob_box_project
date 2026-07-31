@@ -37,17 +37,9 @@ jobs:
 
       - name: Start PulseAudio
         run: |
-          # Use ros2 user's PulseAudio session (user 1000)
-          export PULSE_RUNTIME_PATH=/run/user/1000/pulse
-          export XDG_RUNTIME_DIR=/run/user/1000
-          export PULSE_SERVER=unix:$PULSE_RUNTIME_PATH/native
-          if [ -S "$PULSE_RUNTIME_PATH/native" ]; then
-            echo "PulseAudio socket found at $PULSE_RUNTIME_PATH/native"
-          else
-            echo "ERROR: PulseAudio not running for user ros2 (uid 1000)"
-            exit 1
-          fi
-          pactl info | head -5
+          # Runner runs as root, PA socket is under /run/user/1000/ (0700, ros2)
+          # Use sudo -u ros2 to access the user session
+          sudo -u ros2 pactl info | head -5
 
       - name: Pre-flight check
         run: |
@@ -66,30 +58,26 @@ jobs:
           sleep 15
 
       - name: Record and play voice command
-        env:
-          PULSE_RUNTIME_PATH: /run/user/1000/pulse
-          PULSE_SERVER: unix:/run/user/1000/pulse/native
-          XDG_RUNTIME_DIR: /run/user/1000
         run: |
           RECORD_FILE="/tmp/dialog_e2e_${{ github.run_id }}.wav"
           echo "Recording to $RECORD_FILE for ${{ inputs.record_seconds }}s..."
 
-          # Start recording
-          timeout ${{ inputs.record_seconds }} parec \
+          # Start recording as ros2 user (has PA access)
+          sudo -u ros2 timeout ${{ inputs.record_seconds }} parec \
             --format=s16le --channels=1 --rate=16000 \
             "$RECORD_FILE" &
           RECORD_PID=$!
           sleep 2
 
-          # EQ processing + play
+          # EQ processing + play as ros2 user
           echo "Processing voice with EQ..."
           ffmpeg -y -i ${{ inputs.voice_file }} \
             -af 'highpass=f=200,volume=1.5,alimiter=limit=0.95' \
             -ac 1 -ar 16000 /tmp/voice_eq.wav 2>&1 | tail -1
 
-          pactl set-sink-volume @DEFAULT_SINK@ ${{ inputs.volume }}%
+          sudo -u ros2 pactl set-sink-volume @DEFAULT_SINK@ ${{ inputs.volume }}%
           echo "Playing voice command..."
-          paplay /tmp/voice_eq.wav && echo "PLAY_DONE" || echo "PLAY_FAIL"
+          sudo -u ros2 paplay /tmp/voice_eq.wav && echo "PLAY_DONE" || echo "PLAY_FAIL"
 
           # Wait for robot response
           echo "Waiting for robot response..."
