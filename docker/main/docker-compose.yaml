@@ -275,7 +275,8 @@ services:
       - zenoh-router
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'source /ws/install/setup.bash && ros2 node list | grep -q reflection_node'"]
+      # W11 (Phase 6 v2): reflection_node removed in W10; check the sensor bridge instead
+      test: ["CMD-SHELL", "bash -c 'source /ws/install/setup.bash && ros2 node list | grep -q perception_bridge'"]
       interval: 15s
       timeout: 5s
       start_period: 20s
