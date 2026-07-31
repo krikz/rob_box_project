@@ -170,7 +170,46 @@ class STTNode(Node):
             self.yandex_stub = None
 
     def initialize_vosk(self):
-        """Загрузка Vosk модели (fallback)."""
+        """Load Vosk model (fallback provider).
+
+        Architect decision G-VOSK: the model is bundled in the voice_base
+        image at /models/vosk-model-small-ru-0.22 (see
+        docker/vision/voice_base/Dockerfile). We fail-fast with a helpful
+        error message (instead of the opaque 'Folder does not contain model
+        files' from the Vosk C++ binding) when it isn't there, pointing the
+        operator at the docs.
+
+        Set the env var ROS_VOSK_DISABLE=1 (or declare the
+        ``enable_vosk`` ROS param as False) to skip Vosk entirely —
+        stt_node will then use only the Yandex gRPC provider.
+        """
+        # Operator opt-out — useful when the model isn't available and we
+        # explicitly want a Yandex-only deploy.
+        if os.environ.get('ROS_VOSK_DISABLE', '').lower() in ('1', 'true', 'yes'):
+            self.get_logger().warn(
+                '⚠️  ROS_VOSK_DISABLE is set — skipping Vosk init. '
+                'STT will rely on Yandex gRPC only.'
+            )
+            self.publish_state('error')
+            return
+
+        # Pre-flight check: surface a clear error if the model dir is missing
+        # rather than letting the Vosk C++ binding emit the cryptic "Folder
+        # does not contain model files" stderr (task card G-VOSK).
+        if not os.path.isdir(self.model_path):
+            self.get_logger().error(
+                f'❌ Vosk model not found at "{self.model_path}".\n'
+                f'   The model should be bundled in the voice_base image '
+                f'(see docker/vision/voice_base/Dockerfile).\n'
+                f'   To install on a bare-metal host, see '
+                f'docs/development/VOICE_ASSISTANT_DOCKER.md or run '
+                f'src/rob_box_voice/scripts/quick_start_stt.sh.\n'
+                f'   To skip Vosk entirely and use Yandex gRPC only, '
+                f'set ROS_VOSK_DISABLE=1 in the container env.'
+            )
+            self.publish_state('error')
+            return
+
         try:
             self.get_logger().info(f'Загрузка Vosk модели из {self.model_path}...')
             self.model = Model(self.model_path)
@@ -179,7 +218,15 @@ class STTNode(Node):
             self.get_logger().info('✅ Vosk модель загружена (fallback)')
             self.publish_state('ready')
         except Exception as e:
-            self.get_logger().error(f'❌ Ошибка загрузки Vosk: {e}')
+            # Defensive: even after the isdir() check above, the model files
+            # inside the directory could still be missing/corrupt (e.g. a
+            # half-extracted zip). Surface a clear message + the exception.
+            self.get_logger().error(
+                f'❌ Ошибка загрузки Vosk из {self.model_path}: {e}\n'
+                f'   Path exists but the model files are missing or invalid.\n'
+                f'   See docker/vision/voice_base/Dockerfile — the model '
+                f'should be bundled at build time.'
+            )
             self.publish_state('error')
 
     def tts_state_callback(self, msg: String):
