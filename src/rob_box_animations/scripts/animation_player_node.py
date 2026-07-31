@@ -130,8 +130,7 @@ class AnimationPlayerNode(Node):
         autostart = self.get_parameter('autostart_animation').value
         if autostart:
             self.get_logger().info(f'Autostarting animation: {autostart}')
-            if self.player.load_animation(f'{autostart}.yaml'):
-                self.player.play()
+            self.player.play_animation(f'{autostart}.yaml')
 
     def load_animation_callback(self, msg):
         """Load animation callback (subscription)."""
@@ -177,9 +176,11 @@ class AnimationPlayerNode(Node):
         # Устанавливаем флаг ручной анимации
         self.manual_animation_active = True
 
-        # Load and play the animation
-        if self.player.load_animation(animation_name):
-            self.player.play()
+        # Atomic load+cancel+play: replaces any currently playing animation
+        # cleanly. Previously this was load_animation() + play(), which
+        # produced 'Animation already playing' WARNs and visual overlap
+        # when the previous thread was still alive.
+        if self.player.play_animation(animation_name):
             self.get_logger().info(f'✅ Анимация {animation_name} загружена и запущена (ручной режим)')
 
             # Используем указанную длительность или случайную (5-10 секунд)
@@ -206,16 +207,15 @@ class AnimationPlayerNode(Node):
         # Если робот не говорит - возвращаемся к idle
         if not self.is_robot_speaking:
             self.get_logger().info('⏰ Таймер истёк - возврат к idle анимации')
-            if self.player.load_animation(f'{self.idle_animation}.yaml'):
-                self.player.play()
-            else:
+            # play_animation() is atomic (cancel + load + play), so we
+            # cleanly replace any still-playing emotion animation rather
+            # than racing against it.
+            if not self.player.play_animation(f'{self.idle_animation}.yaml'):
                 self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
         else:
             # Если робот говорит - переключаемся на talking
             self.get_logger().info('⏰ Таймер истёк - переключение на talking (робот говорит)')
-            if self.player.load_animation(f'{self.talking_animation}.yaml'):
-                self.player.play()
-            else:
+            if not self.player.play_animation(f'{self.talking_animation}.yaml'):
                 self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
     def tts_state_callback(self, msg):
@@ -236,9 +236,7 @@ class AnimationPlayerNode(Node):
             if not self.is_robot_speaking:
                 self.get_logger().info('🗣️ Робот говорит - переключаюсь на talking анимацию')
                 self.is_robot_speaking = True
-                if self.player.load_animation(f'{self.talking_animation}.yaml'):
-                    self.player.play()
-                else:
+                if not self.player.play_animation(f'{self.talking_animation}.yaml'):
                     self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
         elif state in ['ready', 'idle', 'stopped']:
@@ -246,9 +244,7 @@ class AnimationPlayerNode(Node):
             if self.is_robot_speaking:
                 self.get_logger().info('🤐 Робот замолчал - возвращаюсь на idle анимацию')
                 self.is_robot_speaking = False
-                if self.player.load_animation(f'{self.idle_animation}.yaml'):
-                    self.player.play()
-                else:
+                if not self.player.play_animation(f'{self.idle_animation}.yaml'):
                     self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
 
     def play_callback(self, request, response):
