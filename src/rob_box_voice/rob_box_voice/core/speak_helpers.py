@@ -109,6 +109,7 @@ class EffectAwaiterRegistry:
     ) -> None:
         self._tts_events: Dict[str, Any] = {}
         self._tts_lock = threading.Lock()
+        self._tts_pending_count: int = 0  # issue #935 v2: deferred cleanup counter
         self._sound_done_event: Optional[Any] = None
         self._sound_lock = threading.Lock()
         self._release_tts = release_tts
@@ -122,9 +123,13 @@ class EffectAwaiterRegistry:
 
     @property
     def has_pending_tts(self) -> bool:
-        """True while at least one TTS chunk is still playing / synthesising."""
+        """True while at least one TTS chunk is still playing/synthesising."""
         with self._tts_lock:
-            return len(self._tts_events) > 0
+            return self._tts_pending_count > 0 or len(self._tts_events) > 0
+
+    def increment_tts_pending(self, count: int = 1) -> None:
+        with self._tts_lock:
+            self._tts_pending_count += count
 
     def pop_tts(self, speech_id: str) -> Optional[asyncio.Event]:  # type: ignore[type-arg]
         with self._tts_lock:
@@ -141,6 +146,9 @@ class EffectAwaiterRegistry:
             speech_id = json.loads(payload).get("speech_id", "")
         except (json.JSONDecodeError, TypeError, AttributeError):
             speech_id = (payload or "").strip()
+        with self._tts_lock:
+            if self._tts_pending_count > 0:
+                self._tts_pending_count -= 1
         if not speech_id:
             return
         event = self.pop_tts(speech_id)

@@ -393,14 +393,21 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
-        # Issue #935 v2: if music cleanup was deferred (beat was playing
-        # while TTS was speaking), publish it now that the last chunk
-        # has finished.
-        if self._pending_music_cleanup and not self._effects.has_pending_tts:
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="tts_finished")
+        # Issue #935 v2: if music cleanup was deferred, reset a short
+        # timer. When the timer fires (1s of TTS silence), publish cleanup.
+        if self._pending_music_cleanup:
+            if hasattr(self, '_cleanup_defer_timer') and self._cleanup_defer_timer:
+                self._cleanup_defer_timer.cancel()
+            self._cleanup_defer_timer = self.create_timer(
+                1.0, self._publish_deferred_cleanup
+            )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
+    def _publish_deferred_cleanup(self) -> None:
+        """Timer callback: publish deferred music cleanup."""
+        if self._pending_music_cleanup:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="tts_finished")
     def _dispatch_turn(self, user_input: str) -> None:
         asyncio.run_coroutine_threadsafe(self._run_turn(user_input), self._loop)
 
@@ -419,17 +426,14 @@ class DialogueNode(Node):
         finally:
             with self._task_lock:
                 self._run_task = None
-            # Issue #935: signal mcp_server to clean up music — but
-            # defer until TTS actually finishes speaking so the beat
-            # doesn't cut out mid-rap.  If no TTS is pending, publish
-            # immediately; otherwise _on_tts_finished will do it.
-            if self._effects.has_pending_tts:
-                self._pending_music_cleanup = True
-                self.get_logger().debug(
-                    "🎵 music_cleanup deferred — TTS still playing"
-                )
-            else:
-                self._publish_music_cleanup()
+            # Issue #935 v2: always defer music cleanup — the
+            # _on_tts_finished callback publishes it when TTS is
+            # truly done. Fallback timer ensures cleanup fires even
+            # when no TTS was queued (pure music-only turns).
+            self._pending_music_cleanup = True
+            self.get_logger().info(
+                "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
+            )
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 self._publish_state()
