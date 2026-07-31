@@ -35,6 +35,7 @@ jobs:
         with:
           sparse-checkout: .github/workflows/scripts/e2e_remote.sh
           sparse-checkout-cone-mode: false
+          clean: true
 
       - name: Install dependencies
         run: |
