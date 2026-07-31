@@ -35,6 +35,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq pulseaudio-utils ffmpeg sshpass
 
+      - name: Start PulseAudio
+        run: |
+          # Use ros2 user's PulseAudio session (user 1000)
+          export PULSE_RUNTIME_PATH=/run/user/1000/pulse
+          export XDG_RUNTIME_DIR=/run/user/1000
+          export PULSE_SERVER=unix:$PULSE_RUNTIME_PATH/native
+          if [ -S "$PULSE_RUNTIME_PATH/native" ]; then
+            echo "PulseAudio socket found at $PULSE_RUNTIME_PATH/native"
+          else
+            echo "ERROR: PulseAudio not running for user ros2 (uid 1000)"
+            exit 1
+          fi
+          pactl info | head -5
+
       - name: Pre-flight check
         run: |
           echo "=== Environment ==="
@@ -52,6 +66,10 @@ jobs:
           sleep 15
 
       - name: Record and play voice command
+        env:
+          PULSE_RUNTIME_PATH: /run/user/1000/pulse
+          PULSE_SERVER: unix:/run/user/1000/pulse/native
+          XDG_RUNTIME_DIR: /run/user/1000
         run: |
           RECORD_FILE="/tmp/dialog_e2e_${{ github.run_id }}.wav"
           echo "Recording to $RECORD_FILE for ${{ inputs.record_seconds }}s..."
