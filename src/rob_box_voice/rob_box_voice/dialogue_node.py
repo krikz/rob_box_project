@@ -189,7 +189,9 @@ class DialogueNode(Node):
                       "r", encoding="utf-8") as fh:
                 prompt = fh.read()
             self.get_logger().info(
-                f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes)")
+                f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes) "
+                f"from {os.path.join(pkg, 'prompts', prompt_file)}\n"
+                f"   first line: {prompt.split(chr(10))[0][:120]!r}")
             return prompt
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
@@ -447,19 +449,6 @@ class DialogueNode(Node):
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
         spoken = strip_history_marker(result.spoken_text or "")
-        # Issue #942: suppress post-amble chatter after rap/poem.
-        # LLM often ignores "AFTER RAP — SILENCE" and adds commentary.
-        # Detect common patterns and replace with empty/done.
-        _POST_AMBLE_PATTERNS = [
-            "Готово", "Зачитал тебе", "Я прочитал", "Вот что прозвучало",
-            "Я только что", "Надеюсь", "🔥", "Want more", "How was that",
-        ]
-        if spoken and any(p in spoken for p in _POST_AMBLE_PATTERNS):
-            self.get_logger().info(
-                f"🤫 Post-amble suppressed: {spoken[:100]!r}"
-            )
-            # Don't publish anything — rap was already spoken via speak_text
-            return
         if not spoken:
             self.get_logger().warning("⚠️ Empty assistant response — fallback")
             spoken = "Что-то я задумался, повтори пожалуйста"
