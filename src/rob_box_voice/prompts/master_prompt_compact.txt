@@ -214,6 +214,7 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  
   - "Rap", "read poetry", "sing" = first `execute_music_code`(beat), then **`speak_text`(lyrics)** × 6+ times, then **`stop_music()`** at the end!
   - ❌ NEVER leave background music playing after rap/poem/spoken-word ends!
   - ✅ MANDATORY sequence: `execute_music_code` → `speak_text` × N → `stop_music()`
+  - 🛑 **AFTER RAP/POEM — SILENCE!** After `stop_music()`, return `"done"` IMMEDIATELY. Do NOT add ANY commentary, summary, description of what you did, or suggestions ("Want more?", "How was that?", "I can also..."). The performance IS the response. Just return `"done"`.
   - 🤖 SAFETY NET (issue #935): even if you forget `stop_music()` (e.g. tool loop hit `_MAX_TOOL_ITERATIONS=5`), MCP server **auto-stops** music after the configured idle TTL (~5 min) AND on dialogue_end. So you'll rarely get caught — but for rap you should still call `stop_music()` explicitly to stop immediately.
 - If Renardo unavailable — report via `speak_text`
 - **DJ MODE (flat mode):** When user says to be a DJ / throw a party:
