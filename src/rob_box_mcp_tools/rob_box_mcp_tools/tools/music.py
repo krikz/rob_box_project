@@ -536,15 +536,14 @@ class MusicManager:
             self._pattern_history[pattern_name] = code
             self._active_patterns.add(pattern_name)
 
-        # Stamp music-session lifecycle (issue #935). Only mark activity when
-        # at least one pattern was started in this call (i.e. we're not in an
-        # idempotent no-op).
-        if pattern_name and pattern_name in self._active_patterns:
-            now = time.monotonic()
-            self._last_music_activity_at = now
-            # session_open: only start a "session" on the *first* pattern this run.
-            if self._music_session_active_since is None:
-                self._music_session_active_since = now
+        # Stamp music-session lifecycle (issue #935). Always mark activity
+        # when code executes successfully — even without pattern_name — so
+        # the safety nets (dialogue-end hook + watchdog) can stop music that
+        # the LLM started but didn't name.
+        now = time.monotonic()
+        self._last_music_activity_at = now
+        if self._music_session_active_since is None:
+            self._music_session_active_since = now
 
         return {"success": True, "message": "Код выполнен успешно", "code": code}
 
@@ -815,8 +814,12 @@ class MusicManager:
             "active_patterns": list(self._active_patterns),
             "auto_stop_count": self._auto_stop_count,
         }
-        # Fast path: nothing playing → don't even compute idle time.
-        if not self._active_patterns or self._last_music_activity_at is None:
+        # Fast path: no music activity recorded → nothing to auto-stop.
+        # NOTE: deliberately *not* gating on _active_patterns — the LLM
+        # may have executed music code without a pattern_name (issue #935
+        # regression), so _active_patterns can be empty while music IS
+        # playing.  We rely on _last_music_activity_at alone.
+        if self._last_music_activity_at is None:
             return result
         idle = now_m - self._last_music_activity_at
         result["idle_seconds"] = idle
@@ -836,29 +839,30 @@ class MusicManager:
         """Force-stop all music when the dialogue ends.
 
         Convenience hook for DialogCore / dialogue_node to call on
-        DIALOGUE_END. Always returns a dict describing whether anything
-        was stopped (issue #935: dialog "виходит" без stop_music → музыка
-        зацикливается — теперь dialog-end hook автоматически чистит).
+        DIALOGUE_END. Always calls ``stop_all()`` unconditionally — the
+        LLM may have started music without a ``pattern_name``, in which
+        case ``_active_patterns`` is empty but music IS playing (issue #935
+        regression: safety net was blind to unnamed patterns).
+
+        ``stop_all()`` is idempotent and safe to call even when nothing is
+        playing.
 
         Returns:
             dict with keys ``was_active`` (bool), ``stopped_patterns``
             (list[str]), ``message`` (str).
         """
-        if not self._active_patterns:
-            return {
-                "was_active": False,
-                "stopped_patterns": [],
-                "message": "Нет активной музыки для остановки",
-            }
-        stopped = list(self._active_patterns)
+        was_active = self._music_session_active_since is not None
+        stopped = list(self._active_patterns)  # may be empty (unnamed patterns)
         result = self.stop_all()
         return {
-            "was_active": True,
+            "was_active": was_active,
             "stopped_patterns": stopped,
             "stop_result": result,
             "message": (
-                f"Диалог завершился с активной музыкой ({len(stopped)} паттернов). "
-                f"Автоматический stop_music сработал (issue #935)."
+                f"Диалог завершился с активной музыкой ({len(stopped)} именованных, "
+                f"+ безымянные паттерны). Автоматический stop_music сработал (issue #935)."
+            ) if was_active else (
+                "Активной музыки не обнаружено — stop_all вызван профилактически (issue #935)."
             ),
         }
 

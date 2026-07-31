@@ -243,6 +243,11 @@ class MCPServer(Node):
                 f"🎵 [{reason}] Авто-стоп {len(result.get('stopped_patterns', []))} "
                 f"активных паттернов (issue #935). msg={result.get('message')}"
             )
+        else:
+            self.get_logger().info(
+                f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
+                f"(stop_all вызван профилактически). msg={result.get('message')}"
+            )
 
     def _run_music_watchdog(self) -> None:
         """Timer callback: auto-stop idle music when TTL is exceeded."""

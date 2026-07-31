@@ -256,6 +256,10 @@ class TestMusicManagerExecuteCode:
 
     def test_execute_fails_if_renardo_not_available(self):
         mgr = _make_manager(sc_running=True, renardo_available=False)
+        # Must mock _ensure_renardo_available — the real method calls
+        # _initialize_renardo() which may succeed on machines where
+        # Renardo is installed, overriding the manual False setting.
+        mgr._ensure_renardo_available = Mock(return_value=False)
         result = mgr.execute_code("p1 >> pluck([0])")
         assert result["success"] is False
         assert "Renardo" in result["error"]
@@ -853,15 +857,18 @@ class TestMusicSessionLifecycle:
             mgr._music_session_active_since <= mgr._last_music_activity_at
         )
 
-    def test_execute_code_without_pattern_does_not_open_session(self):
-        """Clock.bpm = N (no pattern_name) should not start a music session."""
+    def test_execute_code_without_pattern_opens_session(self):
+        """Any successful code execution (even without pattern_name) stamps
+        lifecycle timestamps so safety nets can stop unnamed music (issue #935 fix)."""
         mgr = _make_manager(sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
             result = mgr.execute_code("Clock.bpm = 120")
         assert result["success"] is True
-        # No active patterns, so session should NOT be opened.
-        assert mgr._music_session_active_since is None
-        assert mgr._last_music_activity_at is None
+        # Session IS opened — safety nets need the timestamps even for unnamed code.
+        assert mgr._music_session_active_since is not None
+        assert mgr._last_music_activity_at is not None
+        # But _active_patterns stays empty (no pattern_name given).
+        assert len(mgr._active_patterns) == 0
 
     def test_execute_code_continues_existing_session(self):
         """Second execute keeps session_open but bumps last_activity."""
@@ -906,12 +913,42 @@ class TestMusicSessionLifecycle:
 
     def test_auto_stop_is_noop_when_inactive(self):
         mgr = _make_manager()
-        # Nothing is playing → must NOT increment counter / touch state.
+        # Nothing was ever executed → _last_music_activity_at is None → no-op.
         result = mgr.auto_stop_idle_music()
         assert result["stopped"] is False
         assert result["active_patterns"] == []
         assert result["auto_stop_count"] == 0
         assert result["idle_seconds"] is None
+
+    def test_auto_stop_works_with_unnamed_patterns(self):
+        """Issue #935 regression: auto_stop must work even when the LLM
+        executed music code without a pattern_name (active_patterns empty)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # Simulate: music was executed, but without pattern_name.
+        mgr._last_music_activity_at = 100.0
+        mgr._music_session_active_since = 100.0
+        # _active_patterns is empty — the exact bug scenario.
+        assert len(mgr._active_patterns) == 0
+        # Idle for 400 s, TTL=300 s → should auto-stop.
+        result = mgr.auto_stop_idle_music(now=500.0)
+        assert result["stopped"] is True
+        assert result["auto_stop_count"] == 1
+
+    def test_stop_music_on_session_end_always_calls_stop_all(self):
+        """Issue #935 regression: stop_music_on_session_end must call stop_all
+        even when _active_patterns is empty (unnamed patterns)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # Simulate: music was executed without pattern_name.
+        mgr._last_music_activity_at = 100.0
+        mgr._music_session_active_since = 100.0
+        assert len(mgr._active_patterns) == 0
+        # Should still report was_active=True and call stop_all().
+        result = mgr.stop_music_on_session_end()
+        assert result["was_active"] is True
+        # After stop_all, session is reset.
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+        assert mgr._last_stop_at is not None
 
     def test_auto_stop_is_noop_when_within_ttl(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -986,7 +1023,8 @@ class TestMusicSessionLifecycle:
         result = mgr.stop_music_on_session_end()
         assert result["was_active"] is False
         assert result["stopped_patterns"] == []
-        assert "Нет активной" in result["message"]
+        # Always calls stop_all (prophylactic), message reflects that.
+        assert "профилактически" in result["message"]
 
     def test_session_end_hook_stops_active_music(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -1011,9 +1049,7 @@ class TestMusicSessionLifecycle:
         first = mgr.stop_music_on_session_end()
         second = mgr.stop_music_on_session_end()
         assert first["was_active"] is True
+        # Second call: session already closed, but stop_all still called.
         assert second["was_active"] is False
-        assert second == {
-            "was_active": False,
-            "stopped_patterns": [],
-            "message": "Нет активной музыки для остановки",
-        }
+        assert second["stopped_patterns"] == []
+        assert "профилактически" in second["message"]
