@@ -44,8 +44,7 @@ jobs:
       - name: Pre-flight check
         run: |
           echo "=== Environment ==="
-          echo "PulseAudio: $(pactl info | grep 'Server Name' || echo 'NOT RUNNING')"
-          echo "Default sink: $(pactl get-default-sink || echo 'NONE')"
+          sudo -u ros2 env PULSE_RUNTIME_PATH=/run/user/1000/pulse XDG_RUNTIME_DIR=/run/user/1000 pactl info | head -3
           echo "=== Robot status ==="
           sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
             "docker ps --filter name=voice-assistant --format '{{.Status}}'" || echo "UNREACHABLE"
@@ -62,22 +61,25 @@ jobs:
           RECORD_FILE="/tmp/dialog_e2e_${{ github.run_id }}.wav"
           echo "Recording to $RECORD_FILE for ${{ inputs.record_seconds }}s..."
 
-          # Start recording as ros2 user (has PA access)
-          sudo -u ros2 timeout ${{ inputs.record_seconds }} parec \
+          # Helper: run commands as ros2 with PA environment
+          function r2() { sudo -u ros2 env "PULSE_RUNTIME_PATH=/run/user/1000/pulse" "XDG_RUNTIME_DIR=/run/user/1000" "PATH=$PATH" "$@"; }
+
+          # Start recording as ros2 user
+          r2 timeout ${{ inputs.record_seconds }} parec \
             --format=s16le --channels=1 --rate=16000 \
             "$RECORD_FILE" &
           RECORD_PID=$!
           sleep 2
 
-          # EQ processing + play as ros2 user
+          # EQ processing (no PA needed)
           echo "Processing voice with EQ..."
           ffmpeg -y -i ${{ inputs.voice_file }} \
             -af 'highpass=f=200,volume=1.5,alimiter=limit=0.95' \
             -ac 1 -ar 16000 /tmp/voice_eq.wav 2>&1 | tail -1
 
-          sudo -u ros2 pactl set-sink-volume @DEFAULT_SINK@ ${{ inputs.volume }}%
+          r2 pactl set-sink-volume @DEFAULT_SINK@ ${{ inputs.volume }}%
           echo "Playing voice command..."
-          sudo -u ros2 paplay /tmp/voice_eq.wav && echo "PLAY_DONE" || echo "PLAY_FAIL"
+          r2 paplay /tmp/voice_eq.wav && echo "PLAY_DONE" || echo "PLAY_FAIL"
 
           # Wait for robot response
           echo "Waiting for robot response..."
