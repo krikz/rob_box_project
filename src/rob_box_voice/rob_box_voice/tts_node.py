@@ -1339,10 +1339,11 @@ class TTSNode(Node):
                     self.publish_state("ready")
 
                     # Публикуем ошибку для MCP tools и animation_player
-                    if speech_id:
+                    sid = speech_id or self.current_speech_id
+                    if sid:
                         finished_msg = String()
                         finished_msg.data = json.dumps(
-                            {"speech_id": speech_id, "success": False, "error": "Device unavailable"},
+                            {"speech_id": sid, "success": False, "error": "Device unavailable"},
                             ensure_ascii=False,
                         )
                         self.finished_pub.publish(finished_msg)
@@ -1364,17 +1365,20 @@ class TTSNode(Node):
                 self.publish_state("stopped")
                 self.get_logger().warn("🔇 Воспроизведение прервано")
                 # Публикуем ошибку для MCP tools
-                if speech_id:
+                sid = speech_id or self.current_speech_id
+                if sid:
                     finished_msg = String()
                     finished_msg.data = json.dumps(
-                        {"speech_id": speech_id, "success": False, "error": "stopped"}, ensure_ascii=False
+                        {"speech_id": sid, "success": False, "error": "stopped"}, ensure_ascii=False
                     )
                     self.finished_pub.publish(finished_msg)
             else:
                 self.publish_state("ready")
                 self.get_logger().info("✅ Воспроизведение завершено")
                 # Публикуем успех для MCP tools (#949: включаем duration_sec для аранжировки)
-                if speech_id:
+                # Используем self.current_speech_id на случай если локальный speech_id=None
+                sid = speech_id or self.current_speech_id
+                if sid:
                     finished_msg = String()
                     finished_msg.data = json.dumps(
                         {
@@ -1385,7 +1389,7 @@ class TTSNode(Node):
                         ensure_ascii=False,
                     )
                     self.get_logger().info(
-                        f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., "
+                        f"📢 Публикую TTS finished event: speech_id={sid[:8]}..., "
                         f"success=True, duration={raw_duration_sec}s"
                     )
                     self.finished_pub.publish(finished_msg)
@@ -1399,10 +1403,11 @@ class TTSNode(Node):
             self.get_logger().error(f"❌ Synthesis error: {e}")
             self.publish_state("ready")
             # Публикуем ошибку для MCP tools
-            if speech_id:
+            sid = speech_id or self.current_speech_id
+            if sid:
                 finished_msg = String()
                 finished_msg.data = json.dumps(
-                    {"speech_id": speech_id, "success": False, "error": str(e)}, ensure_ascii=False
+                    {"speech_id": sid, "success": False, "error": str(e)}, ensure_ascii=False
                 )
                 self.finished_pub.publish(finished_msg)
             # Очищаем processing_dialogue_id при ошибке
