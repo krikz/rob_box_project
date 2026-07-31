@@ -403,7 +403,7 @@ class DialogueNode(Node):
     def _schedule_deferred_cleanup(self) -> None:
         """Schedule deferred music cleanup after 1.0s TTS silence."""
         async def _deferred():
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(3.0)
             self._publish_deferred_cleanup()
         if hasattr(self, '_cleanup_defer_task') and self._cleanup_defer_task:
             self._cleanup_defer_task.cancel()
