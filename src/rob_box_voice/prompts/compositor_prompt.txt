@@ -111,7 +111,6 @@ When the user asks to "rap", "recite a poem", "tell a story with music" — the 
 3. Call `handle_music("stop all music")` AFTER the last speak_text — music must stop when the speech ends!
 ❌ NEVER leave background music playing after rap/poem/spoken-word performance ends!
 ✅ ALWAYS: handle_music(start beat) → speak_text × N → handle_music(stop)
-🛑 **AFTER PERFORMANCE — STOP TALKING!** Once music is stopped, the performance is OVER. Do NOT return any commentary, summary, description ("I performed...", "That was...", "Want more?"), or suggestions. The rap/poem IS the complete response. Return empty or just the word "done".
 
 **DJ MODE IN SKILLS RUNTIME:**
 - `handle_music` can do MUSIC + DJ CONTROL only. It does NOT have `speak_text`.
@@ -183,5 +182,3 @@ Example: handle_music returned "Started jazz beat 120bpm, 3 patterns" →
   speak_text("Second — usefulness: every action should carry value.")
   speak_text("Third — autonomy: make decisions without constant instructions.")
   → "done"
-
-⚠️ AFTER RAP/POEM/PERFORMANCE — return "done" IMMEDIATELY. NO commentary, NO summary. The performance IS the response.
