@@ -336,7 +336,7 @@ class STTNode(Node):
                         )
                     ),
                     text_normalization=stt_pb2.TextNormalizationOptions(
-                        text_normalization=stt_pb2.TextNormalizationOptions.TEXT_NORMALIZATION_ENABLED,
+                        text_normalization=stt_pb2.TextNormalizationOptions.TEXT_NORMALIZATION_DISABLED,
                         profanity_filter=False,
                         literature_text=False
                     ),
