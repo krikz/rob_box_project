@@ -81,9 +81,8 @@ jobs:
         env:
           SSHPASS: open
         run: |
-          RID="${{ github.run_id }}"
-          sshpass -e scp -o StrictHostKeyChecking=no "ros2@10.1.1.249:/tmp/dialog_e2e_${RID}.wav" "/tmp/dialog_e2e_${RID}.wav"
-          ls -la "/tmp/dialog_e2e_${RID}.wav"
+          sshpass -e scp -o StrictHostKeyChecking=no "ros2@10.1.1.249:/tmp/dialog_e2e_${{ github.run_id }}.wav" "/tmp/dialog_e2e_${{ github.run_id }}.wav"
+          ls -la "/tmp/dialog_e2e_${{ github.run_id }}.wav"
 
       - name: Collect robot logs
         env:
