@@ -404,14 +404,13 @@ class DialogueNode(Node):
         finally:
             with self._task_lock:
                 self._run_task = None
+            # Issue #935: always signal mcp_server to clean up music.
+            # Don't gate on DIALOGUE state — state may already be IDLE
+            # due to async timing.
+            self._publish_music_cleanup()
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 self._publish_state()
-                # Issue #935: signal mcp_server to clean up any music that
-                # the LLM forgot to stop after rap/poem/spoken-word.
-                # Idempotent — only logs/acts when music is actually
-                # playing (no-op on silent turns).
-                self._publish_music_cleanup()
     def _handle_result(self, result: DialogResult) -> None:
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
@@ -441,12 +440,14 @@ class DialogueNode(Node):
         ``MusicManager.stop_music_on_session_end()``.
         """
         if getattr(self, "_music_cleanup_pub", None) is None:
+            self.get_logger().debug("music_cleanup publisher not available")
             return
         try:
             payload = json.dumps({"reason": reason})
             msg = String()
             msg.data = payload
             self._music_cleanup_pub.publish(msg)
+            self.get_logger().info(f"music_cleanup sent: reason={reason}")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
