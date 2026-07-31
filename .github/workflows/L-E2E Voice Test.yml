@@ -4,23 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Target environment'
+        description: Target environment
         required: true
-        default: 'test'
+        default: test
         type: choice
         options:
           - test
           - staging
       voice_file:
-        description: 'Voice command file path on build machine'
+        description: Voice command file on build machine
         required: false
-        default: '/tmp/voice_new.ogg'
+        default: /tmp/voice_new.ogg
       volume:
-        description: 'Speaker volume (percent)'
+        description: Speaker volume percent
         required: false
         default: '125'
       record_seconds:
-        description: 'Recording duration (seconds)'
+        description: Recording duration seconds
         required: false
         default: '90'
 
@@ -30,66 +30,70 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/workflows/scripts/e2e_remote.sh
+          sparse-checkout-cone-mode: false
+
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg sshpass
 
       - name: Pre-flight check
+        env:
+          SSHPASS: open
         run: |
-          echo "=== Host PA ==="
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "pactl info | head -3"
-          echo "=== Robot status ==="
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
-            "docker ps --filter name=voice-assistant --format '{{.Status}}'" || echo "UNREACHABLE"
-          echo "=== Voice file ==="
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "ls -la ${{ inputs.voice_file }}" || echo "NOT FOUND"
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "docker ps --filter name=voice-assistant --format '{{.Status}}'"
 
       - name: Wait for silence
         run: |
-          echo "Waiting 15s for robot to finish any current speech..."
+          echo "Wait 15s for silence..."
           sleep 15
 
-      - name: Record and play via SSH
+      - name: E2E voice test
+        env:
+          SSHPASS: open
         run: |
+          chmod +x .github/workflows/scripts/e2e_remote.sh
           RID="${{ github.run_id }}"
-          REC="dialog_e2e_${RID}.wav"
-          S="sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.249"
+          DUR="${{ inputs.record_seconds }}"
+          VOL="${{ inputs.volume }}"
+          REC="/tmp/dialog_e2e_${RID}.wav"
 
-          echo "Starting recording..."
-          $S "timeout ${{ inputs.record_seconds }} parec --format=s16le --channels=1 --rate=16000 /tmp/$REC" &
-          RECPID=$!
-          sleep 3
+          # Copy script to build machine
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_remote.sh ros2@10.1.1.249:/tmp/e2e_remote.sh
 
-          echo "EQ + play..."
-          $S "ffmpeg -y -i /tmp/voice_new.ogg -af highpass=f=200,volume=1.5,alimiter=limit=0.95 -ac 1 -ar 16000 /tmp/voice_eq.wav" 2>/dev/null
-          $S "pactl set-sink-volume @DEFAULT_SINK@ ${{ inputs.volume }}%"
-          $S "paplay /tmp/voice_eq.wav && echo PLAY_DONE || echo PLAY_FAIL"
+          # Run via nohup
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+            "nohup /tmp/e2e_remote.sh ${REC} ${DUR} ${VOL} > /tmp/e2e_out.log 2>&1 &"
 
-          echo "Waiting for robot response..."
-          sleep 80
+          WAIT=$((DUR + 25))
+          echo "Waiting ${WAIT}s..."
+          sleep ${WAIT}
 
-          kill $RECPID 2>/dev/null || true
-          wait $RECPID 2>/dev/null || true
-          echo "Recording done"
+          echo "=== Remote output ==="
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_out.log"
 
       - name: Fetch recording
+        env:
+          SSHPASS: open
         run: |
           RID="${{ github.run_id }}"
-          REC="dialog_e2e_${RID}.wav"
-          sshpass -p 'open' scp -o StrictHostKeyChecking=no \
-            ros2@10.1.1.249:/tmp/$REC /tmp/$REC
-          ls -la /tmp/$REC
+          sshpass -e scp -o StrictHostKeyChecking=no "ros2@10.1.1.249:/tmp/dialog_e2e_${RID}.wav" "/tmp/dialog_e2e_${RID}.wav"
+          ls -la "/tmp/dialog_e2e_${RID}.wav"
 
       - name: Collect robot logs
+        env:
+          SSHPASS: open
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
             "docker logs voice-assistant --since 10m 2>&1" > "$LOG" || \
-            echo "Failed to collect logs" > "$LOG"
+            echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
 
       - name: Upload recording
@@ -111,4 +115,3 @@ jobs:
           echo "## E2E Voice Test Complete" >> $GITHUB_STEP_SUMMARY
           echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- Volume: ${{ inputs.volume }}%" >> $GITHUB_STEP_SUMMARY
-          echo "- Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
