@@ -1,4 +1,4 @@
-name: L - E2E Voice Test
+name: 'L: E2E Voice Test'
 
 on:
   workflow_dispatch:
