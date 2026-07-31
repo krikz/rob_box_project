@@ -1,0 +1,69 @@
+2026-07-21 10:42:52,699 run_bench INFO Starting MiniMax TTS audio test bench
+2026-07-21 10:42:52,700 run_bench INFO   fixtures: /home/builder/hermes-share/rob_box_project/tts_audio_bench/fixtures
+2026-07-21 10:42:52,704 run_bench INFO   artifacts: /home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts
+2026-07-21 10:42:52,705 run_bench INFO   mock port: 18080
+2026-07-21 10:42:52,774 mock_minimax INFO mock_minimax listening on http://127.0.0.1:18080 (fixtures=/home/builder/hermes-share/rob_box_project/tts_audio_bench/fixtures)
+2026-07-21 10:42:52,788 mock_minimax INFO mock_minimax listening on http://127.0.0.1:18090 (fixtures=/home/builder/hermes-share/rob_box_project/tts_audio_bench/fixtures)
+2026-07-21 10:42:53,430 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:42:53,438 httpx INFO HTTP Request: POST http://127.0.0.1:18080/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:42:53,455 rob_box_llm.providers.minimax_tts INFO minimax TTS: 32000 samples @ 32000 Hz (model=speech-02-hd, voice=male-qn-qingse, fmt=pcm)
+2026-07-21 10:42:56,068 run_bench INFO     [real_subscriber] frames=1 bytes=32000 sr=16000 ch=1 sw=2 ffprobe_ok=True
+2026-07-21 10:42:56,071 run_bench INFO [OK] format_pcm
+2026-07-21 10:42:56,073 run_bench INFO     TTFA=700.3 ms, chunks=1, bytes=32000, joints_ok=True
+2026-07-21 10:42:56,235 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:42:56,240 httpx INFO HTTP Request: POST http://127.0.0.1:18080/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:42:56,248 rob_box_llm.providers.minimax_tts INFO minimax TTS: 32022 samples @ 32000 Hz (model=speech-02-hd, voice=male-qn-qingse, fmt=wav)
+2026-07-21 10:42:57,743 run_bench INFO     [real_subscriber] frames=1 bytes=32000 sr=16000 ch=1 sw=2 ffprobe_ok=True
+2026-07-21 10:42:57,743 run_bench INFO [OK] format_wav
+2026-07-21 10:42:57,744 run_bench INFO     TTFA=189.9 ms, chunks=1, bytes=32000, joints_ok=True
+2026-07-21 10:42:57,859 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:42:57,861 httpx INFO HTTP Request: POST http://127.0.0.1:18080/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:42:57,877 rob_box_llm.providers.minimax_tts INFO minimax TTS: 4342 samples @ 32000 Hz (model=speech-02-hd, voice=male-qn-qingse, fmt=mp3)
+2026-07-21 10:43:01,332 run_bench INFO     [real_subscriber] frames=1 bytes=32000 sr=16000 ch=1 sw=2 ffprobe_ok=True
+2026-07-21 10:43:01,339 run_bench INFO [OK] format_mp3
+2026-07-21 10:43:01,339 run_bench INFO     TTFA=1241.9 ms, chunks=1, bytes=32000, joints_ok=True
+2026-07-21 10:43:01,467 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:43:01,473 httpx INFO HTTP Request: POST http://127.0.0.1:18080/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:43:01,477 rob_box_llm.providers.minimax_tts INFO minimax TTS: 4342 samples @ 32000 Hz (model=speech-02-hd, voice=male-qn-qingse, fmt=mp3)
+2026-07-21 10:43:06,773 run_bench INFO     [real_subscriber] frames=1 bytes=32000 sr=16000 ch=1 sw=2 ffprobe_ok=True
+2026-07-21 10:43:06,780 run_bench INFO [OK] format_ogg
+2026-07-21 10:43:06,780 run_bench INFO     TTFA=2182.8 ms, chunks=1, bytes=32000, joints_ok=True
+2026-07-21 10:43:06,974 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:43:06,981 httpx INFO HTTP Request: POST http://127.0.0.1:18090/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:43:08,668 run_bench INFO     [real_subscriber] frames=4 bytes=32000 sr=16000 ch=1 sw=2 ffprobe_ok=True
+2026-07-21 10:43:08,669 run_bench INFO [OK] streaming_ttfa_pcm (TTFA=203.7 ms, chunks=4)
+2026-07-21 10:43:08,680 mock_minimax INFO mock_minimax listening on http://127.0.0.1:18081 (fixtures=/home/builder/hermes-share/rob_box_project/tts_audio_bench/fixtures)
+2026-07-21 10:43:08,895 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:43:08,899 httpx INFO HTTP Request: POST http://127.0.0.1:18081/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:43:08,907 tts_node WARNING ⏳ MiniMax retry 1/1 after 0.00s (TTSRateLimitError: minimax API error 1003: rate limit exceeded)
+2026-07-21 10:43:08,923 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:43:08,924 httpx INFO HTTP Request: POST http://127.0.0.1:18081/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:43:08,930 tts_node ERROR MiniMax exhausted 2/2 attempts: minimax API error 1003: rate limit exceeded
+2026-07-21 10:43:09,431 run_bench INFO [OK] rate_limit_exhausted (raised expected: TTSRateLimitError: minimax API error 1003: rate limit exceeded)
+2026-07-21 10:43:09,436 mock_minimax INFO mock_minimax listening on http://127.0.0.1:18082 (fixtures=/home/builder/hermes-share/rob_box_project/tts_audio_bench/fixtures)
+2026-07-21 10:43:09,508 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:43:09,510 httpx INFO HTTP Request: POST http://127.0.0.1:18082/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:43:09,515 tts_node ERROR MiniMax auth error, NO retry: minimax API error 1001: invalid api key
+2026-07-21 10:43:10,011 run_bench INFO [OK] auth_forbidden (raised expected: TTSAuthError: minimax API error 1001: invalid api key)
+2026-07-21 10:43:10,021 mock_minimax INFO mock_minimax listening on http://127.0.0.1:18083 (fixtures=/home/builder/hermes-share/rob_box_project/tts_audio_bench/fixtures)
+2026-07-21 10:43:10,125 mock_minimax INFO mock_minimax: "POST /v1/t2a_v2?GroupId=test-group HTTP/1.1" 200 -
+2026-07-21 10:43:10,131 httpx INFO HTTP Request: POST http://127.0.0.1:18083/v1/t2a_v2?GroupId=%3Credacted%3E "HTTP/1.0 200 OK"
+2026-07-21 10:43:10,138 tts_node ERROR MiniMax bad-request, NO retry: minimax API error 1002: invalid voice_id
+2026-07-21 10:43:10,632 run_bench INFO [OK] bad_request (raised expected: TTSBadRequestError: minimax API error 1002: invalid voice_id)
+2026-07-21 10:43:11,492 run_bench INFO ================================================================
+2026-07-21 10:43:11,492 run_bench INFO Bench summary: 8/8 scenarios passed
+2026-07-21 10:43:11,493 run_bench INFO   [OK] format_pcm
+2026-07-21 10:43:11,493 run_bench INFO        ttfa=700.3ms chunks=1 bytes=32000 sr=16000
+2026-07-21 10:43:11,493 run_bench INFO   [OK] format_wav
+2026-07-21 10:43:11,493 run_bench INFO        ttfa=189.9ms chunks=1 bytes=32000 sr=16000
+2026-07-21 10:43:11,493 run_bench INFO   [OK] format_mp3
+2026-07-21 10:43:11,493 run_bench INFO        ttfa=1241.9ms chunks=1 bytes=32000 sr=16000
+2026-07-21 10:43:11,493 run_bench INFO   [OK] format_ogg
+2026-07-21 10:43:11,493 run_bench INFO        ttfa=2182.8ms chunks=1 bytes=32000 sr=16000
+2026-07-21 10:43:11,494 run_bench INFO   [OK] streaming_ttfa_pcm
+2026-07-21 10:43:11,494 run_bench INFO        ttfa=203.7ms chunks=4 bytes=32000 sr=16000
+2026-07-21 10:43:11,494 run_bench INFO   [OK] rate_limit_exhausted
+2026-07-21 10:43:11,494 run_bench INFO   [OK] auth_forbidden
+2026-07-21 10:43:11,494 run_bench INFO   [OK] bad_request
+2026-07-21 10:43:11,494 run_bench INFO ================================================================
+2026-07-21 10:43:11,508 run_bench INFO Wrote summary to /home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts/bench-summary.json

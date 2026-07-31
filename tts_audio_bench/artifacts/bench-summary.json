@@ -1,0 +1,234 @@
+{
+  "passed": 8,
+  "total": 8,
+  "results": [
+    {
+      "name": "format_pcm",
+      "ok": true,
+      "duration_s": 3.282615887990687,
+      "ttfa_ms": 700.2939170051832,
+      "chunks": 1,
+      "bytes_total": 32000,
+      "sample_rate": 16000,
+      "joints_ok": true,
+      "joints_max_jump": 3392,
+      "error": null,
+      "artifact": "tts_audio_bench/artifacts/format_pcm.wav",
+      "extra": {
+        "real_subscriber": {
+          "wav": "tts_audio_bench/artifacts/format_pcm_real_subscriber.wav",
+          "report": {
+            "ok": true,
+            "frames": 1,
+            "bytes_total": 32000,
+            "samples": 16000,
+            "duration_s": 1.0,
+            "sample_rate": 16000,
+            "channels": 1,
+            "sample_width": 2,
+            "wav_path": "/home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts/format_pcm_real_subscriber.wav",
+            "first_frame_at_s": 0.0,
+            "last_frame_at_s": 0.0,
+            "ffprobe_ok": true,
+            "ffprobe_sample_rate": "16000",
+            "ffprobe_channels": 1,
+            "ffprobe_codec_name": "pcm_s16le"
+          },
+          "bytes_total": 32000,
+          "frames": 1
+        }
+      }
+    },
+    {
+      "name": "format_wav",
+      "ok": true,
+      "duration_s": 1.6691347660089377,
+      "ttfa_ms": 189.90857401513495,
+      "chunks": 1,
+      "bytes_total": 32000,
+      "sample_rate": 16000,
+      "joints_ok": true,
+      "joints_max_jump": 3392,
+      "error": null,
+      "artifact": "tts_audio_bench/artifacts/format_wav.wav",
+      "extra": {
+        "real_subscriber": {
+          "wav": "tts_audio_bench/artifacts/format_wav_real_subscriber.wav",
+          "report": {
+            "ok": true,
+            "frames": 1,
+            "bytes_total": 32000,
+            "samples": 16000,
+            "duration_s": 1.0,
+            "sample_rate": 16000,
+            "channels": 1,
+            "sample_width": 2,
+            "wav_path": "/home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts/format_wav_real_subscriber.wav",
+            "first_frame_at_s": 0.0,
+            "last_frame_at_s": 0.0,
+            "ffprobe_ok": true,
+            "ffprobe_sample_rate": "16000",
+            "ffprobe_channels": 1,
+            "ffprobe_codec_name": "pcm_s16le"
+          },
+          "bytes_total": 32000,
+          "frames": 1
+        }
+      }
+    },
+    {
+      "name": "format_mp3",
+      "ok": true,
+      "duration_s": 3.59468430900597,
+      "ttfa_ms": 1241.9164520106278,
+      "chunks": 1,
+      "bytes_total": 32000,
+      "sample_rate": 16000,
+      "joints_ok": true,
+      "joints_max_jump": 3270,
+      "error": null,
+      "artifact": "tts_audio_bench/artifacts/format_mp3.wav",
+      "extra": {
+        "real_subscriber": {
+          "wav": "tts_audio_bench/artifacts/format_mp3_real_subscriber.wav",
+          "report": {
+            "ok": true,
+            "frames": 1,
+            "bytes_total": 32000,
+            "samples": 16000,
+            "duration_s": 1.0,
+            "sample_rate": 16000,
+            "channels": 1,
+            "sample_width": 2,
+            "wav_path": "/home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts/format_mp3_real_subscriber.wav",
+            "first_frame_at_s": 0.0,
+            "last_frame_at_s": 0.0,
+            "ffprobe_ok": true,
+            "ffprobe_sample_rate": "16000",
+            "ffprobe_channels": 1,
+            "ffprobe_codec_name": "pcm_s16le"
+          },
+          "bytes_total": 32000,
+          "frames": 1
+        }
+      }
+    },
+    {
+      "name": "format_ogg",
+      "ok": true,
+      "duration_s": 5.44066853899858,
+      "ttfa_ms": 2182.7990150195546,
+      "chunks": 1,
+      "bytes_total": 32000,
+      "sample_rate": 16000,
+      "joints_ok": true,
+      "joints_max_jump": 3270,
+      "error": null,
+      "artifact": "tts_audio_bench/artifacts/format_ogg.wav",
+      "extra": {
+        "real_subscriber": {
+          "wav": "tts_audio_bench/artifacts/format_ogg_real_subscriber.wav",
+          "report": {
+            "ok": true,
+            "frames": 1,
+            "bytes_total": 32000,
+            "samples": 16000,
+            "duration_s": 1.0,
+            "sample_rate": 16000,
+            "channels": 1,
+            "sample_width": 2,
+            "wav_path": "/home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts/format_ogg_real_subscriber.wav",
+            "first_frame_at_s": 0.0,
+            "last_frame_at_s": 0.0,
+            "ffprobe_ok": true,
+            "ffprobe_sample_rate": "16000",
+            "ffprobe_channels": 1,
+            "ffprobe_codec_name": "pcm_s16le"
+          },
+          "bytes_total": 32000,
+          "frames": 1
+        }
+      }
+    },
+    {
+      "name": "streaming_ttfa_pcm",
+      "ok": true,
+      "duration_s": 1.8886828169925138,
+      "ttfa_ms": 203.72354600112885,
+      "chunks": 4,
+      "bytes_total": 32000,
+      "sample_rate": 16000,
+      "joints_ok": true,
+      "joints_max_jump": 3393,
+      "error": null,
+      "artifact": "tts_audio_bench/artifacts/streaming_ttfa_pcm.wav",
+      "extra": {
+        "real_subscriber": {
+          "wav": "tts_audio_bench/artifacts/streaming_ttfa_pcm_real_subscriber.wav",
+          "report": {
+            "ok": true,
+            "frames": 4,
+            "bytes_total": 32000,
+            "samples": 16000,
+            "duration_s": 1.0,
+            "sample_rate": 16000,
+            "channels": 1,
+            "sample_width": 2,
+            "wav_path": "/home/builder/hermes-share/rob_box_project/tts_audio_bench/artifacts/streaming_ttfa_pcm_real_subscriber.wav",
+            "first_frame_at_s": 0.0,
+            "last_frame_at_s": 0.0,
+            "ffprobe_ok": true,
+            "ffprobe_sample_rate": "16000",
+            "ffprobe_channels": 1,
+            "ffprobe_codec_name": "pcm_s16le"
+          },
+          "bytes_total": 32000,
+          "frames": 4
+        }
+      }
+    },
+    {
+      "name": "rate_limit_exhausted",
+      "ok": true,
+      "duration_s": 0.261530820018379,
+      "ttfa_ms": null,
+      "chunks": 0,
+      "bytes_total": 0,
+      "sample_rate": 0,
+      "joints_ok": true,
+      "joints_max_jump": 0,
+      "error": "expected: TTSRateLimitError: minimax API error 1003: rate limit exceeded",
+      "artifact": null,
+      "extra": null
+    },
+    {
+      "name": "auth_forbidden",
+      "ok": true,
+      "duration_s": 0.08716456999536604,
+      "ttfa_ms": null,
+      "chunks": 0,
+      "bytes_total": 0,
+      "sample_rate": 0,
+      "joints_ok": true,
+      "joints_max_jump": 0,
+      "error": "expected: TTSAuthError: minimax API error 1001: invalid api key",
+      "artifact": null,
+      "extra": null
+    },
+    {
+      "name": "bad_request",
+      "ok": true,
+      "duration_s": 0.1222546240023803,
+      "ttfa_ms": null,
+      "chunks": 0,
+      "bytes_total": 0,
+      "sample_rate": 0,
+      "joints_ok": true,
+      "joints_max_jump": 0,
+      "error": "expected: TTSBadRequestError: minimax API error 1002: invalid voice_id",
+      "artifact": null,
+      "extra": null
+    }
+  ],
+  "warnings": []
+}
