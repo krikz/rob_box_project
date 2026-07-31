@@ -420,7 +420,7 @@ class DialogueNode(Node):
             # If TTS finished in the last 5s, reschedule — new chunks
             # may have started after scheduling but before our timer.
             now = time.monotonic()
-            if self._last_tts_finish_at and (now - self._last_tts_finish_at) < 5.0:
+            if self._last_tts_finish_at and (now - self._last_tts_finish_at) < 15.0:
                 self.get_logger().info(
                     f"🎵 TTS active {now - self._last_tts_finish_at:.1f}s ago — rescheduling"
                 )
