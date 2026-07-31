@@ -1235,6 +1235,11 @@ class TTSNode(Node):
                 topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
                 self._publish_audio(topic_audio)
 
+            # Capture raw duration BEFORE resample/chipmunk for #949.
+            # This is the actual synthesis duration (pre-effects) so
+            # downstream tools can estimate total TTS playback time.
+            raw_duration_sec: float = round(len(audio_np) / sample_rate, 2) if sample_rate > 0 else 0.0
+
             # КРИТИЧЕСКАЯ ПРОВЕРКА: dialogue_id не изменился во время синтеза?
             if dialogue_id and self.current_dialogue_id != dialogue_id:
                 self.get_logger().warning(
@@ -1368,12 +1373,20 @@ class TTSNode(Node):
             else:
                 self.publish_state("ready")
                 self.get_logger().info("✅ Воспроизведение завершено")
-                # Публикуем успех для MCP tools
+                # Публикуем успех для MCP tools (#949: включаем duration_sec для аранжировки)
                 if speech_id:
                     finished_msg = String()
-                    finished_msg.data = json.dumps({"speech_id": speech_id, "success": True}, ensure_ascii=False)
+                    finished_msg.data = json.dumps(
+                        {
+                            "speech_id": speech_id,
+                            "success": True,
+                            "duration_sec": raw_duration_sec,
+                        },
+                        ensure_ascii=False,
+                    )
                     self.get_logger().info(
-                        f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., success=True"
+                        f"📢 Публикую TTS finished event: speech_id={speech_id[:8]}..., "
+                        f"success=True, duration={raw_duration_sec}s"
                     )
                     self.finished_pub.publish(finished_msg)
                     self.get_logger().info("✅ TTS finished event опубликован на /voice/tts/finished")

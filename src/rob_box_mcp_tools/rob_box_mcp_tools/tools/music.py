@@ -445,7 +445,7 @@ class MusicManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def execute_code(self, code: str, pattern_name: Optional[str] = None) -> Dict[str, Any]:
+    def execute_code(self, code: str, pattern_name: Optional[str] = None, *, duration_sec: Optional[float] = None) -> Dict[str, Any]:
         """Безопасно выполнить Renardo-код.
 
         Перед выполнением проверяется:
@@ -456,6 +456,10 @@ class MusicManager:
         Args:
             code: Строка Python/Renardo-кода.
             pattern_name: Имя паттерна для хранения в истории (опционально).
+            duration_sec: Ожидаемая длительность TTS в секундах (#949).
+                Если задана, в контекст Renardo добавляется переменная
+                ``__total_beats`` = (duration_sec * bpm) / 60, которую
+                можно использовать с ``Clock.future()`` для аранжировки.
 
         Returns:
             dict с ключами ``success``, ``message`` (или ``error``), ``code``.
@@ -505,6 +509,18 @@ class MusicManager:
         # до конца sus-конверта. После многих переходов 1024-нодовая таблица SC
         # забивается → "too many nodes" / "negative node IDs" → тишина.
         has_clock_clear = "Clock.clear()" in code
+
+        # #949: inject __total_beats into Renardo context so the LLM can
+        # schedule timed arrangement changes via Clock.future().
+        if duration_sec is not None and duration_sec > 0:
+            try:
+                current_bpm = float(getattr(self._renardo_context.get("Clock", None), "bpm", 120) or 120)
+            except Exception:
+                current_bpm = 120.0
+            total_beats = (duration_sec * current_bpm) / 60.0
+            self._renardo_context["__total_beats"] = total_beats
+            self._renardo_context["__duration_sec"] = duration_sec
+            self._renardo_context["__bpm"] = current_bpm
 
         try:
             exec(code, self._renardo_context)  # noqa: S102
@@ -912,6 +928,16 @@ class ExecuteMusicCodeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="duration_sec",
+                type="number",
+                description=(
+                    "Ожидаемая длительность TTS в секундах (из estimate_tts_duration). "
+                    "Если задана, в Renardo-контексте доступна переменная __total_beats "
+                    "для аранжировки через Clock.future(__total_beats, ...). #949"
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -922,10 +948,10 @@ class ExecuteMusicCodeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, code: str, pattern_name: Optional[str] = None) -> MCPToolResult:
-        """Выполнить Renardo-код."""
+    def execute(self, code: str, pattern_name: Optional[str] = None, duration_sec: Optional[float] = None) -> MCPToolResult:
+        """Выполнить Renardo-код (#949: duration_sec для аранжировки)."""
         self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
-        result = self._manager.execute_code(code, pattern_name)
+        result = self._manager.execute_code(code, pattern_name, duration_sec=duration_sec)
         if result["success"]:
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])

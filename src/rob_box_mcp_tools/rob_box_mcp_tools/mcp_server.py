@@ -51,6 +51,7 @@ from .tools import (
     GetSoundInfoTool,
     SpeakTextTool,
     ListenForResponseTool,
+    EstimateTtsDurationTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -350,6 +351,7 @@ class MCPServer(Node):
 
         # Dialogue tools (критично для агентного диалога!)
         self.registry.register(SpeakTextTool(self))
+        self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)

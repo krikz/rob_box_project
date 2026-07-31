@@ -216,6 +216,11 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  
   - ✅ MANDATORY sequence: `execute_music_code` → `speak_text` × N → `stop_music()`
   - 🛑 **AFTER RAP/POEM — SILENCE!** After `stop_music()`, return `"done"` IMMEDIATELY. Do NOT add ANY commentary, summary, description of what you did, or suggestions ("Want more?", "How was that?", "I can also..."). The performance IS the response. Just return `"done"`.
   - 🤖 SAFETY NET (issue #935): even if you forget `stop_music()` (e.g. tool loop hit `_MAX_TOOL_ITERATIONS=5`), MCP server **auto-stops** music after the configured idle TTL (~5 min) AND on dialogue_end. So you'll rarely get caught — but for rap you should still call `stop_music()` explicitly to stop immediately.
+  - 🎼 **ARRANGEMENT (#949):** For dynamic beats timed to rap duration:
+    1. Call `estimate_tts_duration(text="<full rap lyrics>")` → get `estimate_sec`
+    2. Call `execute_music_code(code="...", duration_sec=<estimate>)` — the variable `__total_beats` is now available in Renardo context
+    3. Use `Clock.future(__total_beats / 2, lambda: ...)` for mid-point drops, `Clock.future(__total_beats, lambda: Clock.clear())` for auto-stop
+    Example: `Clock.future(__total_beats * 0.7, lambda: d2 >> play("(-o)(-o)(-o)(-o)", amp=0.6))` — adds hi-hat at 70% through the rap
 - If Renardo unavailable — report via `speak_text`
 - **DJ MODE (flat mode):** When user says to be a DJ / throw a party:
   1. Start thematic music via `execute_music_code` (DJ transitions must begin with `Clock.clear()`)

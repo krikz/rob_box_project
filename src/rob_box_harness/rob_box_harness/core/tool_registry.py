@@ -113,6 +113,28 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
             },
         ),
         ToolSpec(
+            name="estimate_tts_duration",
+            description=(
+                "Estimate TTS playback duration in seconds for a given text. "
+                "Use BEFORE speak_text to plan music arrangement timing (#949). "
+                "Returns estimate_sec (float) — approximate playback time with chipmunk 2x speedup."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": _TEXT_PROPERTY,
+                    "chars_per_second": {
+                        "type": "number",
+                        "description": (
+                            "Speech rate in chars/second. Default 30 — calibrated "
+                            "for Russian TTS with ROBBOX chipmunk 2x effect."
+                        ),
+                    },
+                },
+                "required": ["text"],
+            },
+        ),
+        ToolSpec(
             name="play_sound",
             description="Play a sound effect from the sound pack.",
             parameters={
@@ -286,10 +308,21 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
         ),
         ToolSpec(
             name="execute_music_code",
-            description="Execute FoxDot / music code in the runtime.",
+            description="Execute FoxDot / music code in the runtime. Use duration_sec (from estimate_tts_duration) to time arrangements (#949).",
             parameters={
                 "type": "object",
-                "properties": {"code": _TEXT_PROPERTY},
+                "properties": {
+                    "code": _TEXT_PROPERTY,
+                    "duration_sec": {
+                        "type": "number",
+                        "description": (
+                            "Estimated TTS playback duration in seconds (from estimate_tts_duration). "
+                            "When provided, the variable __total_beats is available in Renardo context "
+                            "so you can schedule pattern changes with Clock.future(__total_beats, ...). "
+                            "Use this to time music arrangements (intro, verse, drop, outro) to rap duration."
+                        ),
+                    },
+                },
                 "required": ["code"],
             },
         ),

@@ -329,3 +329,82 @@ class ListenForResponseTool(MCPTool):
             data={"timeout_seconds": timeout_seconds, "prompt_text": prompt_text},
             message=f"Жду ответ пользователя ({timeout_seconds}s таймаут)",
         )
+
+
+class EstimateTtsDurationTool(MCPTool):
+    """Estimate TTS playback duration for a given text (#949).
+
+    Uses a calibrated chars-per-second constant for Russian TTS with
+    the ROBBOX chipmunk 2x speedup effect.  Accurate enough for the
+    LLM to plan music arrangements timed to rap/poem duration.
+    """
+
+    #: Calibrated Russian TTS speed with chipmunk 2x (chars/second).
+    #: Derived from v20 log: 947 chars / 27.8 s chipmunk playback ≈ 34 cps.
+    #: Using a conservative 30 cps to leave headroom for SSML overhead.
+    DEFAULT_CHARS_PER_SECOND: float = 30.0
+
+    def __init__(self, node) -> None:
+        super().__init__(node)
+
+    @property
+    def name(self) -> str:
+        return "estimate_tts_duration"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Оценить длительность TTS-озвучки для заданного текста в секундах. "
+            "Используется для планирования аранжировки музыки под длительность рэпа/стиха. "
+            "Возвращает estimate_sec (float) — примерное время звучания с учётом chipmunk-ускорения."
+        )
+
+    @property
+    def parameters(self) -> list:
+        return [
+            MCPToolParameter(
+                name="text",
+                type="string",
+                description="Текст для оценки длительности озвучки.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="chars_per_second",
+                type="number",
+                description=(
+                    "Скорость озвучки (символов/сек). По умолчанию 30 — "
+                    "калиброванное значение для русского TTS с chipmunk 2x."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self):
+        from ..base import ToolExecutionType
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, text: str, chars_per_second: float | None = None) -> MCPToolResult:
+        cps = float(chars_per_second) if chars_per_second is not None else self.DEFAULT_CHARS_PER_SECOND
+        cps = max(1.0, cps)  # safety floor
+        estimate_sec: float = round(len(text) / cps, 1)
+        self.log_info(
+            f"[estimate_tts_duration] text_len={len(text)}, cps={cps}, "
+            f"estimate={estimate_sec}s"
+        )
+        return MCPToolResult(
+            success=True,
+            data={
+                "estimate_sec": estimate_sec,
+                "text_length": len(text),
+                "chars_per_second": cps,
+            },
+            message=(
+                f"Оценка длительности: ~{estimate_sec}с "
+                f"({len(text)} символов при {cps} симв/с)"
+            ),
+        )
