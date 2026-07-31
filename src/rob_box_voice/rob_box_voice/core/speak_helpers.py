@@ -120,6 +120,12 @@ class EffectAwaiterRegistry:
         with self._tts_lock:
             self._tts_events[speech_id] = event
 
+    @property
+    def has_pending_tts(self) -> bool:
+        """True while at least one TTS chunk is still playing / synthesising."""
+        with self._tts_lock:
+            return len(self._tts_events) > 0
+
     def pop_tts(self, speech_id: str) -> Optional[asyncio.Event]:  # type: ignore[type-arg]
         with self._tts_lock:
             return self._tts_events.pop(speech_id, None)

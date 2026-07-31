@@ -137,6 +137,11 @@ class DialogueNode(Node):
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
 
+        # Deferred music cleanup (issue #935 v2): music should keep playing
+        # while TTS is still speaking (rap, poetry).  Cleanup is published
+        # only after the *last* TTS chunk finishes.
+        self._pending_music_cleanup: bool = False
+
         self._dj = DJModeController(
             hook=DJHook(
                 dispatch=self._dispatch_turn,
@@ -388,6 +393,12 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
+        # Issue #935 v2: if music cleanup was deferred (beat was playing
+        # while TTS was speaking), publish it now that the last chunk
+        # has finished.
+        if self._pending_music_cleanup and not self._effects.has_pending_tts:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="tts_finished")
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
     def _dispatch_turn(self, user_input: str) -> None:
@@ -408,10 +419,17 @@ class DialogueNode(Node):
         finally:
             with self._task_lock:
                 self._run_task = None
-            # Issue #935: always signal mcp_server to clean up music.
-            # Don't gate on DIALOGUE state — state may already be IDLE
-            # due to async timing.
-            self._publish_music_cleanup()
+            # Issue #935: signal mcp_server to clean up music — but
+            # defer until TTS actually finishes speaking so the beat
+            # doesn't cut out mid-rap.  If no TTS is pending, publish
+            # immediately; otherwise _on_tts_finished will do it.
+            if self._effects.has_pending_tts:
+                self._pending_music_cleanup = True
+                self.get_logger().debug(
+                    "🎵 music_cleanup deferred — TTS still playing"
+                )
+            else:
+                self._publish_music_cleanup()
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 self._publish_state()
