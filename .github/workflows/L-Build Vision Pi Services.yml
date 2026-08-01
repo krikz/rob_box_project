@@ -63,7 +63,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -101,7 +101,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -143,7 +143,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -181,7 +181,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true  # Очистка working directory для корректного кеширования Docker
@@ -223,7 +223,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -260,7 +260,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -297,7 +297,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -339,7 +339,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           clean: true
@@ -378,7 +378,7 @@ jobs:
           git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: false
           clean: true
