@@ -395,7 +395,11 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
-        # No timer — cleanup happens on next dialogue start via _dispatch_turn
+        # If stop_music was deferred, execute now that TTS is done
+        if self._pending_music_cleanup:
+            self.get_logger().info("🎵 TTS finished — executing deferred music cleanup")
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="tts_finished")
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
     def _dispatch_turn(self, user_input: str) -> None:
@@ -420,14 +424,18 @@ class DialogueNode(Node):
         finally:
             with self._task_lock:
                 self._run_task = None
-            # Issue #935 v2: always defer music cleanup — the
-            # _on_tts_finished callback publishes it when TTS is
-            # truly done. Fallback timer ensures cleanup fires even
-            # when no TTS was queued (pure music-only turns).
-            self._pending_music_cleanup = True
-            self.get_logger().info(
-                "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
-            )
+            # Issue #935 v3: if LLM called stop_music(), defer cleanup until
+            # TTS finishes.  Otherwise keep music playing until next dialogue.
+            if result and "stop_music" in (result.tools_called or ()):
+                self._pending_music_cleanup = True
+                self.get_logger().info(
+                    "🎵 stop_music deferred — will cleanup after TTS finishes"
+                )
+            else:
+                self._pending_music_cleanup = True
+                self.get_logger().info(
+                    "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
+                )
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 self._publish_state()
