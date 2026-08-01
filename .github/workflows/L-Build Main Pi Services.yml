@@ -56,6 +56,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -95,6 +98,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -127,6 +133,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -159,6 +168,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -191,6 +203,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -227,6 +242,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -259,6 +277,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -291,6 +312,9 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -334,6 +358,9 @@ jobs:
     runs-on: self-hosted
     if: success() && inputs.push_to_registry != false
     steps:
+      - name: Clean stale submodules
+        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
