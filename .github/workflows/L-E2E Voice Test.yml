@@ -30,12 +30,8 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout scripts
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/workflows/scripts/e2e_remote.sh
-          sparse-checkout-cone-mode: false
-          clean: true
 
       - name: Install dependencies
         run: |
