@@ -57,7 +57,10 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Clean stale submodules
-        run: rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
 
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -91,6 +94,12 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -127,6 +136,12 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -159,6 +174,12 @@ jobs:
     needs: [prepare, build-voice-base]
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -195,6 +216,12 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -226,6 +253,12 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -257,6 +290,12 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -293,6 +332,12 @@ jobs:
     needs: prepare
     runs-on: self-hosted
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -326,6 +371,12 @@ jobs:
     runs-on: self-hosted
     if: success() && inputs.push_to_registry != false
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
