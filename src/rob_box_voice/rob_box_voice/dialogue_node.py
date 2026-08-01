@@ -141,6 +141,7 @@ class DialogueNode(Node):
         # while TTS is still speaking (rap, poetry).  Cleanup is published
         # only after the *last* TTS chunk finishes.
         self._pending_music_cleanup: bool = False
+        self._cleanup_task: Optional[asyncio.Task] = None
 
         self._dj = DJModeController(
             hook=DJHook(
@@ -395,11 +396,10 @@ class DialogueNode(Node):
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
         self._effects.handle_tts_finished(msg.data or "")
-        # If stop_music was deferred, execute now that TTS is done
+        # Issue #935 v3: debounce — wait 3s after LAST tts_finished
+        # before executing cleanup.  A new tts_finished resets the timer.
         if self._pending_music_cleanup:
-            self.get_logger().info("🎵 TTS finished — executing deferred music cleanup")
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="tts_finished")
+            self._schedule_deferred_cleanup()
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
     def _dispatch_turn(self, user_input: str) -> None:
@@ -479,6 +479,28 @@ class DialogueNode(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
+            )
+    def _schedule_deferred_cleanup(self) -> None:
+        """Issue #935 v3: (re)start 3-second debounce timer.
+
+        Each ``/voice/tts/finished`` resets this timer.  When the timer
+        finally fires (no new TTS chunk for 3 seconds), we assume all
+        TTS is done and execute the cleanup.
+        """
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+        self._cleanup_task = asyncio.run_coroutine_threadsafe(
+            self._execute_deferred_cleanup(), self._loop,
+        )
+
+    async def _execute_deferred_cleanup(self) -> None:
+        """Wait 3s, then publish music cleanup."""
+        await asyncio.sleep(3.0)
+        if self._pending_music_cleanup:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="tts_finished_debounced")
+            self.get_logger().info(
+                "🎵 tts_finished debounce timer fired — executing cleanup"
             )
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):
