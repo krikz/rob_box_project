@@ -3,11 +3,11 @@
 | Поле | Значение |
 |------|----------|
 | Документ | `docs/architecture/SCHEDULER_DESIGN.md` |
-| Связанное | Issue [#968](https://github.com/krikz/rob_box_project/issues/968), PR #907, #935 |
-| Статус | **Architecture proposal** — ready for review |
-| Автор документа | Architect profile (kanban t_8f5bb012) |
-| Дата | 2026-08-03 |
-| Основание | Анализ issue #968 целиком + все 15 комментариев + аудит текущего кода |
+| Связанное | Issue [#968](https://github.com/krikz/rob_box_project/issues/968), PR #907, #935, ADR-0001 §5 |
+| Статус | **Architecture proposal v2** — расширен по ревью issue #968 |
+| Автор документа | Architect profile (kanban t_8f5bb012 v1, **t_9fca744c v2**) |
+| Дата | 2026-08-03 (v1) / 2026-08-03 (v2: §3.3, §4.5, §4.6, §5.5) |
+| Основание | Анализ issue #968 целиком + все 15 комментариев + аудит текущего кода + пересечение с ADR-0001 §5 |
 
 ---
 
@@ -20,6 +20,13 @@
 **Ключевой принцип (из итоговой модели, согласовано в #13):** тулы от LLM идут в scheduler мгновенно (LLM не блокируется). Scheduler **не задерживает конструктивные** операции (`speak_text`, `play_animation` — встают в очередь канала), а **задерживает деструктивные** (`stop_music`, REPLACE, cancel) — до естественной границы voice-канала.
 
 **Что УЖЕ есть в коде** (см. §11): вызовы `speak_text` уже блокируются через `_output_lock` + `await tts/finished` (dialogue_node.py:672–702). То есть половина исходной проблемы #968 уже решена. Осталось: (1) классификация ввода MERGE/REPLACE/QUEUE/IGNORE/CLARIFY до barge-in (блокер П1), (2) сегментная модель + PENDING-правки, (3) speculative pre-generation, (4) единый EventBus для системных событий.
+
+**Что добавлено в v2 (эта ревизия, task t_9fca744c):**
+
+- **§3.3** — план перехода от блокирующего `speak_text` к scheduler: блокировка переезжает **внутрь voice-канала**, LLM-цикл перестаёт ждать `tts/finished` (не двойная сериализация, а перенос слоя).
+- **§4.5** — scheduler сам инициирует внеочередной LLM-ход после MERGE (триггер «нужен новый task_delta»), не ждёт ни пользователя, ни нового `segment_completed`-тика.
+- **§4.6** — mermaid sequenceDiagram полного MERGE-флоу («комар+енот») + каноническая pydantic-сигнатура `quick_decide()` / `QuickDecision`.
+- **§5.5** — разрешение коллизии `EventBus` (этот документ, scheduler) vs `SideEffectBus` (ADR-0001 §5, AgentSession): разные домены, **EventBus перенесён в фазу 2** (а не 3), naming — `SchedulerEventBus` локально, чтобы не пересекаться с ADR-0001.
 
 ---
 
@@ -134,7 +141,66 @@ Scheduler владеет набором каналов. **Каждый кана�
 | `set_vibe_preset(...)` | led/expression | INSTANT, fire-and-forget |
 | `set_emotion(...)` | expression | INSTANT, fire-and-forget |
 
-### 3.3 Уже реализовано
+### 3.3 Переход от блокирующего `speak_text` к scheduler
+
+Текущая реализация `speak_text` (`dialogue_node.py:672–702`) делает три вещи в одном `await`:
+
+1. Захватывает `_output_lock` (asyncio.Lock) — взаимное исключение на LLM-цикл.
+2. Публикует TTS-заказ в ROS-топик.
+3. **Ждёт `tts/finished` для `speech_id`** до звучания последнего чанка.
+
+**Это решает гонку `stop_music` ↔ `speak`, но создаёт две новые проблемы:**
+
+- **Двойная сериализация**: один TTS-заказ блокирует и `speak_text`, и весь LLM-цикл. Если LLM выдаёт пять `speak_text` подряд, второй уже не «стоит в очереди» — он **ждёт**, пока предыдущий чанк доиграет, плюс ещё LLM-токены между ходами теряются.
+- **Невозможность MERGE во время звучания**: LLM-цикл блокирован, значит обрабатывать новый ввод «и ещё про енота» — нечем. Сценарий «комар+енот» требует живой LLM во время звучания voice.
+
+**Решение (фиксируем в этом документе):** блокировка **не убирается** — она **переезжает внутрь voice-канала**.
+
+```
+Сейчас (voice-канал не существует как объект):
+  LLM-цикл → speak_text() → _output_lock.acquire() → ROS topic → await tts/finished → release
+                                  ↑ блокирует LLM на 2–5с
+
+Станет (есть voice FIFO + state-машина):
+  LLM-цикл → speak_text() → scheduler.enqueue(voice, seg)          [НЕ блокирует LLM]
+                                       ↓
+                              voice-канал (FIFO + state)
+                                       ↓
+                              исполняет сегменты по одному
+                                       ↓
+                              ВНУТРИ канала: lock по каналу + ждёт tts/finished
+                              LLM идёт дальше (следующие tool_calls или system prompt)
+```
+
+**Что меняется в коде:**
+
+| Компонент | Было | Станет |
+|-----------|------|--------|
+| `speak_text` function_tool | `await self._speak_and_wait(text)` | `await self._scheduler.enqueue(channel="voice", seg=Segment(payload=text))` |
+| `_output_lock` | asyncio.Lock на LLM-цикл | asyncio.Lock **только** на исполнителе voice-канала |
+| `_tts_events[speech_id]` wait | внутри `speak_text` (блокирует LLM) | внутри voice-канала (блокирует только следующий сегмент своего канала) |
+| Backpressure | «speak_text ждёт tts/finished» | «voice-канал возвращает ack сразу, сегменты FIFO-встают, исполнитель разруливает» |
+
+**Что НЕ меняется:**
+
+- Никакой новой логики сериализации нет — блокировка остаётся одна, просто живёт ниже по стеку (в канале).
+- `_output_lock` никуда не девается, его владелец меняется: был у `speak_text`, стал у `voice_channel._play_next()`.
+- Поведение `tts/finished` не меняется — те же `speech_id`, тот же счётчик. INSIGHT #7 (один finished на один заказ) сохраняется.
+
+**Почему это НЕ «двойная сериализация»:** слой один — канал. LLM не блокируется ничем; канал сам сериализует свои сегменты. То, что было «блокировкой LLM», становится «FIFO-очередью канала» — это один и тот же механизм сериализации, просто развёрнутый из `await` в `enqueue + drain`.
+
+**Почему это НЕ «race на `_output_lock`»:** `speak_text` больше не вызывает `_output_lock.acquire()`. Lock остаётся, но им владеет только voice-канал. LLM-цикл и voice-канал живут в разных корутинах и блокируют разные ресурсы: LLM — собственный ход; канал — собственный исполнитель.
+
+**Критерий перехода (Phase 1 acceptance, дополнительно):**
+
+- [ ] LLM-цикл не делает `await tts/finished` ни в одном пути (grep `await.*tts.*finished` по `dialogue_node.py` — пусто)
+- [ ] `voice-канал` имеет собственный `_channel_lock` (вместо бывшего `_output_lock`)
+- [ ] Два подряд `speak_text` от LLM возвращают управление за < 50мс каждый (текущее — 2–5с на вызов)
+- [ ] Сценарий «комар+енот» отрабатывает с инвариантом: голос **не** прерывается на середине фразы, новые сегменты встают в очередь до естественной границы
+
+**Обратная совместимость:** до полного перевода всех voice-вызовов через scheduler `_output_lock` остаётся в `dialogue_node.py` как no-op (или удаляется одним PR после перевода). Удаление `_output_lock` — отдельный PR, не часть Phase 1.
+
+### 3.4 Уже реализовано
 
 В текущем `dialogue_node.py:672–702`:
 
@@ -237,6 +303,204 @@ async def on_new_input(text: str, source: str):
         ))
 ```
 
+### 4.5 Авто-триггер внеочередного LLM-после-MERGE (scheduler self-drives)
+
+**Проблема, найденная при проектировании фазы 2:**
+
+После решения MERGE/QUEUE нужно, чтобы LLM **выдала `task_delta`** (новые/изменённые PENDING-сегменты). Но в аудитории сценария «комар+енот» LLM уже **закончила текущий ход** — она не сидит в цикле и ждёт ввода.
+
+Два тупика:
+
+| Стратегия | Почему не работает |
+|-----------|---------------------|
+| Ждать следующего пользовательского ввода | MERGE-триггером был системный сигнал (`battery_critical`) или синтез-сегмент завершился — пользователь молчит минуту. PENDING не правятся минуту. |
+| Дёргать LLM при каждом `segment_completed` | «Прокси-цикл» сетится на каждое TTS-окончание (каждые 2–5с). LLM говорит «угу, продолжай» — не отвечает. Стоимость API взлетает. |
+
+**Решение (зафиксированное здесь):**
+
+Scheduler имеет собственный триггер «нужен новый LLM-ход», который срабатывает **только** когда выполнены все три условия одновременно:
+
+```
+триггер активен ⟺
+  1) есть открытая задача с PENDING-сегментами
+  AND
+  2) есть хотя бы один неприменённый Event/decision
+     (MERGE / battery_critical / user_input с CLARIFY)
+  AND
+  3) канал-voice/music ВЫГЛЯДИТ как требующий продолжения
+     (voice: speaking → silence после ACTIVE; ИЛИ
+      music: playing, но _last_segment_user_initiated=false И
+             `_elapsed_since_last_segment_started > 0.5 × eta)`)
+```
+
+**Когда триггер активен** — scheduler вызывает `llm_continue_hook(current_state)`, который:
+
+1. Берёт `[CHANNELS]` + `[ACTIVE TASKS]` + `[PENDING EVENTS]` — те же блоки, что при обычном ходе.
+2. Формирует короткий prompt: «продолжи активную задачу, применив pending events».
+3. Вызывает **ту же лёгкую LLM**, что и уровень 2 для `quick_decide` — для решений MERGE этого достаточно (нужен только `task_delta` структурно, не свободный текст).
+4. Полученный `task_delta` идёт через `scheduler.update(task_id, delta)` → правка PENDING.
+
+**Где НЕ срабатывает (анти-паттерны):**
+
+- Во время ACTIVE voice-сегмента (ещё рано, предыдущие PENDING сами применятся в третьем-четвёртом ходе LLM, если она там была — а теперь триггер заменит этот ход).
+- При `priority=low` events (IGNORE / шум).
+- При отсутствии PENDING в задаче (нечего дополнять — задача идёт к завершению штатно).
+
+**Связь с MERGE-флоу (§4.4):**
+
+| Шаг | Действие | Кто отвечает |
+|-----|----------|--------------|
+| 1 | Новый ввод → MERGE | quick_decide уровень 1/2 (§4.2) |
+| 2 | MERGE → enqueue в EventBus | scheduler (§5) |
+| 3 | **Триггер «нужен LLM-ход» активируется** | **scheduler (§4.5, этот пункт)** |
+| 4 | LLM выдаёт task_delta | scheduler вызывает continuation-hook |
+| 5 | PENDING-сегменты обновляются | `update()` с инвариантом §2.3 |
+| 6 | Исполнение продолжается | channels drain по правилам §3 |
+
+**Шаг 3 — ключевой новый элемент.** Без него цепочка обрывается на шаге 2.
+
+**Критерий приёмки (фаза 2 acceptance, дополнительно):**
+
+- [ ] `battery_critical` во время песни → scheduler инициирует LLM-ход **сам**, не дожидаясь пользователя
+- [ ] Сценарий «енот без пользовательского ввода» (внешний таймер `30s без ввода → autosuggest`) → MERGE отрабатывает полностью без участия пользователя
+- [ ] Не срабатывает впустую: флаг «неприменённых events + idle voice» ложит только при двух одновременных сигналах (e2e-метрика: auto-trigger fires ≥ 5 раз за прогон, ложных ≤ 1)
+- [ ] Использует лёгкую LLM (≤ 800мс), не основную — фиксируется в `LLMEstimator.last_turn_kind`
+
+### 4.6 Визуализация MERGE-флоу и сигнатура `quick_decide`
+
+#### 4.6.1 Mermaid sequenceDiagram — «комар+енот»
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant STT as VoiceInput (STT)
+    participant QD as quick_decide (level 1/2)
+    participant EB as EventBus
+    participant SCH as TaskScheduler
+    participant LLM as LLM (heavy)
+    participant VC as voice-канал
+    participant MC as music-канал
+    participant LN as light LLM (continuation)
+
+    Note over U,MC: T0 — пользователь: "Спой песню про комара"
+
+    U->>STT: голос
+    STT->>QD: text="Спой песню про комара", source=user_input, priority=normal
+    QD->>LLM: task_delta {op:"create", segments:[seg1..4]}
+    LLM-->>SCH: task.create(type=sing, topics=[комар], segments=[v,m,v,m])
+
+    SCH->>MC: enqueue seg (куплет 1)
+    MC->>U: ♪ куплет 1: комар ...♪
+    Note over MC: ACTIVE, eta=12s
+
+    Note over U,MC: T1 = T0 + 4s — пользователь: "И ещё про енота!"
+
+    U->>STT: голос (во время куплета 1)
+    STT->>QD: text="и ещё про енота"
+    QD-->>SCH: decision.action=MERGE, priority=normal
+    QD->>EB: enqueue Event{type=user_input, decision=MERGE, payload=text}
+
+    Note over SCH: trigger_condition(MERGE + voice.idle_window_tail)
+    SCH->>LN: llm_continue_hook([CHANNELS]+[PENDING EVENTS])
+    LN-->>SCH: task_delta {op:"update", segments:[seg2:rewrite, seg3:replace, seg4:new]}
+
+    Note over SCH: update() применяет только PENDING (см. §2.3 INVARIANT)<br/>ACTIVE seg1 = НЕ ТРОГАЕМ
+
+    MC->>U: ♪ куплет 1: комар ... (доиграл до конца — 12с)
+    Note over MC: ACTIVE → COMPLETED на границе такта
+    MC->>U: ♪ куплет 2: переписан, "комар+енот" — без паузы♪
+    MC->>U: ♪ припев: общий♪
+    MC->>U: ♪ куплет 3: енот♪
+
+    Note over U,MC: T_finish — пользователь слышит непрерывный поток,<br/>ни одной секунды тишины между seg1 и seg2
+```
+
+**Что показывает диаграмма:**
+
+- **MERGE не отменяет LLM-цикл** (блокер П1 разрешён).
+- **`task_delta` приходит от continuation-hook (§4.5), не от пользователя.**
+- **ACTIVE `seg1` доживает до границы** (не обрывается на середине).
+- **PENDING-сегменты перезаписаны** (rewrite + replace + new, инвариант §2.3).
+- **Никакого `_cancel_run`** (сравни с §4.4).
+- **`tts/finished` теперь событие канала, не блокировка LLM** (см. §3.3).
+
+#### 4.6.2 Сигнатура `quick_decide`
+
+Уровень 1 (правила) и уровень 2 (лёгкая LLM) сводятся к одной async-функции на входе scheduler'а:
+
+```python
+from enum import Enum
+from typing import Literal
+from pydantic import BaseModel, Field
+
+class Priority(str, Enum):
+    CRITICAL = "critical"   # obstacle, перегрев, потеря сети
+    HIGH     = "high"       # battery_critical, «хватит»
+    NORMAL   = "normal"     # обычный голосовой ввод, Hermes-команды
+    LOW      = "low"        # шум, междометия, IGNORE-кандидаты
+
+class Action(str, Enum):
+    MERGE   = "MERGE"    # правка PENDING, ACTIVE не трогаем
+    REPLACE = "REPLACE"  # сброс PENDING, новая задача после ACTIVE
+    QUEUE   = "QUEUE"    # новая задача в очередь задач
+    IGNORE  = "IGNORE"   # ничего
+    CLARIFY = "CLARIFY"  # уточняющий вопрос
+
+class QuickDecision(BaseModel):
+    """Canonical решение quick_decide. То, что уходит в EventBus и в LLM-цикл."""
+    action: Action
+    priority: Priority
+    confidence: float = Field(ge=0.0, le=1.0, description="0..1, от уровня 1 или 2")
+    reasoning: str = Field(description="короткое объяснение для логов и feedback")
+    task_delta: dict | None = Field(
+        default=None,
+        description="Если action=MERGE/REPLACE — предложение delta-структуры; "
+                    "LLM всё равно валидирует и может переписать. На уровне 1 — None."
+    )
+    source_level: Literal[1, 2] = Field(description="каким уровнем принято решение")
+    elapsed_ms: int = Field(description="фактическое время решения, для метрик")
+
+async def quick_decide(
+    text: str,
+    *,
+    source: str,                         # "user_input" | "battery_monitor" | "hermes" | ...
+    active_task: Task | None,            # текущая активная задача (или None)
+    rules_engine: RuleEngine,            # уровень 1 (инжектируется)
+    light_llm: LightLLMClient | None,    # уровень 2 (опционально, может быть None в тестах)
+    clock: Clock,
+    timeout_ms: int = 800,
+) -> QuickDecision:
+    """Двухуровневое решение по новому вводу / системному событию.
+
+    Контракт:
+      - Возвращает решение за < 800мс (timeout гарантирует fallback).
+      - При timeout — уровень 1 fallback (lowest priority + IGNORE).
+      - Не вызывает основную (тяжёлую) LLM — это запрещено архитектурно.
+      - Не делает side-effects: только читает active_task + rules_engine + light_llm.
+      - Решение идёт в EventBus (см. §5) — не прямо в каналы.
+    """
+    ...
+```
+
+**Где `quick_decide` живёт в коде:**
+
+- Новый модуль `rob_box_voice/scheduler/quick_decide.py` (Phase 1, S — ~150 LOC).
+- Уровень 1 — набор правил на `RuleEngine` (YAML-таблица соответствий «паттерн → решение»).
+- Уровень 2 — обёртка `LightLLMClient` над существующим MiniMax-провайдером с `temperature=0` и коротким structured-output prompt'ом.
+- DI через конструктор (Phase 5 AgentSession подменит wiring, но сигнатура стабильна).
+
+**Тестируемость (Phase 1 acceptance, дополнительно):**
+
+- [ ] `quick_decide` чистая: не имеет сетевых/ROS-зависимостей, тестируется с `FakeClock` + `FakeLightLLM`
+- [ ] Возвращает `QuickDecision` со всеми полями; pydantic валидация — на границе scheduler
+- [ ] Уровень 1 решает 70% вводов за < 50мс (метрика из логов)
+- [ ] Уровень 2 решает за < 800мс (метрика из `LLMEstimator`)
+- [ ] `quick_decide("угу") → IGNORE, conf=0.95`
+- [ ] `quick_decide("и ещё про енота") → MERGE, conf=0.92`
+- [ ] `quick_decide("хватит") → REPLACE, conf=0.88`
+- [ ] `quick_decide("а потом спой колыбельную") → QUEUE, conf=0.81`
+
 ---
 
 ## 5. EventBus — единая точка входа
@@ -288,6 +552,97 @@ class Event:
 EventBus — singleton в `dialogue_node` (или новый node `scheduler_node`). Не новый топик — внутренняя шина внутри `dialogue_node` для пользовательских событий, плюс ROS-topic подписчики для внешних (`/battery/*`, `/obstacle/*`, `/hermes/*`).
 
 **Не плодим ROS-нод без нужды** — EventBus живёт в том же процессе, что и `dialogue_node`, общается с внешним миром через ROS-subscriber'ов.
+
+### 5.5 Разрешение коллизии: EventBus vs SideEffectBus (ADR-0001 §5)
+
+**Проблема, найденная при анализе двух документов вместе:** в проекте **два кандидата на «шину эффектов»** с пересекающимися доменами. Если не развести явно — получатся два класса с похожими именами и путаница ответственности.
+
+| Кандидат | Где описан | Домен | Фаза |
+|----------|-----------|-------|------|
+| **SideEffectBus** | ADR-0001 §5, P1 (после рефакторинга harness) | Канонические *эффекты* LLM: TTS, Sound, LED, TG-reply. Pure decoration of `Effect[T]`, fan-out через `CompositeBus`. | Phase 5 (AgentSession) |
+| **EventBus** | этот документ, §5 | Time-ordered *события среды*: `battery_critical`, `obstacle_ahead`, `user_input` (до MERGE/REPLACE). Не «что сделать», а «что произошло во внешнем мире». | Phase 2 (scheduler) |
+
+**Почему нельзя заменить одно другим:**
+
+- **EventBus не заменяет SideEffectBus.** Системные события (`battery_critical`) — это сигналы «изменился мир», а не «сделай TTS». Приводить их к `Effect[T]` — натягивание совы на глобус: `Effect.battery_critical`? что у него `apply()`? SideEffectBus оптимизирован под fan-out к downstream, а не под приоритезацию во времени.
+- **SideEffectBus не заменяет EventBus.** SideEffectBus — *порт*, через который `AgentSession` объявляет intent. EventBus — *канал* входящих сигналов от ROS-топиков и STT. Источники SideEffectBus'а — внутри LLM-цикла (skill emit effect). Источники EventBus'а — снаружи (ROS, STT, internal hook). Модели разные.
+
+**Решение (фиксируем здесь и в ADR-0001 follow-up):**
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                       ROS2 topics                                  │
+│         /battery/*, /obstacle/*, /hermes/*                       │
+└─────────────┬──────────────────────────────────────────────────────┘
+              │ (subscriber)
+              ▼
+       ┌──────────────────┐
+       │    EventBus      │  ←  scheduler.EventBus
+       │  (this doc §5)   │      time-ordered,
+       │                  │      priority, отметки времени,
+       │                  │      correlation_id
+       └────────┬─────────┘
+                │ enqueue Event (user_input|battery|obstacle|...)
+                ▼
+       ┌──────────────────┐
+       │   TaskScheduler  │  ←  этот документ целиком
+       │  (channels, ...) │
+       └────────┬─────────┘
+                │ по итогам решения LLM
+                ▼
+       ┌──────────────────┐
+       │  AgentSession    │  ←  ADR-0001
+       │  emits Effect[T] │
+       └────────┬─────────┘
+                │ dispatch(effect)
+                ▼
+       ┌──────────────────┐
+       │  SideEffectBus   │  ←  ADR-0001 §5
+       │  (composite:     │
+       │   TTS+Sound+LED  │
+       │   +TG-reply)     │
+       └────────┬─────────┘
+                │ apply()
+                ▼
+       ROS topics: /tts/*, /audio/*, /led/*, /tg/reply
+```
+
+**Контракт разграничения:**
+
+- **EventBus → scheduler** — направление «извне → логика». Событие — факт, не команда.
+- **Scheduler → SideEffectBus (через AgentSession)** — направление «логика → наружу». Effect — команда-решение, не факт.
+- **Стык**: scheduler после решения формирует `task_delta` → AgentSession применяет его → шлёт `Effect[T]` в SideEffectBus → fan-out.
+
+**Что это меняет в плане фаз (важно):**
+
+- **EventBus ПЕРЕНЕСЁН в фазу 2** (раньше был намечен на фазу 3). Причина: MERGE/REPLACE без EventBus'а — мёртвый код, решения некуда складывать. SideEffectBus остаётся в фазе 5 (AgentSession).
+- **Никакого параллельного EventBus в фазе 5.** Когда придёт AgentSession, SideEffectBus не подменяет EventBus и не знает о нём (EventBus — внешний канал, SideEffectBus — внутренний порт).
+- **Naming**: класс в scheduler-модуле зовём `SchedulerEventBus` (или просто `EventBus` локально), чтобы не путать с ADR-0001's `SideEffectBus`. Внешние пакеты импортируют явно: `from rob_box_voice.scheduler.event_bus import EventBus` vs `from rob_box_harness.side_effect_bus import SideEffectBus`.
+
+**Что НЕ нужно делать (анти-паттерны):**
+
+- ❌ Переносить обработку `battery_critical` в `SideEffectBus.effect_handlers`. Не-effect, не команда.
+- ❌ Пытаться объединить «обе шины» в один класс «Bus». Разные домены, разные lifecycle (EventBus — FIFO, SideEffectBus — port/ABC).
+- ❌ Откладывать решение «EventBus есть в фазе 2, SideEffectBus — в фазе 5» до самой фазы 5. Коллизия должна быть закрыта **до** начала фазы 2.
+
+**Критерий приёмки:**
+
+- [ ] В `docs/design/SCHEDULER_DESIGN.md` §10.2 явно указано: EventBus = фаза 2 (а не 3)
+- [ ] В `docs/adr/0001-harness-architecture.md` §5 добавлен **follow-up ADR** (или комментарий в §5) со ссылкой на §5.5 этого документа: «EventBus — отдельный домен, scheduler отвечает за приоритезацию системных событий»
+- [ ] В `scheduler.py` (новый модуль, Phase 1) класс событийной шины именован `SchedulerEventBus` (а не `EventBus` глобально)
+- [ ] При импорте в `dialogue_node.py` ни один путь не создаёт объект `EventBus` поверх `SideEffectBus` (или наоборот) — никакого авто-wiring'а, который мог бы перехватить сообщения чужого домена
+
+**Зависимость ADR-0001 ↔ этот документ:**
+
+```
+ADR-0001 (P1)                 SCHEDULER_DESIGN (этот документ, Phase 1-3)
+  ↓                                ↓
+AgentSession + SideEffectBus    TaskScheduler + SchedulerEventBus
+  (порт эффектов)                (канал событий)
+                ↘              ↙
+                  разные домены, разные фазы
+                  (формализовано в §5.5 этого документа)
+```
 
 ---
 
@@ -516,14 +871,20 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - [ ] LLM в каждом ходе видит блок `[CHANNELS]` (queue depth, current, eta)
 - [ ] Пост-амбл «Готово! Зачитал тебе...» исчезает при активном voice-канале
 - [ ] **Инвариант сегментов (unit test):** `update()` модифицирует ТОЛЬКО PENDING-сегменты, ACTIVE не затрагивается
+- [ ] **`speak_text` больше не делает `await tts/finished`** (§3.3): grep по `dialogue_node.py` пуст; voice-канал владеет своим `_channel_lock`
+- [ ] **Два подряд `speak_text` возвращают управление за < 50мс каждый** (метрика на e2e-прогоне)
 
-### 10.2 Фаза 2 — двухуровневое решение + EventBus
+### 10.2 Фаза 2 — двухуровневое решение + EventBus (с учётом §5.5)
 
-1. Quick-decide уровень 2 (лёгкая LLM, < 800мс).
-2. `EventBus` для системных событий (`/battery/*`, `/obstacle/*`, `/hermes/*`).
+**Важно (§5.5 — разрешение коллизии):** `EventBus` (scheduler) **в фазе 2**, не в 3. `SideEffectBus` (ADR-0001) — в фазе 5. Naming: `SchedulerEventBus` локально.
+
+1. Quick-decide уровень 2 (лёгкая LLM, < 800мс) — реализация `quick_decide()` (§4.6.2).
+2. **`SchedulerEventBus` для системных событий** (`/battery/*`, `/obstacle/*`, `/hermes/*`) — НЕ путать с ADR-0001's `SideEffectBus` (§5.5).
 3. Приоритеты событий (critical > high > normal > low).
 4. Сценарий «батарея»: `battery_critical` → вплетается в PENDING-сегмент.
 5. **Решение блокера П1:** MERGE/QUEUE не отменяют LLM-цикл (см. §4.4).
+6. **Авто-триггер внеочередного LLM-после-MERGE (§4.5)** — scheduler сам инициирует LLM-ход для получения `task_delta`.
+7. **Follow-up запись в ADR-0001 §5** о разграничении EventBus/SideEffectBus (§5.5).
 
 **Acceptance:**
 - [ ] Решение по новому вводу (любое из 5) принимается < 800мс
@@ -532,6 +893,9 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - [ ] **Два MERGE подряд за < 2с (unit test):** оба применяются к PENDING, без конфликта
 - [ ] **Приоритеты событий (unit test):** critical (`obstacle`) прерывает песню на границе такта, high (`battery`) вплетается в PENDING без прерывания
 - [ ] **e2e «батарея»:** робот поёт → battery_critical → предупреждение в песне → финал → сообщение об уходе на базу (без паузы и рестарта)
+- [ ] **Авто-триггер (§4.5):** `battery_critical` без пользовательского ввода провоцирует LLM-ход через scheduler (а не в ответ на юзера)
+- [ ] **Класс шины именован `SchedulerEventBus`** (а не `EventBus` глобально) — критерий приёмки §5.5
+- [ ] **Никаких обходных импортов `rob_box_harness.side_effect_bus`** в коде scheduler'а и dialogue_node до фазы 5
 
 ### 10.3 Фаза 3 — эстиматоры + speculative pre-generation
 
@@ -572,7 +936,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - Классификация ввода (MERGE/REPLACE/QUEUE/IGNORE/CLARIFY) до barge-in — **блокер П1**
 - Сегментная модель + правка PENDING без прерывания ACTIVE
 - Speculative pre-gen для устранения пауз
-- Единый EventBus для внешних событий (батарея, препятствия, Hermes)
+- ~~Единый EventBus для внешних событий (батарея, препятствия, Hermes)~~ — **закрыто §5.5: `SchedulerEventBus` строится в фазе 2, разведён с ADR-0001 `SideEffectBus`**
 
 ---
 
@@ -583,7 +947,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 | **П1** | 🔴 блокер | barge-in убивает LLM-цикл, MERGE требует его жизни | **§4.4** — классификация ДО barge-in. MERGE/QUEUE/CLARIFY не отменяют цикл. REPLACE — отменяет. |
 | **П2** | 🔴 | «прервать ACTIVE на естественной границе» — оксюморон | **§4.3** — critical **сокращает** ACTIVE до ближайшей границы (1–4с от момента события), а не «прерывает». Одна формулировка. |
 | G1 | 🟡 | Кто исполняет fade-out? | `audio_node` (или его преемник) — НЕ `dialogue_node`. Fade = спецкоманда в music-канал. **Зафиксировать в коде audio_node при реализации фазы 1.** |
-| G2 | 🟡 | Два механизма «TTS готов» | **§3.3 + §8.2** — выбран счётчик по `speech_id` (один finished на один заказ), уже реализован в `tts_node.py:741–744`. |
+| G2 | 🟡 | Два механизма «TTS готов» | **§3.4 + §8.2** — выбран счётчик по `speech_id` (один finished на один заказ), уже реализован в `tts_node.py:741–744`. |
 | G3 | 🟡 | MERGE во время пред-генерации | **§6.5** — `InterruptibleTask.cancel()` при правке. Покрыть unit-тестом (фаза 3). |
 | G4 | 🟡 | Prefetch жжёт токены | **§6.5** — prefetch только при активной задаче (sing/rap/рассказ). В idle — цикл спит. |
 | G5 | 🟡 | `estimate_tts_duration` vs SegmentEstimator | **§6.2** — `SegmentEstimator` = обёртка над существующим механизмом, LLM не вызывает руками. |
@@ -598,7 +962,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 1. **Fade-out (G1)** — какой компонент отвечает? `audio_node` уже умеет? Если нет — добавить в фазу 1.
 2. **Лёгкая LLM (уровень 2)** — какой провайдер/модель? Отдельная конфигурация MiniMax? Или использовать основную с `temperature=0` и коротким промптом? **Требует решения до старта фазы 2.**
 3. **ROS-топик `/harness/task_events`** — нужен ли владелец (отдельный node) или достаточно publisher'а из `dialogue_node`?
-4. **Совместимость с Phase 5 / ADR-0001 §5** (AgentSession + SideEffectBus) — уточнить у @krikz, не дублируем ли SideEffectBus (см. t_c8396602).
+4. **Совместимость с Phase 5 / ADR-0001 §5** (`AgentSession` + `SideEffectBus`) — ~~был открытый~~ **закрыт §5.5**: `SchedulerEventBus` (фаза 2) и `SideEffectBus` (фаза 5) — разные домены, разные фазы. Требуется follow-up запись в ADR-0001 §5 (см. §10.2 acceptance #7).
 5. **Prefetch budget (G4)** — какой лимит «активной задачи» для prefetch? 30с? 60с? Пока задача длиннее N — prefetch крутится, иначе спит.
 
 ---
@@ -642,11 +1006,12 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 ## Приложение B. Связь с текущими задачами
 
-- **t_8f5bb012** (этот документ) — design proposal для #968
+- **t_8f5bb012** (v1 документа) — design proposal для #968, 652 строк, 43 KB
+- **t_9fca744c** (v2, эта ревизия) — добавил §3.3 (блокировка → voice-канал), §4.5 (auto-trigger после MERGE), §4.6 (mermaid + сигнатура quick_decide), §5.5 (EventBus vs SideEffectBus — закрытие коллизии; EventBus перенесён в фазу 2)
 - **t_57d67232** — Architect review #933+#935 (предыдущее состояние voice-assistant)
 - **t_f919de81** — Architect review фазы 06-harness-p0-finalization
 - **t_f0ddd678** — ADR harness (есть ADR-0001, ADR-0009-harness-tts-contract, и др.)
-- **t_c8396602** — P1.1: AgentSession + SideEffectBus (Phase 5, ADR-0001 §5) — **возможна коллизия/синергия, требует уточнения**
+- **t_c8396602** — P1.1: AgentSession + SideEffectBus (Phase 5, ADR-0001 §5) — **коллизия/синергия СНЯТА §5.5 этого документа**
 
 ---
 
