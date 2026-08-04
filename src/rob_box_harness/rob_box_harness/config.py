@@ -133,6 +133,42 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class ConfirmationPolicyConfig:
+    """Configuration for the acceptance / confirmation layer (§8 SCHEDULER_DESIGN).
+
+    Controls how :class:`rob_box_harness.core.confirmation_policy.ToolConfirmationPolicy`
+    classifies tool calls and decides whether a given call needs an
+    explicit user confirmation before it reaches the executor.
+
+    The classification is **data-only** — no tool names are hard-coded
+    in Python. Tool → category mapping lives in
+    ``confirmation_policy.yaml`` (loaded via
+    :func:`rob_box_harness.core.confirmation_policy.load_default_policy`).
+
+    Attributes:
+        enabled: Master switch. When False, every tool call passes
+            through without confirmation (effectively the legacy
+            behaviour). Used for tests and for rolling the feature off
+            in production without redeploying the binary.
+        confirmation_timeout_ms: How long a segment can sit in
+            ``AWAITING_CONFIRMATION`` before it is auto-rejected.
+            Default 20_000 (20 seconds) — matches §8.3 / §11.2.
+        timeout_announcement: Russian phrase TTS says when the
+            confirmation times out ("Отменяю, жду указаний" by default).
+        safe_boundary_policy: How the navigation channel handles an
+            interruption of an ACTIVE navigation segment.
+            ``"soft"`` (default — drive to the nearest safe waypoint
+            before cancelling) / ``"hard"`` (immediate wheel stop,
+            reserved for emergency ``stop_navigation``).
+    """
+
+    enabled: bool = True
+    confirmation_timeout_ms: int = 20_000
+    timeout_announcement: str = "Отменяю, жду указаний"
+    safe_boundary_policy: str = "soft"  # "soft" | "hard"
+
+
+@dataclass(frozen=True)
 class HarnessConfig:
     """Root configuration object passed to every harness.
 
@@ -151,6 +187,7 @@ class HarnessConfig:
     transport: TransportConfig | None = None
     tts: TTSConfig | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    confirmation: ConfirmationPolicyConfig = field(default_factory=ConfirmationPolicyConfig)
 
     # ----- factories -----------------------------------------------------
 
@@ -207,6 +244,7 @@ class HarnessConfig:
         transport_cfg = _parse_transport(raw.get("transport"))
         tts_cfg = _parse_tts(raw.get("tts"), secrets=secrets)
         logging_cfg = _parse_logging(raw.get("logging"))
+        confirmation_cfg = _parse_confirmation(raw.get("confirmation"))
 
         return cls(
             harness=harness_kind,
@@ -219,6 +257,7 @@ class HarnessConfig:
             transport=transport_cfg,
             tts=tts_cfg,
             logging=logging_cfg,
+            confirmation=confirmation_cfg,
         )
 
 
@@ -598,6 +637,55 @@ def _parse_logging(raw: Any) -> LoggingConfig:
     return LoggingConfig(level=level, redact=tuple(redact), format=fmt)
 
 
+def _parse_confirmation(raw: Any) -> ConfirmationPolicyConfig:
+    """Parse the ``confirmation`` section into :class:`ConfirmationPolicyConfig`.
+
+    Mirrors :func:`_parse_logging`: missing section → defaults; unknown
+    key type → :class:`ConfigError` with a precise ``section`` pointer.
+    Section is intentionally permissive — every field has a working
+    default — so that an empty YAML still gives the §8 baseline
+    behaviour (20 s timeout, soft safe-boundary, "Отменяю, жду
+    указаний" announcement).
+    """
+    if raw is None:
+        return ConfirmationPolicyConfig()
+    if not isinstance(raw, Mapping):
+        raise ConfigError(
+            "'confirmation' section must be a mapping",
+            section="confirmation",
+        )
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError(
+            "'confirmation.enabled' must be a bool",
+            section="confirmation.enabled",
+        )
+    timeout_ms = raw.get("confirmation_timeout_ms", 20_000)
+    if not isinstance(timeout_ms, int) or timeout_ms <= 0:
+        raise ConfigError(
+            "'confirmation.confirmation_timeout_ms' must be a positive int",
+            section="confirmation.confirmation_timeout_ms",
+        )
+    announcement = raw.get("timeout_announcement", "Отменяю, жду указаний")
+    if not isinstance(announcement, str) or not announcement.strip():
+        raise ConfigError(
+            "'confirmation.timeout_announcement' must be a non-empty string",
+            section="confirmation.timeout_announcement",
+        )
+    policy = raw.get("safe_boundary_policy", "soft")
+    if policy not in ("soft", "hard"):
+        raise ConfigError(
+            f"'confirmation.safe_boundary_policy' must be 'soft' or 'hard'; got {policy!r}",
+            section="confirmation.safe_boundary_policy",
+        )
+    return ConfirmationPolicyConfig(
+        enabled=enabled,
+        confirmation_timeout_ms=timeout_ms,
+        timeout_announcement=announcement,
+        safe_boundary_policy=policy,
+    )
+
+
 __all__ = [
     "HarnessKind",
     "LLMConfig",
@@ -607,6 +695,7 @@ __all__ = [
     "TransportConfig",
     "TTSConfig",
     "LoggingConfig",
+    "ConfirmationPolicyConfig",
     "HarnessConfig",
     "load_config",
 ]
