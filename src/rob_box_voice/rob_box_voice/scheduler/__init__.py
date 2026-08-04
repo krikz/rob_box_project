@@ -29,6 +29,15 @@ See :class:`TaskScheduler` for the public entry point.
 
 from __future__ import annotations
 
+from .event_bus import (
+    BackpressurePolicy,
+    EventBus,
+    EventBusClosedError,
+    EventBusError,
+    EventEnvelope,
+    EventQueueFullError,
+    EventSubscription,
+)
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
@@ -44,6 +53,13 @@ from .task_scheduler import (
 )
 
 __all__ = [
+    "BackpressurePolicy",
+    "EventBus",
+    "EventBusClosedError",
+    "EventBusError",
+    "EventEnvelope",
+    "EventQueueFullError",
+    "EventSubscription",
     "ChannelKind",
     "ChannelStatus",
     "TaskOutcome",
