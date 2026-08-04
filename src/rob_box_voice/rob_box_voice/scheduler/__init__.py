@@ -29,6 +29,17 @@ See :class:`TaskScheduler` for the public entry point.
 
 from __future__ import annotations
 
+from .decision import (
+    DecisionCoordinator,
+    DecisionPlan,
+    HighLevelPlanner,
+    LowLevelExecutor,
+    PlanExecution,
+    PlanStep,
+    SchedulerStepExecutor,
+    StepExecution,
+    StepStatus,
+)
 from .event_bus import (
     BackpressurePolicy,
     EventBus,
@@ -53,6 +64,15 @@ from .task_scheduler import (
 )
 
 __all__ = [
+    "DecisionCoordinator",
+    "DecisionPlan",
+    "HighLevelPlanner",
+    "LowLevelExecutor",
+    "PlanExecution",
+    "PlanStep",
+    "SchedulerStepExecutor",
+    "StepExecution",
+    "StepStatus",
     "BackpressurePolicy",
     "EventBus",
     "EventBusClosedError",
