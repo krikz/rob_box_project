@@ -1,0 +1,110 @@
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant LLM as LLM (dialog_core)
+    participant Sched as TaskScheduler
+    participant P as PASTE Planner
+    participant AS as ActionServer (HTTP)
+    participant H as TTS Handler
+    participant TTS as tts_node (ROS topic)
+
+    Note over U,TTS: Phase 4 end-to-end -- primary goal s1 + speculative s2
+
+    U->>LLM: "Спой песню про комара"
+    activate LLM
+    LLM->>LLM: stream task_delta: [seg_1, seg_2, seg_3]
+    LLM->>Sched: 1. submit_segment(seg_1, text="куплет про комара")
+    deactivate LLM
+    activate Sched
+
+    Sched->>P: 2. speculate(action_id="s2", goal={text:"припев"})
+    activate P
+    Note right of P: Shadow queue entry created<br/>goal_id="s2", speculative=true
+    P->>AS: 3. POST /actions {goal_id:"s2", kind:"tts.speak",<br/>params:{text:"припев"}, speculative:true}
+    activate AS
+    AS->>H: 4. _handler(goal_s2, feedback, cancelled_s2)
+    activate H
+    H->>TTS: 5. publish /voice/audio/speech (speech_id="s2-shadow")<br/>(pre-synthesis to file, NO audio output)
+    TTS-->>H: 6. chunks...
+    loop pre-synthesis progress
+        H->>AS: 7. feedback({"progress": 0.6, "phase":"synthesizing"})
+        AS->>AS: handle.feedback.append({"progress": 0.6})
+    end
+    H-->>AS: 8. result: {audio_uri:"tts://cache/s2.wav"}
+    Note right of H: Result kept in shadow<br/>NOT played yet (side-effect free)
+    AS-->>P: 9. 202 {goal_id:"s2", state:"accepted"}<br/>then handler runs, server holds result
+    deactivate H
+
+    Sched->>P: 10. submit_segment(seg_1, goal={text:"куплет про комара"})
+    P->>AS: 11. POST /actions {goal_id:"s1", kind:"tts.speak",<br/>params:{text:"куплет про комара"}, speculative:false}
+    activate AS
+    AS->>H: 12. _handler(goal_s1, feedback, cancelled_s1)
+    activate H
+    H->>TTS: 13. publish /voice/audio/speech (speech_id="s1",<br/>NO shadow flag -> plays immediately)
+    TTS-->>H: 14. chunks...
+    loop synthesis progress
+        H->>AS: 15. feedback({"progress": 0.25})
+        H->>AS: 15b. feedback({"progress": 0.50})
+        H->>AS: 15c. feedback({"progress": 0.75})
+    end
+    H-->>AS: 16. result: {audio_uri:"tts://cache/s1.wav"}
+    AS->>AS: handle.state = SUCCEEDED
+    deactivate H
+
+    Note over U,TTS: 17. User hears seg_1 playing
+    U->>Sched: 18. "И ещё про енота!"
+    activate Sched
+    Sched->>LLM: 19. user_input forwarded
+    activate LLM
+    LLM->>Sched: 20. task_delta: {action:"MERGE", rewrite:[seg_2, seg_3], add:seg_4}
+    deactivate LLM
+
+    Sched->>P: 21. discard(action_id="s2") -- LLM rewrote, seg_2 no longer applies
+    activate P
+    P->>AS: 22. POST /actions/s2/cancel
+    AS->>AS: cancelled_s2.set(); task_s2.cancel() (already done)
+    AS->>AS: delete shadow result for s2 (cached WAV reaped)
+    AS-->>P: 200 {cancelled:true}
+    Note right of AS: Cache entry for s2.wav is purged<br/>(TTS cache TTL handles disk cleanup)
+    P->>P: shadow.remove("s2")
+    deactivate P
+
+    Sched->>P: 23. speculate(action_id="s2_new", goal={text:"припев про обоих"})
+    activate P
+    P->>AS: 24. POST /actions {goal_id:"s2_new", speculative:true}
+    activate AS
+    Note right of AS: New shadow goal for rewritten seg_2
+    AS-->>P: 25. 202 {goal_id:"s2_new"}
+    deactivate AS
+    deactivate P
+
+    Note over U,TTS: 26. seg_1 finishes naturally; seg_1 is ACTIVE so MERGE does not interrupt it
+
+    Sched->>AS: 27. GET /actions/s1 (polling)
+    activate AS
+    AS-->>Sched: 28. 200 {state:"succeeded", result:{audio_uri:"s1.wav"}}
+    deactivate AS
+    Sched->>P: 29. commit(action_id="s1")
+    P-->>Sched: 30. cached audio URI
+
+    Note over Sched,TTS: 31. Scheduler advances to seg_2 (rewritten)
+
+    Sched->>P: 32. commit(action_id="s2_new") if LLM confirms
+    P->>AS: 33. GET /actions/s2_new
+    activate AS
+    AS-->>P: 34. 200 {state:"succeeded", result:{audio_uri:"s2_new.wav"}}
+    deactivate AS
+    P->>P: shadow.remove("s2_new"); promote to authoritative
+
+    Note over Sched: 35. Audio of seg_2 plays back-to-back with seg_1<br/>(no gap because s2_new was already pre-synthesised)
+    deactivate Sched
+
+    Note over U,TTS: === Alternative branch: graceful shutdown mid-flight ===
+
+    rect rgb(245, 230, 230)
+        Note over AS: SIGTERM received (e.g., docker stop)
+        AS->>AS: shutting_down = True
+        AS-->>Sched: GET /actions/{id} returns 200 {state:"succeeded"} (in-flight goals complete)
+        AS->>AS: shutdown() -- cancel + wait for active goals (timeout=2s)
+        AS-->>Sched: subsequent GET /healthz returns 503 {ok:false}
+    end
