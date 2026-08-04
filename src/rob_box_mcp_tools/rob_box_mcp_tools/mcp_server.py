@@ -93,7 +93,8 @@ class MCPServer(Node):
         super().__init__("mcp_server")
 
         # Параметры ноды
-        self.declare_parameter("music_max_amp", 0.7)
+        # Issue 986: музыка орала, голос не был слышен — понизили max_amp с 0.7 до 0.42
+        self.declare_parameter("music_max_amp", 0.42)
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
