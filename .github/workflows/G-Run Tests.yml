@@ -52,7 +52,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           sudo python3 -m pip install --upgrade pip
 
           # pytest >= 8 — MUST use --force-reinstall because apt-installed
@@ -74,7 +74,7 @@ jobs:
 
       - name: Install ROS2 test dependencies
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             ros-humble-ament-cmake-pytest \
@@ -103,7 +103,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
@@ -122,7 +122,7 @@ jobs:
       - name: Display test results
         if: always()
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/ros/humble/setup.bash
           cd ${{ github.workspace }}/test_ws
           colcon test-result --all --verbose
@@ -182,7 +182,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           sudo python3 -m pip install --upgrade pip
           sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov
           sudo pip install openai httpx
@@ -190,7 +190,7 @@ jobs:
 
       - name: Build workspace
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
@@ -201,7 +201,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
           cd ${{ github.workspace }}/test_ws
