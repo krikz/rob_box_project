@@ -18,6 +18,8 @@
   <depend>audio_common_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>aiohttp</exec_depend>
 
   <!-- Python dependencies (installed via pip in Dockerfile) -->
   <!-- Note: python3-pyaudio not available in ARM64 repos, installed via pip -->
