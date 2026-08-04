@@ -2,12 +2,12 @@
 
 | Поле | Значение |
 |------|----------|
-| Документ | `docs/architecture/SCHEDULER_DESIGN.md` |
-| Связанное | Issue [#968](https://github.com/krikz/rob_box_project/issues/968), PR #907, #935 |
-| Статус | **Architecture proposal** — ready for review |
-| Автор документа | Architect profile (kanban t_8f5bb012) |
-| Дата | 2026-08-03 |
-| Основание | Анализ issue #968 целиком + все 15 комментариев + аудит текущего кода |
+| Документ | `docs/design/SCHEDULER_DESIGN.md` |
+| Связанное | Issue [#968](https://github.com/krikz/rob_box_project/issues/968) (комментарии [5167924152](https://github.com/krikz/rob_box_project/issues/968#issuecomment-5167924152), [5168761313](https://github.com/krikz/rob_box_project/issues/968#issuecomment-5168761313)), PR #907, #935, ADR-0001 §5 |
+| Статус | **Architecture proposal v4** — §8 Acceptance tool-calling (5167924152) + §8.10 Reflex-слой (5168761313) |
+| Автор документа | Architect profile (kanban t_8f5bb012 v1, t_9fca744c v2, t_99da3520 v3, **t_85ab3ee1 v4**) |
+| Дата | 2026-08-03 (v1) / 2026-08-03 (v2: §3.3, §4.5, §4.6, §5.5) / 2026-08-03 (v3: §2 расширен AWAITING_CONFIRMATION, §8 Acceptance tool-calling, §11.2 фаза 1.5) / **2026-08-03 (v4: §8.10 Reflex-слой по комментарию 5168761313, две фазы интеграции 1.5 + 2, e2e-сценарии 1–5, Q5–Q7)** |
+| Основание | Анализ issue #968 целиком + все 17 комментариев (включая 5167924152 и **5168761313** — reflex-путь в develop-ветке) + аудит текущего кода + пересечение с ADR-0001 §5 |
 
 ---
 
@@ -20,6 +20,27 @@
 **Ключевой принцип (из итоговой модели, согласовано в #13):** тулы от LLM идут в scheduler мгновенно (LLM не блокируется). Scheduler **не задерживает конструктивные** операции (`speak_text`, `play_animation` — встают в очередь канала), а **задерживает деструктивные** (`stop_music`, REPLACE, cancel) — до естественной границы voice-канала.
 
 **Что УЖЕ есть в коде** (см. §11): вызовы `speak_text` уже блокируются через `_output_lock` + `await tts/finished` (dialogue_node.py:672–702). То есть половина исходной проблемы #968 уже решена. Осталось: (1) классификация ввода MERGE/REPLACE/QUEUE/IGNORE/CLARIFY до barge-in (блокер П1), (2) сегментная модель + PENDING-правки, (3) speculative pre-generation, (4) единый EventBus для системных событий.
+
+**Что добавлено в v3 (эта ревизия, task t_99da3520, по комментарию 5167924152):**
+**Что добавлено в v4 (эта ревизия, task t_85ab3ee1, по комментарию 5168761313):**
+- **§8.10 «Reflex-слой: прямые команды без LLM»** — новый раздел: зафиксировано, что в проекте УЖЕ ЕСТЬ reflex-путь `STT → command_parser.py (regex) → command_node.py → Nav2`, минующий LLM. Документ делает его частью архитектуры scheduler'а: reflex — приоритетный источник событий в `SchedulerEventBus` (`source="reflex"`, `priority ∈ {critical, high}`), исполняется мгновенно, LLM уведомляется post-factum через feedback events. Конфликт «reflex vs планировщик»: **reflex всегда побеждает** для команд безопасности («стой»); для команд направления во время песни — каналы независимы, движение исполняется параллельно с продолжением песни.
+- **§11.2 acceptance (дополнен)** — 4 новых acceptance-пункта для фазы 1.5 (reflex-интеграция): reflex-команды попадают в `SchedulerEventBus` с правильным приоритетом; «стой» отменяет ВСЕ активные задачи синхронно; «направо» во время песни исполняется параллельно; «стой» во время AWAITING_CONFIRMATION отменяет ожидание без штрафа.
+- **§11.3 acceptance (дополнен)** — 1 пункт для фазы 2: полная интеграция `command_node` ↔ `SchedulerEventBus` (подписка reflex на исходящие топики scheduler'а для обновления картины мира — `task.cancelled(reason=reflex_stop)` → не повторять cancel).
+- **5 e2e-сценариев reflex-слоя** (§8.10.6) — для автотестов: «спой песню» → «стой!», «едь на кухню» → «направо», «спой песню» → «поверни налево» (параллельно), повторный «стоп» (debounce), «робот, стой» во время fade-out.
+- **3 открытых вопроса дизайна (Q5, Q6, Q7)** добавлены в §14, с предложениями архитектора.
+- **§15 ссылки** — добавлен комментарий 5168761313 и конкретные файлы в develop-ветке (`core/command_parser.py:110–123`, `command_node.py:258/302/316–324`, `context_aggregator_node.py:284`).
+
+**Что добавлено в v3 (предыдущая ревизия, task t_99da3520, по комментарию 5167924152):**
+- **§2.1 + §2.3** — расширение сегментной модели: новые `kind ∈ {nav, mapping, mutate}` и статус `AWAITING_CONFIRMATION` (между `PENDING` и `ACTIVE` для опасных действий). Полная диаграмма переходов с `REJECTED` (timeout/reject).
+- **§8 «Acceptance tool-calling»** — новый раздел целиком по предложению автора issue #968: классификация всех тулов из `mcp_server.py:312–375` на три класса (🔴 confirm / 🟡 notify / 🟢 без подтверждения), жизненный цикл AWAITING_CONFIRMATION, сценарий «кухня → зал» как MERGE с подтверждением, safe boundary policy, 8 e2e-сценариев, 4 открытых вопроса дизайна (Q1–Q4).
+- **§11.2 (новая фаза 1.5)** — отдельная фаза «Acceptance tool-calling» между MVP и фазой 2, со своим блоком acceptance (11 пунктов, включая property-based тест «stop_navigation никогда не требует confirm»).
+
+**Что добавлено в v2 (предыдущая ревизия, task t_9fca744c):**
+
+- **§3.3** — план перехода от блокирующего `speak_text` к scheduler: блокировка переезжает **внутрь voice-канала**, LLM-цикл перестаёт ждать `tts/finished` (не двойная сериализация, а перенос слоя).
+- **§4.5** — scheduler сам инициирует внеочередной LLM-ход после MERGE (триггер «нужен новый task_delta»), не ждёт ни пользователя, ни нового `segment_completed`-тика.
+- **§4.6** — mermaid sequenceDiagram полного MERGE-флоу («комар+енот») + каноническая pydantic-сигнатура `quick_decide()` / `QuickDecision`.
+- **§5.5** — разрешение коллизии `EventBus` (этот документ, scheduler) vs `SideEffectBus` (ADR-0001 §5, AgentSession): разные домены, **EventBus перенесён в фазу 2** (а не 3), naming — `SchedulerEventBus` локально, чтобы не пересекаться с ADR-0001.
 
 ---
 
@@ -61,9 +82,11 @@ LLM вызывает инструменты как «пулемёт»: `speak()`
 
 **Сегмент (Segment)** — атомарная единица исполнения внутри задачи. Имеет:
 - `idx` — порядковый номер
-- `kind` — `voice` | `music` | `anim` | `silence`
-- `payload` — что именно (текст, midi-паттерн, анимация)
-- `status` — `PENDING` → `ACTIVE` → `COMPLETED` / `CANCELLED` / `SKIPPED`
+- `kind` — `voice` | `music` | `anim` | `silence` | `nav` | `mapping` | `mutate`
+- `payload` — что именно (текст, midi-паттерн, анимация, маршрут, операция над waypoint)
+- `status` — `PENDING` → (`AWAITING_CONFIRMATION`?) → `ACTIVE` → `COMPLETED` / `CANCELLED` / `REJECTED` / `SKIPPED`
+  - `AWAITING_CONFIRMATION` — сегмент с физическим/деструктивным действием, ждёт голосового/тач-подтверждения пользователя (см. §8 Acceptance tool-calling); по таймауту → `REJECTED`
+- `confirmation` — `required` (true/false) и `timeout_ms` (по умолчанию 20 000) для сегментов с `kind ∈ {nav, mapping, mutate}`
 - `eta_ms` — оценка длительности (см. §6)
 
 ### 2.2 Пример
@@ -77,7 +100,7 @@ LLM вызывает инструменты как «пулемёт»: `speak()`
 
 ### 2.3 Правила обновления (INVARIANT)
 
-**`update(delta)` модифицирует ТОЛЬКО сегменты со статусом PENDING.** ACTIVE сегмент доигрывает до естественной границы.
+**`update(delta)` модифицирует ТОЛЬКО сегменты со статусом PENDING или AWAITING_CONFIRMATION.** ACTIVE сегмент доигрывает до естественной границы.
 
 Пример MERGE:
 ```
@@ -88,7 +111,27 @@ update("добавь енота"):
   [seg_4: "общий финал"          — PENDING → добавлен]
 ```
 
-**Этот инвариант — фундамент.** Без него любая правка «на лету» ломает воспроизведение. Покрывается unit-тестом (см. §10 acceptance).
+**Правила переходов (расширенный инвариант, включая §8):**
+
+```
+PENDING ──[confirm ok]──► ACTIVE ──[done]────► COMPLETED
+   │                       │
+   │                       └──[abort/replace]► CANCELLED
+   │
+   ├──[requires confirm]─► AWAITING_CONFIRMATION ──[confirm ok]──► ACTIVE
+   │                              │
+   │                              ├──[reject]────► REJECTED → feedback в LLM
+   │                              └──[timeout]───► REJECTED (робот: «отменяю»)
+   │
+   └──[skip]──────────────────────► SKIPPED
+```
+
+- `update()` НЕ трогает `ACTIVE`
+- `update()` НЕ отменяет `AWAITING_CONFIRMATION` без явного отказа пользователя (иначе гонка «едь на кухню» → пользователь только начал отвечать, а уже REJECT)
+- Сегменты с `kind ∈ {voice, music, anim, silence}` идут сразу `PENDING → ACTIVE` (без подтверждения)
+- Сегменты с `kind ∈ {nav, mapping, mutate}` проходят `AWAITING_CONFIRMATION` перед `ACTIVE` (см. §8)
+
+**Этот инвариант — фундамент.** Без него любая правка «на лету» ломает воспроизведение. Покрывается unit-тестом (см. §11.1, §11.2 acceptance).
 
 ### 2.4 Почему сегменты, а не «один большой task»
 
@@ -134,7 +177,66 @@ Scheduler владеет набором каналов. **Каждый кана�
 | `set_vibe_preset(...)` | led/expression | INSTANT, fire-and-forget |
 | `set_emotion(...)` | expression | INSTANT, fire-and-forget |
 
-### 3.3 Уже реализовано
+### 3.3 Переход от блокирующего `speak_text` к scheduler
+
+Текущая реализация `speak_text` (`dialogue_node.py:672–702`) делает три вещи в одном `await`:
+
+1. Захватывает `_output_lock` (asyncio.Lock) — взаимное исключение на LLM-цикл.
+2. Публикует TTS-заказ в ROS-топик.
+3. **Ждёт `tts/finished` для `speech_id`** до звучания последнего чанка.
+
+**Это решает гонку `stop_music` ↔ `speak`, но создаёт две новые проблемы:**
+
+- **Двойная сериализация**: один TTS-заказ блокирует и `speak_text`, и весь LLM-цикл. Если LLM выдаёт пять `speak_text` подряд, второй уже не «стоит в очереди» — он **ждёт**, пока предыдущий чанк доиграет, плюс ещё LLM-токены между ходами теряются.
+- **Невозможность MERGE во время звучания**: LLM-цикл блокирован, значит обрабатывать новый ввод «и ещё про енота» — нечем. Сценарий «комар+енот» требует живой LLM во время звучания voice.
+
+**Решение (фиксируем в этом документе):** блокировка **не убирается** — она **переезжает внутрь voice-канала**.
+
+```
+Сейчас (voice-канал не существует как объект):
+  LLM-цикл → speak_text() → _output_lock.acquire() → ROS topic → await tts/finished → release
+                                  ↑ блокирует LLM на 2–5с
+
+Станет (есть voice FIFO + state-машина):
+  LLM-цикл → speak_text() → scheduler.enqueue(voice, seg)          [НЕ блокирует LLM]
+                                       ↓
+                              voice-канал (FIFO + state)
+                                       ↓
+                              исполняет сегменты по одному
+                                       ↓
+                              ВНУТРИ канала: lock по каналу + ждёт tts/finished
+                              LLM идёт дальше (следующие tool_calls или system prompt)
+```
+
+**Что меняется в коде:**
+
+| Компонент | Было | Станет |
+|-----------|------|--------|
+| `speak_text` function_tool | `await self._speak_and_wait(text)` | `await self._scheduler.enqueue(channel="voice", seg=Segment(payload=text))` |
+| `_output_lock` | asyncio.Lock на LLM-цикл | asyncio.Lock **только** на исполнителе voice-канала |
+| `_tts_events[speech_id]` wait | внутри `speak_text` (блокирует LLM) | внутри voice-канала (блокирует только следующий сегмент своего канала) |
+| Backpressure | «speak_text ждёт tts/finished» | «voice-канал возвращает ack сразу, сегменты FIFO-встают, исполнитель разруливает» |
+
+**Что НЕ меняется:**
+
+- Никакой новой логики сериализации нет — блокировка остаётся одна, просто живёт ниже по стеку (в канале).
+- `_output_lock` никуда не девается, его владелец меняется: был у `speak_text`, стал у `voice_channel._play_next()`.
+- Поведение `tts/finished` не меняется — те же `speech_id`, тот же счётчик. INSIGHT #7 (один finished на один заказ) сохраняется.
+
+**Почему это НЕ «двойная сериализация»:** слой один — канал. LLM не блокируется ничем; канал сам сериализует свои сегменты. То, что было «блокировкой LLM», становится «FIFO-очередью канала» — это один и тот же механизм сериализации, просто развёрнутый из `await` в `enqueue + drain`.
+
+**Почему это НЕ «race на `_output_lock`»:** `speak_text` больше не вызывает `_output_lock.acquire()`. Lock остаётся, но им владеет только voice-канал. LLM-цикл и voice-канал живут в разных корутинах и блокируют разные ресурсы: LLM — собственный ход; канал — собственный исполнитель.
+
+**Критерий перехода (Phase 1 acceptance, дополнительно):**
+
+- [ ] LLM-цикл не делает `await tts/finished` ни в одном пути (grep `await.*tts.*finished` по `dialogue_node.py` — пусто)
+- [ ] `voice-канал` имеет собственный `_channel_lock` (вместо бывшего `_output_lock`)
+- [ ] Два подряд `speak_text` от LLM возвращают управление за < 50мс каждый (текущее — 2–5с на вызов)
+- [ ] Сценарий «комар+енот» отрабатывает с инвариантом: голос **не** прерывается на середине фразы, новые сегменты встают в очередь до естественной границы
+
+**Обратная совместимость:** до полного перевода всех voice-вызовов через scheduler `_output_lock` остаётся в `dialogue_node.py` как no-op (или удаляется одним PR после перевода). Удаление `_output_lock` — отдельный PR, не часть Phase 1.
+
+### 3.4 Уже реализовано
 
 В текущем `dialogue_node.py:672–702`:
 
@@ -151,7 +253,7 @@ async def speak_text(text: str, animation: str = "neutral") -> str:
             await asyncio.wait_for(event.wait(), timeout=30.0)
 ```
 
-Это значит: **основной race «stop_music vs speak» уже частично решён** — потому что пока `speak_text` ждёт `tts/finished`, LLM-цикл не двигается дальше. Проблема остаётся в `execute_music_code` + параллельных вызовах (см. §10 acceptance, регресс v36).
+Это значит: **основной race «stop_music vs speak» уже частично решён** — потому что пока `speak_text` ждёт `tts/finished`, LLM-цикл не двигается дальше. Проблема остаётся в `execute_music_code` + параллельных вызовах (см. §11.1 acceptance, регресс v36).
 
 ---
 
@@ -237,6 +339,204 @@ async def on_new_input(text: str, source: str):
         ))
 ```
 
+### 4.5 Авто-триггер внеочередного LLM-после-MERGE (scheduler self-drives)
+
+**Проблема, найденная при проектировании фазы 2:**
+
+После решения MERGE/QUEUE нужно, чтобы LLM **выдала `task_delta`** (новые/изменённые PENDING-сегменты). Но в аудитории сценария «комар+енот» LLM уже **закончила текущий ход** — она не сидит в цикле и ждёт ввода.
+
+Два тупика:
+
+| Стратегия | Почему не работает |
+|-----------|---------------------|
+| Ждать следующего пользовательского ввода | MERGE-триггером был системный сигнал (`battery_critical`) или синтез-сегмент завершился — пользователь молчит минуту. PENDING не правятся минуту. |
+| Дёргать LLM при каждом `segment_completed` | «Прокси-цикл» сетится на каждое TTS-окончание (каждые 2–5с). LLM говорит «угу, продолжай» — не отвечает. Стоимость API взлетает. |
+
+**Решение (зафиксированное здесь):**
+
+Scheduler имеет собственный триггер «нужен новый LLM-ход», который срабатывает **только** когда выполнены все три условия одновременно:
+
+```
+триггер активен ⟺
+  1) есть открытая задача с PENDING-сегментами
+  AND
+  2) есть хотя бы один неприменённый Event/decision
+     (MERGE / battery_critical / user_input с CLARIFY)
+  AND
+  3) канал-voice/music ВЫГЛЯДИТ как требующий продолжения
+     (voice: speaking → silence после ACTIVE; ИЛИ
+      music: playing, но _last_segment_user_initiated=false И
+             `_elapsed_since_last_segment_started > 0.5 × eta)`)
+```
+
+**Когда триггер активен** — scheduler вызывает `llm_continue_hook(current_state)`, который:
+
+1. Берёт `[CHANNELS]` + `[ACTIVE TASKS]` + `[PENDING EVENTS]` — те же блоки, что при обычном ходе.
+2. Формирует короткий prompt: «продолжи активную задачу, применив pending events».
+3. Вызывает **ту же лёгкую LLM**, что и уровень 2 для `quick_decide` — для решений MERGE этого достаточно (нужен только `task_delta` структурно, не свободный текст).
+4. Полученный `task_delta` идёт через `scheduler.update(task_id, delta)` → правка PENDING.
+
+**Где НЕ срабатывает (анти-паттерны):**
+
+- Во время ACTIVE voice-сегмента (ещё рано, предыдущие PENDING сами применятся в третьем-четвёртом ходе LLM, если она там была — а теперь триггер заменит этот ход).
+- При `priority=low` events (IGNORE / шум).
+- При отсутствии PENDING в задаче (нечего дополнять — задача идёт к завершению штатно).
+
+**Связь с MERGE-флоу (§4.4):**
+
+| Шаг | Действие | Кто отвечает |
+|-----|----------|--------------|
+| 1 | Новый ввод → MERGE | quick_decide уровень 1/2 (§4.2) |
+| 2 | MERGE → enqueue в EventBus | scheduler (§5) |
+| 3 | **Триггер «нужен LLM-ход» активируется** | **scheduler (§4.5, этот пункт)** |
+| 4 | LLM выдаёт task_delta | scheduler вызывает continuation-hook |
+| 5 | PENDING-сегменты обновляются | `update()` с инвариантом §2.3 |
+| 6 | Исполнение продолжается | channels drain по правилам §3 |
+
+**Шаг 3 — ключевой новый элемент.** Без него цепочка обрывается на шаге 2.
+
+**Критерий приёмки (фаза 2 acceptance, дополнительно):**
+
+- [ ] `battery_critical` во время песни → scheduler инициирует LLM-ход **сам**, не дожидаясь пользователя
+- [ ] Сценарий «енот без пользовательского ввода» (внешний таймер `30s без ввода → autosuggest`) → MERGE отрабатывает полностью без участия пользователя
+- [ ] Не срабатывает впустую: флаг «неприменённых events + idle voice» ложит только при двух одновременных сигналах (e2e-метрика: auto-trigger fires ≥ 5 раз за прогон, ложных ≤ 1)
+- [ ] Использует лёгкую LLM (≤ 800мс), не основную — фиксируется в `LLMEstimator.last_turn_kind`
+
+### 4.6 Визуализация MERGE-флоу и сигнатура `quick_decide`
+
+#### 4.6.1 Mermaid sequenceDiagram — «комар+енот»
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant STT as VoiceInput (STT)
+    participant QD as quick_decide (level 1/2)
+    participant EB as EventBus
+    participant SCH as TaskScheduler
+    participant LLM as LLM (heavy)
+    participant VC as voice-канал
+    participant MC as music-канал
+    participant LN as light LLM (continuation)
+
+    Note over U,MC: T0 — пользователь: "Спой песню про комара"
+
+    U->>STT: голос
+    STT->>QD: text="Спой песню про комара", source=user_input, priority=normal
+    QD->>LLM: task_delta {op:"create", segments:[seg1..4]}
+    LLM-->>SCH: task.create(type=sing, topics=[комар], segments=[v,m,v,m])
+
+    SCH->>MC: enqueue seg (куплет 1)
+    MC->>U: ♪ куплет 1: комар ...♪
+    Note over MC: ACTIVE, eta=12s
+
+    Note over U,MC: T1 = T0 + 4s — пользователь: "И ещё про енота!"
+
+    U->>STT: голос (во время куплета 1)
+    STT->>QD: text="и ещё про енота"
+    QD-->>SCH: decision.action=MERGE, priority=normal
+    QD->>EB: enqueue Event{type=user_input, decision=MERGE, payload=text}
+
+    Note over SCH: trigger_condition(MERGE + voice.idle_window_tail)
+    SCH->>LN: llm_continue_hook([CHANNELS]+[PENDING EVENTS])
+    LN-->>SCH: task_delta {op:"update", segments:[seg2:rewrite, seg3:replace, seg4:new]}
+
+    Note over SCH: update() применяет только PENDING (см. §2.3 INVARIANT)<br/>ACTIVE seg1 = НЕ ТРОГАЕМ
+
+    MC->>U: ♪ куплет 1: комар ... (доиграл до конца — 12с)
+    Note over MC: ACTIVE → COMPLETED на границе такта
+    MC->>U: ♪ куплет 2: переписан, "комар+енот" — без паузы♪
+    MC->>U: ♪ припев: общий♪
+    MC->>U: ♪ куплет 3: енот♪
+
+    Note over U,MC: T_finish — пользователь слышит непрерывный поток,<br/>ни одной секунды тишины между seg1 и seg2
+```
+
+**Что показывает диаграмма:**
+
+- **MERGE не отменяет LLM-цикл** (блокер П1 разрешён).
+- **`task_delta` приходит от continuation-hook (§4.5), не от пользователя.**
+- **ACTIVE `seg1` доживает до границы** (не обрывается на середине).
+- **PENDING-сегменты перезаписаны** (rewrite + replace + new, инвариант §2.3).
+- **Никакого `_cancel_run`** (сравни с §4.4).
+- **`tts/finished` теперь событие канала, не блокировка LLM** (см. §3.3).
+
+#### 4.6.2 Сигнатура `quick_decide`
+
+Уровень 1 (правила) и уровень 2 (лёгкая LLM) сводятся к одной async-функции на входе scheduler'а:
+
+```python
+from enum import Enum
+from typing import Literal
+from pydantic import BaseModel, Field
+
+class Priority(str, Enum):
+    CRITICAL = "critical"   # obstacle, перегрев, потеря сети
+    HIGH     = "high"       # battery_critical, «хватит»
+    NORMAL   = "normal"     # обычный голосовой ввод, Hermes-команды
+    LOW      = "low"        # шум, междометия, IGNORE-кандидаты
+
+class Action(str, Enum):
+    MERGE   = "MERGE"    # правка PENDING, ACTIVE не трогаем
+    REPLACE = "REPLACE"  # сброс PENDING, новая задача после ACTIVE
+    QUEUE   = "QUEUE"    # новая задача в очередь задач
+    IGNORE  = "IGNORE"   # ничего
+    CLARIFY = "CLARIFY"  # уточняющий вопрос
+
+class QuickDecision(BaseModel):
+    """Canonical решение quick_decide. То, что уходит в EventBus и в LLM-цикл."""
+    action: Action
+    priority: Priority
+    confidence: float = Field(ge=0.0, le=1.0, description="0..1, от уровня 1 или 2")
+    reasoning: str = Field(description="короткое объяснение для логов и feedback")
+    task_delta: dict | None = Field(
+        default=None,
+        description="Если action=MERGE/REPLACE — предложение delta-структуры; "
+                    "LLM всё равно валидирует и может переписать. На уровне 1 — None."
+    )
+    source_level: Literal[1, 2] = Field(description="каким уровнем принято решение")
+    elapsed_ms: int = Field(description="фактическое время решения, для метрик")
+
+async def quick_decide(
+    text: str,
+    *,
+    source: str,                         # "user_input" | "battery_monitor" | "hermes" | ...
+    active_task: Task | None,            # текущая активная задача (или None)
+    rules_engine: RuleEngine,            # уровень 1 (инжектируется)
+    light_llm: LightLLMClient | None,    # уровень 2 (опционально, может быть None в тестах)
+    clock: Clock,
+    timeout_ms: int = 800,
+) -> QuickDecision:
+    """Двухуровневое решение по новому вводу / системному событию.
+
+    Контракт:
+      - Возвращает решение за < 800мс (timeout гарантирует fallback).
+      - При timeout — уровень 1 fallback (lowest priority + IGNORE).
+      - Не вызывает основную (тяжёлую) LLM — это запрещено архитектурно.
+      - Не делает side-effects: только читает active_task + rules_engine + light_llm.
+      - Решение идёт в EventBus (см. §5) — не прямо в каналы.
+    """
+    ...
+```
+
+**Где `quick_decide` живёт в коде:**
+
+- Новый модуль `rob_box_voice/scheduler/quick_decide.py` (Phase 1, S — ~150 LOC).
+- Уровень 1 — набор правил на `RuleEngine` (YAML-таблица соответствий «паттерн → решение»).
+- Уровень 2 — обёртка `LightLLMClient` над существующим MiniMax-провайдером с `temperature=0` и коротким structured-output prompt'ом.
+- DI через конструктор (Phase 5 AgentSession подменит wiring, но сигнатура стабильна).
+
+**Тестируемость (Phase 1 acceptance, дополнительно):**
+
+- [ ] `quick_decide` чистая: не имеет сетевых/ROS-зависимостей, тестируется с `FakeClock` + `FakeLightLLM`
+- [ ] Возвращает `QuickDecision` со всеми полями; pydantic валидация — на границе scheduler
+- [ ] Уровень 1 решает 70% вводов за < 50мс (метрика из логов)
+- [ ] Уровень 2 решает за < 800мс (метрика из `LLMEstimator`)
+- [ ] `quick_decide("угу") → IGNORE, conf=0.95`
+- [ ] `quick_decide("и ещё про енота") → MERGE, conf=0.92`
+- [ ] `quick_decide("хватит") → REPLACE, conf=0.88`
+- [ ] `quick_decide("а потом спой колыбельную") → QUEUE, conf=0.81`
+
 ---
 
 ## 5. EventBus — единая точка входа
@@ -288,6 +588,97 @@ class Event:
 EventBus — singleton в `dialogue_node` (или новый node `scheduler_node`). Не новый топик — внутренняя шина внутри `dialogue_node` для пользовательских событий, плюс ROS-topic подписчики для внешних (`/battery/*`, `/obstacle/*`, `/hermes/*`).
 
 **Не плодим ROS-нод без нужды** — EventBus живёт в том же процессе, что и `dialogue_node`, общается с внешним миром через ROS-subscriber'ов.
+
+### 5.5 Разрешение коллизии: EventBus vs SideEffectBus (ADR-0001 §5)
+
+**Проблема, найденная при анализе двух документов вместе:** в проекте **два кандидата на «шину эффектов»** с пересекающимися доменами. Если не развести явно — получатся два класса с похожими именами и путаница ответственности.
+
+| Кандидат | Где описан | Домен | Фаза |
+|----------|-----------|-------|------|
+| **SideEffectBus** | ADR-0001 §5, P1 (после рефакторинга harness) | Канонические *эффекты* LLM: TTS, Sound, LED, TG-reply. Pure decoration of `Effect[T]`, fan-out через `CompositeBus`. | Phase 5 (AgentSession) |
+| **EventBus** | этот документ, §5 | Time-ordered *события среды*: `battery_critical`, `obstacle_ahead`, `user_input` (до MERGE/REPLACE). Не «что сделать», а «что произошло во внешнем мире». | Phase 2 (scheduler) |
+
+**Почему нельзя заменить одно другим:**
+
+- **EventBus не заменяет SideEffectBus.** Системные события (`battery_critical`) — это сигналы «изменился мир», а не «сделай TTS». Приводить их к `Effect[T]` — натягивание совы на глобус: `Effect.battery_critical`? что у него `apply()`? SideEffectBus оптимизирован под fan-out к downstream, а не под приоритезацию во времени.
+- **SideEffectBus не заменяет EventBus.** SideEffectBus — *порт*, через который `AgentSession` объявляет intent. EventBus — *канал* входящих сигналов от ROS-топиков и STT. Источники SideEffectBus'а — внутри LLM-цикла (skill emit effect). Источники EventBus'а — снаружи (ROS, STT, internal hook). Модели разные.
+
+**Решение (фиксируем здесь и в ADR-0001 follow-up):**
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                       ROS2 topics                                  │
+│         /battery/*, /obstacle/*, /hermes/*                       │
+└─────────────┬──────────────────────────────────────────────────────┘
+              │ (subscriber)
+              ▼
+       ┌──────────────────┐
+       │    EventBus      │  ←  scheduler.EventBus
+       │  (this doc §5)   │      time-ordered,
+       │                  │      priority, отметки времени,
+       │                  │      correlation_id
+       └────────┬─────────┘
+                │ enqueue Event (user_input|battery|obstacle|...)
+                ▼
+       ┌──────────────────┐
+       │   TaskScheduler  │  ←  этот документ целиком
+       │  (channels, ...) │
+       └────────┬─────────┘
+                │ по итогам решения LLM
+                ▼
+       ┌──────────────────┐
+       │  AgentSession    │  ←  ADR-0001
+       │  emits Effect[T] │
+       └────────┬─────────┘
+                │ dispatch(effect)
+                ▼
+       ┌──────────────────┐
+       │  SideEffectBus   │  ←  ADR-0001 §5
+       │  (composite:     │
+       │   TTS+Sound+LED  │
+       │   +TG-reply)     │
+       └────────┬─────────┘
+                │ apply()
+                ▼
+       ROS topics: /tts/*, /audio/*, /led/*, /tg/reply
+```
+
+**Контракт разграничения:**
+
+- **EventBus → scheduler** — направление «извне → логика». Событие — факт, не команда.
+- **Scheduler → SideEffectBus (через AgentSession)** — направление «логика → наружу». Effect — команда-решение, не факт.
+- **Стык**: scheduler после решения формирует `task_delta` → AgentSession применяет его → шлёт `Effect[T]` в SideEffectBus → fan-out.
+
+**Что это меняет в плане фаз (важно):**
+
+- **EventBus ПЕРЕНЕСЁН в фазу 2** (раньше был намечен на фазу 3). Причина: MERGE/REPLACE без EventBus'а — мёртвый код, решения некуда складывать. SideEffectBus остаётся в фазе 5 (AgentSession).
+- **Никакого параллельного EventBus в фазе 5.** Когда придёт AgentSession, SideEffectBus не подменяет EventBus и не знает о нём (EventBus — внешний канал, SideEffectBus — внутренний порт).
+- **Naming**: класс в scheduler-модуле зовём `SchedulerEventBus` (или просто `EventBus` локально), чтобы не путать с ADR-0001's `SideEffectBus`. Внешние пакеты импортируют явно: `from rob_box_voice.scheduler.event_bus import EventBus` vs `from rob_box_harness.side_effect_bus import SideEffectBus`.
+
+**Что НЕ нужно делать (анти-паттерны):**
+
+- ❌ Переносить обработку `battery_critical` в `SideEffectBus.effect_handlers`. Не-effect, не команда.
+- ❌ Пытаться объединить «обе шины» в один класс «Bus». Разные домены, разные lifecycle (EventBus — FIFO, SideEffectBus — port/ABC).
+- ❌ Откладывать решение «EventBus есть в фазе 2, SideEffectBus — в фазе 5» до самой фазы 5. Коллизия должна быть закрыта **до** начала фазы 2.
+
+**Критерий приёмки:**
+
+- [ ] В `docs/design/SCHEDULER_DESIGN.md` §11.3 явно указано: EventBus = фаза 2 (а не 3)
+- [ ] В `docs/adr/0001-harness-architecture.md` §5 добавлен **follow-up ADR** (или комментарий в §5) со ссылкой на §5.5 этого документа: «EventBus — отдельный домен, scheduler отвечает за приоритезацию системных событий»
+- [ ] В `scheduler.py` (новый модуль, Phase 1) класс событийной шины именован `SchedulerEventBus` (а не `EventBus` глобально)
+- [ ] При импорте в `dialogue_node.py` ни один путь не создаёт объект `EventBus` поверх `SideEffectBus` (или наоборот) — никакого авто-wiring'а, который мог бы перехватить сообщения чужого домена
+
+**Зависимость ADR-0001 ↔ этот документ:**
+
+```
+ADR-0001 (P1)                 SCHEDULER_DESIGN (этот документ, Phase 1-3)
+  ↓                                ↓
+AgentSession + SideEffectBus    TaskScheduler + SchedulerEventBus
+  (порт эффектов)                (канал событий)
+                ↘              ↙
+                  разные домены, разные фазы
+                  (формализовано в §5.5 этого документа)
+```
 
 ---
 
@@ -424,9 +815,375 @@ INSIGHT #8: LLM добавляет «Готово! Зачитал тебе...» 
 
 ---
 
-## 8. Точка интеграции с текущим кодом
+## 8. Acceptance tool-calling (новый класс тулов: подтверждение пользователя)
 
-### 8.1 Где встаёт scheduler
+> Дополнение к #968 от автора (комментарий 5167924152). Источник истины: текст комментария целиком + классификация тулов из `mcp_server.py:312–375`.
+
+### 8.1 Бизнес-сценарий: навигация с подтверждением
+
+Помимо «музыка/речь» (где важно убрать race) есть класс действий, где нужен **подтверждающий шаг** — робот готовит план, спрашивает пользователя, и только потом исполняет. Это **НЕ блокирующий tool** (LLM не ждёт результата) и **НЕ fire-and-forget** — это **новый статус сегмента `AWAITING_CONFIRMATION`**.
+
+```
+Пользователь: "Робот, едь на кухню"
+Робот:        [готовит план: маршрут через гостиную, ~15с]
+              [говорит: "План: еду на кухню через гостиную, 15 секунд. Подтверждаешь?"]
+Пользователь: "Да"
+Робот:        [едет на кухню]
+
+Пользователь: "И потом заедь в зал"   ← во время движения
+Робот:        [останавливается на безопасной границе]
+              [говорит: "Новый план: кухня, потом зал. Подтверждаешь?"]
+Пользователь: "Да"
+Робот:        [продолжает: кухня → зал]
+```
+
+### 8.2 Классификация тулов (по `mcp_server.py:312–375`)
+
+#### 🔴 Требуют подтверждения (физические / деструктивные)
+
+| Тул | Почему | Тип подтверждения |
+|-----|--------|-------------------|
+| `navigate_to_waypoint` | Робот физически движется | План: маршрут + ETA → «подтверждаешь?» |
+| `navigate_to_coordinates` | То же | План: точка + ETA |
+| `move_direction` | Движение без явной цели — опасно | «Двигаюсь вперёд 1м. Ок?» |
+| `start_mapping` / `continue_mapping` | Долгое физическое действие | «Картирование ~5 мин, буду ездить. Начинаю?» |
+| `delete_waypoint` / `clear_waypoints` | Удаление данных | «Удалить waypoint „гараж“?» |
+| `save_waypoint` (перезапись существующего) | Перезапись данных | «Заменить waypoint „кухня“?» |
+
+#### 🟡 Мягкое подтверждение (не блокирует, но уведомляет)
+
+| Тул | Почему |
+|-----|--------|
+| `set_speed` | Изменение поведения — «Скорость 0.5 м/с» (подтверждение = озвучивание, можно отменить голосом «отмени» / «стой») |
+| `finish_mapping` / `optimize_map` | Долгая обработка — уведомление о старте, без вопроса |
+| `set_dj_mode` / `set_volume` / `set_pitch` | Смена режима — «Включаю DJ-режим» |
+
+#### 🟢 Без подтверждения (read-only / безопасные / аварийные)
+
+| Тул | Почему |
+|-----|--------|
+| `stop_navigation` | **АВАРИЙНЫЙ СТОП — никогда не блокировать!** Мгновенно в `ACTIVE` |
+| `get_*` (pose, status, time, battery, perception, sound_info) | Read-only |
+| `list_waypoints` | Read-only |
+| `speak_text`, `play_sound`, `play_animation` | Безопасно |
+| `memory_*`, `faq_search`, `estimate_tts_duration` | Безопасно |
+| `listen_for_response` | Безопасно |
+| Все music-тулы (`play_music`, `stop_music`, `set_music_volume`, и т.д.) | Безопасно |
+
+**Золотое правило:** аварийные команды (`stop_navigation`, голосовое «стоп») — мгновенно и без вопросов. Подтверждение только для действий, которые трудно отменить.
+
+### 8.3 Жизненный цикл сегмента с подтверждением
+
+```
+PENDING ──[scheduler: requires_confirm=true]──► AWAITING_CONFIRMATION
+                                                       │
+                          ┌────────────────────────────┼────────────────────────────┐
+                          ▼                            ▼                            ▼
+                   [user: «да»]                [user: «нет»]              [timeout 20с]
+                          │                            │                            │
+                          ▼                            ▼                            ▼
+                       ACTIVE                      REJECTED                      REJECTED
+                  (план применён)             (feedback в LLM,               (робот говорит
+                                              робот: «отказы-                  «отменяю, жду
+                                              ваю, что дела-                  указаний»)
+                                              ем?» → новый
+                                              LLM-ход)
+```
+
+**Контракт `AWAITING_CONFIRMATION`:**
+
+1. LLM выдаёт `navigate_to_waypoint(кухня)` → scheduler классифицирует тул как 🔴 → ставит сегмент в `AWAITING_CONFIRMATION` (а не сразу `ACTIVE`).
+2. Scheduler через voice-канал просит LLM (через feedback event `awaiting_confirmation(plan, eta)`) сгенерировать `speak_text` с формулировкой плана и вопросом.
+3. Следующий пользовательский ввод → `quick_decide()` (см. §4) распознаёт «да/нет» как **ответ на подтверждение**, а не как новый task_delta. Маршрут:
+   - `CONFIRM` → `AWAITING_CONFIRMATION → ACTIVE`, таймер отменяется
+   - `REJECT`  → `AWAITING_CONFIRMATION → REJECTED`, LLM получает `feedback_event: {kind: 'confirmation_rejected', plan: '...', reason: 'user_said_no'}`, LLM перегенерирует план (новый LLM-ход)
+   - `TIMEOUT` (20с, конфигурируемо) → `AWAITING_CONFIRMATION → REJECTED`, автогенерация `speak_text("Отменяю, жду указаний")`, плана нет
+4. **Параллельный ввод во время ожидания:** новый пользовательский ввод НЕ отменяет AWAITING, а попадает в `quick_decide` для решения: «это ответ на confirm» vs «это новый task_delta» (см. §4.4 + §8.5).
+
+### 8.4 Сценарий «кухня → потом зал» — это MERGE с подтверждением
+
+Ровно MERGE из §4, но для навигации:
+
+1. ACTIVE сегмент «еду на кухню» **НЕ прерывается мгновенно** — робот доезжает до **безопасной границы** (останавливается, см. §8.6).
+2. Новый план (кухня → зал) ставится в `AWAITING_CONFIRMATION`.
+3. После «да» — продолжение без рестарта: ACTIVE-сегмент возобновляется, новый PENDING-добавляется.
+
+### 8.5 Различие с музыкой — почему здесь подтверждение
+
+| | Музыка/речь | Навигация / mapping / mutate |
+|---|---|---|
+| Стоимость ошибки | Низкая (переиграть трек) | Высокая (робот в стене, упал со стола, потеря данных) |
+| Отменяемость | Легко (`stop_music`) | Трудно (уже поехал / уже удалил) |
+| Нужен ли confirm | Нет | **Да** |
+| Канал вывода плана | n/a | voice (TTS): «План: ...» |
+| Решение на ввод | quick_decide (новый task_delta) | quick_decide (ответ на confirm ИЛИ новый task_delta) |
+
+### 8.6 Безопасная граница (safe stop)
+
+Для навигации «прерывание на полуслове» недопустимо — робот может оказаться посреди комнаты, в дверном проёме, на краю стола. Scheduler при `REPLACE`/`MERGE` на ACTIVE-навигационном сегменте:
+
+1. Шлёт команду `safe_stop` исполнителю навигации (`StopNavigationTool` не делаем, а используем внутренний «приехать к ближайшей безопасной точке маршрута» — это safe sub-goal планировщика).
+2. Ждёт `navigation_at_safe_boundary` event (новое событие EventBus, см. §5).
+3. Только после этого переводит ACTIVE → CANCELLED и переходит к новому `AWAITING_CONFIRMATION`.
+
+**Параметр `safe_boundary_policy`:** конфигурируемый — `hard` (немедленная остановка с колёс, допустимо только для аварийных `stop_navigation`) / `soft` (доехать до ближайшего waypoint / pre-defined safe point). По умолчанию `soft`.
+
+### 8.7 8 e2e-сценариев (для автотестов и приёмочных прогонов)
+
+| # | Сценарий | Ожидаемое поведение |
+|---|----------|---------------------|
+| 1 | «Едь на кухню» → «да» | план → confirm → едет → прибыл |
+| 2 | «Едь на кухню, потом в зал» → «да» | план с двумя точками → confirm → кухня → зал |
+| 3 | «Едь на кухню» (едет) → «и потом зал» → «да» | safe_stop на границе → confirm нового плана → кухня → зал |
+| 4 | «Едь на кухню» (едет) → «стой!» | `stop_navigation` мгновенно, БЕЗ подтверждения (🟢 аварийный) |
+| 5 | «Начни картирование» → «да» | «буду ездить ~5 мин, начинаю?» → confirm → mapping активен |
+| 6 | «Удали waypoint гараж» → «да» | «удалить?» → confirm → waypoint удалён |
+| 7 | «Едь на кухню» → (молчит 20с) | таймаут → «отменяю, жду указаний» → сегмент REJECTED |
+| 8 | «Едь на кухню» → «нет, в зал» | confirm-rejected → feedback в LLM → LLM перегенерирует план («кухня → зал») → новое AWAITING_CONFIRMATION → «да» → исполнение |
+
+### 8.8 4 открытых вопроса дизайна (требуют решения PM / Author)
+
+#### Q1. Как пользователь подтверждает?
+
+| Канал | Плюсы | Минусы |
+|-------|-------|--------|
+| **Голос («да»/«ок»)** | Hands-free, естественно для разговора | Требует чёткой работы ASR; шум может ложно матчить |
+| **Тач-кнопка на корпусе** | Детерминированно, не зависит от ASR | Нужен физический доступ; не работает на расстоянии |
+| **Голос ИЛИ тач** | Лучшее из двух | Два пути кода, две политики приоритета |
+
+**Предложение архитектора:** голос как primary (hands-free), тач как fallback / override. `quick_decide` сначала пытается распознать «да/нет» в голосовом вводе, при отсутствии уверенности (> 0.7 score) — ждёт тач-N секунд. Решение за PM.
+
+#### Q2. Порог опасности — где граница «спросить» vs «сделать»?
+
+| Действие | Класс | Обоснование |
+|----------|-------|-------------|
+| Физическое движение робота | 🔴 confirm | Трудно отменить, дорогая ошибка |
+| Удаление / перезапись данных | 🔴 confirm | Потеря пользовательского контента |
+| Изменение поведения (скорость, режим) | 🟡 уведомление | Обратимо, но стоит сказать |
+| Read / safe write / аварийные | 🟢 без вопроса | Безопасно или критично по времени |
+
+Предлагаемое правило: **физическое движение + деструктив данных → спросить; остальное → сделать (с уведомлением, если меняется режим)**. Решение за PM.
+
+#### Q3. Повторный вопрос на цепочку
+
+Если пользователь уже сказал «да» на «кухня + зал», а потом говорит «и ещё в спальню» — спрашивать снова или докатывать по цепочке?
+
+**Предложение:** спрашивать снова. План меняется → новый `task_delta` → новый `AWAITING_CONFIRMATION`. Причина: пользователь должен видеть финальный план перед исполнением. Иначе робот сам «додумывает» траекторию, а это против безопасности. Решение за PM.
+
+#### Q4. Таймаут подтверждения
+
+Предложение: **20 секунд, конфигурируемо** (`SchedulerConfig.confirmation_timeout_ms`, default 20 000). По таймауту — REJECTED + автоозвучка «отменяю, жду указаний». Решение за PM.
+
+### 8.9 Связь с другими разделами
+
+- **§2 (Сегментная модель):** `AWAITING_CONFIRMATION` — новый статус; инвариант переходов расширен.
+- **§3 (Каналы):** для nav/mapping/mutate вводится **отдельный `nav_channel`** (не voice/music/anim) — со своей очередью и `safe_boundary_policy`.
+- **§4 (MERGE/REPLACE/QUEUE/IGNORE/CLARIFY):** классификация ввода для подтверждения добавляет **6-й исход — `CONFIRM`** (или `REJECT`) наряду с пятью существующими; `quick_decide` должен различать «ответ на confirm» и «новый task_delta» (приоритет у ответа на confirm, если сегмент в AWAITING).
+- **§5 (EventBus):** новые события — `awaiting_confirmation(plan, eta)`, `confirmation_accepted(seg_id)`, `confirmation_rejected(seg_id, reason)`, `navigation_at_safe_boundary(seg_id)`.
+- **§7 (Feedback events):** в LLM-контекст добавляется блок `[AWAITING]` (какие сегменты ждут подтверждения, какой план, сколько секунд прошло).
+- **§11 (План реализации):** Acceptance tool-calling — **фаза 1.5** (между MVP и фазой 2) или расширение фазы 1 (см. §11.2).
+
+---
+
+## 8.10 Reflex-слой: прямые команды без LLM
+
+> Дополнение к #968 от автора (комментарий **5168761313**, ветка develop). Источник истины: текст комментария целиком + код в develop (`core/command_parser.py:110–123`, `command_node.py:258/302/316–324`, `context_aggregator_node.py:284`). Суть: в проекте УЖЕ ЕСТЬ параллельный путь для команд безопасности и направления, минующий LLM. Документ делает его частью архитектуры scheduler'а, а не «осадным явлением» в `command_node`.
+
+### 8.10.1 Бизнес-проблема: почему reflex существует
+
+LLM думает 1.5–3с. Для команды «стой!» это **смертельно**: пока LLM-цикл дойдёт до `tool_call(stop_navigation)`, робот успеет врезаться. Аналогично с «направо» / «вперёд» в навигации — пользователь ждёт реакции ≤ 500мс, иначе повторяет (и робот дёргается дважды).
+
+Поэтому в проекте исторически сделано **ДВА независимых пути** от STT до исполнителя:
+
+```
+                    ┌─ reflex-путь:   STT → command_parser.py → command_node.py → Nav2    (≤ 500мс, БЕЗ LLM)
+вход пользователя ──┤
+                    └─ dialog-путь:   STT → dialogue_node → LLM → TaskScheduler → каналы   (1.5–3с, через планировщик)
+```
+
+Reflex-путь уже работает в develop-ветке (см. подтверждение в коде ниже) и не должен сломаться при внедрении scheduler'а. Наоборот — scheduler должен **учитывать** reflex как внешний источник событий, а не пытаться его поглотить.
+
+**Что есть в develop:**
+
+- `src/rob_box_voice/rob_box_voice/core/command_parser.py:110–123` — regex-паттерны для `IntentType.NAVIGATE` (строки 110–116) и `IntentType.STOP` (строки 119–121):
+  ```python
+  (r'(двигайся|иди|поезжай|езжай|катись|двигай)\s+(вперед|вперёд|назад|влево|вправо)', 'direction'),
+  (r'^(вперед|вперёд|назад)$', 'direction'),
+  (r'(поверни|повернись|развернись)\s+(налево|направо|влево|вправо)', 'turn'),
+  (r'^(налево|направо|влево|вправо)$', 'turn'),
+  ...
+  (r'(стой|стоп|остановись|останови|halt|стоять|хватит|замри)', None),
+  (r'(отмени|cancel)\s+(движение|навигацию|задание)', None),
+  ```
+- `command_node.py:258` — `handle_stop()` отменяет **все** активные Nav2 goals через `/navigate_to_pose/_action/cancel_goal` (CancelGoal service с пустым `GoalInfo`).
+- `command_node.py:302–324` — `handle_direction()` маппит направление в координаты (`'налево' = +π/2`, `'направо' = -π/2`, `'вперёд' = +1м`) и шлёт `NavigateToPose` через Nav2 — не напрямую cmd_vel.
+- `context_aggregator_node.py:284` — «Команды движения (вперед, назад, налево, направо, стой) НЕ добавляем в память» — **подтверждает**: reflex-команды не участвуют в диалоге.
+
+### 8.10.2 Архитектурное решение: reflex = приоритетный source в EventBus
+
+Предлагаемое место reflex-слоя в архитектуре scheduler'а:
+
+```
+┌──────────────┐    ┌─────────────────┐
+│   STT/ASR    │────│ command_parser  │─────┐
+│  (dialog)    │    │ (regex, <50мс)  │     │
+└──────────────┘    └─────────────────┘     │ source="reflex"
+                                            ▼
+                                     ┌──────────────────┐    ┌─────────────────┐
+                                     │  SchedulerEvent  │───▶│  TaskScheduler  │
+                                     │       Bus        │    │   (this doc)    │
+                                     │  (§5 этого       │    │                 │
+                                     │  документа)      │    └─────────────────┘
+                                     └────────┬─────────┘             │
+                                              ▲                       │ emit
+                                              │ source="dialog"       │ task.cancelled
+┌──────────────┐    ┌─────────────────┐      │                       │ (reason=reflex_stop)
+│   STT/ASR    │────│ dialogue_node   │──────┘                       ▼
+│  (reflex)    │    │ (LLM, 1.5–3с)   │                       ROS topic
+└──────────────┘    └─────────────────┘                       /harness/task_events
+        (на практике — один и тот же STT, разделение по результату command_parser: match → reflex-path, miss → dialog-path)
+```
+
+**Контракт:**
+
+1. `command_parser.parse(text)` — это **уровень 0** классификации, существующий ДО `quick_decide` (уровни 1–2, см. §4.2). Если regex совпал — текст уходит в reflex-путь **немедленно**, в LLM не идёт.
+2. `command_node` исполняет команду **синхронно** (≤ 500мс для stop, ≤ 1с для direction — это уже отлажено в develop).
+3. **Одновременно** `command_node` (или прослойка между ним и scheduler) публикует `Event` в `SchedulerEventBus` с `source="reflex"`, `priority ∈ {critical, high}`, `type ∈ {"stop", "move_direction"}`, `payload={...}`.
+4. Scheduler обрабатывает reflex-event:
+   - если `priority=critical` («стой») → **REPLACE глобально** для всех каналов навигации, пометка `task.cancelled(reason=reflex_stop)` в feedback
+   - если `priority=high` («направо» во время навигации) → новый nav-сегмент **становится первым** в `nav_channel`, текущая задача продолжается до safe boundary, потом REPLACE
+   - если `priority=high` («направо» во время песни — не навигация) → каналы независимы (§3.1), nav-сегмент исполняется **параллельно** с voice/music
+5. **LLM не вызывается для обработки reflex.** На следующем ходу LLM получает блок в feedback events (см. §7.1):
+   ```
+   [REFLEX EVENTS]
+   - 0.4s ago: reflex.stop() → все активные задачи CANCELLED
+   - 1.2s ago: reflex.move_direction(right) → nav_channel new segment (90° right)
+   ```
+
+**Это решает блокер П1+ («LLM-цикл блокирует emergency reaction») БЕЗ отмены LLM-цикла как такового** — reflex обходит его стороной.
+
+### 8.10.3 Конфликт reflex vs планировщик: кто побеждает
+
+| Ситуация | Reflex-команда | Что должно произойти | Приоритет |
+|----------|----------------|----------------------|-----------|
+| Робот поёт песню (voice+music ACTIVE), пользователь: «стой!» (рефлекс) | stop | **ВСЕ каналы → CANCELLED синхронно** (не дожидаясь границ). voice/music гасятся немедленно через `safe_stop` (если движение) или direct cancel (если только voice). | critical — **reflex всегда побеждает** |
+| Робот едет на кухню (nav ACTIVE), пользователь: «направо» | direction | ACTIVE nav-сегмент → **safe_stop на границе** → REPLACE на новый план «повернуть направо + продолжить к кухне» | high — reflex важнее, чем текущий nav, но не «аварийный» |
+| Робот поёт песню (voice+music ACTIVE, nav IDLE), пользователь: «направо» | direction | **Каналы независимы**: nav-сегмент исполняется параллельно с voice/music (песня не прерывается, движение физически выполняется) | high — но без прерывания ACTIVE каналов |
+| Робот в `AWAITING_CONFIRMATION` («кухня?»), пользователь: «стой!» | stop | AWAITING → REJECTED + все остальные сегменты → CANCELLED, автоозвучка «отменяю» | critical — **reflex важнее confirm-flow** |
+| Пользователь сказал «стоп» 3 раза подряд | stop × 3 | Первый → cancel, остальные IGNORE (debounce 500мс) | low — debounce в command_node |
+
+**Главное правило:** **reflex всегда побеждает** для команд безопасности (`стоп`, `остановись`). Для команд направления — reflex ВЫПОЛНЯЕТСЯ, но scheduler решает, прерывать ли ACTIVE (для nav — да, для voice/music/anim — нет, каналы независимы).
+
+### 8.10.4 Реализация: минимальная интеграция
+
+Reflex-путь **не переписывается**. Scheduler **подписывается** на публикации `command_node` (через ROS-топик `/reflex/events` или прямой вызов — оба варианта валидны, см. Q6).
+
+**Шаг 1 (фаза 1.5):** добавить в `command_node` строку:
+```python
+# после успешного исполнения reflex-команды
+self.reflex_publisher.publish(ReflexEvent(
+    type="stop" if command.intent == IntentType.STOP else "move_direction",
+    priority=Priority.CRITICAL if command.intent == IntentType.STOP else Priority.HIGH,
+    payload={"command": command.original_text, "intent": command.intent.value, ...},
+    timestamp=time.time(),
+))
+```
+
+**Шаг 2 (фаза 1.5):** `SchedulerEventBus` подписывается на `/reflex/events`. Обработчик:
+```python
+async def on_reflex_event(event: ReflexEvent):
+    if event.priority == Priority.CRITICAL:  # stop
+        await scheduler.cancel_all_tasks(reason=f"reflex:{event.type}")
+        await scheduler.emit_feedback_to_llm(
+            kind="reflex_event", payload=event, force_next_turn=True
+        )
+    elif event.priority == Priority.HIGH:  # direction
+        seg = Segment(
+            kind="nav", payload={"direction": event.payload["direction"], "distance": 1.0},
+            status="PENDING",  # минует AWAITING_CONFIRMATION (это не «план», а «корректировка»)
+        )
+        await scheduler.enqueue(channel="nav", seg=seg)
+```
+
+**Шаг 3 (фаза 2):** обратная связь — scheduler публикует `task.cancelled(reason=reflex_stop)` В `command_node` (через `/harness/task_events`), чтобы `command_node` не слал повторные cancel'ы Nav2 (которых и так нет после первого stop, но логирование важно для отладки).
+
+**Шаг 4 (фаза 1.5):** `context_aggregator_node.py:284` оставить без изменений — reflex-команды по-прежнему НЕ попадают в память диалога. Решение зафиксировано: «рефлекс не загрязняет контекст LLM».
+
+### 8.10.5 Связь с AWAITING_CONFIRMATION (§8)
+
+`AWAITING_CONFIRMATION` — это **диалоговый** механизм (LLM предложила план → ждём подтверждения). Reflex — это **не диалоговый** механизм (regex распознал → исполнить немедленно).
+
+Когда reflex приходит во время AWAITING:
+- `стоп` → AWAITING → REJECTED + `task.cancelled(reason=reflex_stop)` в feedback. Пользователь больше ничего не подтверждает, потому что план отменён.
+- `направо` во время AWAITING навигации → см. §8.10.3 (high priority, nav-сегмент встаёт первым, AWAITING продолжает ждать confirm на основной план).
+
+**Q7 (открытый, см. §14):** считать ли reflex-«стоп» ответом на AWAITING (как «нет»), или это отдельная операция? **Предложение архитектора:** это отдельная операция, не ответ на confirm. Reflex не зависит от состояния сегментов — он ВСЕГДА cancel, потому что синтаксически «стой» не имеет отношения к подтверждению плана. Семантика разная.
+
+### 8.10.6 5 e2e-сценариев reflex-слоя
+
+| # | Сценарий | Шаги | Ожидаемое поведение | Reflex в feedback |
+|---|----------|------|---------------------|-------------------|
+| 1 | «Спой песню» → «стой!» | LLM sing task → ACTIVE voice+music → regex match «стой» → reflex-publisher | Все ACTIVE сегменты → CANCELLED за < 500мс, voice/music прерваны, feedback `task.cancelled(reason=reflex_stop)` | `reflex.stop()` |
+| 2 | «Едь на кухню» → «направо» (во время езды) | ACTIVE nav-seg кухня → regex match «направо» | `safe_stop` на ближайшей границе → CANCELLED → новый nav-seg «90° right» → ACTIVE → возобновление маршрута к кухне | `reflex.move_direction(right)` |
+| 3 | «Спой песню» → «поверни налево» (во время песни) | ACTIVE voice+music → regex match «налево» | Каналы независимы: voice/music продолжают играть, nav-сегмент «90° left» исполняется параллельно | `reflex.move_direction(left)` (с пометкой `parallel=true`) |
+| 4 | «Стоп» × 3 подряд | Первое «стоп» → cancel → дебаунс 500мс → 2-й и 3-й «стоп» | Только первый реально отменяет, остальные IGNORE (debounce в command_node уже есть для ASR-эхо) | только первый `reflex.stop()` |
+| 5 | «Робот, стой» во время fade-out | voice fade-out ACTIVE → regex match «стой» | Немедленный stop, fade прерывается (не доигрывает до конца — для stop это норма, для fade-out — допустимо) | `reflex.stop()` |
+
+### 8.10.7 Сценарий «прямо во время активной задачи песни или навигации» (открытый вопрос Q5)
+
+**Q5: «направо» во время песни — выполнить параллельно или проигнорировать?**
+
+| Вариант | Плюсы | Минусы |
+|---------|-------|--------|
+| **Параллельно (каналы независимы)** | Пользователь получает реакцию мгновенно, физическое движение не блокируется семантикой задачи | Робот поёт и одновременно крутится — может выглядеть странно (но не опасно) |
+| **IGNORE во время voice-активной задачи** | Семантически чисто: «робот поёт — не отвлекаем» | Пользователь вынужден ждать конца песни или говорить «стоп» (а это тоже reflex-cancel — противоречие) |
+| **REPLACE на новую задачу «двигайся»** | Чистый контракт: одна задача — один план | Уничтожает песню, пользователь не просил её отменять |
+
+**Предложение архитектора: параллельно (каналы независимы).** Основание — §3.1 явно фиксирует, что каналы независимы (`voice`, `music`, `anim` отдельно от `nav`). Если пользователь сказал «робот, спой и едь на кухню» — это будет QUEUE в LLM-пути (после песни поедет). Если сказал «направо» посреди песни — это **не Q для планировщика**, это физическое действие, не отменяющее voice.
+
+**Решение за PM.** До решения Q5 — реализуем параллельно, флаг `parallel_default=true` в `SchedulerConfig`, можно отключить без правки кода.
+
+### 8.10.8 3 открытых вопроса дизайна (Q5, Q6, Q7)
+
+#### Q5. «направо» во время песни — выполнить параллельно или проигнорировать?
+
+См. §8.10.7. **Предложение:** параллельно, каналы независимы. Решение за PM.
+
+#### Q6. Должен ли reflex-слой логироваться в feedback LLM?
+
+| Вариант | Плюсы | Минусы |
+|---------|-------|--------|
+| **Да, всегда** (reflex event → feedback block) | LLM знает контекст, может корректно завершить фразу («ой, ладно, стоп» вместо «...» в пустоту) | Доп.токены в каждом ходу, но reflex — редкое событие (не «угу») |
+| **Нет, только для cancelled-задач** | Минимум шума | LLM не знает о direction-рефлексах, может попытаться «компенсировать» («ах, ты пошёл налево? тогда я...») |
+| **Нет вообще** | Простота | LLM продолжает говорить как ни в чём не бывало, выглядит странно для пользователя |
+
+**Предложение архитектора:** **да, всегда** (для всех reflex-events), блок `[REFLEX EVENTS]` в feedback. Стоимость — нулевая (reflex — редкое событие, < 5 в час активного диалога), выгода — LLM не «виснет» в нерелевантном контексте. **Решение за PM.**
+
+#### Q7. Как reflex-команда соотносится с AWAITING_CONFIRMATION?
+
+| Ситуация | Вариант A (reflex как ответ «нет») | Вариант B (reflex как отдельная операция) |
+|----------|------------------------------------|------------------------------------------|
+| AWAITING(кухня) → «стой» | AWAITING → REJECTED (reason=user_said_no, интерпретируется как ответ на confirm) | AWAITING → REJECTED (reason=reflex_stop), все задачи CANCELLED |
+| AWAITING(кухня) → «направо» | «направо» — не «да/нет», IGNORE | Новый nav-seg встаёт первым, AWAITING продолжает ждать confirm на основной план |
+
+**Предложение архитектора:** **вариант B — reflex как отдельная операция, не как ответ на confirm.** Семантически «стой» — это «прекрати всё», а не «я не хочу ехать на кухню» (для второго есть «нет»). Смешение приведёт к багам: «стой» во время AWAITING «спой колыбельную?» отменит ПЛАН ПОЕЗДКИ, но НЕ ОТМЕНИТ ожидание колыбельной — потому что reflex не знает, на какое AWAITING он отвечает.
+
+**Решение за PM.** До решения Q7 — реализуем вариант B (более безопасен по умолчанию).
+
+### 8.10.9 Связь с другими разделами
+
+- **§2 (Сегментная модель):** для nav-сегментов от reflex устанавливается `confirmation.required=false` (это не «план», а «корректировка», подтверждение не нужно).
+- **§3 (Каналы):** reflex nav-сегменты идут в `nav_channel` напрямую (минуя очередь AWAITING), для voice/music — каналы независимы.
+- **§4 (MERGE/REPLACE/QUEUE/IGNORE/CLARIFY):** reflex — это **отдельный путь принятия решений**, не ещё один вердикт quick_decide. quick_decide остаётся 5-вердиктным для диалогового пути; reflex обходит его полностью.
+- **§5 (EventBus):** reflex-events — приоритетный `source` в `SchedulerEventBus` (`source="reflex"`, `priority ∈ {critical, high}`).
+- **§7 (Feedback events):** блок `[REFLEX EVENTS]` в LLM-контексте (см. §8.10.2 шаг 5).
+- **§11 (План реализации):** reflex-интеграция — **фаза 1.5** (минимальная, чтобы не сломать develop-ветку) + **фаза 2** (полная обратная связь scheduler ↔ command_node).
+
+---
+
+## 9. Точка интеграции с текущим кодом
+
+### 9.1 Где встаёт scheduler
 
 ```
 Сейчас:   LLM → tool_call → dialogue_node._execute_tool() → ROS topic
@@ -445,7 +1202,7 @@ INSIGHT #8: LLM добавляет «Готово! Зачитал тебе...» 
 
 **Точка входа:** `dialogue_node.py:657` (`speak_text` function_tool) и аналогичные для `execute_music_code`, `stop_music`, `play_sound`, `play_animation`. Планировщик реализует тот же интерфейс, но внутри держит очередь и зависимости.
 
-### 8.2 Что уже есть в коде (повторно, для ясности)
+### 9.2 Что уже есть в коде (повторно, для ясности)
 
 | Компонент | Файл | Статус |
 |-----------|------|--------|
@@ -456,7 +1213,7 @@ INSIGHT #8: LLM добавляет «Готово! Зачитал тебе...» 
 | `_cancel_run` (отмена LLM-цикла при barge-in) | `dialogue_node.py:1786` | ✅ есть, но см. §4.4 |
 | `_run_cancelled` flag (проверка в speak_text) | `dialogue_node.py:157–162` | ✅ есть |
 
-### 8.3 Что нужно построить
+### 9.3 Что нужно построить
 
 | Компонент | Где | Размер |
 |-----------|-----|--------|
@@ -474,7 +1231,7 @@ INSIGHT #8: LLM добавляет «Готово! Зачитал тебе...» 
 
 **Итого:** ~1.4K LOC нового кода, ~50 LOC правки `dialogue_node.py`.
 
-### 8.4 Совместимость с `async_executor`
+### 9.4 Совместимость с `async_executor`
 
 Scheduler **не дублирует** `async_executor`. Использует его как низкоуровневый исполнитель:
 
@@ -484,22 +1241,22 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 ---
 
-## 9. Альтернативы, которые отвергли
+## 10. Альтернативы, которые отвергли
 
 | Альтернатива | Почему нет |
 |--------------|-----------|
 | Блокирующий tool (LLM ждёт TTS-чанк) | «Кома» робота на 30с, не слышит barge-in |
 | Неблокирующий tool (текущий) | Гонки, `stop_music` обгоняет speak |
 | Полный event sourcing (хранить каждое событие) | Overkill для робота-ассистента, нет требования к audit trail |
-| ROS2 Action Server для TTS | INSIGHT #7 — рабочий вариант, но требует переписать tts_node. Принимаем как **фазу 3** (см. §10.3) |
+| ROS2 Action Server для TTS | INSIGHT #7 — рабочий вариант, но требует переписать tts_node. Принимаем как **фазу 3** (см. §11.4) |
 | Отдельный `scheduler_node` (ROS-нода) | Дополнительный IPC overhead, EventBus проще держать в `dialogue_node` |
 | Переписать всё на LangGraph / LangChain | Vendor lock-in, текущий стек — OpenAI Agents SDK + собственный `async_executor` |
 
 ---
 
-## 10. План реализации (фазы) и acceptance criteria
+## 11. План реализации (фазы) и acceptance criteria
 
-### 10.1 Фаза 1 — MVP (1–2 спринта)
+### 11.1 Фаза 1 — MVP (1–2 спринта)
 
 **Цель:** убрать race `stop_music` vs `speak` + классификация ввода.
 
@@ -516,14 +1273,50 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - [ ] LLM в каждом ходе видит блок `[CHANNELS]` (queue depth, current, eta)
 - [ ] Пост-амбл «Готово! Зачитал тебе...» исчезает при активном voice-канале
 - [ ] **Инвариант сегментов (unit test):** `update()` модифицирует ТОЛЬКО PENDING-сегменты, ACTIVE не затрагивается
+- [ ] **`speak_text` больше не делает `await tts/finished`** (§3.3): grep по `dialogue_node.py` пуст; voice-канал владеет своим `_channel_lock`
+- [ ] **Два подряд `speak_text` возвращают управление за < 50мс каждый** (метрика на e2e-прогоне)
 
-### 10.2 Фаза 2 — двухуровневое решение + EventBus
+### 11.2 Фаза 1.5 — Acceptance tool-calling (расширение §8)
 
-1. Quick-decide уровень 2 (лёгкая LLM, < 800мс).
-2. `EventBus` для системных событий (`/battery/*`, `/obstacle/*`, `/hermes/*`).
+> Новая фаза, добавленная в ревизии v3 по комментарию 5167924152 (issue #968). Может выполняться параллельно фазе 1 или сразу после неё.
+
+1. Сегменты с `kind ∈ {nav, mapping, mutate}` проходят через `AWAITING_CONFIRMATION` перед `ACTIVE` (см. §8).
+2. Классификатор тулов (`ToolConfirmationPolicy`, регистр из `mcp_server.py:312–375`) — pure data, загружается из YAML/JSON, без хардкода в коде.
+3. `nav_channel` с параметром `safe_boundary_policy=soft` (по умолчанию).
+4. `quick_decide` расширен: 6-й исход `CONFIRM`/`REJECT` при наличии AWAITING-сегмента.
+5. Voice-канал используется для формулировки плана (`speak_text` генерируется LLM по feedback event `awaiting_confirmation(plan, eta)`).
+6. Таймаут 20с + автоозвучка «отменяю» (конфигурируемо через `SchedulerConfig.confirmation_timeout_ms`).
+7. События EventBus: `awaiting_confirmation`, `confirmation_accepted`, `confirmation_rejected`, `navigation_at_safe_boundary` (§5).
+8. Блок `[AWAITING]` в feedback events (§7).
+
+**Acceptance (фаза 1.5):**
+- [ ] Сегмент `navigate_to_waypoint(кухня)` создаётся в статусе `AWAITING_CONFIRMATION`, а не `ACTIVE` (unit test на классификаторе тулов)
+- [ ] Сегмент `stop_navigation` создаётся в статусе `ACTIVE` сразу, минуя AWAITING (🟢 аварийный — unit test)
+- [ ] Сегмент `speak_text` создаётся в статусе `PENDING → ACTIVE` без подтверждения (🟢 безопасный — unit test)
+- [ ] Пользовательский ввод «да» переводит AWAITING → ACTIVE, таймер отменяется (e2e сценарий 1)
+- [ ] Пользовательский ввод «нет» переводит AWAITING → REJECTED, LLM получает feedback event `confirmation_rejected` и перегенерирует план (e2e сценарий 8)
+- [ ] Таймаут 20с переводит AWAITING → REJECTED + автоозвучка «отменяю, жду указаний» (e2e сценарий 7; метрика на e2e-прогоне)
+- [ ] При ACTIVE-навигации и новом плане: робот доезжает до safe boundary → CANCELLED → новый AWAITING (e2e сценарий 3; safe_boundary_policy=soft)
+- [ ] `stop_navigation` во время AWAITING исполняется мгновенно, не дожидаясь confirm (e2e сценарий 4)
+- [ ] Параллельный пользовательский ввод во время AWAITING НЕ отменяет AWAITING (race-protection unit test: «едь на кухню» → пользователь начал говорить «да» → `quick_decide` приоритетно интерпретирует как ответ на confirm)
+- [ ] Блок `[AWAITING]` присутствует в feedback events, когда есть ожидающие сегменты (unit test на formatter)
+- [ ] **Правило аварийного стопа:** классификатор не имеет права вернуть `requires_confirm=true` для `stop_navigation` ни при каких условиях (property-based тест)
+- [ ] **(§8.10) Reflex-команды попадают в `SchedulerEventBus` с `source="reflex"` и правильным приоритетом** (unit test: «стой» → `priority=critical`, «направо» → `priority=high`)
+- [ ] **(§8.10) Reflex-«стой» отменяет ВСЕ активные задачи синхронно** (e2e сценарий 1 из §8.10.6, метрика latency < 500мс)
+- [ ] **(§8.10) Reflex-«направо» во время песни исполняется параллельно** (e2e сценарий 3 из §8.10.6, voice/music продолжают играть)
+- [ ] **(§8.10) Reflex-«стой» во время AWAITING_CONFIRMATION отменяет ожидание без штрафа** (e2e: «кухня?» → «стой!» → AWAITING → REJECTED + остальные CANCELLED, автоозвучка «отменяю»)
+
+### 11.3 Фаза 2 — двухуровневое решение + EventBus (с учётом §5.5)
+
+**Важно (§5.5 — разрешение коллизии):** `EventBus` (scheduler) **в фазе 2**, не в 3. `SideEffectBus` (ADR-0001) — в фазе 5. Naming: `SchedulerEventBus` локально.
+
+1. Quick-decide уровень 2 (лёгкая LLM, < 800мс) — реализация `quick_decide()` (§4.6.2).
+2. **`SchedulerEventBus` для системных событий** (`/battery/*`, `/obstacle/*`, `/hermes/*`) — НЕ путать с ADR-0001's `SideEffectBus` (§5.5).
 3. Приоритеты событий (critical > high > normal > low).
 4. Сценарий «батарея»: `battery_critical` → вплетается в PENDING-сегмент.
 5. **Решение блокера П1:** MERGE/QUEUE не отменяют LLM-цикл (см. §4.4).
+6. **Авто-триггер внеочередного LLM-после-MERGE (§4.5)** — scheduler сам инициирует LLM-ход для получения `task_delta`.
+7. **Follow-up запись в ADR-0001 §5** о разграничении EventBus/SideEffectBus (§5.5).
 
 **Acceptance:**
 - [ ] Решение по новому вводу (любое из 5) принимается < 800мс
@@ -532,8 +1325,12 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - [ ] **Два MERGE подряд за < 2с (unit test):** оба применяются к PENDING, без конфликта
 - [ ] **Приоритеты событий (unit test):** critical (`obstacle`) прерывает песню на границе такта, high (`battery`) вплетается в PENDING без прерывания
 - [ ] **e2e «батарея»:** робот поёт → battery_critical → предупреждение в песне → финал → сообщение об уходе на базу (без паузы и рестарта)
+- [ ] **Авто-триггер (§4.5):** `battery_critical` без пользовательского ввода провоцирует LLM-ход через scheduler (а не в ответ на юзера)
+- [ ] **Класс шины именован `SchedulerEventBus`** (а не `EventBus` глобально) — критерий приёмки §5.5
+- [ ] **Никаких обходных импортов `rob_box_harness.side_effect_bus`** в коде scheduler'а и dialogue_node до фазы 5
+- [ ] **(§8.10) Полная двусторонняя интеграция `command_node` ↔ `SchedulerEventBus`:** scheduler подписан на `/reflex/events` И публикует `task.cancelled(reason=reflex_stop)` в `/harness/task_events` для подтверждения (e2e: «спой песню» → «стой!» → reflex-cancel → feedback `task.cancelled` → нет повторных cancel от command_node, лог-инспекция)
 
-### 10.3 Фаза 3 — эстиматоры + speculative pre-generation
+### 11.4 Фаза 3 — эстиматоры + speculative pre-generation
 
 1. `SegmentEstimator` (обёртка над `estimate_tts_duration` + music/anim метриками).
 2. `LLMEstimator` (EMA latency).
@@ -548,7 +1345,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - [ ] При опоздании LLM — музыка/ambient продолжается, тишины нет; пометка о паузе в feedback
 - [ ] Пред-генерация N+1 отменяется при правке без артефактов (unit test)
 
-### 10.4 Фаза 4 (будущее) — action server + PASTE
+### 11.5 Фаза 4 (будущее) — action server + PASTE
 
 1. Перевести `tts_node` на ROS2 Action Server (goal/feedback/result/cancel) — даёт «честный сигнал TTS готов» из коробки (INSIGHT #7).
 2. Speculative execution с shadow queue (Microsoft PASTE, arxiv 2603.18897) — для prefetch результатов тулов.
@@ -556,7 +1353,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 ---
 
-## 11. Что уже решено в текущем коде (без scheduler)
+## 12. Что уже решено в текущем коде (без scheduler)
 
 Чтобы не строить лишнего — фиксируем, что **уже работает**:
 
@@ -572,46 +1369,54 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - Классификация ввода (MERGE/REPLACE/QUEUE/IGNORE/CLARIFY) до barge-in — **блокер П1**
 - Сегментная модель + правка PENDING без прерывания ACTIVE
 - Speculative pre-gen для устранения пауз
-- Единый EventBus для внешних событий (батарея, препятствия, Hermes)
+- ~~Единый EventBus для внешних событий (батарея, препятствия, Hermes)~~ — **закрыто §5.5: `SchedulerEventBus` строится в фазе 2, разведён с ADR-0001 `SideEffectBus`**
 
 ---
 
-## 12. Аудит противоречий (по #15) — как разрешены
+## 13. Аудит противоречий (по #15) — как разрешены
 
 | # | Тип | Суть | Разрешение |
 |---|-----|------|------------|
 | **П1** | 🔴 блокер | barge-in убивает LLM-цикл, MERGE требует его жизни | **§4.4** — классификация ДО barge-in. MERGE/QUEUE/CLARIFY не отменяют цикл. REPLACE — отменяет. |
 | **П2** | 🔴 | «прервать ACTIVE на естественной границе» — оксюморон | **§4.3** — critical **сокращает** ACTIVE до ближайшей границы (1–4с от момента события), а не «прерывает». Одна формулировка. |
 | G1 | 🟡 | Кто исполняет fade-out? | `audio_node` (или его преемник) — НЕ `dialogue_node`. Fade = спецкоманда в music-канал. **Зафиксировать в коде audio_node при реализации фазы 1.** |
-| G2 | 🟡 | Два механизма «TTS готов» | **§3.3 + §8.2** — выбран счётчик по `speech_id` (один finished на один заказ), уже реализован в `tts_node.py:741–744`. |
+| G2 | 🟡 | Два механизма «TTS готов» | **§3.4** — выбран счётчик по `speech_id` (один finished на один заказ), уже реализован в `tts_node.py:741–744`. |
 | G3 | 🟡 | MERGE во время пред-генерации | **§6.5** — `InterruptibleTask.cancel()` при правке. Покрыть unit-тестом (фаза 3). |
 | G4 | 🟡 | Prefetch жжёт токены | **§6.5** — prefetch только при активной задаче (sing/rap/рассказ). В idle — цикл спит. |
 | G5 | 🟡 | `estimate_tts_duration` vs SegmentEstimator | **§6.2** — `SegmentEstimator` = обёртка над существующим механизмом, LLM не вызывает руками. |
 | N1 | 🟢 | «мгновенно от LLM» vs «мгновенно на железо» | **§0 + §4.3** — мгновенно в scheduler — ок; мгновенно на железо — нет. Scheduler = буфер. |
-| N2 | 🟢 | «stop_music не может исполниться» | **§10.1 acceptance** — «не может ДОЙТИ ДО ЖЕЛЕЗА». |
+| N2 | 🟢 | «stop_music не может исполниться» | **§11.1 acceptance** — «не может ДОЙТИ ДО ЖЕЛЕЗА». |
 | N3 | 🟢 | «без паузы» vs «пауза ≤ 2с при 429» | **§4 + edge cases** — норма = без паузы; ошибки API = пауза допустима, фиксируется в feedback. |
 
 ---
 
-## 13. Открытые вопросы (для обсуждения с PM/Author #968)
+## 14. Открытые вопросы (для обсуждения с PM/Author #968)
 
 1. **Fade-out (G1)** — какой компонент отвечает? `audio_node` уже умеет? Если нет — добавить в фазу 1.
 2. **Лёгкая LLM (уровень 2)** — какой провайдер/модель? Отдельная конфигурация MiniMax? Или использовать основную с `temperature=0` и коротким промптом? **Требует решения до старта фазы 2.**
 3. **ROS-топик `/harness/task_events`** — нужен ли владелец (отдельный node) или достаточно publisher'а из `dialogue_node`?
-4. **Совместимость с Phase 5 / ADR-0001 §5** (AgentSession + SideEffectBus) — уточнить у @krikz, не дублируем ли SideEffectBus (см. t_c8396602).
+4. **Совместимость с Phase 5 / ADR-0001 §5** (`AgentSession` + `SideEffectBus`) — ~~был открытый~~ **закрыт §5.5**: `SchedulerEventBus` (фаза 2) и `SideEffectBus` (фаза 5) — разные домены, разные фазы. Требуется follow-up запись в ADR-0001 §5 (см. §11.3 acceptance #7).
 5. **Prefetch budget (G4)** — какой лимит «активной задачи» для prefetch? 30с? 60с? Пока задача длиннее N — prefetch крутится, иначе спит.
+6. **Q5 (reflex, §8.10.7)** — «направо» во время песни: параллельно (по умолчанию) или IGNORE? Флаг `parallel_default=true` в `SchedulerConfig` снимет остроту, но PM должен подтвердить поведение.
+7. **Q6 (reflex, §8.10.8)** — логировать ли reflex-events в LLM feedback? Предложение: да, всегда (стоимость нулевая, выгода — LLM не «виснет»). PM подтверждает.
+8. **Q7 (reflex + AWAITING, §8.10.8)** — reflex-«стоп» это ответ на AWAITING или отдельная операция? Предложение: вариант B (отдельная). PM подтверждает.
+9. **Канал передачи reflex-events в SchedulerEventBus** — ROS-топик `/reflex/events` (стандартный путь, observability) или прямой вызов Python (быстрее, но менее наблюдаемо)? **Требует решения до старта фазы 1.5.**
 
 ---
 
-## 14. Ссылки
+## 15. Ссылки
 
-- Issue [#968](https://github.com/krikz/rob_box_project/issues/968) — основная задача (15 комментариев)
+- Issue [#968](https://github.com/krikz/rob_box_project/issues/968) — основная задача (17 комментариев; см. комментарий [5167924152](https://github.com/krikz/rob_box_project/issues/968#issuecomment-5167924152) — источник §8, комментарий [5168761313](https://github.com/krikz/rob_box_project/issues/968#issuecomment-5168761313) — источник §8.10)
 - PR #907 — tool loop в `dialog_core.py` (предыдущая итерация, устарело)
 - PR #935 — watchdog для музыки (временные фиксы в `dialogue_node`)
 - ADR-0001 §5 — `AgentSession[StateT]` + `SideEffectBus` (Phase 5, см. t_c8396602)
 - `src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py` — `AsyncToolExecutor`, `InterruptibleTask`
 - `src/rob_box_voice/rob_box_voice/dialogue_node.py` — `speak_text`, `_output_lock`, `_tts_events`, `_cancel_run`
 - `src/rob_box_voice/rob_box_voice/tts_node.py` — публикация `tts/finished` (по одному на speech_id)
+- `src/rob_box_voice/rob_box_voice/core/command_parser.py:110–123` — regex-паттерны `IntentType.NAVIGATE` и `IntentType.STOP` (§8.10.1)
+- `src/rob_box_voice/rob_box_voice/command_node.py:258` — `handle_stop()` отмена Nav2 goals через CancelGoal service (§8.10.1)
+- `src/rob_box_voice/rob_box_voice/command_node.py:302–324` — `handle_direction()` маппинг направлений в NavigateToPose (§8.10.1)
+- `src/rob_box_perception/rob_box_perception/context_aggregator_node.py:284` — «Команды движения НЕ добавляем в память» (§8.10.4)
 
 ### Внешние источники (INSIGHT #9)
 
@@ -628,25 +1433,34 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 | Термин | Значение |
 |--------|----------|
-| **Сегмент** | Атомарная единица исполнения (TTS-чанк, музыкальный такт, anim-кадр) |
+| **Сегмент** | Атомарная единица исполнения (TTS-чанк, музыкальный такт, anim-кадр, nav-сегмент, mapping-job, mutate-op) |
 | **Задача** | Намерение пользователя, разложенное LLM в последовательность сегментов |
-| **Канал** | FIFO-очередь сегментов одного типа (voice/music/anim) |
+| **Канал** | FIFO-очередь сегментов одного типа (`voice` / `music` / `anim` / `nav`) |
 | **MERGE** | Правка PENDING-сегментов без прерывания ACTIVE |
 | **REPLACE** | Сброс очереди, новая задача после текущего сегмента |
-| **Естественная граница** | Конец предложения (voice) / такта (music) / ключевого кадра (anim) |
+| **AWAITING_CONFIRMATION** | Статус сегмента (между PENDING и ACTIVE), когда действие требует подтверждения пользователя (см. §8). По timeout/reject → REJECTED |
+| **REJECTED** | Статус сегмента, отклонённого пользователем или по таймауту; feedback в LLM |
+| **🔴/🟡/🟢 классы тулов** | Классы по необходимости подтверждения: 🔴 физические/деструктивные (нужен confirm), 🟡 изменения поведения (notify), 🟢 read-only/безопасные/аварийные (без вопроса) |
+| **Safe boundary** | Ближайшая точка маршрута, на которой навигация может безопасно остановиться при REPLACE/MERGE (см. §8.6) |
+| **Естественная граница** | Конец предложения (voice) / такта (music) / ключевого кадра (anim) / safe boundary (nav) |
 | **Speculative pre-generation** | Пред-синтез TTS следующего сегмента до ответа LLM |
-| **EventBus** | Единая шина для пользовательских и системных событий |
+| **EventBus** | Единая шина для пользовательских и системных событий (SchedulerEventBus — локально, см. §5.5) |
 | **LLMEstimator** | EMA по latency LLM, обновляется после каждого хода |
+| **Reflex-слой** | Параллельный путь `STT → command_parser → command_node → Nav2` для команд безопасности и направления, минующий LLM (≤ 500мс). В scheduler'е представлен как `source="reflex"` в `SchedulerEventBus`. Reflex всегда побеждает для команд безопасности («стой!»); для команд направления — каналы независимы (§8.10) |
+| **Reflex-event** | `Event(source="reflex", priority ∈ {critical, high}, type ∈ {"stop", "move_direction"})`. Critical (stop) → REPLACE глобально + `task.cancelled(reason=reflex_stop)`. High (direction) → новый nav-сегмент в `nav_channel` (минуя AWAITING_CONFIRMATION), или параллельное исполнение, если активны voice/music |
 
 ---
 
 ## Приложение B. Связь с текущими задачами
 
-- **t_8f5bb012** (этот документ) — design proposal для #968
+- **t_8f5bb012** (v1 документа) — design proposal для #968, 652 строк, 43 KB
+- **t_9fca744c** (v2) — добавил §3.3 (блокировка → voice-канал), §4.5 (auto-trigger после MERGE), §4.6 (mermaid + сигнатура quick_decide), §5.5 (EventBus vs SideEffectBus — закрытие коллизии; EventBus перенесён в фазу 2)
+- **t_99da3520** (v3) — §8 Acceptance tool-calling по комментарию 5167924152: новый статус `AWAITING_CONFIRMATION` (§2), классификация всех тулов из `mcp_server.py:312–375` на 🔴/🟡/🟢, сценарий «кухня → зал» как MERGE с подтверждением, safe boundary policy, 8 e2e-сценариев, 4 открытых вопроса дизайна, новая фаза 1.5 (§11.2) с acceptance из 11 пунктов
+- **t_85ab3ee1** (v4, эта ревизия) — §8.10 Reflex-слой по комментарию 5168761313: зафиксирован параллельный путь `STT → command_parser → command_node → Nav2` (≤ 500мс, без LLM), reflex как приоритетный `source` в `SchedulerEventBus`, контракт «reflex всегда побеждает для безопасности», каналы независимы для direction во время песни, 5 e2e-сценариев, 3 открытых вопроса Q5/Q6/Q7, дополнены acceptance-чеклисты §11.2 (+4 пункта) и §11.3 (+1 пункт)
 - **t_57d67232** — Architect review #933+#935 (предыдущее состояние voice-assistant)
 - **t_f919de81** — Architect review фазы 06-harness-p0-finalization
 - **t_f0ddd678** — ADR harness (есть ADR-0001, ADR-0009-harness-tts-contract, и др.)
-- **t_c8396602** — P1.1: AgentSession + SideEffectBus (Phase 5, ADR-0001 §5) — **возможна коллизия/синергия, требует уточнения**
+- **t_c8396602** — P1.1: AgentSession + SideEffectBus (Phase 5, ADR-0001 §5) — **коллизия/синергия СНЯТА §5.5 этого документа**
 
 ---
 
