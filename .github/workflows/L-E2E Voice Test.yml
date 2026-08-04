@@ -12,13 +12,17 @@ on:
           - test
           - staging
       voice_file:
-        description: Voice command file on build machine (local file or .github/e2e/voice_commands/)
+        description: Voice command file (repo file from .github/e2e/voice_commands/ or /tmp on build machine)
         required: false
-        default: /tmp/voice_new.ogg
+        default: .github/e2e/voice_commands/spoy_peasenku_pro_enotika.ogg
+        type: choice
+        options:
+          - .github/e2e/voice_commands/spoy_peasenku_pro_enotika.ogg
+          - /tmp/voice_new.ogg
       voice_text:
         description: Voice command text (auto-generated if voice_file missing)
         required: false
-        default: 'Робот, расскажи анекдот про программиста'
+        default: 'Робот, спой песенку про енотика'
       volume:
         description: Speaker volume percent
         required: false
