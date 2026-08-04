@@ -15,6 +15,10 @@ on:
         description: Voice command file on build machine
         required: false
         default: /tmp/voice_new.ogg
+      voice_text:
+        description: Voice command text (auto-generated if voice_file missing)
+        required: false
+        default: 'Робот, расскажи анекдот про программиста'
       volume:
         description: Speaker volume percent
         required: false
@@ -49,6 +53,13 @@ jobs:
         run: |
           echo "Wait 15s for silence..."
           sleep 15
+
+      - name: Ensure voice command file
+        env:
+          SSHPASS: open
+        run: |
+          chmod +x .github/workflows/scripts/ensure_voice_file.sh
+          .github/workflows/scripts/ensure_voice_file.sh "${{ inputs.voice_text }}" "${{ inputs.voice_file }}"
 
       - name: E2E voice test
         env:
