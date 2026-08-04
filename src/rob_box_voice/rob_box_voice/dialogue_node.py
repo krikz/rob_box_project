@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from typing import Any, List, Optional
 
 import rclpy
@@ -130,6 +131,13 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/finished", self._on_tts_finished, 10,
             callback_group=cbg)
+        # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
+        # batch (rap, poetry), not after the first. tts_node publishes this
+        # event once ``batch_index == batch_total`` for a given ``batch_id``.
+        self.create_subscription(
+            String, "/voice/tts/batch_complete",
+            self._on_tts_batch_complete, 10,
+            callback_group=cbg)
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10,
             callback_group=cbg)
@@ -137,11 +145,11 @@ class DialogueNode(Node):
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
 
-        # Deferred music cleanup (issue #935 v2): music should keep playing
-        # while TTS is still speaking (rap, poetry).  Cleanup is published
-        # only after the *last* TTS chunk finishes.
+        # Deferred music cleanup (issue #935 v2 → #980): music should keep
+        # playing while TTS is still speaking (rap, poetry). Cleanup is now
+        # published strictly after the *last* TTS chunk finishes — see
+        # ``_on_tts_batch_complete``.
         self._pending_music_cleanup: bool = False
-        self._cleanup_task: Optional[asyncio.Task] = None
 
         self._dj = DJModeController(
             hook=DJHook(
@@ -395,11 +403,39 @@ class DialogueNode(Node):
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
+        """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
+
+        Issue #980: firing ``music_cleanup`` from the *first* ``/voice/tts/finished``
+        event of a multi-chunk turn cut the playback short (e.g. a 35 s rap
+        only played 10 s). We now trigger cleanup exclusively from
+        ``/voice/tts/batch_complete`` which fires once after the last chunk.
+        """
         self._effects.handle_tts_finished(msg.data or "")
-        # Issue #935 v3: debounce — wait 3s after LAST tts_finished
-        # before executing cleanup.  A new tts_finished resets the timer.
-        if self._pending_music_cleanup:
-            self._schedule_deferred_cleanup()
+    def _on_tts_batch_complete(self, msg: String) -> None:
+        """Fire ``music_cleanup`` once a full TTS batch has finished (issue #980).
+
+        ``tts_node`` publishes this after the chunk whose ``batch_index ==
+        batch_total`` lands on ``/voice/tts/finished`` (success *or* failure).
+        Single-chunk turns still produce exactly one ``batch_complete`` so the
+        previous behaviour is preserved.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        chunks_total = payload.get("chunks_total")
+        batch_duration_ms = payload.get("batch_duration_ms")
+        if not self._pending_music_cleanup:
+            self.get_logger().debug(
+                "tts_batch_complete received but no pending music_cleanup"
+            )
+            return
+        self._pending_music_cleanup = False
+        self._publish_music_cleanup(reason="tts_batch_complete")
+        self.get_logger().info(
+            "🎵 tts_batch_complete fired music_cleanup "
+            f"(chunks_total={chunks_total}, batch_duration_ms={batch_duration_ms})"
+        )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
     def _dispatch_turn(self, user_input: str) -> None:
@@ -450,7 +486,18 @@ class DialogueNode(Node):
         if not spoken:
             self.get_logger().warning("⚠️ Empty assistant response — fallback")
             spoken = "Что-то я задумался, повтори пожалуйста"
-        self._publish_response(spoken)
+        # Issue #980 — split into chunks and publish as a single TTS batch so
+        # that /voice/tts/batch_complete fires only after the last chunk.
+        chunks = split_into_chunks(spoken)
+        if not chunks:
+            self._publish_response(spoken)
+        elif len(chunks) == 1:
+            self._publish_response(chunks[0])
+        else:
+            total = self._publish_response_batch(chunks)
+            self.get_logger().info(
+                f"📦 [dialogue_node] TTS batch: {total} chunks (issue #980)"
+            )
         self.get_logger().info(
             f"📤 LLM OUTPUT: {spoken[:200]!r}" if self._verbose_llm
             else f"✅ Turn done. Response: {spoken[:80]!r}")
@@ -459,9 +506,39 @@ class DialogueNode(Node):
         msg.data = self._dsm.current_state.name
         self._state_pub.publish(msg)
     def _publish_response(self, text: str, animation: str = "neutral") -> None:
+        """Single-chunk publish — kept for backwards compatibility.
+
+        For multi-chunk turns prefer :meth:`_publish_response_batch` which
+        attaches a shared ``batch_id`` so ``tts_node`` can fire
+        ``/voice/tts/batch_complete`` once the last chunk lands (issue #980).
+        """
         msg = String()
         msg.data = build_ssml_payload(text, animation)
         self._response_pub.publish(msg)
+
+    def _publish_response_batch(self, chunks: List[str], animation: str = "neutral") -> int:
+        """Publish ``chunks`` as a single TTS batch (issue #980).
+
+        Each chunk carries the same ``batch_id`` plus 1-based ``batch_index``
+        and ``batch_total`` counters. ``tts_node`` echoes those fields on
+        ``/voice/tts/finished`` and publishes ``/voice/tts/batch_complete``
+        after the final chunk. Returns the number of chunks published.
+        """
+        if not chunks:
+            return 0
+        batch_id = str(uuid.uuid4())
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            msg = String()
+            msg.data = build_ssml_payload(
+                chunk,
+                animation,
+                batch_id=batch_id,
+                batch_index=idx,
+                batch_total=total,
+            )
+            self._response_pub.publish(msg)
+        return total
 
     def _publish_music_cleanup(self, reason: str = "dialogue_end") -> None:
         """Issue #935 — signal mcp_server to auto-stop any active music.
@@ -483,28 +560,6 @@ class DialogueNode(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
-            )
-    def _schedule_deferred_cleanup(self) -> None:
-        """Issue #935 v3: (re)start 3-second debounce timer.
-
-        Each ``/voice/tts/finished`` resets this timer.  When the timer
-        finally fires (no new TTS chunk for 3 seconds), we assume all
-        TTS is done and execute the cleanup.
-        """
-        if self._cleanup_task is not None and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-        self._cleanup_task = asyncio.run_coroutine_threadsafe(
-            self._execute_deferred_cleanup(), self._loop,
-        )
-
-    async def _execute_deferred_cleanup(self) -> None:
-        """Wait 3s, then publish music cleanup."""
-        await asyncio.sleep(3.0)
-        if self._pending_music_cleanup:
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="tts_finished_debounced")
-            self.get_logger().info(
-                "🎵 tts_finished debounce timer fired — executing cleanup"
             )
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):

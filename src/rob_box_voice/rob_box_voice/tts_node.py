@@ -73,6 +73,8 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
+from typing import Any, Dict, Optional
+
 from .audio_playback_manager import AudioPlaybackManager
 
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
@@ -552,6 +554,12 @@ class TTSNode(Node):
         self.finished_pub = self.create_publisher(
             String, "/voice/tts/finished", 10
         )  # Публикация завершения произношения
+        # Issue #980 — single event per multi-chunk TTS batch (rap, poetry).
+        # tts_node publishes one ``/voice/tts/batch_complete`` after the last
+        # chunk lands so dialogue_node can fire ``music_cleanup`` exactly once.
+        self.batch_complete_pub = self.create_publisher(
+            String, "/voice/tts/batch_complete", 10
+        )
 
         # Флаг для остановки воспроизведения
         self.stop_requested = False
@@ -906,8 +914,22 @@ class TTSNode(Node):
             # Извлекаем атрибуты SSML (pitch, rate)
             ssml_attributes = self._parse_ssml_attributes(ssml)
 
+            # Issue #980 — carry batch_id/batch_index/batch_total from the
+            # dialogue_node publish through to ``/voice/tts/finished`` so
+            # dialogue_node can fire music_cleanup only after the *last*
+            # chunk of a multi-chunk assistant turn. Missing fields default
+            # to None and treated as a single-chunk (legacy) batch — the
+            # tts_node still fires one ``/voice/tts/batch_complete`` so the
+            # back-compat behaviour is preserved.
+            batch_id = chunk_data.get("batch_id")
+            batch_index = chunk_data.get("batch_index")
+            batch_total = chunk_data.get("batch_total")
+
             self.get_logger().info(
-                f'🔊 TTS: {text[:50]}... (speech_id: {speech_id[:8]}, dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}...)'
+                f'🔊 TTS: {text[:50]}... '
+                f'(speech_id: {speech_id[:8]}, '
+                f'dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}..., '
+                f'batch: {(batch_id or "None")[:8]} {batch_index}/{batch_total})'
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
@@ -938,6 +960,9 @@ class TTSNode(Node):
                 text,
                 dialogue_id,
                 ssml_attributes,
+                batch_id,
+                batch_index,
+                batch_total,
             )
 
         except json.JSONDecodeError as e:
@@ -1090,6 +1115,9 @@ class TTSNode(Node):
         dialogue_id: str = None,
         ssml_attributes: dict = None,
         speech_id: str = None,
+        batch_id: str = None,
+        batch_index: int = None,
+        batch_total: int = None,
     ):
         """Serialize blocking synth/play work outside the ROS callback thread."""
         with self._synthesis_lock:
@@ -1104,12 +1132,31 @@ class TTSNode(Node):
                 dialogue_id,
                 ssml_attributes,
                 speech_id,
+                batch_id,
+                batch_index,
+                batch_total,
             )
 
     def _synthesize_and_play(
-        self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None
+        self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
+        batch_id: str = None, batch_index: int = None, batch_total: int = None,
     ):
         """Синтез речи и воспроизведение."""
+        # Issue #980 — ``batch_started_at`` measures the wall-clock span between
+        # the first and last chunk of a single TTS batch. We start a fresh
+        # monotonic counter on the *first* chunk of the batch (``batch_index == 1``)
+        # and stamp it onto ``batch_complete`` after the last one. ``time.monotonic``
+        # is used because wall-clock may jump on NTP resync.
+        import time as _time
+        batch_started_at: Optional[float] = None
+        if batch_id is not None and batch_index == 1:
+            batch_started_at = _time.monotonic()
+        elif batch_id is None:
+            # Single-chunk legacy batch — still treated as a batch of size 1
+            # so dialogue_node gets exactly one ``batch_complete`` event.
+            batch_index = 1
+            batch_total = 1
+            batch_started_at = _time.monotonic()
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
 
@@ -1344,15 +1391,17 @@ class TTSNode(Node):
                     self.publish_state("ready")
 
                     # Публикуем ошибку для MCP tools и animation_player
-                    sid = speech_id or self.current_speech_id
-                    if sid:
-                        finished_msg = String()
-                        finished_msg.data = json.dumps(
-                            {"speech_id": sid, "success": False, "error": "Device unavailable"},
-                            ensure_ascii=False,
-                        )
-                        self.finished_pub.publish(finished_msg)
-                        self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
+                    self._publish_tts_finished(
+                        speech_id,
+                        success=False,
+                        error="Device unavailable",
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        batch_started_at=batch_started_at,
+                        dialogue_id=dialogue_id,
+                    )
+                    self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
 
                     # Очищаем processing_dialogue_id
                     if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -1370,35 +1419,36 @@ class TTSNode(Node):
                 self.publish_state("stopped")
                 self.get_logger().warn("🔇 Воспроизведение прервано")
                 # Публикуем ошибку для MCP tools
-                sid = speech_id or self.current_speech_id
-                if sid:
-                    finished_msg = String()
-                    finished_msg.data = json.dumps(
-                        {"speech_id": sid, "success": False, "error": "stopped"}, ensure_ascii=False
-                    )
-                    self.finished_pub.publish(finished_msg)
+                self._publish_tts_finished(
+                    speech_id,
+                    success=False,
+                    error="stopped",
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    batch_started_at=batch_started_at,
+                    dialogue_id=dialogue_id,
+                )
             else:
                 self.publish_state("ready")
                 self.get_logger().info("✅ Воспроизведение завершено")
                 # Публикуем успех для MCP tools (#949: включаем duration_sec для аранжировки)
-                # Используем self.current_speech_id на случай если локальный speech_id=None
-                sid = speech_id or self.current_speech_id
-                if sid:
-                    finished_msg = String()
-                    finished_msg.data = json.dumps(
-                        {
-                            "speech_id": speech_id,
-                            "success": True,
-                            "duration_sec": raw_duration_sec,
-                        },
-                        ensure_ascii=False,
-                    )
-                    self.get_logger().info(
-                        f"📢 Публикую TTS finished event: speech_id={sid[:8]}..., "
-                        f"success=True, duration={raw_duration_sec}s"
-                    )
-                    self.finished_pub.publish(finished_msg)
-                    self.get_logger().info("✅ TTS finished event опубликован на /voice/tts/finished")
+                # Issue #980: batch metadata is now propagated so the very last
+                # chunk publishes ``/voice/tts/batch_complete`` deterministically.
+                self.get_logger().info(
+                    f"📢 Публикую TTS finished event: speech_id={(speech_id or self.current_speech_id or '')[:8]}..., "
+                    f"success=True, duration={raw_duration_sec}s, batch={batch_index}/{batch_total}"
+                )
+                self._publish_tts_finished(
+                    speech_id,
+                    success=True,
+                    duration_sec=raw_duration_sec,
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    batch_started_at=batch_started_at,
+                    dialogue_id=dialogue_id,
+                )
 
             # Очищаем processing_dialogue_id после завершения
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -1407,14 +1457,17 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().error(f"❌ Synthesis error: {e}")
             self.publish_state("ready")
-            # Публикуем ошибку для MCP tools
-            sid = speech_id or self.current_speech_id
-            if sid:
-                finished_msg = String()
-                finished_msg.data = json.dumps(
-                    {"speech_id": sid, "success": False, "error": str(e)}, ensure_ascii=False
-                )
-                self.finished_pub.publish(finished_msg)
+            # Публикуем ошибку для MCP tools (#980: also fires batch_complete if applicable)
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error=str(e),
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                batch_started_at=batch_started_at,
+                dialogue_id=dialogue_id,
+            )
             # Очищаем processing_dialogue_id при ошибке
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
@@ -2182,6 +2235,80 @@ class TTSNode(Node):
         msg = String()
         msg.data = state
         self.state_pub.publish(msg)
+
+    def _publish_tts_finished(
+        self,
+        speech_id: Optional[str],
+        *,
+        success: bool,
+        error: Optional[str] = None,
+        duration_sec: Optional[float] = None,
+        batch_id: Optional[str] = None,
+        batch_index: Optional[int] = None,
+        batch_total: Optional[int] = None,
+        batch_started_at: Optional[float] = None,
+        dialogue_id: Optional[str] = None,
+    ) -> None:
+        """Publish ``/voice/tts/finished`` (and possibly ``/voice/tts/batch_complete``).
+
+        Issue #980 — single source of truth for finished-event publishing so
+        that batch metadata stays consistent across the success/stopped/error
+        branches and the batch_complete fire rule (``batch_index == batch_total``)
+        doesn't drift between code paths.
+        """
+        if not speech_id:
+            return
+        payload: Dict[str, Any] = {"speech_id": speech_id, "success": success}
+        if error is not None:
+            payload["error"] = error
+        if duration_sec is not None:
+            payload["duration_sec"] = duration_sec
+        if batch_id is not None:
+            payload["batch_id"] = batch_id
+        if batch_index is not None:
+            payload["batch_index"] = int(batch_index)
+        if batch_total is not None:
+            payload["batch_total"] = int(batch_total)
+        finished_msg = String()
+        finished_msg.data = json.dumps(payload, ensure_ascii=False)
+        self.finished_pub.publish(finished_msg)
+
+        # Batch-complete side-channel — fires once per turn after the last
+        # chunk so dialogue_node can drive music_cleanup deterministically.
+        if batch_id is not None and batch_index is not None and batch_total is not None \
+                and int(batch_index) == int(batch_total):
+            import time as _time
+            duration_ms: Optional[int] = None
+            if batch_started_at is not None:
+                duration_ms = int((_time.monotonic() - batch_started_at) * 1000)
+            batch_payload: Dict[str, Any] = {
+                "batch_id": batch_id,
+                "chunks_total": int(batch_total),
+                "batch_index": int(batch_index),
+            }
+            if duration_ms is not None:
+                batch_payload["batch_duration_ms"] = duration_ms
+            batch_msg = String()
+            batch_msg.data = json.dumps(batch_payload, ensure_ascii=False)
+            self.batch_complete_pub.publish(batch_msg)
+            self.get_logger().info(
+                "📦 [tts_node] /voice/tts/batch_complete published "
+                f"(batch_id={batch_id[:8]}..., chunks_total={batch_total}, "
+                f"batch_duration_ms={duration_ms})"
+            )
+            # Echo on finished too so any consumer of ``/voice/tts/finished``
+            # that wants the closure timestamp can grab it without a second
+            # subscription. Kept behind the ``last_chunk`` branch to avoid
+            # spamming every chunk's finished event with the closure marker.
+            payload["batch_complete"] = True
+            if duration_ms is not None:
+                payload["batch_duration_ms"] = duration_ms
+            finished_msg.data = json.dumps(payload, ensure_ascii=False)
+            # Republish to keep the marker attached to the same logical event.
+            # (Bounded QoS depth=10 means the second publish can briefly bump
+            # the depth; downstream subscribers are designed to be idempotent
+            # on ``batch_complete``.)
+            self.finished_pub.publish(finished_msg)
 
     def parameters_callback(self, params):
         """Callback для изменения параметров во время работы."""

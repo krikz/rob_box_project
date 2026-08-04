@@ -72,16 +72,37 @@ def split_into_chunks(text: str, max_len: int = 200) -> List[str]:
     return [c for c in chunks if c.strip()] or [text]
 
 
-def build_ssml_payload(text: str, animation: str = "neutral") -> str:
-    """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``."""
-    return json.dumps(
-        {
-            "ssml": f"<speak>{text}</speak>",
-            "speech_id": str(uuid.uuid4()),
-            "emotion": animation,
-        },
-        ensure_ascii=False,
-    )
+def build_ssml_payload(
+    text: str,
+    animation: str = "neutral",
+    *,
+    batch_id: Optional[str] = None,
+    batch_index: Optional[int] = None,
+    batch_total: Optional[int] = None,
+) -> str:
+    """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
+
+    Issue #980 — chunked long responses (rap, poetry) publish one TTS request
+    per chunk. To let ``dialogue_node`` know when *all* chunks of a single
+    assistant turn finished (and only then trigger music cleanup), each chunk
+    in a batch carries a shared ``batch_id`` plus 1-based ``batch_index`` and
+    ``batch_total`` counters. tts_node echoes those on ``/voice/tts/finished``
+    and publishes a dedicated ``/voice/tts/batch_complete`` once the last
+    chunk lands. Single-chunk turns simply reuse the chunk as both speech
+    and batch identifiers — back-compat behaviour.
+    """
+    payload: Dict[str, Any] = {
+        "ssml": f"<speak>{text}</speak>",
+        "speech_id": str(uuid.uuid4()),
+        "emotion": animation,
+    }
+    if batch_id is not None:
+        payload["batch_id"] = batch_id
+    if batch_index is not None:
+        payload["batch_index"] = int(batch_index)
+    if batch_total is not None:
+        payload["batch_total"] = int(batch_total)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 class EffectAwaiterRegistry:
