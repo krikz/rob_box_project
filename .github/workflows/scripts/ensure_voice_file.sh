@@ -12,9 +12,9 @@ VFILE="$2"
 
 # Case 1: file exists in the repo checkout (committed user voice command)
 if [ -f "${VFILE}" ]; then
-  echo "Found in repo checkout: ${VFILE}"
-  sshpass -e scp -o StrictHostKeyChecking=no "${VFILE}" "ros2@10.1.1.249:${VFILE}"
-  sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la ${VFILE} && echo VOICE_FILE_FROM_REPO"
+  echo "Found in repo checkout: ${VFILE} — pushing as /tmp/voice_new.ogg"
+  sshpass -e scp -o StrictHostKeyChecking=no "${VFILE}" "ros2@10.1.1.249:/tmp/voice_new.ogg"
+  sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/voice_new.ogg && echo VOICE_FILE_FROM_REPO"
   exit 0
 fi
 
