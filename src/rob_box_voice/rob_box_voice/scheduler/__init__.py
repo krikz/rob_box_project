@@ -80,6 +80,17 @@ from .quality import (
     EstimatorSample,
     PredictionOutcome,
 )
+from .reflex import (
+    DEFAULT_DEBOUNCE_MS,
+    DEFAULT_HISTORY_SIZE,
+    ReflexDecision,
+    ReflexEvent,
+    ReflexKind,
+    ReflexLayer,
+    ReflexMetrics,
+    ReflexPriority,
+    command_to_view,
+)
 from .speculative_executor import (
     CANCEL_REASON_MERGE_TOUCHED_FROZEN,
     CANCEL_REASON_PLAN_SUPERSEDED,
@@ -148,4 +159,14 @@ __all__ = [
     "TaskSubmitError",
     "TaskNotFoundError",
     "ChannelBusyError",
+    # Phase 2.5 — Reflex layer (issue #968 §8.10)
+    "DEFAULT_DEBOUNCE_MS",
+    "DEFAULT_HISTORY_SIZE",
+    "ReflexDecision",
+    "ReflexEvent",
+    "ReflexKind",
+    "ReflexLayer",
+    "ReflexMetrics",
+    "ReflexPriority",
+    "command_to_view",
 ]
