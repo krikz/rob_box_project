@@ -262,6 +262,54 @@ services:
     labels:
       logging: "promtail"
 
+  # Phase 4: isolated action/PASTE control plane. The current voice node can
+  # migrate incrementally; this sidecar has an independent health lifecycle.
+  voice-action-server:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
+    container_name: voice-action-server
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ACTION_SERVER_HOST=127.0.0.1
+      - ACTION_SERVER_PORT=${ACTION_SERVER_PORT:-8765}
+    command: ["/bin/bash", "-lc", "python3 -m rob_box_voice.action_server.http_server"]
+    depends_on:
+      voice-assistant:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:${ACTION_SERVER_PORT:-8765}/healthz\")'"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # Phase 4: isolated action/PASTE control plane. The current voice node can
+  # migrate incrementally; this sidecar has an independent health lifecycle.
+  voice-action-server:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
+    container_name: voice-action-server
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ACTION_SERVER_HOST=127.0.0.1
+      - ACTION_SERVER_PORT=${ACTION_SERVER_PORT:-8765}
+    command: ["/bin/bash", "-lc", "python3 -m rob_box_voice.action_server.http_server"]
+    depends_on:
+      voice-assistant:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:${ACTION_SERVER_PORT:-8765}/healthz\")'"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   # ============ Telegram Bot ============
   # Операторский интерфейс через Telegram
   # Управление роботом с телефона: фото, голос, движение, LLM чат
