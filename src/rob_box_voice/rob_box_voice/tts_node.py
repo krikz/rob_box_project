@@ -339,15 +339,9 @@ class TTSNode(Node):
         self.declare_parameter("synthesis_max_workers", SYNTHESIS_MAX_WORKERS_DEFAULT)  # 1..4
         self.declare_parameter("synthesis_max_queue", SYNTHESIS_MAX_QUEUE_DEFAULT)  # pending tasks cap before drop
 
-        # Per-provider TTS chunking + retry-halve (issue #933).
-        self.declare_parameter(
-            "chunk_max_chars_yandex", CHUNK_LIMITS["yandex_grpc_v3"]
-        )
-        self.declare_parameter(
-            "chunk_max_chars_silero", CHUNK_LIMITS["silero_v5"]
-        )
-        self.declare_parameter("chunk_max_retries", DEFAULT_MAX_RETRIES)
-        self.declare_parameter("chunk_min_chars", MIN_CHUNK_CHARS)
+        # Per-provider TTS chunking + retry-halve параметры объявлены
+        # выше (issue #933 + дополнение #976 для minimax). Дубликат
+        # удалён — см. задачу t_20265b43.
 
         # Общие параметры
         self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
