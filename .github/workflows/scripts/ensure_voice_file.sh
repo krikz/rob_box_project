@@ -1,11 +1,22 @@
 #!/bin/bash
 # E2E voice test: ensure voice command file exists on build machine.
-# If missing — generate via Yandex TTS on robot (10.1.1.21), push to build machine (10.1.1.249).
+# Priority:
+#   1. If voice_file is a repo-relative path (.github/e2e/voice_commands/...) — push it from checkout
+#   2. If voice_file exists on build machine — use it
+#   3. If missing — generate via Yandex TTS on robot (10.1.1.21), push to build machine (10.1.1.249)
 # Usage: ensure_voice_file.sh <voice_text> <voice_file_path>
 set -e
 
 VOICE_TEXT="$1"
 VFILE="$2"
+
+# Case 1: file exists in the repo checkout (committed user voice command)
+if [ -f "${VFILE}" ]; then
+  echo "Found in repo checkout: ${VFILE}"
+  sshpass -e scp -o StrictHostKeyChecking=no "${VFILE}" "ros2@10.1.1.249:${VFILE}"
+  sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la ${VFILE} && echo VOICE_FILE_FROM_REPO"
+  exit 0
+fi
 
 echo "Checking ${VFILE} on build machine..."
 if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la ${VFILE}" 2>/dev/null; then

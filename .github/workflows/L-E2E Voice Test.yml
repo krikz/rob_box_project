@@ -12,7 +12,7 @@ on:
           - test
           - staging
       voice_file:
-        description: Voice command file on build machine
+        description: Voice command file on build machine (local file or .github/e2e/voice_commands/)
         required: false
         default: /tmp/voice_new.ogg
       voice_text:
