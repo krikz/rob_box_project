@@ -26,6 +26,31 @@
       vad_timeout: 1.5            # Секунды тишины до отправки результата
       min_speech_duration: 0.5    # Минимальная длина речи (секунды)
 
+      # ===== Fallback/retry/short-phrase (issue #979) =====
+      # yandex_timeout_s — soft-timeout на один gRPC-streaming вызов Yandex.
+      # Был ~1.3s (gRPC deadline по умолчанию), из-за чего валидные фразы после
+      # TTS падали на мусорный Vosk fallback. Подняли до 5s — окно для фраз
+      # 3-4 слов при audio_processing_type=REAL_TIME.
+      yandex_timeout_s: 5.0
+      # yandex_max_retries — количество retry на primary перед падением
+      # на Vosk. 1 по спецификации issue #979: "один retry перед падением на Vosk".
+      yandex_max_retries: 1
+      # retry_backoff_s — пауза перед retry (issue #979: «попробовать ещё раз
+      # через 1с»). Линейная; экспоненциальный множитель — будущая работа.
+      retry_backoff_s: 1.0
+      # min_text_chars — порог для is_short_phrase(). Vosk 0.42 возвращает
+      # "а"/"а а" для эха — это мусор, не команда. 3 символа достаточно
+      # чтобы отсечь эхо-мусор и при этом принять "стоп"/"пока".
+      min_text_chars: 3
+      # unclear_phrase — что робот говорит вслух, когда ни Yandex (после
+      # retry), ни Vosk не дали внятного результата (issue #979 acceptance:
+      # «Не расслышал, скажи ещё раз», а не молчание). Пустая строка
+      # отключает голосовой ответ.
+      unclear_phrase: "Не расслышал, скажи ещё раз"
+      # unclear_cooldown_s — анти-петля: не повторять «не расслышал» чаще
+      # раза в N секунд. Иначе эхо собственного TTS снова триггерит VAD.
+      unclear_cooldown_s: 5.0
+
       # Legacy settings (для будущей поддержки других STT)
       provider: "vosk"            # "vosk", "whisper" или "yandex"
       language: "ru-RU"
