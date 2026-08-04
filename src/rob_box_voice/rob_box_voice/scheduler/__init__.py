@@ -67,6 +67,13 @@ from .event_bus import (
     EventQueueFullError,
     EventSubscription,
 )
+from .pre_gen import (
+    PreGenCandidate,
+    PreGenCancelledError,
+    PreGenFactory,
+    PreGenPlan,
+    SpeculativePreGenerator,
+)
 from .quality import (
     CalibrationBin,
     EstimatorQualityTracker,
@@ -109,6 +116,11 @@ __all__ = [
     "EventEnvelope",
     "EventQueueFullError",
     "EventSubscription",
+    "PreGenCandidate",
+    "PreGenCancelledError",
+    "PreGenFactory",
+    "PreGenPlan",
+    "SpeculativePreGenerator",
     "CalibrationBin",
     "EstimatorQualityTracker",
     "EstimatorSample",
