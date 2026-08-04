@@ -1,4 +1,5 @@
-"""Regression tests for kanban task ``t_42726db6`` (issue #929).
+"""Regression tests for kanban task ``t_42726db6`` (issue #929) and
+``t_5f0e984c`` (issue #980).
 
 The TTS synthesis submit chain used to pass ``speech_id`` twice: once as
 the explicit positional kwarg to ``_submit_synthesis``, and once as a
@@ -17,16 +18,20 @@ shadowed by the earlier ``speech_id=None`` default in
   to ``_run_synthesis_worker`` without updating the call site — the
   silent shadowing masks the argument shift.
 
-This test enforces:
+Issue #980 extended the chain with three new positional parameters
+(``batch_id``, ``batch_index``, ``batch_total``) so that ``tts_node``
+can publish ``/voice/tts/batch_complete`` after the last chunk of a
+multi-chunk TTS batch.  This test still enforces:
 
 1. ``dialogue_callback`` invokes ``_submit_synthesis`` with exactly
    one ``speech_id`` positional argument (the kwarg), followed by the
-   four positional args expected by ``_run_synthesis_worker``.
+   seven positional args expected by ``_run_synthesis_worker``
+   (``ssml``, ``text``, ``dialogue_id``, ``ssml_attributes``,
+   ``batch_id``, ``batch_index``, ``batch_total``).
 2. ``_run_synthesis_worker``'s signature still terminates in
-   ``speech_id=None`` so that, if a caller ever forgets to pass it,
-   the default kicks in instead of a TypeError.
-3. Both halves agree on the parameter ordering (ssml, text,
-   dialogue_id, ssml_attributes, speech_id) — verified by AST
+   ``batch_total=None`` so that, if a caller ever forgets to pass
+   it, the default kicks in instead of a TypeError.
+3. Both halves agree on the parameter ordering — verified by AST
    inspection so the test does not need rclpy/grpc/torch to import.
 
 If any of these invariants is violated, the test fails immediately
@@ -38,8 +43,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-
-import pytest
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
@@ -79,12 +82,11 @@ def _arg_to_name(node: ast.AST) -> str:
 
 def test_dialogue_callback_passes_speech_id_once() -> None:
     """``dialogue_callback`` must invoke ``_submit_synthesis`` with one
-    ``speech_id`` positional (the explicit kwarg) plus the four
+    ``speech_id`` positional (the explicit kwarg) plus the seven
     positional worker args — *not* a trailing duplicate ``speech_id``.
     """
     tree = _parse_module(_TTS_NODE)
     cb = _find_function(tree, "dialogue_callback")
-    cb_src = ast.unparse(cb)
 
     # Locate the ``self._submit_synthesis( ... )`` call inside
     # dialogue_callback. AST inspect keeps the test independent of rclpy.
@@ -107,8 +109,7 @@ def test_dialogue_callback_passes_speech_id_once() -> None:
 
     # _submit_synthesis(self, fn, speech_id, *args) — so positional[0]
     # is ``fn`` (= _run_synthesis_worker), positional[1] is ``speech_id``,
-    # and everything after flows into ``*args`` (ssml, text, dialogue_id,
-    # ssml_attributes — no trailing duplicate speech_id).
+    # and everything after flows into ``*args``.
     assert positional_names[0] == "_run_synthesis_worker", (
         "First positional to _submit_synthesis must be _run_synthesis_worker"
     )
@@ -121,21 +122,24 @@ def test_dialogue_callback_passes_speech_id_once() -> None:
         f"{positional_names} (duplicate shadows later positional args "
         "without raising TypeError — that's the bug t_42726db6 fixed)"
     )
-    # The trailing *args for the worker must be ssml, text, dialogue_id,
-    # ssml_attributes in that order — match worker signature.
-    expected_tail = ["ssml", "text", "dialogue_id", "ssml_attributes"]
+    # The trailing *args for the worker must match the worker signature.
+    expected_tail = [
+        "ssml", "text", "dialogue_id", "ssml_attributes",
+        "batch_id", "batch_index", "batch_total",
+    ]
     assert positional_names[2:] == expected_tail, (
         f"Trailing positional args must be {expected_tail} "
-        "(matching _run_synthesis_worker signature); "
-        f"got {positional_names[2:]}"
+        "(matching _run_synthesis_worker signature, including issue #980 "
+        f"batch fields); got {positional_names[2:]}"
     )
 
 
-def test_run_synthesis_worker_signature_terminates_in_speech_id() -> None:
-    """``_run_synthesis_worker``'s last parameter must be ``speech_id=None``
-    so that any future caller forgetting to pass it doesn't TypeError, and
-    so that the worker can be invoked with the same arity as
-    ``dialogue_callback`` passes.
+def test_run_synthesis_worker_signature_terminates_in_batch_total() -> None:
+    """``_run_synthesis_worker``'s last parameter must be ``batch_total=None``.
+
+    Issue #980 added three batch-tracking parameters to the worker; the
+    terminal one (``batch_total``) is what we check here so the chain
+    terminates with a defaulted sentinel rather than a required one.
     """
     tree = _parse_module(_TTS_NODE)
     worker = _find_function(tree, "_run_synthesis_worker")
@@ -152,28 +156,38 @@ def test_run_synthesis_worker_signature_terminates_in_speech_id() -> None:
     )
 
     last_param = positional[-1]
-    assert last_param.arg == "speech_id", (
-        "_run_synthesis_worker must terminate in a `speech_id` parameter "
-        "so the call site in dialogue_callback can pass it positionally. "
-        f"Got terminal param {last_param.arg!r}"
+    assert last_param.arg == "batch_total", (
+        "_run_synthesis_worker must terminate in a `batch_total` parameter "
+        "so the call site in dialogue_callback can pass it positionally "
+        "(issue #980 batch tracking). Got terminal param "
+        f"{last_param.arg!r}"
     )
 
-    # The last default value (which aligns with `speech_id`) must be
-    # the literal ``None`` — not ``""`` or any other sentinel.
+    # The last default value (which aligns with `batch_total`) must be
+    # the literal ``None`` — not ``0`` or any other sentinel that would
+    # accidentally pass the ``batch_index == batch_total`` check.
     last_default = defaults[-1]
     assert isinstance(last_default, ast.Constant) and last_default.value is None, (
-        "_run_synthesis_worker's speech_id default must be None (not '' "
-        "or a placeholder) — downstream code does `if speech_id:` to "
-        "decide whether to publish a /voice/tts/finished event."
+        "_run_synthesis_worker's batch_total default must be None (not 0) — "
+        "otherwise legacy single-chunk turns would always look like "
+        "\"the last chunk\" and dialogue_node would fire music_cleanup "
+        "after the first chunk."
+    )
+
+    # speech_id must still be present in the signature (back-compat).
+    worker_positional_names = [a.arg for a in worker.args.args if a.arg != "self"]
+    assert "speech_id" in worker_positional_names, (
+        "_run_synthesis_worker must keep `speech_id` for back-compat — "
+        "even though #980 adds batch fields, speech_id is still the "
+        "primary key for /voice/tts/finished payloads."
     )
 
 
 def test_submit_and_worker_arg_arities_agree() -> None:
     """The number of positional args after the explicit ``speech_id``
     kwarg in dialogue_callback's ``_submit_synthesis`` call must equal
-    the number of non-(self, fn, speech_id) positional parameters on
-    ``_submit_synthesis`` AND equal the number of positional parameters
-    on ``_run_synthesis_worker``.
+    the number of positional parameters on ``_run_synthesis_worker``
+    (excluding ``self``).
 
     If any of these drifts, the executor's ``submit(fn, *args)`` call
     will silently swallow the mismatch because Python ``*args`` is
@@ -185,10 +199,11 @@ def test_submit_and_worker_arg_arities_agree() -> None:
     cb = _find_function(tree, "dialogue_callback")
 
     # _submit_synthesis(self, fn, speech_id, *args) — only the first two
-    # are mandatory positional; *args is variadic.  But the dialogue_callback
+    # are mandatory positional; *args is variadic.  The dialogue_callback
     # call site must hand it (fn, speech_id, ssml, text, dialogue_id,
-    # ssml_attributes) — exactly 6 positional values (the first two being
-    # the function and the speech_id kwarg; the rest become *args).
+    # ssml_attributes, batch_id, batch_index, batch_total) — exactly 9
+    # positional values (the first two being the function and the
+    # speech_id kwarg; the rest become *args).
     submit_call = next(
         node
         for node in ast.walk(cb)
@@ -197,20 +212,22 @@ def test_submit_and_worker_arg_arities_agree() -> None:
         and node.func.attr == "_submit_synthesis"
     )
     n_call_positional = len(submit_call.args)
-    assert n_call_positional == 6, (
-        f"dialogue_callback -> _submit_synthesis must pass exactly 6 "
+    assert n_call_positional == 9, (
+        f"dialogue_callback -> _submit_synthesis must pass exactly 9 "
         f"positional args (fn, speech_id, ssml, text, dialogue_id, "
-        f"ssml_attributes); got {n_call_positional}"
+        f"ssml_attributes, batch_id, batch_index, batch_total); "
+        f"got {n_call_positional}"
     )
 
     # _run_synthesis_worker is a method — first positional is ``self``.
     worker_positional_names = [a.arg for a in worker.args.args if a.arg != "self"]
     assert worker_positional_names == [
-        "ssml", "text", "dialogue_id", "ssml_attributes", "speech_id",
+        "ssml", "text", "dialogue_id", "ssml_attributes",
+        "speech_id", "batch_id", "batch_index", "batch_total",
     ], (
         f"_run_synthesis_worker signature drifted from canonical "
-        f"(ssml, text, dialogue_id, ssml_attributes, speech_id); "
-        f"got {worker_positional_names}"
+        f"(ssml, text, dialogue_id, ssml_attributes, speech_id, "
+        f"batch_id, batch_index, batch_total); got {worker_positional_names}"
     )
 
     # _submit_synthesis's own signature must accept at minimum (fn,

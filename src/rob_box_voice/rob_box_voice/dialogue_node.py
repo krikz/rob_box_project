@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from typing import Any, List, Optional
 
 import rclpy
@@ -130,13 +131,13 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/finished", self._on_tts_finished, 10,
             callback_group=cbg)
-        # Issue #980: subscribe to /voice/tts/batch_complete (published by
-        # mcp_server.SpeakTextTool when the last chunk of a multi-chunk
-        # speak_text(...) finishes). This is the authoritative signal for
-        # "all TTS done" — cleanup music here, not on the first tts/finished.
+        # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
+        # batch (rap, poetry), not after the first. tts_node publishes this
+        # event once ``batch_index == batch_total`` for a given ``batch_id``.
         self.create_subscription(
-            String, "/voice/tts/batch_complete", self._on_tts_batch_complete,
-            10, callback_group=cbg)
+            String, "/voice/tts/batch_complete",
+            self._on_tts_batch_complete, 10,
+            callback_group=cbg)
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10,
             callback_group=cbg)
@@ -144,17 +145,11 @@ class DialogueNode(Node):
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
 
-        # Deferred music cleanup (issue #935 v2 / #980):
-        # - Primary path: /voice/tts/batch_complete — SpeakTextTool publishes
-        #   this exactly once, after the last chunk of a batch finishes.
-        #   Music cleanup fires here, music plays through the entire rap.
-        # - Fallback safety net: long timer (default 15s) — fires cleanup
-        #   only if batch_complete never arrived (e.g. tts_node crash,
-        #   SpeakTextTool not running). The fallback is *much* longer than
-        #   the previous 3s debounce on purpose: 3s was the root cause of
-        #   issue #980 because inter-chunk pauses in long raps exceed it.
+        # Deferred music cleanup (issue #935 v2 → #980): music should keep
+        # playing while TTS is still speaking (rap, poetry). Cleanup is now
+        # published strictly after the *last* TTS chunk finishes — see
+        # ``_on_tts_batch_complete``.
         self._pending_music_cleanup: bool = False
-        self._cleanup_task: Optional[asyncio.Task] = None
 
         self._dj = DJModeController(
             hook=DJHook(
@@ -194,14 +189,6 @@ class DialogueNode(Node):
         # be exercised deterministically without spinning up rclpy
         # publishers.
         self.declare_parameter("tool_provider", "ros_mcp")
-        # Issue #980: fallback timer for music cleanup if /voice/tts/batch_complete
-        # never arrives (tts_node crash, SpeakTextTool not running, etc.).
-        # Was 3s in the previous debounce implementation — turned out to be
-        # shorter than the inter-chunk pause in long raps, so the music cut
-        # out after the first chunk. Default 15s is comfortably above the
-        # longest plausible chunk-to-chunk gap; can be raised via launch
-        # if even longer poetry is planned.
-        self.declare_parameter("music_cleanup_fallback_timeout_s", 15.0)
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
@@ -416,61 +403,38 @@ class DialogueNode(Node):
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         self._dispatch_turn(clean)
     def _on_tts_finished(self, msg: String) -> None:
-        self._effects.handle_tts_finished(msg.data or "")
-        # Issue #980: cleanup is now driven by /voice/tts/batch_complete
-        # (the authoritative "all chunks of speak_text done" signal),
-        # not by per-chunk tts/finished. We still ARM a long fallback
-        # timer here so that if batch_complete never arrives (tts_node
-        # crashed, SpeakTextTool not running, etc.) we still clean up.
-        if self._pending_music_cleanup:
-            self._schedule_deferred_cleanup()
-    def _on_tts_batch_complete(self, msg: String) -> None:
-        """Issue #980: definitive "all TTS chunks done" signal.
+        """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
 
-        SpeakTextTool publishes /voice/tts/batch_complete exactly once
-        per speak_text(...) call, after the last chunk's tts/finished
-        arrives. We cancel the fallback timer and publish music_cleanup
-        here, so the music plays through the entire rap — not just the
-        first chunk's worth.
+        Issue #980: firing ``music_cleanup`` from the *first* ``/voice/tts/finished``
+        event of a multi-chunk turn cut the playback short (e.g. a 35 s rap
+        only played 10 s). We now trigger cleanup exclusively from
+        ``/voice/tts/batch_complete`` which fires once after the last chunk.
         """
-        if not self._pending_music_cleanup:
-            return
-        # Парсим payload для метрики (issue #980 acceptance: логировать
-        # chunks_total и batch_duration_ms). Не валимся на мусорном payload.
-        chunks_total = None
-        batch_duration_ms = None
-        batch_id = None
+        self._effects.handle_tts_finished(msg.data or "")
+    def _on_tts_batch_complete(self, msg: String) -> None:
+        """Fire ``music_cleanup`` once a full TTS batch has finished (issue #980).
+
+        ``tts_node`` publishes this after the chunk whose ``batch_index ==
+        batch_total`` lands on ``/voice/tts/finished`` (success *or* failure).
+        Single-chunk turns still produce exactly one ``batch_complete`` so the
+        previous behaviour is preserved.
+        """
         try:
-            payload = json.loads(msg.data) if msg.data else {}
-        except (TypeError, ValueError):
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
             payload = {}
-        if isinstance(payload, dict):
-            try:
-                if "chunks_total" in payload:
-                    chunks_total = int(payload["chunks_total"])
-                if "batch_duration_ms" in payload:
-                    batch_duration_ms = int(payload["batch_duration_ms"])
-                if "batch_id" in payload:
-                    batch_id = str(payload["batch_id"])
-            except (TypeError, ValueError):
-                pass
+        chunks_total = payload.get("chunks_total")
+        batch_duration_ms = payload.get("batch_duration_ms")
+        if not self._pending_music_cleanup:
+            self.get_logger().debug(
+                "tts_batch_complete received but no pending music_cleanup"
+            )
+            return
         self._pending_music_cleanup = False
-        # Отменим fallback-таймер: он уже не нужен, batch_complete пришёл.
-        if self._cleanup_task is not None and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-            self._cleanup_task = None
-        self._publish_music_cleanup(
-            reason="tts_batch_complete",
-            chunks_total=chunks_total,
-            batch_duration_ms=batch_duration_ms,
-            batch_id=batch_id,
-        )
-        log_parts = [f"chunks_total={chunks_total}"]
-        if batch_duration_ms is not None:
-            log_parts.append(f"batch_duration_ms={batch_duration_ms}")
+        self._publish_music_cleanup(reason="tts_batch_complete")
         self.get_logger().info(
-            "🎬 tts_batch_complete — music cleanup published (issue #980): "
-            + ", ".join(log_parts)
+            "🎵 tts_batch_complete fired music_cleanup "
+            f"(chunks_total={chunks_total}, batch_duration_ms={batch_duration_ms})"
         )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
@@ -522,7 +486,18 @@ class DialogueNode(Node):
         if not spoken:
             self.get_logger().warning("⚠️ Empty assistant response — fallback")
             spoken = "Что-то я задумался, повтори пожалуйста"
-        self._publish_response(spoken)
+        # Issue #980 — split into chunks and publish as a single TTS batch so
+        # that /voice/tts/batch_complete fires only after the last chunk.
+        chunks = split_into_chunks(spoken)
+        if not chunks:
+            self._publish_response(spoken)
+        elif len(chunks) == 1:
+            self._publish_response(chunks[0])
+        else:
+            total = self._publish_response_batch(chunks)
+            self.get_logger().info(
+                f"📦 [dialogue_node] TTS batch: {total} chunks (issue #980)"
+            )
         self.get_logger().info(
             f"📤 LLM OUTPUT: {spoken[:200]!r}" if self._verbose_llm
             else f"✅ Turn done. Response: {spoken[:80]!r}")
@@ -531,94 +506,60 @@ class DialogueNode(Node):
         msg.data = self._dsm.current_state.name
         self._state_pub.publish(msg)
     def _publish_response(self, text: str, animation: str = "neutral") -> None:
+        """Single-chunk publish — kept for backwards compatibility.
+
+        For multi-chunk turns prefer :meth:`_publish_response_batch` which
+        attaches a shared ``batch_id`` so ``tts_node`` can fire
+        ``/voice/tts/batch_complete`` once the last chunk lands (issue #980).
+        """
         msg = String()
         msg.data = build_ssml_payload(text, animation)
         self._response_pub.publish(msg)
 
-    def _publish_music_cleanup(
-        self,
-        reason: str = "dialogue_end",
-        chunks_total: Optional[int] = None,
-        batch_duration_ms: Optional[int] = None,
-        batch_id: Optional[str] = None,
-    ) -> None:
-        """Issue #935 / #980 — signal mcp_server to auto-stop any active music.
+    def _publish_response_batch(self, chunks: List[str], animation: str = "neutral") -> int:
+        """Publish ``chunks`` as a single TTS batch (issue #980).
+
+        Each chunk carries the same ``batch_id`` plus 1-based ``batch_index``
+        and ``batch_total`` counters. ``tts_node`` echoes those fields on
+        ``/voice/tts/finished`` and publishes ``/voice/tts/batch_complete``
+        after the final chunk. Returns the number of chunks published.
+        """
+        if not chunks:
+            return 0
+        batch_id = str(uuid.uuid4())
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            msg = String()
+            msg.data = build_ssml_payload(
+                chunk,
+                animation,
+                batch_id=batch_id,
+                batch_index=idx,
+                batch_total=total,
+            )
+            self._response_pub.publish(msg)
+        return total
+
+    def _publish_music_cleanup(self, reason: str = "dialogue_end") -> None:
+        """Issue #935 — signal mcp_server to auto-stop any active music.
 
         Best-effort: if the publisher was never created (e.g. mcp_server
         not running in this container), this is a silent no-op. mcp_server
         decides what to do — currently it logs and calls
         ``MusicManager.stop_music_on_session_end()``.
-
-        Optional metrics (chunks_total / batch_duration_ms / batch_id)
-        are included in the payload when known — they are forwarded to
-        /mcp/music_cleanup logs and used by issue #980 acceptance checks.
         """
         if getattr(self, "_music_cleanup_pub", None) is None:
             self.get_logger().debug("music_cleanup publisher not available")
             return
         try:
-            payload: dict = {"reason": reason}
-            if chunks_total is not None:
-                payload["chunks_total"] = int(chunks_total)
-            if batch_duration_ms is not None:
-                payload["batch_duration_ms"] = int(batch_duration_ms)
-            if batch_id is not None:
-                payload["batch_id"] = str(batch_id)
+            payload = json.dumps({"reason": reason})
             msg = String()
-            msg.data = json.dumps(payload)
+            msg.data = payload
             self._music_cleanup_pub.publish(msg)
-            extras = []
-            if chunks_total is not None:
-                extras.append(f"chunks_total={chunks_total}")
-            if batch_duration_ms is not None:
-                extras.append(f"batch_duration_ms={batch_duration_ms}")
-            self.get_logger().info(
-                f"music_cleanup sent: reason={reason}"
-                + (f" ({', '.join(extras)})" if extras else "")
-            )
+            self.get_logger().info(f"music_cleanup sent: reason={reason}")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
-            )
-    def _schedule_deferred_cleanup(self) -> None:
-        """Issue #980: arm (or re-arm) the music cleanup fallback timer.
-
-        This is a *safety net*, NOT the primary cleanup path. The
-        primary path is /voice/tts/batch_complete (set in
-        :meth:`_on_tts_batch_complete`).
-
-        Each ``/voice/tts/finished`` from tts_node resets this timer.
-        If no batch_complete arrives within the configured window
-        (default 15s; was 3s in the previous debounce implementation),
-        we assume something went wrong upstream and clean up anyway.
-        """
-        if self._cleanup_task is not None and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-        self._cleanup_task = asyncio.run_coroutine_threadsafe(
-            self._execute_deferred_cleanup(), self._loop,
-        )
-
-    async def _execute_deferred_cleanup(self) -> None:
-        """Wait the configured fallback timeout, then publish cleanup.
-
-        Issue #980: 15s default is long enough that inter-chunk pauses
-        in long raps don't accidentally trigger it; short enough that
-        a wedged tts_node won't keep the music playing forever.
-        """
-        try:
-            timeout_s = float(
-                self.get_parameter("music_cleanup_fallback_timeout_s").value
-            )
-        except (TypeError, ValueError, RuntimeError):
-            timeout_s = 15.0
-        timeout_s = max(1.0, timeout_s)
-        await asyncio.sleep(timeout_s)
-        if self._pending_music_cleanup:
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="tts_finished_fallback")
-            self.get_logger().info(
-                f"🎵 fallback cleanup timer fired "
-                f"after {timeout_s:.1f}s — batch_complete never arrived"
             )
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):
