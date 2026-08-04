@@ -108,9 +108,9 @@ For music requests:
 When the user asks to "rap", "recite a poem", "tell a story with music" — the Compositor MUST:
 1. Call `handle_music(...)` to start the background beat
 2. Call `speak_text(...)` multiple times with the rap/poem/story text (min 6 lines for rap)
-3. Call `handle_music("stop all music")` AFTER the last speak_text — music must stop when the speech ends!
-❌ NEVER leave background music playing after rap/poem/spoken-word performance ends!
-✅ ALWAYS: handle_music(start beat) → speak_text × N → handle_music(stop)
+3. Return "done" immediately after the LAST speak_text — **do NOT call `handle_music("stop all music")`!** The system stops the music itself once ALL TTS chunks of the batch finish (`tts_batch_complete`).
+❌ NEVER call `handle_music("stop all music")` after rap/poem/spoken-word performance — stopping music early cuts the beat off mid-phrase (regression v36)!
+✅ ALWAYS: `handle_music(start beat)` → `speak_text` × N → "done" (system stops music via tts_batch_complete)
 
 **DJ MODE IN SKILLS RUNTIME:**
 - `handle_music` can do MUSIC + DJ CONTROL only. It does NOT have `speak_text`.
@@ -134,8 +134,9 @@ When the user asks to "rap", "recite a poem", "tell a story with music" — the 
   call only `handle_music(...)` for the current track.
 - If the user asks for a GLOBAL set rewrite (e.g. whole set with vocals / all tracks house):
   call `save_dj_set_plan(...)`, then `handle_music(...)`.
-- To stop DJ mode: call `handle_music("Stop DJ mode: set_dj_mode(enabled=false) + stop_music")`,
+- To stop DJ mode — ONLY on explicit user request ("хватит диджеить", "выключи музыку", "стоп музыку"): call `handle_music("Stop DJ mode: set_dj_mode(enabled=false) + stop_music")`,
   then `speak_text(...)`.
+  ⚠️ This is the ONLY case where stop_music is allowed — after rap/poem/singing NEVER stop music yourself, the system stops it via tts_batch_complete!
 
 **RAP / SINGING WITH LYRICS:**
 - For rap / sung lyrics in skills mode: use `handle_music(...)` for the backing beat only.
