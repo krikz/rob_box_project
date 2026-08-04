@@ -65,13 +65,14 @@ jobs:
           sudo pip install openai httpx
 
           # ---- verify pytest >= 8 ----
-          python3 -c "
-import pytest, sys
+          python3 <<'PYTEST_CHECK'
+import pytest
+import sys
 v = pytest.__version__
-print(f'pytest: {v} ({pytest.__file__})')
-print(f'sys.path[0]: {sys.path[0]}')
-assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old: {v}'
-"
+print(f"pytest: {v} ({pytest.__file__})")
+print(f"sys.path[0]: {sys.path[0]}")
+assert tuple(int(x) for x in v.split(".")) >= (8, 0), f"pytest too old: {v}"
+PYTEST_CHECK
 
           # ---- purge user-site leftovers ----
           rm -rf ~/.local/lib/python3.10/site-packages/_pytest*  2>/dev/null || true
@@ -91,12 +92,12 @@ assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old: {v}'
           sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov pytest-mock
 
           # ---- final verify: MUST be >= 8 ----
-          python3 -c "
+          python3 <<'PYTEST_CHECK2'
 import pytest
 v = pytest.__version__
-assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old after apt: {v}'
-print(f'OK pytest={v} ({pytest.__file__})')
-"
+assert tuple(int(x) for x in v.split(".")) >= (8, 0), f"pytest too old after apt: {v}"
+print(f"OK pytest={v} ({pytest.__file__})")
+PYTEST_CHECK2
 
       - name: Build workspace
         run: |
@@ -122,11 +123,11 @@ print(f'OK pytest={v} ({pytest.__file__})')
 
           # Force pip-installed pytest>=8 before apt's 6.2.5
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
-          python3 -c "
+          python3 <<'PYTEST_CHECK3'
 import pytest
-print(f'colcon pytest: {pytest.__version__} ({pytest.__file__})')
-assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'
-"
+print(f"colcon pytest: {pytest.__version__} ({pytest.__file__})")
+assert pytest.__version__ >= "8", f"WRONG pytest: {pytest.__version__}"
+PYTEST_CHECK3
 
           # Run tests — NO `|| true`, failures MUST surface
           colcon test \
