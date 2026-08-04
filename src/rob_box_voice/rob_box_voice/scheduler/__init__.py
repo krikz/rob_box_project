@@ -80,6 +80,13 @@ from .quality import (
     EstimatorSample,
     PredictionOutcome,
 )
+from .speculative_executor import (
+    CANCEL_REASON_MERGE_TOUCHED_FROZEN,
+    CANCEL_REASON_PLAN_SUPERSEDED,
+    SpeculativePlanResult,
+    SpeculativeStepExecutor,
+    estimate_llm_eta_ms,
+)
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
@@ -125,6 +132,11 @@ __all__ = [
     "EstimatorQualityTracker",
     "EstimatorSample",
     "PredictionOutcome",
+    "CANCEL_REASON_MERGE_TOUCHED_FROZEN",
+    "CANCEL_REASON_PLAN_SUPERSEDED",
+    "SpeculativePlanResult",
+    "SpeculativeStepExecutor",
+    "estimate_llm_eta_ms",
     "ChannelKind",
     "ChannelStatus",
     "TaskOutcome",
