@@ -84,7 +84,10 @@ LLM вызывает инструменты как «пулемёт»: `speak()`
 - `idx` — порядковый номер
 - `kind` — `voice` | `music` | `anim` | `silence` | `nav` | `mapping` | `mutate`
 - `payload` — что именно (текст, midi-паттерн, анимация, маршрут, операция над waypoint)
-- `status` — `PENDING` → (`AWAITING_CONFIRMATION`?) → `ACTIVE` → `COMPLETED` / `CANCELLED` / `REJECTED` / `SKIPPED`
+- `status` — `PENDING (live|frozen)` → (`AWAITING_CONFIRMATION`?) → `ACTIVE` → `COMPLETED` / `CANCELLED` / `REJECTED` / `SKIPPED`
+  - `PENDING_LIVE` — PENDING-сегмент, до которого LLM **успеет добраться** ответом (см. §6.5 runtime-budget). Доступен для правки через MERGE.
+  - `PENDING_FROZEN` — PENDING-сегмент, который LLM уже **не успеет** переписать: prefetch-budget истёк (см. §6.5). Зафиксирован — LLM может его только отменить через REPLACE/CANCEL, не редактировать.
+  - Переход `PENDING_LIVE → PENDING_FROZEN` — runtime, дешёвый (один проход по списку сегментов), срабатывает при (а) старте каждого сегмента, (б) обновлении `LLMEstimator.record(latency_ms)`, (в) `task.update()`. См. §6.5 + §14 #5.
   - `AWAITING_CONFIRMATION` — сегмент с физическим/деструктивным действием, ждёт голосового/тач-подтверждения пользователя (см. §8 Acceptance tool-calling); по таймауту → `REJECTED`
 - `confirmation` — `required` (true/false) и `timeout_ms` (по умолчанию 20 000) для сегментов с `kind ∈ {nav, mapping, mutate}`
 - `eta_ms` — оценка длительности (см. §6)
@@ -887,20 +890,59 @@ remaining_voice_time > estimated_llm_latency + tts_synthesis_time + safety_margi
 
 Если инвариант нарушается — планировщик делает что-то ДО того, как динамики замолчат (см. §6.5).
 
-### 6.5 Speculative pre-generation
+### 6.5 Speculative pre-generation и runtime-budget (rev. v5)
 
-**Пока звучит сегмент N, планировщик заранее синтезирует TTS сегмента N+1** (по текущему плану, без ожидания правки):
+**Принцип (зафиксирован owner'ом в v5, см. §14 #5):** нет фиксированного «budget в N секунд». Prefetch-budget — это **runtime-вычисление** на основе `LLMEstimator.estimate_ms` и текущего сегмент-плана. Где в потоке приземлится ответ LLM → какие сегменты к тому моменту ещё PENDING → их LLM может переписать через MERGE; что до точки приземления — уже FROZEN.
 
-- **Момент старта:** осталось ≤ `(llm_latency + tts_synth)` до конца сегмента N
-- **Пришла правка (MERGE):** незавершённый синтез отменяется через `InterruptibleTask.cancel()` (уже есть в `async_executor.py:23`)
-- **Результат:** к моменту ответа LLM следующий сегмент уже готов — паузы нет
+**Алгоритм runtime-расчёта:**
+
+```python
+def update_live_frozen_flags(task: Task, llm_eta_ms: float, safety_margin_ms: float = 500):
+    """
+    Граница: первый сегмент, в котором приземлится ответ LLM.
+    До него — FROZEN, после — LIVE.
+    """
+    cumulative_ms = task.active_segment.remaining_ms  # если есть ACTIVE
+    boundary_idx = None
+    for seg in task.pending_segments:  # в порядке idx
+        cumulative_ms += seg.eta_ms
+        if cumulative_ms >= llm_eta_ms + safety_margin_ms:
+            boundary_idx = seg.idx
+            break
+
+    # Помечаем
+    for seg in task.pending_segments:
+        seg.frozen = (boundary_idx is None) or (seg.idx >= boundary_idx)
+```
+
+**Что это даёт (пример):**
+
+| LLM ETA | Сегмент-план | boundary | FROZEN | LIVE |
+|---------|--------------|----------|--------|------|
+| 2.1с (быстрая) | active=8s, p=[3.2, 3.5, 2.0] | seg_1 (active) | [] | [seg_2, seg_3, seg_4] (3 сегмента MERGE) |
+| 5.0с (средняя) | active=8s, p=[3.2, 3.5, 2.0] | seg_2 (на 11.2с) | [seg_1] (но он ACTIVE, не правится) | [seg_3, seg_4] (2 сегмента) |
+| 12.0с (медленная) | active=8s, p=[3.2, 3.5, 2.0] | seg_3 (на 14.7с) | [seg_1, seg_2] | [seg_4] (1 сегмент) |
+| 20.0с (очень медленная) | active=8s, p=[3.2, 3.5, 2.0] | после всего | [seg_1, seg_2, seg_3, seg_4] | [] (задача доиграет без MERGE) |
+
+**Speculative pre-gen (TTS):**
+
+- **Момент старта:** для сегмента X — когда X становится `boundary_idx` (т.е. до X LLM уже не успеет добраться). Scheduler запускает TTS-синтез X **в фоне** через `InterruptibleTask`.
+- **Пришла правка MERGE для FROZEN-сегмента:** незавершённый синтез отменяется через `InterruptibleTask.cancel()` (есть в `async_executor.py:23`), перезапуск по новому плану.
+- **Результат:** к моменту, когда X становится ACTIVE, его TTS уже готов — паузы нет.
 
 **Edge case (G3 из аудита #15):** MERGE во время пред-генерации → незавершённый синтез отменяется, перезапуск по новому плану. Покрыть unit-тестом.
+
+**Связь с FROZEN-маркировкой в feedback (§7.1):** LLM видит `REWRITEABLE_SEGMENTS` и понимает свои реальные возможности. Не пытается править FROZEN — бессмысленно.
 
 **Если LLM всё-таки опаздывает:**
 - Не тишина! Музыка/ambient продолжается (fill-сегмент)
 - Голос молчит до готовности
 - В feedback LLM уходит пометка «была пауза Nс из-за моей задержки» — самообучение для `LLMEstimator`
+
+**Что НЕ делаем (анти-паттерны из §13 G4):**
+- ❌ Фиксированный `prefetch_budget = N сегментов` (магическое число)
+- ❌ Hard/soft cap (защита от жадности) — не нужна, runtime-расчёт самобалансирующийся
+- ❌ Prefetch во время idle / для типов `speak`/`reply` (только `sing`/`rap`/`narrate`, см. §14 #5 Q11.2)
 
 ### 6.6 Что УЖЕ есть
 
@@ -926,6 +968,16 @@ remaining_voice_time > estimated_llm_latency + tts_synthesis_time + safety_margi
   current="куплет 2/4", eta=45s,
   channels={music: playing, voice: speaking, anim: idle}
 
+[SEGMENT PLAN]                                  # rev. v5: новый блок
+- task_id=t_001, type=sing, llm_eta_ms=2100 (n=23)
+- ACTIVE:  seg_1 voice "куплет про комара" (remaining=8.0s)
+- FROZEN:  seg_2 voice "припев"   (will play at +8.0s, BEFORE LLM response at +2.1s)
+- LIVE:    seg_3 voice "куплет 2" (will play at +11.2s, AFTER LLM response)
+- LIVE:    seg_4 voice "финал"    (will play at +14.7s, AFTER LLM response)
+- LLM_RESPONSE_EXPECTED_AT: +2.1s (during seg_1)
+- REWRITEABLE_SEGMENTS: [seg_3, seg_4]          # ← LLM видит что может менять через MERGE
+- AT_RISK_ON_REPLACE: [seg_2, seg_3, seg_4]     # ← что уйдёт при REPLACE (все PENDING)
+
 [CHANNELS]
 - voice: queue=3 segs, current_seg=seg_2, current_eta=2.1s, last_finished=0.4s ago
 - music: queue=1 segs, current_seg=mseg_1, playing_for=12.3s
@@ -934,10 +986,26 @@ remaining_voice_time > estimated_llm_latency + tts_synthesis_time + safety_margi
 [PENDING EVENTS]
 - battery_critical (source=hermes, priority=high): "батарея 12%, скоро еду на базу"
 
+[REFLEX EVENTS]                                 # rev. v5: зафиксировано owner'ом (см. §14 #8)
+- 0.4s ago: reflex.stop() → все активные задачи CANCELLED
+- 1.2s ago: reflex.move_direction(right) → nav_channel new segment (90° right)
+
 [ESTIMATORS]
 - llm_latency_ema: 1850ms (n=23)
 - last_turn_latency: 2103ms
 ```
+
+**Семантика блоков (для LLM):**
+
+- **`[SEGMENT PLAN]`** — активная задача и что с ней. LLM видит:
+  - `FROZEN` сегменты — LLM **не** может переписать (prefetch-budget истёк). Можно отменить через REPLACE/CANCEL, нельзя редактировать.
+  - `LIVE` сегменты — LLM может править через MERGE.
+  - `LLM_RESPONSE_EXPECTED_AT` — где в потоке окажется её ответ (для планирования).
+  - `REWRITEABLE_SEGMENTS` — явный список idx-ов, которые LLM может изменить.
+  - `AT_RISK_ON_REPLACE` — что исчезнет, если юзер сделает REPLACE (= все PENDING-сегменты, независимо от live/frozen). Полезно для LLM при формулировке «если юзер прервёт, что уйдёт».
+  - Блок выводится **только при наличии ACTIVE задачи**; в idle — отсутствует.
+- **`[REFLEX EVENTS]`** — последние N=10 reflex-событий за последние 60с (см. §14 #8, owner зафиксировал «да, всегда»).
+- **`[CHANNELS]`, `[PENDING EVENTS]`, `[ESTIMATORS]`, `[ACTIVE TASKS]`** — без изменений.
 
 ### 7.2 Публикуемые события
 
@@ -1545,7 +1613,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 | G1 | 🟡 ✅ закрыт (rev. v5, 2026-08-04) | Кто исполняет fade-out? | **Решение: fade-out НЕ нужен.** Гильотина (`MusicManager.stop_all()` → `Clock.clear()` + OSC `/g_freeAll` на `scsynth`) устраивает. Scheduler отвечает только за **надёжность** — гарантия, что `stop_music` доезжает до синтезатора и срубает **всю** музыку (запланированные ноты в `Clock` и призраки в Group 1). Промежуточный fade вносит сложность без пользы для текущих сценариев. Задача сводится к тому, чтобы `stop_music()` гарантированно доходил до железа и вырубал всё — это уже зона `MusicManager.stop_all()` (`src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:621`). См. запись в §14 #1. |
 | G2 | 🟡 | Два механизма «TTS готов» | **§3.4** — выбран счётчик по `speech_id` (один finished на один заказ), уже реализован в `tts_node.py:741–744`. |
 | G3 | 🟡 | MERGE во время пред-генерации | **§6.5** — `InterruptibleTask.cancel()` при правке. Покрыть unit-тестом (фаза 3). |
-| G4 | 🟡 | Prefetch жжёт токены | **§6.5** — prefetch только при активной задаче (sing/rap/рассказ). В idle — цикл спит. |
+| G4 | 🟡 ✅ закрыт (rev. v5, 2026-08-04) | Prefetch жжёт токены | **§6.5 (v5)** — prefetch-budget не фиксированное число, а runtime-расчёт через `LLMEstimator.estimate_ms`: где в потоке приземлится ответ LLM → какие сегменты к тому моменту PENDING → их LLM может переписать. Prefetch включается только для `task.type ∈ {sing, rap, narrate}` и после ≥1 completed сегмента. FROZEN/LIVE-маркировка сегментов отражается в `[SEGMENT PLAN]` feedback (см. §7.1). См. §14 #5. |
 | G5 | 🟡 | `estimate_tts_duration` vs SegmentEstimator | **§6.2** — `SegmentEstimator` = обёртка над существующим механизмом, LLM не вызывает руками. |
 | N1 | 🟢 | «мгновенно от LLM» vs «мгновенно на железо» | **§0 + §4.3** — мгновенно в scheduler — ок; мгновенно на железо — нет. Scheduler = буфер. |
 | N2 | 🟢 | «stop_music не может исполниться» | **§11.1 acceptance** — «не может ДОЙТИ ДО ЖЕЛЕЗА». |
@@ -1569,7 +1637,29 @@ Scheduler **не дублирует** `async_executor`. Использует е�
    - Авто-триггер внеочередного LLM-после-MERGE (§4.5) переписывается на основную LLM, а не на лёгкую.
 3. **ROS-топик `/harness/task_events`** — нужен ли владелец (отдельный node) или достаточно publisher'а из `dialogue_node`? **Вопрос адресован архитектору (kanban t_8f5bb012 / t_f0ddd678 и др.) — требуется архитектурное решение. Описание вариантов и контекст см. в §14.1 ниже.**
 4. **Совместимость с Phase 5 / ADR-0001 §5** (`AgentSession` + `SideEffectBus`) — ~~был открытый~~ **закрыт §5.5**: `SchedulerEventBus` (фаза 2) и `SideEffectBus` (фаза 5) — разные домены, разные фазы. Требуется follow-up запись в ADR-0001 §5 (см. §11.3 acceptance #7).
-5. **Prefetch budget (G4)** — какой лимит «активной задачи» для prefetch? 30с? 60с? Пока задача длиннее N — prefetch крутится, иначе спит.
+5. ~~**Prefetch budget (G4)** — какой лимит «активной задачи» для prefetch? 30с? 60с? Пока задача длиннее N — prefetch крутится, иначе спит.~~ **✅ ЗАКРЫТ (rev. v5, 2026-08-04, owner).** Решение owner'а: **нет фиксированного N секунд**. Prefetch budget — это **runtime-вычисление** на основе `LLMEstimator.estimate_ms` и сегмент-плана.
+   - **Мотивация (owner):** «мы эстиматором считаем время и прикидываем, на каком сегменте к нам прилетит ответ от LLM, и тогда мы сможем уже накидывать новые сегменты. Сегментов, которые мы заменим, может быть больше одного».
+   - **Принцип:** «где в потоке приземлится ответ LLM → какие сегменты к тому моменту ещё PENDING → их LLM может переписать через MERGE; что до точки приземления — уже FROZEN».
+   - **Алгоритм (для §6.5):**
+     ```
+     LLM начал ход → timestamp t_request_sent
+     LLMEstimator.estimate_ms = T_ms → t_response ≈ t_request_sent + T_ms
+
+     для каждого сегмента в порядке [ACTIVE_remaining, PENDING_eta_1, PENDING_eta_2, ...]:
+       накапливаем eta пока сумма < T_ms
+       первый сегмент, в котором ответ «приземлился» = boundary_segment
+
+     boundary и все ДО него = FROZEN (LLM не успеет переписать)
+     все ПОСЛЕ boundary = LIVE (LLM может переписать через MERGE)
+     ```
+   - **Пример (T=2.1с, seg_1=8с active, seg_2=3.2с, seg_3=3.5с, seg_4=2.0с):** ответ приземлится во время seg_1 → FROZEN=[] (пусто, т.к. seg_1 не PENDING) → LIVE=[seg_2, seg_3, seg_4] (3 сегмента доступны MERGE).
+   - **Пример (T=12с, та же очередь):** seg_1+seg_2=11.2 < 12 → seg_3=14.7 > 12 → boundary=seg_3 → FROZEN=[seg_1, seg_2, seg_3] → LIVE=[seg_4] (только 1 сегмент доступен MERGE).
+   - **Что меняется в дизайне:**
+     - §2.1 — статусы расширяются: `PENDING` имеет атрибут `live | frozen` (или под-статусы `PENDING_LIVE` / `PENDING_FROZEN`).
+     - §6.5 — нет магических чисел и cap-ов; budget = runtime-вычисление через `LLMEstimator`.
+     - §7.1 — блок `[SEGMENT PLAN]` показывает LLM: где сейчас, что FROZEN/LIVE, `LLM_RESPONSE_EXPECTED_AT`, `REWRITEABLE_SEGMENTS`.
+     - §13 G4 — закрыт, см. §6.5 и §7.1.
+   - **Реализация (фаза 3):** runtime-расчёт в `Scheduler.update_live_frozen_flags()` вызывается при (а) старте каждого сегмента, (б) получении `LLMEstimator.record(latency_ms)`, (в) `task.update()`. Дешёво — один проход по списку сегментов.
 6. ~~**Q5 (reflex, §8.10.7)** — «направо» во время песни: параллельно (по умолчанию) или IGNORE?~~ **✅ ЗАКРЫТ (rev. v5, 2026-08-04, owner).** Решение owner'а: **вариант A — параллельно, всегда**.
    - **Мотивация (owner, дословно):** «робот будет больше похож на человека по поведению — когда он поёт песню и у него занят рот, но он может повернуть направо, то пусть повернёт».
    - **Совместимость с кодом:** уже реализовано в `src/rob_box_voice/rob_box_voice/command_node.py:302` (`handle_direction()` безусловно шлёт `NavigateToPose` через Nav2, не глядя на состояние voice-канала). Scheduler просто **формализует существующее поведение**, не меняет его.
@@ -1627,7 +1717,19 @@ Scheduler **не дублирует** `async_executor`. Использует е�
    - **Реализация (фаза 1.5):** ~30 LOC в `SchedulerEventBus.on_reflex_event()` (ветка по `nav_channel_active`).
    - **Анти-паттерн (отвергнуто):**
      - ❌ Фиксированный B (reflex всегда cancel all) — сломанный кейс: юзер в панике говорит «стой» во время фонового чтения памяти, отменяется вся активность без нужды. Owner прямо сказал: «если не движется — спросить что имел в виду».
-10. **Канал передачи reflex-events в SchedulerEventBus** — ROS-топик `/reflex/events` (стандартный путь, observability) или прямой вызов Python (быстрее, но менее наблюдаемо)? **Требует решения до старта фазы 1.5.**
+10. **Канал передачи reflex-events в SchedulerEventBus** — ROS-топик `/reflex/events` (стандартный путь, observability) или прямой вызов Python (быстрее, но менее наблюдаемо)? **Требует решения до старта фазы 1.5. Вопрос адресован аналитику** (после завершения архитектурной фазы и начала разработки прототипа scheduler'а). Зачем отложено: аналитик должен измерить реальный latency-бюджет на работающем scheduler'е (фаза 1.5 в работе) и подтвердить, укладывается ли +5мс от ROS-топика в общий бюджет reflex-cancel (< 500мс, см. §8.10.6 сценарий #1). Если да — выбираем A (топик); если нет — B (прямой вызов).
+
+   **Контекст для аналитика (на момент разбора):**
+   - §8.10.4 шаг 1 уже явно предлагает publisher (`self.reflex_publisher.publish(ReflexEvent(...))`) — это вариант A.
+   - `command_node` уже использует 3 ROS-топика для исходящих сообщений (`/voice/command/intent`, `/voice/command/feedback`, `/cmd_vel_voice`) — стиль consistent с A.
+   - `dialog_harness_node` уже создаёт свой ROS-ноду ([dialog.py:264](src/rob_box_harness/rob_box_harness/harnesses/dialog.py#L264)) — умеет подписываться через `ROS2Transport`.
+   - Latency для A в `network_mode: host` внутри одного контейнера ≈ +2–5мс (через DDS round-trip); B (прямой Python-вызов) ≈ +0.1мс, но требует гарантии общего процесса.
+
+   **Критерии выбора для аналитика:**
+   - Измерить фактический round-trip `command_node → dialog_harness_node` через `/reflex/events` на прототипе фазы 1.5 (median + p95).
+   - Сравнить с медианой round-trip прямого вызова (in-process).
+   - Если разница < 10мс и не превышает 5% бюджета 500мс → A.
+   - Если разница > 10мс ИЛИ не укладывается в бюджет → B (с оговоркой: гарантия общего процесса + observability через локальный `print` или `self.get_logger()`).
 
 ---
 
