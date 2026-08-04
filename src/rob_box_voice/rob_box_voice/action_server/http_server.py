@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 
 from .http import create_app
 from .server import ActionServer
@@ -23,10 +24,14 @@ async def main() -> None:
     site = web.TCPSite(runner, os.getenv("ACTION_SERVER_HOST", "127.0.0.1"),
                        int(os.getenv("ACTION_SERVER_PORT", "8765")))
     await site.start()
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
     try:
-        await asyncio.Event().wait()
+        await stop_event.wait()
     finally:
-        await server.shutdown()
+        await server.shutdown(timeout=float(os.getenv("ACTION_SERVER_SHUTDOWN_TIMEOUT", "5.0")))
         await runner.cleanup()
 
 
