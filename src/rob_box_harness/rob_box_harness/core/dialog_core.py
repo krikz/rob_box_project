@@ -22,10 +22,12 @@ the *orchestrator*, not a duplicate of the ports.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
+from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
@@ -34,6 +36,12 @@ from rob_box_harness.core.dialogue_state_machine import (
 from rob_box_harness.memory import MemoryStore
 from rob_box_harness.tools import ToolProvider, ToolSpec
 from rob_box_llm.provider import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolResult
+
+if TYPE_CHECKING:
+    # Forward import — AcceptanceGate is in rob_box_harness.core.acceptance
+    # and importing it eagerly here would create a circular dependency
+    # with the package's __init__ exports.
+    from rob_box_harness.core.acceptance import AcceptanceGate
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +124,7 @@ class DialogCore:
         user_id: str = "default",
         history_trim_limit: int | None = None,
         inactivity_timeout: float | None = None,
+        acceptance_gate: "AcceptanceGate | None" = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -144,6 +153,15 @@ class DialogCore:
                 :meth:`DialogueStateMachine.check_inactivity_timeout`).
                 ``None`` disables the inactivity check; the shell is
                 then expected to drive ``TIMEOUT`` events manually.
+            acceptance_gate: Optional :class:`AcceptanceGate` (issue
+                #968 §8 / §11.2). When provided, every tool call
+                emitted by the LLM is first classified: ``require``
+                segments enter ``AWAITING_CONFIRMATION`` and the
+                LLM receives an ``"awaiting_user_confirmation"``
+                tool result; ``pass_through`` / ``notify`` segments
+                are executed as before. When ``None`` the core runs
+                the legacy un-gated path — backward-compatible with
+                every existing test that doesn't construct a gate.
         """
         if llm is None:
             raise TypeError("DialogCore: llm is required")
@@ -160,6 +178,7 @@ class DialogCore:
         self._user_id = user_id
         self._history_trim_limit = history_trim_limit
         self._inactivity_timeout = inactivity_timeout
+        self._acceptance_gate = acceptance_gate
 
     # ---- main entry point -----------------------------------------------
 
@@ -317,7 +336,48 @@ class DialogCore:
             )
 
             # Execute every requested tool call and feed results back.
+            # When an AcceptanceGate is wired in, require-classified calls
+            # enter AWAITING_CONFIRMATION and the LLM receives a sentinel
+            # tool result instead of an executor result — the LLM cycle
+            # is NOT blocked (§4.4: MERGE/QUEUE/AWAITING don't cancel the
+            # LLM cycle), and the user gets to confirm/reject before the
+            # call ever reaches the executor.
             for call in response.tool_calls:
+                if self._acceptance_gate is not None:
+                    segment, decision = self._acceptance_gate.submit(
+                        tool=call.name,
+                        args=dict(call.arguments or {}),
+                        call_id=call.id,
+                    )
+                    if decision.kind is ConfirmationKind.REQUIRE:
+                        # Don't call the executor — gate will dispatch it
+                        # later via the future scheduler (Фаза 2).
+                        tool_result = ToolResult(
+                            tool_call_id=call.id,
+                            content=json.dumps(
+                                {
+                                    "status": "awaiting_user_confirmation",
+                                    "segment_id": segment.segment_id,
+                                    "tool": call.name,
+                                    "plan_text": segment.decision.plan_text,
+                                    "confirmation_timeout_ms": int(
+                                        self._acceptance_gate.config.confirmation_timeout_ms
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            ),
+                            is_error=False,
+                        )
+                        messages.append(
+                            LLMMessage(
+                                role="tool",
+                                content=tool_result.content,
+                                tool_call_id=tool_result.tool_call_id,
+                                tool_result=tool_result,
+                            )
+                        )
+                        continue
+
                 tool_result = await self._tools.execute(call)
                 messages.append(
                     LLMMessage(
