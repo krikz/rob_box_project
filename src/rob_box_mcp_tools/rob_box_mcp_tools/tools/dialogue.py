@@ -37,8 +37,22 @@ class SpeakTextTool(MCPTool):
         self._dialogue_id_sub = node.create_subscription(
             String, "/voice/current_dialogue_id", self._on_current_dialogue_id, 1
         )
-        # Трекер активных произношений: speech_id -> None; очищается в _on_tts_finished
+        # Publisher для batch_complete — публикуется, когда последний чанк
+        # батча получает /voice/tts/finished (issue #980). Используется
+        # dialogue_node, чтобы не рубить музыку между чанками длинного
+        # speak_text (рэп, стихи): cleanup ждёт batch_complete, а не debounce.
+        self.batch_complete_pub = node.create_publisher(
+            String, "/voice/tts/batch_complete", 10
+        )
+        # Трекер активных произношений: speech_id -> {batch_id, batch_total};
+        # batch_total == 0 указывает на «одиночный» вызов (без split) —
+        # в этом случае batch_complete публикуется после первого finished,
+        # чтобы не сломать совместимость с уже существующими потребителями.
         self.pending_speeches: dict = {}
+        # batch_id -> {"remaining": int, "total": int, "started_at_ms": float,
+        #              "success": bool}; создаётся в execute(), обновляется
+        # и закрывается в _on_tts_finished().
+        self.pending_batches: dict = {}
         import threading
         self.pending_speeches_lock = threading.Lock()
 
@@ -47,21 +61,77 @@ class SpeakTextTool(MCPTool):
         self._current_dialogue_id = msg.data
 
     def _on_tts_finished(self, msg: "String"):
-        """Обработка завершения произношения — очищает запись из pending_speeches."""
+        """Обработка завершения произношения.
+
+        1. Удаляет запись speech_id из pending_speeches.
+        2. Декрементирует счётчик батча. Когда батч завершён (remaining==0),
+           публикует /voice/tts/batch_complete с chunks_total и
+           batch_duration_ms (issue #980). dialogue_node подписан на этот
+           топик и публикует /mcp/music_cleanup ровно один раз после
+           последнего чанка — музыка играет весь рэп, а не вырубается
+           после 1-го чанка из 4.
+        """
         import json
         try:
             result = json.loads(msg.data)
-            speech_id = result.get("speech_id")
-            self.log_info(f"🔔 TTS finished: speech_id={speech_id[:8] if speech_id else 'None'}..., success={result.get('success')}")
-            if speech_id:
-                with self.pending_speeches_lock:
-                    if speech_id in self.pending_speeches:
-                        del self.pending_speeches[speech_id]  # Очищаем, чтобы не росло в памяти
-                        self.log_info(f"✅ Speech {speech_id[:8]}... удалён из pending_speeches")
-                    else:
-                        self.log_warning(f"⚠️ Speech {speech_id[:8]}... не найден в pending_speeches (возможно уже удалён)")
-        except json.JSONDecodeError as e:
-            self.log_error(f"❌ Ошибка парсинга TTS finished: {e}")
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            self.log_error(f"❌ Ошибка парсинга TTS finished: {exc}")
+            return
+        speech_id = result.get("speech_id")
+        finished_success = bool(result.get("success", False))
+        self.log_info(
+            f"🔔 TTS finished: speech_id="
+            f"{speech_id[:8] if speech_id else 'None'}..., "
+            f"success={finished_success}"
+        )
+        if not speech_id:
+            return
+
+        with self.pending_speeches_lock:
+            entry = self.pending_speeches.pop(speech_id, None)
+            if entry is None:
+                self.log_warning(
+                    f"⚠️ Speech {speech_id[:8]}... не найден в pending_speeches "
+                    "(возможно уже удалён)"
+                )
+                return
+            batch_id = entry["batch_id"]
+            batch = self.pending_batches.get(batch_id)
+            if batch is None:
+                # Баланс между двумя dict'ами мог разъехаться только при
+                # баге — отмечаем как warning, но не падаем.
+                self.log_warning(
+                    f"⚠️ Batch {batch_id[:8] if batch_id else 'None'}... не "
+                    f"найден при finished для speech {speech_id[:8]}..."
+                )
+                return
+            # Если чанк упал — батч помечаем как unsuccessful, чтобы
+            # dialogue_node мог почистить ресурсы даже при сбое.
+            if not finished_success:
+                batch["success"] = False
+            batch["remaining"] -= 1
+            remaining = batch["remaining"]
+            total = batch["total"]
+            # Берём snapshot до pop(), чтобы не лезть в удалённый dict.
+            batch_success = batch["success"]
+            batch_started_at = batch["started_at_ms"]
+            is_complete = (remaining == 0)
+            if is_complete:
+                # Удаляем батч, чтобы не рос в памяти.
+                self.pending_batches.pop(batch_id, None)
+
+        if is_complete:
+            self._publish_batch_complete(
+                batch_id=batch_id,
+                chunks_total=total,
+                success=batch_success,
+                started_at_ms=batch_started_at,
+            )
+        else:
+            self.log_info(
+                f"⏳ Batch {batch_id[:8]}... "
+                f"{total - remaining}/{total} чанков завершено"
+            )
 
     @property
     def name(self) -> str:
@@ -230,6 +300,15 @@ class SpeakTextTool(MCPTool):
         if len(chunks) > 1:
             self.log_info(f"✂️ Текст разбит на {len(chunks)} чанков (длина: {len(text)} символов)")
 
+        # Issue #980: один speak_text(...) может породить несколько чанков
+        # TTS-запросов. dialogue_node должен знать, когда ВСЕ чанки этого
+        # вызова закончили проигрываться, чтобы корректно отложить cleanup
+        # музыки. Генерируем batch_id заранее, до публикации первого чанка,
+        # и регистрируем каждый speech_id с этим batch_id в pending_speeches.
+        import time as _time
+        batch_id = str(uuid.uuid4())
+        chunks_total = len(chunks)
+
         from std_msgs.msg import String
         speech_ids = []
         for i, chunk in enumerate(chunks):
@@ -247,11 +326,32 @@ class SpeakTextTool(MCPTool):
                 except Exception as e:
                     self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
 
-            # Регистрируем ожидание
+            # Регистрируем ожидание: каждый speech_id знает свой batch_id
+            # и chunks_total. Это нужно _on_tts_finished(), чтобы понять —
+            # последний это чанк или промежуточный.
             with self.pending_speeches_lock:
-                self.pending_speeches[speech_id] = None
+                self.pending_speeches[speech_id] = {
+                    "batch_id": batch_id,
+                    "batch_total": chunks_total,
+                }
+                # Батч создаётся один раз — при обработке первого чанка.
+                if batch_id not in self.pending_batches:
+                    self.pending_batches[batch_id] = {
+                        "remaining": chunks_total,
+                        "total": chunks_total,
+                        "started_at_ms": _time.monotonic() * 1000.0,
+                        "success": True,
+                    }
 
-            tts_request = {"ssml": _make_ssml(chunk), "speech_id": speech_id}
+            tts_request = {
+                "ssml": _make_ssml(chunk),
+                "speech_id": speech_id,
+                # batch_id публикуется в payload запроса — даже если tts_node
+                # его игнорирует, мы не зависим от него: batch_id хранится
+                # и в pending_speeches, и восстанавливается без участия
+                # tts_node. Поле оставлено для трейсинга в логах tts_node.
+                "batch_id": batch_id,
+            }
             if self._current_dialogue_id:
                 tts_request["dialogue_id"] = self._current_dialogue_id
             msg = String()
@@ -259,15 +359,70 @@ class SpeakTextTool(MCPTool):
             self.tts_pub.publish(msg)
             self.log_info(
                 f"📤 TTS чанк {i+1}/{len(chunks)}: {chunk[:40]!r}... "
-                f"(speech_id: {speech_id[:8]}, dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
+                f"(speech_id: {speech_id[:8]}, batch_id: {batch_id[:8]}, "
+                f"dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
             )
 
-        self.log_info(f"✅ TTS запрос(ов) принято: {len(chunks)} (асинхронный режим)")
+        self.log_info(
+            f"✅ TTS запрос(ов) принято: {chunks_total} "
+            f"(асинхронный режим, batch_id: {batch_id[:8]})"
+        )
         return MCPToolResult(
             success=True,
-            data={"text": text, "animation": animation, "chunks": len(chunks), "speech_ids": speech_ids, "async": True},
-            message=f"TTS запрос отправлен ({len(chunks)} чанк(ов)): {text[:50]}..."
+            data={
+                "text": text,
+                "animation": animation,
+                "chunks": chunks_total,
+                "speech_ids": speech_ids,
+                "batch_id": batch_id,
+                "async": True,
+            },
+            message=(
+                f"TTS запрос отправлен ({chunks_total} чанк(ов)): {text[:50]}..."
+            ),
         )
+
+    def _publish_batch_complete(
+        self,
+        *,
+        batch_id: str,
+        chunks_total: int,
+        success: bool,
+        started_at_ms: float,
+    ) -> None:
+        """Публикует /voice/tts/batch_complete (issue #980).
+
+        Вызывается ровно один раз для каждого батча — когда последний
+        ``tts/finished`` прилетел. ``batch_duration_ms`` — настенное
+        время от первого чанка до последнего; полезно для диагностики
+        раскладки рэпов (issue #949 уже использует duration_sec).
+        """
+        import json as _json
+        import time as _time
+        now_ms = _time.monotonic() * 1000.0
+        batch_duration_ms = max(0.0, now_ms - started_at_ms)
+        payload = {
+            "batch_id": batch_id,
+            "chunks_total": chunks_total,
+            "batch_duration_ms": int(batch_duration_ms),
+            "success": bool(success),
+        }
+        try:
+            from std_msgs.msg import String as _StringMsg
+            msg = _StringMsg()
+            msg.data = _json.dumps(payload, ensure_ascii=False)
+            self.batch_complete_pub.publish(msg)
+            self.log_info(
+                f"🎬 TTS batch_complete: batch_id={batch_id[:8]}... "
+                f"chunks_total={chunks_total} "
+                f"batch_duration_ms={int(batch_duration_ms)} "
+                f"success={success}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Cleanup музыки зависит от batch_complete — не теряем ошибку.
+            self.log_error(
+                f"❌ Не удалось опубликовать /voice/tts/batch_complete: {exc}"
+            )
 
 class ListenForResponseTool(MCPTool):
     """Инструмент для ожидания ответа пользователя."""
