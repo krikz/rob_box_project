@@ -111,12 +111,20 @@ jobs:
 
           # Force pip-installed pytest>=8 before apt's 6.2.5
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          # Disable launch_testing plugin: it was compiled for pytest 6,
+          # implements a hook that no longer exists in pytest 9 → plugin loader crashes.
+          # We re-enable only the plugins we actually need via --pytest-args.
+          export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
           python3 -c "import pytest; v=pytest.__version__; assert v >= '8', f'WRONG pytest: {v}'; print(f'colcon pytest: {v} ({pytest.__file__})')"
 
           # Run tests — NO `|| true`, failures MUST surface
+          # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 stops pytest from auto-loading
+          # the apt-installed `launch_testing` plugin (compiled for pytest 6,
+          # breaks with pytest 9). We re-enable only the plugins we need.
           colcon test \
             --packages-select rob_box_voice rob_box_animations rob_box_perception \
             --event-handlers console_direct+ \
+            --pytest-args "-p pytest_asyncio -p pytest_cov -p pytest_mock" \
             --return-code-on-test-failure
 
       - name: Display test results
