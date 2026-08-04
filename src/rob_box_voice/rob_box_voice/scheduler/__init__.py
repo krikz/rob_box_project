@@ -49,6 +49,17 @@ from .event_bus import (
     EventQueueFullError,
     EventSubscription,
 )
+from .reflex import (
+    DEFAULT_DEBOUNCE_MS,
+    DEFAULT_HISTORY_SIZE,
+    ReflexDecision,
+    ReflexEvent,
+    ReflexKind,
+    ReflexLayer,
+    ReflexMetrics,
+    ReflexPriority,
+    command_to_view,
+)
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
@@ -91,4 +102,14 @@ __all__ = [
     "TaskSubmitError",
     "TaskNotFoundError",
     "ChannelBusyError",
+    # Phase 2.5 — Reflex layer (issue #968 §8.10)
+    "DEFAULT_DEBOUNCE_MS",
+    "DEFAULT_HISTORY_SIZE",
+    "ReflexDecision",
+    "ReflexEvent",
+    "ReflexKind",
+    "ReflexLayer",
+    "ReflexMetrics",
+    "ReflexPriority",
+    "command_to_view",
 ]
