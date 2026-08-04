@@ -19,7 +19,7 @@
 
 **Ключевой принцип (из итоговой модели, согласовано в #13):** тулы от LLM идут в scheduler мгновенно (LLM не блокируется). Scheduler **не задерживает конструктивные** операции (`speak_text`, `play_animation` — встают в очередь канала), а **задерживает деструктивные** (`stop_music`, REPLACE, cancel) — до естественной границы voice-канала.
 
-**Что УЖЕ есть в коде** (см. §11): вызовы `speak_text` уже блокируются через `_output_lock` + `await tts/finished` (dialogue_node.py:672–702). То есть половина исходной проблемы #968 уже решена. Осталось: (1) классификация ввода MERGE/REPLACE/QUEUE/IGNORE/CLARIFY до barge-in (блокер П1), (2) сегментная модель + PENDING-правки, (3) speculative pre-generation, (4) единый EventBus для системных событий.
+**Что УЖЕ есть в коде** (см. §11): вызовы `speak_text` уже блокируются через `EffectAwaiterRegistry._tts_lock` + `await tts/finished` (`speak_helpers.py:110–148` — `_tts_events` dict, `register_tts`, `handle_tts_finished`). То есть половина исходной проблемы #968 уже решена. Осталось: (1) классификация ввода MERGE/REPLACE/QUEUE/IGNORE/CLARIFY до barge-in (блокер П1), (2) сегментная модель + PENDING-правки, (3) speculative pre-generation, (4) единый EventBus для системных событий.
 
 **Что добавлено в v3 (эта ревизия, task t_99da3520, по комментарию 5167924152):**
 **Что добавлено в v4 (эта ревизия, task t_85ab3ee1, по комментарию 5168761313):**
@@ -182,11 +182,11 @@ Scheduler владеет набором каналов. **Каждый кана�
 
 ### 3.3 Переход от блокирующего `speak_text` к scheduler
 
-Текущая реализация `speak_text` (`dialogue_node.py:672–702`) делает три вещи в одном `await`:
+Текущая реализация `speak_text` (блокирующая часть — `speak_helpers.py:110–148`: `_tts_events` dict + `register_tts` + `handle_tts_finished`) делает три вещи в одном `await`:
 
-1. Захватывает `_output_lock` (asyncio.Lock) — взаимное исключение на LLM-цикл.
+1. Захватывает `EffectAwaiterRegistry._tts_lock` (`speak_helpers.py:111`, threading.Lock) — взаимное исключение на регистрацию/освобождение TTS-событий.
 2. Публикует TTS-заказ в ROS-топик.
-3. **Ждёт `tts/finished` для `speech_id`** до звучания последнего чанка.
+3. **Ждёт `tts/finished` для `speech_id`** через `await self._effects._tts_events[speech_id].wait()` — до звучания последнего чанка.
 
 **Это решает гонку `stop_music` ↔ `speak`, но создаёт две новые проблемы:**
 
@@ -197,9 +197,10 @@ Scheduler владеет набором каналов. **Каждый кана�
 
 ```
 Сейчас (voice-канал не существует как объект):
-  LLM-цикл → speak_text() → _output_lock.acquire() → ROS topic → await tts/finished → release
+  LLM-цикл → speak_text() → effects._tts_lock + _tts_events[sp_id]=Event → ROS topic → await tts/finished → release
                                   ↑ блокирует LLM на 2–5с
-
+                                  (см. speak_helpers.py:110–148)
+```
 Станет (есть voice FIFO + state-машина):
   LLM-цикл → speak_text() → scheduler.enqueue(voice, seg)          [НЕ блокирует LLM]
                                        ↓
@@ -216,44 +217,43 @@ Scheduler владеет набором каналов. **Каждый кана�
 | Компонент | Было | Станет |
 |-----------|------|--------|
 | `speak_text` function_tool | `await self._speak_and_wait(text)` | `await self._scheduler.enqueue(channel="voice", seg=Segment(payload=text))` |
-| `_output_lock` | asyncio.Lock на LLM-цикл | asyncio.Lock **только** на исполнителе voice-канала |
+| `EffectAwaiterRegistry._tts_lock` | threading.Lock на регистрацию `_tts_events` (`speak_helpers.py:111`) | threading.Lock **только** на исполнителе voice-канала |
 | `_tts_events[speech_id]` wait | внутри `speak_text` (блокирует LLM) | внутри voice-канала (блокирует только следующий сегмент своего канала) |
 | Backpressure | «speak_text ждёт tts/finished» | «voice-канал возвращает ack сразу, сегменты FIFO-встают, исполнитель разруливает» |
 
 **Что НЕ меняется:**
-
 - Никакой новой логики сериализации нет — блокировка остаётся одна, просто живёт ниже по стеку (в канале).
-- `_output_lock` никуда не девается, его владелец меняется: был у `speak_text`, стал у `voice_channel._play_next()`.
+- `EffectAwaiterRegistry._tts_lock` никуда не девается, его владелец меняется: был у `speak_text`, стал у `voice_channel._play_next()`.
 - Поведение `tts/finished` не меняется — те же `speech_id`, тот же счётчик. INSIGHT #7 (один finished на один заказ) сохраняется.
 
 **Почему это НЕ «двойная сериализация»:** слой один — канал. LLM не блокируется ничем; канал сам сериализует свои сегменты. То, что было «блокировкой LLM», становится «FIFO-очередью канала» — это один и тот же механизм сериализации, просто развёрнутый из `await` в `enqueue + drain`.
 
-**Почему это НЕ «race на `_output_lock`»:** `speak_text` больше не вызывает `_output_lock.acquire()`. Lock остаётся, но им владеет только voice-канал. LLM-цикл и voice-канал живут в разных корутинах и блокируют разные ресурсы: LLM — собственный ход; канал — собственный исполнитель.
+**Почему это НЕ «race на `_tts_lock`»:** `speak_text` больше не делает `register_tts` напрямую — регистрация события переезжает в voice-канал. LLM-цикл и voice-канал живут в разных корутинах и блокируют разные ресурсы: LLM — собственный ход; канал — собственный исполнитель.
 
 **Критерий перехода (Phase 1 acceptance, дополнительно):**
 
 - [ ] LLM-цикл не делает `await tts/finished` ни в одном пути (grep `await.*tts.*finished` по `dialogue_node.py` — пусто)
-- [ ] `voice-канал` имеет собственный `_channel_lock` (вместо бывшего `_output_lock`)
+- [ ] `voice-канал` имеет собственный `_channel_lock` (вместо бывшего `EffectAwaiterRegistry._tts_lock`)
 - [ ] Два подряд `speak_text` от LLM возвращают управление за < 50мс каждый (текущее — 2–5с на вызов)
 - [ ] Сценарий «комар+енот» отрабатывает с инвариантом: голос **не** прерывается на середине фразы, новые сегменты встают в очередь до естественной границы
 
-**Обратная совместимость:** до полного перевода всех voice-вызовов через scheduler `_output_lock` остаётся в `dialogue_node.py` как no-op (или удаляется одним PR после перевода). Удаление `_output_lock` — отдельный PR, не часть Phase 1.
+**Обратная совместимость:** до полного перевода всех voice-вызовов через scheduler `EffectAwaiterRegistry._tts_lock` остаётся в `speak_helpers.py` как общий регистрационный лок. Удаление/замена — отдельный PR, не часть Phase 1.
 
 ### 3.4 Уже реализовано
 
-В текущем `dialogue_node.py:672–702`:
+В текущем `speak_helpers.py:110–148` (механизм `EffectAwaiterRegistry._tts_events`):
 
 ```python
-async def speak_text(text: str, animation: str = "neutral") -> str:
-    ...
-    async with lock:  # ← _output_lock, сериализует speak/play_sound/animation
-        result_str = await _call("speak_text", {...}, timeout=60.0)
-        # ↓↓↓ ждём пока TTS реально договорит ↓↓↓
-        speech_id = json.loads(result_str).get("data", {}).get("speech_id", "")
-        if speech_id:
-            event = asyncio.Event()
-            self._tts_events[speech_id] = event
-            await asyncio.wait_for(event.wait(), timeout=30.0)
+# speak_text вызывает (через self._effects):
+def _wait_for_tts_finished(self, speech_id: str, timeout: float = 30.0) -> None:
+    event = asyncio.Event()
+    self._effects.register_tts(speech_id, event)         # speak_helpers.py:120
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    finally:
+        self._effects.pop_tts(speech_id)                  # speak_helpers.py:134
+# _on_tts_finished (dialogue_node.py:397) → self._effects.handle_tts_finished(...)
+# handle_tts_finished (speak_helpers.py:144) → pop_tts + _release_tts(event.set())
 ```
 
 Это значит: **основной race «stop_music vs speak» уже частично решён** — потому что пока `speak_text` ждёт `tts/finished`, LLM-цикл не двигается дальше. Проблема остаётся в `execute_music_code` + параллельных вызовах (см. §11.1 acceptance, регресс v36).
@@ -1439,10 +1439,10 @@ async def on_reflex_event(event: ReflexEvent):
 |-----------|------|--------|
 | `AsyncToolExecutor` с INSTANT/FAST/MEDIUM/LONG | `async_executor.py:136` | ✅ есть |
 | `InterruptibleTask.cancel()` | `async_executor.py:23` | ✅ есть |
-| Блокирующий `speak_text` через `_output_lock` + `tts/finished` await | `dialogue_node.py:672–702` | ✅ есть |
-| `_tts_events` dict (speech_id → Event) | `dialogue_node.py:169` | ✅ есть |
-| `_cancel_run` (отмена LLM-цикла при barge-in) | `dialogue_node.py:1786` | ✅ есть, но см. §4.4 |
-| `_run_cancelled` flag (проверка в speak_text) | `dialogue_node.py:157–162` | ✅ есть |
+| Блокирующий `speak_text` через `_tts_events[speech_id]` + `tts/finished` await | `speak_helpers.py:110–148` (`register_tts`/`handle_tts_finished`) | ✅ есть |
+| `_tts_events` dict (speech_id → Event) | `speak_helpers.py:110` (внутри `EffectAwaiterRegistry`) | ✅ есть |
+| `_cancel_run` (отмена LLM-цикла при barge-in) | `dialogue_node.py:517` | ✅ есть, но см. §4.4 |
+| `_run_cancelled` flag (проверка в speak_text) | `dialogue_node.py:81` | ✅ есть |
 
 ### 9.3 Что нужно построить
 
@@ -1590,10 +1590,10 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 | Проблема из #968 | Где решена | Как |
 |------------------|------------|-----|
-| `stop_music` обгоняет `speak_text` (race) | `dialogue_node.py:672` (`_output_lock`) | `speak_text` блокируется до `tts/finished` |
-| Несколько `speak_text` в одном батче | `dialogue_node.py:672` (lock) + line 190 (`_output_lock`) | Сериализуются через asyncio.Lock |
+| `stop_music` обгоняет `speak_text` (race) | `speak_helpers.py:144` (`handle_tts_finished`) | `speak_text` блокируется до `tts/finished` |
+| Несколько `speak_text` в одном батче | `speak_helpers.py:110–148` (`_tts_lock` + `_tts_events`) | Сериализуются через регистрацию/освобождение события |
 | Cleanup срабатывал на первом чанке (v38) | `tts_node.py:741–744` (один finished на speech_id) | Теперь один speech_id = один finished event |
-| LLM вызывает `speak_text` + `stop_music` подряд | `dialogue_node.py:678–702` (wait_for finished) | LLM-цикл не двигается, пока TTS не договорит |
+| LLM вызывает `speak_text` + `stop_music` подряд | `speak_helpers.py:120,134` (wait_for finished) | LLM-цикл не двигается, пока TTS не договорит |
 
 **Что осталось как OPEN issue:**
 - LLM не видит состояние каналов → пост-амбл, не знает что TTS играет
@@ -1740,7 +1740,8 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - PR #935 — watchdog для музыки (временные фиксы в `dialogue_node`)
 - ADR-0001 §5 — `AgentSession[StateT]` + `SideEffectBus` (Phase 5, см. t_c8396602)
 - `src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py` — `AsyncToolExecutor`, `InterruptibleTask`
-- `src/rob_box_voice/rob_box_voice/dialogue_node.py` — `speak_text`, `_output_lock`, `_tts_events`, `_cancel_run`
+- `src/rob_box_voice/rob_box_voice/dialogue_node.py` — `speak_text`, `_cancel_run` (`dialogue_node.py:517`), `_on_tts_finished` (`dialogue_node.py:397`)
+- `src/rob_box_voice/rob_box_voice/core/speak_helpers.py` — `EffectAwaiterRegistry._tts_events` dict (`speak_helpers.py:110`), `register_tts` (`speak_helpers.py:120`), `handle_tts_finished` (`speak_helpers.py:144`)
 - `src/rob_box_voice/rob_box_voice/tts_node.py` — публикация `tts/finished` (по одному на speech_id)
 - `src/rob_box_voice/rob_box_voice/core/command_parser.py:110–123` — regex-паттерны `IntentType.NAVIGATE` и `IntentType.STOP` (§8.10.1)
 - `src/rob_box_voice/rob_box_voice/command_node.py:258` — `handle_stop()` отмена Nav2 goals через CancelGoal service (§8.10.1)
