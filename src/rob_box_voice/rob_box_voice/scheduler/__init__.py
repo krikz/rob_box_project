@@ -67,6 +67,12 @@ from .event_bus import (
     EventQueueFullError,
     EventSubscription,
 )
+from .quality import (
+    CalibrationBin,
+    EstimatorQualityTracker,
+    EstimatorSample,
+    PredictionOutcome,
+)
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
@@ -103,6 +109,10 @@ __all__ = [
     "EventEnvelope",
     "EventQueueFullError",
     "EventSubscription",
+    "CalibrationBin",
+    "EstimatorQualityTracker",
+    "EstimatorSample",
+    "PredictionOutcome",
     "ChannelKind",
     "ChannelStatus",
     "TaskOutcome",
