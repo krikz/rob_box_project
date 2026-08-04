@@ -591,37 +591,29 @@ class TaskScheduler:
     async def wait_all(self, timeout: Optional[float] = None) -> None:
         """Await every channel's queue and current task.
 
-        Returns when every channel pump has consumed every queued
-        task and the channel lock is free. Raises
-        :class:`asyncio.TimeoutError` if *timeout* expires first
-        (per-channel — the slowest channel wins).
-        """
-        coros = []
-        for channel in self._channels.values():
-            pump = channel._pump_task  # noqa: SLF001 — internal pump
-            if pump is None:
-                continue
-            coros.append(self._await_pump(channel, timeout))
-        if coros:
-            await asyncio.gather(*coros)
+        Returns when every channel has finished every task that
+        was queued at the moment of the call. New submissions
+        after :meth:`wait_all` started are ignored — this matches
+        the typical use case (end-of-dialogue cleanup) where the
+        caller wants to know «everything that was in flight is
+        done». The pump tasks themselves keep running; they are
+        cancelled only by :meth:`shutdown`.
 
-    async def _await_pump(
-        self,
-        channel: _Channel,
-        timeout: Optional[float],
-    ) -> None:
-        """Await the channel pump + queue join, optionally bounded by *timeout*."""
-        pump = channel._pump_task  # noqa: SLF001
-        if pump is None:
-            return
-        try:
-            await channel._queue.join()  # noqa: SLF001 — task_done accounting
-        finally:
-            pass
+        Raises:
+            asyncio.TimeoutError: If *timeout* (in seconds)
+                expires before every channel settles.
+        """
+        # Capture the queues we want to join BEFORE awaiting — a
+        # late submit() that lands during wait_all() must NOT be
+        # included (caller has not enqueued it yet).
+        queues = list(self._channels.values())
         if timeout is None:
-            await pump
+            await asyncio.gather(*(ch._queue.join() for ch in queues))  # noqa: SLF001
         else:
-            await asyncio.wait_for(pump, timeout=timeout)
+            await asyncio.wait_for(
+                asyncio.gather(*(ch._queue.join() for ch in queues)),  # noqa: SLF001
+                timeout=timeout,
+            )
 
     def channel_status(self, kind: ChannelKind) -> ChannelStatus:
         """Return the §7 ``[CHANNELS]`` snapshot for *kind*."""
