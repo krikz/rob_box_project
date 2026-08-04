@@ -10,5 +10,48 @@
     "/opt/ros/humble/lib/python3.10/site-packages",
     "/opt/ros/humble/local/lib/python3.10/dist-packages"
   ],
-  "ROS2.distro": "humble"
+  "ROS2.distro": "humble",
+  "files.exclude": {
+    "**/htmlcov/**": true,
+    "**/build/**": true,
+    "**/log/**": true,
+    "**/logs/**": true,
+    "**/.pytest_cache/**": true,
+    "**/__pycache__/**": true,
+    "**/*.egg-info/**": true
+  },
+  "files.watcherExclude": {
+    "**/htmlcov/**": true,
+    "**/build/**": true,
+    "**/log/**": true,
+    "**/logs/**": true,
+    "**/.pytest_cache/**": true,
+    "**/__pycache__/**": true,
+    "**/.vscode/browse.vc.db*": true
+  },
+  "search.exclude": {
+    "**/htmlcov/**": true,
+    "**/build/**": true,
+    "**/log/**": true,
+    "**/logs/**": true,
+    "**/.pytest_cache/**": true,
+    "**/__pycache__/**": true,
+    "**/.vscode/browse.vc.db": true
+  },
+  "python.analysis.exclude": [
+    "**/htmlcov/**",
+    "**/build/**",
+    "**/log/**",
+    "**/logs/**",
+    "**/.pytest_cache/**",
+    "**/__pycache__/**",
+    "**/install/**",
+    "**/migrations/**"
+  ],
+  "C_Cpp.files.exclude": {
+    "**/htmlcov/**": true,
+    "**/build/**": true,
+    "**/log/**": true
+  },
+  "C_Cpp.default.compileCommands": ""
 }
