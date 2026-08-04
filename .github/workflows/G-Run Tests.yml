@@ -52,23 +52,51 @@ jobs:
 
       - name: Install Python dependencies
         run: |
+          set -euxo pipefail
           sudo python3 -m pip install --upgrade pip
+
+          # pytest >= 8 — MUST use --force-reinstall because apt-installed
+          # python3-pytest 6.2.5 at /usr/lib/python3/dist-packages/ takes
+          # precedence over /usr/local/lib/python3.10/dist-packages/ in
+          # Python's sys.path.  Without --force-reinstall, colcon test
+          # loads 6.2.5 → ModuleNotFoundError: _pytest.scope.
+          sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov pytest-mock
+
           sudo pip install openai httpx
-          # Nuke any user-site pytest that shadows system package
-          pip uninstall -y pytest pytest-cov pytest-mock 2>/dev/null || true
-          rm -rf ~/.local/lib/python3.10/site-packages/_pytest* 2>/dev/null || true
-          rm -rf ~/.local/lib/python3.10/site-packages/pytest* 2>/dev/null || true
-          python3 -c "import pytest; print(f'pytest: {pytest.__version__}, path: {pytest.__file__}')"
+
+          # ---- verify pytest >= 8 ----
+          python3 -c "
+import pytest, sys
+v = pytest.__version__
+print(f'pytest: {v} ({pytest.__file__})')
+print(f'sys.path[0]: {sys.path[0]}')
+assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old: {v}'
+"
+
+          # ---- purge user-site leftovers ----
+          rm -rf ~/.local/lib/python3.10/site-packages/_pytest*  2>/dev/null || true
+          rm -rf ~/.local/lib/python3.10/site-packages/pytest*    2>/dev/null || true
+          rm -rf ~/.local/lib/python3.10/site-packages/pytest_*   2>/dev/null || true
 
       - name: Install ROS2 test dependencies
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            python3-pytest \
-            python3-pytest-cov \
             ros-humble-ament-cmake-pytest \
             ros-humble-launch-testing \
             ros-humble-launch-testing-ament-cmake
+
+          # apt may reinstall python3-pytest 6.2.5 as a dep → re-force
+          sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov pytest-mock
+
+          # ---- final verify: MUST be >= 8 ----
+          python3 -c "
+import pytest
+v = pytest.__version__
+assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old after apt: {v}'
+print(f'OK pytest={v} ({pytest.__file__})')
+"
 
       - name: Build workspace
         run: |
@@ -86,23 +114,33 @@ jobs:
 
       - name: Run unit tests
         run: |
+          set -euxo pipefail
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           cd ${{ github.workspace }}/test_ws
 
-          # Run tests with colcon
+          # Force pip-installed pytest>=8 before apt's 6.2.5
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          python3 -c "
+import pytest
+print(f'colcon pytest: {pytest.__version__} ({pytest.__file__})')
+assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'
+"
+
+          # Run tests — NO `|| true`, failures MUST surface
           colcon test \
             --packages-select rob_box_voice rob_box_animations rob_box_perception \
             --event-handlers console_direct+ \
-            --return-code-on-test-failure || true
+            --return-code-on-test-failure
 
       - name: Display test results
         if: always()
         run: |
+          set -euxo pipefail
           source /opt/ros/humble/setup.bash
           cd ${{ github.workspace }}/test_ws
-          colcon test-result --all --verbose || true
+          colcon test-result --all --verbose
 
       - name: Generate coverage report
         if: always()
@@ -141,42 +179,54 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+
       - name: Cache colcon build
         uses: actions/cache@v4
         with:
           path: |
             ${{ github.workspace }}/test_ws/build
             ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-v2-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
-                      colcon-humble-v2-
+          key: colcon-humble-v3-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
           restore-keys: |
             colcon-humble-${{ runner.os }}-
-
 
       - name: Set up ROS2 Humble
         uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
 
+      - name: Install Python dependencies
+        run: |
+          set -euxo pipefail
+          sudo python3 -m pip install --upgrade pip
+          sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov
+          sudo pip install openai httpx
+          python3 -c "import pytest; assert pytest.__version__>='8', f'pytest={pytest.__version__}'"
+
       - name: Build workspace
         run: |
+          set -euxo pipefail
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
-          cp -r src/* ${{ github.workspace }}/test_ws/src/
+          rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
           cd ${{ github.workspace }}/test_ws
-          colcon build --symlink-install
+          colcon build --symlink-install \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run integration tests
         run: |
+          set -euxo pipefail
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
-
-          # Run tests marked as integration
           cd ${{ github.workspace }}/test_ws
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          python3 -c "import pytest; assert pytest.__version__>='8'"
           colcon test \
             --packages-select rob_box_voice \
-            --pytest-args -m integration \
-            --event-handlers console_direct+
+            --pytest-args '-m integration' \
+            --event-handlers console_direct+ \
+            --return-code-on-test-failure
 
   # ============================================================================
   # Test Summary
