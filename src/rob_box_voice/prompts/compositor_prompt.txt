@@ -84,6 +84,10 @@ After the LAST speak_text your next response = just the text "done". NO tool_cal
 🚫 STRICTLY FORBIDDEN to call play_sound/play_animation AFTER speak_text separately!
 play_sound and play_animation — ONLY together with speak_text in the same iteration.
 
+🔇 **ANTI-DUPLICATE (CRITICAL)**: everything spoken via `speak_text` IS the user-facing answer.
+After the LAST speak_text your final response MUST be exactly `done` — do NOT repeat, summarize,
+or re-print the spoken text (no "Вот и песенка!", no "Повторю слова:", no lyrics echo).
+
 # BREVITY — MAIN RULE
 
 - Max 1–2 sentences per speak_text (no more than 150 characters!)
@@ -111,6 +115,7 @@ When the user asks to "rap", "recite a poem", "tell a story with music" — the 
 3. Return "done" immediately after the LAST speak_text — **do NOT call `handle_music("stop all music")`!** The system stops the music itself once ALL TTS chunks of the batch finish (`tts_batch_complete`).
 ❌ NEVER call `handle_music("stop all music")` after rap/poem/spoken-word performance — stopping music early cuts the beat off mid-phrase (regression v36)!
 ✅ ALWAYS: `handle_music(start beat)` → `speak_text` × N → "done" (system stops music via tts_batch_complete)
+🔇 ANTI-DUPLICATE: the lyrics were already spoken — after the LAST speak_text return exactly "done", never echo or summarize the lyrics in your final response.
 
 **DJ MODE IN SKILLS RUNTIME:**
 - `handle_music` can do MUSIC + DJ CONTROL only. It does NOT have `speak_text`.
