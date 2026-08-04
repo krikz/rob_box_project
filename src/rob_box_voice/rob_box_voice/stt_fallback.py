@@ -292,12 +292,11 @@ def log_attempts(
     else:
         logger.warning(f"[stt_attempt] {summary} -> rejected")
     # Каждую попытку — отдельной строкой для парсинга/dashboard.
+    # NB: RcutilsLogger не принимает позиционные аргументы (%s-стиль),
+    # только одну строку — поэтому f-string.
     for a in attempts:
+        a_text = f"'{a.text[:30]}'" if a.text else "-"
         logger.info(
-            "[stt_attempt_metric] provider=%s reason=%s latency_ms=%d attempt=%d text=%s",
-            a.provider,
-            a.reason,
-            a.latency_ms,
-            a.attempt_index,
-            f"'{a.text[:30]}'" if a.text else "-",
+            f"[stt_attempt_metric] provider={a.provider} reason={a.reason} "
+            f"latency_ms={a.latency_ms} attempt={a.attempt_index} text={a_text}"
         )
