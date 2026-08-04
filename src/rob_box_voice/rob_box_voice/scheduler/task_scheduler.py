@@ -1,0 +1,666 @@
+"""task_scheduler.py — Phase 1 MVP TaskScheduler (issue #968 §11.1).
+
+Minimal viable scheduler that
+
+1. accepts :class:`SchedulerTask` submissions,
+2. routes each task to the right FIFO channel
+   (voice / music / anim — see :class:`ChannelKind`),
+3. runs the tasks on each channel **strictly sequentially** via an
+   ``asyncio.Lock`` so two TTS requests never collide on the audio
+   device and ``stop_music`` cannot outrun the TTS chunk that the
+   scheduler just queued,
+4. exposes a small ``wait_all`` / ``cancel`` / ``channel_status``
+   surface for the LLM loop and integration tests.
+
+The MVP deliberately keeps the executor interface trivial: callers
+pass a :class:`TaskExecutor` — a coroutine that performs the actual
+side-effect (publish on ``/voice/tts/control``, etc.) and returns a
+:class:`TaskResult`. The MVP does NOT route through the
+:class:`~rob_box_harness.core.acceptance.AcceptanceGate`; that is
+Phase 1.5 (acceptance tool-calling, §11.2).
+
+Threading / concurrency
+-----------------------
+
+The scheduler is built around ``asyncio``. All public methods are
+coroutines (or coroutine-returning). A single ``threading.Lock``
+guards ``self._tasks`` so the snapshot views are coherent when read
+from a non-asyncio thread (e.g. a ROS2 callback). The per-channel
+execution lock is an ``asyncio.Lock``; it MUST be awaited on the
+loop that owns the scheduler (callers that need to drive it from a
+worker thread should use ``asyncio.run_coroutine_threadsafe``).
+
+Out of scope (Phase 1.5+)
+-------------------------
+
+* ``SchedulerEventBus`` (Phase 2)
+* Reflex / priority queue (Phase 1.5+)
+* Two-tier quick-decide (Phase 2)
+* ``SegmentEstimator`` / speculative pre-gen (Phase 3)
+* Persistent timers / timeouts (Phase 1.5)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Protocol, runtime_checkable
+
+
+_LOG = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public enums & dataclasses
+# ---------------------------------------------------------------------------
+
+
+class ChannelKind(str, Enum):
+    """Scheduler channels for Phase 1 MVP.
+
+    Mirrors the §3.1 trio (voice / music / anim). ``UNKNOWN`` is
+    intentionally absent — the MVP does not have to absorb
+    nav/mapping/mutate, those land in Phase 1.5 via
+    :class:`~rob_box_harness.core.acceptance.AcceptanceGate`. Tasks
+    whose :attr:`SchedulerTask.channel` is not a known
+    :class:`ChannelKind` are rejected with :class:`TaskSubmitError`.
+    """
+
+    VOICE = "voice"
+    MUSIC = "music"
+    ANIM = "anim"
+
+
+class TaskStatus(str, Enum):
+    """Lifecycle states a :class:`SchedulerTask` walks through.
+
+    The transitions are:
+
+    * ``QUEUED``     — set by :meth:`TaskScheduler.submit` after the
+      task is appended to a channel queue.
+    * ``SCHEDULED``  — set by :meth:`Channel._pump` once the task is
+      dequeued and the channel lock is acquired (i.e. it is the next
+      task to run).
+    * ``RUNNING``    — set right before the executor is awaited.
+    * ``COMPLETED``  — terminal: executor returned a successful
+      :class:`TaskResult`.
+    * ``FAILED``     — terminal: executor raised.
+    * ``CANCELLED``  — terminal: removed from the queue (before
+      ``SCHEDULED``) or cancelled mid-flight via
+      :meth:`TaskScheduler.cancel`.
+
+    The MVP does NOT have a ``SKIPPED`` or ``REJECTED`` status —
+    those belong to Phase 1.5's awaiting-confirmation flow.
+    """
+
+    QUEUED = "QUEUED"
+    SCHEDULED = "SCHEDULED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class TaskOutcome(str, Enum):
+    """Subset of :class:`TaskStatus` values that signal «done».
+
+    Used by :class:`TaskScheduler.wait_all` so callers can branch
+    on success/failure without inspecting :class:`TaskStatus`.
+    """
+
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    """What the executor returns on success.
+
+    Carries the executor's payload (typically the structured
+    response the LLM tool decorator would have produced) plus an
+    optional human-readable ``message`` for logging / LLM
+    feedback. ``None`` payload means "tool produced no
+    response" — e.g. ``stop_music``.
+    """
+
+    payload: Any = None
+    message: str = ""
+    error: Optional[str] = None
+
+    @property
+    def is_success(self) -> bool:
+        """True when the task completed without an ``error`` set."""
+        return self.error is None
+
+
+@dataclass
+class SchedulerTask:
+    """A single unit of work submitted to the scheduler.
+
+    Attributes:
+        task_id: Stable identifier (uuid4 hex). Generated by
+            :meth:`TaskScheduler.submit` when not supplied.
+        tool: Tool name (e.g. ``"speak_text"``). Echoed in logs and
+            in the §7 ``[CHANNELS]`` feedback block — Phase 3 will
+            surface it through the LLM system prompt.
+        channel: Which :class:`ChannelKind` owns this task.
+        executor: Coroutine invoked when the task reaches the head
+            of its channel. It must return a :class:`TaskResult`;
+            raising ends the task with :attr:`TaskStatus.FAILED`.
+        args: Original argument dict — kept verbatim for the
+            executor and for log introspection.
+        status: Current :class:`TaskStatus`. Mutated under the
+            scheduler's lock.
+        created_at: ``time.monotonic()`` at submission.
+        started_at: ``time.monotonic()`` at executor entry, or
+            ``None`` until then.
+        finished_at: ``time.monotonic()`` at terminal transition.
+        result: :class:`TaskResult` returned by the executor, or
+            ``None`` until then.
+        error: Exception text captured on :attr:`TaskStatus.FAILED`,
+            or ``None`` until then.
+    """
+
+    task_id: str
+    tool: str
+    channel: ChannelKind
+    executor: Callable[["SchedulerTask"], Awaitable[TaskResult]]
+    args: Dict[str, Any] = field(default_factory=dict)
+    status: TaskStatus = TaskStatus.QUEUED
+    created_at: float = field(default_factory=time.monotonic)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    result: Optional[TaskResult] = None
+    error: Optional[str] = None
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a frozen, log-friendly view of the task.
+
+        The executor callable is NOT included — coroutine objects
+        are not JSON-serializable. Callers that need the body
+        should keep a separate handle.
+        """
+        return {
+            "task_id": self.task_id,
+            "tool": self.tool,
+            "channel": self.channel.value,
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "args_keys": sorted(self.args.keys()),
+            "error": self.error,
+        }
+
+
+@runtime_checkable
+class TaskExecutor(Protocol):
+    """Protocol describing a single executor callable.
+
+    Concrete implementations are usually inline lambdas created by
+    the LLM-tool adapter — e.g. ``lambda task: _publish_tts(task)``.
+    The protocol keeps the surface explicit for unit tests that
+    build fakes.
+    """
+
+    def __call__(self, task: SchedulerTask) -> Awaitable[TaskResult]:
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Channel
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ChannelStatus:
+    """Snapshot of a single channel — used by the §7 ``[CHANNELS]`` block.
+
+    The MVP exposes the three numbers LLM feedback needs in Phase 3
+    (queue depth, current task id, ETA). ETA is ``None`` because
+    the MVP has no :class:`SegmentEstimator` yet — Phase 3 wires
+    it up via :meth:`TaskScheduler.set_eta_provider`.
+    """
+
+    kind: ChannelKind
+    queue_depth: int
+    current_task_id: Optional[str]
+    current_tool: Optional[str]
+    eta_s: Optional[float] = None
+
+
+class _Channel:
+    """A single FIFO channel.
+
+    Each channel owns
+
+    * an ``asyncio.Queue`` (dequeuing is driven by
+      :meth:`_pump`),
+    * an ``asyncio.Lock`` that serialises executor awaits, and
+    * a small bookkeeping table that mirrors the queue head so
+      :meth:`TaskScheduler.channel_status` does not have to peek
+      at the queue (which would race with ``_pump``).
+    """
+
+    def __init__(self, kind: ChannelKind, *, loop: asyncio.AbstractEventLoop) -> None:
+        self.kind = kind
+        self._queue: "asyncio.Queue[SchedulerTask]" = asyncio.Queue()
+        self._lock = asyncio.Lock()
+        self._current_task_id: Optional[str] = None
+        self._current_tool: Optional[str] = None
+        self._pump_task: Optional[asyncio.Task[None]] = None
+        # Loop is bound so the lock/queue are constructed on the
+        # right event loop. ``loop`` is unused at runtime but kept
+        # to fail fast when the scheduler is mis-initialised from
+        # inside a non-asyncio thread.
+        self._loop = loop
+
+    def submit(self, task: SchedulerTask) -> None:
+        """Enqueue *task* on this channel (sync, called from :meth:`TaskScheduler.submit`)."""
+        self._queue.put_nowait(task)
+
+    def start(self) -> None:
+        """Spawn the background pump task. Idempotent."""
+        if self._pump_task is None or self._pump_task.done():
+            self._pump_task = asyncio.create_task(
+                self._pump(), name=f"scheduler-{self.kind.value}-pump"
+            )
+
+    async def drain(self) -> None:
+        """Wait until the channel has finished every queued/current task.
+
+        Used by tests and by :meth:`TaskScheduler.wait_all` so the
+        caller can sync on the side-effects settling.
+        """
+        if self._pump_task is None:
+            return
+        await self._pump_task
+
+    def status(self) -> ChannelStatus:
+        """Snapshot view (sync, lock-free reads)."""
+        return ChannelStatus(
+            kind=self.kind,
+            queue_depth=self._queue.qsize(),
+            current_task_id=self._current_task_id,
+            current_tool=self._current_tool,
+        )
+
+    # ----- internals ----------------------------------------------------
+
+    async def _pump(self) -> None:
+        """Drain the queue forever; one executor at a time per channel."""
+        while True:
+            task: SchedulerTask = await self._queue.get()
+            try:
+                # Lock guarantees that two tasks on the SAME channel
+                # never run concurrently. Different channels are
+                # independent — Phase 3 introduces priority that
+                # spans channels.
+                async with self._lock:
+                    self._current_task_id = task.task_id
+                    self._current_tool = task.tool
+                    task.status = TaskStatus.SCHEDULED
+                    task.status = TaskStatus.RUNNING
+                    task.started_at = time.monotonic()
+                    try:
+                        task.result = await task.executor(task)
+                        task.status = TaskStatus.COMPLETED
+                    except asyncio.CancelledError:
+                        task.status = TaskStatus.CANCELLED
+                        task.error = "cancelled"
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — MVP guards the boundary
+                        task.status = TaskStatus.FAILED
+                        task.error = f"{type(exc).__name__}: {exc}"
+                        _LOG.exception(
+                            "scheduler: task %s (%s) failed",
+                            task.task_id, task.tool,
+                        )
+                    finally:
+                        task.finished_at = time.monotonic()
+                        self._current_task_id = None
+                        self._current_tool = None
+            finally:
+                self._queue.task_done()
+
+    def remove(self, task_id: str) -> Optional[SchedulerTask]:
+        """Remove *task_id* from the queue if it has not started yet.
+
+        The asyncio.Queue API does not support O(1) removal, so we
+        rebuild the queue from a snapshot. Cheap at MVP scale (≤
+        a few dozen tasks); Phase 3 will swap in a deque.
+        """
+        kept: list[SchedulerTask] = []
+        removed: Optional[SchedulerTask] = None
+        while True:
+            try:
+                t = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if t.task_id == task_id and removed is None:
+                removed = t
+                t.status = TaskStatus.CANCELLED
+                t.error = "cancelled before start"
+                t.finished_at = time.monotonic()
+                # We swallowed one ``put``; mark it done so
+                # ``join`` accounting stays sane.
+                self._queue.task_done()
+                continue
+            kept.append(t)
+        for t in kept:
+            self._queue.put_nowait(t)
+        return removed
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class TaskSubmitError(ValueError):
+    """Raised when :meth:`TaskScheduler.submit` rejects a task."""
+
+
+class TaskNotFoundError(KeyError):
+    """Raised when ``cancel`` / ``wait`` references an unknown task id."""
+
+
+class ChannelBusyError(RuntimeError):
+    """Raised when a single-task channel already has a current task."""
+
+
+# ---------------------------------------------------------------------------
+# Scheduler façade
+# ---------------------------------------------------------------------------
+
+
+class TaskScheduler:
+    """Phase 1 MVP task scheduler.
+
+    Lifecycle:
+
+    1. Construct on the asyncio loop that will own the channels.
+    2. Call :meth:`start` once (idempotent) to spawn the channel
+       pumps.
+    3. :meth:`submit` tasks; await :meth:`wait_all` if you need to
+       synchronise on completion (tests, end-of-dialogue cleanup).
+    4. :meth:`shutdown` to drain and stop the pumps (rarely needed
+       in production — the dialogue node owns the loop).
+
+    Threading:
+
+    * :meth:`start`, :meth:`shutdown`, :meth:`submit`, :meth:`cancel`
+      are **not** coroutines — they are safe to call from a ROS2
+      callback running on a worker thread, provided the loop that
+      owns the channels is reachable via
+      ``asyncio.run_coroutine_threadsafe``.
+    * :meth:`wait_all`, :meth:`wait`, :meth:`channel_status` are
+      synchronous and lock-free — they only read state mutated
+      under the internal ``threading.Lock``.
+
+    Example (test)::
+
+        async def _run() -> None:
+            sched = TaskScheduler()
+            sched.start()
+            task = sched.submit(SchedulerTask(
+                task_id="t1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_fake_speak, args={"text": "hello"},
+            ))
+            await sched.wait_all()
+            assert task.status is TaskStatus.COMPLETED
+            sched.shutdown()
+    """
+
+    #: Channels created by default — :class:`ChannelKind.VOICE`,
+    #: :class:`ChannelKind.MUSIC`, :class:`ChannelKind.ANIM`.
+    DEFAULT_CHANNELS: tuple[ChannelKind, ...] = (
+        ChannelKind.VOICE,
+        ChannelKind.MUSIC,
+        ChannelKind.ANIM,
+    )
+
+    def __init__(
+        self,
+        *,
+        channels: tuple[ChannelKind, ...] = DEFAULT_CHANNELS,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        if not channels:
+            raise TaskSubmitError("TaskScheduler requires at least one channel")
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        self._loop = loop or running_loop
+        if self._loop is None:
+            raise RuntimeError(
+                "TaskScheduler must be constructed inside an asyncio loop "
+                "or be given an explicit loop= argument"
+            )
+        self._lock = threading.Lock()
+        self._tasks: Dict[str, SchedulerTask] = {}
+        self._channels: Dict[ChannelKind, _Channel] = {
+            kind: _Channel(kind, loop=self._loop) for kind in channels
+        }
+        self._started: bool = False
+        self._shutdown: bool = False
+        # Optional Phase 3 hook — left ``None`` for the MVP. When
+        # set, :meth:`channel_status` reads ETA from the provider.
+        self._eta_provider: Optional[Callable[[SchedulerTask], Optional[float]]] = None
+
+    # ----- lifecycle -----------------------------------------------------
+
+    def start(self) -> None:
+        """Spawn the per-channel pump tasks. Idempotent."""
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+        for channel in self._channels.values():
+            channel.start()
+
+    def shutdown(self) -> None:
+        """Cancel pump tasks. Does NOT cancel in-flight executor coroutines.
+
+        The MVP is designed to live as long as the dialogue node;
+        calling :meth:`shutdown` from a test is the typical use.
+        Operators that need a hard stop should ``await`` the pump
+        tasks explicitly (exposed via :attr:`_channels`).
+        """
+        with self._lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+        for channel in self._channels.values():
+            pump = channel._pump_task  # noqa: SLF001 — test-only escape hatch
+            if pump is not None and not pump.done():
+                pump.cancel()
+
+    # ----- public surface ------------------------------------------------
+
+    def submit(self, task: SchedulerTask) -> SchedulerTask:
+        """Enqueue *task* on its channel.
+
+        The task's :attr:`~SchedulerTask.task_id` is rewritten to a
+        uuid4 hex if empty. The returned object is the live
+        instance the scheduler stores internally — keep a
+        reference if you need to call :meth:`wait`.
+
+        Raises:
+            TaskSubmitError: If the channel is unknown, the
+                scheduler is shut down, or the executor is missing.
+        """
+        if task.channel not in self._channels:
+            raise TaskSubmitError(
+                f"unknown channel {task.channel!r}; "
+                f"valid channels: {[c.value for c in self._channels]}"
+            )
+        if task.executor is None:
+            raise TaskSubmitError("task.executor is required")
+        if not callable(task.executor):
+            raise TaskSubmitError("task.executor must be callable")
+        if self._shutdown:
+            raise TaskSubmitError("scheduler is shut down")
+        if not task.task_id:
+            task.task_id = uuid.uuid4().hex
+        with self._lock:
+            self._tasks[task.task_id] = task
+        channel = self._channels[task.channel]
+        # ``submit`` runs on the loop that owns the channel's
+        # queue; it is a sync helper (``put_nowait``).
+        channel.submit(task)
+        _LOG.debug(
+            "scheduler: enqueued task %s (%s) on %s",
+            task.task_id, task.tool, task.channel.value,
+        )
+        return task
+
+    def cancel(self, task_id: str) -> bool:
+        """Cancel *task_id*.
+
+        Returns ``True`` if the task was found and either
+        cancelled before start or marked for cancellation after
+        start. The MVP does not interrupt a running executor
+        coroutine mid-flight — that lands in Phase 2 with
+        :class:`SchedulerEventBus`.
+
+        Tasks already in :attr:`TaskStatus.COMPLETED` /
+        :attr:`TaskStatus.FAILED` are reported as not found
+        because their lifecycle is closed.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return False
+        channel = self._channels[task.channel]
+        removed = channel.remove(task_id)
+        if removed is not None:
+            _LOG.info("scheduler: task %s cancelled before start", task_id)
+            return True
+        # The task is already past SCHEDULED — we cannot preempt
+        # it in the MVP. Surface a best-effort log line and leave
+        # the executor to finish naturally.
+        _LOG.info(
+            "scheduler: task %s already running; "
+            "MVP cannot preempt (Phase 2 will add EventBus cancel)",
+            task_id,
+        )
+        return False
+
+    def get_task(self, task_id: str) -> Optional[SchedulerTask]:
+        """Return the live task record for *task_id*, or ``None``."""
+        with self._lock:
+            return self._tasks.get(task_id)
+
+    def wait(self, task_id: str, *, timeout: Optional[float] = None) -> SchedulerTask:
+        """Block until *task_id* reaches a terminal status.
+
+        Implemented as a polling loop on the task's :attr:`status`
+        field rather than a per-task ``asyncio.Event`` so the MVP
+        keeps a minimal API surface. Polling cadence is 5 ms —
+        fine for human-scale TTS (sub-second to multi-second) but
+        Phase 3 will swap in proper events.
+
+        Raises:
+            TaskNotFoundError: If *task_id* is not tracked.
+            asyncio.TimeoutError: If *timeout* (in seconds) elapses
+                before the task terminates.
+        """
+        task = self.get_task(task_id)
+        if task is None:
+            raise TaskNotFoundError(task_id)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if task.status in (
+                TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED,
+            ):
+                return task
+            if deadline is not None and time.monotonic() >= deadline:
+                raise asyncio.TimeoutError(f"task {task_id} did not finish within {timeout}s")
+            time.sleep(0.005)
+
+    async def wait_all(self, timeout: Optional[float] = None) -> None:
+        """Await every channel's queue and current task.
+
+        Returns when every channel pump has consumed every queued
+        task and the channel lock is free. Raises
+        :class:`asyncio.TimeoutError` if *timeout* expires first
+        (per-channel — the slowest channel wins).
+        """
+        coros = []
+        for channel in self._channels.values():
+            pump = channel._pump_task  # noqa: SLF001 — internal pump
+            if pump is None:
+                continue
+            coros.append(self._await_pump(channel, timeout))
+        if coros:
+            await asyncio.gather(*coros)
+
+    async def _await_pump(
+        self,
+        channel: _Channel,
+        timeout: Optional[float],
+    ) -> None:
+        """Await the channel pump + queue join, optionally bounded by *timeout*."""
+        pump = channel._pump_task  # noqa: SLF001
+        if pump is None:
+            return
+        try:
+            await channel._queue.join()  # noqa: SLF001 — task_done accounting
+        finally:
+            pass
+        if timeout is None:
+            await pump
+        else:
+            await asyncio.wait_for(pump, timeout=timeout)
+
+    def channel_status(self, kind: ChannelKind) -> ChannelStatus:
+        """Return the §7 ``[CHANNELS]`` snapshot for *kind*."""
+        channel = self._channels.get(kind)
+        if channel is None:
+            raise TaskSubmitError(f"unknown channel {kind!r}")
+        status = channel.status()
+        if self._eta_provider is not None:
+            with self._lock:
+                current = self._tasks.get(status.current_task_id) if status.current_task_id else None
+            if current is not None:
+                status.eta_s = self._eta_provider(current)
+        return status
+
+    def all_statuses(self) -> Mapping[ChannelKind, ChannelStatus]:
+        """Return a snapshot of every channel's status."""
+        return {kind: ch.status() for kind, ch in self._channels.items()}
+
+    # ----- Phase 3 hooks (no-op in MVP) ---------------------------------
+
+    def set_eta_provider(
+        self,
+        provider: Optional[Callable[[SchedulerTask], Optional[float]]],
+    ) -> None:
+        """Install the Phase 3 :class:`SegmentEstimator` callback.
+
+        The MVP leaves ETA as ``None`` until §11.3 ships. The hook
+        is exposed now so callers can wire the estimator later
+        without touching the scheduler API.
+        """
+        self._eta_provider = provider
+
+    # ----- diagnostics ---------------------------------------------------
+
+    def tasks_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Return a log-friendly view of every tracked task.
+
+        Used by tests to assert ordering without poking at the
+        internals.
+        """
+        with self._lock:
+            return {tid: t.snapshot() for tid, t in self._tasks.items()}
