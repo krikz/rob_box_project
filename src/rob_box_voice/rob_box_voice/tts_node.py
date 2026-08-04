@@ -272,6 +272,17 @@ class TTSNode(Node):
         self.declare_parameter("silero_put_stress_homo", True)  # Ударения в омографах (замОк/зАмок)
         self.declare_parameter("silero_put_yo_homo", True)  # Ударения в омографах с ё
 
+        # Per-provider max chunk size (issue #933). Defaults берутся из
+        # ``CHUNK_LIMITS`` в ``tts_chunking.py`` (yandex=700, silero=800,
+        # minimax=5000). Override через YAML/launch (см. voice_assistant.yaml).
+        self.declare_parameter(
+            "chunk_max_chars_yandex", CHUNK_LIMITS["yandex_grpc_v3"]
+        )
+        self.declare_parameter("chunk_max_chars_silero", CHUNK_LIMITS["silero_v5"])
+        self.declare_parameter("chunk_max_chars_minimax", CHUNK_LIMITS["minimax"])
+        self.declare_parameter("chunk_max_retries", DEFAULT_MAX_RETRIES)
+        self.declare_parameter("chunk_min_chars", MIN_CHUNK_CHARS)
+
         # MiniMax TTS (HTTP, T2A v2). Активируется когда provider="minimax".
         # Параметры берутся из ROS-параметров или из ENV (MINIMAX_API_KEY / MINIMAX_GROUP_ID).
         self.declare_parameter("minimax_api_key", "")  # пусто → fallback на os.getenv("MINIMAX_API_KEY")
