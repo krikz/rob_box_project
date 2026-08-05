@@ -340,10 +340,19 @@ class DialogueNode(Node):
         model = str(self.get_parameter("model").value or "").strip()
 
         if provider_name == "minimax":
+            # 🔴 FIX (live 14:39): build_minimax_provider принимает
+            # LLMConfig, а не kwargs (api_key=...) как deepseek. Коммит
+            # 7d3e95c9 скопировал deepseek-стиль → TypeError при старте →
+            # dialogue_node падал → робот молчал. Собираем LLMConfig.
+            from rob_box_harness.config import LLMConfig
+
             return build_minimax_provider(
-                api_key=self.get_parameter("api_key").value or None,
-                base_url=base_url or MINIMAX_DEFAULT_BASE_URL,
-                model=model or MINIMAX_DEFAULT_MODEL,
+                LLMConfig(
+                    provider="minimax",
+                    model=model or MINIMAX_DEFAULT_MODEL,
+                    api_key=self.get_parameter("api_key").value or None,
+                    timeout_s=90.0,
+                )
             )
         if provider_name == "deepseek":
             return build_deepseek_provider(
