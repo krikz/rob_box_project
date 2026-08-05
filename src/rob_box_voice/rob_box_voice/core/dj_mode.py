@@ -173,21 +173,25 @@ class DJModeController:
     # ── Prompt builders ─────────────────────────────────────────────
 
     def preamble(self) -> str:
-        """Prefix injected into user STT turns when DJ-mode is active."""
+        """Prefix injected into user STT turns when DJ-mode is active.
+
+        🔴 FIX (live 11:48): раньше preamble подмешивал ПОЛНЫЕ DJ-инструкции
+        («вызови set_dj_mode(enabled=true...)») к КАЖДОЙ user-команде —
+        LLM видела «[DJ-РЕЖИМ АКТИВЕН, переход #3...]» перед «расскажи
+        анекдот» и продолжала диджеить вместо ответа юзеру. Теперь это
+        НЕЙТРАЛЬНАЯ подсказка: DJ играет в фоне, юзер говорит обычную
+        команду — ответь на неё; не трогай DJ, если юзер не просит.
+        Полные DJ-инструкции живут только в build_auto_prompt (DJ_AUTO).
+        """
         persona = self.state.persona or self._persona_default
-        plan_line = (
-            f"Текущий план сета:\n{self.state.set_plan}\n"
-            if self.state.set_plan
-            else ""
+        theme_line = (
+            f', тема: "{self.state.theme}"' if self.state.theme else ""
         )
         return (
-            f"[🎧 DJ-РЕЖИМ АКТИВЕН, переход #{self.state.transition_count}. "
-            f'Тема: "{self.state.theme}". '
-            f'Твой DJ-образ: "{persona}". '
-            f"{plan_line}"
-            "Если DJ-режим должен что-то обновить — вызови "
-            "set_dj_mode(enabled=true, next_transition_sec=45, theme='...') "
-            "или просто ответь голосом.] "
+            f"[🎧 DJ-режим активен — фоновая музыка играет{theme_line}, "
+            f"диджей: {persona}. Это ОБЫЧНАЯ команда юзера, не DJ-переход. "
+            "Ответь на неё нормально. Не вызывай set_dj_mode и не меняй "
+            "музыку, если юзер об этом не просит.] "
         )
 
     def build_auto_prompt(self, n: int) -> str:
