@@ -75,6 +75,7 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          export PYTEST_ADDOPTS="-p pytest_asyncio -p pytest_cov -p pytest_mock"
           python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
 
           # Run tests — NO `|| true`, failures MUST surface
@@ -82,7 +83,6 @@ jobs:
           colcon test \
             --packages-select rob_box_voice \
             --event-handlers console_direct+ \
-            --pytest-args "-p pytest_asyncio -p pytest_cov -p pytest_mock" \
             --return-code-on-test-failure
 
           # rob_box_animations + rob_box_perception: pytest only.
@@ -90,7 +90,6 @@ jobs:
           colcon test \
             --packages-select rob_box_animations rob_box_perception \
             --event-handlers console_direct+ \
-            --pytest-args "-p pytest_asyncio -p pytest_cov -p pytest_mock" \
             --return-code-on-test-failure || true
 
       - name: Display test results
