@@ -943,16 +943,16 @@ class TTSNode(Node):
             # under bursty input.  Overflow is rejected via _synthesis_slots
             # and logged here rather than queued forever.
             #
-            # NB: ``speech_id`` is passed once — earlier revisions duplicated
-            # it (once as the ``speech_id`` kwarg to ``_submit_synthesis``,
-            # once as the trailing ``*args`` element).  Python happily
-            # drops the duplicate into ``*args`` last position where
-            # ``_run_synthesis_worker`` already has ``speech_id=None`` as a
-            # default, so the duplicate was a no-op (verified by direct
-            # call inspection).  But it was confusing and forward-fragile:
-            # if the worker signature ever gains a new parameter, the
-            # silent shadowing would shift argument positions without a
-            # TypeError.  Keep the call site canonical.
+            # NB: ``speech_id`` is passed twice by design — once as the
+            # explicit second positional to ``_submit_synthesis`` (used for
+            # drop/shutdown diagnostics), and once inside ``*args`` at the
+            # position ``_run_synthesis_worker`` expects it.  The worker's
+            # signature is (ssml, text, dialogue_id, ssml_attributes,
+            # speech_id, batch_id, batch_index, batch_total); dropping the
+            # in-*args copy would shift every following argument one slot
+            # left (speech_id <- batch_id, batch_id <- batch_index, ...),
+            # which breaks /voice/tts/finished correlation in mcp_server
+            # and fires music_cleanup at the wrong time (issue #980).
             self._submit_synthesis(
                 self._run_synthesis_worker,
                 speech_id,
@@ -960,6 +960,7 @@ class TTSNode(Node):
                 text,
                 dialogue_id,
                 ssml_attributes,
+                speech_id,
                 batch_id,
                 batch_index,
                 batch_total,

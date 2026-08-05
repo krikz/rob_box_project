@@ -23,11 +23,14 @@ Issue #980 extended the chain with three new positional parameters
 can publish ``/voice/tts/batch_complete`` after the last chunk of a
 multi-chunk TTS batch.  This test still enforces:
 
-1. ``dialogue_callback`` invokes ``_submit_synthesis`` with exactly
-   one ``speech_id`` positional argument (the kwarg), followed by the
-   seven positional args expected by ``_run_synthesis_worker``
-   (``ssml``, ``text``, ``dialogue_id``, ``ssml_attributes``,
-   ``batch_id``, ``batch_index``, ``batch_total``).
+1. ``dialogue_callback`` invokes ``_submit_synthesis`` with ``speech_id``
+   twice by design: once as the explicit second positional (the kwarg,
+   used for drop/shutdown diagnostics) and once inside ``*args`` at the
+   position ``_run_synthesis_worker`` expects it.  The in-*args copy is
+   what actually reaches the worker; without it every following argument
+   shifts one slot left (``speech_id <- batch_id``,
+   ``batch_id <- batch_index``, ...), breaking finished-event
+   correlation and music_cleanup timing (issue #980).
 2. ``_run_synthesis_worker``'s signature still terminates in
    ``batch_total=None`` so that, if a caller ever forgets to pass
    it, the default kicks in instead of a TypeError.
@@ -116,16 +119,17 @@ def test_dialogue_callback_passes_speech_id_once() -> None:
     assert positional_names[1] == "speech_id", (
         "Second positional to _submit_synthesis must be the kwarg speech_id"
     )
-    assert positional_names.count("speech_id") == 1, (
-        "speech_id must be passed exactly once to _submit_synthesis; "
+    assert positional_names.count("speech_id") == 2, (
+        "speech_id must be passed exactly twice to _submit_synthesis: once "
+        "as the diagnostic kwarg and once inside *args for the worker; "
         f"found {positional_names.count('speech_id')} occurrences in "
-        f"{positional_names} (duplicate shadows later positional args "
-        "without raising TypeError — that's the bug t_42726db6 fixed)"
+        f"{positional_names} (a single copy shifts batch_id into "
+        "speech_id's slot — that's the issue #980 arg-chain bug)"
     )
     # The trailing *args for the worker must match the worker signature.
     expected_tail = [
         "ssml", "text", "dialogue_id", "ssml_attributes",
-        "batch_id", "batch_index", "batch_total",
+        "speech_id", "batch_id", "batch_index", "batch_total",
     ]
     assert positional_names[2:] == expected_tail, (
         f"Trailing positional args must be {expected_tail} "
@@ -201,9 +205,10 @@ def test_submit_and_worker_arg_arities_agree() -> None:
     # _submit_synthesis(self, fn, speech_id, *args) — only the first two
     # are mandatory positional; *args is variadic.  The dialogue_callback
     # call site must hand it (fn, speech_id, ssml, text, dialogue_id,
-    # ssml_attributes, batch_id, batch_index, batch_total) — exactly 9
-    # positional values (the first two being the function and the
-    # speech_id kwarg; the rest become *args).
+    # ssml_attributes, speech_id, batch_id, batch_index, batch_total) —
+    # exactly 10 positional values (the first two being the function and
+    # the speech_id kwarg; the rest become *args, with speech_id repeated
+    # at the worker's expected position).
     submit_call = next(
         node
         for node in ast.walk(cb)
@@ -212,11 +217,11 @@ def test_submit_and_worker_arg_arities_agree() -> None:
         and node.func.attr == "_submit_synthesis"
     )
     n_call_positional = len(submit_call.args)
-    assert n_call_positional == 9, (
-        f"dialogue_callback -> _submit_synthesis must pass exactly 9 "
+    assert n_call_positional == 10, (
+        f"dialogue_callback -> _submit_synthesis must pass exactly 10 "
         f"positional args (fn, speech_id, ssml, text, dialogue_id, "
-        f"ssml_attributes, batch_id, batch_index, batch_total); "
-        f"got {n_call_positional}"
+        f"ssml_attributes, speech_id, batch_id, batch_index, "
+        f"batch_total); got {n_call_positional}"
     )
 
     # _run_synthesis_worker is a method — first positional is ``self``.
