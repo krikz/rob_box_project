@@ -67,3 +67,8 @@ openai-agents>=0.18.3,<1.0.0
 # SuperCollider runs in separate container; renardo connects via OSC localhost:57110
 # =============================================================================
 renardo-lib
+# ddgs — DuckDuckGo search (free, no API key) used by search_artist_style tool
+# in rob_box_voice/skills/music_skill.py for DJ-mode "research first" workflow
+# (issue #1000). Used by Compositor agent before handle_music to learn about
+# artist style, BPM, key, instruments.
+ddgs>=8.0.0

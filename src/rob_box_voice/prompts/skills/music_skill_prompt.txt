@@ -299,6 +299,11 @@ Your music tools:
 - search_samples(query, pack, case): for drums/unknown letters (NOT for vocal 'c'!)
   Searches samples by keyword in filename (filename = sound character).
   query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
+- search_artist_style(artist_name, song_names?): DuckDuckGo research — issue #1000.
+  CALL FIRST (before execute_music_code) when user mentions artist/band/concept/theme.
+  Returns genre, BPM, key, instruments, mood. Use to match Renardo code to artist style.
+  Examples: search_artist_style('Егор Летов'), search_artist_style('летняя дискотека хаус'),
+            search_artist_style('Пастырь культа') → 'ритуальная музыка хоралы культ'.
 - execute_music_code(code, segments?): run Renardo code (create/update a pattern).
   ⚠️ Issue #990: `segments` (bars, 1 бар = 4 бита) — ТОЛЬКО предохранитель.
   Система сама останавливает музыку после tts_batch_complete; segments лишь
