@@ -246,12 +246,6 @@ class DialogueNode(Node):
         # babbles again after the retry, we fall through to publish the
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
-        # 🔴 FIX (live 16:45 «постоянно задумался»): MiniMax M3
-        # Interleaved Thinking compaction даёт пустой content даже
-        # при успешном reasoning. Делаем ОДИН nudge-retry на input,
-        # прежде чем сдаться в «задумался». Кеш ограничивает
-        # повторный retry на тот же запрос.
-        self._empty_retry_used: dict[str, bool] = {}
 
         # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
         # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
@@ -1114,56 +1108,6 @@ class DialogueNode(Node):
             "'Могу бит добавить, хочешь?' — это BUG."
         )
 
-    # ── Empty-response retry (live 16:45) ─────────────────────────────
-    def _empty_retry_available_for(self, user_input: str) -> bool:
-        """Return True iff we have not yet retried this exact input.
-
-        The retry is keyed on the literal user_input so an LLM that
-        compacts and returns empty on the SAME utterance three times
-        in a row will burn through empty → retry → empty → fallback
-        instead of pinging the LLM forever. A NEW user phrase resets
-        the budget.
-        """
-        key = user_input.strip()
-        if not key:
-            return False
-        return not self._empty_retry_used.get(key, False)
-
-    def _retry_empty_with_nudge(self, user_input: str) -> bool:
-        """Schedule a single nudge-retry for the same LLM session.
-
-        Returns True on success — caller should ``return`` so the
-        fallback «задумался» is NOT delivered. Returns False on
-        failure — caller falls through to the fallback.
-        """
-        key = user_input.strip()
-        if not key:
-            return False
-        self._empty_retry_used[key] = True
-        # Cap the cache so a long conversation does not leak memory.
-        if len(self._empty_retry_used) > 32:
-            for old_key in list(self._empty_retry_used.keys())[: -32]:
-                self._empty_retry_used.pop(old_key, None)
-        nudge = (
-            f"{user_input}\n\n"
-            "[SYSTEM REMINDER] Прошлый твой ответ на этот вопрос был "
-            "пустым после твоих мыслей — пользователь НИЧЕГО не услышал. "
-            "Ответь СНОВА, КРАТКО, по существу (1-3 предложения или "
-            "один tool-вызов). Без переноса в thinking. Без дублирования "
-            "только что сказанного. После speak_text или tool верни 'done'."
-        )
-        try:
-            self._dispatch_turn(
-                nudge,
-                raw_user_command=user_input,
-                is_dj_auto=False,
-                is_babble_retry=False,
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"⚠️ Empty-nudge retry failed: {exc}")
-            return False
-
     def _apply_music_guard(
         self,
         *,
@@ -1347,20 +1291,55 @@ class DialogueNode(Node):
             # обнулил spoken → «задумался» был ЛОЖНЫМ. Fallback — только
             # если LLM вообще ничего не сделала (tools пуст).
             #
-            # 🔴 FIX (live 16:45 «постоянно задумался»): MiniMax M3 Interleaved
-            # Thinking compaction возвращает {'content': '', 'reasoning_details': [...]}
-            # после ретраёв — наш strip_thinking_blocks съел reasoning, content
-            # после strip тоже пуст, tools пусты → юзер слышит «задумался»
-            # каждые 2-3 turn. НЕ падаем в fallback сразу — пробуем ОДИН ретрай
-            # с жёсткой подсказкой «тот же запрос, дай контент», если ретрай
-            # тоже пуст → fallback.
+            # 🔴 FIX (live 16:58 «всегда задумался»): НЕ падаем в fallback
+            # «задумался» — логируем структурированную диагностику
+            # (finish_reason + raw) и пишем reminder в память, чтобы
+            # СЛЕДУЮЩИЙ turn LLM увидела, что прислала пустоту и так
+            # делать не надо. Юзер не получает ложного «задумался».
             if not tools_called:
-                original_input = user_input or ""
-                if self._empty_retry_available_for(original_input):
-                    if self._retry_empty_with_nudge(original_input):
-                        return
-                self.get_logger().warning("⚠️ Empty assistant response — fallback")
-                spoken = "Что-то я задумался, повтори пожалуйста"
+                fr = getattr(result, "finish_reason", None)
+                raw = getattr(result, "raw_response", None)
+                # Короткая диагностика: что именно вернул провайдер.
+                raw_hint = ""
+                if raw is not None:
+                    try:
+                        raw_hint = str(raw)[:300]
+                    except Exception:  # noqa: BLE001
+                        raw_hint = "<unprintable raw>"
+                self.get_logger().warning(
+                    "⚠️ Empty assistant response (LLM вернул пустоту): "
+                    f"finish_reason={fr!r} tools={list(tools_called)!r} "
+                    f"raw={raw_hint!r}"
+                )
+                # Reminder в долгую память — следующий turn LLM его
+                # увидит через memory_context / history. _handle_result
+                # синхронный → планируем фоновую запись.
+                try:
+                    from rob_box_harness.memory import Turn
+
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        self._memory.append_turn(
+                            self._user_id,
+                            Turn(
+                                role="assistant",
+                                content=(
+                                    "[SYSTEM REMINDER] В прошлом цикле ты "
+                                    "вернул ПУСТОЙ ответ (ни текста, ни "
+                                    "tool-вызова) — пользователь ничего не "
+                                    "услышал. Так делать НЕЛЬЗЯ. Всегда "
+                                    "отвечай текстом или вызови tool."
+                                ),
+                            ),
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().warning(
+                        f"⚠️ empty-reminder append failed: {exc}"
+                    )
+                # Тихий return: не падаем в «задумался», а просто
+                # завершаем цикл (следующий turn LLM увидит reminder).
+                return
             else:
                 self.get_logger().info(
                     "🔇 TRACK-запрос выполнен тулами, spoken пуст — "

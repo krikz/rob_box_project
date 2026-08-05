@@ -91,6 +91,13 @@ class DialogResult:
     new_state: DialogueStateKind = DialogueStateKind.IDLE
     tools_called: list[str] = field(default_factory=list)
     error: BaseException | None = None
+    # ── LLM diagnostics (live 16:58) ────────────────────────────────────
+    # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
+    # compaction, timeouts, finish_reason='length'), we want to know WHY
+    # in the debug log. Populated by DialogCore from the last LLMResponse
+    # and consumed by dialogue_node when spoken_text is empty.
+    finish_reason: str | None = None
+    raw_response: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +303,13 @@ class DialogCore:
                     await self._memory.append_turn(
                         self._user_id, Turn(role="user", content=text)
                     )
-                spoken, tools_called = await self._run_with_tools(messages)
+                spoken, tools_called, finish_reason, raw_response = (
+                    await self._run_with_tools(messages)
+                )
                 result.spoken_text = spoken
                 result.tools_called = list(tools_called)
+                result.finish_reason = finish_reason
+                result.raw_response = raw_response
                 if not is_dj_auto:
                     await self._memory.append_turn(
                         self._user_id, Turn(role="assistant", content=spoken)
@@ -436,7 +447,7 @@ class DialogCore:
                 _MAX_TOOL_ITERATIONS,
             )
 
-        return response.content, tools_called
+        return response.content, tools_called, response.finish_reason, response.raw
 
     async def _resolve_history(
         self,
