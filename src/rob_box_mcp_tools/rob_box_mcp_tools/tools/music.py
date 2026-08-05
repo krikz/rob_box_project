@@ -16,6 +16,7 @@ music.py - Инструменты для управления музыкой в 
 """
 
 import json
+import logging
 import os
 import re
 import socket
@@ -41,7 +42,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 _BLOCKED_TOKENS = re.compile(
     r"\b("
     r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
-    r"importlib|builtins|__import__|__builtins__|__class__|__subclasses__|"
+    r"importlib|builtins|__import__|__builtins__|__subclasses__|"
     r"open|exec|eval|compile|globals|locals|vars|delattr"
     r")\b"
 )
@@ -220,7 +221,22 @@ class MusicManager:
         # We do this BEFORE calling _initialize_renardo() so a broken
         # upstream .scd file cannot manifest as silent exec errors later.
         self._evaluate_music_stack_health(sclang_log_path=sclang_log_path)
+        #: DJ mode flag — when True, strip Clock.future(outro/Clock.clear()) from code
+        self._dj_mode_enabled: bool = False
         self._initialize_renardo()
+
+    # ------------------------------------------------------------------
+    # DJ Mode
+    # ------------------------------------------------------------------
+
+    @property
+    def dj_mode_enabled(self) -> bool:
+        """True when DJ mode is active — Clock.future(outro) will be stripped."""
+        return self._dj_mode_enabled
+
+    def set_dj_mode(self, enabled: bool) -> None:
+        """Set DJ mode flag. Called by SetDjModeTool."""
+        self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -454,8 +470,12 @@ class MusicManager:
         - ``amp=0.9``          → ``amp=0.7`` (если max_amp=0.7)
         - ``amp=P[0.5, 1.0]``  → ``amp=P[0.5, 0.7]``
         - ``amp=1``            → ``amp=0.7``
+        - ``amplify=var([1,0.3])`` → ``amplify=var([0.7,0.3])``
+        - ``amplify=0.8``      → ``amplify=0.7``
+        - ``oct=5``            → ``oct=4`` (макс 4 — oct=5 очень резкое)
         """
         max_amp = self._max_amp
+        max_oct = 4  # oct=5 и выше слишком резкое/громкое
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -465,11 +485,34 @@ class MusicManager:
 
         code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
 
-        # 2. Затем простые числа
+        # 2. amp= простые числа
         def _cap_n(m: re.Match) -> str:
             return f"amp={min(float(m.group(1)), max_amp):.3g}"
 
         code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
+
+        # 3. amplify=var([...]) — ограничиваем числа внутри var()
+        def _cap_amplify_var(m: re.Match) -> str:
+            inner = m.group(1)
+            def _cap_num(n: re.Match) -> str:
+                return f"{min(float(n.group()), max_amp):.3g}"
+            inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
+            return f"amplify=var({inner})"
+
+        code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
+
+        # 4. amplify= простые числа
+        def _cap_amplify_n(m: re.Match) -> str:
+            return f"amplify={min(float(m.group(1)), max_amp):.3g}"
+
+        code = re.sub(r"amplify\s*=\s*(\d+(?:\.\d*)?)", _cap_amplify_n, code)
+
+        # 5. oct= — ограничиваем до max_oct
+        def _cap_oct(m: re.Match) -> str:
+            return f"oct={min(int(m.group(1)), max_oct)}"
+
+        code = re.sub(r"oct\s*=\s*(\d+)", _cap_oct, code)
+
         return code
 
     # ------------------------------------------------------------------
@@ -545,6 +588,12 @@ class MusicManager:
         is_safe, filter_error = self._filter_code(code)
         if not is_safe:
             return {"success": False, "error": filter_error}
+
+        # Auto-replace pianovel/piano → rhpiano (оба используют MdaPiano физмодель — цокает)
+        if "pianovel" in code:
+            code = code.replace("pianovel", "rhpiano")
+        # piano заменяем только если это отдельное слово (не часть rhpiano, pianovel и т.д.)
+        code = re.sub(r'(?<![a-zA-Z])piano(?![a-zA-Z])', 'rhpiano', code)
 
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
@@ -626,15 +675,35 @@ class MusicManager:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
         if has_clock_clear:
-            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
+            # ПЛАВНЫЙ ПЕРЕХОД: сначала gate=0 (release envelope), потом freeAll.
+            # Без gate=0 → /g_freeAll обрезает синты mid-waveform → щелчки!
+            import struct as _struct
+            import time as _time
+
+            # 1. gate=0 на ВСЕ ноды → запуск release-фазы ADSR
+            msg_gate = b"/n_set\x00\x00"
+            msg_gate += b",isf\x00\x00"  # int, string, float
+            msg_gate += _struct.pack(">i", -1)  # node ID -1 = all nodes
+            msg_gate += b"gate\x00\x00\x00\x00"  # parameter name "gate"
+            msg_gate += _struct.pack(">f", 0.0)  # value = 0
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.sendto(msg_gate, (self.SC_HOST, self.SC_PORT))
+            except Exception:
+                pass
+
+            # 2. Ждём 50ms — release envelope начался, синты затухают
+            _time.sleep(0.05)
+
+            # 3. Убиваем старые SC-ноды (сейчас они уже в release, не кликают)
             osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
                     _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
             except Exception:
-                pass  # если SC недоступен — не критично, старые ноды умрут сами
-            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
-            import struct as _struct
+                pass
+
+            # 4. Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
             msg_gnew = bytearray()
             for part in [b"/g_new\x00\x00", b",iii\x00\x00\x00\x00"]:
                 msg_gnew.extend(part)
@@ -1098,6 +1167,36 @@ class ExecuteMusicCodeTool(MCPTool):
         duration_sec: Optional[float] = None,
     ) -> MCPToolResult:
         """Выполнить Renardo-код (#990: segments как предохранитель)."""
+        # ── DJ mode: strip Clock.future(outro/Clock.clear()) patterns ──
+        # MusicSkill sub-agent bypasses dialogue_node filter, so we need it here too.
+        if self._manager.dj_mode_enabled:
+            import re as _re
+            original_len = len(code)
+            # Pattern 1: Clock.future(N, lambda: Clock.clear()) — inline lambda
+            code = _re.sub(
+                r"Clock\.future\(\s*\d+\s*,\s*lambda\s*:\s*Clock\.clear\(\)\s*\)\s*\n?",
+                "",
+                code,
+            )
+            # Pattern 2: def outro(): ... Clock.clear() ... Clock.future(N, outro)
+            code = _re.sub(
+                r"def\s+\w+\s*\(\s*\)\s*:\s*\n(?:\s+[^\n]*\n)*?\s+Clock\.clear\(\)\s*\n"
+                r"(?:\s+[^\n]*\n)*?\s*Clock\.future\(\s*\d+\s*,\s*\w+\s*\)\s*\n?",
+                "",
+                code,
+                flags=_re.MULTILINE,
+            )
+            # Pattern 3: def outro(): Clock.clear(); Clock.future(N, outro) — single line
+            code = _re.sub(
+                r"def\s+\w+\s*\(\s*\)\s*:\s*Clock\.clear\(\)\s*;?\s*Clock\.future\(\s*\d+\s*,\s*\w+\s*\)\s*\n?",
+                "",
+                code,
+            )
+            if len(code) != original_len:
+                self.log_info(
+                    f"🔇 DJ execute_music_code: stripped Clock.future(outro) "
+                    f"({original_len}→{len(code)} chars)"
+                )
         self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
         result = self._manager.execute_code(
             code, pattern_name, segments=segments, duration_sec=duration_sec
@@ -1304,11 +1403,11 @@ class GetMusicStateTool(MCPTool):
 
 from pathlib import Path as _Path
 
-# Migration file lookup: Docker mounts repo migrations/ at /migrations,
+# Migration directory lookup: Docker mounts repo migrations/ at /migrations,
 # dev/build environments find it relative to the package root.
-_MIGRATION_FILE = _Path("/migrations/004_music_library.sql")
-if not _MIGRATION_FILE.exists():
-    _MIGRATION_FILE = _Path(__file__).resolve().parents[4] / "migrations" / "004_music_library.sql"
+_MIGRATION_DIR = _Path("/migrations")
+if not _MIGRATION_DIR.is_dir():
+    _MIGRATION_DIR = _Path(__file__).resolve().parents[4] / "migrations"
 
 
 class TrackLibrary:
@@ -1341,15 +1440,40 @@ class TrackLibrary:
     # ------------------------------------------------------------------
 
     def _apply_migration(self) -> None:
-        """Применить 004_music_library.sql идемпотентно (IF NOT EXISTS + INSERT OR IGNORE)."""
-        if not _MIGRATION_FILE.exists():
+        """Применить все миграции из migrations/ идемпотентно.
+
+        1. CREATE TABLE IF NOT EXISTS (004) — создаёт music_tracks если нет
+        2. ALTER TABLE ADD COLUMN type — гарантируем наличие колонки
+        3. Применяем остальные миграции (005, 008, 009) — INSERT OR IGNORE / DELETE
+        """
+        if not _MIGRATION_DIR.is_dir():
             raise FileNotFoundError(
-                f"Миграция не найдена: {_MIGRATION_FILE}. "
+                f"Директория миграций не найдена: {_MIGRATION_DIR}. "
                 "Проверьте volume монтирование migrations/ в docker-compose."
             )
-        ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
+        migration_files = sorted(_MIGRATION_DIR.glob("*.sql"))
+        _log = logging.getLogger(__name__)
         with self._lock:
-            self._conn.executescript(ddl)
+            # Phase 1: apply all SQL migrations (idempotent DDL + data)
+            for mf in migration_files:
+                ddl = mf.read_text(encoding="utf-8")
+                try:
+                    self._conn.executescript(ddl)
+                except sqlite3.OperationalError as e:
+                    _log.warning(f"Миграция {mf.name}: {e}")
+            # Phase 2: guarantee 'type' column exists for older DBs
+            # (008 inserts with type=, but old DBs lack the column)
+            try:
+                self._conn.execute(
+                    "ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'user'"
+                )
+                _log.info("ALTER TABLE: добавлена колонка type в music_tracks")
+                # Re-run 008 now that column exists (INSERT OR IGNORE is safe)
+                m008 = _MIGRATION_DIR / "008_github_presets.sql"
+                if m008.exists():
+                    self._conn.executescript(m008.read_text(encoding="utf-8"))
+            except sqlite3.OperationalError:
+                pass  # колонка уже есть — ок
             self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -1436,27 +1560,32 @@ class TrackLibrary:
 
         return {"success": True, "message": f"Трек '{slug}' {action}", "name": slug}
 
-    def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0) -> Dict[str, Any]:
+    def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0,
+                    track_type: Optional[str] = None) -> Dict[str, Any]:
         """Вернуть список треков с фильтрацией (без поля code).
 
         Args:
             tag: Фильтр по тегу (опционально).
             min_rating: Минимальный рейтинг (0-5).
+            track_type: Фильтр по типу ('preset' или 'user'). None = все.
 
         Returns:
             dict ``success``, ``tracks`` (list of dicts), ``total``.
         """
         with self._lock:
-            rows = self._conn.execute(
-                """
+            query = """
                 SELECT name, title, description, tags, rating, notes,
-                       play_count, created_at, updated_at
+                       play_count, created_at, updated_at, type
                 FROM music_tracks
                 WHERE rating >= ?
-                ORDER BY rating DESC, name ASC
-                """,
-                (min_rating,),
-            ).fetchall()
+            """
+            params: list = [min_rating]
+            if track_type:
+                query += " AND type = ?"
+                params.append(track_type)
+            query += " ORDER BY rating DESC, name ASC"
+
+            rows = self._conn.execute(query, params).fetchall()
 
         tracks = [self._row_to_dict(r, include_code=False) for r in rows]
         if tag:
@@ -1954,8 +2083,9 @@ class SearchSamplesTool(MCPTool):
 class SetDjModeTool(MCPTool):
     """Включить или выключить режим DJ — автономные плавные переходы между треками."""
 
-    def __init__(self, node) -> None:
+    def __init__(self, node, manager: MusicManager) -> None:
         super().__init__(node)
+        self._manager = manager
         from std_msgs.msg import String as _String
         self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
 
