@@ -66,6 +66,11 @@ class DJModeController:
     POSTPONE_INTERVAL_S: float = 15.0
     DJ_TICK_INTERVAL_S: float = 5.0
     DJ_AUTO_STOP_THRESHOLD: int = 3
+    # 🔴 FIX (live 11:19 DJ): save_dj_set_plan тула НЕТ → set_plan пуст →
+    # авто-стоп по плану не срабатывал → DJ крутился бесконечно (#24+).
+    # Жёсткий лимит переходов без плана (DJ_AUTO_MAX_TRANSITIONS):
+    # после N переходов DJ сам выключается (юзер может включить снова).
+    DJ_AUTO_MAX_TRANSITIONS: int = 8
 
     def __init__(self, *, hook: DJHook, logger: logging.Logger) -> None:
         self._hook = hook
@@ -132,6 +137,19 @@ class DJModeController:
         # Hard-stop when the plan is exhausted.
         plan_tracks = self.state.set_plan.count("Трек ")
         next_n = self.state.transition_count + 1
+        # 🔴 FIX (live 11:19 DJ): save_dj_set_plan тула НЕТ — set_plan всегда
+        # пуст → plan_tracks=0 → авто-стоп никогда не срабатывал → DJ
+        # крутился бесконечно (#22+, час музыки, юзер не может выйти).
+        # Фолбэк: если плана нет — жёсткий лимит переходов
+        # (DJ_AUTO_MAX_TRANSITIONS), после которого DJ сам выключается.
+        if plan_tracks == 0 and next_n > self.DJ_AUTO_MAX_TRANSITIONS:
+            self._logger.warning(
+                f"🛑 DJ auto-stop: переход #{next_n} превысил лимит "
+                f"без плана ({self.DJ_AUTO_MAX_TRANSITIONS}) — "
+                "save_dj_set_plan не вызывался, останавливаю DJ"
+            )
+            self._reset_state()
+            return
         if plan_tracks > 0 and next_n > plan_tracks + self.DJ_AUTO_STOP_THRESHOLD:
             self._logger.warning(
                 f"🛑 DJ auto-stop: transition #{next_n} beyond plan ({plan_tracks})"

@@ -308,6 +308,7 @@ class _TestableDialogueNode(DialogueNode):
         self,
         user_input: str,
         is_dj_auto: bool = False,
+        was_idle: bool = False,
         is_babble_retry: bool = False,
     ) -> None:
         """Schedule the turn on the test loop directly.
