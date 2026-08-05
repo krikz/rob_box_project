@@ -363,6 +363,14 @@ class DialogueNode(Node):
         if not text:
             return
         text_lower = text.lower()
+        # Issue 989 Fix A: dialogue_node НЕ должен реагировать на
+        # rejected(empty) — это эхо собственной музыки/голоса, а не речь
+        # пользователя. Защита на случай, если stt_node начнёт публиковать
+        # маркеры отклонения в /voice/stt/result (сейчас он публикует только
+        # accepted, но guard дешёвый и страхует от регрессий).
+        if text_lower.startswith(("rejected", "«rejected", "empty", "«пусто", "тишина")):
+            self.get_logger().info(f"🔇 [issue 989] Игнор rejected/empty маркера: {text[:60]}")
+            return
         state = self._dsm.current_state
         if state == DialogueStateKind.SILENCED:
             if is_unsilence_command(text_lower):

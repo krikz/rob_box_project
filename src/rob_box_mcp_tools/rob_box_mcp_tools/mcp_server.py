@@ -138,6 +138,11 @@ class MCPServer(Node):
         # Publisher для результатов
         self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
 
+        # Issue 989 Fix C: публикуем состояние музыки для audio_node, чтобы
+        # тот поднимал VAD threshold при активной музыке (strict mode).
+        # audio_node подписывается на /voice/music/state ("playing"/"idle").
+        self.music_state_pub = self.create_publisher(String, "/voice/music/state", qos_profile)
+
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
         # on_execute_request блокируется ожидая action result.
@@ -271,6 +276,33 @@ class MCPServer(Node):
                 f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов после "
                 f"{idle:.1f}s (ttl={ttl:.0f}s). Issue #935."
             )
+        # Issue 989 Fix C: синхронизируем состояние музыки для audio_node
+        # (поднятие VAD threshold при активной музыке). Watchdog тикает
+        # каждые ~5s — достаточно для strict mode; tool-вызовы публикуют
+        # состояние немедленно (см. publish_music_state).
+        self.publish_music_state()
+
+    def publish_music_state(self) -> None:
+        """Опубликовать /voice/music/state: "playing" если музыка активна, иначе "idle".
+
+        Issue 989 Fix C: audio_node слушает этот топик и поднимает порог VAD
+        при активной музыке, чтобы бит не триггерил «речь» (эхо-петля).
+        Музыка считается активной, если у MusicManager есть открытая сессия
+        (``music_session_active_since`` не None) или именованные паттерны.
+        """
+        manager = getattr(self, "_music_manager", None)
+        pub = getattr(self, "music_state_pub", None)
+        if manager is None or pub is None:
+            return
+        try:
+            state = manager.get_state()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f"⚠️ publish_music_state: get_state failed: {exc}")
+            return
+        playing = bool(state.get("active_patterns")) or state.get("music_session_active_since") is not None
+        msg = String()
+        msg.data = "playing" if playing else "idle"
+        pub.publish(msg)
 
     def _init_waypoint_store(self) -> WaypointStore:
         """Инициализация WaypointStore (SQLite для вейпоинтов)."""

@@ -111,6 +111,13 @@ class STTNode(Node):
         # собственного TTS снова триггерит VAD → бесконечный цикл).
         self.declare_parameter("unclear_cooldown_s", 5.0)
 
+        # Grace period после окончания TTS (issue 989 Fix B): 2-3 секунды
+        # игнорируем ВСЕ фразы от audio_node — робот должен «дослушать» эхо
+        # собственного голоса, а не триггериться на него. Раньше было 0.3s
+        # и только для коротких фраз (<0.8s), из-за чего эхо TTS длиной
+        # >0.8s снова попадало в STT и замыкало петлю «не расслышал».
+        self.declare_parameter("tts_grace_s", 2.5)
+
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.environ.get("YANDEX_API_KEY", "")
         self.yandex_language = self.get_parameter("yandex_language").value
         self.yandex_model = self.get_parameter("yandex_model").value
@@ -126,6 +133,7 @@ class STTNode(Node):
         self.min_text_chars: int = int(self.get_parameter("min_text_chars").value)
         self.unclear_phrase: str = str(self.get_parameter("unclear_phrase").value)
         self.unclear_cooldown_s: float = float(self.get_parameter("unclear_cooldown_s").value)
+        self.tts_grace_s: float = float(self.get_parameter("tts_grace_s").value)
         self._last_unclear_at: float = 0.0  # монотонное время последней фразы «не расслышал»
 
         # EOU profiles configuration
@@ -319,22 +327,28 @@ class STTNode(Node):
                 self.get_logger().info(f"🔇 [software AEC] Игнор фразы {duration:.2f}с: робот говорит")
                 return
         else:
-            # Аппаратное AEC: XVF-3000 фильтрует эхо в чипе.
-            # Добавляем grace period 300мс после окончания TTS — фильтруем остаточные эхо-артефакты.
-            # Короткие фразы (<0.5с) сразу после TTS, вероятно, эхо-артефакты — игнорируем.
-            grace = 0.3  # секунды grace period после окончания TTS
+            # Аппаратное AEC: XVF-3000 фильтрует эхо в чипе, но не справляется
+            # с громкой музыкой/собственным TTS (issue 989). Grace period после
+            # окончания TTS: игнорируем ВСЕ фразы (не только короткие <0.8s),
+            # чтобы эхо собственного голоса не замкнуло петлю «не расслышал».
             time_since_tts = time.monotonic() - self._tts_ended_at
-            if self.is_robot_speaking or time_since_tts < grace:
+            if time_since_tts < self.tts_grace_s:
+                self.get_logger().info(
+                    f"🔇 [issue 989] Игнор фразы {duration:.2f}с — grace "
+                    f"{time_since_tts:.2f}с/{self.tts_grace_s}с после TTS "
+                    "(эхо собственного голоса)"
+                )
+                return
+            if self.is_robot_speaking:
                 if duration < 0.8:
                     self.get_logger().info(
-                        f"🔇 [hardware AEC] Игнор короткой фразы {duration:.2f}с "
-                        f"(grace {time_since_tts:.2f}с/{grace}с или TTS активен)"
+                        f"🔇 [hardware AEC] Игнор короткой фразы {duration:.2f}с — TTS активен"
                     )
                     return
-                else:
-                    self.get_logger().info(
-                        f"🎤 [hardware AEC] Фраза {duration:.2f}с во время/после TTS — обрабатываем (возможно прерывание)"
-                    )
+                self.get_logger().info(
+                    f"🎤 [hardware AEC] Фраза {duration:.2f}с во время TTS — "
+                    "обрабатываем (возможно прерывание)"
+                )
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
         self.publish_state("recognizing")
@@ -361,9 +375,16 @@ class STTNode(Node):
                 self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое, <{self.min_text_chars} chars): "{text}"')
             else:
                 self.get_logger().warning("❌ ОТКЛОНЕНО (пустое)")
-            # Issue #979 acceptance: при неясном результате робот просит
-            # повторить вслух, а не молчит. С cooldown против эхо-петли.
-            self._maybe_speak_unclear()
+            # Issue 989 Fix A: различаем rejected(empty) и rejected(short).
+            # rejected(empty) — это почти наверняка эхо собственной музыки/голоса
+            # робота или шум: НЕ говорим «не расслышал», молчим. Иначе робот
+            # говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
+            # rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
+            # т.е. был реальный речевой ввод, но слишком короткий — можно переспросить.
+            if text:
+                self._maybe_speak_unclear()
+            else:
+                self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
             self.publish_state("ready")
 
     def _maybe_speak_unclear(self) -> None:

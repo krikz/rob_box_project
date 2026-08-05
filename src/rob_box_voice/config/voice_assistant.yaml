@@ -18,6 +18,17 @@
       speech_min_duration: 0.3    # Минимальная длительность фразы (секунды)
       speech_max_duration: 10.0   # Максимальная длительность фразы (секунды)
 
+      # Issue 989 (эхо-петля «не расслышал»): анти-эхо гейты.
+      # tts_grace_s — после окончания TTS не считаем VAD речью (робот
+      # «дослушивает» эхо собственного голоса). 2.5s по спеке issue 989.
+      tts_grace_s: 2.5
+      # music_vad_threshold — порог VAD (GAMMAVAD_SR) при активной музыке
+      # (strict mode). 3.5 → 6-8 dB, чтобы бит не триггерил «речь».
+      music_vad_threshold: 6.0
+      # music_vad_min_db — программный гейт по RMS: при музыке сигнал ниже
+      # этого уровня считается музыкой/шумом, а не голосом поверх.
+      music_vad_min_db: -35.0
+
     # ========== STT Node ==========
     stt_node:
       # Vosk settings (Phase 3)
@@ -50,6 +61,9 @@
       # unclear_cooldown_s — анти-петля: не повторять «не расслышал» чаще
       # раза в N секунд. Иначе эхо собственного TTS снова триггерит VAD.
       unclear_cooldown_s: 5.0
+      # tts_grace_s (issue 989 Fix B) — grace period после окончания TTS:
+      # игнорировать ВСЕ фразы от audio_node (эхо собственного голоса).
+      tts_grace_s: 2.5
 
       # Legacy settings (для будущей поддержки других STT)
       provider: "vosk"            # "vosk", "whisper" или "yandex"

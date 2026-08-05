@@ -224,6 +224,7 @@ def _make_stt_node_stub(**param_overrides):
         min_text_chars=DEFAULT_MIN_TEXT_CHARS,
         unclear_phrase="Не расслышал, скажи ещё раз",
         unclear_cooldown_s=5.0,
+        tts_grace_s=2.5,
     )
     defaults.update(param_overrides)
 
@@ -424,13 +425,18 @@ class TestRecognizeWithFallback:
 
 
 # ---------------------------------------------------------------------------
-# Acceptance: робот говорит «не расслышал» при неясном результате
+# Issue 989: rejected(empty) → МОЛЧИМ, rejected(short) → переспрашиваем
 # ---------------------------------------------------------------------------
 
 
 class TestSpeakUnclear:
-    """Issue #979 acceptance: при неясном результате робот просит повторить
-    вслух (а не молчит), с cooldown против эхо-петли."""
+    """Issue #979 + #989: при неясном результате робот просит повторить
+    вслух (а не молчит), с cooldown против эхо-петли.
+
+    Issue 989 Fix A: rejected(empty) — эхо собственной музыки/голоса → НЕ
+    говорим «не расслышал» (молчим). rejected(short) — был реальный ввод,
+    но слишком короткий → можно переспросить.
+    """
 
     def test_speaks_unclear_phrase_on_reject(self, stt_node):
         stt_node.tts_request_pub = MagicMock()
@@ -462,8 +468,9 @@ class TestSpeakUnclear:
 
         assert stt_node.tts_request_pub.publish.call_count == 0
 
-    def test_speech_audio_callback_rejected_triggers_unclear(self, stt_node):
-        """Реальная связка: STT вернул None → робот говорит «не расслышал»."""
+    def test_speech_audio_callback_empty_rejected_stays_silent(self, stt_node):
+        """Issue 989 Fix A: STT вернул None (empty) → робот МОЛЧИТ,
+        «не расслышал» НЕ говорится (это эхо/музыка, не речь пользователя)."""
         stt_node.tts_request_pub = MagicMock()
         stt_node._last_unclear_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
@@ -474,9 +481,79 @@ class TestSpeakUnclear:
         msg.data = [0] * (16000 * 2)  # 1с PCM
         stt_node.speech_audio_callback(msg)
 
-        # Результат не опубликован, но фраза запрошена через TTS
+        # Результат не опубликован, «не расслышал» НЕ запрошен
+        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.tts_request_pub.publish.call_count == 0
+
+    def test_speech_audio_callback_short_rejected_still_speaks(self, stt_node):
+        """Issue 989 Fix A: STT вернул короткий текст (Vosk «не»/«пути»)
+        → это реальный речевой ввод, можно переспросить."""
+        stt_node.tts_request_pub = MagicMock()
+        stt_node._last_unclear_at = 0.0
+        # Короткий текст "не" (2 chars < min_text_chars=3) → rejected(short)
+        stt_node._recognize_with_fallback = MagicMock(return_value=("не", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
         assert stt_node.result_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 1
+
+
+class TestTTSGracePeriod:
+    """Issue 989 Fix B: grace period после TTS — игнорируем ВСЕ фразы."""
+
+    def test_default_tts_grace_is_2_5s(self, stt_node):
+        assert stt_node.tts_grace_s == 2.5
+
+    def test_phrase_inside_grace_is_ignored(self, stt_node):
+        """Фраза, пришедшая в течение tts_grace_s после TTS → игнор
+        (эхо собственного голоса), STT не вызывается, «не расслышал» нет."""
+        import time as _time
+
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = False
+        stt_node._tts_ended_at = _time.monotonic() - 1.0  # 1с назад — внутри grace
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        # Внутри grace — фраза не доходит до распознавания
+        stt_node._recognize_with_fallback.assert_not_called()
+        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.tts_request_pub.publish.call_count == 0
+
+    def test_phrase_outside_grace_is_processed(self, stt_node):
+        """Фраза после истечения grace обрабатывается нормально."""
+        import time as _time
+
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = False
+        stt_node._tts_ended_at = _time.monotonic() - 10.0  # 10с назад — вне grace
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        stt_node._recognize_with_fallback.assert_called_once()
+        # "робок привет" принят — publish_result дёрнут (внутри него
+        # происходит публикация в /voice/stt/result)
+        assert stt_node.publish_result.call_count == 1
 
 
 # ---------------------------------------------------------------------------

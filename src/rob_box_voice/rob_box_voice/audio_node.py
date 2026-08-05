@@ -61,6 +61,17 @@ class AudioNode(Node):
         self.declare_parameter('device_index', -1)  # -1 = auto-detect
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
 
+        # Issue 989 Fix B: grace period после окончания TTS — не начинать
+        # накопление речи (и не публиковать VAD=True) пока робот говорит
+        # или в течение tts_grace_s секунд после. Иначе эхо собственного
+        # голоса/музыки захватывается как «речь» и замыкает петлю.
+        self.declare_parameter('tts_grace_s', 2.5)
+        # Issue 989 Fix C: при активной музыке поднимаем порог VAD на
+        # ReSpeaker (GAMMAVAD_SR) и дополнительно гейтим по уровню RMS —
+        # музыка не должна триггерить VAD как речь.
+        self.declare_parameter('music_vad_threshold', 6.0)
+        self.declare_parameter('music_vad_min_db', -35.0)
+
         self.sample_rate = self.get_parameter('sample_rate').value
         self.channels = self.get_parameter('channels').value
         self.chunk_size = self.get_parameter('chunk_size').value
@@ -68,6 +79,10 @@ class AudioNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.device_index = self.get_parameter('device_index').value
         self.device_name = self.get_parameter('device_name').value
+        # Issue 989: параметры анти-эхо.
+        self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
+        self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
+        self.music_vad_min_db = float(self.get_parameter('music_vad_min_db').value)
 
         # QoS для аудио потока
         audio_qos = QoSProfile(
@@ -83,6 +98,14 @@ class AudioNode(Node):
         self.direction_pub = self.create_publisher(Int32, '/audio/direction', 10)
         self.state_pub = self.create_publisher(String, '/audio/state', 10)
         self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
+
+        # Issue 989: подписки на состояние TTS и музыки для анти-эхо гейтов.
+        # /voice/tts/state — "synthesizing"/"playing" пока робот говорит,
+        # "ready"/"idle" после. Используем для grace period (Fix B).
+        self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
+        # /voice/music/state — "playing"/"idle" от mcp_server (Fix C): при
+        # активной музыке поднимаем порог VAD, чтобы бит не триггерил речь.
+        self.create_subscription(String, '/voice/music/state', self._on_music_state, 10)
 
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
@@ -114,6 +137,17 @@ class AudioNode(Node):
         self.speech_prefetch_bytes = int(
             self.speech_prefetch * self.sample_rate * 2)  # 16-bit = 2 bytes
         self.prev_vad = False
+
+        # Issue 989: анти-эхо состояние.
+        # TTS: True пока робот говорит (synthesizing/playing); после перехода
+        # в ready/idle запоминаем момент окончания для grace period.
+        self.tts_active: bool = False
+        self._tts_ended_at: float = 0.0  # монотонное время окончания TTS
+        # Музыка: True когда mcp_server сообщил "playing" на /voice/music/state.
+        self.music_active: bool = False
+        # Текущий уровень сигнала (dB) для программного гейта VAD (Fix C).
+        # Обновляется в audio_callback; стартуем как «тишина».
+        self._current_db: float = -100.0
 
         # Таймер для VAD/DoA (после sleep(5) безопасно!)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.check_vad_and_doa)
@@ -207,6 +241,13 @@ class AudioNode(Node):
             msg.data = list(audio_bytes)
             self.audio_pub.publish(msg)
 
+            # Issue 989 Fix C: обновляем текущий уровень сигнала для
+            # программного гейта VAD при активной музыке.
+            try:
+                self._current_db = calculate_db(calculate_rms(audio_bytes))
+            except Exception:  # noqa: BLE001 — не критично для захвата
+                pass
+
             # Буферизация для speech_audio
             if self.is_speeching:
                 # Во время речи - добавляем в speech buffer
@@ -220,6 +261,103 @@ class AudioNode(Node):
                 self.speech_prefetch_buffer = self.speech_prefetch_buffer[-self.speech_prefetch_bytes:]
 
         return (None, pyaudio.paContinue)
+
+    # ------------------------------------------------------------------
+    # Issue 989: анти-эхо гейты (Fix B — grace после TTS, Fix C — музыка)
+    # ------------------------------------------------------------------
+    def _on_tts_state(self, msg: String) -> None:
+        """Следим за состоянием TTS: пока робот говорит — VAD игнорируется.
+
+        При переходе в speaking-состояние сбрасываем накопленный буфер
+        (это почти наверняка эхо предыдущей фразы) и не даём VAD начать
+        новую «речь». После ready/idle запоминаем момент окончания для
+        grace period (tts_grace_s).
+        """
+        state = (msg.data or "").strip()
+        if state in ("synthesizing", "playing"):
+            if not self.tts_active:
+                self.get_logger().info("🔇 [issue 989] TTS активен — VAD гейтится (эхо)")
+                # Сбрасываем незавершённое накопление — это эхо, не речь.
+                self.speech_audio_buffer = b""
+                self.is_speeching = False
+            self.tts_active = True
+        elif state in ("ready", "idle", "stopped"):
+            if self.tts_active:
+                self._tts_ended_at = time.monotonic()
+                self.get_logger().info(
+                    f"🔇 [issue 989] TTS закончился — grace {self.tts_grace_s}s"
+                )
+            self.tts_active = False
+
+    def _on_music_state(self, msg: String) -> None:
+        """Состояние музыки от mcp_server (Fix C).
+
+        При активной музыке поднимаем эффективный порог VAD (3.5 → 6-8 dB),
+        чтобы бит/мелодия не триггерили «речь». Порог применяется к железу
+        best-effort (set_vad_threshold может не поддерживаться на всех
+        прошивках ReSpeaker) и к программному гейту по RMS.
+        """
+        state = (msg.data or "").strip()
+        was_active = self.music_active
+        self.music_active = state == "playing"
+        if self.music_active == was_active:
+            return
+        if self.music_active:
+            self.get_logger().info(
+                f"🎵 [issue 989] Музыка активна — VAD threshold {self.vad_threshold} → "
+                f"{self.music_vad_threshold} dB (strict mode)"
+            )
+            self._apply_vad_threshold(self.music_vad_threshold)
+        else:
+            self.get_logger().info(
+                f"🎵 [issue 989] Музыка остановлена — VAD threshold → {self.vad_threshold} dB"
+            )
+            self._apply_vad_threshold(self.vad_threshold)
+
+    def _apply_vad_threshold(self, threshold: float) -> None:
+        """Best-effort применение порога VAD к железу ReSpeaker."""
+        if not self.respeaker.is_connected():
+            self.get_logger().debug(
+                f"[issue 989] ReSpeaker не подключён — порог {threshold} dB только программный"
+            )
+            return
+        try:
+            ok = self.respeaker.set_vad_threshold(threshold)
+            if ok:
+                self.get_logger().info(f"✅ [issue 989] ReSpeaker VAD threshold = {threshold} dB")
+            else:
+                self.get_logger().warning(
+                    f"⚠️ [issue 989] ReSpeaker не принял threshold {threshold} dB — программный гейт остаётся"
+                )
+        except Exception as exc:  # noqa: BLE001 — USB write может блокировать PyAudio
+            self.get_logger().warning(
+                f"⚠️ [issue 989] Не удалось set_vad_threshold({threshold}): {exc}"
+            )
+
+    def _vad_gated(self, vad: bool) -> bool:
+        """Применить анти-эхо гейты к аппаратному VAD.
+
+        Возвращает эффективное значение VAD с учётом:
+        - TTS grace period (Fix B): пока робот говорит или tts_grace_s после — False
+        - активной музыки (Fix C): требуем программный порог по RMS
+        """
+        if self.tts_active:
+            return False
+        if time.monotonic() - self._tts_ended_at < self.tts_grace_s:
+            return False
+        if not vad:
+            return False
+        if self.music_active:
+            # Музыка активна: аппаратный VAD может ловить бит как «речь».
+            # Программный гейт: RMS должен быть выше music_vad_min_db,
+            # иначе это музыка/шум, а не голос поверх музыки.
+            if self._current_db < self.music_vad_min_db:
+                self.get_logger().debug(
+                    f"🎵 [issue 989] VAD подавлен музыкой: dB={self._current_db:.1f} < "
+                    f"{self.music_vad_min_db} (strict)"
+                )
+                return False
+        return True
 
     def check_vad_and_doa(self):
         """Проверка VAD и DoA от ReSpeaker."""
@@ -241,16 +379,19 @@ class AudioNode(Node):
             if vad is None:
                 return  # Ошибка чтения, пропускаем
 
-            if vad != self.prev_vad:
+            # Issue 989: анти-эхо гейты (TTS grace + музыка strict mode).
+            vad_eff = self._vad_gated(bool(vad))
+
+            if vad_eff != self.prev_vad:
                 # Публикуем только при изменении
                 msg = Bool()
-                msg.data = vad
+                msg.data = vad_eff
                 self.vad_pub.publish(msg)
-                self.get_logger().info(f'🎙️  VAD: {"речь" if vad else "тишина"}')
-                self.prev_vad = vad
+                self.get_logger().info(f'🎙️  VAD: {"речь" if vad_eff else "тишина"}')
+                self.prev_vad = vad_eff
 
             # Обработка состояния речи
-            if vad:
+            if vad_eff:
                 # Речь обнаружена - обновляем время остановки
                 self.speech_stopped_time = now
 

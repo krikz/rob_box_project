@@ -953,8 +953,23 @@ class ExecuteMusicCodeTool(MCPTool):
         self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
         result = self._manager.execute_code(code, pattern_name, duration_sec=duration_sec)
         if result["success"]:
+            # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
+            # активна — VAD threshold поднимается без ожидания watchdog.
+            self._notify_music_state()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
+
+    def _notify_music_state(self) -> None:
+        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
+        if self.node is None:
+            return
+        publisher = getattr(self.node, "publish_music_state", None)
+        if publisher is None:
+            return
+        try:
+            publisher()
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
 class StopMusicTool(MCPTool):
@@ -1008,8 +1023,23 @@ class StopMusicTool(MCPTool):
             result = self._manager.stop_pattern(pattern_name)
 
         if result["success"]:
+            # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
+            # остановлена — VAD threshold возвращается к обычному.
+            self._notify_music_state()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
+
+    def _notify_music_state(self) -> None:
+        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
+        if self.node is None:
+            return
+        publisher = getattr(self.node, "publish_music_state", None)
+        if publisher is None:
+            return
+        try:
+            publisher()
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
 class SetVibePresetTool(MCPTool):
