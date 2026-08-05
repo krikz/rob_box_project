@@ -273,10 +273,10 @@ class TestConstructor:
         with pytest.raises(TTSAuthError):
             p._headers()
 
-    def test_missing_group_id_raises_on_params(self):
+    def test_missing_group_id_no_auth_on_params(self):
+        # GroupId опционален (api.minimax.io) — пустой group_id НЕ роняет.
         p = MiniMaxTTSProvider(api_key="k", group_id="")
-        with pytest.raises(TTSAuthError):
-            p._params()
+        assert p._params() == {}
 
 
 # ---------------------------------------------------------------------------

@@ -350,11 +350,11 @@ class TestMiniMaxTTSProviderHealthcheck:
         assert "MINIMAX_API_KEY" in (h.reason or "")
 
     @pytest.mark.asyncio
-    async def test_not_ok_when_group_id_missing(self):
+    async def test_ok_when_group_id_missing(self):
+        # GroupId опционален (api.minimax.io international) — health OK.
         p = _stub_provider(api_key=_FAKE_KEY, group_id="")
         h = await p.healthcheck()
-        assert h.ok is False
-        assert "MINIMAX_GROUP_ID" in (h.reason or "")
+        assert h.ok is True
 
     @pytest.mark.asyncio
     async def test_no_upstream_call(self, minimax_provider, mock_minimax_http):

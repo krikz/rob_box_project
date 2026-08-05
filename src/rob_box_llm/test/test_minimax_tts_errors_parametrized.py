@@ -483,25 +483,30 @@ class TestPreFlightGuards:
 
     @pytest.mark.asyncio
     @pytest.mark.minimax
-    async def test_missing_group_id_raises_auth_without_hitting_wire(self) -> None:
-        """``group_id=\"\"`` → TTSAuthError raised by ``_params()``."""
+    async def test_missing_group_id_works_without_hitting_wire_guard_only_api_key(self) -> None:
+        """``group_id=\"\"`` → НЕ TTSAuthError: GroupId опционален на
+        api.minimax.io (проверено живым запросом 2026-08-05: без GroupId
+        возвращается аудио). Синтез идёт в сеть с пустым params; с пустым
+        api_key — падает ДО сети."""
         with respx.mock(assert_all_called=False) as router:
-            route = router.post("/v1/t2a_v2").pass_through()
+            route = router.post("/v1/t2a_v2").respond(200, json={})
             provider = MiniMaxTTSProvider(
                 api_key=_SENTINEL_API_KEY,
                 group_id="",
             )
             try:
                 with pytest.raises(TTSAuthError) as exc_info:
-                    await provider.synthesize("hello world")
+                    await MiniMaxTTSProvider(
+                        api_key="",
+                        group_id="",
+                    ).synthesize("hello world")
             finally:
                 await provider.aclose()
 
-        assert exc_info.value.provider == "minimax"
         assert route.call_count == 0
-        assert "MINIMAX_GROUP_ID" in str(exc_info.value)
+        assert "MINIMAX_API_KEY" in str(exc_info.value)
         # And the API key still must not leak — the error talks about
-        # the group_id, not the api_key.
+        # the api_key, not the group_id.
         assert _SENTINEL_API_KEY not in str(exc_info.value)
 
 

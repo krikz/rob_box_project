@@ -710,12 +710,12 @@ class TestMissingApiKeyRaises:
         assert "MINIMAX_API_KEY" in str(exc_info.value)
         assert exc_info.value.provider == "minimax"
 
-    def test_params_with_empty_group_id_raises_auth(self) -> None:
+    def test_params_with_empty_group_id_no_auth(self) -> None:
+        # 🔴 FIX (live 15:0x): GroupId опционален на api.minimax.io —
+        # пустой group_id больше НЕ роняет: _params() возвращает {}.
         provider = MiniMaxTTSProvider(api_key="k", group_id="")
-        with pytest.raises(TTSAuthError) as exc_info:
-            provider._params()
-        assert "MINIMAX_GROUP_ID" in str(exc_info.value)
-        assert exc_info.value.provider == "minimax"
+        assert provider._params() == {}
+        assert provider._headers()["Authorization"] == "Bearer k"
 
     async def test_synthesize_with_missing_api_key_raises_auth(
         self,
