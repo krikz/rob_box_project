@@ -96,6 +96,12 @@ class DJModeController:
             if self.state.transition_count == 0 or not self.state.theme:
                 self.state.theme = theme.strip()
                 self._logger.info(f"🎧 DJ theme: {self.state.theme!r}")
+        # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
+        # сохраняем, чтобы автопромпты использовали её вместо дефолта.
+        persona = data.get("persona")
+        if persona and isinstance(persona, str) and persona.strip():
+            self.state.persona = persona.strip()
+            self._logger.info(f"🎧 DJ persona: {self.state.persona!r}")
         next_sec = data.get("next_transition_sec")
         delay = float(max(15, min(300, int(next_sec)))) if next_sec else 60.0
         self.state.next_transition_at = time.time() + delay
@@ -155,9 +161,9 @@ class DJModeController:
             f'Тема: "{self.state.theme}". '
             f'Твой DJ-образ: "{persona}". '
             f"{plan_line}"
-            "Если DJ-режим должен что-то обновить — обращайся к доступным "
-            "инструментам (например save_dj_persona / save_dj_set_plan / "
-            "save_dj_theme), иначе просто ответь голосом.] "
+            "Если DJ-режим должен что-то обновить — вызови "
+            "set_dj_mode(enabled=true, next_transition_sec=45, theme='...') "
+            "или просто ответь голосом.] "
         )
 
     def build_auto_prompt(self, n: int) -> str:
@@ -171,9 +177,10 @@ class DJModeController:
             return (
                 "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
                 f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
-                "Составь план сета на 5-8 треков через save_dj_set_plan() "
-                "(стиль, BPM, тональность, атмосфера в духе темы). "
-                f"Затем сыграй трек #1 через handle_music и представься как {persona}."
+                "Запусти музыку через execute_music_code (бит в духе темы, "
+                "segments 64-128 — сет непрерывный). Затем представься как "
+                f"{persona} через speak_text. Переходы делай через "
+                "set_dj_mode(enabled=true, next_transition_sec=45)."
             )
         plan_block = (
             f"План сета:\n{self.state.set_plan}\n" if self.state.set_plan else ""
@@ -181,8 +188,9 @@ class DJModeController:
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
-            f"Сыграй трек #{n} согласно плану. После execute_music_code вызови "
-            "set_dj_mode(enabled=True, next_transition_sec=X) для следующего "
+            "Сыграй следующий трек через execute_music_code (segments 64-128, "
+            "другой бит/темп в духе темы). После этого вызови "
+            "set_dj_mode(enabled=true, next_transition_sec=45) для следующего "
             "перехода. Изредка произноси тематическую фразу через speak_text()."
         )
 

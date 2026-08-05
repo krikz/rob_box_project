@@ -949,8 +949,18 @@ class MusicManager:
         # tts_batch_complete → no music_cleanup). Stop music so it cannot
         # play forever. This takes priority over the idle TTL because the
         # deadline is the more precise contract the LLM asked for.
+        # 🔴 FIX (live 10:13 DJ): при активном DJ-режиме дедлайн
+        # ИГНОРИРУЕТСЯ — DJ-сет непрерывен (переходы каждые 30-120с),
+        # segments-дедлайн #990 (~30с) убивал музыку посреди сета.
+        # DJ-флаг приходит из mcp_server (подписка на /voice/dj_mode).
         deadline = self._music_deadline_at
         if deadline is not None and now_m >= deadline:
+            if getattr(self, "_dj_active", False):
+                # DJ живёт по idle-TTL; сбросим дедлайн — следующий
+                # переход продлит сессию.
+                self._music_deadline_at = None
+                self._music_deadline_segments = None
+                return result
             stop_result = self.stop_all()
             result["stopped"] = True
             result["stop_reason"] = "segments_deadline"
@@ -1996,6 +2006,17 @@ class SetDjModeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="persona",
+                type="string",
+                description=(
+                    "DJ-образ / персона, которую юзер задал словами "
+                    "(например 'диджей Пёс', 'диджей Кот'). Передавай когда "
+                    "юзер назначил роль — робот будет представляться этим "
+                    "образом. По умолчанию 'ДиДжей РОббокс'."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -2006,7 +2027,7 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
         # LLM иногда шлёт transition_seconds вместо next_transition_sec
@@ -2017,10 +2038,16 @@ class SetDjModeTool(MCPTool):
             payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
         if theme and isinstance(theme, str) and theme.strip():
             payload["theme"] = theme.strip()
+        # 🔴 FIX (live 10:13 DJ): персона юзера («ты диджей Пёс») —
+        # пробрасываем в DJState, чтобы автопромпты не перезаписывали
+        # её дефолтом «ДиДжей РОббокс».
+        if persona and isinstance(persona, str) and persona.strip():
+            payload["persona"] = persona.strip()
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
         action = "включён" if enabled else "выключен"
         interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
-        self.log_info(f"🎧 DJ-режим {action}{interval_info}")
-        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}")
+        persona_info = f", персона: {persona}" if persona else ""
+        self.log_info(f"🎧 DJ-режим {action}{interval_info}{persona_info}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}{persona_info}")

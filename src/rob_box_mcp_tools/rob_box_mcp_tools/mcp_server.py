@@ -209,6 +209,25 @@ class MCPServer(Node):
                 f"⚠️ Не удалось подписаться на /mcp/music_cleanup: {exc}"
             )
 
+        # 🔴 FIX (live 10:13 DJ): подписка на /voice/dj_mode — watchdog
+        # должен знать, что DJ-режим активен (непрерывный сет с
+        # переходами каждые 30-120с). Без этого segments-дедлайн #990
+        # (~30с при segments:16) убивал музыку посреди DJ-сета:
+        # «чуть музыки потом замолкает».
+        try:
+            self._dj_active = False
+            self._dj_mode_sub = self.create_subscription(
+                String,
+                "/voice/dj_mode",
+                self._on_dj_mode,
+                qos_profile,
+            )
+            self.get_logger().info("🎧 Подписан на /voice/dj_mode (DJ watchdog)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /voice/dj_mode: {exc}"
+            )
+
         if self._music_watchdog_enabled:
             period = max(0.1, self._music_watchdog_period_s)
             try:
@@ -230,6 +249,24 @@ class MCPServer(Node):
     # ------------------------------------------------------------------
     # Music cleanup hooks — safety-net (issue #935)
     # ------------------------------------------------------------------
+    def _on_dj_mode(self, msg: "String") -> None:
+        """Track DJ-mode state so the watchdog doesn't kill DJ sets.
+
+        DJ-режим = непрерывный сет с переходами каждые 30-120с.
+        segments-дедлайн (#990) ставится на каждый execute_music_code
+        (~30с при segments:16) — если DJ активен и мы его соблюдаем,
+        музыка умирает посреди сета. Пока DJ включён — дедлайн
+        игнорируется; музыка живёт по idle-TTL (300с), а каждый
+        переход обновляет активность.
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else {}
+            self._dj_active = bool(data.get("enabled", False))
+            state = "ON" if self._dj_active else "OFF"
+            self.get_logger().info(f"🎧 [DJ watchdog] DJ mode: {state}")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"⚠️ DJ mode parse failed: {exc}")
+
     def _on_music_cleanup(self, msg: "String") -> None:
         """Topic callback: force-stop music on dialogue/shutdown events.
 
@@ -262,6 +299,11 @@ class MCPServer(Node):
         if manager is None:
             return
         try:
+            # 🔴 FIX (live 10:13 DJ): проброс DJ-флага в MusicManager —
+            # watchdog не должен убивать непрерывный DJ-сет по
+            # segments-дедлайну #990.
+            if hasattr(self, "_dj_active"):
+                manager._dj_active = bool(self._dj_active)
             result = manager.auto_stop_idle_music()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
