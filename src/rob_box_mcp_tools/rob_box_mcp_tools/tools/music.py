@@ -546,6 +546,16 @@ class MusicManager:
         if not is_safe:
             return {"success": False, "error": filter_error}
 
+        # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
+        # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
+        # компилируемый и чистый). LLM продолжает писать pianovel несмотря
+        # на запрет в промпте → защита на уровне кода. Взято из ветки
+        # phase-3.2-music-testing (проверено в live-экспериментах юзера).
+        if "pianovel" in code:
+            code = code.replace("pianovel", "rhpiano")
+        # piano заменяем только если это отдельное слово (не rhpiano, pianovel и т.д.)
+        code = re.sub(r"(?<![a-zA-Z])piano(?![a-zA-Z])", "rhpiano", code)
+
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
 
