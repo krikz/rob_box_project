@@ -605,6 +605,18 @@ class MusicManager:
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
 
+        # 🔴 DEBUG (live 15:44 «Error in Player: 'amp'»): полный код ПОСЛЕ
+        # всех трансформаций (pianovel→rhpiano, amp-caps) — чтобы видеть,
+        # что реально уходит в renardo. Ошибка KeyError('amp') в Players.py
+        # означает, что в event плеера нет ключа amp — нужен полный код
+        # для воспроизведения.
+        import sys as _sys
+        _sys.stderr.write(
+            f"🎵 [execute_music_code] FINAL CODE:\n{code}\n"
+            f"🎵 [execute_music_code] FINAL CODE END (len={len(code)})\n"
+        )
+        _sys.stderr.flush()
+
         # Issue G-MUSIC: short-circuit before sending anything to Renardo if
         # the sclang startup log shows the music stack is degraded. This
         # prevents the LLM from retrying code that will keep failing because
