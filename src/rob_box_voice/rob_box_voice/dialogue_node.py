@@ -1248,8 +1248,21 @@ class DialogueNode(Node):
         ):
             return
         if not spoken:
-            self.get_logger().warning("⚠️ Empty assistant response — fallback")
-            spoken = "Что-то я задумался, повтори пожалуйста"
+            # 🔴 FIX (live 10:49): пустой spoken НЕ всегда ошибка — LLM
+            # могла выполнить TRACK-запрос («сыграй баха») через
+            # execute_music_code и вернуть 'done' без speak_text (новый
+            # TRACK-контракт: музыка без болтовни). Мой done-strip
+            # обнулил spoken → «задумался» был ЛОЖНЫМ. Fallback — только
+            # если LLM вообще ничего не сделала (tools пуст).
+            if not tools_called:
+                self.get_logger().warning("⚠️ Empty assistant response — fallback")
+                spoken = "Что-то я задумался, повтори пожалуйста"
+            else:
+                self.get_logger().info(
+                    "🔇 TRACK-запрос выполнен тулами, spoken пуст — "
+                    f"тихо завершаю (tools={list(tools_called)!r})"
+                )
+                return
         # Issue #980 — split into chunks and publish as a single TTS batch so
         # that /voice/tts/batch_complete fires only after the last chunk.
         chunks = split_into_chunks(spoken)
