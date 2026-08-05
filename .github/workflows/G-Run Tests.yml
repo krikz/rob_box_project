@@ -75,9 +75,14 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
-          # Remove launch_testing — apt package compiled for pytest 6, crashes pytest 9.
-          # Will be removed from the image in the next Dockerfile rebuild.
-          apt-get remove -y ros-humble-launch-testing ros-humble-launch-testing-ament-cmake 2>/dev/null || true
+
+          # Block launch_testing plugin (apt, compiled for pytest 6, crashes pytest 9).
+          # pytest.ini in workspace root is the only reliable way — PYTEST_ADDOPTS
+          # env var is not always inherited by ament_cmake_pytest subprocesses.
+          cat > ${{ github.workspace }}/test_ws/pytest.ini <<'EOF'
+[tool:pytest]
+addopts = -p no:launch_testing
+EOF
           python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
 
           # Run tests — NO `|| true`, failures MUST surface
