@@ -284,15 +284,25 @@ class DialogCore:
                 # the just-stored user message back into the prompt.
                 messages = await self._resolve_history(history)
                 messages.append(LLMMessage(role="user", content=text))
-                await self._memory.append_turn(
-                    self._user_id, Turn(role="user", content=text)
-                )
+                # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
+                # пишутся в долгую память — иначе каждый переход (#1..#N)
+                # копит user+assistant пары в SQLite, history_max_turns
+                # (20 пар) заполняется DJ-промптами, LLM тонет в 20+
+                # одинаковых «[DJ_AUTO переход #N]» + [CRITICAL] ретраях
+                # → пустые ответы → «Что-то я задумался». Системный
+                # DJ-триггер — не реплика юзера, он не должен загрязнять
+                # контекст диалога.
+                if not is_dj_auto:
+                    await self._memory.append_turn(
+                        self._user_id, Turn(role="user", content=text)
+                    )
                 spoken, tools_called = await self._run_with_tools(messages)
                 result.spoken_text = spoken
                 result.tools_called = list(tools_called)
-                await self._memory.append_turn(
-                    self._user_id, Turn(role="assistant", content=spoken)
-                )
+                if not is_dj_auto:
+                    await self._memory.append_turn(
+                        self._user_id, Turn(role="assistant", content=spoken)
+                    )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 result.error = exc
                 # The user turn was already appended BEFORE the LLM call

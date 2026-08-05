@@ -79,6 +79,8 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     # issue #990 — segments safety-net deadline
     mgr._music_deadline_at = None
     mgr._music_deadline_segments = None
+    # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
+    mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
 
@@ -187,6 +189,7 @@ class TestMusicManagerSCCheck:
         mgr._renardo_context = {}
         # issue #935 — music session lifecycle defaults
         mgr._auto_stop_ttl_seconds = 300
+        mgr._dj_mode_enabled = False
         mgr._music_session_active_since = None
         mgr._last_music_activity_at = None
         mgr._last_stop_at = None

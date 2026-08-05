@@ -66,6 +66,11 @@ class DJModeController:
     POSTPONE_INTERVAL_S: float = 15.0
     DJ_TICK_INTERVAL_S: float = 5.0
     DJ_AUTO_STOP_THRESHOLD: int = 3
+    # 🔴 FIX (live 11:19 DJ): save_dj_set_plan тула НЕТ → set_plan пуст →
+    # авто-стоп по плану не срабатывал → DJ крутился бесконечно (#24+).
+    # Жёсткий лимит переходов без плана (DJ_AUTO_MAX_TRANSITIONS):
+    # после N переходов DJ сам выключается (юзер может включить снова).
+    DJ_AUTO_MAX_TRANSITIONS: int = 8
 
     def __init__(self, *, hook: DJHook, logger: logging.Logger) -> None:
         self._hook = hook
@@ -113,6 +118,12 @@ class DJModeController:
         self.state.theme = ""
         self.state.set_plan = ""
         self.state.persona = ""
+        # 🔴 FIX (live 11:46): без этого enabled оставался True после
+        # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
+        # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
+        # остановки (бесконечность). enabled=False — единственный
+        # надёжный выключатель: tick() сразу возвращается.
+        self.state.enabled = False
         self._logger.info("🎧 DJ Mode OFF")
 
     # ── Tick ────────────────────────────────────────────────────────
@@ -132,6 +143,19 @@ class DJModeController:
         # Hard-stop when the plan is exhausted.
         plan_tracks = self.state.set_plan.count("Трек ")
         next_n = self.state.transition_count + 1
+        # 🔴 FIX (live 11:19 DJ): save_dj_set_plan тула НЕТ — set_plan всегда
+        # пуст → plan_tracks=0 → авто-стоп никогда не срабатывал → DJ
+        # крутился бесконечно (#22+, час музыки, юзер не может выйти).
+        # Фолбэк: если плана нет — жёсткий лимит переходов
+        # (DJ_AUTO_MAX_TRANSITIONS), после которого DJ сам выключается.
+        if plan_tracks == 0 and next_n > self.DJ_AUTO_MAX_TRANSITIONS:
+            self._logger.warning(
+                f"🛑 DJ auto-stop: переход #{next_n} превысил лимит "
+                f"без плана ({self.DJ_AUTO_MAX_TRANSITIONS}) — "
+                "save_dj_set_plan не вызывался, останавливаю DJ"
+            )
+            self._reset_state()
+            return
         if plan_tracks > 0 and next_n > plan_tracks + self.DJ_AUTO_STOP_THRESHOLD:
             self._logger.warning(
                 f"🛑 DJ auto-stop: transition #{next_n} beyond plan ({plan_tracks})"
@@ -149,21 +173,25 @@ class DJModeController:
     # ── Prompt builders ─────────────────────────────────────────────
 
     def preamble(self) -> str:
-        """Prefix injected into user STT turns when DJ-mode is active."""
+        """Prefix injected into user STT turns when DJ-mode is active.
+
+        🔴 FIX (live 11:48): раньше preamble подмешивал ПОЛНЫЕ DJ-инструкции
+        («вызови set_dj_mode(enabled=true...)») к КАЖДОЙ user-команде —
+        LLM видела «[DJ-РЕЖИМ АКТИВЕН, переход #3...]» перед «расскажи
+        анекдот» и продолжала диджеить вместо ответа юзеру. Теперь это
+        НЕЙТРАЛЬНАЯ подсказка: DJ играет в фоне, юзер говорит обычную
+        команду — ответь на неё; не трогай DJ, если юзер не просит.
+        Полные DJ-инструкции живут только в build_auto_prompt (DJ_AUTO).
+        """
         persona = self.state.persona or self._persona_default
-        plan_line = (
-            f"Текущий план сета:\n{self.state.set_plan}\n"
-            if self.state.set_plan
-            else ""
+        theme_line = (
+            f', тема: "{self.state.theme}"' if self.state.theme else ""
         )
         return (
-            f"[🎧 DJ-РЕЖИМ АКТИВЕН, переход #{self.state.transition_count}. "
-            f'Тема: "{self.state.theme}". '
-            f'Твой DJ-образ: "{persona}". '
-            f"{plan_line}"
-            "Если DJ-режим должен что-то обновить — вызови "
-            "set_dj_mode(enabled=true, next_transition_sec=45, theme='...') "
-            "или просто ответь голосом.] "
+            f"[🎧 DJ-режим активен — фоновая музыка играет{theme_line}, "
+            f"диджей: {persona}. Это ОБЫЧНАЯ команда юзера, не DJ-переход. "
+            "Ответь на неё нормально. Не вызывай set_dj_mode и не меняй "
+            "музыку, если юзер об этом не просит.] "
         )
 
     def build_auto_prompt(self, n: int) -> str:
