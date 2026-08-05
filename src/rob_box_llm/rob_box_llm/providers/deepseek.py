@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from typing import Any, AsyncIterator, Iterable, Mapping, Optional, Union
 
 from openai import (
@@ -339,11 +340,48 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
+        # 🐞 VERBOSE LLM TRACE: полный контекст, который видит модель.
+        # Включается env ROBOT_LLM_VERBOSE=1 (или оставьте пустым = всегда).
+        if os.environ.get("ROBOT_LLM_VERBOSE", "1") == "1":
+            _log.info("🔎 LLM REQUEST START")
+            for i, m in enumerate(messages):
+                role = getattr(m, "role", "?")
+                content = getattr(m, "content", "")
+                if isinstance(content, list):
+                    content = json.dumps(content, ensure_ascii=False)[:500]
+                else:
+                    content = str(content)[:500]
+                tc = getattr(m, "tool_calls", None)
+                tc_str = ""
+                if tc:
+                    try:
+                        tc_str = " tool_calls=" + json.dumps(
+                            [{"name": t.name, "args": t.arguments} for t in tc],
+                            ensure_ascii=False)[:400]
+                    except Exception:
+                        tc_str = f" tool_calls={tc!r}"[:400]
+                _log.info(f"  [{i}] {role}: {content!r}{tc_str}")
+            if tools:
+                _log.info(f"  tools({len(tools)}): " + ", ".join(
+                    t.get("function", {}).get("name", "?") for t in tools))
+            _log.info("🔎 LLM REQUEST END")
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — convert to our domain errors
             raise _map_exception(exc, provider=self.name) from exc
         self._post_process_response(resp)
+        if os.environ.get("ROBOT_LLM_VERBOSE", "1") == "1":
+            try:
+                ch = resp.choices[0] if resp.choices else None
+                msg = ch.message if ch else None
+                content = msg.content if msg else ""
+                _log.info(
+                    f"🔎 LLM RESPONSE: content={str(content)[:500]!r} "
+                    f"finish={ch.finish_reason if ch else None} "
+                    f"tool_calls={[(tc.function.name, str(tc.function.arguments)[:200]) for tc in (msg.tool_calls if msg and msg.tool_calls else [])]!r}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.info(f"🔎 LLM RESPONSE (log failed): {exc}")
 
         choice = resp.choices[0] if resp.choices else None
         content = choice.message.content if choice and choice.message else ""
