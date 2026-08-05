@@ -75,6 +75,8 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          # Disable launch_testing plugin (apt, compiled for pytest 6 → crashes pytest 9)
+          export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
           export PYTEST_ADDOPTS="-p pytest_asyncio -p pytest_cov -p pytest_mock"
           python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
 
