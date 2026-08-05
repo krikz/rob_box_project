@@ -636,9 +636,9 @@ class TTSNode(Node):
         if self.provider == "minimax":
             if not MINIMAX_AVAILABLE:
                 self.get_logger().warn("⚠️  provider=minimax но rob_box_llm недоступен — MiniMax не будет работать")
-            elif not self.minimax_api_key or not self.minimax_group_id:
+            elif not self.minimax_api_key:
                 self.get_logger().warn(
-                    "⚠️  provider=minimax но MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы — MiniMax не будет работать"
+                    "⚠️  provider=minimax но MINIMAX_API_KEY не задан — MiniMax не будет работать"
                 )
             else:
                 self.get_logger().info(
@@ -2184,9 +2184,11 @@ class TTSNode(Node):
         """
         if not MINIMAX_AVAILABLE:
             raise Exception("rob_box_llm недоступен — MiniMax не подключён")
-        if not self.minimax_api_key or not self.minimax_group_id:
+        if not self.minimax_api_key:
+            # GroupId опционален (api.minimax.io international) — ключ
+            # обязателен, группа нет.
             raise MiniMaxTTSAuthError(
-                "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы",
+                "MINIMAX_API_KEY не задан",
                 provider="minimax",
             )
 
