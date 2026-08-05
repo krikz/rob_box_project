@@ -408,6 +408,7 @@ class DialogueNode(Node):
             self.get_logger().info(f"🔇 [issue 989] Игнор rejected/empty маркера: {text[:60]}")
             return
         state = self._dsm.current_state
+        was_idle = state == DialogueStateKind.IDLE  # FIX #992: для music_cleanup new_dialogue
         if state == DialogueStateKind.SILENCED:
             if is_unsilence_command(text_lower):
                 self._dsm.on_event(DialogueEvent.UNSILENCE)
@@ -445,7 +446,7 @@ class DialogueNode(Node):
             clean = self._dj.preamble() + clean
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
-        self._dispatch_turn(clean)
+        self._dispatch_turn(clean, was_idle=was_idle)
     def _on_tts_finished(self, msg: String) -> None:
         """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
 
@@ -617,7 +618,7 @@ class DialogueNode(Node):
             self._dj_auto_retry_count = 0
         self._dispatch_turn(user_input, is_dj_auto=True)
 
-    def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False) -> None:
+    def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False, was_idle: bool = False) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
         # guard the LLM cycle is reset mid-track, which in turn trips the
@@ -630,7 +631,14 @@ class DialogueNode(Node):
                 "🎧 [issue 992] DJ auto-transition — skipping "
                 "new_dialogue music_cleanup"
             )
-        elif self._pending_music_cleanup:
+        elif self._pending_music_cleanup and was_idle:
+            # 🔴 FIX (issue 992 live 08:55): music_cleanup reason=new_dialogue
+            # ТОЛЬКО при новом диалоге из IDLE. Продолжение диалога
+            # (barge-in: «ещё спой про зайчиков» во время ответа) — это
+            # тот же диалог: музыка живёт до tts_batch_complete (#968),
+            # LLM сам сменит/оставит трек через execute_music_code.
+            # Раньше cleanup слался на ЛЮБОЙ STT → музыка убивалась
+            # в момент продолжения (v08:55:11 music_cleanup new_dialogue).
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         asyncio.run_coroutine_threadsafe(
