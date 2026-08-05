@@ -9,6 +9,7 @@ test_music.py - Unit тесты для инструментов управлен
 
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -75,6 +76,9 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._last_music_activity_at = None
     mgr._last_stop_at = None
     mgr._auto_stop_count = 0
+    # issue #990 — segments safety-net deadline
+    mgr._music_deadline_at = None
+    mgr._music_deadline_segments = None
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
 
@@ -187,6 +191,9 @@ class TestMusicManagerSCCheck:
         mgr._last_music_activity_at = None
         mgr._last_stop_at = None
         mgr._auto_stop_count = 0
+        # issue #990 — segments safety-net deadline
+        mgr._music_deadline_at = None
+        mgr._music_deadline_segments = None
         return mgr
 
     def test_sc_running_returns_true(self):
@@ -313,6 +320,67 @@ class TestMusicManagerExecuteCode:
             result = mgr.execute_code("p1 >> bad()")
         assert result["success"] is False
         assert "boom" in result["error"]
+
+    # ----- Issue #990 — segments contract ---------------------------------
+
+    def test_execute_with_segments_injects_total_beats_and_schedules_deadline(self):
+        """``segments`` (bars) → __total_beats = segments*4 + deadline set."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=110)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0])", segments=16)
+        assert result["success"] is True
+        assert mgr._renardo_context["__total_segments"] == 16
+        assert mgr._renardo_context["__total_beats"] == 64  # 16 bars * 4 beats
+        assert mgr._renardo_context["__bpm"] == 110
+        assert mgr._renardo_context["__bar_duration"] == pytest.approx(4 * 60.0 / 110.0)
+        # 16 bars @110bpm = 34.9s → deadline in the future
+        assert mgr._music_deadline_at is not None
+        assert mgr._music_deadline_at > time.monotonic()
+        assert mgr._music_deadline_segments == 16
+
+    def test_execute_with_small_segments_respects_deadline_floor(self):
+        """A tiny segments guess must not cut a song off after ~1s (#990)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=1)
+        # 1 bar @120bpm = 2s, but the floor is 15s
+        remaining = mgr._music_deadline_at - time.monotonic()
+        assert remaining >= MusicManager.MIN_SEGMENTS_DEADLINE_SECONDS - 0.5
+
+    def test_execute_with_segments_clamps_absurd_values(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=10_000)
+        assert mgr._renardo_context["__total_segments"] == MusicManager.MAX_SEGMENTS
+
+    def test_execute_duration_sec_is_deprecated_and_does_not_schedule_stop(self):
+        """Backward compat: duration_sec is clamped, never schedules a stop."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=110)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0])", duration_sec=6.0)
+        assert result["success"] is True
+        # clamped up so legacy Clock.future(__total_beats) cannot cut early
+        assert mgr._renardo_context["__duration_sec"] == pytest.approx(
+            MusicManager.DEPRECATED_DURATION_SEC_CLAMP
+        )
+        # __total_beats derives from the CLAMPED duration, not the LLM guess
+        expected_beats = (MusicManager.DEPRECATED_DURATION_SEC_CLAMP * 110.0) / 60.0
+        assert mgr._renardo_context["__total_beats"] == pytest.approx(expected_beats)
+        # No safety-net deadline from duration_sec
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_execute_without_segments_keeps_previous_deadline(self):
+        """A follow-up pattern change without segments keeps the backstop."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=16)
+        deadline_before = mgr._music_deadline_at
+        with patch("builtins.exec"):
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        assert mgr._music_deadline_at == deadline_before
 
 
 # ---------------------------------------------------------------------------
@@ -1015,6 +1083,64 @@ class TestMusicSessionLifecycle:
         assert result["stopped"] is True
         assert isinstance(result["idle_seconds"], float)
         assert result["idle_seconds"] >= 300.0
+
+    # ----- Issue #990 — segments safety-net deadline -----------------------
+
+    def test_auto_stop_fires_at_segments_deadline(self):
+        """If the TTS batch never completes, music stops at the deadline."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        # Simulate the watchdog firing after the deadline (idle < TTL).
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "segments_deadline"
+        assert mgr._auto_stop_count == 1
+        # stop_all cleared the deadline.
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_auto_stop_noop_before_segments_deadline(self):
+        """Before the deadline, the segments backstop must NOT fire."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        deadline = mgr._music_deadline_at
+        # now is just BEFORE the deadline and idle is within the high TTL.
+        result = mgr.auto_stop_idle_music(ttl_seconds=999, now=deadline - 1)
+        assert result["stopped"] is False
+        assert result.get("stop_reason") is None
+
+    def test_auto_stop_uses_deadline_before_idle_ttl(self):
+        """The deadline takes priority over the idle TTL (#990)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        now = mgr._music_deadline_at + 0.5
+        result = mgr.auto_stop_idle_music(ttl_seconds=999, now=now)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "segments_deadline"
+
+    def test_stop_all_clears_segments_deadline(self):
+        """tts_batch_complete → stop_all must cancel the backstop."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        mgr.stop_all()
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_get_state_exposes_segments_deadline(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=8)
+        state = mgr.get_state()
+        assert state["music_deadline_segments"] == 8
+        assert state["music_deadline_at"] == mgr._music_deadline_at
 
     # ----- stop_music_on_session_end ---------------------------------------
 

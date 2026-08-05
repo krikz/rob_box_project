@@ -171,8 +171,9 @@ class BaselineEstimator:
       ``0.5`` — the heuristic is calibrated, but actual rate
       depends on phoneme density.
     * ``music`` (``execute_music_code``): duration from the
-      ``duration_sec`` payload the executor returns (or from the
-      ``duration_ms`` argument when it is supplied eagerly).
+      ``segments`` payload (bars × 4 beats @ 120 BPM estimate),
+      falling back to the deprecated ``duration_sec`` or the
+      ``duration_ms`` argument when supplied eagerly (issue #990).
       Confidence is ``0.9`` because the value is a hard contract
       from the music engine.
     * ``anim`` (``play_animation``): duration from a preset
@@ -257,9 +258,21 @@ class BaselineEstimator:
         if channel is ChannelKind.MUSIC:
             duration_ms_raw = args.get("duration_ms")
             duration_sec = args.get("duration_sec")
+            segments = args.get("segments")
             if duration_ms_raw is not None:
                 duration_ms = float(duration_ms_raw)
+            elif segments is not None:
+                # Issue #990 — the music contract is now `segments` (bars).
+                # 1 bar = 4 beats; estimate at the default 120 BPM when the
+                # code's Clock.bpm is not parseable here (the manager knows
+                # the real tempo — this is only a scheduler budget).
+                try:
+                    bar_ms = 4 * 60000.0 / 120.0  # 2000 ms per bar @120 BPM
+                    duration_ms = int(segments) * bar_ms
+                except (TypeError, ValueError):
+                    duration_ms = 1000.0
             elif duration_sec is not None:
+                # Deprecated (#949 → #990) — kept as a fallback.
                 duration_ms = float(duration_sec) * 1000.0
             else:
                 # Default to a 1-second nominal segment when the

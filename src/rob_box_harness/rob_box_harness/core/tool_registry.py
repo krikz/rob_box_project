@@ -308,18 +308,31 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
         ),
         ToolSpec(
             name="execute_music_code",
-            description="Execute FoxDot / music code in the runtime. Use duration_sec (from estimate_tts_duration) to time arrangements (#949).",
+            description=(
+                "Execute FoxDot / music code in the runtime. Pass `segments` "
+                "(number of bars, 4 beats per bar) as a safety net only — the "
+                "system stops the music itself at tts_batch_complete (issue #990). "
+                "Do NOT pass duration_sec (deprecated, ignored)."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
                     "code": _TEXT_PROPERTY,
+                    "segments": {
+                        "type": "integer",
+                        "description": (
+                            "Number of bars (4 beats per bar) the background music "
+                            "should play as a backstop. The system stops music at "
+                            "tts_batch_complete; segments only caps playback if TTS "
+                            "hangs. Typical song background: 8-16 bars. Omit if "
+                            "unsure (default: until tts_batch_complete)."
+                        ),
+                    },
                     "duration_sec": {
                         "type": "number",
                         "description": (
-                            "Estimated TTS playback duration in seconds (from estimate_tts_duration). "
-                            "When provided, the variable __total_beats is available in Renardo context "
-                            "so you can schedule pattern changes with Clock.future(__total_beats, ...). "
-                            "Use this to time music arrangements (intro, verse, drop, outro) to rap duration."
+                            "DEPRECATED (issue #990) — ignored for stopping. "
+                            "Backward compatibility only; do not use."
                         ),
                     },
                 },
