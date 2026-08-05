@@ -267,7 +267,7 @@ class DialogueNode(Node):
         self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
         self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
     def _declare_params(self) -> None:
-        self.declare_parameter("llm_provider", "deepseek")
+        self.declare_parameter("llm_provider", "minimax")
         self.declare_parameter("api_key", "")
         self.declare_parameter("base_url", "")
         self.declare_parameter("model", "")

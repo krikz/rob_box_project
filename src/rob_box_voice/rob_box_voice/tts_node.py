@@ -258,7 +258,7 @@ class TTSNode(Node):
 
         # Параметры
         # yandex (primary) | silero (fallback) | minimax (HTTP, opt-in)
-        self.declare_parameter("provider", "yandex")
+        self.declare_parameter("provider", "minimax")
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
