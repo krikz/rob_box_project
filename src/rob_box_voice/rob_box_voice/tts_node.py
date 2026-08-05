@@ -585,6 +585,17 @@ class TTSNode(Node):
         # blocking HTTP+ALSA work inside each worker — the executor only
         # bounds *thread count*, the semaphore + lock bound *in-flight work*.
         max_workers = max(1, min(4, int(self.get_parameter("synthesis_max_workers").value)))
+        # 🔴 FIX (live 12:02 «анекдот перепутан»): ThreadPoolExecutor с
+        # max_workers>1 + _synthesis_lock = ГОНКА за lock. LLM вызвала
+        # 5 speak_text подряд (анекдот) — 5 задач ушли в пул параллельно,
+        # каждый ждал lock, и порядок воспроизведения стал порядком
+        # ЗАХВАТА lock, а не порядком отправки («Второй отвечает» сыграл
+        # раньше «Один говорит»). _synthesis_lock всё равно сериализует
+        # и синтез, и проигрывание — параллелизма нет, есть только гонка.
+        # Решение: max_workers=1 → executor исполняет задачи строго в
+        # порядке submit (FIFO), а submit идёт из ROS-callback в порядке
+        # приёма фраз → порядок фраз сохраняется.
+        max_workers = 1
         max_queue = max(1, int(self.get_parameter("synthesis_max_queue").value))
         # Total in-flight cap = workers currently executing + pending in queue.
         # Once the cap is hit, submit() is rejected and the ROS callback
