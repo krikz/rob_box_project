@@ -331,6 +331,17 @@ class MusicManager:
             for sdef in _rt.SynthDefs.values():
                 sdef.add()
 
+            # Загружаем эффекты (reverb/volume) — иначе scsynth отвечает
+            # "SynthDef reverb not found" / "SynthDef volume not found" на каждый
+            # Player с room=/amp-fx и музыка молчит (live 05.08: все e2e-прогоны
+            # после деплоя тихие, TTS работает, музыка нет).
+            # EffectManager.reload() = effect.load() для каждого эффекта +
+            # In() + Out() (служебные bus-ноды).
+            try:
+                _rt.effect_manager.reload()
+            except Exception as exc:  # noqa: BLE001
+                self._renardo_last_error = f"effect_manager.reload failed: {exc}"
+
             # Ждём компиляции всех 188 SynthDef-ов через sclang.
             # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
             _time.sleep(5)
