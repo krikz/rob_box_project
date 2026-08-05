@@ -808,24 +808,22 @@ class MusicManager:
         degraded = self._require_healthy and not self.is_music_stack_healthy()
 
         if not degraded and self._renardo_available and self._check_supercollider():
-            # Шаг 0: плавный ramp-down — amp=0 на всех живых плеерах
-            # (запускает release-фазу ADSR, синты затухают сами).
+            # 🔴 FIX (live 15:44 «Error in Player: 'amp'»): ramp-down через
+            # ``{name}.amp = 0`` УБРАН. Renardo Player.__setattr__ оборачивает
+            # любое присваивание в asStream() → attr["amp"] становится PGroup,
+            # а не скаляром → get_event() строит event с PGroup-amp →
+            # send_osc_message не находит скаляр → KeyError('amp') на каждом
+            # кадре → музыка мертва (рэп/Бах/DJ — всё) с деплоя 15:26, когда
+            # влился 3cc04a0c. Останавливаем плееры только через .stop()
+            # (как работало в 12:27), без трюка с amp.
             player_names = (
                 [f"d{i}" for i in range(1, 10)]
                 + [f"p{i}" for i in range(1, 10)]
                 + [f"s{i}" for i in range(1, 10)]
                 + [f"l{i}" for i in range(1, 10)]
             )
-            ramp_code = "\n".join(
-                f"try:\n  {name}.amp = 0\nexcept Exception:\n  pass"
-                for name in player_names
-            )
-            try:
-                exec(ramp_code, self._renardo_context)  # noqa: S102
-            except Exception:
-                pass  # best-effort, продолжаем
 
-            # Шаг 1: остановить все плееры (после ramp-down — без кликов)
+            # Шаг 1: остановить все плееры
             stop_code = "\n".join(
                 f"try:\n  {name}.stop()\nexcept Exception:\n  pass"
                 for name in player_names
