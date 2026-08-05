@@ -155,9 +155,15 @@ def _install_all_mocks():
     #   <root>/rob_box_voice/test/unit/tts/conftest.py
     # The real transcode helper is at:
     #   <root>/rob_box_voice/rob_box_voice/utils/audio_transcode.py
-    _ROOT = __file__.rsplit("/test/unit/tts/conftest.py", 1)[0]
-    _TRANSCODE_PATH = _ROOT + "/rob_box_voice/utils/audio_transcode.py"
-    _spec = _ilu.spec_from_file_location("rob_box_voice.utils.audio_transcode", _TRANSCODE_PATH)
+    # NOTE: pytest 9.x now uses os-native path separators in __file__ on
+    # Windows (backslashes). Use pathlib so this works on both POSIX and
+    # Windows and is robust to pytest path-resolution changes.
+    import pathlib as _pathlib
+    _ROOT = _pathlib.Path(__file__).resolve().parent.parent.parent.parent
+    _TRANSCODE_PATH = _ROOT / "rob_box_voice" / "utils" / "audio_transcode.py"
+    _spec = _ilu.spec_from_file_location(
+        "rob_box_voice.utils.audio_transcode", str(_TRANSCODE_PATH)
+    )
     _transcode_mod = _ilu.module_from_spec(_spec)
     sys.modules["rob_box_voice.utils.audio_transcode"] = _transcode_mod
     _spec.loader.exec_module(_transcode_mod)
@@ -166,7 +172,7 @@ def _install_all_mocks():
     # tts_node uses (find_respeaker_device_sounddevice); the real
     # __init__.py is NOT imported.
     mock_utils_pkg = types.ModuleType("rob_box_voice.utils")
-    mock_utils_pkg.__path__ = [_ROOT + "/rob_box_voice/utils"]
+    mock_utils_pkg.__path__ = [str(_ROOT / "rob_box_voice" / "utils")]
     mock_utils_pkg.find_respeaker_device_sounddevice = MagicMock()
     sys.modules["rob_box_voice.utils"] = mock_utils_pkg
 

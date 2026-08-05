@@ -85,6 +85,10 @@ jobs:
           printf '[tool:pytest]\naddopts = -p no:launch_testing\n' > ${{ github.workspace }}/test_ws/pytest.ini
           python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
 
+          # Ensure runtime deps for unit tests (defensive — Dockerfile already has these,
+          # but a stale image may not. Pinned to known-good versions.)
+          python3 -m pip install --quiet --no-cache-dir requests pyyaml 2>/dev/null || true
+
           # Run tests — NO `|| true`, failures MUST surface
           # rob_box_voice: FULL test suite (pytest + linting). Must pass clean.
           colcon test \

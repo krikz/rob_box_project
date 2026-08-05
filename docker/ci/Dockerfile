@@ -93,7 +93,7 @@ RUN apt-get update && \
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir \
         'pytest>=8' pytest-asyncio pytest-cov pytest-mock \
-        openai httpx
+        openai httpx requests pyyaml
 
 # ── Verify ─────────────────────────────────────────────────────────────
 RUN python3 -c "import pytest; assert pytest.__version__ >= '8', f'pytest={pytest.__version__}'" && \
