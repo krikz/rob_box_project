@@ -901,6 +901,20 @@ class DialogueNode(Node):
         "зачитывай",
     )
 
+    # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
+    # speak_text достаточно — бит не обязателен (юзер мог попросить
+    # спеть ПОД уже играющую музыку, как «спой про мурку в этот
+    # момент» — Григ играл, LLM правильно не перезапустила трек).
+    # Bug C нудит только если LLM вообще НИЧЕГО не сделала (tools
+    # пуст). Для БИТО-обязательных («рэп/зачитай/диджей») — как было:
+    # нуднуть если нет execute_music_code.
+    _MUSIC_GUARD_VOCAL_KEYWORDS = (
+        "спой",
+        "пой ",
+        "песня",
+        "песню",
+    )
+
     def _user_wants_music(self, user_input: str) -> bool:
         """Heuristic: does the user request music / a track?
 
@@ -1119,10 +1133,22 @@ class DialogueNode(Node):
             self._dispatch_dj_turn(self._build_dj_retry_prompt())
             return
         if self._user_wants_music(user_input):
+            tools_now = set(tools_called or ())
+            # 🔴 FIX (live 10:00): вокальные запросы («спой/пой/песня»)
+            # — speak_text уже есть (песня озвучена), бит не обязателен:
+            # не нудить. Только если LLM вообще ничего не сделала
+            # (tools пуст) — это настоящий пропуск.
+            if any(kw in user_input.lower() for kw in self._MUSIC_GUARD_VOCAL_KEYWORDS):
+                if tools_now:
+                    self.get_logger().debug(
+                        "🎵 [issue 992 Bug C] vocal request, LLM replied "
+                        f"(tools={sorted(tools_now)!r}) — no nudge needed"
+                    )
+                    return
             # Bug C — user asked for rap/song/DJ but LLM skipped music.
             self.get_logger().warning(
                 "🎵 [issue 992 Bug C] user asked for music but LLM "
-                f"skipped execute_music_code (tools={list(tools_set)!r}); "
+                f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
                 "publishing spoken nudge"
             )
             self._speak_direct(
