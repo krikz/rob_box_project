@@ -27,6 +27,9 @@ jobs:
   unit-tests:
     name: Unit Tests (ROS2 Humble)
     runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/krikz/rob-box-ci:humble
+      options: --user root
 
     steps:
       - name: Checkout code
@@ -44,48 +47,6 @@ jobs:
           restore-keys: |
             colcon-humble-${{ runner.os }}-
 
-
-      - name: Set up ROS2 Humble
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: humble
-
-      - name: Install Python dependencies
-        run: |
-          set -eo pipefail
-          sudo python3 -m pip install --upgrade pip
-
-          # pytest >= 8 — MUST use --force-reinstall because apt-installed
-          # python3-pytest 6.2.5 at /usr/lib/python3/dist-packages/ takes
-          # precedence over /usr/local/lib/python3.10/dist-packages/ in
-          # Python's sys.path.  Without --force-reinstall, colcon test
-          # loads 6.2.5 → ModuleNotFoundError: _pytest.scope.
-          sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov pytest-mock
-
-          sudo pip install openai httpx
-
-          # ---- verify pytest >= 8 ----
-          python3 -c "import pytest, sys; v=pytest.__version__; assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old: {v}'; print(f'pytest: {v} ({pytest.__file__}) sys.path[0]={sys.path[0]}')"
-
-          # ---- purge user-site leftovers ----
-          rm -rf ~/.local/lib/python3.10/site-packages/_pytest*  2>/dev/null || true
-          rm -rf ~/.local/lib/python3.10/site-packages/pytest*    2>/dev/null || true
-          rm -rf ~/.local/lib/python3.10/site-packages/pytest_*   2>/dev/null || true
-
-      - name: Install ROS2 test dependencies
-        run: |
-          set -eo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            ros-humble-ament-cmake-pytest \
-            ros-humble-launch-testing \
-            ros-humble-launch-testing-ament-cmake
-
-          # apt may reinstall python3-pytest 6.2.5 as a dep → re-force
-          sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov pytest-mock
-
-          # ---- final verify: MUST be >= 8 ----
-          python3 -c "import pytest; v=pytest.__version__; assert tuple(int(x) for x in v.split('.')) >= (8,0), f'pytest too old after apt: {v}'; print(f'OK pytest={v} ({pytest.__file__})')"
 
       - name: Build workspace
         run: |
@@ -109,13 +70,8 @@ jobs:
 
           cd ${{ github.workspace }}/test_ws
 
-          # Force pip-installed pytest>=8 before apt's 6.2.5
-          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
-          # Disable launch_testing plugin: it was compiled for pytest 6,
-          # implements a hook that no longer exists in pytest 9 → plugin loader crashes.
-          # We re-enable only the plugins we actually need via --pytest-args.
-          export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-          python3 -c "import pytest; v=pytest.__version__; assert v >= '8', f'WRONG pytest: {v}'; print(f'colcon pytest: {v} ({pytest.__file__})')"
+          # Verify pytest (pre-installed in CI image)
+          python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
 
           # Run tests — NO `|| true`, failures MUST surface
           # rob_box_voice: FULL test suite (pytest + linting). Must pass clean.
@@ -171,6 +127,9 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/krikz/rob-box-ci:humble
+      options: --user root
     if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
 
     steps:
@@ -189,19 +148,6 @@ jobs:
           restore-keys: |
             colcon-humble-${{ runner.os }}-
 
-      - name: Set up ROS2 Humble
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: humble
-
-      - name: Install Python dependencies
-        run: |
-          set -eo pipefail
-          sudo python3 -m pip install --upgrade pip
-          sudo pip install --force-reinstall 'pytest>=8' pytest-asyncio pytest-cov
-          sudo pip install openai httpx
-          python3 -c "import pytest; assert pytest.__version__>='8', f'pytest={pytest.__version__}'"
-
       - name: Build workspace
         run: |
           set -eo pipefail
@@ -219,7 +165,6 @@ jobs:
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
           cd ${{ github.workspace }}/test_ws
-          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
           python3 -c "import pytest; assert pytest.__version__>='8'"
           colcon test \
             --packages-select rob_box_voice \

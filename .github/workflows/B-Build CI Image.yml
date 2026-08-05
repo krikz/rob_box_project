@@ -1,0 +1,77 @@
+name: "B: Build CI Image"
+
+# Периодическая сборка CI-образа (weekly) + ручной запуск.
+# Образ ghcr.io/krikz/rob-box-ci:humble содержит ROS2 Humble
+# и все зависимости для тестов — экономит ~10 мин на каждом PR.
+
+on:
+  schedule:
+    # Каждый вторник в 04:00 UTC
+    - cron: '0 4 * * 2'
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'docker/ci/Dockerfile'
+      - '.github/workflows/B-Build CI Image.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build & Push CI Image
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Metadata ──────────────────────────────────────────────────
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/rob-box-ci
+          tags: |
+            type=raw,value=humble
+            type=sha,prefix=humble-,format=short
+            type=ref,event=branch
+
+      # ── Build & push ───────────────────────────────────────────────
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/ci
+          file: docker/ci/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Verify ────────────────────────────────────────────────────
+      - name: Smoke test
+        run: |
+          docker pull ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble
+          docker run --rm ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble \
+            bash -c "
+              set -euo pipefail
+              source /opt/ros/humble/setup.bash
+              python3 -c 'import pytest; assert pytest.__version__ >= \"8\"'
+              python3 -c 'import openai, httpx; print(\"OK\")'
+              ros2 --version
+              echo '=== SMOKE TEST PASSED ==='
+            "
