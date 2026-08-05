@@ -57,7 +57,7 @@ from rob_box_voice.core.dialogue_text import (
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
-    strip_history_marker, strip_markdown,
+    strip_history_marker, strip_markdown, strip_thinking_blocks,
 )
 
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
@@ -1224,6 +1224,14 @@ class DialogueNode(Node):
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
         spoken = strip_history_marker(result.spoken_text or "")
+        # 🔴 FIX (live 16:02 «английская мысль на Бахе»): MiniMax M3
+        # возвращает ``<think>...</think>`` в content перед реальным
+        # ответом. Done-чекер ниже ловит «done», но если перед ним лежит
+        # английский мысленный комментарий («Music started successfully.
+        # Now return "done" — no speak_text...»), он весь уходит в TTS
+        # как «озвучка ответа». Strip-блоков ДО done-чекера → в TTS идёт
+        # либо пусто (маркер done → тишина), либо реальный финал.
+        spoken = strip_thinking_blocks(spoken)
         # Issue #988 (code part): strip Markdown BEFORE chunking. Chunking
         # splits on punctuation, which can cut a paired "*...*" in half;
         # strip_markdown in tts_node only removes *paired* delimiters, so a

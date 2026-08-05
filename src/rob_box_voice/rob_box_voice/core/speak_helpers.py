@@ -30,12 +30,32 @@ _HISTORY_MARKER_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Strip interleaved-thinking blocks (MiniMax M3 + Anthropic format).
+# After removal, the trailing "done" marker (if present) is what's left
+# — which the dialogue_node correctly recognises and skips from auto-TTS.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
+
 
 def strip_history_marker(text: str) -> str:
     """Return *text* with the leading ``[выполнено через: ...]`` marker removed."""
     if not text:
         return text
     return _HISTORY_MARKER_RE.sub("", text).strip()
+
+
+def strip_thinking_blocks(text: str) -> str:
+    """Remove ``<think>...</think>`` blocks so internal reasoning does not
+    leak into spoken output.
+
+    MiniMax M3 returns a ``<think>...</think>`` block in ``content`` BEFORE
+    the actual reply. If we don't strip it, the model literally says things
+    like ``«Music started successfully. Now return "done" — no speak_text,
+    no follow-up.»`` over TTS, and the user hears the model's internal
+    monologue (often in English, even when the system prompt says Russian).
+    """
+    if not text:
+        return text
+    return _THINK_BLOCK_RE.sub("", text).strip()
 
 
 #: Regexes applied by :func:`strip_markdown` in order. Each tuple is
