@@ -172,6 +172,67 @@ class TestMusicManagerFilter:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — issue #1000 anti-click caps (oct, amplify, ramp-down)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerCaps:
+    """``_cap_amp`` ограничивает amp / amplify / oct — фазa-3.2 anti-click.
+
+    Issue #1000: ``pianovel/piano → rhpiano`` (MdaPiano цокает) уже
+    автозаменяется в ``execute_code``. Капы ``oct <= 4`` и ``amplify`` ≤
+    ``max_amp`` — защита от громких/резких звуков.
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    def test_oct_is_capped_at_4(self):
+        # oct=5 (резкий диапазон) → oct=4
+        code = "p1 >> pluck([0,2,4], oct=5)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=4" in out
+        assert "oct=5" not in out
+
+    def test_oct_unchanged_when_leq_4(self):
+        code = "p1 >> pluck([0,2,4], oct=3)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=3" in out
+
+    def test_amplify_var_is_capped(self):
+        # amplify=var([1, 0.3]) → amplify=var([0.7, 0.3])
+        code = "d1 >> play('X', amplify=var([1,0.3]))"
+        out = self.mgr._cap_amp(code)
+        assert "0.7" in out
+        # внутри var() 1.0 должно быть заменено на 0.7, 0.3 остаётся
+        assert "amplify=var([0.7,0.3])" in out.replace(" ", "")
+
+    def test_amplify_simple_is_capped(self):
+        # amplify=0.8 → amplify=0.7
+        code = "d1 >> play('X', amplify=0.8)"
+        out = self.mgr._cap_amp(code)
+        assert "amplify=0.7" in out
+
+    def test_amp_simple_is_capped(self):
+        # amp=0.9 → amp=0.7 (default max_amp=0.7)
+        code = "p1 >> pluck([0], amp=0.9)"
+        out = self.mgr._cap_amp(code)
+        assert "amp=0.7" in out
+
+    def test_dj_mode_flag_default_off(self):
+        # Issue #1000 — DJ mode flag should default to False
+        assert self.mgr.dj_mode_enabled is False
+
+    def test_set_dj_mode_toggles_flag(self):
+        # Issue #1000 — set_dj_mode(True) → dj_mode_enabled True
+        self.mgr.set_dj_mode(True)
+        assert self.mgr.dj_mode_enabled is True
+        self.mgr.set_dj_mode(False)
+        assert self.mgr.dj_mode_enabled is False
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — SuperCollider check
 # ---------------------------------------------------------------------------
 

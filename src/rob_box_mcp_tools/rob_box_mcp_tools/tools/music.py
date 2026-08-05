@@ -213,6 +213,13 @@ class MusicManager:
         # stats — surfaced via get_state() for the DialogCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
+        # Issue #1000 — DJ mode flag. When True, ``execute_code`` strips
+        # ``Clock.future(outro/Clock.clear())`` patterns because the LLM
+        # keeps planning its own stop (banned by contract #992) — only the
+        # system clock + watchdog should stop DJ transitions.
+        # ------------------------------------------------------------------
+        self._dj_mode_enabled: bool = False
+        # ------------------------------------------------------------------
         # Music stack health (issue G-MUSIC, architect review v3)
         # ------------------------------------------------------------------
         # If sclang already wrote a startup log and it's degraded, refuse to
@@ -221,6 +228,19 @@ class MusicManager:
         # upstream .scd file cannot manifest as silent exec errors later.
         self._evaluate_music_stack_health(sclang_log_path=sclang_log_path)
         self._initialize_renardo()
+
+    # ------------------------------------------------------------------
+    # DJ Mode — issue #1000
+    # ------------------------------------------------------------------
+
+    @property
+    def dj_mode_enabled(self) -> bool:
+        """True when DJ mode is active — ``Clock.future`` stop patterns are stripped."""
+        return self._dj_mode_enabled
+
+    def set_dj_mode(self, enabled: bool) -> None:
+        """Set DJ mode flag. Called by :class:`SetDjModeTool`."""
+        self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -448,14 +468,18 @@ class MusicManager:
         return True, ""
 
     def _cap_amp(self, code: str) -> str:
-        """Ограничить все amp= значения в коде до self._max_amp.
+        """Ограничить громкость/октаву в коде до безопасных пределов.
 
-        Обрабатывает:
-        - ``amp=0.9``          → ``amp=0.7`` (если max_amp=0.7)
-        - ``amp=P[0.5, 1.0]``  → ``amp=P[0.5, 0.7]``
-        - ``amp=1``            → ``amp=0.7``
+        Issue #1000 — phase-3.2 anti-click caps:
+        - ``amp=0.9``               → ``amp=0.7`` (если max_amp=0.7)
+        - ``amp=P[0.5, 1.0]``       → ``amp=P[0.5, 0.7]``
+        - ``amp=1``                 → ``amp=0.7``
+        - ``amplify=var([1,0.3])``  → ``amplify=var([0.7,0.3])``
+        - ``amplify=0.8``           → ``amplify=0.7``
+        - ``oct=5``                 → ``oct=4`` (макс 4 — oct=5 очень резкое/громкое)
         """
         max_amp = self._max_amp
+        max_oct = 4  # oct=5 и выше слишком резкое/громкое (issue #1000)
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -465,11 +489,33 @@ class MusicManager:
 
         code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
 
-        # 2. Затем простые числа
+        # 2. amp= простые числа
         def _cap_n(m: re.Match) -> str:
             return f"amp={min(float(m.group(1)), max_amp):.3g}"
 
         code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
+
+        # 3. amplify=var([...]) — ограничиваем числа внутри var() (issue #1000)
+        def _cap_amplify_var(m: re.Match) -> str:
+            inner = m.group(1)
+            def _cap_num(n: re.Match) -> str:
+                return f"{min(float(n.group()), max_amp):.3g}"
+            inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
+            return f"amplify=var({inner})"
+
+        code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
+
+        # 4. amplify= простые числа
+        def _cap_amplify_n(m: re.Match) -> str:
+            return f"amplify={min(float(m.group(1)), max_amp):.3g}"
+
+        code = re.sub(r"amplify\s*=\s*(\d+(?:\.\d*)?)", _cap_amplify_n, code)
+
+        # 5. oct= — ограничиваем до max_oct (issue #1000)
+        def _cap_oct(m: re.Match) -> str:
+            return f"oct={min(int(m.group(1)), max_oct)}"
+
+        code = re.sub(r"oct\s*=\s*(\d+)", _cap_oct, code)
         return code
 
     # ------------------------------------------------------------------
@@ -727,13 +773,19 @@ class MusicManager:
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
     def stop_all(self) -> Dict[str, Any]:
-        """Остановить всю музыку: остановить все плееры + Clock.clear() + SC freeAll.
+        """Остановить всю музыку: плавный gate=0 ramp-down → freeAll.
 
-        Трёхэтапная остановка:
-        1. Вызвать .stop() на каждом известном плеере (d1-d9, p1-p9, s1-s9, l1-l9)
-           чтобы снять их с Clock до очистки.
-        2. Clock.clear() — убрать все запланированные события из шедулера.
-        3. OSC /g_freeAll — убить все живые синтезаторы в scsynth (Group 1).
+        Issue #1000 (phase-3.2 anti-click):
+            Hard ``/g_freeAll`` без ramp-down даёт щелчки на MdaPiano/rhpiano
+            (физ-модели — release-фаза ADSR не успевает затухнуть). Делаем
+            ``amp=0`` на всех плеерах → release → ~50ms → ``/g_freeAll``.
+
+        Этапы:
+        1. ``amp=0`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
+           запускает release-фазу ADSR, синты затухают естественно.
+        2. ``Clock.clear()`` — убрать все запланированные события.
+        3. ~50ms sleep — дать ADSR release затухнуть.
+        4. OSC ``/g_freeAll`` — убить все живые синтезаторы в scsynth.
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
@@ -744,13 +796,24 @@ class MusicManager:
         degraded = self._require_healthy and not self.is_music_stack_healthy()
 
         if not degraded and self._renardo_available and self._check_supercollider():
-            # Шаг 1: остановить все плееры которые есть в контексте
+            # Шаг 0: плавный ramp-down — amp=0 на всех живых плеерах
+            # (запускает release-фазу ADSR, синты затухают сами).
             player_names = (
                 [f"d{i}" for i in range(1, 10)]
                 + [f"p{i}" for i in range(1, 10)]
                 + [f"s{i}" for i in range(1, 10)]
                 + [f"l{i}" for i in range(1, 10)]
             )
+            ramp_code = "\n".join(
+                f"try:\n  {name}.amp = 0\nexcept Exception:\n  pass"
+                for name in player_names
+            )
+            try:
+                exec(ramp_code, self._renardo_context)  # noqa: S102
+            except Exception:
+                pass  # best-effort, продолжаем
+
+            # Шаг 1: остановить все плееры (после ramp-down — без кликов)
             stop_code = "\n".join(
                 f"try:\n  {name}.stop()\nexcept Exception:\n  pass"
                 for name in player_names
@@ -770,7 +833,13 @@ class MusicManager:
                 # still need to reset our own lifecycle fields. Issue #935.
                 clock_error = f"Clock.clear() failed: {exc}"
 
-            # Шаг 3: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
+            # Шаг 3: ~50ms на release ADSR (issue #1000 anti-click)
+            try:
+                time.sleep(0.05)
+            except Exception:
+                pass
+
+            # Шаг 4: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
             osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:

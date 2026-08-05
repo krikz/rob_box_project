@@ -72,6 +72,16 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
       - degree lists: MAX 5 notes — [0,2,4,2,3] is enough, more is noise!
       - NEVER amp=1.0 — that's speaker-breaking clipping territory!
 
+🎲 RANDOMIZATION MANDATE (issue #1000 — DJ-сет ОДНООБРАЗНЫЙ без этого):
+   Каждый DJ-переход ОБЯЗАН отличаться от предыдущего минимум в 3 из 6 параметров:
+   1. BPM (Clock.bpm)             — rotate: 90/96/100/104/110/115/120/125/128/132/136/140/145
+   2. Root (Root.default)         — rotate: C/D/E/F/G/A/B (НЕ тот же что в прошлый раз!)
+   3. Scale (Scale.default)       — rotate: minor/dorian/mixolydian/lydian/phrygian/majorPentatonic
+   4. Bass synth                  — rotate: dub/wobblebass/fuzz/tb303/moogbass/retrobass/karp
+   5. Lead synth                  — rotate: blip/arpy/supersawlead/karp/sitar/cs80lead/varsaw/rave
+   6. Drum pattern (d1)           — rotate: "X...X..."/"X..X..o."/"X..X.X.." /"X.X.X.X."/etc
+   ❌ Если 3+ параметра совпадают с прошлым переходом — это ЗАПРЕЩЕНО (user жалуется «опять то же»).
+
 💡 DJ TRANSITION STRUCTURE (mandatory rules, examples vary every time!):
 🚨 LOG SHOWS 6+ IDENTICAL COPY-PASTE TRANSITIONS: BPM=125, F dorian, wobblebass+blip+ambi
    ❌ NEVER copy any example below verbatim — they show STRUCTURE only, NOT values to reuse!
