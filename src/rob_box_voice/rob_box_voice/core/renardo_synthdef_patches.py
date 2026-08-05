@@ -10,7 +10,7 @@ CONFLICT_BLOCK_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 
-BRASS_SYNTHDEF = """SynthDef.new(\\brass, {.
+BRASS_SYNTHDEF = """SynthDef.new(\\brass, {
         |vib=0, rate=0.3, sus=1, fmod=0, bus=0, atk=0.01, amp=1, freq=0, pan=0|
         var osc, env;
         freq = In.kr(bus, 1);
@@ -28,7 +28,7 @@ BRASS_SYNTHDEF = """SynthDef.new(\\brass, {.
 }).add;
 """
 
-ORGAN_SYNTHDEF = """SynthDef.new(\\organ, {.
+ORGAN_SYNTHDEF = """SynthDef.new(\\organ, {
         |vib=0, rate=0.3, sus=1, fmod=0, bus=0, atk=0.02, rel=0.18, amp=1, freq=0, pan=0|
         var osc, env, baseFreq, gate, width;
         baseFreq = Lag.kr(In.kr(bus, 1).max(20), 0.03);
@@ -47,7 +47,7 @@ ORGAN_SYNTHDEF = """SynthDef.new(\\organ, {.
         ReplaceOut.ar(bus, osc)
 }).add;
 """
-TB303_SYNTHDEF = """SynthDef.new(\\tb303, {.
+TB303_SYNTHDEF = """SynthDef.new(\\tb303, {
         |sus=0.08, dec=0.14, bus=0, atk=0.03, amp=1, freq=0, pan=0, cutoff=1400, rq=0.2, res=0.85, dist=0.18, wave=0|
         var baseFreq, osc, ampEnv, filtEnv, filtStart, filtPeak, cutoffBase;
         baseFreq = Lag.kr(In.kr(bus, 1).max(20), 0.01);
