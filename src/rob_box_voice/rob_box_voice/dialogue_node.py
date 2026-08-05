@@ -42,9 +42,12 @@ from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
 from rob_box_harness.memory import InMemoryStore, MemoryStore, SQLiteVoiceMemory
 from rob_box_harness.providers import (
+    DEFAULT_BASE_URL as MINIMAX_DEFAULT_BASE_URL,
+    DEFAULT_MODEL as MINIMAX_DEFAULT_MODEL,
     DEEPSEEK_DEFAULT_BASE_URL,
     DEEPSEEK_DEFAULT_MODEL,
     build_deepseek_provider,
+    build_minimax_provider,
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 
@@ -329,21 +332,29 @@ class DialogueNode(Node):
         provider_name = str(
             self.get_parameter("llm_provider").value or "deepseek"
         ).strip().lower()
-        if provider_name != "deepseek":
-            raise ValueError(
-                f"Unsupported llm_provider={provider_name!r}; "
-                "this dialogue shell currently supports only 'deepseek'"
-            )
 
         # Resolve the endpoint here instead of relying on SDK defaults.  This
         # makes the production route visible and testable at the ROS shell
         # boundary, where YAML parameters enter the application.
         base_url = str(self.get_parameter("base_url").value or "").strip()
         model = str(self.get_parameter("model").value or "").strip()
-        return build_deepseek_provider(
-            api_key=self.get_parameter("api_key").value or None,
-            base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
-            model=model or DEEPSEEK_DEFAULT_MODEL,
+
+        if provider_name == "minimax":
+            return build_minimax_provider(
+                api_key=self.get_parameter("api_key").value or None,
+                base_url=base_url or MINIMAX_DEFAULT_BASE_URL,
+                model=model or MINIMAX_DEFAULT_MODEL,
+            )
+        if provider_name == "deepseek":
+            return build_deepseek_provider(
+                api_key=self.get_parameter("api_key").value or None,
+                base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
+                model=model or DEEPSEEK_DEFAULT_MODEL,
+            )
+
+        raise ValueError(
+            f"Unsupported llm_provider={provider_name!r}; "
+            "supported: 'minimax', 'deepseek'"
         )
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``

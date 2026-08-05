@@ -74,7 +74,7 @@
 
     # ========== TTS Node ==========
     tts_node:
-      provider: "yandex"          # "yandex", "silero" или "minimax"
+      provider: "minimax"          # "yandex", "silero" или "minimax"
 
       # Параметры для кода (плоские, без вложенности)
       speaker: "aidar"            # Голоса Silero v5: aidar (М), baya (М), kseniya (Ж), xenia (Ж), eugene (М, NEW!)
@@ -168,11 +168,10 @@
       max_question_time: 20.0     # максимальное время накопления вопроса
 
       # LLM
-      # 2026-07-29: switched from mimo (budget exhausted) to deepseek
-      # NOTE: deepseek-chat is deprecated (2026-Q3). Use deepseek-v4-flash.
-      llm_provider: "deepseek"     # Supported provider for the W5 dialogue shell
-      base_url: "https://api.deepseek.com"
-      model: "deepseek-v4-flash"   # deepseek-chat is deprecated
+      # 2026-08-05: switched to MiniMax primary, DeepSeek fallback
+      llm_provider: "minimax"      # minimax | deepseek
+      base_url: "https://api.minimax.io/v1"
+      model: "MiniMax-M3"
       system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
 
       # История
