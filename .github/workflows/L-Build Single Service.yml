@@ -139,7 +139,6 @@ jobs:
                   BUILD_CONTEXT="docker/main/twist_mux"
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
                   ;;
-                  ;;
                 "ros2-control"|"ros2_control")
                   SERVICE_NAME="ros2_control"
                   IMAGE_NAME="ros2-control"
