@@ -44,6 +44,20 @@ class SpeakTextTool(MCPTool):
         self.batch_complete_pub = node.create_publisher(
             String, "/voice/tts/batch_complete", 10
         )
+        # Issue #992: a separate "batch registered" prelude so dialogue_node
+        # can learn about every in-flight batch_id BEFORE the first chunk
+        # finishes. This is required for multi-speak_text cycles — when the
+        # LLM fires two ``speak_text`` tool calls in one cycle, each call
+        # creates its own ``batch_id`` and produces its own
+        # ``/voice/tts/batch_complete``. Without the prelude, dialogue_node
+        # only discovers a batch via the first ``tts_finished`` for it,
+        # which means batch #1's ``batch_complete`` fires cleanup while
+        # batch #2 is still pending. The prelude lets dialogue_node register
+        # the batch up front so cleanup is held until the last batch
+        # completes. Payload: ``{"batch_id": str, "chunks_total": int}``.
+        self.batch_registered_pub = node.create_publisher(
+            String, "/voice/tts/batch_registered", 10
+        )
         # Трекер активных произношений: speech_id -> {batch_id, batch_total};
         # batch_total == 0 указывает на «одиночный» вызов (без split) —
         # в этом случае batch_complete публикуется после первого finished,
@@ -308,6 +322,29 @@ class SpeakTextTool(MCPTool):
         import time as _time
         batch_id = str(uuid.uuid4())
         chunks_total = len(chunks)
+
+        # Issue #992: announce the batch to dialogue_node BEFORE the first
+        # TTS request lands. dialogue_node needs to know how many
+        # ``batch_id``s are in flight so it can hold the music_cleanup
+        # until the last ``batch_complete`` (the LLM may fire several
+        # ``speak_text`` calls in one cycle, each with its own batch).
+        try:
+            from std_msgs.msg import String as _RegMsg
+            _reg_msg = _RegMsg()
+            _reg_msg.data = json.dumps(
+                {"batch_id": batch_id, "chunks_total": chunks_total},
+                ensure_ascii=False,
+            )
+            self.batch_registered_pub.publish(_reg_msg)
+        except Exception as _exc:  # noqa: BLE001
+            # Prelude is best-effort — without it dialogue_node falls back
+            # to discovering the batch via the first tts_finished, which
+            # is correct for single-speak_text cycles but breaks the
+            # multi-speak_text case. Log loudly so operators notice.
+            self.log_warning(
+                f"⚠️ [issue 992] Не удалось опубликовать "
+                f"/voice/tts/batch_registered: {_exc}"
+            )
 
         from std_msgs.msg import String
         speech_ids = []

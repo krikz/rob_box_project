@@ -138,6 +138,17 @@ class DialogueNode(Node):
             String, "/voice/tts/batch_complete",
             self._on_tts_batch_complete, 10,
             callback_group=cbg)
+        # Issue #992 — SpeakTextTool publishes this prelude BEFORE the first
+        # TTS request of each ``speak_text`` call so we can pre-register the
+        # ``batch_id``. Without it we only learn about a batch from the
+        # first ``tts_finished`` for that batch — which works for a single
+        # ``speak_text`` call but fails when the LLM fires two in a row:
+        # batch #1's ``batch_complete`` would fire cleanup while batch #2 is
+        # still pending. Payload: ``{"batch_id": str, "chunks_total": int}``.
+        self.create_subscription(
+            String, "/voice/tts/batch_registered",
+            self._on_tts_batch_registered, 10,
+            callback_group=cbg)
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10,
             callback_group=cbg)
@@ -145,15 +156,31 @@ class DialogueNode(Node):
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
 
-        # Deferred music cleanup (issue #935 v2 → #980): music should keep
-        # playing while TTS is still speaking (rap, poetry). Cleanup is now
-        # published strictly after the *last* TTS chunk finishes — see
-        # ``_on_tts_batch_complete``.
+        # Deferred music cleanup (issue #935 v2 → #980 → #992): music should
+        # keep playing while TTS is still speaking (rap, poetry). Cleanup is
+        # published strictly after the *last* TTS batch of a turn finishes
+        # — see ``_on_tts_batch_complete``.
+        #
+        # Issue #992: a single ``_pending_music_cleanup`` boolean is not
+        # enough when the LLM fires multiple ``speak_text`` tool calls
+        # in one cycle (each call is a separate ``batch_id`` and produces
+        # its own ``/voice/tts/batch_complete``). The first batch's
+        # completion used to wipe music while the second batch was still
+        # playing. ``_active_batches`` tracks every in-flight ``batch_id``
+        # so we only fire cleanup when the registry is empty AND the
+        # LLM actually asked to stop music.
         self._pending_music_cleanup: bool = False
+        self._active_batches: Dict[str, int] = {}
 
+        # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
+        # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
+        # sets ``is_dj_auto=True`` so the dispatcher skips
+        # ``_publish_music_cleanup(reason="new_dialogue")`` and the
+        # barge-in cancel that would otherwise wipe an in-flight
+        # track and feed the LLM an empty input.
         self._dj = DJModeController(
             hook=DJHook(
-                dispatch=self._dispatch_turn,
+                dispatch=self._dispatch_dj_turn,
                 is_active=lambda: (self._run_task is not None
                                    and not self._run_task.done()),
                 is_dialogue_active=lambda: self._dsm.current_state in (
@@ -417,22 +444,123 @@ class DialogueNode(Node):
         event of a multi-chunk turn cut the playback short (e.g. a 35 s rap
         only played 10 s). We now trigger cleanup exclusively from
         ``/voice/tts/batch_complete`` which fires once after the last chunk.
+
+        Issue #992: register the in-flight ``batch_id`` here (idempotent) so
+        ``_on_tts_batch_complete`` can know which batches are still active
+        when the LLM fires multiple ``speak_text`` calls in one cycle. The
+        first chunk of each batch is enough to register — subsequent chunks
+        are no-ops because ``batch_id`` is already in ``_active_batches``.
         """
         self._effects.handle_tts_finished(msg.data or "")
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        batch_id = payload.get("batch_id")
+        batch_total = payload.get("batch_total")
+        if batch_id is None or batch_total is None:
+            return
+        try:
+            self._register_active_batch(str(batch_id), int(batch_total))
+        except (TypeError, ValueError):
+            # Defensive: malformed batch metadata must not break the
+            # awaiter-release path or the batch tracking.
+            self.get_logger().debug(
+                f"⚠️ [issue 992] Skipping batch registration: "
+                f"batch_id={batch_id!r}, batch_total={batch_total!r}"
+            )
+
+    def _on_tts_batch_registered(self, msg: String) -> None:
+        """Pre-register an in-flight TTS batch (issue #992).
+
+        SpeakTextTool publishes this BEFORE the first ``/voice/tts/request``
+        of each ``speak_text`` call so we can lock the batch_id into
+        ``_active_batches`` up front. This is what makes multi-speak_text
+        cycles work: each ``speak_text`` registers its own batch, the last
+        ``batch_complete`` unregisters the last one, and only then do we
+        fire ``/mcp/music_cleanup``.
+
+        The registry is also updated by ``_on_tts_finished`` as a
+        fallback — this prelude just makes registration *eager* so
+        cleanup is correctly held across multiple batches.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        batch_id = payload.get("batch_id")
+        chunks_total = payload.get("chunks_total")
+        if batch_id is None or chunks_total is None:
+            return
+        try:
+            self._register_active_batch(str(batch_id), int(chunks_total))
+        except (TypeError, ValueError):
+            self.get_logger().debug(
+                f"⚠️ [issue 992] Skipping batch_registered: "
+                f"batch_id={batch_id!r}, chunks_total={chunks_total!r}"
+            )
+
+    def _register_active_batch(self, batch_id: str, chunks_total: int) -> None:
+        """Track an in-flight TTS batch for music-cleanup gating (issue #992).
+
+        Idempotent: re-registering an already-known ``batch_id`` is a no-op
+        so the second/third chunk's ``tts_finished`` doesn't double-count.
+        """
+        if batch_id in self._active_batches:
+            return
+        self._active_batches[batch_id] = chunks_total
+        self.get_logger().debug(
+            f"🎵 [issue 992] Registered active batch {batch_id[:8]}... "
+            f"(chunks_total={chunks_total}, "
+            f"now active={len(self._active_batches)})"
+        )
+
+    def _unregister_active_batch(self, batch_id: str) -> None:
+        """Drop a batch from the in-flight registry (issue #992)."""
+        removed = self._active_batches.pop(batch_id, None)
+        if removed is None:
+            return
+        self.get_logger().debug(
+            f"🎵 [issue 992] Unregistered batch {batch_id[:8]}... "
+            f"(remaining={len(self._active_batches)})"
+        )
+
     def _on_tts_batch_complete(self, msg: String) -> None:
-        """Fire ``music_cleanup`` once a full TTS batch has finished (issue #980).
+        """Fire ``music_cleanup`` once *all* TTS batches have finished (issue #992).
 
         ``tts_node`` publishes this after the chunk whose ``batch_index ==
         batch_total`` lands on ``/voice/tts/finished`` (success *or* failure).
         Single-chunk turns still produce exactly one ``batch_complete`` so the
         previous behaviour is preserved.
+
+        Issue #992: when the LLM calls ``speak_text`` more than once in a
+        single cycle, each call creates a *separate* ``batch_id`` and
+        therefore a *separate* ``/voice/tts/batch_complete`` event. The
+        previous implementation fired ``/mcp/music_cleanup`` on the first
+        event, which cut music off while the second batch was still
+        playing. We now unregister the completed batch from
+        ``_active_batches`` and only fire cleanup when the registry is
+        empty AND ``_pending_music_cleanup`` is set.
         """
         try:
             payload = json.loads(msg.data or "{}")
         except (json.JSONDecodeError, TypeError):
             payload = {}
+        batch_id_raw = payload.get("batch_id")
         chunks_total = payload.get("chunks_total")
-        batch_duration_ms = payload.get("batch_duration_ms")
+        batch_id = str(batch_id_raw) if batch_id_raw is not None else None
+        if batch_id is not None:
+            self._unregister_active_batch(batch_id)
+        if self._active_batches:
+            # At least one batch is still in flight — hold the cleanup
+            # until that one (and any others) finish too.
+            self.get_logger().debug(
+                f"🎵 [issue 992] batch_complete for "
+                f"{batch_id[:8] if batch_id else 'None'}... but "
+                f"{len(self._active_batches)} batch(es) still active — "
+                f"deferring music_cleanup"
+            )
+            return
         if not self._pending_music_cleanup:
             self.get_logger().debug(
                 "tts_batch_complete received but no pending music_cleanup"
@@ -442,13 +570,44 @@ class DialogueNode(Node):
         self._publish_music_cleanup(reason="tts_batch_complete")
         self.get_logger().info(
             "🎵 tts_batch_complete fired music_cleanup "
-            f"(chunks_total={chunks_total}, batch_duration_ms={batch_duration_ms})"
+            f"(chunks_total={chunks_total}, last_batch={batch_id[:8] if batch_id else 'None'}...)"
         )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
-    def _dispatch_turn(self, user_input: str) -> None:
-        # Stop music from previous dialogue before starting new one
-        if self._pending_music_cleanup:
+    def _dispatch_dj_turn(self, user_input: str) -> None:
+        """Issue #992 Bug A — DJ auto-transition dispatcher.
+
+        Behaves like :meth:`_dispatch_turn` but:
+
+        * does NOT publish ``music_cleanup`` with ``reason="new_dialogue"`` —
+          a DJ tick is an autonomous transition, not a fresh user dialogue.
+          Wiping the active track on every transition would either cut the
+          music mid-phrase (no execute_music_code in this cycle) or feed
+          the LLM an empty input and trip the
+          "Что-то я задумался, повтори пожалуйста" fallback.
+        * does NOT cancel an in-flight ``_run_task`` — DJ transitions
+          compose with the existing DJ cycle instead of barging in. If
+          the current task is still running (e.g. the previous DJ turn's
+          LLM call hasn't returned yet) we simply queue the next tick;
+          :meth:`DJModeController.tick` already defers by 15 s when a
+          dialogue is active, so collisions are rare and safe.
+        """
+        self._dispatch_turn(user_input, is_dj_auto=True)
+
+    def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False) -> None:
+        # Issue #992 Bug A — DJ auto-transitions must NOT publish
+        # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
+        # guard the LLM cycle is reset mid-track, which in turn trips the
+        # empty-assistant fallback ("Что-то я задумался, повтори
+        # пожалуйста") and makes the robot sound broken during a DJ
+        # session. Bug C guards against the complementary failure mode
+        # (LLM skips execute_music_code).
+        if is_dj_auto:
+            self.get_logger().debug(
+                "🎧 [issue 992] DJ auto-transition — skipping "
+                "new_dialogue music_cleanup"
+            )
+        elif self._pending_music_cleanup:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         asyncio.run_coroutine_threadsafe(self._run_turn(user_input), self._loop)
@@ -470,16 +629,32 @@ class DialogueNode(Node):
                 self._run_task = None
             # Issue #935 v3: if LLM called stop_music(), defer cleanup until
             # TTS finishes.  Otherwise keep music playing until next dialogue.
+            # Issue #992: a second stop_music() call from a follow-up LLM
+            # turn (while a previous cleanup is still pending) must be
+            # ignored — the flag is already set and the next batch_complete
+            # for any active batch will fire cleanup.
             if result and "stop_music" in (result.tools_called or ()):
-                self._pending_music_cleanup = True
-                self.get_logger().info(
-                    "🎵 stop_music deferred — will cleanup after TTS finishes"
-                )
+                if self._pending_music_cleanup:
+                    self.get_logger().debug(
+                        "🎵 [issue 992] stop_music deferred — already pending, "
+                        "ignoring duplicate"
+                    )
+                else:
+                    self._pending_music_cleanup = True
+                    self.get_logger().info(
+                        "🎵 stop_music deferred — will cleanup after TTS finishes"
+                    )
             else:
-                self._pending_music_cleanup = True
-                self.get_logger().info(
-                    "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
-                )
+                if not self._pending_music_cleanup:
+                    self._pending_music_cleanup = True
+                    self.get_logger().info(
+                        "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
+                    )
+                else:
+                    self.get_logger().debug(
+                        "🎵 [issue 992] music_cleanup already pending — "
+                        "ignoring redundant re-arm"
+                    )
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             # DialogCore completes the DIALOGUE → IDLE transition itself.
@@ -560,11 +735,18 @@ class DialogueNode(Node):
         and ``batch_total`` counters. ``tts_node`` echoes those fields on
         ``/voice/tts/finished`` and publishes ``/voice/tts/batch_complete``
         after the final chunk. Returns the number of chunks published.
+
+        Issue #992: the batch is registered eagerly on the dialogue_node
+        side so the music-cleanup gate knows about it even if the first
+        ``/voice/tts/finished`` event is lost (e.g. dropped subscription
+        edge case). The registry is idempotent so the matching
+        ``_on_tts_finished`` registration is a safe no-op.
         """
         if not chunks:
             return 0
         batch_id = str(uuid.uuid4())
         total = len(chunks)
+        self._register_active_batch(batch_id, total)
         for idx, chunk in enumerate(chunks, start=1):
             msg = String()
             msg.data = build_ssml_payload(
