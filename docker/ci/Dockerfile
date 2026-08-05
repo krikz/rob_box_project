@@ -19,11 +19,16 @@ FROM ubuntu:22.04
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-# ── Locale ─────────────────────────────────────────────────────────────
+# ── Locale & timezone (non-interactive) ─────────────────────────────────
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends locales && \
+    apt-get install -y --no-install-recommends locales tzdata && \
     locale-gen en_US.UTF-8 && \
-    update-locale LANG=en_US.UTF-8
+    update-locale LANG=en_US.UTF-8 && \
+    ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
