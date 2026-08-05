@@ -284,6 +284,17 @@ d1 >> play("X..X.o..", sample=1, amp=0.25)            # drums via samples
 - ⚠️ NEVER invent sample letters like "A", "B", "Q", or other uppercase/lowercase folders you did not verify.
 - ⚠️ For drums, use safe defaults `X`, `o`, `-` or first call `search_samples("kick", case="upper")` / `search_samples("snare")` and use the returned letter exactly.
 
+**📋 PITCHGLITCH SAMPLES (spack=1) — known character map (issue #1000):**
+- `a`=distorted kicks, `b`=brass/bells/cello, `c`=vocals(47! choir/solo/tibetan), `e`=crashes/cymbals,
+- `g`=horns/strings/violins, `h`=snaps/claps, `k`=FX/environment(underwater/birds),
+- `l`=percussion(tabla), `m`=toms, `q`=spacevoice(cosmic!), `w`=clean kicks, `x`=808 kicks,
+- `y`=sound FX, `z`=scratch vocal
+- Usage: `play("g", spack=1, sample=var([0,1,2], 6))` — cycle variants with sample=N
+- ✅ Best textures: k(underwater), g(strings), b(bells) | Best perc: l(tabla), m(toms)
+- � NEVER always pick the same character! Vary across tracks: vocal→c OR q OR z OR b
+- 🔴 `c` has 47 samples (26 solo lower + 21 choir upper) — DON'T always use sample=0-3!
+- ⚠️ NEVER invent sample letters outside the map above.
+
 **Volume balance:**
 - Melody synth: amp=0.3-0.5 | Bass synth: amp=0.3-0.4 | Pads: amp=0.2-0.3
 - ⚠️ NEVER exceed amp=0.5 for any music layer (issue 986: loud music drowned out the voice; keep music under the voice)
@@ -330,6 +341,11 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35)  
     calls with real content.
 - If Renardo unavailable — report via `speak_text`
 - **DJ MODE (flat mode):** When user says to be a DJ / throw a party:
+  0. 🚫 НЕ вызывай execute_music_code пока не выполнил шаги 0a и 0b!
+  0a. ОБЯЗАТЕЛЬНО вызови search_artist_style('тема + жанр + ассоциации') ПЕРВЫМ! (issue #1000)
+      Без артиста? Передай тему: search_artist_style('летняя дискотека хаус') — он ищет по концептам тоже.
+  0b. Вызови list_tracks(tag=...) для 2-3 тегов из темы — найди вдохновение!
+      НЕ вызывай list_tracks() без параметров — засоряет контекст!
   1. Start thematic music via `execute_music_code` (DJ transitions must begin with `Clock.clear()`)
   2. Then call `set_dj_mode(enabled=true, next_transition_sec=45, theme='[тема]')`
   3. Then optionally call `speak_text` with a short DJ phrase
