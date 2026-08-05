@@ -16,17 +16,26 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Generate launch description для Voice Assistant."""
+    """Generate launch description для Voice Assistant.
+
+    Issue #1004 fix (ADR-0004): per-node YAML files вместо одного
+    монолитного ``voice_assistant.yaml``. Раньше каждый Node грузил общий
+    YAML, и вложенные блоки ``dialogue_node:`` / ``tts_node:`` создавали
+    dotted-параметры ``dialogue_node.llm_provider``, которые нода
+    ``get_parameter("llm_provider")`` НЕ читала — параметр всегда был
+    default. Теперь каждый Node грузит СВОЙ per-node файл
+    (src/rob_box_voice/config/<node>.yaml), и ``get_parameter("foo")``
+    находит foo напрямую.
+    """
 
     # Аргументы
-    config_file_arg = DeclareLaunchArgument(
-        'config_file',
+    config_dir_arg = DeclareLaunchArgument(
+        'config_dir',
         default_value=PathJoinSubstitution([
             FindPackageShare('rob_box_voice'),
             'config',
-            'voice_assistant.yaml'
         ]),
-        description='Path to voice assistant config YAML'
+        description='Directory with per-node ROS2 config YAMLs'
     )
 
     namespace_arg = DeclareLaunchArgument(
@@ -48,8 +57,8 @@ def generate_launch_description():
     # production path (LLMToolCallAdapter → ROSMCPToolProvider with the
     # 34-manifest ToolRegistry). ``fake`` swaps in FakeToolProvider for
     # smoke tests; ``none`` disables tools entirely (chat-only deploy).
-    # The operator can also flip this in voice_assistant.yaml's
-    # ``dialogue_node.tool_provider`` key without re-launching the stack.
+    # The operator can also flip this in dialogue_node.yaml's
+    # ``tool_provider`` key without re-launching the stack.
     tool_provider_arg = DeclareLaunchArgument(
         'tool_provider',
         default_value='ros_mcp',
@@ -58,8 +67,17 @@ def generate_launch_description():
     )
 
     # Конфигурация
-    config_file = LaunchConfiguration('config_file')
+    config_dir = LaunchConfiguration('config_dir')
     namespace = LaunchConfiguration('namespace')
+
+    # Per-node config paths (issue #1004 fix).
+    audio_node_yaml = PathJoinSubstitution([config_dir, 'audio_node.yaml'])
+    stt_node_yaml = PathJoinSubstitution([config_dir, 'stt_node.yaml'])
+    tts_node_yaml = PathJoinSubstitution([config_dir, 'tts_node.yaml'])
+    dialogue_node_yaml = PathJoinSubstitution([config_dir, 'dialogue_node.yaml'])
+    sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
+    led_node_yaml = PathJoinSubstitution([config_dir, 'led_node.yaml'])
+    command_node_yaml = PathJoinSubstitution([config_dir, 'command_node.yaml'])
 
     # === Audio Node ===
     audio_node = Node(
@@ -67,7 +85,7 @@ def generate_launch_description():
         executable='audio_node',
         name='audio_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[audio_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -80,7 +98,7 @@ def generate_launch_description():
         executable='led_node',
         name='led_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[led_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=2.0,
@@ -104,13 +122,15 @@ def generate_launch_description():
     )
 
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
+    # Issue #1004: dialog_node.yaml грузится первым, потом launch-override
+    # tool_provider (W5a) — чтобы можно было переключать без правки YAML.
     dialogue_node = Node(
         package='rob_box_voice',
         executable='dialogue_node',
         name='dialogue_node',
         namespace=namespace,
         parameters=[
-            config_file,
+            dialogue_node_yaml,
             {'tool_provider': LaunchConfiguration('tool_provider')},
         ],
         output='screen',
@@ -120,12 +140,14 @@ def generate_launch_description():
     )
 
     # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
+    # Issue #1004: tts_node.yaml первым, launch-override provider — чтобы
+    # переключать TTS провайдера одной строкой без правки YAML.
     tts_node = Node(
         package='rob_box_voice',
         executable='tts_node',
         name='tts_node',
         namespace=namespace,
-        parameters=[config_file, {'provider': LaunchConfiguration('provider')}],
+        parameters=[tts_node_yaml, {'provider': LaunchConfiguration('provider')}],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -138,7 +160,7 @@ def generate_launch_description():
         executable='stt_node',
         name='stt_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[stt_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -151,7 +173,7 @@ def generate_launch_description():
         executable='sound_node',
         name='sound_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[sound_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=3.0,
@@ -164,7 +186,7 @@ def generate_launch_description():
         executable='command_node',
         name='command_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[command_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -226,7 +248,7 @@ def generate_launch_description():
     # )
 
     return LaunchDescription([
-        config_file_arg,
+        config_dir_arg,
         namespace_arg,
         provider_arg,
         tool_provider_arg,

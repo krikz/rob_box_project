@@ -2,6 +2,13 @@
 """
 Headless Voice Assistant Launch для Vision Pi
 Включает animation_player_node для LED анимаций
+
+Issue #1004 fix (ADR-0004): каждый Node грузит СВОЙ per-node YAML
+(audio_node.yaml / tts_node.yaml / ...) из src/rob_box_voice/config/,
+а не общий docker/vision/config/voice_assistant/voice_assistant.yaml.
+Докер-сборка копирует src/config/<node>.yaml в
+install/rob_box_voice/share/rob_box_voice/config/<node>.yaml, поэтому
+FindPackageShare('rob_box_voice').config отдаёт правильный путь.
 """
 
 from launch import LaunchDescription
@@ -15,14 +22,13 @@ def generate_launch_description():
     """Generate launch description для Voice Assistant (headless)"""
 
     # Аргументы
-    config_file_arg = DeclareLaunchArgument(
-        'config_file',
+    config_dir_arg = DeclareLaunchArgument(
+        'config_dir',
         default_value=PathJoinSubstitution([
             FindPackageShare('rob_box_voice'),
             'config',
-            'voice_assistant.yaml'
         ]),
-        description='Path to voice assistant config YAML'
+        description='Directory with per-node ROS2 config YAMLs'
     )
 
     namespace_arg = DeclareLaunchArgument(
@@ -32,8 +38,17 @@ def generate_launch_description():
     )
 
     # Конфигурация
-    config_file = LaunchConfiguration('config_file')
+    config_dir = LaunchConfiguration('config_dir')
     namespace = LaunchConfiguration('namespace')
+
+    # Per-node config paths (issue #1004 fix).
+    audio_node_yaml = PathJoinSubstitution([config_dir, 'audio_node.yaml'])
+    led_node_yaml = PathJoinSubstitution([config_dir, 'led_node.yaml'])
+    dialogue_node_yaml = PathJoinSubstitution([config_dir, 'dialogue_node.yaml'])
+    tts_node_yaml = PathJoinSubstitution([config_dir, 'tts_node.yaml'])
+    stt_node_yaml = PathJoinSubstitution([config_dir, 'stt_node.yaml'])
+    sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
+    command_node_yaml = PathJoinSubstitution([config_dir, 'command_node.yaml'])
 
     # === Audio Node ===
     audio_node = Node(
@@ -41,7 +56,7 @@ def generate_launch_description():
         executable='audio_node',
         name='audio_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[audio_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -54,7 +69,7 @@ def generate_launch_description():
         executable='led_node',
         name='led_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[led_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=2.0,
@@ -84,7 +99,7 @@ def generate_launch_description():
         executable='dialogue_node',
         name='dialogue_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[dialogue_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -97,7 +112,7 @@ def generate_launch_description():
         executable='tts_node',
         name='tts_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[tts_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -110,7 +125,7 @@ def generate_launch_description():
         executable='stt_node',
         name='stt_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[stt_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -123,7 +138,7 @@ def generate_launch_description():
         executable='sound_node',
         name='sound_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[sound_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=3.0,
@@ -136,7 +151,7 @@ def generate_launch_description():
         executable='command_node',
         name='command_node',
         namespace=namespace,
-        parameters=[config_file],
+        parameters=[command_node_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -156,7 +171,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        config_file_arg,
+        config_dir_arg,
         namespace_arg,
         audio_node,
         led_node,
