@@ -118,6 +118,12 @@ class DJModeController:
         self.state.theme = ""
         self.state.set_plan = ""
         self.state.persona = ""
+        # 🔴 FIX (live 11:46): без этого enabled оставался True после
+        # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
+        # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
+        # остановки (бесконечность). enabled=False — единственный
+        # надёжный выключатель: tick() сразу возвращается.
+        self.state.enabled = False
         self._logger.info("🎧 DJ Mode OFF")
 
     # ── Tick ────────────────────────────────────────────────────────
