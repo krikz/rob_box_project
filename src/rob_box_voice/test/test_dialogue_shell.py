@@ -312,10 +312,9 @@ class _TestableDialogueNode(DialogueNode):
         ``ThreadPoolExecutor``. For tests we own the loop, so we just
         create the task and let ``drive_one_turn`` run it.
 
-        ``is_dj_auto`` matches the production signature so DJ-mode
-        tests (issue #992 Bug A) can exercise the same code path the
-        shell uses in production. The flag is honoured by the parent's
-        ``_run_turn`` / ``_apply_music_guard``.
+        ``is_dj_auto`` is forwarded to the scheduled ``_run_turn`` so
+        the post-turn guard sees the same ``was_dj_auto`` value the
+        production shell would (issue #992 Bug B / Bug C).
 
         We mirror the production ``new_dialogue`` cleanup branch so
         issue #992 Bug A regression suites can observe the publish:
@@ -333,7 +332,9 @@ class _TestableDialogueNode(DialogueNode):
         elif self._pending_music_cleanup:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
-        self._run_task = self._test_loop.create_task(self._run_turn(user_input))
+        self._run_task = self._test_loop.create_task(
+            self._run_turn(user_input, is_dj_auto=is_dj_auto),
+        )
 
     # ── Async helpers used by the tests ──────────────────────────────
 

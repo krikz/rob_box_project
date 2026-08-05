@@ -172,13 +172,6 @@ class DialogueNode(Node):
         # LLM actually asked to stop music.
         self._pending_music_cleanup: bool = False
         self._active_batches: Dict[str, int] = {}
-        # Issue #992 Bug B / Bug C — track whether the currently
-        # in-flight turn was dispatched by the DJ auto-transition
-        # timer (set by ``_dispatch_dj_turn``, consumed and reset by
-        # ``_run_turn``). When the LLM skips ``execute_music_code`` we
-        # use this flag to decide whether to retry the auto-prompt
-        # synchronously instead of waiting for the next 5 s tick.
-        self._current_turn_is_dj_auto: bool = False
         # Issue #992 Bug B — how many synchronous DJ retries have
         # already fired in the current transition. Caps the retry
         # loop so a stubborn LLM that keeps ignoring
@@ -607,8 +600,14 @@ class DialogueNode(Node):
           LLM call hasn't returned yet) we simply queue the next tick;
           :meth:`DJModeController.tick` already defers by 15 s when a
           dialogue is active, so collisions are rare and safe.
-        * flips ``self._current_turn_is_dj_auto`` so :meth:`_run_turn`
-          can apply DJ-specific post-turn guards (Bug B + Bug C).
+        * forwards ``is_dj_auto=True`` so :meth:`_run_turn` applies
+          DJ-specific post-turn guards (Bug B + Bug C). The DJ flag is
+          threaded through the parameter rather than stored on ``self``
+          to avoid a race where :meth:`_apply_music_guard`'s synchronous
+          retry is dispatched *before* the next turn's ``_run_turn`` reads
+          the flag — without this, a retry launched from inside the
+          ``finally`` block would observe the parent's already-cleared
+          flag and silently lose the ``was_dj_auto=True`` semantics.
 
         ``from_tick`` distinguishes a fresh tick transition (resets the
         Bug-B retry budget) from a synchronous retry triggered by the
@@ -616,17 +615,7 @@ class DialogueNode(Node):
         """
         if from_tick:
             self._dj_auto_retry_count = 0
-        self._current_turn_is_dj_auto = True
-        try:
-            self._dispatch_turn(user_input, is_dj_auto=True)
-        finally:
-            # ``_dispatch_turn`` schedules the coroutine on the asyncio
-            # loop and returns immediately, so the flag must stay set
-            # until the task finishes — reset it from ``_run_turn``
-            # instead. We keep a separate path here so the assertion
-            # below catches any future call site that forgets to clear
-            # the flag.
-            assert self._current_turn_is_dj_auto is True
+        self._dispatch_turn(user_input, is_dj_auto=True)
 
     def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
@@ -644,13 +633,19 @@ class DialogueNode(Node):
         elif self._pending_music_cleanup:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
-        asyncio.run_coroutine_threadsafe(self._run_turn(user_input), self._loop)
+        asyncio.run_coroutine_threadsafe(
+            self._run_turn(user_input, is_dj_auto=is_dj_auto), self._loop,
+        )
 
-    async def _run_turn(self, user_input: str) -> None:
+    async def _run_turn(self, user_input: str, *, is_dj_auto: bool = False) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
-        was_dj_auto = self._current_turn_is_dj_auto
+        # Issue #992 Bug B / Bug C — ``is_dj_auto`` is threaded through
+        # ``_dispatch_turn`` rather than read from ``self`` so a
+        # synchronous DJ retry dispatched from inside this turn's
+        # ``finally`` block does not race with the parent's flag reset.
+        was_dj_auto = is_dj_auto
         try:
             # Issue #992 — DJ auto-turns must bypass the wake-word
             # classifier so the LLM is actually called. The DJ prompt
@@ -713,16 +708,17 @@ class DialogueNode(Node):
             # earlier DIALOGUE notification and scenario runners wait forever.
             self._publish_state()
             # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
-            try:
-                self._apply_music_guard(
-                    was_dj_auto=was_dj_auto,
-                    user_input=user_input,
-                    tools_called=result.tools_called if result else (),
-                )
-            finally:
-                # Reset the DJ flag regardless of branch — it must only
-                # affect a single in-flight turn.
-                self._current_turn_is_dj_auto = False
+            # ``is_dj_auto`` was threaded through the dispatch path so no
+            # shared flag needs to be cleared here. The guard may
+            # synchronously dispatch a follow-up DJ turn while we are
+            # still inside this turn's ``finally``; that is intentional —
+            # ``drive_one_turn`` (and any production loop) drains the
+            # retry as part of this very turn cycle.
+            self._apply_music_guard(
+                was_dj_auto=was_dj_auto,
+                user_input=user_input,
+                tools_called=result.tools_called if result else (),
+            )
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 
