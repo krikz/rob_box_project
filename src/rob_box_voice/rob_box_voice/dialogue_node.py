@@ -491,6 +491,28 @@ class DialogueNode(Node):
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
         spoken = strip_history_marker(result.spoken_text or "")
+        tools_called = tuple(result.tools_called or ())
+        # Issue #988 — anti-duplicate: when the LLM already called
+        # ``speak_text`` during this cycle, the answer (song / poem /
+        # phrase) was voiced directly by the MCP tool via
+        # ``/voice/tts/request``. Auto-voicing ``result.spoken_text``
+        # here would play the same content a second time (E2E v44:
+        # песня читается дважды). Per the master-prompt contract the
+        # final text after the LAST speak_text is expected to be "done"
+        # (or empty), so we skip the TTS publish entirely and only log
+        # the LLM output for debugging.
+        if "speak_text" in tools_called:
+            if self._verbose_llm:
+                self.get_logger().info(
+                    f"🔇 [issue 988] speak_text called in cycle — "
+                    f"skipping auto-TTS of final text: {spoken[:200]!r}"
+                )
+            else:
+                self.get_logger().info(
+                    f"🔇 [issue 988] speak_text called — final text skipped "
+                    f"(anti-duplicate): {spoken[:80]!r}"
+                )
+            return
         if not spoken:
             self.get_logger().warning("⚠️ Empty assistant response — fallback")
             spoken = "Что-то я задумался, повтори пожалуйста"
