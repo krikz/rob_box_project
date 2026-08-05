@@ -77,6 +77,9 @@ from typing import Any, Dict, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
 
+# Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
+from .core.speak_helpers import strip_markdown
+
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
 # into ROS-ready int16 LE PCM. Imported independently from the optional MiniMax
 # provider so conversion utilities remain available even when rob_box_llm is not.
@@ -972,12 +975,20 @@ class TTSNode(Node):
             self.get_logger().error(f"❌ TTS error: {e}")
 
     def _extract_text_from_ssml(self, ssml: str) -> str:
-        """Извлекает текст из SSML тегов."""
+        """Извлекает текст из SSML тегов и чистит markdown (issue #988).
+
+        The LLM often wraps poems / rap in Markdown (``*Жил да был енот
+        весёлый,*``); TTS would read the literal ``*`` as «звёздочка».
+        Strip the markers here — this is the single chokepoint through
+        which *all* TTS requests pass (``/voice/dialogue/response`` from
+        dialogue_node AND ``/voice/tts/request`` from the ``speak_text``
+        MCP tool), so both voice paths get the same sanitisation.
+        """
         import re
 
         # Убираем все XML теги
         text = re.sub(r"<[^>]+>", "", ssml)
-        return text.strip()
+        return strip_markdown(text).strip()
 
     def _parse_ssml_attributes(self, ssml: str) -> dict:
         """

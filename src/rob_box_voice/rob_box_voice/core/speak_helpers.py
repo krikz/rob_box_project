@@ -38,6 +38,62 @@ def strip_history_marker(text: str) -> str:
     return _HISTORY_MARKER_RE.sub("", text).strip()
 
 
+#: Regexes applied by :func:`strip_markdown` in order. Each tuple is
+#: ``(compiled_pattern, replacement)``. The emphasis patterns intentionally
+#: require *paired* delimiters so a lone ``*`` or ``_`` (e.g. ``2 * 3``,
+#: ``под_черкивание``) survives untouched.
+_MARKDOWN_STRIP_RULES: List[tuple] = [
+    # Inline code spans: `code` → code
+    (re.compile(r"`([^`]*)`"), r"\1"),
+    # Bold / italic: **text** → text, *text* → text
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),
+    (re.compile(r"\*([^*]+)\*"), r"\1"),
+    # __bold__ / _italic_
+    (re.compile(r"__([^_]+)__"), r"\1"),
+    (re.compile(r"_([^_]+)_"), r"\1"),
+    # Strikethrough: ~~text~~ → text
+    (re.compile(r"~~([^~]+)~~"), r"\1"),
+    # Headings at line start: # text / ## text → text
+    (re.compile(r"(?m)^[#]{1,6}\s*"), ""),
+    # Blockquote at line start: > text → text
+    (re.compile(r"(?m)^\s*>\s?"), ""),
+    # List markers at line start: - text, * text, + text, 1. text → text
+    (re.compile(r"(?m)^\s*[-*+]\s+"), ""),
+    (re.compile(r"(?m)^\s*\d+\.\s+"), ""),
+    # Links: [text](url) → text
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),
+]
+
+
+def strip_markdown(text: str) -> str:
+    """Strip common Markdown formatting before TTS synthesis (issue #988).
+
+    The LLM frequently wraps poems / rap / emphasis in Markdown
+    (``*Жил да был енот весёлый,*``). TTS engines read the literal
+    ``*`` as «звёздочка», producing «звёздочка звёздочка лалала».
+    This strips the *markers* while keeping the words, so the robot
+    sings the song instead of spelling out punctuation.
+
+    Rules are intentionally conservative:
+
+    * emphasis markers (``**`` / ``*`` / ``__`` / ``_``) are removed
+      only in *pairs* — a single ``*`` (multiplication) or ``_``
+      (underscore inside a word) is left alone;
+    * ``#`` headings, ``>`` blockquotes and list bullets are removed
+      only at the start of a line;
+    * inline code spans (`` ` ``) and links (``[text](url)``) keep the
+      visible text.
+
+    Returns the cleaned text; non-string input is returned as-is.
+    """
+    if not isinstance(text, str):
+        return text
+    for pattern, repl in _MARKDOWN_STRIP_RULES:
+        text = pattern.sub(repl, text)
+    return text.strip()
+
+
+
 def split_into_chunks(text: str, max_len: int = 200) -> List[str]:
     """Sentence-aware splitter — keeps TTS requests under the SSML limit."""
     raw = re.split(r"(?<=[.!?;])\s+", text.strip())
@@ -200,6 +256,7 @@ class EffectAwaiterRegistry:
 
 __all__ = [
     "strip_history_marker",
+    "strip_markdown",
     "split_into_chunks",
     "build_ssml_payload",
     "EffectAwaiterRegistry",
