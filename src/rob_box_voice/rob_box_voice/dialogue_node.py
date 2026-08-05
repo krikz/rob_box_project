@@ -53,7 +53,7 @@ from rob_box_voice.core.dialogue_text import (
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
-    strip_history_marker,
+    strip_history_marker, strip_markdown,
 )
 
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
@@ -491,6 +491,13 @@ class DialogueNode(Node):
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
         spoken = strip_history_marker(result.spoken_text or "")
+        # Issue #988 (code part): strip Markdown BEFORE chunking. Chunking
+        # splits on punctuation, which can cut a paired "*...*" in half;
+        # strip_markdown in tts_node only removes *paired* delimiters, so a
+        # lone "*" survives and TTS reads it as «звёздочка». Sanitising here
+        # (before split_into_chunks) fixes that. Applies to the auto-voice
+        # path AND the speak_text path (which also passes through chunking).
+        spoken = strip_markdown(spoken)
         tools_called = tuple(result.tools_called or ())
         # Issue #988 — anti-duplicate: when the LLM already called
         # ``speak_text`` during this cycle, the answer (song / poem /
