@@ -734,9 +734,9 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 ok=False, provider=self.name, reason="MINIMAX_API_KEY missing"
             )
         if not self._group_id:
-            return TTSHealth(
-                ok=False, provider=self.name, reason="MINIMAX_GROUP_ID missing"
-            )
+            # GroupId опционален (api.minimax.io international) — не считаем
+            # отсутствие group_id ошибкой готовности.
+            pass
         return TTSHealth(ok=True, provider=self.name)
 
     def _http_client_factory(self) -> httpx.AsyncClient:
@@ -818,11 +818,13 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         }
 
     def _params(self) -> dict[str, str]:
+        # 🔴 FIX (live 15:0x): GroupId ОПЦИОНАЛЕН на международном
+        # api.minimax.io — тест БЕЗ GroupId вернул аудио (base64 MP3),
+        # с пустым GroupId — «insufficient balance». Раньше код падал
+        # с TTSAuthError при отсутствии MINIMAX_GROUP_ID → TTS молчал.
+        # Теперь: если group_id нет — просто не передаём параметр.
         if not self._group_id:
-            raise TTSAuthError(
-                "MINIMAX_GROUP_ID is not configured (set env or pass group_id=)",
-                provider=self.name,
-            )
+            return {}
         return {"GroupId": self._group_id}
 
     async def _post(self, payload: Mapping[str, Any]) -> dict[str, Any]:

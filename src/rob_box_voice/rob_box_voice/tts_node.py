@@ -1896,10 +1896,12 @@ class TTSNode(Node):
                 "rob_box_llm недоступен — MiniMaxTTSProvider не импортирован. "
                 "Соберите rob_box_llm или вернитесь к provider=yandex."
             )
-        if not self.minimax_api_key or not self.minimax_group_id:
+        if not self.minimax_api_key:
+            # GroupId опционален (api.minimax.io international) — ключ
+            # обязателен, группа нет.
             raise MiniMaxTTSAuthError(
-                "MINIMAX_API_KEY/MINIMAX_GROUP_ID не заданы. "
-                "Установите их через ROS-параметры или env-переменные.",
+                "MINIMAX_API_KEY не задан. "
+                "Установите его через ROS-параметры или env-переменные.",
                 provider="minimax",
             )
 
