@@ -37,8 +37,17 @@ from rob_box_llm.tts import TTSAudio, TTSChunk, TTSFormat
 
 # Import transcode helper directly (bypass utils/__init__.py → pyaudio).
 import importlib.util as _ilu
+import pathlib as _pl
 
-_TRANSCODE_PATH = __file__.rsplit("/test/unit/tts/", 1)[0] + "/rob_box_voice/utils/audio_transcode.py"
+# Use pathlib instead of __file__.rsplit: pytest 9.x passes ``__file__``
+# with OS-native separators on Windows, so the previous rsplit('/test/.../')
+# only worked under POSIX. parents[3] is robust across pytest versions.
+_TRANSCODE_PATH = str(
+    _pl.Path(__file__).resolve().parents[3]
+    / "rob_box_voice"
+    / "utils"
+    / "audio_transcode.py"
+)
 _spec = _ilu.spec_from_file_location("rob_box_voice_audio_transcode_tts", _TRANSCODE_PATH)
 _mod = _ilu.module_from_spec(_spec)
 sys.modules["rob_box_voice_audio_transcode_tts"] = _mod

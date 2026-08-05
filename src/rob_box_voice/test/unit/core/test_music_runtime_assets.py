@@ -3,7 +3,19 @@
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
+# Resolve repo root by walking up the tree until we find the ``docker/`` and
+# ``src/`` siblings. This avoids brittle parents[N] indexing that breaks when
+# the test is copied into a colcon workspace (test_ws/src/rob_box_voice/...).
+def _resolve_repo_root(start: Path) -> Path:
+    for parent in [start, *start.parents]:
+        if (parent / "docker").is_dir() and (parent / "src").is_dir():
+            return parent
+    # Fallback: original semantics (5 parents up from this test file).
+    return start.parents[5]
+
+
+_THIS_FILE = Path(__file__).resolve()
+REPO_ROOT = _resolve_repo_root(_THIS_FILE)
 FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
 START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "vision" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
 CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "custom_synthdefs"

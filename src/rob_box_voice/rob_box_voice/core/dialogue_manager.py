@@ -192,13 +192,15 @@ class DialogueManager:
             # In silence mode, only respond to unsilence + wake word
             return self.has_wake_word(text) and self.is_unsilence_command(text)
 
-        # In IDLE, need wake word
+        # In IDLE, require the wake word to gate entry into a new conversation.
         if self.state == DialogueState.IDLE:
             return self.has_wake_word(text)
 
-        # In LISTENING or DIALOGUE, require wake word for every message
+        # In LISTENING or DIALOGUE we are already in an active exchange with
+        # the user, so every utterance is considered a reply — no wake word
+        # check is needed. The wake word gates the IDLE state, not mid-conversation replies.
         if self.state in (DialogueState.LISTENING, DialogueState.DIALOGUE):
-            return self.has_wake_word(text)
+            return True
         return False
 
     def transition_state(self, new_state: DialogueState):

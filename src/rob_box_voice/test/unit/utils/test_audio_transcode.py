@@ -31,7 +31,17 @@ from rob_box_llm.tts import TTSFormat
 import importlib.util as _ilu
 import sys as _sys
 
-_TRANSCODE_PATH = __file__.rsplit("/test/unit/utils/", 1)[0] + "/rob_box_voice/utils/audio_transcode.py"
+# Resolve the audio_transcode module via pathlib rather than ``__file__.rsplit``
+# because pytest 9.x passes ``__file__`` with the OS-native separator on
+# Windows (backslash), and the previous rsplit('/test/unit/utils/') only
+# matched POSIX paths — which broke the path lookup.
+import pathlib as _pl
+_TRANSCODE_PATH = str(
+    _pl.Path(__file__).resolve().parents[3]
+    / "rob_box_voice"
+    / "utils"
+    / "audio_transcode.py"
+)
 _spec = _ilu.spec_from_file_location("rob_box_voice_audio_transcode", _TRANSCODE_PATH)
 _mod = _ilu.module_from_spec(_spec)
 _sys.modules["rob_box_voice_audio_transcode"] = _mod

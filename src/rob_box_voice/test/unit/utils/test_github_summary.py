@@ -35,9 +35,14 @@ import requests
 # Bypass rob_box_voice.utils.__init__ to avoid pulling pyaudio on dev
 # containers without USB-audio stack. The github_summary module only
 # needs stdlib + requests.
-_HERE = __file__
-_UTILS_DIR = _HERE.rsplit("/test/unit/utils/", 1)[0] + "/rob_box_voice/utils"
-_TARGET = _UTILS_DIR + "/github_summary.py"
+#
+# pytest 9.x passes ``__file__`` with the OS-native separator on Windows
+# (backslashes), so we resolve the path with pathlib rather than hardcoded
+# rsplit patterns. This stays portable between pytest versions and OSes.
+import pathlib as _pl
+_HERE = _pl.Path(__file__).resolve()
+_ROB_BOX_VOICE_PKG = _HERE.parents[3] / "rob_box_voice" / "utils"
+_TARGET = str(_ROB_BOX_VOICE_PKG / "github_summary.py")
 
 _spec = _ilu.spec_from_file_location("rob_box_voice_github_summary", _TARGET)
 gs = _ilu.module_from_spec(_spec)

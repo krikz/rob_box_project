@@ -141,6 +141,17 @@ class FAQStore:
             self._ensure_vec_table(stored_dim)
 
     def _run_migrations(self) -> None:
+        """Apply SQL migrations from ``migrations_dir`` in numeric filename order.
+
+        Each migration file is named ``NNN_*.sql`` and ``NNN`` is its version.
+        We track the highest applied version via ``PRAGMA user_version``.
+
+        SQLite has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``. Migration
+        006 tolerates duplicate-column errors during its ALTER by relying on
+        the ``TrackLibrary.__init__`` runtime guard as a fallback path; the
+        migration runner itself propagates any other OperationalError so that
+        genuine migration failures remain visible.
+        """
         with self.lock:
             current = self.conn.execute("PRAGMA user_version").fetchone()[0]
 

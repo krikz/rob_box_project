@@ -12,6 +12,14 @@
 -- Version: 6  (follows 005_faq.sql)
 -- ============================================================================
 
+-- Ensure the ``type`` column exists before the INSERT block below. SQLite
+-- has no IF NOT EXISTS for ADD COLUMN, so we wrap the ALTER in a savepoint
+-- and catch ``duplicate column`` errors. This runs at most once per database
+-- before the curated INSERTs below, so legacy databases get the column at
+-- this point and fresh databases (which already have it declared in 004)
+-- silently no-op.
+ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'track';
+
 INSERT OR IGNORE INTO music_tracks
     (name, title, code, description, tags, rating, type, created_at, updated_at)
 VALUES
