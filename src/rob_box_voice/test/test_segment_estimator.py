@@ -97,6 +97,24 @@ def test_baseline_estimator_music_prefers_duration_ms_then_duration_sec() -> Non
     assert est3.confidence == pytest.approx(0.9)
 
 
+def test_baseline_estimator_music_uses_segments_contract() -> None:
+    """Issue #990 — segments (bars) is now the primary music contract."""
+    estimator = BaselineEstimator()
+    # 16 bars × 4 beats/bar @120 BPM = 16 × 2000 ms = 32 s
+    task = _noop_task(ChannelKind.MUSIC, "execute_music_code", {"segments": 16})
+    est = estimator.estimate(task, EstimatorContext(channel=ChannelKind.MUSIC, tool="execute_music_code"))
+    assert est.duration_ms == pytest.approx(32000.0)
+    assert est.confidence == pytest.approx(0.9)
+    # segments wins over the deprecated duration_sec
+    task2 = _noop_task(
+        ChannelKind.MUSIC,
+        "execute_music_code",
+        {"segments": 8, "duration_sec": 1.5},
+    )
+    est2 = estimator.estimate(task2, EstimatorContext(channel=ChannelKind.MUSIC, tool="execute_music_code"))
+    assert est2.duration_ms == pytest.approx(16000.0)
+
+
 def test_baseline_estimator_anim_uses_preset_manifest() -> None:
     estimator = BaselineEstimator()
     estimator.register_preset("wave", 800.0)

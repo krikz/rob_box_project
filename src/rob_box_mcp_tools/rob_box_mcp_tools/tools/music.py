@@ -83,6 +83,30 @@ class MusicManager:
     SC_HOST: str = "127.0.0.1"
     SC_PORT: int = 57110
 
+    # ------------------------------------------------------------------
+    # Issue #990 — segments safety-net contract
+    # ------------------------------------------------------------------
+    # The LLM must NOT pass duration_sec anymore (it cannot know the real
+    # TTS duration — that was the root cause of music cutting off mid-song).
+    # Instead it passes ``segments`` (number of bars) which is ONLY a
+    # backstop: the system stops the music at tts_batch_complete; segments
+    # caps playback only if the TTS batch hangs.
+    #: 1 bar = 4 beats in Renardo's default meter.
+    BEATS_PER_BAR: int = 4
+    #: Floor for the segments deadline (seconds). A tiny LLM guess (e.g.
+    #: segments=2) must not cut a real song off after 2 seconds — the
+    #: deadline is a TTS-hang backstop, not a song-length contract.
+    MIN_SEGMENTS_DEADLINE_SECONDS: float = 15.0
+    #: Upper bound for accepted segments (guard against absurd values).
+    MAX_SEGMENTS: int = 512
+    #: Backward-compat clamp for the deprecated ``duration_sec`` param
+    #: (#949 → #990). If an old LLM still passes duration_sec we only use it
+    #: to define ``__total_beats`` so legacy generated code does not
+    #: NameError, but we clamp it to at least this many seconds so it can
+    #: never stop the music before the song ends. No stop is scheduled from
+    #: duration_sec.
+    DEPRECATED_DURATION_SEC_CLAMP: float = 60.0
+
     #: ``ROB_BOX_MUSIC_REQUIRE_HEALTHY=1`` → degraded sclang runtime blocks
     #: ``execute_music_code`` / ``set_vibe_preset`` instead of letting the LLM
     #: fight a broken Renardo stack. Defaults to ``False`` — music tools work
@@ -179,6 +203,13 @@ class MusicManager:
         self._music_session_active_since: Optional[float] = None
         self._last_music_activity_at: Optional[float] = None
         self._last_stop_at: Optional[float] = None
+        # Issue #990 — segments safety-net deadline. Wall-clock monotonic
+        # timestamp (from ``_schedule_stop``) after which the watchdog stops
+        # music if the TTS batch never completed (no tts_batch_complete).
+        # None = no deadline (music plays until tts_batch_complete / idle TTL).
+        self._music_deadline_at: Optional[float] = None
+        #: segments value that produced the deadline (diagnostics only).
+        self._music_deadline_segments: Optional[int] = None
         # stats — surfaced via get_state() for the DialogCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -442,10 +473,48 @@ class MusicManager:
         return code
 
     # ------------------------------------------------------------------
+    # Issue #990 — segments safety-net
+    # ------------------------------------------------------------------
+
+    def _renardo_bpm(self) -> float:
+        """Current Renardo BPM (default 120 when Clock is unavailable)."""
+        try:
+            clock = self._renardo_context.get("Clock", None)
+            bpm = float(getattr(clock, "bpm", 120) or 120)
+        except Exception:
+            bpm = 120.0
+        return bpm if bpm > 0 else 120.0
+
+    def _schedule_stop(self, *, segments: int, bpm: float) -> None:
+        """Set the segments safety-net deadline (issue #990).
+
+        The deadline is a wall-clock backstop only: the system normally
+        stops the music at ``tts_batch_complete`` (dialogue_node →
+        ``/mcp/music_cleanup`` → ``stop_music_on_session_end``). If the TTS
+        batch hangs (or the batch_complete event is lost), the mcp_server
+        watchdog calls ``auto_stop_idle_music`` and stops music once the
+        deadline passes, so it cannot play forever.
+
+        A floor (``MIN_SEGMENTS_DEADLINE_SECONDS``) guarantees a tiny LLM
+        guess cannot cut a real song off prematurely.
+        """
+        bar_duration_s = self.BEATS_PER_BAR * 60.0 / max(1.0, float(bpm))
+        timeout_s = max(segments * bar_duration_s, self.MIN_SEGMENTS_DEADLINE_SECONDS)
+        self._music_deadline_at = time.monotonic() + timeout_s
+        self._music_deadline_segments = int(segments)
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def execute_code(self, code: str, pattern_name: Optional[str] = None, *, duration_sec: Optional[float] = None) -> Dict[str, Any]:
+    def execute_code(
+        self,
+        code: str,
+        pattern_name: Optional[str] = None,
+        *,
+        segments: Optional[int] = None,
+        duration_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Безопасно выполнить Renardo-код.
 
         Перед выполнением проверяется:
@@ -456,10 +525,19 @@ class MusicManager:
         Args:
             code: Строка Python/Renardo-кода.
             pattern_name: Имя паттерна для хранения в истории (опционально).
-            duration_sec: Ожидаемая длительность TTS в секундах (#949).
-                Если задана, в контекст Renardo добавляется переменная
-                ``__total_beats`` = (duration_sec * bpm) / 60, которую
-                можно использовать с ``Clock.future()`` для аранжировки.
+            segments: Количество тактов (баров, 1 бар = 4 бита) — ТОЛЬКО
+                предохранитель (issue #990). Если задан, в контекст Renardo
+                добавляются переменные ``__total_beats`` (segments * 4),
+                ``__total_segments``, ``__bpm``, ``__bar_duration``, и
+                устанавливается дедлайн ``_schedule_stop`` — watchdog
+                остановит музыку, если TTS-батч завис. Музыка ВСЕГДА живёт
+                до ``tts_batch_complete``; segments лишь ограничивает время
+                игры при зависшем TTS.
+            duration_sec: DEPRECATED (#949 → #990). Игнорируется для
+                остановки музыки. Оставлен только для обратной
+                совместимости: ``__total_beats`` определяется из него со
+                сдвигом вверх (clamp ≥ 60s), чтобы старый код не падал с
+                NameError, но и не мог оборвать музыку раньше конца песни.
 
         Returns:
             dict с ключами ``success``, ``message`` (или ``error``), ``code``.
@@ -510,16 +588,36 @@ class MusicManager:
         # забивается → "too many nodes" / "negative node IDs" → тишина.
         has_clock_clear = "Clock.clear()" in code
 
-        # #949: inject __total_beats into Renardo context so the LLM can
-        # schedule timed arrangement changes via Clock.future().
-        if duration_sec is not None and duration_sec > 0:
-            try:
-                current_bpm = float(getattr(self._renardo_context.get("Clock", None), "bpm", 120) or 120)
-            except Exception:
-                current_bpm = 120.0
-            total_beats = (duration_sec * current_bpm) / 60.0
+        # Issue #990: the music lifecycle is owned by the system
+        # (tts_batch_complete → music_cleanup → stop_music_on_session_end).
+        # The LLM must pass ``segments`` (bars) as a *safety net* only: the
+        # deadline below stops music if the TTS batch hangs. The old
+        # ``duration_sec`` contract (#949) is deprecated — it is clamped and
+        # never used to schedule an early stop (the LLM cannot know the real
+        # TTS duration; that was the root cause of music cutting off at 6s
+        # while the song was 51s).
+        if segments is not None and int(segments) > 0:
+            segments_i = max(1, min(int(segments), self.MAX_SEGMENTS))
+            current_bpm = self._renardo_bpm()
+            beats_per_bar = self.BEATS_PER_BAR
+            total_beats = segments_i * beats_per_bar
+            bar_duration_s = beats_per_bar * 60.0 / current_bpm
+            self._renardo_context["__total_segments"] = segments_i
             self._renardo_context["__total_beats"] = total_beats
-            self._renardo_context["__duration_sec"] = duration_sec
+            self._renardo_context["__bpm"] = current_bpm
+            self._renardo_context["__bar_duration"] = bar_duration_s
+            self._schedule_stop(segments=segments_i, bpm=current_bpm)
+        elif duration_sec is not None and duration_sec > 0:
+            # Backward compat (#949 → #990): keep the context variables
+            # alive so legacy generated code referencing __total_beats does
+            # not NameError — but clamp the value so an LLM guess (e.g. 6.0s)
+            # can never stop the music before the song ends. No stop is
+            # scheduled from duration_sec.
+            clamped = max(float(duration_sec), self.DEPRECATED_DURATION_SEC_CLAMP)
+            current_bpm = self._renardo_bpm()
+            total_beats = (clamped * current_bpm) / 60.0
+            self._renardo_context["__total_beats"] = total_beats
+            self._renardo_context["__duration_sec"] = clamped
             self._renardo_context["__bpm"] = current_bpm
 
         try:
@@ -672,6 +770,10 @@ class MusicManager:
 
         self._active_patterns.clear()
         self._last_stop_at = time.monotonic()
+        # Issue #990 — a stop cancels the segments safety-net deadline:
+        # music is no longer playing, so there is nothing to backstop.
+        self._music_deadline_at = None
+        self._music_deadline_segments = None
         # Reset session only when the *whole* session is over so a partial
         # ``stop_pattern``-then-restart sequence doesn't lose the timer
         # (issue #935 — keeps audit trail of when music was active).
@@ -787,6 +889,9 @@ class MusicManager:
             "last_stop_at": self._last_stop_at,
             "auto_stop_ttl_seconds": self._auto_stop_ttl_seconds,
             "auto_stop_count": self._auto_stop_count,
+            # Issue #990 — segments safety-net deadline (None = no deadline).
+            "music_deadline_at": self._music_deadline_at,
+            "music_deadline_segments": self._music_deadline_segments,
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -839,6 +944,20 @@ class MusicManager:
             return result
         idle = now_m - self._last_music_activity_at
         result["idle_seconds"] = idle
+        # Issue #990 — segments safety-net: if the LLM passed ``segments``
+        # and the deadline has passed, the TTS batch likely hung (no
+        # tts_batch_complete → no music_cleanup). Stop music so it cannot
+        # play forever. This takes priority over the idle TTL because the
+        # deadline is the more precise contract the LLM asked for.
+        deadline = self._music_deadline_at
+        if deadline is not None and now_m >= deadline:
+            stop_result = self.stop_all()
+            result["stopped"] = True
+            result["stop_reason"] = "segments_deadline"
+            result["stop_result"] = stop_result
+            self._auto_stop_count += 1
+            result["auto_stop_count"] = self._auto_stop_count
+            return result
         if idle < ttl:
             return result
         # Auto-stop — call the existing stop_all() so the closure logic
@@ -929,12 +1048,25 @@ class ExecuteMusicCodeTool(MCPTool):
                 required=False,
             ),
             MCPToolParameter(
+                name="segments",
+                type="integer",
+                description=(
+                    "Сколько тактов (баров) должна играть фоновая музыка "
+                    "(1 бар = 4 бита). Это ТОЛЬКО предохранитель: система "
+                    "сама останавливает музыку после tts_batch_complete, "
+                    "segments лишь ограничивает время игры, если TTS завис. "
+                    "Для песни обычно 8-16 тактов. Если не знаешь — НЕ "
+                    "указывай (дефолт: музыка играет до конца озвучки). #990"
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
                 name="duration_sec",
                 type="number",
                 description=(
-                    "Ожидаемая длительность TTS в секундах (из estimate_tts_duration). "
-                    "Если задана, в Renardo-контексте доступна переменная __total_beats "
-                    "для аранжировки через Clock.future(__total_beats, ...). #949"
+                    "DEPRECATED (#990) — игнорируется для остановки музыки, "
+                    "оставлен для обратной совместимости. НЕ используй. "
+                    "Вместо него передавай segments."
                 ),
                 required=False,
             ),
@@ -948,10 +1080,18 @@ class ExecuteMusicCodeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, code: str, pattern_name: Optional[str] = None, duration_sec: Optional[float] = None) -> MCPToolResult:
-        """Выполнить Renardo-код (#949: duration_sec для аранжировки)."""
+    def execute(
+        self,
+        code: str,
+        pattern_name: Optional[str] = None,
+        segments: Optional[int] = None,
+        duration_sec: Optional[float] = None,
+    ) -> MCPToolResult:
+        """Выполнить Renardo-код (#990: segments как предохранитель)."""
         self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
-        result = self._manager.execute_code(code, pattern_name, duration_sec=duration_sec)
+        result = self._manager.execute_code(
+            code, pattern_name, segments=segments, duration_sec=duration_sec
+        )
         if result["success"]:
             # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
             # активна — VAD threshold поднимается без ожидания watchdog.

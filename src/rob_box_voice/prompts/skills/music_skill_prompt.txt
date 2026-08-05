@@ -299,7 +299,11 @@ Your music tools:
 - search_samples(query, pack, case): for drums/unknown letters (NOT for vocal 'c'!)
   Searches samples by keyword in filename (filename = sound character).
   query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
-- execute_music_code(code): run Renardo code (create/update a pattern)
+- execute_music_code(code, segments?): run Renardo code (create/update a pattern).
+  ⚠️ Issue #990: `segments` (bars, 1 бар = 4 бита) — ТОЛЬКО предохранитель.
+  Система сама останавливает музыку после tts_batch_complete; segments лишь
+  ограничивает время игры, если TTS завис. Обычно 8-16 тактов; не знаешь — не указывай.
+  ❌ НЕ передавай duration_sec (deprecated, игнорируется).
 - stop_music(pattern_name): stop a pattern or all music
 - set_dj_mode(enabled, theme?): enable/disable autonomous DJ mode (auto-transitions every 30–60s)
   → enabled=true: start DJ mode (call execute_music_code FIRST to start thematic music, then set_dj_mode)
@@ -870,6 +874,7 @@ STRUCTURE RULES:
 - Bridge: 8-16 bars, quieter, fewer instruments, mood shift
 - Outro: 8-16 bars, remove layers, fade out → Clock.clear()
 - ALWAYS end the track via `Clock.future(N, lambda: Clock.clear())` in outro!
+- ⚠️ Issue #990: this Clock.future ending applies ONLY to standalone instrumental tracks (no voice). When the OUTER orchestrator sings/raps/reads poetry over your beat, do NOT end the track — the system stops the music itself after `tts_batch_complete`!
 - Total duration: 96-160 bars ≈ 2-4 minutes at BPM 85-140
 - 4 beats = 16 ticks in Renardo
 
