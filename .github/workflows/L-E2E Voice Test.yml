@@ -23,7 +23,7 @@ on:
       volume:
         description: Speaker volume percent
         required: false
-        default: '125'
+        default: '150'
       record_seconds:
         description: Recording duration seconds
         required: false

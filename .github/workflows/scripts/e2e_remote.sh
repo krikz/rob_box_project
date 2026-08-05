@@ -1,7 +1,7 @@
 #!/bin/bash
 # E2E Voice Test - runs on build machine via SSH
 R="$1"; D="$2"; V="$3"
-ffmpeg -y -i /tmp/voice_new.ogg -af "highpass=f=200,volume=1.5,alimiter=limit=0.95" -ac 1 -ar 16000 /tmp/voice_eq.wav 2>/dev/null
+ffmpeg -y -i /tmp/voice_new.ogg -af "highpass=f=200,volume=3.0,alimiter=limit=0.98" -ac 1 -ar 16000 /tmp/voice_eq.wav 2>/dev/null
 pactl set-sink-volume @DEFAULT_SINK@ ${V}%
 # Record raw PCM then convert to proper WAV
 timeout ${D} parec --format=s16le --channels=1 --rate=16000 /tmp/e2e_raw.pcm &
