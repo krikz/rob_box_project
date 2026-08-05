@@ -1174,6 +1174,19 @@ class TTSNode(Node):
             play_seq,
         )
 
+    def _release_play_seq(self, play_seq: int | None) -> None:
+        """Освободить FIFO-очередь воспроизведения (безопасно для None).
+
+        Вызывается при ЛЮБОМ выходе из _synthesize_and_play после синтеза:
+        после play_audio (finally), при dialogue-check, при STOP-check.
+        Без этого _next_play_seq застревает и все следующие фразы ждут
+        очередь вечно (live 12:28 «робот замолчал после barge-in»).
+        """
+        if play_seq is not None:
+            with self._play_order_cond:
+                self._next_play_seq += 1
+                self._play_order_cond.notify_all()
+
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
         batch_id: str = None, batch_index: int = None, batch_total: int = None, play_seq: int = None,
@@ -1329,6 +1342,19 @@ class TTSNode(Node):
             # downstream tools can estimate total TTS playback time.
             raw_duration_sec: float = round(len(audio_np) / sample_rate, 2) if sample_rate > 0 else 0.0
 
+            # 🔴 FIX (live 12:28 «робот замолчал после barge-in»): FIFO-gate
+            # ДОЛЖЕН быть ДО dialogue/STOP checks. Раньше он стоял перед
+            # play_audio, а checks — выше: фраза с play_seq=1, отменённая
+            # через dialogue-check или STOP-check, выходила ДО gate →
+            # _next_play_seq НЕ инкрементировался → все следующие фразы
+            # (seq 2,3,4...) ждали очередь ВЕЧНО → робот молчал после
+            # barge-in. Теперь gate стоит сразу после синтеза, а каждый
+            # ранний return освобождает seq через _release_play_seq.
+            if play_seq is not None:
+                with self._play_order_cond:
+                    while self._next_play_seq != play_seq:
+                        self._play_order_cond.wait()
+
             # КРИТИЧЕСКАЯ ПРОВЕРКА: dialogue_id не изменился во время синтеза?
             if dialogue_id and self.current_dialogue_id != dialogue_id:
                 self.get_logger().warning(
@@ -1337,6 +1363,7 @@ class TTSNode(Node):
                     f"(было: {dialogue_id[:8]}..., сейчас: {self.current_dialogue_id[:8]}...)"
                 )
                 self.processing_dialogue_id = None
+                self._release_play_seq(play_seq)
                 return
 
             # Воспроизводим локально
@@ -1405,18 +1432,10 @@ class TTSNode(Node):
             if self.stop_requested:
                 self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
                 self.publish_state("stopped")
+                # 🔴 FIX (12:28): без release следующий seq ждал бы вечно
+                self._release_play_seq(play_seq)
                 return
 
-            # 🔴 FIX (12:02 «анекдот перепутан»): FIFO-gate — ждём своей
-            # очереди воспроизведения. Синтез (выше) шёл ПАРАЛЛЕЛЬНО в
-            # пуле (быстро), но играть должны строго в порядке приёма
-            # запросов = порядок LLM tool_calls. Без gate 5 фраз анекдота
-            # играли в порядке завершения синтеза («Второй отвечает»
-            # раньше «Один говорит»).
-            if play_seq is not None:
-                with self._play_order_cond:
-                    while self._next_play_seq != play_seq:
-                        self._play_order_cond.wait()
             try:
                 # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
                 with ignore_stderr(enable=True):
@@ -1433,10 +1452,7 @@ class TTSNode(Node):
                     )
             finally:
                 # Пропускаем следующую фразу (всегда, даже при исключении)
-                if play_seq is not None:
-                    with self._play_order_cond:
-                        self._next_play_seq += 1
-                        self._play_order_cond.notify_all()
+                self._release_play_seq(play_seq)
 
             if not success:
                 self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
@@ -1511,6 +1527,9 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().error(f"❌ Synthesis error: {e}")
             self.publish_state("ready")
+            # 🔴 FIX (12:28): ошибка ПОСЛЕ gate (resample/play) тоже должна
+            # освободить FIFO-очередь — иначе следующие фразы ждут вечно.
+            self._release_play_seq(play_seq)
             # Публикуем ошибку для MCP tools (#980: also fires batch_complete if applicable)
             self._publish_tts_finished(
                 speech_id,
