@@ -62,7 +62,8 @@ RUN apt-get update && \
         clang \
         lcov \
         libasio-dev \
-        libtinyxml2-dev && \
+        libtinyxml2-dev \
+        python3-pip && \
     rosdep init && rosdep update && \
     rm -rf /var/lib/apt/lists/*
 
