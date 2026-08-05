@@ -71,8 +71,6 @@ RUN apt-get update && \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-humble-ament-cmake-pytest \
-        ros-humble-launch-testing \
-        ros-humble-launch-testing-ament-cmake \
         python3-flake8-docstrings \
         python3-flake8-blind-except \
         python3-flake8-builtins \
