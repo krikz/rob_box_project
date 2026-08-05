@@ -205,14 +205,33 @@ def audio_node():
 
 
 class TestTTSGraceGate:
-    """Fix B: пока TTS активен или в течение tts_grace_s — VAD не речь."""
+    """Fix B (989) + Fix 993 barge-in:
+
+    - После окончания TTS в течение tts_grace_s — VAD не речь (эхо).
+    - Во время самого TTS VAD НЕ гейтится (issue 993): barge-in должен
+      работать. Wake-word gate в dialogue_node отсекает эхо без
+      помощи VAD-гейта.
+    """
 
     def test_default_grace_2_5s(self, audio_node):
         assert audio_node.tts_grace_s == 2.5
 
-    def test_vad_false_when_tts_active(self, audio_node):
-        audio_node.tts_active = True
-        assert audio_node._vad_gated(True) is False
+    def test_vad_true_during_tts_active_for_barge_in(self, audio_node):
+        """Issue 993: во время TTS VAD пропускает речь — barge-in работает.
+
+        Раньше (Fix B из 989) VAD гейтился пока робот говорит, поэтому
+        пользователь не мог перебить рэп командой. Теперь гейт снят —
+        wake-word в dialogue_node сам отсекает эхо собственного голоса.
+        Симулируем «TTS сейчас играет» через _on_tts_state(playing):
+        он выставляет tts_active=True, и _vad_gated пропускает VAD
+        (issue 993 barge-in).
+        """
+        audio_node.music_active = False
+        playing = MagicMock()
+        playing.data = "playing"
+        audio_node._on_tts_state(playing)
+        assert audio_node.tts_active is True
+        assert audio_node._vad_gated(True) is True  # barge-in!
 
     def test_vad_false_inside_grace_after_tts(self, audio_node):
         audio_node.tts_active = False
@@ -229,11 +248,11 @@ class TestTTSGraceGate:
 
     def test_vad_false_when_hardware_silence(self, audio_node):
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
+        audio_node._tts_ended_at = 0.0  # «давно, не в grace»
         assert audio_node._vad_gated(False) is False
 
     def test_tts_state_transitions(self, audio_node):
-        """_on_tts_state: playing → гейт, ready → grace сбрасывает буфер."""
+        """_on_tts_state: playing → reset буфера, ready → grace с timestamp."""
         audio_node.speech_audio_buffer = b"some-echo-data"
         audio_node.is_speeching = True
 
@@ -248,7 +267,7 @@ class TestTTSGraceGate:
         ready.data = "ready"
         audio_node._on_tts_state(ready)
         assert audio_node.tts_active is False
-        assert audio_node._tts_ended_at > 0.0
+        assert audio_node._tts_ended_at > 0.0  # момент окончания зафиксирован
 
 
 class TestMusicStrictGate:
@@ -280,7 +299,7 @@ class TestMusicStrictGate:
     def test_vad_suppressed_when_music_and_quiet_signal(self, audio_node):
         """Музыка активна, уровень сигнала ниже music_vad_min_db → VAD подавлен."""
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
+        audio_node._tts_ended_at = 0.0  # «давно, не в grace»
         audio_node.music_active = True
         audio_node.music_vad_min_db = -35.0
         audio_node._current_db = -50.0  # тихо — это музыка/шум

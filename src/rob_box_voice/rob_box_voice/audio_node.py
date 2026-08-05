@@ -266,17 +266,24 @@ class AudioNode(Node):
     # Issue 989: анти-эхо гейты (Fix B — grace после TTS, Fix C — музыка)
     # ------------------------------------------------------------------
     def _on_tts_state(self, msg: String) -> None:
-        """Следим за состоянием TTS: пока робот говорит — VAD игнорируется.
+        """Следим за состоянием TTS: пока робот говорит — не трогаем VAD.
 
-        При переходе в speaking-состояние сбрасываем накопленный буфер
-        (это почти наверняка эхо предыдущей фразы) и не даём VAD начать
-        новую «речь». После ready/idle запоминаем момент окончания для
-        grace period (tts_grace_s).
+        Issue 989 Fix B: при переходе в speaking-состояние сбрасываем
+        накопленный буфер (это почти наверняка эхо предыдущей фразы) и
+        запоминаем момент окончания TTS для grace period (tts_grace_s).
+
+        Issue 993 barge-in: НЕ гейтим VAD пока робот говорит — wake-word
+        gate в dialogue_node отсекает эхо собственного голоса, а
+        пользователь может перебить рэп/ответ командой «робот, добавь
+        музыку».
         """
         state = (msg.data or "").strip()
         if state in ("synthesizing", "playing"):
             if not self.tts_active:
-                self.get_logger().info("🔇 [issue 989] TTS активен — VAD гейтится (эхо)")
+                self.get_logger().info(
+                    "🔇 [issue 993] TTS активен — VAD пропускает речь "
+                    "(barge-in через wake-word gate)"
+                )
                 # Сбрасываем незавершённое накопление — это эхо, не речь.
                 self.speech_audio_buffer = b""
                 self.is_speeching = False
@@ -338,12 +345,23 @@ class AudioNode(Node):
         """Применить анти-эхо гейты к аппаратному VAD.
 
         Возвращает эффективное значение VAD с учётом:
-        - TTS grace period (Fix B): пока робот говорит или tts_grace_s после — False
+        - TTS grace period (issue 989 Fix B): в течение tts_grace_s после
+          окончания TTS — False (эхо собственного голоса).
+          НЕ гейтим VAD пока робот говорит (issue 993 barge-in): эхо
+          отсекается wake-word gate в dialogue_node._on_stt_result
+          (строка ~411 «has_wake_word»), поэтому во время рэпа/ответа
+          пользователь может перебить робот командой «робот, …» —
+          barge-in работает.
         - активной музыки (Fix C): требуем программный порог по RMS
         """
+        # Issue 993 barge-in: пока TTS активен — НЕ гейтим. Эхо
+        # отсекается wake-word gate в dialogue_node.
         if self.tts_active:
-            return False
-        if time.monotonic() - self._tts_ended_at < self.tts_grace_s:
+            # VAD дальше пройдёт проверки (если vad=True и музыка не
+            # слишком громкая). Это разрешает пользователю перебить рэп.
+            pass
+        elif time.monotonic() - self._tts_ended_at < self.tts_grace_s:
+            # После TTS в течение tts_grace_s — это эхо.
             return False
         if not vad:
             return False
