@@ -62,16 +62,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ── Verify ────────────────────────────────────────────────────
+      # ── Verify (image self-tests in Dockerfile) ────────────────────
       - name: Smoke test
         run: |
           docker pull ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble
           docker run --rm ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble \
-            bash -c "
-              set -euo pipefail
-              source /opt/ros/humble/setup.bash
-              python3 -c 'import pytest; assert pytest.__version__ >= \"8\"'
-              python3 -c 'import openai, httpx; print(\"OK\")'
-              ros2 --version
-              echo '=== SMOKE TEST PASSED ==='
-            "
+            python3 -c 'import pytest, openai, httpx; print("OK pytest=" + pytest.__version__)'
