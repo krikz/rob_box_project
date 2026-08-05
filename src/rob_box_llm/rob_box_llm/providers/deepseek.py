@@ -341,9 +341,11 @@ class _OpenAICompatibleProvider(LLMProvider):
         self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
         # 🐞 VERBOSE LLM TRACE: полный контекст, который видит модель.
-        # Включается env ROBOT_LLM_VERBOSE=1 (или оставьте пустым = всегда).
+        # Пишем в stderr (как rclpy) — python logging не виден в docker logs.
+        # Включается env ROBOT_LLM_VERBOSE (по умолчанию 1 = всегда).
         if os.environ.get("ROBOT_LLM_VERBOSE", "1") == "1":
-            _log.info("🔎 LLM REQUEST START")
+            import sys as _sys
+            _sys.stderr.write("🔎 LLM REQUEST START\n"); _sys.stderr.flush()
             for i, m in enumerate(messages):
                 role = getattr(m, "role", "?")
                 content = getattr(m, "content", "")
@@ -360,28 +362,30 @@ class _OpenAICompatibleProvider(LLMProvider):
                             ensure_ascii=False)[:400]
                     except Exception:
                         tc_str = f" tool_calls={tc!r}"[:400]
-                _log.info(f"  [{i}] {role}: {content!r}{tc_str}")
+                _sys.stderr.write(f"  [{i}] {role}: {content!r}{tc_str}\n")
             if tools:
-                _log.info(f"  tools({len(tools)}): " + ", ".join(
-                    t.get("function", {}).get("name", "?") for t in tools))
-            _log.info("🔎 LLM REQUEST END")
+                _sys.stderr.write("  tools(" + str(len(tools)) + "): " + ", ".join(
+                    t.get("function", {}).get("name", "?") for t in tools) + "\n")
+            _sys.stderr.write("🔎 LLM REQUEST END\n"); _sys.stderr.flush()
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — convert to our domain errors
             raise _map_exception(exc, provider=self.name) from exc
         self._post_process_response(resp)
         if os.environ.get("ROBOT_LLM_VERBOSE", "1") == "1":
+            import sys as _sys
             try:
                 ch = resp.choices[0] if resp.choices else None
                 msg = ch.message if ch else None
                 content = msg.content if msg else ""
-                _log.info(
+                _sys.stderr.write(
                     f"🔎 LLM RESPONSE: content={str(content)[:500]!r} "
                     f"finish={ch.finish_reason if ch else None} "
-                    f"tool_calls={[(tc.function.name, str(tc.function.arguments)[:200]) for tc in (msg.tool_calls if msg and msg.tool_calls else [])]!r}"
+                    f"tool_calls={[(tc.function.name, str(tc.function.arguments)[:200]) for tc in (msg.tool_calls if msg and msg.tool_calls else [])]!r}\n"
                 )
+                _sys.stderr.flush()
             except Exception as exc:  # noqa: BLE001
-                _log.info(f"🔎 LLM RESPONSE (log failed): {exc}")
+                _sys.stderr.write(f"🔎 LLM RESPONSE (log failed): {exc}\n")
 
         choice = resp.choices[0] if resp.choices else None
         content = choice.message.content if choice and choice.message else ""
