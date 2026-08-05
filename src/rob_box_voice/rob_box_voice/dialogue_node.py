@@ -714,7 +714,26 @@ class DialogueNode(Node):
                         "🎵 stop_music deferred — will cleanup after TTS finishes"
                     )
             else:
-                if not self._pending_music_cleanup:
+                # 🔴 FIX (live 09:35): если LLM в этом цикле САМ запустила
+                # музыку (execute_music_code) — НЕ убивать её по
+                # tts_batch_complete короткой прелюдии («Слушай Баха!»).
+                # Музыка, запущенная как композиция, живёт до segments
+                # или явного stop_music. Cleanup — только если музыка
+                # НЕ запускалась в этом цикле (осталась от прошлого).
+                tools_now = set(result.tools_called or ())
+                if "execute_music_code" in tools_now:
+                    if self._pending_music_cleanup:
+                        self._pending_music_cleanup = False
+                        self.get_logger().info(
+                            "🎵 [issue 992] LLM restarted music via "
+                            "execute_music_code — cancelled pending cleanup"
+                        )
+                    else:
+                        self.get_logger().debug(
+                            "🎵 [issue 992] LLM started music — no cleanup "
+                            "scheduled for this turn"
+                        )
+                elif not self._pending_music_cleanup:
                     self._pending_music_cleanup = True
                     self.get_logger().info(
                         "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
@@ -887,6 +906,16 @@ class DialogueNode(Node):
         # (before split_into_chunks) fixes that. Applies to the auto-voice
         # path AND the speak_text path (which also passes through chunking).
         spoken = strip_markdown(spoken)
+        # 🔴 FIX (live 09:35): LLM-маркер завершения «done» (и вариации)
+        # НЕ должен озвучиваться буквально («дан»). Это происходит когда
+        # LLM завершила цикл без speak_text (например повтор «сыграй баха»
+        # после уже запущенной музыки → ответил просто done).
+        _done_marker = spoken.strip().lower()
+        if _done_marker in ("done", "task complete", "task_complete", "готово", "всё", "выполнено"):
+            self.get_logger().info(
+                f"🔇 LLM completion marker — skip auto-TTS: {spoken[:60]!r}"
+            )
+            spoken = ""
         tools_called = tuple(result.tools_called or ())
         # Issue #988 — anti-duplicate: when the LLM already called
         # ``speak_text`` during this cycle, the answer (song / poem /
