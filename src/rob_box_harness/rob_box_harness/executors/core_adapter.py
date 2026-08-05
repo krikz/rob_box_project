@@ -34,11 +34,26 @@ class LegacyToolProviderAdapter(LegacyToolProvider):
         )
 
     async def execute(self, call: ToolCall) -> LLMToolResult:
-        result = await self._provider.invoke(
-            call.name,
-            call.arguments,
-            ToolContext(metadata={"tool_call_id": call.id}),
-        )
+        try:
+            result = await self._provider.invoke(
+                call.name,
+                call.arguments,
+                ToolContext(metadata={"tool_call_id": call.id}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 🔴 FIX (live 09:58): аргументы от LLM могут быть невалидны
+            # (speak_text({}) — deepseek сгенерировала пустой JSON).
+            # invoke() бросает ToolValidationError → если не обернуть,
+            # исключение вылетает из _run_with_tools ДО return →
+            # tools_called теряется, цикл умирает, «задумался».
+            # Как ToolResult(is_error=True) ошибка уходит в LLM как
+            # обычное tool-сообщение — модель видит причину и
+            # перевызывает инструмент с корректными аргументами.
+            return LLMToolResult(
+                tool_call_id=call.id,
+                content=f"{type(exc).__name__}: {exc}",
+                is_error=True,
+            )
         return LLMToolResult(
             tool_call_id=call.id,
             content=_result_content(result),

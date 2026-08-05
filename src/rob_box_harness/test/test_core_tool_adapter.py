@@ -83,7 +83,27 @@ async def test_adapter_maps_legacy_tool_call_and_preserves_call_id() -> None:
 async def test_adapter_delegates_close() -> None:
     provider = _Provider()
     adapter = adapt_tool_provider(provider)
-
     await adapter.aclose()
-
     assert provider.closed == 1
+
+
+def test_adapter_wraps_invoke_exception_into_error_tool_result() -> None:
+    """ToolValidationError/любое исключение invoke НЕ убивает цикл —
+    оборачивается в ToolResult(is_error=True), LLM получает причину."""
+
+    import asyncio
+
+    provider = _Provider()
+    adapter = adapt_tool_provider(provider)
+    result = asyncio.run(
+        adapter.execute(
+            ToolCall(
+                id="call_x",
+                name="speak_text",
+                arguments={"text": ""},
+            )
+        )
+    )
+    assert result.is_error is True
+    assert "ToolNotFound" in result.content
+    assert result.tool_call_id == "call_x"
