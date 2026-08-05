@@ -55,6 +55,8 @@ setup(
             'sound_node = rob_box_voice.sound_node:main',
             # Phase 5: Command Recognition
             'command_node = rob_box_voice.command_node:main',
+            # Issue #1003: startup greeting — прикольная фраза при старте voice-assistant
+            'startup_greeting_node = rob_box_voice.startup_greeting_node:main',
             # Utilities
             'configure_respeaker_aec = scripts.configure_respeaker_aec:main',
         ],
