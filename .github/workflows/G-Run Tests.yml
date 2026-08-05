@@ -30,6 +30,9 @@ jobs:
     container:
       image: ghcr.io/krikz/rob-box-ci:humble
       options: --user root
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout code
@@ -130,6 +133,9 @@ jobs:
     container:
       image: ghcr.io/krikz/rob-box-ci:humble
       options: --user root
+    defaults:
+      run:
+        shell: bash
     if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
 
     steps:
