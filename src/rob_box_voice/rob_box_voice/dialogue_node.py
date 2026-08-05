@@ -351,7 +351,7 @@ class DialogueNode(Node):
                     provider="minimax",
                     model=model or MINIMAX_DEFAULT_MODEL,
                     api_key=self.get_parameter("api_key").value or None,
-                    timeout_s=90.0,
+                    timeout_s=180.0,
                 )
             )
         if provider_name == "deepseek":
