@@ -1320,7 +1320,9 @@ class DialogueNode(Node):
                     loop = asyncio.get_running_loop()
                     loop.create_task(
                         self._memory.append_turn(
-                            self._user_id,
+                            # DialogCore строится с user_id="default"
+                            # (см. __init__) — дублируем здесь.
+                            "default",
                             Turn(
                                 role="assistant",
                                 content=(
