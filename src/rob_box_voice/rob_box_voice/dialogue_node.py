@@ -98,6 +98,7 @@ class DialogueNode(Node):
             dsm=self._dsm,
             history_trim_limit=int(self.get_parameter("history_max_turns").value),
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
+            system_prompt=self._system_prompt,
         )
 
         cbg = ReentrantCallbackGroup()
@@ -571,6 +572,21 @@ class DialogueNode(Node):
                 f"deferring music_cleanup"
             )
             return
+        # 🔴 FIX (issue 992 live 09:09): LLM часто делает speak_text(прелюдия)
+        # ПЕРЕД execute_music_code в одном цикле. Прелюдия — короткий batch
+        # (2-5s), его batch_complete приходит ПОКА цикл LLM ещё крутится
+        # (дальше Мурка/зайчики). Если чистить здесь — музыка убивается
+        # через секунды после старта. Откладываем cleanup, пока _run_turn
+        # активен: настоящий cleanup придёт от последнего batch_complete
+        # (или 10s fallback), когда цикл завершится.
+        run_task = self._run_task
+        if run_task is not None and not run_task.done():
+            self.get_logger().debug(
+                f"🎵 [issue 992] batch_complete for {batch_id[:8] if batch_id else 'None'}... "
+                "but LLM turn still active — deferring music_cleanup "
+                "(prelude/pre-talk batch inside a running cycle)"
+            )
+            return
         if not self._pending_music_cleanup:
             self.get_logger().debug(
                 "tts_batch_complete received but no pending music_cleanup"
@@ -708,6 +724,18 @@ class DialogueNode(Node):
                         "🎵 [issue 992] music_cleanup already pending — "
                         "ignoring redundant re-arm"
                     )
+            # 🔴 FIX (issue 992 live 09:09): LLM-цикл завершён — если pending
+            # cleanup ещё не отправлен (его batch_complete пришёл ВО ВРЕМЯ
+            # цикла, например от prelude-прелюдии, и был отложен моей
+            # проверкой run_task.done()), а активных batch больше нет —
+            # отправляем cleanup СЕЙЧАС. Иначе музыка зависнет до TTL 300s.
+            if self._pending_music_cleanup and not self._active_batches:
+                self._pending_music_cleanup = False
+                self._publish_music_cleanup(reason="tts_batch_complete")
+                self.get_logger().info(
+                    "🎵 turn finished, no active batches — fired music_cleanup "
+                    "(issue 992 prelude-deferral catch-up)"
+                )
             if self._dsm.current_state == DialogueStateKind.DIALOGUE:
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             # DialogCore completes the DIALOGUE → IDLE transition itself.

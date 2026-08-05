@@ -349,6 +349,37 @@ def test_process_input_includes_history_in_llm_messages(
     assert sent[-1].content == "now"
 
 
+def test_system_prompt_is_prepended_when_configured(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """System prompt must reach the LLM as the first message.
+
+    Regression: dialogue_node loaded _system_prompt but never passed it
+    to DialogCore — deepseek was running WITHOUT a system prompt, so
+    every rule (ALWAYS execute_music_code, NO METALANGUAGE, ...) was
+    silently dropped. Found via verbose LLM trace: messages had no
+    [0] system entry. (#992)
+    """
+    obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        system_prompt="ТЫ ДИДЖЕЙ. ВСЕГДА вызывай execute_music_code.",
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("сыграй баха"))
+    sent = llm.calls[0][0]
+    assert sent[0].role == "system"
+    assert "execute_music_code" in sent[0].content
+    # user message follows the system prompt
+    assert sent[1].role == "user"
+    assert sent[1].content == "сыграй баха"
+
+
 def test_process_input_wraps_llm_errors(core: DialogCore, llm: _FakeLLMProvider) -> None:
     """LLM exceptions are surfaced via DialogResult.error, not raised."""
     llm.error = ProviderError("boom")

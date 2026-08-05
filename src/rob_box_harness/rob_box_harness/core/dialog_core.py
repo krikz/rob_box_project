@@ -125,6 +125,7 @@ class DialogCore:
         history_trim_limit: int | None = None,
         inactivity_timeout: float | None = None,
         acceptance_gate: "AcceptanceGate | None" = None,
+        system_prompt: str | None = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -176,6 +177,7 @@ class DialogCore:
         self._memory = memory
         self._dsm = dsm
         self._user_id = user_id
+        self._system_prompt = system_prompt
         self._history_trim_limit = history_trim_limit
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
@@ -444,11 +446,22 @@ class DialogCore:
         if history is not None:
             return list(history)
         if self._history_trim_limit is None:
-            return []
+            out: list[LLMMessage] = []
+            if self._system_prompt:
+                out.append(LLMMessage(role="system", content=self._system_prompt))
+            return out
         recent_turns = await self._memory.load_recent(
             self._user_id, limit=self._history_trim_limit
         )
         out: list[LLMMessage] = []
+        # 🔴 FIX: system prompt обязателен первым сообщением — раньше
+        # dialogue_node грузил _system_prompt, но никогда не передавал
+        # его в LLM: deepseek работала БЕЗ системного промпта (все
+        # правила «ALWAYS execute_music_code», NO METALANGUAGE и т.д.
+        # не доходили до модели). Найдено через verbose-трейс 09:08:
+        # в messages не было [0] system.
+        if self._system_prompt:
+            out.append(LLMMessage(role="system", content=self._system_prompt))
         for turn in recent_turns:
             out.append(LLMMessage(role=turn.role, content=turn.content))
         return out
