@@ -602,4 +602,11 @@ def build_minimax_provider(
         timeout=timeout,
         retry=retry,
         client=client,
+        # 🔴 FIX (live 15:27): thinking=None — DEFAULT_THINKING_POLICY
+        # ({"type": "disabled"}) просачивался в settings.extra →
+        # _build_kwargs → create(thinking=...) → MiniMax API не принимает
+        # аргумент thinking → AsyncCompletions.create() TypeError →
+        # DialogCore error → Empty → «задумался». Voice-путь latency-sensitive,
+        # thinking не нужен.
+        thinking=None,
     )
