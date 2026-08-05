@@ -46,6 +46,7 @@ ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
 внешних соединений; см. PR #907 BLK-9.
 """
 
+import asyncio
 import concurrent.futures
 import io
 import json
@@ -248,6 +249,46 @@ SYNTHESIS_THREAD_NAME_PREFIX: str = "tts-synth"
 # shorter than the surrounding function call), so this is the same
 # primitive as the synthesis executor and not an unbounded fan-out.
 ASYNC_BRIDGE_MAX_WORKERS: int = 1
+
+# ────────────────────────────────────────────────────────────────────────
+# MiniMax TTS — single long-lived event loop (live 17:20)
+# ────────────────────────────────────────────────────────────────────────
+# 🔴 FIX (live 16:xx «MiniMax retry: Event loop is closed»): the MiniMax
+# provider owns an httpx.AsyncClient bound to the FIRST event loop it saw.
+# Every call to ``asyncio.run(coro)`` creates a fresh loop and closes it on
+# exit — so the second synthesis (or the first retry) runs the client
+# against a CLOSED loop → ``TTSError: Event loop is closed`` → TTS silently
+# drops speech (user hears nothing) until the node restarts.
+#
+# Fix: keep ONE event loop alive in a dedicated daemon thread and submit
+# every coroutine to it via ``run_coroutine_threadsafe``. The loop never
+# closes while the process lives, so the provider client stays valid.
+_TTS_LOOP_LOCK = threading.Lock()
+_TTS_LOOP: asyncio.AbstractEventLoop | None = None
+_TTS_LOOP_THREAD: threading.Thread | None = None
+
+
+def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
+    """Return the process-wide MiniMax TTS event loop (create on first use)."""
+    global _TTS_LOOP, _TTS_LOOP_THREAD
+    with _TTS_LOOP_LOCK:
+        if _TTS_LOOP is not None and not _TTS_LOOP.is_closed():
+            return _TTS_LOOP
+        _TTS_LOOP = asyncio.new_event_loop()
+        _TTS_LOOP_THREAD = threading.Thread(
+            target=_TTS_LOOP.run_forever,
+            daemon=True,
+            name="minimax-tts-loop",
+        )
+        _TTS_LOOP_THREAD.start()
+        return _TTS_LOOP
+
+
+def _run_in_tts_loop(coro) -> Any:
+    """Run *coro* on the process-wide TTS loop from any (sync) thread."""
+    loop = _ensure_tts_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()
 
 
 class TTSNode(Node):
@@ -2060,20 +2101,10 @@ class TTSNode(Node):
             if not chunks:
                 raise Exception("MiniMax stream yielded no audio chunks")
 
-        try:
-            loop = _asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None:
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=ASYNC_BRIDGE_MAX_WORKERS,
-            ) as ex:
-                ex.submit(lambda: _asyncio.run(_consume_and_publish())).result()
-        else:
-            _asyncio.run(_consume_and_publish())
+        # 🔴 FIX (live 16:xx «Event loop is closed»): единый вечный loop —
+        # см. _run_in_tts_loop. asyncio.run() здесь создавал бы новый loop,
+        # закрывая его после, ломая httpx-клиент провайдера.
+        _run_in_tts_loop(_consume_and_publish())
 
         return {
             "audio_np": np.concatenate(chunks),
@@ -2084,29 +2115,15 @@ class TTSNode(Node):
     def _synthesize_minimax(self, text: str, ssml_attributes: dict = None) -> dict:
         """Sync-обёртка над :meth:`_synthesize_minimax_with_retry`.
 
-        Синхронная ROS-нода не может просто await-нуть — оборачиваем через
-        ``asyncio.run`` если loop ещё не запущен, или планируем в существующем.
+        🔴 FIX (live 16:xx «Event loop is closed»): раньше оборачивали
+        через ``asyncio.run`` — каждый вызов создавал НОВЫЙ loop, а
+        провайдер держит httpx-клиент, привязанный к первому loop.
+        Теперь ВСЕ вызовы идут через процесс-глобальный вечный loop
+        (``_run_in_tts_loop``) — retry внутри одного синтеза и
+        последующие синтезы переиспользуют тот же loop.
         """
-        import asyncio
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
         coro = self._synthesize_minimax_with_retry(text, ssml_attributes)
-        if loop is not None:
-            # Если уже внутри event loop (например, в тестах) — создаём task.
-            # Но в ROS-ноде _synthesize_and_play синхронный, так что эта ветка
-            # в проде не срабатывает. Оставляем fallback на всякий случай.
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=ASYNC_BRIDGE_MAX_WORKERS,
-            ) as ex:
-                return ex.submit(lambda: asyncio.run(coro)).result()
-        # Нет активного loop (типичный кейс ROS callback) → asyncio.run.
-        return asyncio.run(coro)
+        return _run_in_tts_loop(coro)
 
     async def _stream_minimax_chunks(self, text: str, ssml_attributes: dict = None):
         """Стриминг MiniMax через ``provider.stream()`` для chunk-per-frame.

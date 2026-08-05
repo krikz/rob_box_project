@@ -33,6 +33,10 @@ class PlayAnimationTool(MCPTool):
         "error",
         "low_battery",
         "charging",
+        # 🔴 FIX (live 17:20): MiniMax M3 систематически шлёт "excited" —
+        # он в общем LLM-словаре эмоций, но тут его не было → валидация
+        # падала каждый раз. "excited" маппим на "happy" (та же эмоция).
+        "excited",
         # Дорожные
         "police_lights",
         "ambulance",
@@ -106,6 +110,12 @@ class PlayAnimationTool(MCPTool):
                 error=f"Неизвестная анимация: {animation}",
                 message=f"Доступные: {', '.join(self.AVAILABLE_ANIMATIONS)}",
             )
+
+        # 🔴 FIX (live 17:20): MiniMax M3 шлёт "excited" — его НЕТ на
+        # стороне робота (animation_player знает только happy и др.).
+        # Маппим на happy, чтобы и валидация прошла, и робот понял.
+        if animation == "excited":
+            animation = "happy"
 
         # Валидация длительности - если вне диапазона, устанавливаем минимальную
         if duration is not None:
