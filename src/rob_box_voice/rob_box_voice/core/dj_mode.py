@@ -53,7 +53,7 @@ class DJHook:
         persona_default: DJ persona fallback when none is set yet.
     """
 
-    dispatch: Callable[[str], Any]
+    dispatch: Callable[..., Any]  # Issue #992: signature is (prompt, from_tick=False)
     is_active: Callable[[], bool]
     is_dialogue_active: Callable[[], bool]
     persona_default: str = "ДиДжей РОббокс"
@@ -136,7 +136,9 @@ class DJModeController:
         self.state.transition_count = next_n
         self.state.next_transition_at = now + self.FALLBACK_INTERVAL_S
         self._logger.info(f"🎧 DJ auto-transition #{next_n}")
-        self._hook.dispatch(self.build_auto_prompt(next_n))
+        # Issue #992 Bug B — ``from_tick=True`` lets the dispatcher
+        # reset its synchronous-retry budget for this fresh transition.
+        self._hook.dispatch(self.build_auto_prompt(next_n), True)
 
     # ── Prompt builders ─────────────────────────────────────────────
 

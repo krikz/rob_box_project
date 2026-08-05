@@ -187,6 +187,7 @@ class DialogCore:
         text: str,
         *,
         history: Iterable[LLMMessage] | None = None,
+        is_dj_auto: bool = False,
     ) -> DialogResult:
         """Process a single user turn.
 
@@ -194,6 +195,17 @@ class DialogCore:
         reply, the new DSM state, and any error. Never raises — LLM
         exceptions are wrapped in ``result.error`` so the shell can
         log them without aborting the conversation loop.
+
+        ``is_dj_auto`` (issue #992) — when True the input is treated
+        as an autonomous DJ auto-transition: the wake-word classifier
+        is bypassed and the DSM is force-transitioned to DIALOGUE so
+        the LLM actually runs. Without this the DJ prompt
+        ``"[DJ_AUTO] ... Роббокс ..."`` matches the "роббокс" wake
+        trigger, ``on_user_input`` returns ``WAKE_WORD`` (instead of
+        ``STT_RESULT``), the DSM transition is a no-op on LISTENING,
+        and ``process_input`` silently skips the LLM call — which is
+        exactly the production symptom in issue #992 ("DJ cycle never
+        produces music, robot says 'задумался'").
 
         History trimming: if the caller passes ``history=None`` AND
         ``history_trim_limit`` was set at construction, the memory
@@ -236,11 +248,26 @@ class DialogCore:
         """
         result = DialogResult()
 
-        # 1. classify
-        event = self._dsm.on_user_input(text)
+        # 1. classify — DJ auto-transitions bypass the wake-word
+        #    classifier because their prompt intentionally mentions
+        #    "роббокс" / "диджей" (the persona), which would otherwise
+        #    short-circuit into a WAKE_WORD event and skip the LLM
+        #    call entirely (issue #992 root cause).
+        if is_dj_auto:
+            event = DialogueEvent.STT_RESULT
+        else:
+            event = self._dsm.on_user_input(text)
 
         # 2. transition
         self._dsm.on_event(event)
+        # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
+        # shell already drove the cycle, force-transition into DIALOGUE
+        # so the LLM gate fires. ``STT_RESULT`` from LISTENING
+        # normally does this — but a previous turn may have left the
+        # DSM in IDLE (e.g. silence timeout between transitions).
+        if is_dj_auto and self._dsm.current_state == DialogueStateKind.IDLE:
+            self._dsm.on_event(DialogueEvent.WAKE_WORD)
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
         result.new_state = self._dsm.current_state
 
         # 3. if we're now in DIALOGUE state, run the LLM

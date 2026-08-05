@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from typing import Any, List, Optional
 
@@ -171,6 +172,21 @@ class DialogueNode(Node):
         # LLM actually asked to stop music.
         self._pending_music_cleanup: bool = False
         self._active_batches: Dict[str, int] = {}
+        # Issue #992 Bug B / Bug C — track whether the currently
+        # in-flight turn was dispatched by the DJ auto-transition
+        # timer (set by ``_dispatch_dj_turn``, consumed and reset by
+        # ``_run_turn``). When the LLM skips ``execute_music_code`` we
+        # use this flag to decide whether to retry the auto-prompt
+        # synchronously instead of waiting for the next 5 s tick.
+        self._current_turn_is_dj_auto: bool = False
+        # Issue #992 Bug B — how many synchronous DJ retries have
+        # already fired in the current transition. Caps the retry
+        # loop so a stubborn LLM that keeps ignoring
+        # ``execute_music_code`` doesn't lock the dialogue node in an
+        # infinite coroutine chain. After ``MAX_DJ_AUTO_RETRIES`` the
+        # cycle gives up and lets the normal 5 s tick take over.
+        self._dj_auto_retry_count: int = 0
+        self.MAX_DJ_AUTO_RETRIES: int = 2
 
         # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
         # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
@@ -574,7 +590,7 @@ class DialogueNode(Node):
         )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
-    def _dispatch_dj_turn(self, user_input: str) -> None:
+    def _dispatch_dj_turn(self, user_input: str, from_tick: bool = False) -> None:
         """Issue #992 Bug A — DJ auto-transition dispatcher.
 
         Behaves like :meth:`_dispatch_turn` but:
@@ -591,8 +607,26 @@ class DialogueNode(Node):
           LLM call hasn't returned yet) we simply queue the next tick;
           :meth:`DJModeController.tick` already defers by 15 s when a
           dialogue is active, so collisions are rare and safe.
+        * flips ``self._current_turn_is_dj_auto`` so :meth:`_run_turn`
+          can apply DJ-specific post-turn guards (Bug B + Bug C).
+
+        ``from_tick`` distinguishes a fresh tick transition (resets the
+        Bug-B retry budget) from a synchronous retry triggered by the
+        music-guard in :meth:`_run_turn` (keeps the budget intact).
         """
-        self._dispatch_turn(user_input, is_dj_auto=True)
+        if from_tick:
+            self._dj_auto_retry_count = 0
+        self._current_turn_is_dj_auto = True
+        try:
+            self._dispatch_turn(user_input, is_dj_auto=True)
+        finally:
+            # ``_dispatch_turn`` schedules the coroutine on the asyncio
+            # loop and returns immediately, so the flag must stay set
+            # until the task finishes — reset it from ``_run_turn``
+            # instead. We keep a separate path here so the assertion
+            # below catches any future call site that forgets to clear
+            # the flag.
+            assert self._current_turn_is_dj_auto is True
 
     def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
@@ -616,17 +650,33 @@ class DialogueNode(Node):
         with self._task_lock:
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
+        was_dj_auto = self._current_turn_is_dj_auto
         try:
-            result: DialogResult = await self._core.process_input(user_input)
+            # Issue #992 — DJ auto-turns must bypass the wake-word
+            # classifier so the LLM is actually called. The DJ prompt
+            # intentionally mentions "роббокс" / "диджей" which would
+            # otherwise short-circuit into a no-op transition.
+            result: DialogResult = await self._core.process_input(
+                user_input, is_dj_auto=was_dj_auto,
+            )
             self._handle_result(result)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
+            result = None
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"❌ DialogCore error: {exc}")
             self._speak_direct("Что-то я задумался, повтори пожалуйста")
+            result = None
         finally:
+            # Issue #992 Bug B: ``_apply_music_guard`` may synchronously
+            # dispatch a follow-up DJ turn, which sets ``self._run_task``
+            # to a fresh coroutine. We must not wipe that reference here
+            # or the test driver (and any future hook that watches
+            # ``self._run_task``) would lose the retry. Only clear the
+            # slot when no replacement was scheduled.
             with self._task_lock:
-                self._run_task = None
+                if self._run_task is asyncio.current_task():
+                    self._run_task = None
             # Issue #935 v3: if LLM called stop_music(), defer cleanup until
             # TTS finishes.  Otherwise keep music playing until next dialogue.
             # Issue #992: a second stop_music() call from a follow-up LLM
@@ -662,6 +712,138 @@ class DialogueNode(Node):
             # here; otherwise the ROS state topic remains stuck at the
             # earlier DIALOGUE notification and scenario runners wait forever.
             self._publish_state()
+            # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
+            try:
+                self._apply_music_guard(
+                    was_dj_auto=was_dj_auto,
+                    user_input=user_input,
+                    tools_called=result.tools_called if result else (),
+                )
+            finally:
+                # Reset the DJ flag regardless of branch — it must only
+                # affect a single in-flight turn.
+                self._current_turn_is_dj_auto = False
+
+    # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
+
+    # Issue #992 Bug C — narrow keyword heuristic. ``трек`` and ``бит``
+    # are deliberately excluded because they fire on chit-chat like
+    # "роббокс какой трек посоветуешь?" (issue 992 test_user_normal_chat
+    # regression). Keep the list focused on unambiguous "play something
+    # NOW" commands so the spoken nudge only fires when the user clearly
+    # asked for generated music.
+    _MUSIC_GUARD_KEYWORDS = (
+        "спой",
+        "пой ",
+        "рэп",
+        "рап",
+        "диджей",
+        "dj ",
+        "dj-",
+        "песня",
+        "песню",
+        "зачитай",
+        "зачита",
+        "зачитывай",
+    )
+
+    def _user_wants_music(self, user_input: str) -> bool:
+        """Heuristic: does the user request music / a track?
+
+        Used by :meth:`_apply_music_guard` to decide whether Bug C's
+        code-side fallback should fire. The check is intentionally
+        narrow so we don't retry on ordinary chit-chat that happens
+        to mention "track" in passing.
+        """
+        if not user_input:
+            return False
+        low = user_input.lower()
+        return any(kw in low for kw in self._MUSIC_GUARD_KEYWORDS)
+
+    def _apply_music_guard(
+        self,
+        *,
+        was_dj_auto: bool,
+        user_input: str,
+        tools_called: tuple,
+    ) -> None:
+        """Post-turn guard that catches LLM music-skip regressions.
+
+        Issue #992 Bug B — DJ auto-transitions: the LLM was told
+        ``Сыграй трек #N через handle_music``, but it frequently
+        replies with just a spoken phrase and no ``execute_music_code``
+        tool call. Without this guard the DJ cycle silently produces
+        zero audio for that transition. We re-arm
+        ``next_transition_at`` to ``now + POSTPONE_INTERVAL_S`` so the
+        next tick fires shortly, AND publish a one-shot synthetic
+        prompt that injects a CRITICAL reminder to call the tool.
+
+        Issue #992 Bug C — user rap/song commands: even outside DJ
+        mode, when the user asks for a rap/poem/song and the LLM
+        forgets ``execute_music_code``, we publish a short spoken
+        acknowledgment so the user hears *something* and can repeat
+        the request. We deliberately do NOT auto-pick a beat without
+        user consent: that would surprise the operator.
+        """
+        tools_set = set(tools_called or ())
+        if "execute_music_code" in tools_set:
+            # Reset the retry counter on success so a future failure
+            # gets a fresh budget.
+            self._dj_auto_retry_count = 0
+            return
+        if was_dj_auto and self._dj.state.enabled:
+            # Bug B — DJ was supposed to play but didn't.
+            if self._dj_auto_retry_count >= self.MAX_DJ_AUTO_RETRIES:
+                self.get_logger().warning(
+                    "🎵 [issue 992 Bug B] DJ retry budget exhausted "
+                    f"({self._dj_auto_retry_count}/{self.MAX_DJ_AUTO_RETRIES}); "
+                    "letting 5 s tick take over"
+                )
+                self._dj_auto_retry_count = 0
+                return
+            self._dj_auto_retry_count += 1
+            self.get_logger().warning(
+                "🎵 [issue 992 Bug B] DJ auto-transition completed "
+                "without execute_music_code — forcing synchronous retry "
+                f"({self._dj_auto_retry_count}/{self.MAX_DJ_AUTO_RETRIES})"
+            )
+            self._dj.state.next_transition_at = (
+                time.time() + DJModeController.POSTPONE_INTERVAL_S
+            )
+            self._dispatch_dj_turn(self._build_dj_retry_prompt())
+            return
+        if self._user_wants_music(user_input):
+            # Bug C — user asked for rap/song/DJ but LLM skipped music.
+            self.get_logger().warning(
+                "🎵 [issue 992 Bug C] user asked for music but LLM "
+                f"skipped execute_music_code (tools={list(tools_set)!r}); "
+                "publishing spoken nudge"
+            )
+            self._speak_direct(
+                "Я тут растерялся — бит не запустился, попробуй ещё раз."
+            )
+
+    def _build_dj_retry_prompt(self) -> str:
+        """Synthetic auto-prompt for the Bug-B synchronous retry.
+
+        Re-uses the persona/theme context from
+        :class:`DJModeController` but appends a CRITICAL reminder —
+        the LLM has ignored the standard auto-prompt at least once,
+        so this retry escalates the instruction with an explicit tool
+        name and a no-tools rejection clause.
+        """
+        n = self._dj.state.transition_count
+        base = self._dj.build_auto_prompt(n)
+        return (
+            base
+            + "\n\n[CRITICAL] В прошлом цикле ты НЕ вызвал "
+            "execute_music_code — DJ-режим остался без музыки. "
+            "В этом цикле ОБЯЗАТЕЛЬНО вызови execute_music_code "
+            "(Renardo code) ДО любого speak_text. Если ты снова "
+            "не вызовешь execute_music_code, цикл будет считаться "
+            "пустым и робот озвучит 'задумался'. Никаких tools_calls, "
+            "кроме execute_music_code и speak_text, здесь не нужно."
+        )
     def _handle_result(self, result: DialogResult) -> None:
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")

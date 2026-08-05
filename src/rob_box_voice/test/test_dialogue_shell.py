@@ -304,14 +304,35 @@ class _TestableDialogueNode(DialogueNode):
     def _load_system_prompt(self) -> str:  # type: ignore[override]
         return ""
 
-    def _dispatch_turn(self, user_input: str) -> None:  # type: ignore[override]
+    def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False) -> None:  # type: ignore[override]
         """Schedule the turn on the test loop directly.
 
         The production shell uses ``asyncio.run_coroutine_threadsafe``
         to dispatch turns onto a loop running in a
         ``ThreadPoolExecutor``. For tests we own the loop, so we just
         create the task and let ``drive_one_turn`` run it.
+
+        ``is_dj_auto`` matches the production signature so DJ-mode
+        tests (issue #992 Bug A) can exercise the same code path the
+        shell uses in production. The flag is honoured by the parent's
+        ``_run_turn`` / ``_apply_music_guard``.
+
+        We mirror the production ``new_dialogue`` cleanup branch so
+        issue #992 Bug A regression suites can observe the publish:
+        when ``is_dj_auto`` is False and ``_pending_music_cleanup`` is
+        set, we clear the flag and publish the same
+        ``/mcp/music_cleanup`` reason="new_dialogue" message the
+        production shell would. DJ auto-transitions MUST skip this
+        publish.
         """
+        if is_dj_auto:
+            self.get_logger().debug(
+                "🎧 [issue 992 test] DJ auto-transition — skipping "
+                "new_dialogue music_cleanup"
+            )
+        elif self._pending_music_cleanup:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="new_dialogue")
         self._run_task = self._test_loop.create_task(self._run_turn(user_input))
 
     # ── Async helpers used by the tests ──────────────────────────────
@@ -323,20 +344,46 @@ class _TestableDialogueNode(DialogueNode):
         need to drive it. We use ``run_until_complete`` so any
         sub-tasks (e.g. ``asyncio.shield`` wrappers, awaited futures)
         are also drained.
+
+        Issue #992 Bug B: the post-turn music-guard may schedule a
+        synchronous retry via ``_dispatch_dj_turn`` while we are still
+        inside the first turn's ``finally`` block. That overwrites
+        ``self._run_task`` with a fresh coroutine — we must keep
+        draining until no new task appears, otherwise the retry never
+        actually runs in the test.
         """
-        for _ in range(20):
-            if self._run_task is not None:
-                break
-            time.sleep(0.005)
-        if self._run_task is None:
-            return
-        try:
-            self._test_loop.run_until_complete(self._run_task)
-        except asyncio.CancelledError:
-            pass
-        except RuntimeError:
-            # Task may already be done; ignore.
-            pass
+        for cycle in range(10):  # safety cap; 1 + MAX_DJ_AUTO_RETRIES is plenty
+            # Wait for a task to appear (e.g. ``_dispatch_turn`` races
+            # with the previous run's finally-block cleanup).
+            for _ in range(20):
+                if self._run_task is not None:
+                    break
+                time.sleep(0.005)
+            if self._run_task is None:
+                return
+            try:
+                self._test_loop.run_until_complete(self._run_task)
+            except asyncio.CancelledError:
+                pass
+            except RuntimeError:
+                # Task may already be done; ignore.
+                pass
+            # If the guard scheduled a follow-up turn, ``_run_task``
+            # was replaced by a non-done task — drain it too. Otherwise
+            # stop.
+            if self._run_task is None or self._run_task.done():
+                # ``_run_task`` may still be the finished task we just
+                # drove — drop the reference so the next dispatch
+                # starts fresh.
+                self._run_task = None
+                # Loop again only if a follow-up dispatch has populated
+                # a new task since we started the cycle.
+                for _ in range(20):
+                    if self._run_task is not None:
+                        break
+                    time.sleep(0.005)
+                if self._run_task is None:
+                    return
 
     def close(self) -> None:
         """Tear down the asyncio loop and the node."""
@@ -644,9 +691,13 @@ class TestDialogueShell(unittest.TestCase):
         # Patch the dispatch hook on the controller to record the call.
         # This isolates the tick → dispatch chain from the LLM path,
         # which is the piece that owns the timer-based trigger.
+        # Issue #992 Bug B — production signature is (prompt, from_tick=False);
+        # accept both so this test stays a unit-level spy.
         dispatched: list = []
         original_dispatch = self.node._dj._hook.dispatch
-        self.node._dj._hook.dispatch = lambda prompt: dispatched.append(prompt)
+        self.node._dj._hook.dispatch = lambda prompt, from_tick=False: dispatched.append(
+            (prompt, from_tick)
+        )
         try:
             self.node._dj.tick()
         finally:
@@ -655,7 +706,13 @@ class TestDialogueShell(unittest.TestCase):
             len(dispatched), 1,
             "DJ tick did not invoke dispatch exactly once",
         )
-        self.assertIn("[DJ_AUTO", dispatched[0])
+        self.assertIn("[DJ_AUTO", dispatched[0][0])
+        # Tick-driven dispatch must signal from_tick=True so the shell
+        # resets its Bug-B synchronous-retry budget for this fresh transition.
+        self.assertTrue(
+            dispatched[0][1],
+            "DJ tick dispatch must set from_tick=True (issue #992 Bug B)",
+        )
         self.assertEqual(self.node._dj.state.transition_count, 1)
 
     def test_dj_mode_tick_skips_when_dialogue_active(self):
