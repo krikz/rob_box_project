@@ -571,6 +571,18 @@ class TTSNode(Node):
         # requests are dropped by dialogue-id checks after barge-in.
         self._synthesis_lock = threading.Lock()
 
+        # 🔴 FIX (live 12:02 «анекдот перепутан»): FIFO-порядок воспроизведения.
+        # LLM вызвала 5 speak_text подряд (анекдот) — 5 задач ушли в пул
+        # параллельно, каждый ждал _synthesis_lock, и порядок воспроизведения
+        # стал порядком ЗАХВАТА lock, а не порядком отправки («Второй
+        # отвечает» сыграл раньше «Один говорит»). Решение: синтез идёт
+        # ПАРАЛЛЕЛЬНО (без lock — быстро, 4-5 фраз рендерятся сразу), а
+        # перед play_audio каждый worker ждёт своей очереди (play_seq),
+        # выданной в порядке приёма запросов (порядок LLM tool_calls).
+        self._play_seq_counter = 0        # выдаётся при submit (порядок приёма)
+        self._next_play_seq = 1           # какой seq сейчас можно играть
+        self._play_order_cond = threading.Condition()
+
         # Bounded synthesis executor (BLK-9 fix).
         #
         # Replaces the previous `threading.Thread(target=..., daemon=True)`
@@ -585,17 +597,6 @@ class TTSNode(Node):
         # blocking HTTP+ALSA work inside each worker — the executor only
         # bounds *thread count*, the semaphore + lock bound *in-flight work*.
         max_workers = max(1, min(4, int(self.get_parameter("synthesis_max_workers").value)))
-        # 🔴 FIX (live 12:02 «анекдот перепутан»): ThreadPoolExecutor с
-        # max_workers>1 + _synthesis_lock = ГОНКА за lock. LLM вызвала
-        # 5 speak_text подряд (анекдот) — 5 задач ушли в пул параллельно,
-        # каждый ждал lock, и порядок воспроизведения стал порядком
-        # ЗАХВАТА lock, а не порядком отправки («Второй отвечает» сыграл
-        # раньше «Один говорит»). _synthesis_lock всё равно сериализует
-        # и синтез, и проигрывание — параллелизма нет, есть только гонка.
-        # Решение: max_workers=1 → executor исполняет задачи строго в
-        # порядке submit (FIFO), а submit идёт из ROS-callback в порядке
-        # приёма фраз → порядок фраз сохраняется.
-        max_workers = 1
         max_queue = max(1, int(self.get_parameter("synthesis_max_queue").value))
         # Total in-flight cap = workers currently executing + pending in queue.
         # Once the cap is hit, submit() is rejected and the ROS callback
@@ -1097,8 +1098,14 @@ class TTSNode(Node):
             )
             return
         self._synthesis_in_flight += 1
+        # 🔴 FIX (12:02 FIFO): выдаём play_seq в порядке submit — это
+        # порядок приёма запросов из ROS-callback = порядок LLM tool_calls.
+        # Worker будет ждать своей очереди перед play_audio.
+        with self._play_order_cond:
+            self._play_seq_counter += 1
+            play_seq = self._play_seq_counter
         try:
-            future = self._synthesis_executor.submit(fn, *args)
+            future = self._synthesis_executor.submit(fn, *args, play_seq)
         except RuntimeError as exc:
             # Executor was shut down between our check and submit() — rare
             # but possible during node teardown.
@@ -1141,28 +1148,35 @@ class TTSNode(Node):
         batch_id: str = None,
         batch_index: int = None,
         batch_total: int = None,
+        play_seq: int = None,
     ):
-        """Serialize blocking synth/play work outside the ROS callback thread."""
-        with self._synthesis_lock:
-            if dialogue_id and self.current_dialogue_id != dialogue_id:
-                self.get_logger().warning(
-                    f"Dropping queued TTS for stale dialogue {dialogue_id[:8]}"
-                )
-                return
-            self._synthesize_and_play(
-                ssml,
-                text,
-                dialogue_id,
-                ssml_attributes,
-                speech_id,
-                batch_id,
-                batch_index,
-                batch_total,
+        """Синтез + воспроизведение вне ROS callback thread.
+
+        🔴 FIX (12:02 «анекдот перепутан»): _synthesis_lock УБРАН — при
+        max_workers=4 синтез идёт ПАРАЛЛЕЛЬНО (4-5 фраз рендерятся сразу,
+        быстро). Порядок воспроизведения обеспечивает FIFO-gate внутри
+        _synthesize_and_play (play_seq выдан в порядке приёма запросов).
+        """
+        if dialogue_id and self.current_dialogue_id != dialogue_id:
+            self.get_logger().warning(
+                f"Dropping queued TTS for stale dialogue {dialogue_id[:8]}"
             )
+            return
+        self._synthesize_and_play(
+            ssml,
+            text,
+            dialogue_id,
+            ssml_attributes,
+            speech_id,
+            batch_id,
+            batch_index,
+            batch_total,
+            play_seq,
+        )
 
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
-        batch_id: str = None, batch_index: int = None, batch_total: int = None,
+        batch_id: str = None, batch_index: int = None, batch_total: int = None, play_seq: int = None,
     ):
         """Синтез речи и воспроизведение."""
         # Issue #980 — ``batch_started_at`` measures the wall-clock span between
@@ -1393,46 +1407,63 @@ class TTSNode(Node):
                 self.publish_state("stopped")
                 return
 
-            # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
-            with ignore_stderr(enable=True):
-                self.current_stream = True  # Маркер что воспроизведение идёт
+            # 🔴 FIX (12:02 «анекдот перепутан»): FIFO-gate — ждём своей
+            # очереди воспроизведения. Синтез (выше) шёл ПАРАЛЛЕЛЬНО в
+            # пуле (быстро), но играть должны строго в порядке приёма
+            # запросов = порядок LLM tool_calls. Без gate 5 фраз анекдота
+            # играли в порядке завершения синтеза («Второй отвечает»
+            # раньше «Один говорит»).
+            if play_seq is not None:
+                with self._play_order_cond:
+                    while self._next_play_seq != play_seq:
+                        self._play_order_cond.wait()
+            try:
+                # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
+                with ignore_stderr(enable=True):
+                    self.current_stream = True  # Маркер что воспроизведение идёт
 
-                # Используем AudioPlaybackManager для синхронизированного доступа
-                success = self.playback_manager.play_audio(
-                    audio_data=audio_stereo,
-                    sample_rate=target_rate,
-                    device_index=self.device_index,
-                    blocking=True,  # Блокирующее воспроизведение для TTS
-                    timeout=5.0,
-                    node_name="tts_node",
-                )
-
-                if not success:
-                    self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
-                    self.current_stream = None
-                    # КРИТИЧНО: публикуем события завершения даже при ошибке!
-                    self.publish_state("ready")
-
-                    # Публикуем ошибку для MCP tools и animation_player
-                    self._publish_tts_finished(
-                        speech_id,
-                        success=False,
-                        error="Device unavailable",
-                        batch_id=batch_id,
-                        batch_index=batch_index,
-                        batch_total=batch_total,
-                        batch_started_at=batch_started_at,
-                        dialogue_id=dialogue_id,
+                    # Используем AudioPlaybackManager для синхронизированного доступа
+                    success = self.playback_manager.play_audio(
+                        audio_data=audio_stereo,
+                        sample_rate=target_rate,
+                        device_index=self.device_index,
+                        blocking=True,  # Блокирующее воспроизведение для TTS
+                        timeout=5.0,
+                        node_name="tts_node",
                     )
-                    self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
+            finally:
+                # Пропускаем следующую фразу (всегда, даже при исключении)
+                if play_seq is not None:
+                    with self._play_order_cond:
+                        self._next_play_seq += 1
+                        self._play_order_cond.notify_all()
 
-                    # Очищаем processing_dialogue_id
-                    if dialogue_id and self.processing_dialogue_id == dialogue_id:
-                        self.processing_dialogue_id = None
-
-                    return
-
+            if not success:
+                self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
                 self.current_stream = None
+                # КРИТИЧНО: публикуем события завершения даже при ошибке!
+                self.publish_state("ready")
+
+                # Публикуем ошибку для MCP tools и animation_player
+                self._publish_tts_finished(
+                    speech_id,
+                    success=False,
+                    error="Device unavailable",
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    batch_started_at=batch_started_at,
+                    dialogue_id=dialogue_id,
+                )
+                self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
+
+                # Очищаем processing_dialogue_id
+                if dialogue_id and self.processing_dialogue_id == dialogue_id:
+                    self.processing_dialogue_id = None
+
+                return
+
+            self.current_stream = None
 
             # Cleanup для устранения белого шума после воспроизведения
             self.cleanup_playback_noise()
