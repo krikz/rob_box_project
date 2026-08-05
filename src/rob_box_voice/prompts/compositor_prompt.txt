@@ -133,23 +133,21 @@ When the user asks to "rap", "recite a poem", "tell a story with music" — the 
 - STRICT TRIGGER: DJ logic is ONLY for explicit DJ / party requests.
   Required signals: "диджей", "DJ", "режим диджея", "вечеринка", "party", "сет", "club set".
   Words like "бродячий музыкант", "циркач", "уличный артист", "шоу", "как артист" are NOT DJ triggers.
-  For those performer-role requests: play one-off music via `handle_music(...)` only, without `save_dj_theme(...)` or DJ planning.
-- If the user starts a DJ party / asks the robot to be a DJ:
-  1. If they gave a DJ name/persona — call `save_dj_persona(...)`
-  2. Call `handle_music(...)` to start the thematic track and enable DJ mode
-  3. Then call `speak_text(...)` yourself for the DJ intro phrase
-- If the user CHANGES the party theme during active DJ mode:
-  1. Call `save_dj_theme(...)`
-  2. Immediately call `handle_music(...)` so the music changes now, not on the next timer tick
-  3. Then optionally call `speak_text(...)` with a short acknowledgement
-- Do NOT call `save_dj_theme(...)` for a mere performance style tweak.
-  "сделай как циркач", "будь бродячим музыкантом", "играй как уличный артист" = local style change, not a new party theme.
-  If DJ mode is inactive, these requests should stay one-off music requests.
-  If DJ mode is already active, treat them as LOCAL current-track tweaks unless the user explicitly says the whole party/theme changed.
-- If the user asks for a LOCAL tweak during DJ mode (e.g. add vocal, lower bass, add balalaika):
-  call only `handle_music(...)` for the current track.
-- If the user asks for a GLOBAL set rewrite (e.g. whole set with vocals / all tracks house):
-  call `save_dj_set_plan(...)`, then `handle_music(...)`.
+  |  For those performer-role requests: play one-off music via `handle_music(...)` only, without `set_dj_mode(enabled=true)` or DJ planning.
+  |- If the user starts a DJ party / asks the robot to be a DJ:
+    1. Pass the DJ persona/theme into `handle_music(...)` (e.g. `handle_music("DJ Козленок на вечеринке в стиле диско")`) — it will both start the music and enable DJ mode internally
+    2. Then call `speak_text(...)` yourself for the DJ intro phrase (mention the persona if user gave one, e.g. "Я диджей Козленок, диско для вас!")
+  |- If the user CHANGES the party theme during active DJ mode:
+    1. Call `handle_music(...)` with the new theme immediately so the music changes now, not on the next timer tick
+    2. Then optionally call `speak_text(...)` with a short acknowledgement
+  |- Do NOT enable DJ mode for a mere performance style tweak.
+    "сделай как циркач", "будь бродячим музыкантом", "играй как уличный артист" = local style change, not a new party theme.
+    If DJ mode is inactive, these requests should stay one-off music requests.
+    If DJ mode is already active, treat them as LOCAL current-track tweaks unless the user explicitly says the whole party/theme changed.
+  |- If the user asks for a LOCAL tweak during DJ mode (e.g. add vocal, lower bass, add balalaika):
+    call only `handle_music(...)` for the current track.
+  |- If the user asks for a GLOBAL set rewrite (e.g. whole set with vocals / all tracks house):
+    call `handle_music(...)` with the new theme — it will rebuild the set internally.
 - To stop DJ mode — ONLY on explicit user request ("хватит диджеить", "выключи музыку", "стоп музыку"): call `handle_music("Stop DJ mode: set_dj_mode(enabled=false) + stop_music")`,
   then `speak_text(...)`.
   ⚠️ This is the ONLY case where stop_music is allowed — after rap/poem/singing NEVER stop music yourself, the system stops it via tts_batch_complete!
@@ -188,7 +186,7 @@ Example: handle_music returned "Started jazz beat 120bpm, 3 patterns" →
   handle_music("play a different busker-style melody for point B") →
   → "done"
 
-❌ Wrong: "как циркач" or "как бродячий музыкант" → save_dj_theme(...) or DJ mode by itself.
+❌ Wrong: "как циркач" or "как бродячий музыкант" → enabling DJ mode (`set_dj_mode(enabled=true)`) by itself.
 
 ✅ Status: "What's the battery level?"
   handle_status("get_battery_level") →
