@@ -1,17 +1,20 @@
-# Copyright (c) 2024-2026 Rob Box Project. See LICENSE file for details.
+﻿# Copyright 2024-2026 Rob Box Project
+#
+# Licensed under the MIT License. See LICENSE file for details.
+# SPDX-License-Identifier: MIT
 """Unit tests for AnimationPlayer.play_animation() (gap G-ANIM fix).
 
 The bug being tested: before this fix the node called ``load_animation()``
 followed by ``play()``. When the previous playback was still running,
 ``play()`` logged ``'Animation already playing'`` and returned False
-without cancelling the previous thread — so two playback loops ended up
+without cancelling the previous thread â€” so two playback loops ended up
 racing over ``current_animation`` and spamming the same WARN ~21 times
 per dialog (see ``voice_v3_postdeploy.log``).
 
-Acceptance (per 06-ARCHITECT-REVIEW-V3.md §2.G-ANIM):
+Acceptance (per 06-ARCHITECT-REVIEW-V3.md Â§2.G-ANIM):
 
 * ``play_animation()`` on a running player replaces the previous thread
-  cleanly — no ``'Animation already playing'`` WARN.
+  cleanly â€” no ``'Animation already playing'`` WARN.
 * Reload is skipped when the same manifest is requested twice in a row
   (no needless publisher churn).
 * State is consistent under the lock (no half-written
@@ -57,7 +60,7 @@ class TestAnimationPlayerPlayAnimation:
 
         Before the fix, the second call hit ``play()``'s
         ``is_playing`` guard and returned ``False`` while the old
-        thread kept running — exactly the production race we are
+        thread kept running â€” exactly the production race we are
         closing.
         """
         assert player.play_animation('idle.yaml') is True
@@ -83,7 +86,7 @@ class TestAnimationPlayerPlayAnimation:
         assert player.current_animation.name == 'talking'
 
         # The old thread should be gone and a new one in its place.
-        # First thread's stop_event was set — its loop returned.
+        # First thread's stop_event was set â€” its loop returned.
         assert cancelled.is_set() or not first_thread.is_alive()
         # The new playback_thread is the freshly-spawned one.
         assert player.playback_thread is not first_thread
@@ -94,7 +97,7 @@ class TestAnimationPlayerPlayAnimation:
         """The exact WARN string that spammed the log must not appear.
 
         Production log evidence:
-            ``voice_v3_postdeploy.log:278,318,...,520`` — 21
+            ``voice_v3_postdeploy.log:278,318,...,520`` â€” 21
             occurrences of ``'Animation already playing'`` in 145s
             of dialog.
         """
@@ -132,7 +135,7 @@ class TestAnimationPlayerPlayAnimation:
             player.play_animation('idle.yaml')
             player.play_animation('idle.yaml')  # second call should skip
 
-        # Loader only consulted once — the cached manifest is reused.
+        # Loader only consulted once â€” the cached manifest is reused.
         assert spy.call_count == 1
         # And the state still points at the same animation.
         assert player.current_animation.name == 'idle'
@@ -140,7 +143,7 @@ class TestAnimationPlayerPlayAnimation:
     def test_play_animation_reloads_when_manifest_changes(
         self, player,
     ) -> None:
-        """Different manifest = fresh load — regression guard."""
+        """Different manifest = fresh load â€” regression guard."""
         with patch.object(
             player.loader,
             'load_manifest',
@@ -154,7 +157,7 @@ class TestAnimationPlayerPlayAnimation:
     def test_play_animation_returns_false_on_missing_manifest(
         self, player,
     ) -> None:
-        """Failure path: loader raises → returns ``False``, state preserved."""
+        """Failure path: loader raises â†’ returns ``False``, state preserved."""
         # First load the idle animation cleanly.
         assert player.play_animation('idle.yaml') is True
 
@@ -212,7 +215,7 @@ class TestAnimationPlayerPlayAnimation:
         assert player.current_animation is not None
 
         # And the worker threads didn't leak any "Animation already
-        # playing" warnings — the load+play path never reaches the
+        # playing" warnings â€” the load+play path never reaches the
         # old play() method's guard.
         warn_mock = player.node._logger.warn
         offending = [
