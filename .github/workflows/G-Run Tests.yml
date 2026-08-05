@@ -55,9 +55,16 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
-          # Create workspace — exclude vendor submodules (not our code to lint)
+          # Create workspace — exclude vendor submodules (not our code to lint).
+          # Also copy sibling directories (docker/, migrations/, docs/...) so
+          # tests can resolve paths like ``../../docker/vision/...`` relative
+          # to repo root when the tests are copied into test_ws/src/.
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Sibling directories referenced by tests (NOT compiled by colcon).
+          for d in docker migrations docs; do
+            [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
+          done
 
           # Build packages (use --packages-up-to to include dependencies)
           cd ${{ github.workspace }}/test_ws

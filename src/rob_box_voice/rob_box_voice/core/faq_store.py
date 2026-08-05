@@ -7,6 +7,7 @@ import sqlite3
 import struct
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .voice_memory import _SQLITE_VEC_AVAILABLE, OllamaEmbedder
@@ -110,19 +111,7 @@ class FAQStore:
         if migrations_dir:
             self.migrations_dir = migrations_dir
         else:
-            # Try Docker volume mount path first (/migrations), then fall back to repo-relative path
-            _docker_mount = "/migrations"
-            _repo_relative = os.path.normpath(
-                os.path.join(
-                    os.path.dirname(__file__),
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "migrations",
-                )
-            )
-            self.migrations_dir = _docker_mount if os.path.isdir(_docker_mount) else _repo_relative
+            self.migrations_dir = self._find_migrations_dir()
 
         self._run_migrations()
         self._vec_loaded = self._load_vec_extension()
@@ -139,6 +128,33 @@ class FAQStore:
         stored_dim = self._get_meta_int("faq_embedding_dim")
         if stored_dim and self._vec_loaded:
             self._ensure_vec_table(stored_dim)
+
+    @staticmethod
+    def _find_migrations_dir() -> str:
+        """Locate the project ``migrations/`` directory.
+
+        Resolution order:
+        1. ``/migrations`` — runtime mount in Docker.
+        2. Walk up from this source file looking for a ``migrations/`` sibling
+           of ``src/`` — works for both the development source tree and a
+           colcon-installed package (because colcon copies only ``src/``,
+           the relative layout is ``<root>/src/rob_box_voice/...``).
+        3. The legacy 4-level-up path, preserved for backwards compatibility.
+        """
+        _docker_mount = "/migrations"
+        if os.path.isdir(_docker_mount):
+            return _docker_mount
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        for parent in [here, *Path(here).parents]:
+            candidate = os.path.join(parent, "migrations")
+            if os.path.isdir(candidate):
+                return candidate
+
+        # Legacy fallback (4 parents up from src/rob_box_voice/core/).
+        return os.path.normpath(
+            os.path.join(here, "..", "..", "..", "..", "migrations")
+        )
 
     def _run_migrations(self) -> None:
         """Apply SQL migrations from ``migrations_dir`` in numeric filename order.
