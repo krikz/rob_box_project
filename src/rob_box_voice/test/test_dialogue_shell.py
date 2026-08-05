@@ -304,7 +304,12 @@ class _TestableDialogueNode(DialogueNode):
     def _load_system_prompt(self) -> str:  # type: ignore[override]
         return ""
 
-    def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False) -> None:  # type: ignore[override]
+    def _dispatch_turn(  # type: ignore[override]
+        self,
+        user_input: str,
+        is_dj_auto: bool = False,
+        is_babble_retry: bool = False,
+    ) -> None:
         """Schedule the turn on the test loop directly.
 
         The production shell uses ``asyncio.run_coroutine_threadsafe``
@@ -333,7 +338,11 @@ class _TestableDialogueNode(DialogueNode):
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         self._run_task = self._test_loop.create_task(
-            self._run_turn(user_input, is_dj_auto=is_dj_auto),
+            self._run_turn(
+                user_input,
+                is_dj_auto=is_dj_auto,
+                is_babble_retry=is_babble_retry,
+            ),
         )
 
     # ── Async helpers used by the tests ──────────────────────────────
