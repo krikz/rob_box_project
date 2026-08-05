@@ -61,6 +61,60 @@ ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
+# Issue #992 Bug D — banned metalanguage openers. When the LLM returns
+# plain text (no ``speak_text`` call) that begins with one of these
+# phrases — e.g. "Зачитаю рэп про космос!", "Могу бит добавить,
+# хочешь?", "Слушай, сейчас расскажу..." — the user hears a meta-
+# promise instead of the actual performance. We catch that pattern at
+# the dialogue_node boundary and force a single retry with a CRITICAL
+# prompt-level reminder.
+#
+# The list is lowercase, comma/space separated, and checked via a
+# substring match on the first ~80 chars of the LLM output (after
+# strip_markdown). Add new phrases when the LLM invents a new opener;
+# keep the list tight to avoid false positives on legitimate answers.
+BABBLE_BANNED_OPENERS: tuple = (
+    "зачит",   # зачитаю / зачитаем / зачитываю
+    "погнали",  # погнали! / ну что, погнали?
+    "могу ",    # могу бит добавить, могу спеть
+    "хочешь",  # хочешь ещё? / хочешь послушать?
+    "сейчас ",  # сейчас устроим / сейчас расскажу
+    "устроим",  # устроим концерт / устроим вечеринку
+    "давай-ка",  # давай-ка я спою
+    "давай ",  # давай я / давай попробуем
+    "слушай,",  # слушай, сейчас ...
+    "слушай ",
+    "окей, ",
+    "окей ",
+    "так, ",
+    "так ",
+    "ну что ж",
+    "переключаюсь",
+    "переключ",
+)
+
+# Issue #992 Bug D — keywords that mark the user request as a
+# performance command. When the LLM babbles on a performance request
+# we *must* retry, because the alternative is the user hearing nothing
+# (the LLM promised but never spoke). When the user just asked a
+# normal question and the LLM babbled, we still retry but the
+# consequence is less severe — the user hears ONE meta-phrase instead
+# of an answer. Keeping the heuristic narrow prevents false positives
+# on ordinary chit-chat that happens to start with «слушай».
+BABBLE_PERFORMANCE_KEYWORDS: tuple = (
+    "рэп", "реп", "rap",
+    "песн", "song", "песню", "песня",
+    "стих", "стишок", "poem", "стихотворен",
+    "зачитай", "прочитай", "прочти",
+    "спой", "пой", "спела",
+    "сыграй", "играй",
+    "музык", "мелоди", "бит", "трек",
+    "диджей", "dj ",
+    "концерт",
+    "джаз", "рок", "блюз", "частушки", "частушк",
+)
+
+
 class DialogueNode(Node):
     """ROS2 shell that composes DialogCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
@@ -181,6 +235,14 @@ class DialogueNode(Node):
         # cycle gives up and lets the normal 5 s tick take over.
         self._dj_auto_retry_count: int = 0
         self.MAX_DJ_AUTO_RETRIES: int = 2
+
+        # Issue #992 Bug D — metalanguage / babble detector.
+        # ``True`` after a single metalanguage retry has already been
+        # dispatched for the current user turn. We only allow ONE
+        # babble retry to avoid an infinite LLM ping-pong; if the LLM
+        # babbles again after the retry, we fall through to publish the
+        # meta-text verbatim and let the operator debug from logs.
+        self._babble_retry_used: bool = False
 
         # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
         # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
@@ -634,7 +696,13 @@ class DialogueNode(Node):
             self._dj_auto_retry_count = 0
         self._dispatch_turn(user_input, is_dj_auto=True)
 
-    def _dispatch_turn(self, user_input: str, is_dj_auto: bool = False, was_idle: bool = False) -> None:
+    def _dispatch_turn(
+        self,
+        user_input: str,
+        is_dj_auto: bool = False,
+        was_idle: bool = False,
+        is_babble_retry: bool = False,
+    ) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
         # guard the LLM cycle is reset mid-track, which in turn trips the
@@ -658,10 +726,21 @@ class DialogueNode(Node):
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         asyncio.run_coroutine_threadsafe(
-            self._run_turn(user_input, is_dj_auto=is_dj_auto), self._loop,
+            self._run_turn(
+                user_input,
+                is_dj_auto=is_dj_auto,
+                is_babble_retry=is_babble_retry,
+            ),
+            self._loop,
         )
 
-    async def _run_turn(self, user_input: str, *, is_dj_auto: bool = False) -> None:
+    async def _run_turn(
+        self,
+        user_input: str,
+        *,
+        is_dj_auto: bool = False,
+        is_babble_retry: bool = False,
+    ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
@@ -670,6 +749,25 @@ class DialogueNode(Node):
         # synchronous DJ retry dispatched from inside this turn's
         # ``finally`` block does not race with the parent's flag reset.
         was_dj_auto = is_dj_auto
+        # Issue #992 Bug D — reset the babble-retry budget only at the
+        # TOP of a *user-initiated* turn. When ``is_babble_retry=True``
+        # we are inside the LLM-triggered follow-up dispatched by
+        # :meth:`_check_babble_and_retry`, and the flag MUST stay True
+        # so a still-babbling retry response is not escalated to a
+        # second retry (which would loop forever).
+        if not is_babble_retry:
+            self._babble_retry_used = False
+        # Issue #992 Bug D — when the babble detector schedules a retry
+        # we MUST NOT end the dialogue at the bottom of this turn. The
+        # retry's ``_run_turn`` will run on the same DSM session and
+        # needs to find DIALOGUE (or at least LISTENING) state so the
+        # wake-word classifier short-circuits to STT_RESULT and the
+        # LLM gate fires. Without this guard the first turn's
+        # unconditional ``DIALOGUE_END`` drops the DSM back to IDLE,
+        # the retry's ``process_input`` classifies the synthetic
+        # prompt as STT_RESULT but stays in IDLE (no-op), and the
+        # LLM is never called — the user hears nothing.
+        babble_retry_pending = False
         try:
             # Issue #992 — DJ auto-turns must bypass the wake-word
             # classifier so the LLM is actually called. The DJ prompt
@@ -678,7 +776,8 @@ class DialogueNode(Node):
             result: DialogResult = await self._core.process_input(
                 user_input, is_dj_auto=was_dj_auto,
             )
-            self._handle_result(result)
+            self._handle_result(result, user_input=user_input)
+            babble_retry_pending = bool(self._babble_retry_used)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
             result = None
@@ -743,11 +842,6 @@ class DialogueNode(Node):
                         "🎵 [issue 992] music_cleanup already pending — "
                         "ignoring redundant re-arm"
                     )
-            # 🔴 FIX (issue 992 live 09:09): LLM-цикл завершён — если pending
-            # cleanup ещё не отправлен (его batch_complete пришёл ВО ВРЕМЯ
-            # цикла, например от prelude-прелюдии, и был отложен моей
-            # проверкой run_task.done()), а активных batch больше нет —
-            # отправляем cleanup СЕЙЧАС. Иначе музыка зависнет до TTL 300s.
             if self._pending_music_cleanup and not self._active_batches:
                 self._pending_music_cleanup = False
                 self._publish_music_cleanup(reason="tts_batch_complete")
@@ -755,7 +849,16 @@ class DialogueNode(Node):
                     "🎵 turn finished, no active batches — fired music_cleanup "
                     "(issue 992 prelude-deferral catch-up)"
                 )
-            if self._dsm.current_state == DialogueStateKind.DIALOGUE:
+            # Issue #992 Bug D — defer the DIALOGUE_END transition
+            # when the babble detector scheduled a retry. The retry's
+            # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
+            # LLM gate fires; otherwise the synthetic prompt is
+            # classified as STT_RESULT but the state stays in IDLE
+            # (no-op), and the user never hears the retry answer.
+            if (
+                self._dsm.current_state == DialogueStateKind.DIALOGUE
+                and not babble_retry_pending
+            ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             # DialogCore completes the DIALOGUE → IDLE transition itself.
             # Publish the resulting state even when no transition is needed
@@ -810,6 +913,158 @@ class DialogueNode(Node):
             return False
         low = user_input.lower()
         return any(kw in low for kw in self._MUSIC_GUARD_KEYWORDS)
+
+    # ── Issue #992 Bug D — metalanguage / babble detection ───────────
+
+    def _is_metalanguage_babble(self, spoken_text: str) -> bool:
+        """Issue #992 Bug D — does this LLM output read as meta-talk?
+
+        Returns ``True`` when the LLM final response text starts with a
+        known metalanguage opener («зачита», «могу», «хочешь»,
+        «сейчас», «устроим», «погнали», «давай», «слушай», «окей»,
+        «так», «переключ», «ну что ж»). The check operates on the
+        first 80 chars after :func:`strip_markdown` so a lone "**"
+        that survived cleaning cannot mask the opener.
+
+        The detector is intentionally *conservative*: a normal answer
+        that happens to contain «слушай» somewhere in the middle is
+        safe — only the first 80 chars are inspected. When in doubt,
+        return ``False``; :meth:`_check_babble_and_retry` will fall
+        through to the standard TTS publish path.
+        """
+        if not spoken_text:
+            return False
+        head = spoken_text[:80].lower().lstrip(" \t*#>-")
+        # Match the opener only at the START of the head or inside the
+        # first 30 chars (after stripping). 30 chars is enough to cover
+        # «Слушай, сейчас расскажу...» but short enough to skip
+        # legitimate mid-sentence uses like «Если хочешь, могу
+        # остановиться» or «А сейчас продолжу маршрут».
+        opener_zone = head[:30]
+        return any(
+            opener_zone.startswith(opener) or f" {opener}" in opener_zone
+            for opener in BABBLE_BANNED_OPENERS
+        )
+
+    def _user_wants_performance(self, user_input: str) -> bool:
+        """Issue #992 Bug D — does the user request a *performance*?
+
+        Used to decide whether a metalanguage reply is a hard bug
+        (user asked for a rap, robot returned "Зачитаю рэп про X!") or
+        just a stylistic miss (user asked "что нового?", robot replied
+        "Слушай, у меня тут..." — still answer-shaped, just informal).
+        """
+        if not user_input:
+            return False
+        low = user_input.lower()
+        return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
+
+    def _check_babble_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #992 Bug D — single-shot babble retry dispatcher.
+
+        Inspects ``spoken`` (the LLM final text after strip_markdown)
+        and decides whether to force ONE retry with a CRITICAL
+        reminder. Returns ``True`` when a retry was scheduled (so the
+        caller should skip the regular TTS publish), ``False`` when the
+        detector passed and the caller should proceed normally.
+
+        Retry rules — all must hold for a retry to fire:
+        1. ``speak_text`` was NOT called this cycle (already handled
+           by the anti-duplicate path otherwise).
+        2. ``spoken`` is non-empty and starts with a banned opener
+           (see :data:`BABBLE_BANNED_OPENERS`).
+        3. The user request looks like a performance command OR the
+           babble phrase is unambiguously a "promise to do" — i.e. the
+           opener is in the *promise* subset («зачит», «погнали»,
+           «устроим», «переключ», «давай-ка»). Other openers
+           («слушай,», «окей,», «так,») only retry when the user
+           explicitly asked for a performance.
+        4. We have NOT already used our one-shot babble retry for
+           this turn (avoids an infinite LLM ping-pong).
+        """
+        if "speak_text" in (tools_called or ()):
+            return False
+        if not spoken:
+            return False
+        if self._babble_retry_used:
+            return False
+        if not self._is_metalanguage_babble(spoken):
+            return False
+        user_wants_perf = self._user_wants_performance(user_input or "")
+        if not user_wants_perf:
+            # The promise-only subset always retries regardless of
+            # user_input — these phrases are NEVER valid answers.
+            promise_only = (
+                "зачит", "погнали", "устроим",
+                "переключ", "давай-ка",
+            )
+            head = spoken[:60].lower()
+            if not any(p in head for p in promise_only):
+                return False
+        # Issue #992 Bug D — the retry turn needs the same DSM state
+        # transitions as a real STT input (IDLE → LISTENING → DIALOGUE)
+        # — otherwise DialogCore's process_input sees IDLE and returns
+        # an empty result, which trips the
+        # "Что-то я задумался, повтори пожалуйста" fallback. This is
+        # exactly the wake-word gate logic from ``_on_stt``.
+        try:
+            from rob_box_harness.core.dialogue_state_machine import (
+                DialogueEvent as _DE,
+                DialogueStateKind as _DSK,
+            )
+            if self._dsm.current_state == _DSK.IDLE:
+                self._dsm.on_event(_DE.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(_DE.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            # dialog_state_machine is part of rob_box_harness; if it
+            # ever disappears the safe default is to skip the
+            # transition and let process_input return an empty result.
+            pass
+        # Mark the retry as used BEFORE dispatching so a re-entrant
+        # call from the retry itself can never escalate to a second
+        # retry.
+        self._babble_retry_used = True
+        retry_prompt = self._build_babble_retry_prompt(user_input or "")
+        self.get_logger().warning(
+            "🗣️ [issue 992 Bug D] LLM babble detected — retrying once with "
+            f"CRITICAL reminder (head={spoken[:60]!r})"
+        )
+        self._dispatch_turn(retry_prompt, is_babble_retry=True)
+        return True
+
+    def _build_babble_retry_prompt(self, user_input: str) -> str:
+        """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
+
+        Echoes the original ``user_input`` so the LLM has the request
+        in context, then appends a CRITICAL instruction that names the
+        babble pattern and demands a tool-call reply (no plain text
+        promises).
+        """
+        return (
+            f"{user_input}\n\n"
+            "[CRITICAL] Твой предыдущий ответ был метатекст "
+            "(начинался с «зачит», «могу», «хочешь», «сейчас», "
+            "«устроим», «погнали», «слушай», «давай», «так» или "
+            "«переключ») — пользователь слышит пустую болтовню "
+            "вместо результата.\n"
+            "❌ ЗАПРЕЩЕНО отвечать текстом-обещанием. "
+            "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
+            "  • rap/песня → execute_music_code + speak_text(lyrics),\n"
+            "  • поэзия → speak_text(...) × N строк,\n"
+            "  • мелодия → execute_music_code(...),\n"
+            "  • анекдот → speak_text(...) × N.\n"
+            "После последнего speak_text верни 'done'. Никаких "
+            "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "
+            "'Могу бит добавить, хочешь?' — это BUG."
+        )
 
     def _apply_music_guard(
         self,
@@ -895,7 +1150,23 @@ class DialogueNode(Node):
             "пустым и робот озвучит 'задумался'. Никаких tools_calls, "
             "кроме execute_music_code и speak_text, здесь не нужно."
         )
-    def _handle_result(self, result: DialogResult) -> None:
+    def _handle_result(
+        self,
+        result: DialogResult,
+        user_input: Optional[str] = None,
+    ) -> None:
+        """Publish (or swallow) the LLM response for one turn.
+
+        ``user_input`` is threaded through from :meth:`_run_turn` so
+        :meth:`_check_babble_and_retry` can correlate the LLM reply
+        with the user request when deciding whether the response
+        reads as metalanguage / babble (issue #992 Bug D). The
+        parameter is optional for backwards compatibility with any
+        external caller that bypasses :meth:`_run_turn`; when
+        ``None`` the babble-retry path falls back to "promise-only"
+        detection which is still safe (no false positives on
+        ordinary answers).
+        """
         if result.error is not None:
             self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
         spoken = strip_history_marker(result.spoken_text or "")
@@ -937,6 +1208,18 @@ class DialogueNode(Node):
                     f"🔇 [issue 988] speak_text called — final text skipped "
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
+            return
+        # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
+        # synchronous retry with a CRITICAL prompt reminder when the
+        # LLM replied with meta-talk instead of performing the request.
+        # Returns ``True`` when a retry was scheduled; in that case we
+        # MUST NOT publish the meta-text to TTS — otherwise the user
+        # would hear the babble AND then the retry answer.
+        if spoken and self._check_babble_and_retry(
+            spoken=spoken,
+            user_input=user_input,
+            tools_called=tools_called,
+        ):
             return
         if not spoken:
             self.get_logger().warning("⚠️ Empty assistant response — fallback")
