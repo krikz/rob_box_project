@@ -423,11 +423,20 @@ class DialogueStateMachine:
 
         # Silence commands — check FIRST so "роббокс замолчи" is
         # treated as SILENCE_COMMAND, not WAKE_WORD.
+        # 🔴 FIX (live 09:32): «молчи» — ТОЛЬКО как отдельная команда
+        # (точное совпадение). Подстрока «молчи» в составе фразы
+        # («сыграй баха и молчи просто играй» = играй без комментариев)
+        # НЕ должна уводить DSM в SILENCED — иначе LLM не вызывается
+        # и робот отвечает «Что-то я задумался».
         silence_triggers = (
-            "тихо", "молчи", "замолчи", "хватит", "стоп",
+            "тихо", "замолчи", "хватит", "стоп",
             "помолчи", "заткнись", "умолкни",
         )
+        # Точные команды (вся фраза = команда замолчать)
+        exact_silence = ("молчи", "молчать", "тишина", "тише")
         if any(trigger in text_lower for trigger in silence_triggers):
+            return DialogueEvent.SILENCE_COMMAND
+        if text_lower.strip() in exact_silence:
             return DialogueEvent.SILENCE_COMMAND
 
         # Wake words
