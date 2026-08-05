@@ -505,11 +505,16 @@ class DialogueNode(Node):
             self._publish_state()
         self._dsm.on_event(DialogueEvent.STT_RESULT)
         self._publish_state()
+        raw_user_command = clean
         if self._dj.state.enabled:
             clean = self._dj.preamble() + clean
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
-        self._dispatch_turn(clean, was_idle=was_idle)
+        # 🔴 FIX (live 12:45): Bug C guard должен смотреть ТОЛЬКО оригинальную
+        # команду юзера, а не текст с DJ-preamble. Preamble содержит
+        # «диджей: ...» — guard видел его и думал «юзер просит музыку»,
+        # нудил Bug C и LLM начинала DJ-сессию вместо анекдота.
+        self._dispatch_turn(clean, was_idle=was_idle, raw_user_command=raw_user_command)
     def _on_tts_finished(self, msg: String) -> None:
         """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
 
@@ -702,6 +707,7 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
+        raw_user_command: str | None = None,
     ) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
@@ -730,6 +736,7 @@ class DialogueNode(Node):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                raw_user_command=raw_user_command,
             ),
             self._loop,
         )
@@ -740,6 +747,7 @@ class DialogueNode(Node):
         *,
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
+        raw_user_command: str | None = None,
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
@@ -874,7 +882,7 @@ class DialogueNode(Node):
             # retry as part of this very turn cycle.
             self._apply_music_guard(
                 was_dj_auto=was_dj_auto,
-                user_input=user_input,
+                user_input=raw_user_command or user_input,
                 tools_called=result.tools_called if result else (),
             )
 

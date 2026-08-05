@@ -183,13 +183,16 @@ class DJModeController:
         команду — ответь на неё; не трогай DJ, если юзер не просит.
         Полные DJ-инструкции живут только в build_auto_prompt (DJ_AUTO).
         """
-        persona = self.state.persona or self._persona_default
+        persona = self.state.persona
+        persona_line = (
+            f", диджей: {persona}" if persona else ""
+        )
         theme_line = (
             f', тема: "{self.state.theme}"' if self.state.theme else ""
         )
         return (
-            f"[🎧 DJ-режим активен — фоновая музыка играет{theme_line}, "
-            f"диджей: {persona}. Это ОБЫЧНАЯ команда юзера, не DJ-переход. "
+            f"[🎧 Музыкальный режим активен — фоновая музыка играет{theme_line}"
+            f"{persona_line}. Это ОБЫЧНАЯ команда юзера, не DJ-переход. "
             "Ответь на неё нормально. Не вызывай set_dj_mode и не меняй "
             "музыку, если юзер об этом не просит.] "
         )
