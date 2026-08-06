@@ -517,8 +517,15 @@ class DialogueNode(Node):
         if not clean:
             return
         if is_silence_command(text_lower):
-            self._handle_silence()
-            return
+            # 🔴 FIX (live 06.08): «хватит диджеить/музыку/трек» — это НЕ
+            # silence, а запрос остановки музыки/DJ. Подстрока «хватит»
+            # матчила «хватит диджеить» → робот «молчал», а музыка
+            # продолжала играть. Такие команды идут в LLM (stop_music).
+            if not any(
+                kw in text_lower for kw in self._MUSIC_STOP_OVERRIDES
+            ):
+                self._handle_silence()
+                return
         self._cancel_run("new STT input")
         sfx = String()
         sfx.data = "thinking"
@@ -943,6 +950,23 @@ class DialogueNode(Node):
         "зачитай",
         "зачита",
         "зачитывай",
+    )
+
+    # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
+    # остановить музыку/DJ, а НЕ замолчать робота. Подстрока «хватит»
+    # в silence_commands перехватывала такие команды до LLM. Эти фразы
+    # пробивают silence-гейт и идут в LLM (который вызовет stop_music +
+    # set_dj_mode(enabled=false)).
+    _MUSIC_STOP_OVERRIDES = (
+        "диджеить",
+        "диджея",
+        "диджей режим",
+        "выключи музыку",
+        "выключ музыку",
+        "музыку выключ",
+        "стоп музык",
+        "останови музык",
+        "убери музык",
     )
 
     # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
