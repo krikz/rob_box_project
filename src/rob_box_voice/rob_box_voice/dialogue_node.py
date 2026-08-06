@@ -378,6 +378,23 @@ class DialogueNode(Node):
         # boundary, where YAML parameters enter the application.
         base_url = str(self.get_parameter("base_url").value or "").strip()
         model = str(self.get_parameter("model").value or "").strip()
+        temperature = float(self.get_parameter("temperature").value or 0.7)
+        max_tokens = int(self.get_parameter("max_tokens").value or 500)
+
+        # 🔴 FIX (live 06.08): логируем LLM-конфиг при старте — раньше
+        # конфиг выводился, потом потерялся. Без этого непонятно, какой
+        # провайдер/модель реально активны (MiniMax vs DeepSeek), какой
+        # max_tokens (256 резал ответы). Провайдер виден в каждом запросе
+        # (HTTP Request), а модель/temperature/max_tokens — только тут.
+        self.get_logger().info(
+            "⚙️ LLM CONFIG: provider=%s model=%s base_url=%s "
+            "temperature=%s max_tokens=%s",
+            provider_name,
+            model or "(default)",
+            base_url or "(provider default)",
+            temperature,
+            max_tokens,
+        )
 
         if provider_name == "minimax":
             # 🔴 FIX (live 14:39): build_minimax_provider принимает

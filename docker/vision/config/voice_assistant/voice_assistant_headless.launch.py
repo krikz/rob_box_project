@@ -170,6 +170,29 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
+    # === Startup Greeting Node (Issue #1003) ===
+    # Один раз при старте говорит случайную прикольную фразу через TTS и
+    # завершается. Ждёт, пока на /voice/dialogue/response появится подписчик
+    # (= tts_node жив), поэтому запускаем ПОСЛЕ tts_node.
+    # 🔴 FIX (live 06.08): гретинг был только в voice_assistant.launch.py,
+    # а prod (Vision Pi) запускает ЭТОТ headless-лаунч → нода не стартовала
+    # (0 упоминаний в логах). Добавлено сюда.
+    startup_greeting_node = Node(
+        package='rob_box_voice',
+        executable='startup_greeting_node',
+        name='startup_greeting_node',
+        namespace=namespace,
+        output='screen',
+        respawn=False,  # одноразовая нода, респаун не нужен
+        arguments=['--ros-args', '--log-level', 'info'],
+        parameters=[{
+            'wait_time': 5.0,
+            'check_timeout': 30.0,
+            'enable_greeting': True,
+            'readiness_check_interval': 1.0,
+        }],
+    )
+
     return LaunchDescription([
         config_dir_arg,
         namespace_arg,
@@ -181,5 +204,6 @@ def generate_launch_description():
         stt_node,
         sound_node,
         command_node,
-        mcp_server
+        mcp_server,
+        startup_greeting_node
     ])
