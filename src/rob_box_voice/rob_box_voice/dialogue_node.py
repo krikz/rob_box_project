@@ -1410,6 +1410,28 @@ class DialogueNode(Node):
                         self.get_logger().warning(
                             f"🎵 stop fallback failed: {exc}"
                         )
+                    # 🔴 FIX (live 06.08 #2): cleanup гасит ТОЛЬКО музыку,
+                    # но DJ-тикер (core/dj_mode, tick каждые 5с) живёт по
+                    # флагу state.enabled — его сбрасывает только
+                    # публикация /voice/dj_mode с enabled=false. Без этого
+                    # DJ продолжал генерить переходы (#5, #6...) и после
+                    # «говори» снова включал музыку («продолжил диджейский
+                    # сет»). Публикуем set_dj_mode(enabled=false) сами.
+                    try:
+                        dj_msg = String()
+                        dj_msg.data = json.dumps({"enabled": False})
+                        if getattr(self, "_dj_mode_pub", None) is None:
+                            self._dj_mode_pub = self.create_publisher(
+                                String, "/voice/dj_mode", 10
+                            )
+                        self._dj_mode_pub.publish(dj_msg)
+                        self.get_logger().info(
+                            "🎵 DJ off published (stop-command fallback)"
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self.get_logger().warning(
+                            f"🎵 DJ off publish failed: {exc}"
+                        )
                 # Короткая диагностика: что именно вернул провайдер.
                 raw_hint = ""
                 if raw is not None:
