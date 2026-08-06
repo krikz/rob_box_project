@@ -46,7 +46,7 @@ import asyncio
 import logging
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, AsyncIterator, Iterable, Mapping
 
 from openai import AsyncOpenAI
@@ -302,6 +302,18 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         (``AuthError`` / ``ContentFilterError`` /
         ``CapabilityUnavailableError``) propagate immediately.
         """
+        # 🔴 FIX (live 06.08): MiniMax API режет ответ на своём дефолте
+        # 256 токенов, когда max_tokens не задан — робот отвечал
+        # обрывками («[INSTR», пустота). dialog_core зовёт
+        # complete(messages, tools=...) без settings → здесь ставим
+        # разумный дефолт 4096 для голоса (промпт 39K символов,
+        # музыкальный код + речь не влезают в 256).
+        if settings is None:
+            settings = LLMSettings(model=self.model, max_tokens=4096)
+        elif settings.max_tokens is None:
+            settings = LLMSettings(
+                **{**asdict(settings), "max_tokens": 4096}
+            )
         return await self._call_with_retry(
             self._inner.complete, messages, tools=tools, settings=settings
         )
