@@ -1677,27 +1677,25 @@ class DialogueNode(Node):
                 _tool_results=current_tool_results,
             ):
                 self._do_recursive_streaming(_result, _messages, _tool_results)
-            # Diagnostic: log the wrapper's __defaults__ so we can see
-            # in the test CI log whether the test mock has the right
-            # hand-off to mutate the result dict. ``print`` to stderr
-            # because the conftest's MagicMock logger captures the
-            # ``info()`` call but doesn't surface it to the test log.
-            import sys
-            print(
-                f"[stream diag] wrapper={_streaming_wrapper!r} "
-                f"defaults={_streaming_wrapper.__defaults__!r}",
-                file=sys.stderr,
-            )
             max_attempts = 2
             for _attempt in range(max_attempts):
+                # NOTE: we deliberately do NOT use ``with ThreadPoolExecutor(...)``
+                # here. The unit-test harness (``test_agent_loop.py``) replaces
+                # ``ThreadPoolExecutor`` with a ``FakeExecutor`` that implements
+                # ``submit``/``shutdown`` but NOT the context-manager protocol
+                # (``__enter__``/``__exit__``). Using ``with`` would raise
+                # ``AttributeError: __enter__`` and the retry/result hand-off
+                # would never run. We manage the executor lifecycle manually.
+                executor = ThreadPoolExecutor(max_workers=1)
                 try:
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(_streaming_wrapper)
-                        future.result(timeout=timeout_s)
+                    future = executor.submit(_streaming_wrapper)
+                    future.result(timeout=timeout_s)
                 except concurrent.futures.TimeoutError:
                     result_dict["error"] = "timeout"
                 except Exception as exc:  # noqa: BLE001
                     result_dict["error"] = str(exc)
+                finally:
+                    executor.shutdown(wait=False)
                 # Stop retrying on first success.
                 if not result_dict.get("error"):
                     break

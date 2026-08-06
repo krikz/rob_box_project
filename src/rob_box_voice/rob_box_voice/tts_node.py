@@ -588,17 +588,6 @@ class TTSNode(Node):
             # Kick off the background warm-load so the first fallback
             # doesn't pay the 2-3 s cold-load cost.
             self._start_silero_warm_load()
-        # Diagnostic log to help identify the cause of
-        # test_no_warm_load_thread_for_silero_primary failures where
-        # the test reports ``_silero_warm_requested is True`` for a
-        # silero-primary node. We use ``print`` to stderr because the
-        # conftest's MagicMock logger doesn't capture anything.
-        import sys
-        print(
-            f"[tts init diag] provider={self.provider!r} "
-            f"_silero_warm_requested={self._silero_warm_requested!r}",
-            file=sys.stderr,
-        )
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
         self.yandex_channel = None
