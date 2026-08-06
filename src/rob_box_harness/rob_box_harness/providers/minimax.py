@@ -335,6 +335,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         If the initial request fails, the upstream provider raises
         before yielding, and we DO retry the same way as ``complete``.
         """
+        # 🔴 FIX (live 06.08): тот же max_tokens-дефолт, что в complete —
+        # MiniMax режет на 256 токенах без max_tokens (обрывки «[INSTR»).
+        if settings is None:
+            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+        elif settings.max_tokens is None:
+            settings = LLMSettings(
+                **{**asdict(settings), "max_tokens": 4096}
+            )
         # We can't decorate an async generator with the retry loop
         # without buffering chunks, so we isolate the initial request
         # call in a retryable wrapper. The upstream AsyncOpenAI stream

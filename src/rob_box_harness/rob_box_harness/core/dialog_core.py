@@ -361,7 +361,7 @@ class DialogCore:
 
         tools_called: list[str] = []
         seen: set[str] = set()
-        response: LLMResponse = await self._llm.complete(
+        response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
 
@@ -438,7 +438,7 @@ class DialogCore:
                     )
                 )
 
-            response = await self._llm.complete(messages, tools=openai_tools)
+            response = await self._stream_response(messages, tools=openai_tools)
 
         else:  # for-else: loop exhausted without breaking
             logging.getLogger(__name__).warning(
@@ -448,6 +448,40 @@ class DialogCore:
             )
 
         return response.content, tools_called, response.finish_reason, response.raw
+
+    async def _stream_response(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+    ) -> LLMResponse:
+        """Streaming LLM completion aggregated into a full :class:`LLMResponse`.
+
+        🔴 FIX (live 06.08): раньше использовали ``complete()`` — не-стримовый
+        вызов ждал ВЕСЬ ответ (~24с на первом turn: MiniMax холодный старт +
+        полная генерация). ``stream()`` отдаёт первый токен раньше и умеет
+        агрегировать tool-call deltas (streaming_tools теперь True). Итоговый
+        ответ тот же — но latency ниже и последующие вызовы (в цикле тулов)
+        быстрее.
+        """
+        parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        finish_reason: str | None = None
+        raw: Any = None
+        async for chunk in self._llm.stream(messages, tools=tools):
+            if chunk.content_delta:
+                parts.append(chunk.content_delta)
+            if chunk.tool_call_delta is not None:
+                tool_calls.append(chunk.tool_call_delta)
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
+        return LLMResponse(
+            content="".join(parts),
+            tool_calls=tuple(tool_calls),
+            finish_reason=finish_reason,
+            usage=None,
+            raw=raw,
+        )
 
     async def _resolve_history(
         self,

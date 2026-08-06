@@ -257,7 +257,10 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         text=True,
         streaming_text=True,
         tools=True,
-        streaming_tools=False,
+        # 🔴 FIX (live 06.08): streaming_tools=True — MiniMax OpenAI-совместимый
+        # API стримит tool-call deltas; база (_OpenAICompatibleProvider.stream)
+        # теперь агрегирует их в ToolCall.
+        streaming_tools=True,
         image_input=True,
     )
 
