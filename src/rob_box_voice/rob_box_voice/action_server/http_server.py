@@ -15,8 +15,29 @@ def _handler(goal, feedback, cancelled):
     return {"accepted": True, "goal": dict(goal)}
 
 
+def _import_aiohttp():
+    """Import aiohttp with a clear failure message.
+
+    Issue #1004-class bug: if aiohttp isn't installed in the running image,
+    a generic ``ModuleNotFoundError`` causes container restart loops. Replacing
+    it with a sidecar-friendly hint makes the next operator debug session
+    obvious (see E2E_TESTING_DESIGN_v2 §D A43).
+    """
+    try:
+        from aiohttp import web  # type: ignore
+    except ImportError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(
+            "voice-action-server requires the 'aiohttp' Python package. "
+            "It is declared in src/rob_box_voice/package.xml as <exec_depend> "
+            "and pinned in docker/vision/voice_assistant/requirements.txt. "
+            "If you see this on a freshly built image, the build cache was "
+            "stale — bump BASE image or rebuild without cache."
+        ) from exc
+    return web
+
+
 async def main() -> None:
-    from aiohttp import web
+    web = _import_aiohttp()
     server = ActionServer(_handler)
     app = create_app(server, web=web)
     runner = web.AppRunner(app)

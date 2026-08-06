@@ -10,6 +10,18 @@ requests
 omegaconf==2.3.1
 
 # =============================================================================
+# Async HTTP server (voice-action-server sidecar, action_server/http_server.py)
+# The package.xml declares <exec_depend>aiohttp</exec_depend> but rosdep
+# resolution on ARM64 (Raspberry Pi 5, Ubuntu 24.04 noble) is unreliable.
+# Until 5d3df7e2 the package wasn't pinned, which left the voice-action-server
+# container crashing with `ModuleNotFoundError: No module named 'aiohttp'`
+# (399 restarts since 06.08 01:03 — see E2E_TESTING_DESIGN_v2 §D A43).
+# Pin explicitly so apt-resolved python3-aiohttp vs pip-aiohttp drift can't
+# reintroduce the regression.
+# =============================================================================
+aiohttp>=3.9.1,<4.0
+
+# =============================================================================
 # Audio processing
 # =============================================================================
 pyaudio
