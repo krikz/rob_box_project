@@ -1591,13 +1591,7 @@ class TTSNode(Node):
                         batch_started_at=batch_started_at,
                         dialogue_id=dialogue_id,
                     )
-                    batch_id=batch_id,
-                    batch_index=batch_index,
-                    batch_total=batch_total,
-                    batch_started_at=batch_started_at,
-                    dialogue_id=dialogue_id,
-                )
-                self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
+                    self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
 
                 # Очищаем processing_dialogue_id
                 if dialogue_id and self.processing_dialogue_id == dialogue_id:
