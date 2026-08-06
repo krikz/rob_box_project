@@ -204,10 +204,24 @@ class DJModeController:
             if self.state.theme
             else ""
         )
+        # Issue #1016: explicit stage + dramaturgy reminder so LLM does not
+        # regenerate a static loop. Library-first, then adapt, then new code.
+        stage_line = (
+            f"Стадия сета: переход #{n} из ~{self.DJ_AUTO_MAX_TRANSITIONS}. "
+            "Трек должен РАЗВИВАТЬСЯ внутри 45 секунд (не статичный луп)."
+        )
+        library_line = (
+            "🎵 ОБЯЗАТЕЛЬНО: 1) list_tracks(tag=<жанр>, min_rating=4) — "
+            "найди референс; 2) если подходит тема — load_track(name=...) "
+            "использует готовый человеческий код с настоящей драматургией; "
+            "3) если адаптируешь — сохрани развивающие паттерны "
+            "(.every, PVar, LinExp, chop, Clock.future), не упрощай до лупа."
+        )
         if n == 1:
             return (
                 "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
                 f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
+                f"{library_line} {stage_line} "
                 "Запусти музыку через execute_music_code (бит в духе темы, "
                 "segments 64-128 — сет непрерывный). Затем представься как "
                 f"{persona} через speak_text. Переходы делай через "
@@ -219,10 +233,13 @@ class DJModeController:
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
+            f"{library_line} {stage_line} "
             "Сыграй следующий трек через execute_music_code (segments 64-128, "
-            "другой бит/темп в духе темы). После этого вызови "
-            "set_dj_mode(enabled=true, next_transition_sec=45) для следующего "
-            "перехода. Изредка произноси тематическую фразу через speak_text()."
+            "другой бит/темп в духе темы, С РАЗВИТИЕМ внутри трека — "
+            "минимум один из: .every(), PVar, LinExp, chop, Clock.future). "
+            "После этого вызови set_dj_mode(enabled=true, next_transition_sec=45) "
+            "для следующего перехода. Изредка произноси тематическую фразу "
+            "через speak_text()."
         )
 
 
