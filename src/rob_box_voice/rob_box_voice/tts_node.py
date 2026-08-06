@@ -1628,7 +1628,7 @@ class TTSNode(Node):
                 # Issue #980: batch metadata is now propagated so the very last
                 # chunk publishes ``/voice/tts/batch_complete`` deterministically.
                 self.get_logger().info(
-                    f"📢 Публикую TTS finished event: speech_id={(speech_id or self.current_speech_id or '')[:8]}..., "
+                    f"📢 Публикую TTS finished event: speech_id={(speech_id or getattr(self, 'current_speech_id', None) or '')[:8]}..., "
                     f"success=True, duration={raw_duration_sec}s, batch={batch_index}/{batch_total}"
                 )
                 _publish_finished = getattr(self, "_publish_tts_finished", None)
@@ -1659,16 +1659,18 @@ class TTSNode(Node):
             if release is not None:
                 release(play_seq)
             # Публикуем ошибку для MCP tools (#980: also fires batch_complete if applicable)
-            self._publish_tts_finished(
-                speech_id,
-                success=False,
-                error=str(e),
-                batch_id=batch_id,
-                batch_index=batch_index,
-                batch_total=batch_total,
-                batch_started_at=batch_started_at,
-                dialogue_id=dialogue_id,
-            )
+            _publish_finished = getattr(self, "_publish_tts_finished", None)
+            if _publish_finished is not None:
+                _publish_finished(
+                    speech_id,
+                    success=False,
+                    error=str(e),
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    batch_started_at=batch_started_at,
+                    dialogue_id=dialogue_id,
+                )
             # Очищаем processing_dialogue_id при ошибке
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
