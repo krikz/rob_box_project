@@ -622,11 +622,11 @@ def build_minimax_provider(
         timeout=timeout,
         retry=retry,
         client=client,
-        # 🔴 FIX (live 15:27): thinking=None — DEFAULT_THINKING_POLICY
-        # ({"type": "disabled"}) просачивался в settings.extra →
-        # _build_kwargs → create(thinking=...) → MiniMax API не принимает
-        # аргумент thinking → AsyncCompletions.create() TypeError →
-        # DialogCore error → Empty → «задумался». Voice-путь latency-sensitive,
-        # thinking не нужен.
-        thinking=None,
+        # 🔴 FIX (live 06.08): вернули DEFAULT_THINKING_POLICY — вчера (b5879b79)
+        # thinking={"type":"disabled"} падал TypeError, т.к. шёл в kwargs →
+        # create(thinking=...) → AsyncOpenAI SDK строго типизирован. Теперь
+        # _build_kwargs кладёт кастомные поля в extra_body → API принимает.
+        # MiniMax-M3 по умолчанию включает adaptive thinking → <think> блоки
+        # в каждом ответе = +10-20с на turn. Voice-путь latency-sensitive.
+        thinking=DEFAULT_THINKING_POLICY,
     )

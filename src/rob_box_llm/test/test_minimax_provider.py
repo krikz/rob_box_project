@@ -118,14 +118,44 @@ def _ok_response(
     )
 
 
+@dataclass
+class _ToolCallDelta:
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments: str | None = None
+
+
+@dataclass
+class _ToolCallDeltaWrapper:
+    index: int
+    id: str | None = None
+    function: Any | None = None
+
+
 def _stream_chunk(
     content: str = "",
     finish_reason: str | None = None,
+    tool_call: _ToolCallDelta | None = None,
     *,
     base_resp: dict[str, Any] | None = None,
 ) -> _ResponseObj:
+    delta_kwargs: dict = {"content": content}
+    if tool_call is not None:
+        delta_kwargs["tool_calls"] = [
+            _ToolCallDeltaWrapper(
+                index=tool_call.index,
+                id=tool_call.id,
+                function=_FunctionObj(
+                    name=tool_call.name or "",
+                    arguments=tool_call.arguments or "",
+                )
+                if (tool_call.name or tool_call.arguments)
+                else None,
+            )
+        ]
     return _ResponseObj(
-        choices=[_ChoiceObj(delta=_MessageObj(content=content), finish_reason=finish_reason)],
+        choices=[_ChoiceObj(delta=_MessageObj(**delta_kwargs), finish_reason=finish_reason)],
         base_resp=base_resp or {},
     )
 
@@ -232,8 +262,9 @@ def test_capabilities_advertise_text_streaming_tools_and_image_input():
     assert caps.streaming_text is True
     assert caps.tools is True
     assert caps.image_input is True
-    # Streaming tool calls are deliberately off — see architecture doc.
-    assert caps.streaming_tools is False
+    # 🔴 FIX (live 06.08): streaming_tools=True — OpenAI-совместимый API
+    # стримит tool-call deltas, stream() агрегирует их в ToolCall.
+    assert caps.streaming_tools is True
 
 
 def test_capabilities_for_vision_model_keeps_image_input():
@@ -297,8 +328,9 @@ def test_complete_passes_model_and_messages():
     assert kwargs["stream"] is False
     assert kwargs["messages"][0]["role"] == "system"
     assert kwargs["messages"][1]["role"] == "user"
-    # Default thinking policy is injected via settings.extra.
-    assert kwargs["thinking"] == DEFAULT_THINKING_POLICY
+    # Default thinking policy is injected via extra_body (live 06.08:
+    # кастомные поля через extra_body — create(thinking=...) = TypeError).
+    assert kwargs["extra_body"]["thinking"] == DEFAULT_THINKING_POLICY
 
 
 def test_complete_settings_override_model_and_temperature():
@@ -335,7 +367,7 @@ def test_thinking_policy_applied_by_default():
     p, c = _make_minimax()
     c.chat.completions.next_response = _ok_response("ok")
     asyncio.run(p.complete([LLMMessage(role="user", content="hi")]))
-    assert c.chat.completions.calls[0]["thinking"] == {"type": "disabled"}
+    assert c.chat.completions.calls[0]["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 def test_thinking_policy_can_be_disabled_per_instance():
@@ -355,7 +387,7 @@ def test_thinking_policy_callers_can_override():
         )
     )
     # Caller-supplied extra wins over instance default.
-    assert c.chat.completions.calls[0]["thinking"] == {
+    assert c.chat.completions.calls[0]["extra_body"]["thinking"] == {
         "type": "enabled",
         "budget": 200,
     }
@@ -386,8 +418,16 @@ def test_stream_yields_chunks_and_stops_on_finish_reason():
 
 
 def test_stream_with_tools_raises_capability_error():
-    """Streaming + tools is not implemented; refuse before the network."""
+    """Streaming + tools now WORKS (streaming_tools=True, live 06.08).
+
+    The OpenAI-compatible adapter aggregates streaming tool-call deltas.
+    No CapabilityUnavailableError should be raised; stream must hit the SDK.
+    """
     p, c = _make_minimax()
+    c.chat.completions.next_stream = [
+        _stream_chunk(tool_call=_ToolCallDelta(index=0, id="call_1", name="play_sound", arguments="{}")),
+        _stream_chunk(finish_reason="tool_calls"),
+    ]
 
     async def drain():
         async for _ in p.stream(
@@ -396,9 +436,11 @@ def test_stream_with_tools_raises_capability_error():
         ):
             pass
 
-    with pytest.raises(CapabilityUnavailableError):
-        asyncio.run(drain())
-    assert c.chat.completions.calls == []
+    asyncio.run(drain())
+    assert c.chat.completions.calls
+    kwargs = c.chat.completions.calls[0]
+    assert kwargs.get("stream") is True
+    assert "tools" in kwargs
 
 
 # ---------------------------------------------------------------------------

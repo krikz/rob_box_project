@@ -30,7 +30,7 @@ from rob_box_llm.errors import (
 )
 from rob_box_llm.providers.deepseek import DeepSeekProvider, _OpenAICompatibleProvider
 from rob_box_llm.providers.mimo import MiMoProvider
-from rob_box_llm.provider import LLMMessage, LLMResponse
+from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse
 
 # ---------------------------------------------------------------------------
 # Fake SDK objects
@@ -47,6 +47,23 @@ class _ToolCallObj:
 class _FunctionObj:
     name: str
     arguments: str  # raw JSON
+
+
+@dataclass
+class _ToolCallDelta:
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments: str | None = None
+
+
+@dataclass
+class _ToolCallDeltaWrapper:
+    """OpenAI stream delta shape: tool_calls[i].function..."""
+
+    index: int
+    id: str | None = None
+    function: _FunctionObj | None = None
 
 
 @dataclass
@@ -87,8 +104,28 @@ def _ok_response(content: str = "hi", tool_calls=None, finish_reason: str = "sto
     )
 
 
-def _stream_chunk(content: str = "", finish_reason: str | None = None) -> _ResponseObj:
-    return _ResponseObj(choices=[_ChoiceObj(delta=_MessageObj(content=content), finish_reason=finish_reason)])
+def _stream_chunk(
+    content: str = "",
+    finish_reason: str | None = None,
+    tool_call: _ToolCallDelta | None = None,
+) -> _ResponseObj:
+    delta_kwargs: dict = {"content": content}
+    if tool_call is not None:
+        delta_kwargs["tool_calls"] = [
+            _ToolCallDeltaWrapper(
+                index=tool_call.index,
+                id=tool_call.id,
+                function=_FunctionObj(
+                    name=tool_call.name or "",
+                    arguments=tool_call.arguments or "",
+                )
+                if (tool_call.name or tool_call.arguments)
+                else None,
+            )
+        ]
+    return _ResponseObj(
+        choices=[_ChoiceObj(delta=_MessageObj(**delta_kwargs), finish_reason=finish_reason)]
+    )
 
 
 class _FakeCompletions:
@@ -209,7 +246,7 @@ def test_complete_passes_model_and_messages_to_sdk():
 
 
 def test_complete_settings_override_model_and_temperature():
-    from rob_box_llm.provider import LLMSettings
+    from rob_box_llm.provider import LLMChunk, LLMSettings
 
     p, c = _make_deepseek()
     c.chat.completions.next_response = _ok_response("ok")
@@ -268,28 +305,55 @@ def test_stream_yields_chunks_and_stops_on_finish_reason():
 
 
 def test_stream_propagates_tools_to_sdk():
-    """Streaming + tools is gated behind ``streaming_tools`` capability.
+    """Streaming + tools now WORKS (streaming_tools=True, live 06.08).
 
-    The current OpenAI-compatible adapter does not aggregate streaming tool-call
-    deltas, so this combination MUST raise ``CapabilityUnavailableError``
-    before touching the network. Callers that need tools + streaming should
-    fall back to ``complete()``.
+    The OpenAI-compatible adapter aggregates streaming tool-call deltas
+    (id/name/arguments fragments) into a ToolCall. The SDK must be called
+    with stream=True and tools passed through.
     """
-    from rob_box_llm.errors import CapabilityUnavailableError
-
     p, c = _make_deepseek()
 
-    # No SDK call should happen — we expect an early capability refusal.
+    # Simulate streaming tool-call deltas (fragmented arguments!).
+    c.chat.completions.next_stream = [
+        _stream_chunk(tool_call=_ToolCallDelta(
+            index=0,
+            id="call_abc",
+            name="play_sound",
+            arguments='{"sound',
+        )),
+        _stream_chunk(tool_call=_ToolCallDelta(
+            index=0,
+            arguments='_name": "cute"}',
+        )),
+        _stream_chunk(tool_call=_ToolCallDelta(
+            index=1,
+            name="speak_text",
+            arguments="{}",
+        )),
+        _stream_chunk(finish_reason="tool_calls"),
+    ]
+
+    collected: list[LLMChunk] = []
+
     async def drain():
-        async for _ in p.stream(
+        async for chunk in p.stream(
             [LLMMessage(role="user", content="hi")],
             tools=({"type": "function", "function": {"name": "play_sound"}},),
         ):
-            pass
+            collected.append(chunk)
 
-    with pytest.raises(CapabilityUnavailableError):
-        asyncio.run(drain())
-    assert c.chat.completions.calls == []
+    asyncio.run(drain())
+    kwargs = c.chat.completions.calls[0]
+    assert kwargs.get("stream") is True
+    assert "tools" in kwargs
+    # Two fully-assembled tool calls.
+    calls = [ch.tool_call_delta for ch in collected if ch.tool_call_delta is not None]
+    assert len(calls) == 2
+    assert calls[0].name == "play_sound"
+    assert calls[0].arguments == {"sound_name": "cute"}
+    assert calls[1].name == "speak_text"
+    assert calls[0].id == "call_abc"
+    assert collected[-1].finish_reason == "tool_calls"
 
 
 def test_stream_without_tools_works():
@@ -327,7 +391,7 @@ def test_complete_round_trips_assistant_tool_calls_with_frozen_arguments():
     ``TypeError: Object of type MappingProxyType is not JSON serializable``
     and broke the entire tool loop.
     """
-    from rob_box_llm.provider import ToolCall
+    from rob_box_llm.provider import LLMChunk, ToolCall
     from rob_box_llm.providers.deepseek import _json_dumps
 
     # Sanity: ``ToolCall.__post_init__`` does freeze the dict view.

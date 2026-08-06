@@ -297,8 +297,20 @@ class _OpenAICompatibleProvider(LLMProvider):
             kwargs["stop"] = list(s.stop)
         if s.tool_choice is not None:
             kwargs["tool_choice"] = s.tool_choice
+        # 🔴 FIX (live 06.08): кастомные поля провайдеров — через extra_body,
+        # НЕ в kwargs! OpenAI SDK строго типизирован: create(thinking=...) →
+        # TypeError → DialogCore error → «задумался» (коммит b5879b79).
+        # DeepSeek V4 думает по умолчанию (thinking mode) — отключаем.
+        extra_body: dict[str, Any] = {}
+        if self.name == "deepseek":
+            extra_body.setdefault("enable_thinking", False)
+        # s.extra (в т.ч. MiniMax thinking={"type":"disabled"} из
+        # DEFAULT_THINKING_POLICY) — тоже кастомные поля → extra_body.
         if s.extra:
-            kwargs.update(s.extra)
+            for k, v in s.extra.items():
+                extra_body.setdefault(k, v)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         if tools:
             kwargs["tools"] = [dict(t) for t in tools]
         return kwargs
@@ -441,7 +453,7 @@ class _OpenAICompatibleProvider(LLMProvider):
         # callers had to use complete() and lost ~20s latency on the first
         # turn (MiniMax cold start + full non-streamed response).
         pending: dict[int, dict] = {}  # index -> {id, name, arguments}
-        for event in stream_obj:
+        async for event in stream_obj:
             self._post_process_response(event)
             choice = event.choices[0] if event.choices else None
             delta = choice.delta if choice else None

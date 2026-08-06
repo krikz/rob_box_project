@@ -187,6 +187,7 @@ class DialogueNode(Node):
             history_trim_limit=int(self.get_parameter("history_max_turns").value),
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
+            use_streaming=bool(self.get_parameter("llm_streaming").value),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -341,6 +342,9 @@ class DialogueNode(Node):
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
+        # 🔴 FIX (live 06.08): стриминг LLM через конфиг (llm_streaming).
+        # Замер без стриминга: false → complete() (полный ответ).
+        self.declare_parameter("llm_streaming", False)
         self.declare_parameter("history_excluded_tools", ["handle_navigation"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
         # W5a: select the tool-provider backend. ``ros_mcp`` is the

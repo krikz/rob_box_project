@@ -133,6 +133,7 @@ class DialogCore:
         inactivity_timeout: float | None = None,
         acceptance_gate: "AcceptanceGate | None" = None,
         system_prompt: str | None = None,
+        use_streaming: bool = False,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -186,6 +187,9 @@ class DialogCore:
         self._user_id = user_id
         self._system_prompt = system_prompt
         self._history_trim_limit = history_trim_limit
+        # 🔴 FIX (live 06.08): стриминг управляется конфигом (dialogue_node.yaml
+        # → llm_streaming). Дефолт False — консервативно, без стриминга.
+        self._use_streaming = use_streaming
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
 
@@ -457,13 +461,12 @@ class DialogCore:
     ) -> LLMResponse:
         """Streaming LLM completion aggregated into a full :class:`LLMResponse`.
 
-        🔴 FIX (live 06.08): раньше использовали ``complete()`` — не-стримовый
-        вызов ждал ВЕСЬ ответ (~24с на первом turn: MiniMax холодный старт +
-        полная генерация). ``stream()`` отдаёт первый токен раньше и умеет
-        агрегировать tool-call deltas (streaming_tools теперь True). Итоговый
-        ответ тот же — но latency ниже и последующие вызовы (в цикле тулов)
-        быстрее.
+        🔴 FIX (live 06.08): стриминг переключается конфигом (llm_streaming).
+        False → полный complete() (как раньше, до стриминга); True → stream()
+        с агрегацией tool-call deltas. Оба пути возвращают LLMResponse.
         """
+        if not self._use_streaming:
+            return await self._llm.complete(messages, tools=tools)
         parts: list[str] = []
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None

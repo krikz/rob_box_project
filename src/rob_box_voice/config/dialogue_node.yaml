@@ -46,6 +46,7 @@ dialogue_node:
     enable_mcp_tools: true
     llm_timeout_sec: 90.0
     verbose_llm: true
+    llm_streaming: false
     history_excluded_tools:
     - handle_navigation
     sqlite_db_path: ~/.rob_box/voice.db
