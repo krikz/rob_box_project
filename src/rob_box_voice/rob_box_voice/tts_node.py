@@ -1188,7 +1188,12 @@ class TTSNode(Node):
             self._play_seq_counter += 1
             play_seq = self._play_seq_counter
         try:
-            future = self._synthesis_executor.submit(fn, *args, play_seq)
+            # 🔴 FIX (live 06.08): play_seq ТОЛЬКО через kwargs! Воркер e65a6e5d
+            # убрал позиционный play_seq из _run_synthesis_worker (→ **kwargs),
+            # а submit(fn, *args, play_seq) передавал его 10-м позиционным →
+            # TypeError: takes from 3 to 9 positional args but 10 given →
+            # TTS молчал (только пилик). Теперь kwarg — попадает в **kwargs.
+            future = self._synthesis_executor.submit(fn, *args, play_seq=play_seq)
         except RuntimeError as exc:
             # Executor was shut down between our check and submit() — rare
             # but possible during node teardown.
