@@ -2109,6 +2109,16 @@ class DialogueNode(Node):
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
         # that /voice/tts/batch_complete fires only after the last chunk.
+        # 🔴 FIX (live 06.08): LLM копирует [SYSTEM REMINDER] из памяти как
+        # свой ответ (Bug C guard пишет reminder как assistant-turn, LLM его
+        # повторяет) → озвучивался служебный текст. Служебные маркеры НЕ
+        # озвучиваем — тихо завершаем цикл (LLM уже получил контекст).
+        _spoken_stripped = spoken.strip()
+        if _spoken_stripped.startswith(("[SYSTEM", "[СИСТЕМ", "[REMINDER")):
+            self.get_logger().warning(
+                f"🔇 Служебный текст LLM не озвучиваем: {_spoken_stripped[:100]!r}"
+            )
+            return
         chunks = split_into_chunks(spoken)
         if not chunks:
             self._publish_response(spoken)
