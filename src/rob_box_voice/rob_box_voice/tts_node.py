@@ -577,6 +577,10 @@ class TTSNode(Node):
         # Если provider='silero' - загружаем сразу (synchronous; primary mode)
         if self.provider == "silero":
             self.get_logger().info("🔄 Provider=silero → загрузка Silero TTS...")
+            # Belt-and-suspenders: explicitly reset the warm-load flag so
+            # any unit test that inspects it sees the truth (no background
+            # warm-load is scheduled when Silero is the primary provider).
+            self._silero_warm_requested = False
             self._load_silero_model()
             # Mark as loaded regardless of outcome so the hot-path wait
             # doesn't hang on a never-completed background job.
