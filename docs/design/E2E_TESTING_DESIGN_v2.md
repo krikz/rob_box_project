@@ -253,10 +253,12 @@ matrix:
 > L2: snapshot.sh v2 (см. §F.2)
 >
 > Метрика: `unhealthy_container_count == 0` для verdict PASS.
-> Было (06.08 09:00–10:50 МСК): voice-action-server `Restarting (1) 55 seconds ago`, `restart_count=26`, `15 ModuleNotFoundError` в последних 200 строках лога — **DEGRADED** по A43 (см. recovery §5.1 — aiohttp баг с 06.08 01:03).
-> Фикс: kanban t_fb6f64a2 (backend). В `docker/vision/voice_assistant/Dockerfile` добавлено `RUN pip3 install --no-cache-dir "aiohttp>=3.9.1,<4.0"` (voice_base оставлен нетронутым, чтобы не инвалидировать ~10 GB pytorch cache); в `http_server.py` import обёрнут в `_import_aiohttp()` с понятной диагностикой.
-> Коммит: 13a2a060 на `feature/e2e-testing-design-v2`. Сборка через `L-Build Vision Pi Services.yml` → `localhost:5000/krikz/rob_box:voice-assistant-humble-test`.
-> Статус: **VERIFIED** (после редеплоя — см. `kanban_complete` t_fb6f64a2 metadata.before/after snapshot).
+> Было (06.08 09:00 МСК): voice-action-server `Restarting` с `restart_count=399` (с 06.08 01:03) — **DEGRADED** по A43 (recovery §5.1 — aiohttp баг, python3-aiohttp apt не разрешается на Pi5 noble arm64).
+> Фикс: kanban t_fb6f64a2 (backend). Два коммита на `feature/harness-p0-foundation`:
+>   - `2e6ab214` — добавил `aiohttp>=3.9.1,<4.0` в `docker/vision/voice_assistant/requirements.txt` + обернул `from aiohttp import web` в `_import_aiohttp()` с понятной диагностикой в `src/rob_box_voice/rob_box_voice/action_server/http_server.py`.
+>   - `337548a3` — добавил explicit `RUN pip3 install "aiohttp>=3.9.1,<4.0"` в `docker/vision/voice_assistant/Dockerfile` (на случай если voice_assistant/requirements.txt не подхватывается voice_base stage).
+>   Ребилд через `L-Build Vision Pi Services.yml` → registry `10.1.1.249:5000/krikz/rob_box:voice-assistant-humble-test`; redeploy через `L-Deploy Vision Pi Services.yml` на `10.1.1.21`.
+> Статус: **VERIFIED** (живой реран `tests/e2e/live/snapshot.sh` @ 2026-08-06T08:30:18Z — `unhealthy_container_count=0`, `module_not_found_crashes=0`, `restart_count_total=0`, voice-action-server `Up 10 minutes (healthy)`, внутри контейнера `python3 -c 'import aiohttp' → 3.14.3`).
 
 ### B.5 Что multi-model НЕ покрывает
 
@@ -312,13 +314,13 @@ SSH-доступ к 10.1.1.249, scp 10 wav'ов из `/tmp/dialog_e2e_<run_id>.w
 | **A40 (новый v1 §7.2)** | wake без префикса | OPEN | **PARTIAL** | Все 10 фраз v7 с префиксом — wake OK. `spoy_peasenku_pro_enotika.ogg` без префикса — не в серии. **Требует отдельного теста** |
 | **A41 (новый v1 §7.3)** | LLM fail-over | OPEN | **OPEN** | Подписка Minimax активна, fail-over не воспроизводился |
 | **A42 (новый v2 §B.3)** | Multi-model observability | — | **OPEN** | Требует параметризации workflow |
-| **A43 (новый v2 §B.4)** | Snapshot всех контейнеров | — | **OPEN** (DEGRADED) | voice-action-server `Restarting` — DEGRADED прямо сейчас |
+| **A43 (новый v2 §B.4)** | Snapshot всех контейнеров | — | **VERIFIED** (живой rerun @ 08:30Z — `unhealthy_container_count=0`, см. t_fb6f64a2) | Был DEGRADED (aiohttp), починён 2e6ab214+337548a3 |
 
 ### C.4 Главные выводы v7
 
 1. **A39 VERIFIED** — execute_music_code теперь даёт звук. Фиксы `dda417c8` (effect_manager.reload) + `7ab0caf4` (Bug C retry) сделали своё дело.
 2. **Wake-drop больше не воспроизводится** в текущей кодовой базе для фраз с префиксом «Робот!». 10/10 wav'ов имеют реальный звук.
-3. **voice-action-server по-прежнему крашится** — это отдельный баг, не блокирует диалог, но DEGRADED по A43.
+3. **voice-action-server починен** — A43 VERIFIED после ребилда 2e6ab214+337548a3. Живой реран `snapshot.sh v2` 2026-08-06T08:30:18Z: `unhealthy_container_count=0`. См. t_fb6f64a2.
 4. **Различия v7 vs v1 SUMMARY**: parent `t_5fb8a092` видел 8 фраз, в v7 — 10 (добавлены `rabot_dj_off`, `spoy_peasenku_pro_enotika`). v1 матрица §5 привязана к 05.08 фразам — для актуальности нужен v2 §C.2.
 
 ---
