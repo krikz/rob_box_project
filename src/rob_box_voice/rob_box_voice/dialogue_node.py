@@ -420,16 +420,16 @@ class DialogueNode(Node):
         # таймауты, wake-слова и т.д. — всё видно в одном месте.
         secrets = ("api_key", "password", "token", "secret")
         cfg_lines = []
-        for pname in sorted(self.get_parameter_names()):
+        for p in sorted(self.get_parameters(), key=lambda p: p.name):
             try:
-                pval = self.get_parameter(pname).value
+                pval = p.value
             except Exception:  # noqa: BLE001 — параметр мог отвалиться
                 continue
             if pval is None:
                 continue
-            if any(s in pname.lower() for s in secrets) and pval:
+            if any(s in p.name.lower() for s in secrets) and pval:
                 pval = "***"
-            cfg_lines.append(f"{pname}={pval}")
+            cfg_lines.append(f"{p.name}={pval}")
         self.get_logger().info(
             "⚙️ STARTUP CONFIG:\n%s",
             "\n".join(cfg_lines),
