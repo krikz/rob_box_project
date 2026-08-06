@@ -70,7 +70,9 @@ class DJModeController:
     # авто-стоп по плану не срабатывал → DJ крутился бесконечно (#24+).
     # Жёсткий лимит переходов без плана (DJ_AUTO_MAX_TRANSITIONS):
     # после N переходов DJ сам выключается (юзер может включить снова).
-    DJ_AUTO_MAX_TRANSITIONS: int = 8
+    # 🔴 FIX (live 15:20 06.08): 8 переходов ≈ 6 минут сета — юзер слышал
+    # «однотипное потом замолчал». Поднято до 24 (~18 мин при 45с).
+    DJ_AUTO_MAX_TRANSITIONS: int = 24
 
     def __init__(self, *, hook: DJHook, logger: logging.Logger) -> None:
         self._hook = hook
@@ -110,6 +112,14 @@ class DJModeController:
         next_sec = data.get("next_transition_sec")
         delay = float(max(15, min(300, int(next_sec)))) if next_sec else 60.0
         self.state.next_transition_at = time.time() + delay
+        # 🔴 FIX (live 15:30 06.08): план сета из set_dj_mode(plan=...) —
+        # DJ идёт по плану и завершается финальным объявлением, а не
+        # молча по лимиту DJ_AUTO_MAX_TRANSITIONS.
+        plan = data.get("plan")
+        if plan and isinstance(plan, str) and plan.strip():
+            self.state.set_plan = plan.strip()
+            self.state.transition_count = 0
+            self._logger.info(f"🎧 DJ plan: {len(plan.splitlines())} треков")
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
     def _reset_state(self) -> None:
@@ -230,13 +240,30 @@ class DJModeController:
         plan_block = (
             f"План сета:\n{self.state.set_plan}\n" if self.state.set_plan else ""
         )
+        # 🔴 FIX (live 15:30 06.08): финальный трек плана — DJ объявляет
+        # конец вечеринки и выключается сам (как было до удаления ghost
+        # тулов save_dj_* — юзер слышал «вечеринка заканчивается»).
+        plan_tracks = len(self.state.set_plan.splitlines()) if self.state.set_plan else 0
+        if plan_tracks and n >= plan_tracks:
+            return (
+                f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
+                f"Ты {persona}. {theme_line}{plan_block}"
+                f"{library_line} "
+                "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
+                "execute_music_code (спокойный финал, затухание — но не "
+                "статичный луп, держи развитие). Затем ОБЯЗАТЕЛЬНО: "
+                "1) через speak_text объяви: «Вот и всё, вечеринка "
+                "заканчивается! Спасибо, что были со мной!» (или в тему "
+                "своего сета); 2) вызови set_dj_mode(enabled=false) — "
+                "DJ-режим завершается."
+            )
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
             f"{library_line} {stage_line} "
             "Сыграй следующий трек через execute_music_code (segments 64-128, "
             "другой бит/темп в духе темы, С РАЗВИТИЕМ внутри трека — "
-            "минимум один из: .every(), PVar, LinExp, chop, Clock.future). "
+            "минимум один из: .every(), Pvar, linvar, chop, Clock.future). "
             "После этого вызови set_dj_mode(enabled=true, next_transition_sec=45) "
             "для следующего перехода. Изредка произноси тематическую фразу "
             "через speak_text()."
