@@ -91,3 +91,6 @@ Thumbs.db
 .worktrees/
 docker/vision/config/voice_assistant/event_mode.yaml
 .colcon-bench/
+
+# e2e live test artefacts (regenerated each run)
+tests/e2e/_artifacts/
