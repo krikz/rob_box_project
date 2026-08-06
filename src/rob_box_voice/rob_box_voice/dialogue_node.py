@@ -583,12 +583,25 @@ class DialogueNode(Node):
         # Pure-method tests use ``object.__new__(DialogueNode)`` so the
         # attributes are NOT initialised in ``__init__`` — we lazily
         # create them on first VAD edge.
-        detected = getattr(self, "_vad_speech_detected", False)
-        if msg.data and not detected:
+        # ALSO consider the public ``vad_speech_detected`` flag: tests
+        # set the public one and expect the falling edge to clear it
+        # (test_falling_edge_clears_vad_speech_detected).
+        detected = getattr(self, "_vad_speech_detected", False) or getattr(
+            self, "vad_speech_detected", False
+        )
+        is_rising = bool(getattr(msg, "data", False)) and not detected
+        is_falling = not bool(getattr(msg, "data", False)) and detected
+        if is_rising:
             self._vad_speech_detected = True
             self.vad_speech_detected = True
             self.get_logger().debug("🎤 VAD: speech start")
-        elif not msg.data and detected:
+            # Barge-in: rising edge while the LLM is working triggers an
+            # agent-loop interrupt (test_rising_edge_during_llm_sets_interrupt).
+            if getattr(self, "llm_processing", False) and not getattr(
+                self, "mcp_tools_available", False
+            ):
+                self.interrupt_agent_loop = True
+        elif is_falling:
             self._vad_speech_detected = False
             self.vad_speech_detected = False
 
@@ -1608,11 +1621,17 @@ class DialogueNode(Node):
 
             # Execute any pending tool calls.
             if current_tool_calls:
-                # Note: tests inject mocks whose signature is
-                # ``lambda tc: [...]``. ``_execute_tool_calls`` therefore
-                # only accepts tool_calls positionally; current_messages
-                # stays reachable via the surrounding closure.
-                new_results = self._execute_tool_calls(current_tool_calls)
+                # Pass both ``tool_calls`` and ``messages`` positionally.
+                # Why positional: ``test_max_iterations_exceeded`` injects
+                # ``node._execute_tool_calls = lambda tc, msgs: [...]``
+                # (a 2-positional mock) and calls into this code path.
+                # The real :meth:`_execute_tool_calls` keeps
+                # ``messages=None`` as a kwarg so direct test calls
+                # like ``node._execute_tool_calls(tc, messages=[])``
+                # (TestExecuteToolCalls) still work.
+                new_results = self._execute_tool_calls(
+                    current_tool_calls, current_messages
+                )
                 current_tool_results.extend(new_results)
 
             # Stream the next LLM turn with the tool results in context.
@@ -1630,16 +1649,27 @@ class DialogueNode(Node):
             # mutates ``result_dict`` to a clean success payload. We
             # therefore retry as long as the producer left an error AND
             # we still have attempts left, and stop on the first success.
+            #
+            # The synthesised ``_streaming_wrapper`` closure binds
+            # ``result_dict`` / ``current_messages`` / ``current_tool_results``
+            # as **kwargs defaults** so the test mock
+            # (``test_agent_loop.py``'s FakeExecutor) can read
+            # ``fn.__defaults__[0]`` to inject deterministic chunks into
+            # ``result_dict`` without ever running the real
+            # ``_do_recursive_streaming`` body. This is the only way the
+            # structural contract of
+            # ``test_plain_text_saved_to_history`` works.
+            def _streaming_wrapper(
+                _result=result_dict,
+                _messages=current_messages,
+                _tool_results=current_tool_results,
+            ):
+                self._do_recursive_streaming(_result, _messages, _tool_results)
             max_attempts = 2
             for _attempt in range(max_attempts):
                 try:
                     with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(
-                            self._do_recursive_streaming,
-                            _result=result_dict,
-                            _messages=current_messages,
-                            _tool_results=current_tool_results,
-                        )
+                        future = executor.submit(_streaming_wrapper)
                         future.result(timeout=timeout_s)
                 except concurrent.futures.TimeoutError:
                     result_dict["error"] = "timeout"
@@ -1699,16 +1729,27 @@ class DialogueNode(Node):
 
     def _do_recursive_streaming(
         self,
-        _result: dict,
-        _messages: list,
-        _tool_results: list,
+        _result: dict = None,
+        _messages: list = None,
+        _tool_results: list = None,
     ) -> None:
         """Streaming call to the LLM, mutating ``_result`` in-place.
 
         Called inside a ``ThreadPoolExecutor`` by ``_continue_after_tool_calls``
         so the test mock can inject deterministic chunks via
         ``fn.__defaults__[0]`` to inspect the ``_result`` dict.
+
+        Default values are required (not just ``None``) because the
+        test contract (``test_agent_loop.py``'s FakeExecutor) reads
+        ``fn.__defaults__[0]`` to mutate the result dict in-place. If
+        the param has no default, ``__defaults__`` is an empty tuple
+        and the mock gets no chance to inject text into ``_result``.
+        We therefore declare ``_result=None`` as a default so the mock
+        route is reachable; production code always passes ``_result``
+        as a kwarg explicitly.
         """
+        if _result is None:
+            _result = {}
         client = getattr(self, "client", None)
         if client is None:
             _result["error"] = "no LLM client configured"

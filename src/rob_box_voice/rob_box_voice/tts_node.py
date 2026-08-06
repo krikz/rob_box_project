@@ -1230,8 +1230,8 @@ class TTSNode(Node):
         speech_id: str = None,
         batch_id: str = None,
         batch_index: int = None,
-                batch_total: int = None,
-        play_seq: int = None,  # FIFO-gate slot, passed as kwarg to _synthesize_and_play
+        batch_total: int = None,
+        **kwargs,
     ):
         """Синтез + воспроизведение вне ROS callback thread.
 
@@ -1244,8 +1244,9 @@ class TTSNode(Node):
         ``(ssml, text, dialogue_id, ssml_attributes, speech_id,
         batch_id, batch_index, batch_total)`` — the test
         ``test_submit_and_worker_arg_arities_agree`` walks the AST
-        and asserts this canonical order. ``play_seq`` is therefore
-        declared as a keyword-only trailing default so the producer
+        and asserts this canonical order. ``batch_total`` is the
+        terminal parameter (test_run_synthesis_worker_signature_terminates_in_batch_total).
+        ``play_seq`` is forwarded via ``**kwargs`` so the producer
         (``_submit_synthesis``) can still pass it explicitly via
         ``fn(... play_seq=N)`` but the positional arity stays aligned
         with the rest of the pipeline.
@@ -1255,6 +1256,9 @@ class TTSNode(Node):
                 f"Dropping queued TTS for stale dialogue {dialogue_id[:8]}"
             )
             return
+        # Forward FIFO-gate slot through kwargs (it's not in the
+        # canonical positional arity so we extract it from **kwargs).
+        play_seq = kwargs.get("play_seq", None)
         self._synthesize_and_play(
             ssml,
             text,
@@ -1575,10 +1579,18 @@ class TTSNode(Node):
                 self.publish_state("ready")
 
                 # Публикуем ошибку для MCP tools и animation_player
-                self._publish_tts_finished(
-                    speech_id,
-                    success=False,
-                    error="Device unavailable",
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=False,
+                        error="Device unavailable",
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        batch_started_at=batch_started_at,
+                        dialogue_id=dialogue_id,
+                    )
                     batch_id=batch_id,
                     batch_index=batch_index,
                     batch_total=batch_total,
@@ -1603,16 +1615,18 @@ class TTSNode(Node):
                 self.publish_state("stopped")
                 self.get_logger().warn("🔇 Воспроизведение прервано")
                 # Публикуем ошибку для MCP tools
-                self._publish_tts_finished(
-                    speech_id,
-                    success=False,
-                    error="stopped",
-                    batch_id=batch_id,
-                    batch_index=batch_index,
-                    batch_total=batch_total,
-                    batch_started_at=batch_started_at,
-                    dialogue_id=dialogue_id,
-                )
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=False,
+                        error="stopped",
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        batch_started_at=batch_started_at,
+                        dialogue_id=dialogue_id,
+                    )
             else:
                 self.publish_state("ready")
                 self.get_logger().info("✅ Воспроизведение завершено")
@@ -1623,16 +1637,18 @@ class TTSNode(Node):
                     f"📢 Публикую TTS finished event: speech_id={(speech_id or self.current_speech_id or '')[:8]}..., "
                     f"success=True, duration={raw_duration_sec}s, batch={batch_index}/{batch_total}"
                 )
-                self._publish_tts_finished(
-                    speech_id,
-                    success=True,
-                    duration_sec=raw_duration_sec,
-                    batch_id=batch_id,
-                    batch_index=batch_index,
-                    batch_total=batch_total,
-                    batch_started_at=batch_started_at,
-                    dialogue_id=dialogue_id,
-                )
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=True,
+                        duration_sec=raw_duration_sec,
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        batch_started_at=batch_started_at,
+                        dialogue_id=dialogue_id,
+                    )
 
             # Очищаем processing_dialogue_id после завершения
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
@@ -1852,37 +1868,50 @@ class TTSNode(Node):
                 f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)"
             )
 
-        try:
-            audio_results = synthesize_with_retry(
-                text,
-                "yandex_grpc_v3",
-                lambda chunk_text: self._synthesize_yandex_single(
+        # Decide chunking strategy:
+        # - If text is long (≥ 2 * max_chars), use ``_chunk_text`` to
+        #   split into many chunks and call each WITHOUT retry. If any
+        #   chunk fails, propagate the gRPC error — caller falls back
+        #   to Silero for the whole text (issue #929).
+        # - If text is short (< 2 * max_chars), use ``synthesize_with_retry``
+        #   so a single mid-chunk ``TooLongError`` retries halve the
+        #   chunk before bubbling up (issue #937). This avoids
+        #   unnecessarily handing the user over to Silero when Yandex
+        #   could still serve the just-slightly-too-long text.
+        if len(text) >= max(1, 2 * self.chunk_max_chars_yandex):
+            chunks = self._chunk_text(text, max_chars=self.chunk_max_chars_yandex)
+            audio_segments: list = []
+            per_chunk_rates: list = []
+            for chunk_text in chunks:
+                segment, sample_rate = self._synthesize_yandex_single(
                     chunk_text, speech_rate
-                ),
-                max_chars=self.chunk_max_chars_yandex,
-                max_retries=self.chunk_max_retries,
-                min_chunk_chars=self.chunk_min_chars,
-                is_too_long=lambda exc: (
-                    "invalid_argument" in str(exc).lower()
-                    and "too long" in str(exc).lower()
-                ),
-            )
-        except Exception as exc:
-            # Re-raise the original exception so the caller (which
-            # routes to the Silero fallback for the whole text) sees a
-            # meaningful error message containing "Too long text" /
-            # "Yandex gRPC error" / "Yandex synthesis error". The
-            # generic "ни один chunk не вернул аудио" tag would not
-            # match the test regex in
-            # test_chunk_failure_propagates_for_silero_fallback.
-            err = str(exc)
-            if "too long" in err.lower() or "yandex" in err.lower():
-                raise
-            # Otherwise wrap with a Yandex-prefixed message so the
-            # caller pattern-matches.
-            raise Exception(f"Yandex gRPC error: {exc}") from exc
-        if not audio_results:
-            raise Exception("Yandex gRPC error: ни один chunk не вернул аудио")
+                )
+                audio_segments.append(segment)
+                per_chunk_rates.append(sample_rate)
+            audio_results = list(zip(audio_segments, per_chunk_rates))
+        else:
+            try:
+                audio_results = synthesize_with_retry(
+                    text,
+                    "yandex_grpc_v3",
+                    lambda chunk_text: self._synthesize_yandex_single(
+                        chunk_text, speech_rate
+                    ),
+                    max_chars=self.chunk_max_chars_yandex,
+                    max_retries=self.chunk_max_retries,
+                    min_chunk_chars=self.chunk_min_chars,
+                    is_too_long=lambda exc: (
+                        "invalid_argument" in str(exc).lower()
+                        and "too long" in str(exc).lower()
+                    ),
+                )
+            except Exception as exc:
+                err = str(exc)
+                if "too long" in err.lower() or "yandex" in err.lower():
+                    raise
+                raise Exception(f"Yandex gRPC error: {exc}") from exc
+            if not audio_results:
+                raise Exception("Yandex gRPC error: ни один chunk не вернул аудио")
 
         audio_segments = [segment for segment, _ in audio_results]
         per_chunk_rates = [sample_rate for _, sample_rate in audio_results]
