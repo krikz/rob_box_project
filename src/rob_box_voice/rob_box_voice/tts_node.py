@@ -591,10 +591,13 @@ class TTSNode(Node):
         # Diagnostic log to help identify the cause of
         # test_no_warm_load_thread_for_silero_primary failures where
         # the test reports ``_silero_warm_requested is True`` for a
-        # silero-primary node.
-        self.get_logger().info(
-            f"[init diag] provider={self.provider!r} "
-            f"_silero_warm_requested={self._silero_warm_requested!r}"
+        # silero-primary node. We use ``print`` to stderr because the
+        # conftest's MagicMock logger doesn't capture anything.
+        import sys
+        print(
+            f"[tts init diag] provider={self.provider!r} "
+            f"_silero_warm_requested={self._silero_warm_requested!r}",
+            file=sys.stderr,
         )
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
