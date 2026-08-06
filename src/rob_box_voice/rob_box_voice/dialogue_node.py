@@ -238,6 +238,11 @@ class DialogueNode(Node):
         # cycle gives up and lets the normal 5 s tick take over.
         self._dj_auto_retry_count: int = 0
         self.MAX_DJ_AUTO_RETRIES: int = 2
+        # Bug C (юзер-запросы музыки) retry-бюджет — LLM часто решает
+        # «музыка уже играет» из истории диалога и пропускает
+        # execute_music_code; даём 1 синхронный retry с CRITICAL-промптом.
+        self._music_guard_retry_count: int = 0
+        self.MAX_MUSIC_GUARD_RETRIES: int = 1
 
         # Issue #992 Bug D — metalanguage / babble detector.
         # ``True`` after a single metalanguage retry has already been
@@ -789,6 +794,13 @@ class DialogueNode(Node):
         # second retry (which would loop forever).
         if not is_babble_retry:
             self._babble_retry_used = False
+        # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
+        # чтобы каждый запрос получал свежий retry (retry-промпт
+        # не должен считаться новым запросом и сбрасывать сам себя).
+        if not is_babble_retry and not was_dj_auto and not user_input.startswith(
+            "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code"
+        ):
+            self._music_guard_retry_count = 0
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -1142,6 +1154,7 @@ class DialogueNode(Node):
             # Reset the retry counter on success so a future failure
             # gets a fresh budget.
             self._dj_auto_retry_count = 0
+            self._music_guard_retry_count = 0
             return
         if was_dj_auto and self._dj.state.enabled:
             # Bug B — DJ was supposed to play but didn't.
@@ -1178,6 +1191,24 @@ class DialogueNode(Node):
                     )
                     return
             # Bug C — user asked for rap/song/DJ but LLM skipped music.
+            # 🔴 FIX (live 06.08): для ЯВНЫХ запросов (диджей/рэп/зачитай)
+            # — retry с CRITICAL-промптом (как Bug B), а не только нудж:
+            # LLM часто решает «музыка уже играет» из-за истории диалога
+            # (предыдущие прогоны) и пропускает execute_music_code.
+            if self._music_guard_retry_count < self.MAX_MUSIC_GUARD_RETRIES:
+                self._music_guard_retry_count += 1
+                self.get_logger().warning(
+                    f"🎵 [issue 992 Bug C] user asked for music but LLM "
+                    f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
+                    f"synchronous retry {self._music_guard_retry_count}/"
+                    f"{self.MAX_MUSIC_GUARD_RETRIES}"
+                )
+                self._dispatch_turn(
+                    self._build_music_retry_prompt(user_input),
+                    was_idle=False,
+                    raw_user_command=user_input,
+                )
+                return
             self.get_logger().warning(
                 "🎵 [issue 992 Bug C] user asked for music but LLM "
                 f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
@@ -1186,6 +1217,26 @@ class DialogueNode(Node):
             self._speak_direct(
                 "Я тут растерялся — бит не запустился, попробуй ещё раз."
             )
+
+    def _build_music_retry_prompt(self, user_input: str) -> str:
+        """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
+        execute_music_code).
+
+        The LLM frequently concludes «музыка уже играет» from the dialogue
+        history (previous runs/songs) and returns ``done`` without calling
+        ``execute_music_code``. This prompt explicitly resets that assumption
+        and demands the tool call.
+        """
+        return (
+            "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code, "
+            "хотя пользователь ЯВНО попросил музыку/диджея. "
+            "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
+            "Вызови execute_music_code (Renardo code) ДО любого speak_text. "
+            "Запрос пользователя: "
+            + (user_input or "")
+            + " Если ты снова не вызовешь execute_music_code, "
+            "цикл будет считаться пустым."
+        )
 
     def _build_dj_retry_prompt(self) -> str:
         """Synthetic auto-prompt for the Bug-B synchronous retry.
