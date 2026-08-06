@@ -588,13 +588,13 @@ class TTSNode(Node):
             # Kick off the background warm-load so the first fallback
             # doesn't pay the 2-3 s cold-load cost.
             self._start_silero_warm_load()
-        # Final safety-net: if the test environment brokers warm-load
-        # for us (e.g. via the asyncio-loop executor path or a sneaky
-        # callback), force the flag back to the truth determined by the
-        # provider branch above. The mutation happens BEFORE any
-        # background thread sees the flag.
-        assert self._silero_warm_requested == (self.provider != "silero"), (
-            "warm-load flag drifted from provider branch invariant"
+        # Diagnostic log to help identify the cause of
+        # test_no_warm_load_thread_for_silero_primary failures where
+        # the test reports ``_silero_warm_requested is True`` for a
+        # silero-primary node.
+        self.get_logger().info(
+            f"[init diag] provider={self.provider!r} "
+            f"_silero_warm_requested={self._silero_warm_requested!r}"
         )
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)

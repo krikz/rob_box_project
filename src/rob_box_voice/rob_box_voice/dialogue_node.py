@@ -1677,6 +1677,13 @@ class DialogueNode(Node):
                 _tool_results=current_tool_results,
             ):
                 self._do_recursive_streaming(_result, _messages, _tool_results)
+            # Diagnostic: log the wrapper's __defaults__ so we can see
+            # in the test CI log whether the test mock has the right
+            # hand-off to mutate the result dict.
+            self.get_logger().info(
+                f"[stream diag] wrapper={_streaming_wrapper!r} "
+                f"defaults={_streaming_wrapper.__defaults__!r}"
+            )
             max_attempts = 2
             for _attempt in range(max_attempts):
                 try:
