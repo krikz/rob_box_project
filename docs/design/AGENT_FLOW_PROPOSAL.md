@@ -1,293 +1,445 @@
-# Agent Flow Proposal — Issue → e2e Queue → Closed (draft)
+# Agent Flow Proposal — Issue → branch+PR → e2e round → manual merge → close
 
 | Поле | Значение |
 |------|----------|
 | Документ | `docs/design/AGENT_FLOW_PROPOSAL.md` |
-| Статус | **draft (черновик юзера, оформлен архитектором)**, требует согласования |
-| Дата | 2026-08-06 (зачаток по итогам сессии) |
-| Автор | PM / юзер (krikz) → оформил: Hermes (subagent по запросу юзера) |
-| Связанное | `docs/design/E2E_TESTING_DESIGN_v2.md`, `.github/workflows/L-E2E Voice Test.yml`, существующий cron `e2e-sound-delivery`, канбан `t_*` |
-| Назначение | Описать сквозной поток: **GitHub Issue → cron-Hermes увидел → задача в канбан → branch+PR → зелёные CI → e2e-сценарий → артефакты в задачу → re-assign исполнителю → close** |
+| Статус | **v1, decisions applied (Q1..Q9 закрыты 06.08 20:25)** — ожидает review юзера перед Phase 1 |
+| Дата | 2026-08-06 |
+| Автор | PM / юзер (krikz) → оформил: Hermes |
+| Issue | **#1038** |
+| Связанное | `docs/design/E2E_TESTING_DESIGN_v2.md`, `docs/design/CHILD_TASKS_PROPOSAL.md`, `.github/workflows/L-E2E Voice Test.yml`, канбан `t_*`, существующий cron `e2e-sound-delivery` |
 
 ---
 
-## 0. TL;DR — что юзер накидал черновиком
+## 0. TL;DR
 
-Сценарий «end-to-end для агент-воркера, который ведёт задачу через GitHub + канбан + e2e-проверку»:
+Сквозной поток для агент-воркера, **от ручного создания Issue до ручного merge юзером**, с **автоматизацией** в середине:
 
-1. **Триггер** — человек создаёт Issue в GitHub (или просит «создай issue для ...»).
-2. **Cron** на стороне Hermes (например `*/2 * * * *`) забирает все новые Issue с лейблом `hermes` (или по assign — `krikz`). Это **`agent-flow-triage`** cron — НЕ самостоятельно пишет код, а создаёт **карточку канбана** с инструкцией.
-3. **Карточка канбана** содержит (а) issue-метаданные (title/body/labels), (б) **короткую инструкцию для агента-исполнителя** (например «fix voice-assistant silence gate», «docs(api): add error schema»), (в) поле `assignee: <исполнитель>` — для issue-бота обычно «backend»/«architect»/«reviewer» — определяется по labels или эвристике.
-4. **Исполнитель** (sub-agent или воркер) должен:
-   - создать **ветку** `agent/<short-id>` от актуального main / feature-ветки
-   - внести изменения по **инструкции из карточки** (НЕ по issue — карточка может быть сокращена)
-   - открыть **PR от своей ветки**
-   - **связать PR с issue** (ключевые слова `closes #N`)
-5. **Гейт** — PR открыт → ждать зелёных **всех CI**: build OK, все линтеры (G: Lint / Run Tests / Validate Docker Compose / TTS Provider Tests), все кросс-чек.
-6. **E2E-маркировка** — после зелёных CI: автоматически (через GitHub labeler) ставится лейбл `needs-e2e` (или руками юзером / reviewer'ом). **Дальше — отдельная очередь e2e**.
-7. **E2E-очередь** (`e2e-process` — отдельная сущность / роль / канбан-карточка):
-   - читает issue/PR + diff (через `gh pr diff`)
-   - **генерирует сценарий** (1–3 голосовые команды), кладёт OGG в `.github/e2e/voice_commands/e2e_<issue_id>/`
-   - **запускает** серию через `gh workflow run L-E2E Voice Test.yml --ref <PR-branch>`, --ref — обязательно (иначе берётся main → mimo, дважды наступали)
-   - **собирает артефакты** (`.wav` 16kHz, mp3 через `ffmpeg`, RMS-метрики, transcript-dump)
-   - **комментит в issue/PR** сводку + прикладывает артефакты (`gh pr comment`)
-   - **re-assign** задачу в исходную роль исполнителя (он уже сделал код) — там он видит доказательства работы
-8. **Close** — исполнитель (или ревьюер, или юзер) видит артефакты, подтверждает → Issue → `done`, карточка канбана → `done`, в changelog записывается что вышло.
+```
+human → Issue[hermes+agent:role]
+   ↓ cron `agent-flow-triage` (every 2m)
+kanban-карточка (assignee, инструкция, branch-naming)
+   ↓ sub-agent по карточке
+worktree → branch `agent/<id>-<slug>` → push
+   ↓ cron `agent-flow-merge-gate` (every 2m)
+CI зелёные + merge_state=clean → label `needs-e2e`
+   ↓ cron `e2e-process` (rolling-round, every 1h)
+resolver берёт задачу → мержит в `e2e/wip-<id>-<slug>` → PR в `e2e/test-round-N` → CI → merge в test-round-N → e2e прогон
+   ↓ артефакты
+issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + timing + RMS + baseline
+   ↓ человек (юзер)
+ручной merge `agent/<id>-<slug>` → `feature/harness-p0-foundation`
+   ↓ cleanup
+удалить `agent/<id>-<slug>` и `e2e/wip-<id>-<slug>`, issue close
+```
 
-Цель: **полный цикл «идея → доказательства работы → close» без человеческих «передергиваний» посередине**. Юзер делает только две вещи: «создай issue» и «закрой issue когда уверен» (или «вот доказательства — сам закрою»).
-
----
-
-## 1. Что сейчас УЖЕ работает (06.08) — точки опоры для proposal
-
-| Что | Где | Покрытие |
-|-----|-----|----------|
-| Cron в Hermes качает deliver-mp3 | `~/.hermes/.../cronjobs/04b0846a4066 e2e-sound-delivery` (paused юзером) | ✅ в одну сторону — watcher→Telegram mp3 |
-| Worker | `claude-code / codex / opencode / hermes` subagents | ✅ — умеют писать коммит→билд→деплой→rebase |
-| Сами скрипты e2e | `e2e_series7.sh`, `e2e_watcher7.sh`, watcher poll | ✅ — 10/10 verdicts v7 |
-| Отдельный e2e-раннер | `rob-box-e2e-1` (лейбл `e2e`), workflow `L-E2E Voice Test.yml` → `runs-on: e2e` | ✅ сделано сегодня по требованию юзера |
-| Канбан | Hermes kanban + `~/.hermes/kanban/boards/robbox` | ✅ — карточки t_* существуют |
-| `gh` доступ | GOODWORKRINKZ (perms) | ✅ |
-
-**На proposal нужны новые сущности:**
-
-- `agent-flow-triage` — cron для «видит issue с лейблом → создаёт карточку канбана» (раз в 2 мин, как watchdog).
-- `agent-flow-merge-gate` — бот, который после PR-open ждёт `checks=ok` и **триггерит `e2e-process`** (или ставит лейбл `needs-e2e`).
-- `e2e-process` (может быть cron, может быть отдельный worktree) — генерит OGG → dispatch'ит workflow → собирает артефакты → re-assign.
+**Ручное:** Issue creation (юзер) и merge approval (юзер). Остальное — автомат.
 
 ---
 
-## 2. Маркеры для агента (что именно делать)
+## 1. Что УЖЕ работает (06.08, точки опоры)
 
-### 2.1 Issue-side
+| Компонент | Где | Статус |
+|-----------|-----|--------|
+| Kanban Hermes | `~/.hermes/kanban/boards/robbox/` | ✅ карточки `t_*` |
+| Sub-agents | `claude-code`, `codex`, `opencode`, `hermes` | ✅ |
+| e2e-script | `/tmp/e2e_series7.sh` (driver) | ✅ 10/10 verdicts v7 |
+| e2e-watcher | `/tmp/e2e_watcher7.sh` (mp3-delivery через cron) | ⚠️ paused юзером |
+| Отдельный e2e-раннер | `rob-box-e2e-1` (label `e2e`), `L-E2E Voice Test.yml` → `runs-on: e2e` | ✅ |
+| GH access | `gh` (GOODWORKRINKZ) | ✅ |
+| Репо | `krikz/rob_box_project` | ✅ |
 
-| Маркер | Пример | Что делает cron-triage |
-|--------|--------|-------------------------|
-| Лейбл `hermes` | `labels: hermes, voice` | подхватывается |
-| Лейбл `agent:backend` | (assign=backend/architect/reviewer) | определяет **дефолтного исполнителя** карточки |
-| Лейбл `priority:P0..P2` | | мапится на канбан-приоритет |
-| Milestone / Project | | опционально |
+---
 
-**Минимум для оформления proposal:** «нужны 1+ маркеров на issue» — например **только `hermes`** (=кто-то другой может поставить лейбл, тогда триаж включится).
+## 2. Маркеры
 
-### 2.2 PR-side
+### Issue-side
 
 | Маркер | Что значит |
 |--------|-----------|
-| Связь с issue (`Closes #N` / `Fixes #N` в description) | стандартно, увязывает канбан |
-| Лейбл `needs-e2e` | внешний cron e2e-process может её подобрать |
-| Лейбл `e2e-ready` (альтернатива) | то же |
+| `hermes` | триаж cron берёт |
+| `agent:backend \| agent:architect \| agent:devops \| agent:reviewer` | роль исполнителя в канбан-карточке |
+| default роли (если нет `agent:*`) | **`hermes`** (Гермес сам себе делает) |
+| `priority:P0 \| P1 \| P2` | канбан-приоритет |
+| `e2e:now` | срочно — пропустить волну (Phase 4) |
 
-**Триггер триажа на КАРТОЧКЕ при наличии issue == `assignee`/лейбла** — это про дизайн.
+### PR-side
 
-### 2.3 e2e-процесс ожидает
-
-- **название PR-ветки** вида `agent/<id>` или `feature/<id>` — parser вытаскивает
-- **bashкоманда запуска**: `gh workflow run "L-E2E Voice Test.yml" --ref <branch> -f environment=test -f voice_file=.github/e2e/voice_commands/<file>.ogg -f volume=150 -f record_seconds=120`
-- **артефакты**: `.wav` 16k mono + .mp3 + transcript-dump (отдельная тема)
+| Маркер | Что значит |
+|--------|-----------|
+| База ветки `e2e/test-round-N` | PR из `e2e/wip-<id>-<slug>` в test-round-N |
+| `needs-e2e` | auto от merge-gate когда CI зелёные |
+| `e2e-done` | после успешного e2e (с артефактами) |
+| `e2e:rejected` | юзер отказал merge'у |
 
 ---
 
 ## 3. Контракты между частями
 
-### 3.1 `agent-flow-triage` (cron)
+### 3.1 `agent-flow-triage` (cron, every 2 min)
 
-**Inputs:** GitHub issues с лейблом `hermes` (за период с прошлого тика).
+**Inputs:** `gh issue list --label hermes --state open --json ...` (с прошлого тика).
 
-**Outputs:** канбан-карточки с:
+**Outputs:** kanban-карточка с шаблоном:
 ```
-title: <issue title truncated>
+title: <issue.title>
 body:
-  -- issue-meta --
   ## Source
   • repo: krikz/rob_box_project
   • issue: #<N>
   • url: <link>
-  • labels: hermes, ...
-  
-  ## Agent instruction (короткое — ПОЛНОЕ тело issue НЕ копируем, оно большое)
-  <тут 1-3 предложения максимум — что конкретно делать>
-  
+  • labels: hermes, agent:<role>, ...
+  ## Agent instruction (короткое, ≤3 строк)
+  <TL;DR инструкция что делать>
   ## Branch + PR convention
-  • branch: agent/issue-<N>-<short-slug>
-  • commit style: feat/fix/docs(scope): ...
-  • link PR with "Closes #<N>"
-  
+  • branch: agent/<id>-<short-slug>
+  • merge: PR `e2e/wip-<id>-<slug>` → `e2e/test-round-N`
   ## Done criteria
-  • CI all green (build + lint + tests + e2e)
-  • PR opened + reviewed
-  
-  • assignee: <определён по labels>
-labels: [<assigned role>]   # backend / architect / reviewer
-priority: P<P0-P2>
+  • CI all green
+  • PR merged в test-round-N
+  • e2e SUCCESS
+  • Артефакты приложены в issue
+  • Manual merge юзером
+assignee: <agent:<role> или hermes>
+priority: P<P0..P2>
 ```
 
-**TBD:** как детектить «issue уже обработан» (state `in_progress`, parent issue number в комментарии → state `closed`, или by created comment с маркером `kanban: t_<task_id>`).
+**Идемпотентность:** при создании карточки пишет **коммент в issue** с маркером `kanban: t_<task_id>`. На следующем тике cron смотрит на наличие такого комментария — пропускает.
 
-### 3.2 agent-исполнитель (sub-agent)
+### 3.2 Agent-исполнитель (sub-agent)
 
-**Inputs:** kanban-карточка (через Hermes API для selection).
+**Inputs:** канбан-карточка `t_<id>`.
 
-**Действия:**
-1. Получает карточку, читает инструкцию + родительскую issue.
-2. Создаёт ветку `agent/issue-<N>-<short-slug>` от main (или от feature/harness-p0-foundation, если флажок).
-3. Делает **локальные изменения** (включая `docs/`/скрипты если нужно). Если архитектор/док — только документы, коммит, PR без кода.
-4. **Перед push:** `git fetch origin` + `rebase origin/<base>` (защита от race с воркерами-архитекторами, мы уже наступали).
-5. Push, `gh pr create --base <base> --fill` (title из issue / card, body с `Closes #<N>`).
-6. Ждёт CI (или cron/agent-flow-merge-gate за этим смотрит).
-7. **По завершении ставит** на PR + issue комментарий `kanban: t_<task_id>`.
+**Действия (пошагово):**
 
-### 3.3 `agent-flow-merge-gate` (cron / on-PR-check)
+1. Получает карточку через kanban-tool.
+2. Создаёт worktree (свой собственный, не `_work`!) от `feature/harness-p0-foundation`:
+   ```
+   git worktree add -b agent/<id>-<slug> /home/builder/wt-<id> origin/feature/harness-p0-foundation
+   ```
+3. Делает код по инструкции из карточки. Если нужно — читает родительский issue.
+4. **Commit style:** `feat/fix/docs(scope): ...`.
+5. Push в `origin/agent/<id>-<slug>`.
+6. **Ждёт** пока merge-gate не выставит `needs-e2e`.
+7. Когда выставлен — переключается на `e2e/test-round-N`:
+   ```
+   git fetch origin
+   git checkout -b e2e/wip-<id>-<slug> origin/e2e/test-round-N
+   git merge --no-ff origin/agent/<id>-<slug>  # резолвит конфликты если есть
+   git push origin e2e/wip-<id>-<slug>
+   gh pr create --base e2e/test-round-N --head e2e/wip-<id>-<slug>
+   ```
+8. **Ждёт** пока `e2e-bot` (cron) не смёрджит `e2e/wip-<id>-<slug>` → `e2e/test-round-N` (CI зелёные).
+9. **Ждёт** `e2e-process` (cron) — прогоняет e2e на свежем `e2e/test-round-N`.
+10. **После e2e SUCCESS** — пишет коммент в issue с артефактами (см. §5).
+11. **Ждёт** ручного merge юзером.
+12. **После merge** (или `e2e:rejected`):
+   - `gh pr merge` (юзер сделал) → удалить `agent/<id>-<slug>` и `e2e/wip-<id>-<slug>`:
+     ```
+     git push origin --delete agent/<id>-<slug>
+     git push origin --delete e2e/wip-<id>-<slug>
+     ```
 
-**Inputs:** PR с label `needs-e2e` (или хотя бы у PR-ветки `agent/issue-*` + merge_state=clean).
+### 3.3 `agent-flow-merge-gate` (cron, every 2 min)
+
+**Inputs:** PR из `agent/<id>-*` в `feature/harness-p0-foundation` или комментарий-триггер от agent.
 
 **Checks:**
-- `gh pr checks --watch` — все passed (build / lint / unit tests / docker-compose / TTS provider tests)
-- `gh pr view --json mergeable` — `MERGEABLE=true`, конфликтов нет
-- `gh pr diff <NUM> --patch` — обязательно глянуть (можно и не смотреть, но желательно)
+- `gh pr checks <NUM> --watch --exit-status` — все passed.
+- `gh pr view <NUM> --json mergeable` — `MERGEABLE=true`.
 
-**Action:** ставит лейбл `e2e-triggered` или прямо диспатчит `gh workflow run` для e2e (через отдельный worktree или sub-agent).
+**Action:** добавить label `needs-e2e` к PR (если ещё нет).
 
-### 3.4 `e2e-process` (отдельный субъект)
+### 3.4 `e2e-process` (cron, every 1 hour)
 
-**Inputs:** `gh issue view <N>`, `gh pr view <PR_NUM> --json title,body,files` (чтобы понять, что меняется), текущий список OGG.
+**Inputs:** PR с label `needs-e2e` в `e2e/test-round-N`.
+
+**Алгоритм:**
+
+1. **Определить N** — текущий номер round:
+   - `git ls-remote origin | grep e2e/test-round-` → max N.
+   - Если нет веток → создать `e2e/test-round-1` от `feature/harness-p0-foundation`.
+   - Иначе → использовать `e2e/test-round-N` (max N).
+2. **Резолв всех PR** с `needs-e2e` (если agent ещё не слил) — `e2e-process` сам мержит:
+   ```
+   for pr in $(gh pr list --label needs-e2e --json number --jq '.[].number'); do
+     branch=$(gh pr view $pr --json headRefName --jq .headRefName)
+     base=$(gh pr view $pr --json baseRefName --jq .baseRefName)
+     if [ "$base" = "e2e/test-round-$N" ]; then
+       gh pr merge --squash --delete-branch $pr
+     fi
+   done
+   ```
+3. **OGG-генерация** (Phase 3+): для каждой issue с `e2e-done` лейблом — если нет OGG в коммитах, **offline на Katana**:
+   ```
+   ssh ros2@10.1.1.249 "cd /home/ros2/... && docker exec voice-assistant python3 gen_prov.py '<text>' <name>.wav && ffmpeg -i <name>.wav -c:a libopus -b:a 32k -ar 16000 -ac 1 <name>.ogg"
+   git add .github/e2e/voice_commands/e2e_<id>/<name>.ogg
+   git commit -m "e2e(<id>): add scenario <name>"
+   git push origin e2e/test-round-N
+   ```
+4. **Запустить e2e прогон** через наш runner:
+   ```
+   gh workflow run "L-E2E Voice Test.yml" --ref e2e/test-round-N -f environment=test -f voice_file=.github/e2e/voice_commands/<file>.ogg -f volume=150 -f record_seconds=120
+   gh run watch $RUNID --exit-status
+   ```
+5. **Скачать артефакты** + сгенерить mp3:
+   ```
+   gh run download --name run-<id>-dialog_e2e.wav
+   ffmpeg -i run-<id>-dialog_e2e.wav -c:a libmp3lame -b:a 64k e2e_<id>.mp3
+   ```
+6. **Comment в issue** с артефактами (см. §5).
+7. **Создать новый round:**
+   ```
+   if e2e SUCCESS: 
+     git fetch origin
+     git checkout feature/harness-p0-foundation
+     git branch e2e/test-round-$((N+1))
+     git push origin e2e/test-round-$((N+1))
+     # Удалить старые:
+     for old in $(git branch -r | grep -oE 'e2e/test-round-[0-9]+' | sort -u | head -n -2); do
+       git push origin --delete $old
+     done
+   else:
+     # FAIL — добавить label `e2e:rejected`, ничего не создавать
+   ```
+
+**State:** хранить `N` (текущий round) можно в **имени ветки** (max N) либо в файлике `state/e2e_round.txt` в репо (fallback).
+
+### 3.5 Юзер (финальное решение)
 
 **Действия:**
-1. Сгенерирует **1–3 OGG-сценария** в папку `.github/e2e/voice_commands/e2e_<issue_id>/`. Генерация вне CI:
-   - docker `gen_prov.py` (есть в проекте — MiniMax TTS, voice=`male-qn-qingse` или юзер) → `docker cp` → `ffmpeg -i raw.wav -c:a libopus -b:a 32k -ar 16000 -ac 1 <file>.ogg` → коммит в ветку `agent/e2e-<id>`.
-   - **Триаж:** если issue = «voice / e2e / и т.п.», можно сгенерить вручную (юзер/архитектор).
-2. `gh workflow run L-E2E Voice Test.yml --ref <branch> -f environment=test -f voice_file=... -f volume=150 -f record_seconds=...` — **БЕЗ `--ref` берётся main → mimo-конфиг** (юзер дважды наступал).
-3. `gh run watch $RUNID --exit-status` — пауза между прогонами (наш `e2e_series7.sh` уже так делает).
-4. Сбор артефактов: `gh run download --name run-<id>-dialog_e2e.wav` + ffmpeg→mp3 + mediainfo / RMS-аудит.
-5. **Comment** в PR (и issue) с markdown-блоком:
+
+1. Создаёт issue с `hermes` label (может + `agent:<role>` и `priority:P*`).
+2. Ждёт пока PR появится (не обязательно, опционально смотреть).
+3. **Когда issue получает коммент с артефактами** (`e2e-done` label) — слушает mp3, читает diff, проверяет acceptance.
+4. Если ОК → `gh pr merge --squash agent/<id>-<slug> → feature/harness-p0-foundation`.
+5. Если НЕ ОК → `e2e:rejected` label + коммент «что не так», agent делает следующую итерацию.
+
+---
+
+## 4. Триггеры (стыковка с Hermes cronjob)
+
+| Cron | Период | no_agent | script | deliver |
+|------|--------|----------|--------|---------|
+| `agent-flow-triage` | every 2m | false (LLM-driven) | — | local |
+| `agent-flow-merge-gate` | every 2m | true (pure check) | `gh pr checks` | local |
+| `e2e-process` | every 1h | false (LLM-driven, но orchestrator) | — | local |
+
+**Hermes cronjob pattern:**
+```bash
+# agent-flow-triage
+cronjob.create(
+  prompt="Проверь новые issues с label hermes. Для каждой новой issue создай канбан-карточку с шаблоном (см. §3.1). После создания карточки напиши comment в issue с маркером 'kanban: t_<task_id>'.",
+  schedule="every 2m",
+  skills=["github"],
+  deliver="local"
+)
+```
+
+---
+
+## 5. Артефакты (что agent кладёт в issue после e2e SUCCESS)
+
+Богатый набор (Вариант C по Q8). Шаблон:
+
+```markdown
+## 📊 e2e-доклад #<issue_id> (PR #<pr_num>) — <verdict PASS|FAIL>
+
+### Verdict
+✅ PASS (×N kейсов)
+
+### Ссылка на run
+[run #<id>](https://github.com/krikz/rob_box_project/actions/runs/<id>)
+
+### Acceptance
+- A11 wake+prefix: ✅
+- A39 music RMS: ✅ (-16.6 dB > -25 dB threshold)
+- A40 wake без префикса: ➖ не тестировалось
+- A40b: ✅
+
+### Timing breakdown
+- VAD end → STT accept: 5.5с
+- LLM streaming first chunk: 1.2с
+- LLM full response: 4.1с
+- TTS first chunk: 0.8с
+- TTS finish: 7.2с
+
+### Audio
+- mp3: [attachment: e2e_<id>.mp3]
+- wav: [GitHub Artifact run-<id>-dialog_e2e.wav]
+- RMS: -16.6 dB
+
+### ASR transcript (Vosk)
+> «Робот, диджей Ленин» → «Текст ответа: ...»
+
+### Diff summary
+```
+ src/.../dj_mode.py | +124 -47
+ src/.../prompts/... | +15 -8
+```
+
+### Baseline comparison
+| Метрика | До фикса | После фикса | Delta |
+|---------|----------|-------------|-------|
+| DJ transitions until stop | 8 | 24+ | +200% |
+| Verdict v7 success rate | 10/10 | 10/10 | = |
+```
+
+---
+
+## 6. Решения Q1..Q9 (зафиксировано)
+
+| Q# | Решение |
+|----|---------|
+| Q1 | `hermes` + `agent:<role>`; default = `hermes` |
+| Q2 | все CI зелёные + merge_state=clean + auto-label `needs-e2e`; ветка `agent/<id>-<slug>` |
+| Q3 | resolver (sub-agent) берёт из очереди; OGG offline на Katana |
+| Q4 | **Волны раз в час** через `e2e/test-round-N` |
+| Q5 | Agent создаёт `e2e/wip-<id>-<slug>` → PR в test-round-N → CI → merge. `agent/<id>` живёт до merge в main |
+| Q6 | race невозможен (push в свою wip-ветку) |
+| Q7 | **Ручной merge юзером** после просмотра артефактов |
+| Q8 | Богатый набор артефактов (verdict+run+log+audio+ASR+diff+acceptance+timing+RMS+baseline) |
+| Q9 | Номерованные проходы `e2e/test-round-N`, N из предыдущей ветки или файлика |
+
+---
+
+## 7. MVP scope (Phase 1 + 2 + 3 mini)
+
+### Phase 1 — Triage MVP
+
+- [ ] Cron `agent-flow-triage` в Hermes (cronjob create с prompt).
+- [ ] Парсинг issues через `gh issue list --label hermes --json ...`.
+- [ ] Создание kanban-карточки (нужен kanban-tool wrapper).
+- [ ] Идемпотентность через comment с `kanban: t_<task_id>`.
+- [ ] Тест: создать issue → 2 мин → карточка появилась → проверить comment в issue.
+
+### Phase 2 — Agent branch+PR
+
+- [ ] Hand-off от карточки → sub-agent.
+- [ ] Создание `agent/<id>-<slug>` от feature-ветки.
+- [ ] Push + commit style.
+- [ ] Тест: 1 issue → через 30-60 мин PR готов.
+
+### Phase 3 mini — Merge-gate + e2e (rolling-round)
+
+- [ ] Cron `agent-flow-merge-gate` (every 2m) — label `needs-e2e`.
+- [ ] Cron `e2e-process` (every 1h) — генерация OGG offline + e2e прогон + артефакты.
+- [ ] Round-ветки `e2e/test-round-N` с rotation.
+- [ ] Тест: 1 issue → через час e2e SUCCESS → comment с артефактами.
+
+### Phase 4+ (не в MVP)
+
+- Multi-model e2e matrix (A42)
+- Master-plan на N фаз
+- Dashboard
+- Auto-merge
+
+---
+
+## 8. План реализации (пошаговый)
+
+### Что нужно для Phase 1 (triage MVP)
+
+**По пунктам:**
+
+1. **Канбан-tool wrapper** — CLI для создания/обновления карточек (через существующий kanban API Hermes или новый wrapper). Если wrapper'а нет — Phase 1 невозможен. Решение: сделать минимальный wrapper на Python (3 дня), или использовать существующий kanban-tool если уже есть.
+2. **Шаблон комментария** — канонический текст для `kanban: t_<id>` в issue (вынести в `docs/templates/agent_flow_card.md`).
+3. **Cronjob** `agent-flow-triage`:
    ```
-   ### e2e автоматика для #<issue_id> (PR #<pr_num>)
-   - сценарий: <file>.ogg (содержание: <asr>)
-   - результат: SUCCESS, mean RMS -16.6 dB
-   - mp3: attach1 (сегодня — через Telegram-доставку MEDIA:/path/to.mp3)
-   - verdict: A39 + A40 satisfied
+   prompt: «Проверь issues с label hermes (за период с прошлого тика). 
+   Для каждой новой issue создай канбан-карточку через kanban-tool.
+   После создания напиши comment в issue: 'kanban: t_<task_id>'.
+   На следующем тике пропускай issue, у которых уже есть такой comment.
+   Deliver: local (без спама в Telegram).»
+   schedule: «every 2m»
+   skills: ["github"]
    ```
-6. **Re-assign** исполнителя (по labels) — ставит assignee обратно на роль, что бы агент-разработчик **получил обратно карточку с доказательствами**.
-7. Issue/PR — `status: green` + готов к merge. Если FAIL — повторно assign + комментарий с ошибками.
+4. **Идемпотентность** — state хранится в самой issue (comment marker). Никакой внешней БД не нужно.
+5. **Документация** — `docs/design/AGENT_FLOW_PROPOSAL.md` (этот файл) уже описывает контракт.
 
-### 3.5 Юзер (финальный close)
+**Acceptance для Phase 1:**
+- Создаю issue с label `hermes`.
+- В течение 2 мин появляется kanban-карточка с правильной структурой.
+- В issue появляется comment с `kanban: t_<id>`.
+- Повторный запуск cron'а не создаёт дубль.
 
-- Видит mp3 в Telegram (по cron-delivery или MEDIA-файл).
-- Или **сам** лезет в run logs, проверяет.
-- `gh issue close #N` (или approve PR для вливания).
+### Что нужно для Phase 2 (agent branch+PR)
 
----
+**По пунктам:**
 
-## 4. Триггеры (как стыкуются с реальным API Hermes)
+1. **Selection logic** — `select_agent(role)` — какой sub-agent делает (architect/backend/devops). Определяется по label `agent:<role>` на issue или default `hermes`.
+2. **Worktree management** — изоляция от race (как было с билд-раннерами 06.08). Один worktree на agent'а.
+3. **Commit conventions** — `feat/fix/docs(scope): ...`.
+4. **Push через rebase** — `git fetch + rebase origin/feature/harness-p0-foundation + push + pop stash` (паттерн уже воркеры используют).
+5. **Hand-off протокол** — sub-agent получает карточку, читает issue, делает код, оставляет статус.
 
-| Триггер | Где | Период |
-|---------|-----|--------|
-| `agent-flow-triage` cron | Hermes → `~/.hermes/...cronjobs/<id>.sh` (script = `gh issue list --label hermes --json ... | build card`) | every 2 min |
-| `e2e-process` cron | отдельный job poll'ит PR с `needs-e2e` | every 5 min |
-| `agent-flow-merge-gate` | webhook on `pull_request` (нота — пока бот через cron check by sha) | every 2 min |
+**Acceptance для Phase 2:**
+- Issue `#<id>` с label `hermes` → через 30-60 мин есть PR от `agent/<id>-<slug>` в feature-ветку с правильным commit-message и `Closes #<id>`.
 
-Хермес cronjob — это `cronjob(no_agent=True, script=...)` + `deliver=telegram` или `local`. (см. существующий `Agent Cockpeat Watch Tock` — pattern есть).
+### Что нужно для Phase 3 mini (merge-gate + e2e)
 
----
+**По пунктам:**
 
-## 5. Открытые вопросы (нужен ответ юзера / PM)
+1. **Cron `agent-flow-merge-gate`** — pure-check через `gh pr checks` + `gh pr view --json mergeable`. Label `needs-e2e` если оба ОК.
+2. **Cron `e2e-process`** — orchestrator (LLM-driven):
+   - Найти `e2e/test-round-N` (max N).
+   - Резолвнуть PR с `needs-e2e` (если ещё не слиты).
+   - Генерация OGG (offline на Katana).
+   - `gh workflow run L-E2E Voice Test.yml --ref e2e/test-round-N`.
+   - Скачать артефакт + ffmpeg→mp3 + RMS.
+   - Comment в issue с артефактами.
+   - Rotation: создать `e2e/test-round-N+1`, удалить `e2e/test-round-N-1`.
+3. **OGG-генератор** — скрипт `scripts/gen_ogg.sh` (ssh на Katana + docker exec + ffmpeg).
+4. **Артефакт-коммент** — шаблон в `docs/templates/e2e_artifacts.md`.
 
-| Q# | Вопрос → **Решение** |
-|----|----------------------|
-| **Q1** | Маркер на issue — **только `hermes`** или +обязательно `agent:<role>`? → **ДВА маркера**: `hermes` + `agent:<role>` (default `architect`) |
-| **Q2** | E2E: **только при `needs-e2e`** (ручной) или **автомат** на любой PR? → **АВТОМАТ**: `agent-flow-merge-gate` cron — CI зелёные + merge_state=clean → label `needs-e2e` → `e2e-process` cron запускает |
-| **Q3** | OGG-генерация в CI или offline? → **OFFLINE на Katana** (MiniMax 429 сегодня; `MINIMAX_API_KEY` НЕ в GH Secrets) |
-| **Q4** | Re-assign в GH (через bot) или канбане? → **Только в канбане** + label `e2e-done` в PR; GH-assignee **не трогаем** |
-| **Q5** | Авто-merge `gh pr merge --auto`? → **НЕТ**, re-assign на reviewer → ручной `gh pr merge --squash` (юзер memory: «не рестартить без разрешения») |
-| **Q6** | Master-plan на N фаз или каждая issue сама? → **Каждая issue сама по себе**, master-plan в Phase 4+ |
-| **Q7** | Артефакты: GH artifacts / release / папка? → **GH Actions artifact** (wav) + PR-comment summary + issue-comment + Telegram-mp3 opt-in |
-| **Q8** | Dashboard? → **НЕТ в MVP** (Phase 4) |
+**Acceptance для Phase 3:**
+- Issue → PR → CI зелёные → label `needs-e2e` → в течение часа e2e прогон на `e2e/test-round-N` → comment с артефактами в issue → round-N+1 создан.
 
-### §MVP scope (по итогам дискаса)
+### Что нужно для Phase 4+ (не MVP)
 
-Включает: **Phase 1** (agent-flow-triage cron) + **Phase 2** (sub-agent branch+PR) + **Phase 3 mini** (merge-gate cron + auto e2e через наш `rob-box-e2e-1` runner).
-
-НЕ включает: auto-merge, multi-model matrix (A42 OPEN), master-plan, dashboard.
-
----
-
-## 6. Порядок реализации (proposal по фазам для согласования)
-
-### Phase 1 — Triage MVP (1-2 дня)
-
-**Goal:** cron видит issue с лейблом `hermes` → создаёт карточку канбана с правильной метаданной.
-
-- [ ] Cron `agent-flow-triage` в Hermes
-- [ ] Парсинг issue via `gh issue list --label hermes --json number,title,body,labels,assignees`
-- [ ] Создание карточки канбана через kanban-tool (нужен cli-обёртка?)
-- [ ] Тест: создаю issue → жду 2 мин → карточка появляется в robbox-board
-- [ ] Не открывать issue сразу sub-agent'ом — только `ready` статус
-
-**Accept:** 1 issue → 1 card, idempotency при ретри (уже обработанные issue не дёргаются повторно).
-
-### Phase 2 — Agent в ветке+PR (2-3 дня)
-
-**Goal:** выбранный агент действительно решает задачу, делает ветку, открывает PR.
-
-- [ ] Hand-off от карточки → sub-agent: `select_agent(role)` (можно первый slice — только architect/backend/devops)
-- [ ] agent привязан к подготовке: git clone / checkout / создать `agent/issue-<N>-<slug>`
-- [ ] PR creation с правильным шаблоном: title, body, `Closes #<N>`
-- [ ] Acceptance: создать issue «fix voice-action-server aiohttp» (та самая A43) → через 30-60 мин PR с фиксом появился + CI запущен
-
-**Accept:** manual test of 1 воркера — issue доходит до зелёного PR.
-
-### Phase 3 — Merge gate + e2e (2-3 дня)
-
-**Goal:** зелёный CI автоматом запускает e2e-серию, артефакты прикладываются.
-
-- [ ] `agent-flow-merge-gate` cron: PR all-checks-pass → label `e2e-ready`
-- [ ] `e2e-process` cron: dispatch L-E2E Voice Test.yml (ТОЛЬКО через наш e2e-раннер)
-- [ ] Comment summary в PR + issue
-- [ ] OGG-генерация (offline или через secrets)
-- [ ] `e2e_<issue_id>/` папка, прикладываемая через upload-artifact
-
-**Accept:** завести тестовую issue, проверить, что e2e-прогон отрабатывает через наш runner с правильными артефактами.
-
-### Phase 4 — Polishing / observability (по запросу)
-
-- [ ] Manager dashboard (tab в вебе / telegram-bot)
-- [ ] SLA / метрики (средний time-to-merge per role)
-- [ ] Self-approve-e2e (rollback на fallback'и)
+- Multi-model e2e matrix.
+- Dashboard.
+- Master-plan.
+- Auto-merge.
 
 ---
 
-## 7. Risks / открытые риски
+## 9. Risks
 
 | R | Risk | Mitigation |
 |---|------|-----------|
-| R1 | Sub-agent плохо интерпретирует «короткое тело карточки» | Ссылка на родительское issue, никогда не обрезать |
-| R2 | Race воркеров на общем workspace (как раньше sparse-checkout) | Отдельный раннер per-role, очистка workspace между прогонами (как сделано 06.08) |
-| R3 | MiniMax 429 — e2e не проходит из-за лимита | Fallback на deepseek для ogg-generation if min лимит, см. `LLM fallback` фикс 06.08 |
-| R4 | Юзер не получает mp3 в Telegram — снова спам cron | mp3-доставка on-demand: bot pin «pull your mp3 here» + ручное прикладывание к issue |
-| R5 | Re-assign on-the-fly нарушает assignees в GitHub | Использовать **только внутренний канбан-assignee**, не GitHub-assignee. |
+| R1 | Agent плохо интерпретирует короткое тело карточки | Ссылка на родительское issue, никогда не обрезать полное тело |
+| R2 | Race воркеров на общем workspace (было с билд-раннерами) | Отдельный worktree на agent'а, очистка между прогонами |
+| R3 | MiniMax 429 — e2e не проходит | OGG-gen offline (Katana), fallback на deepseek/silero (уже есть) |
+| R4 | Re-assign в GH ломает assignees | Только в канбане, не в GH (label `e2e-done` + comment) |
+| R5 | Merge conflict в `e2e/test-round-N` | agent резолвит в `e2e/wip-<id>-*` (изолированная ветка), если не получается → `e2e:rejected` + manual |
+| R6 | Agent удаляет ветку, но юзер ещё не посмотрел артефакты | Удалять `agent/<id>-<slug>` ТОЛЬКО после merge в main (не после e2e SUCCESS) |
+| R7 | `e2e/test-round-N` accumulation | Раз в день cleanup (N-2 и старше удаляются) |
+| R8 | Kanban-tool wrapper не существует | Phase 1 blocker — нужно сделать wrapper или взять существующий |
 
 ---
 
-## 8. Что НЕ входит в proposal (открыто для следующих итераций)
+## 10. Что НЕ входит
 
-- **авто-merge** (`gh pr merge --auto` после e2e-success) — отдельно, юзер явно не хочет спешки
-- **multi-model e2e matrix** — A42 OPEN, требует OGG для каждого TTS/LLM/STT комбо
-- **Hypothesis-test mode** — issue → 8 фаз → 8 PR-ов автоматом
-- **Re-rank / planning decisions** — выставление приоритетов P0..P2 по содержимому issue
-- **Self-healing про e2e** — автоматический re-test при flake
-
----
-
-## 9. TODO / on-merge
-
-После согласования (юзер sign-off на Phase 1):
-
-1. Создать issue `feat(agent-flow): phase 1 triage MVP`
-2. Сделать карточку канбана (как тут описано в §1)
-3. Завести cron `agent-flow-triage` в Hermes
-4. Подождать первого реального issue (для теста) — посмотреть, пришла ли карточка
-5. Review в слёте (отчёт по достижениям setup'а)
+- Авто-merge (запрет Q5)
+- Multi-model e2e matrix (A42 OPEN)
+- Master-plan на N фаз
+- Dashboard / observability
 
 ---
 
-**Готовый артефакт:** данный файл — после согласования юзером → берется за Phase 1.
+## 11. TODO / on-merge (после review юзером)
+
+1. [ ] Юзер review proposal'а (issue #1038 comment + коммит)
+2. [ ] Решения по §6 подтверждены (или поправлены)
+3. [ ] Создать issue `feat(agent-flow): phase 1 triage MVP`
+4. [ ] Сделать карточку канбана Phase 1
+5. [ ] Проверить наличие kanban-tool wrapper (R8) — без него Phase 1 невозможен
+6. [ ] Сделать wrapper если нет
+7. [ ] Завести cron `agent-flow-triage` в Hermes
+8. [ ] Тест на 1 issue — посмотреть, пришла ли карточка
+9. [ ] Review результата юзером
+
+---
+
+**Готовый артефакт:** данный файл — после согласования юзером → Phase 1.
