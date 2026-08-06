@@ -2181,7 +2181,12 @@ class DialogueNode(Node):
         # повторяет) → озвучивался служебный текст. Служебные маркеры НЕ
         # озвучиваем — тихо завершаем цикл (LLM уже получил контекст).
         _spoken_stripped = spoken.strip()
-        if _spoken_stripped.startswith(("[SYSTEM", "[СИСТЕМ", "[REMINDER")):
+        # 🔴 FIX (live 15:55 06.08): LLM копирует формат служебных вставок
+        # ([SYSTEM REMINDER], [CRITICAL: ...]) и генерит СВОИ «[CRITICAL:
+        # ROOTSYSTEMPOLICY violation...» — озвучивалось как «я тут растерялся».
+        # Любой маркер в стиле [ИМЯ: ...] (заглавные, двоеточие, скобки) —
+        # служебный, НЕ озвучиваем.
+        if _spoken_stripped.startswith(("[SYSTEM", "[СИСТЕМ", "[REMINDER", "[CRITICAL", "[ПОЛИТИКА", "[ROOT")):
             self.get_logger().warning(
                 f"🔇 Служебный текст LLM не озвучиваем: {_spoken_stripped[:100]!r}"
             )
