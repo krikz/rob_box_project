@@ -250,6 +250,12 @@ SYNTHESIS_THREAD_NAME_PREFIX: str = "tts-synth"
 # primitive as the synthesis executor and not an unbounded fan-out.
 ASYNC_BRIDGE_MAX_WORKERS: int = 1
 
+# MiniMax TTS event-loop executor (BLK-9): single long-lived worker
+# that runs ``run_forever`` for the asyncio event loop. ``1`` because
+# asyncio is single-threaded by design; oversized would risk unbounded
+# growth and contradict the BLK-9 regression-guard.
+TTS_LOOP_MAX_WORKERS: int = 1
+
 # ────────────────────────────────────────────────────────────────────────
 # MiniMax TTS — single long-lived event loop (live 17:20)
 # ────────────────────────────────────────────────────────────────────────
@@ -275,12 +281,14 @@ def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
         if _TTS_LOOP is not None and not _TTS_LOOP.is_closed():
             return _TTS_LOOP
         _TTS_LOOP = asyncio.new_event_loop()
-        _TTS_LOOP_THREAD = threading.Thread(
-            target=_TTS_LOOP.run_forever,
-            daemon=True,
-            name="minimax-tts-loop",
+        # Use bounded ``ThreadPoolExecutor`` (BLK-9 regression-guard) so we
+        # never spawn a raw ``threading.Thread(daemon=True)``. The single
+        # worker runs ``run_forever`` for the event loop until shutdown.
+        _TTS_LOOP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=TTS_LOOP_MAX_WORKERS,
+            thread_name_prefix="minimax-tts-loop",
         )
-        _TTS_LOOP_THREAD.start()
+        _TTS_LOOP_THREAD = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
         return _TTS_LOOP
 
 
