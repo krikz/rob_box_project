@@ -433,19 +433,14 @@ class DialogueNode(Node):
                 pval = "***"
             cfg_lines.append(f"{pname}={pval}")
         self.get_logger().info(
-            "⚙️ STARTUP CONFIG:\n%s",
-            "\n".join(cfg_lines),
+            "⚙️ STARTUP CONFIG:\n" + "\n".join(cfg_lines)
         )
 
         # LLM-параметры отдельно — они критичны для диагностики обрывков.
         self.get_logger().info(
-            "⚙️ LLM CONFIG: provider=%s model=%s base_url=%s "
-            "temperature=%s max_tokens=%s",
-            provider_name,
-            model or "(default)",
-            base_url or "(provider default)",
-            temperature,
-            max_tokens,
+            f"⚙️ LLM CONFIG: provider={provider_name} model={model or '(default)'} "
+            f"base_url={base_url or '(provider default)'} "
+            f"temperature={temperature} max_tokens={max_tokens}"
         )
 
         if provider_name == "minimax":
