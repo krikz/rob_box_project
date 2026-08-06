@@ -149,6 +149,47 @@ BABBLE_PERFORMANCE_KEYWORDS: tuple = (
 )
 
 
+class _FallbackLLM:
+    """LLM-обёртка с fallback-цепочкой (live 06.08).
+
+    Primary (MiniMax) → при ЛЮБОЙ ошибке (429 Token Plan limit, таймаут,
+    5xx) переключается на fallback (DeepSeek), чтобы робот не немел, пока
+    primary недоступен. ``LLMConfig.fallback`` декларативно существует,
+    но ``_build_llm`` его не использовал → 429 оставлял робота немым.
+
+    Оба метода (``complete`` / ``stream``) пробуют primary, при исключении
+    логируют и отдают fallback.
+    """
+
+    def __init__(self, primary: Any, fallback: Any, logger: Any) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._log = logger
+        self._pname = getattr(primary, "name", type(primary).__name__)
+        self._fname = getattr(fallback, "name", type(fallback).__name__)
+
+    async def complete(self, messages, tools=None):
+        try:
+            return await self._primary.complete(messages, tools=tools)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"🔄 LLM {self._pname} упал: {exc} — fallback {self._fname}"
+            )
+            return await self._fallback.complete(messages, tools=tools)
+
+    async def stream(self, messages, tools=None):
+        try:
+            async for chunk in self._primary.stream(messages, tools=tools):
+                yield chunk
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"🔄 LLM {self._pname} stream упал: {exc} — fallback {self._fname}"
+            )
+        async for chunk in self._fallback.stream(messages, tools=tools):
+            yield chunk
+
+
 class DialogueNode(Node):
     """ROS2 shell that composes DialogCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
@@ -454,7 +495,7 @@ class DialogueNode(Node):
             # dialogue_node падал → робот молчал. Собираем LLMConfig.
             from rob_box_harness.config import LLMConfig
 
-            return build_minimax_provider(
+            primary = build_minimax_provider(
                 LLMConfig(
                     provider="minimax",
                     model=model or MINIMAX_DEFAULT_MODEL,
@@ -462,6 +503,23 @@ class DialogueNode(Node):
                     timeout_s=90.0,
                 )
             )
+            # 🔴 FIX (live 06.08): fallback на DeepSeek при 429/ошибке
+            # MiniMax (Token Plan limit) — иначе DJ/диалог молчит, пока
+            # лимит не сбросится. LLMConfig.fallback декларативно есть,
+            # но _build_llm его не использовал → робот немел на 429.
+            try:
+                fb = build_deepseek_provider(
+                    api_key=None,  # берёт DEEPSEEK_API_KEY из env
+                )
+                self.get_logger().info(
+                    "🔄 LLM fallback: deepseek (при 429/ошибке MiniMax)"
+                )
+                return _FallbackLLM(primary, fb, self.get_logger())
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"⚠️ DeepSeek fallback не построен ({exc}) — только MiniMax"
+                )
+                return primary
         if provider_name == "deepseek":
             return build_deepseek_provider(
                 api_key=self.get_parameter("api_key").value or None,

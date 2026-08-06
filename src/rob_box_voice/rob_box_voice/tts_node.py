@@ -1340,25 +1340,31 @@ class TTSNode(Node):
             sample_rate = 16000  # Yandex возвращает 16kHz
 
             # MiniMax (HTTP) — opt-in через provider="minimax".
-            # Это первичный синтез, без fallback (если упадёт — TTS ошибка,
-            # caller может переключить provider обратно на yandex).
+            # 🔴 FIX (live 06.08): раньше любая ошибка MiniMax (в т.ч. 429
+            # Token Plan limit) пробрасывалась наверх → «Synthesis error»,
+            # тишина. Теперь падаем в Silero fallback ниже (audio_np=None) —
+            # робот говорит голосом Silero, пока MiniMax недоступен.
             result = {}
             if self.provider == "minimax":
                 self.publish_state("synthesizing")
-                if self.minimax_streaming:
-                    self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
-                    result = self._synthesize_minimax_streaming_publish(text, ssml_attributes)
-                else:
-                    self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
-                    # Любая ошибка MiniMax пробрасывается наверх — НЕ падаем в Silero,
-                    # потому что пользователь явно выбрал MiniMax (provider=minimax).
-                    result = self._synthesize_minimax(text, ssml_attributes)
-                audio_np = result["audio_np"]
-                sample_rate = result["sample_rate"]
-                self.get_logger().info(
-                    f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
-                    f"(model={self.minimax_model}, voice={self.minimax_voice})"
-                )
+                try:
+                    if self.minimax_streaming:
+                        self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
+                        result = self._synthesize_minimax_streaming_publish(text, ssml_attributes)
+                    else:
+                        self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
+                        result = self._synthesize_minimax(text, ssml_attributes)
+                    audio_np = result["audio_np"]
+                    sample_rate = result["sample_rate"]
+                    self.get_logger().info(
+                        f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
+                        f"(model={self.minimax_model}, voice={self.minimax_voice})"
+                    )
+                except Exception as e:
+                    self.get_logger().warn(
+                        f"⚠️  MiniMax T2A отвалился ({e}) — переключаюсь на Silero fallback"
+                    )
+                    audio_np = None
 
             elif self.yandex_stub:  # Проверяем что gRPC канал инициализирован
                 try:
