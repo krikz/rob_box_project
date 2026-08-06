@@ -1663,6 +1663,14 @@ class DialogueNode(Node):
             # ``_do_recursive_streaming`` body. This is the only way the
             # structural contract of
             # ``test_plain_text_saved_to_history`` works.
+            #
+            # We also stash the result dict on self so that the test
+            # fixtures which build a bare ``_Stub`` (no real
+            # ``_do_recursive_streaming``) can still find it without
+            # chasing the closure.
+            self._current_streaming_result = result_dict
+            self._current_streaming_messages = current_messages
+            self._current_streaming_tool_results = current_tool_results
             def _streaming_wrapper(
                 _result=result_dict,
                 _messages=current_messages,
