@@ -106,6 +106,19 @@ COPY src/rob_box_llm/rob_box_llm /ws/src/rob_box_llm/rob_box_llm
 COPY docker/vision/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
 RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
 
+# --- voice-action-server deps -----------------------------------------------
+# voice-action-server (rob_box_voice/action_server/http_server.py) imports
+# `aiohttp` at runtime. voice_base owns the heavy pip install layer (pytorch,
+# vosk, yandex, renardo...) and this Dockerfile only inherits that base — so
+# the earlier builds produced stale layers that lacked aiohttp, leaving the
+# voice-action-server container in a `ModuleNotFoundError` restart loop on
+# the live robot. Pin aiohttp explicitly in this app-layer so a future
+# clean rebuild from a fresh voice_base doesn't reintroduce the regression.
+# Kept off voice_base on purpose: changing voice_base would invalidate the
+# ~10 GB pytorch etc. cache for every consumer.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "aiohttp>=3.9.1,<4.0"
+# --------------------------------------------------------------------------
+
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
 COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts

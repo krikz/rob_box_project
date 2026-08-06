@@ -247,14 +247,16 @@ matrix:
 
 ### B.4 Acceptance-пункт A43 (новый) — snapshot всех контейнеров
 
-> **A43 (новый, v2)**: L2 snapshot включает `docker ps -a` (все контейнеры, включая unhealthy). voice-action-server должен быть в `Up` (не `Restarting`). Если `Restarting count > 0` — verdict = DEGRADED, не PASS.
+> A43 (новый, v2): L2 snapshot включает `docker ps -a` (все контейнеры, включая unhealthy). voice-action-server должен быть в `Up` (не `Restarting`). Если `Restarting count > 0` — verdict = DEGRADED, не PASS.
 >
 > L0: pytest `test_snapshot_includes_unhealthy_containers`
 > L2: snapshot.sh v2 (см. §F.2)
 >
 > Метрика: `unhealthy_container_count == 0` для verdict PASS.
-> Текущее состояние: voice-action-server `Restarting (1) 44 seconds ago` — **DEGRADED** по A43 (см. recovery §5.1 — aiohttp баг с 06.08 01:03).
-> Статус: **OPEN**, требует фикса aiohttp в `rob_box_voice` deps.
+> Было (06.08 09:00–10:50 МСК): voice-action-server `Restarting (1) 55 seconds ago`, `restart_count=26`, `15 ModuleNotFoundError` в последних 200 строках лога — **DEGRADED** по A43 (см. recovery §5.1 — aiohttp баг с 06.08 01:03).
+> Фикс: kanban t_fb6f64a2 (backend). В `docker/vision/voice_assistant/Dockerfile` добавлено `RUN pip3 install --no-cache-dir "aiohttp>=3.9.1,<4.0"` (voice_base оставлен нетронутым, чтобы не инвалидировать ~10 GB pytorch cache); в `http_server.py` import обёрнут в `_import_aiohttp()` с понятной диагностикой.
+> Коммит: 13a2a060 на `feature/e2e-testing-design-v2`. Сборка через `L-Build Vision Pi Services.yml` → `localhost:5000/krikz/rob_box:voice-assistant-humble-test`.
+> Статус: **VERIFIED** (после редеплоя — см. `kanban_complete` t_fb6f64a2 metadata.before/after snapshot).
 
 ### B.5 Что multi-model НЕ покрывает
 
@@ -332,7 +334,7 @@ SSH-доступ к 10.1.1.249, scp 10 wav'ов из `/tmp/dialog_e2e_<run_id>.w
 | A40b (новый) | wake без префикса (только для intent-фраз) | L0+L2 | test_wake_no_prefix + live_spoy_peasenku | ratio ≥ 0.5 для `спой/играй/читай` без «Робот!» | **OPEN** | Не воспроизводится в v7 (1 файл в репо, не в серии) |
 | A41 | LLM fail-over (timeout → fallback) | L1 | stend_test_llm_failover | user-facing msg за < 35с | **OPEN** | Не воспроизводился |
 | **A42** | Multi-model observability | L0+L1+L2 | test_model_field + stend_test_matrix | 100% прогонов имеют model.json | **OPEN** | Новая фича v2 |
-| **A43** | Snapshot всех контейнеров (unhealthy ≠ 0) | L0+L2 | test_snapshot_unhealthy + live snapshot.sh v2 | unhealthy_container_count == 0 | **OPEN** (DEGRADED — aiohttp) | Новая фича v2 |
+| **A43** | Snapshot всех контейнеров (unhealthy ≠ 0) | L0+L2 | test_snapshot_unhealthy + live snapshot.sh v2 | unhealthy_container_count == 0 | **VERIFIED** (фикс 13a2a060, см. t_fb6f64a2) | Новая фича v2 |
 
 ### D.2 Матрица «verdict → acceptance» v7 (заменяет v1 §5)
 
@@ -377,11 +379,11 @@ SSH-доступ к 10.1.1.249, scp 10 wav'ов из `/tmp/dialog_e2e_<run_id>.w
 - [ ] **T3v2.2** Сравнение `metrics.json` между LLM (Minimax vs DeepSeek) — отдельный отчёт
 - [ ] **T3v2.3** Сравнение `barge_in_ratio` между TTS (Minimax vs Edge) — отдельный отчёт
 
-### Этап 4v2 — Fix voice-action-server (1 день, owner: backend)
+### Этап 4v2 — Fix voice-action-server (1 день, owner: backend) [DONE в t_fb6f64a2, 13a2a060]
 
-- [ ] **T4v2.1** Добавить `aiohttp` в `rob_box_voice` deps (коммит `5d3df7e2` НЕ починил)
-- [ ] **T4v2.2** После фикса — DEGRADED → UP, A43 → VERIFIED
-- [ ] **T4v2.3** Регрессия: snapshot.sh v2 + cron раз в час
+- [x] **T4v2.1** Добавить `aiohttp` в `rob_box_voice` deps (коммит `5d3df7e2` НЕ починил — закрыто в 13a2a060)
+- [x] **T4v2.2** После фикса — DEGRADED → UP, A43 → VERIFIED (живой rerun — см. `kanban_complete` t_fb6f64a2)
+- [ ] **T4v2.3** Регрессия: snapshot.sh v2 + cron раз в час (out of scope для T4v2.1; оставлено для Этап 5)
 
 ---
 
@@ -396,7 +398,7 @@ A40,dialog_node.md,6.3,wake с префиксом,L0+L2,test_wake_word+live_R1-R
 A40b,dialog_node.md,6.3,wake без префикса (intent),L0+L2,test_wake_no_prefix+live_spoy_peasenku,unit+live,wake_accepted_ratio_intent,>=0.5,logs,OPEN,dialog_node_owner
 A41,SCHEDULER_DESIGN.md,11.3,LLM fail-over,L1,stend_test_llm_failover,stend,user_facing_msg_sec,<35,logs,OPEN,architect+backend
 A42,E2E_TESTING_DESIGN_v2.md,B.3,multi-model observability,L0+L1+L2,test_model_field+stend_test_matrix,unit+stend+live,model_json_coverage,1.0,model.json,OPEN,architect
-A43,E2E_TESTING_DESIGN_v2.md,B.4,snapshot all containers,L0+L2,test_snapshot_unhealthy+live_snapshot_v2,unit+live,unhealthy_container_count,0,snapshot.json,OPEN_DEGRADED,backend
+A43,E2E_TESTING_DESIGN_v2.md,B.4,snapshot all containers,L0+L2,test_snapshot_unhealthy+live_snapshot_v2,unit+live,unhealthy_container_count,0,snapshot.json,VERIFIED,backend
 ```
 
 ### F.2 snapshot.sh v2 (дополнение v1 §9)
