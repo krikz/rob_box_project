@@ -301,6 +301,26 @@ class DialogueNode(Node):
         )
         self.create_timer(5.0, self._on_inactivity_check)
         self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
+        # 🔴 FIX (live 06.08): startup-приветствие внутри dialogue_node
+        # (замена отдельной startup_greeting_node, #1003). Одноразовый
+        # таймер: через startup_greeting_sec секунд после старта говорим
+        # фразу. tts_node к этому моменту уже прогрет (он стартует раньше
+        # и грузится ~3-5с), поэтому гонки нет. 0 = выключено.
+        self._startup_greeting_sec = float(
+            self.get_parameter("startup_greeting_sec").value or 0.0
+        )
+        self._startup_greeting_text = str(
+            self.get_parameter("startup_greeting_text").value
+            or "Я на связи, все системы в норме!"
+        )
+        if self._startup_greeting_sec > 0:
+            self.get_logger().info(
+                f"🗣 Startup greeting через {self._startup_greeting_sec:.0f}s: "
+                f"{self._startup_greeting_text!r}"
+            )
+            self.create_timer(
+                self._startup_greeting_sec, self._on_startup_greeting
+            )
         self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
@@ -331,6 +351,18 @@ class DialogueNode(Node):
         # be exercised deterministically without spinning up rclpy
         # publishers.
         self.declare_parameter("tool_provider", "ros_mcp")
+        # 🔴 FIX (live 06.08): startup-приветствие БЕЗ отдельной ноды (#1003).
+        # Отдельная startup_greeting_node страдала гонкой (tts_node ещё не
+        # инициализирован → сообщение терялось). Теперь сам dialogue_node
+        # через N секунд после старта говорит фразу напрямую через
+        # _publish_response (тот же путь, что и обычная речь робота).
+        # 0 = отключено, >0 = задержка в секундах.
+        self.declare_parameter("startup_greeting_sec", 12.0)
+        self.declare_parameter(
+            "startup_greeting_text",
+            "Я на связи, все системы в норме!",
+        )
+        self._startup_greeting_fired = False
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
@@ -2008,6 +2040,26 @@ class DialogueNode(Node):
         msg = String()
         msg.data = self._dsm.current_state.name
         self._state_pub.publish(msg)
+    def _on_startup_greeting(self) -> None:
+        """Одноразовое приветствие при старте (issue #1003, редизайн 06.08).
+
+        Раньше была отдельная startup_greeting_node — она публиковала
+        приветствие до того, как tts_node завершал инициализацию, и
+        фраза терялась. Теперь dialogue_node сам ждёт N секунд и шлёт
+        текст тем же путём, что обычная речь (build_ssml_payload →
+        /voice/dialogue/response → tts_node).
+        """
+        if self._startup_greeting_fired:
+            return
+        self._startup_greeting_fired = True
+        # Thinking-звук, как при обычном диалоге.
+        sfx = String()
+        sfx.data = "thinking"
+        self._sound_trigger_pub.publish(sfx)
+        self.get_logger().info(
+            f"🗣 Startup greeting: {self._startup_greeting_text!r}"
+        )
+        self._publish_response(self._startup_greeting_text)
     def _publish_response(self, text: str, animation: str = "neutral") -> None:
         """Single-chunk publish — kept for backwards compatibility.
 
