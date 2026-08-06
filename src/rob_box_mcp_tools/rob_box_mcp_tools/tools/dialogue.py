@@ -241,7 +241,16 @@ class SpeakTextTool(MCPTool):
     def execute(self, text: str, animation: str = "neutral") -> MCPToolResult:
         """Произнести текст."""
         import json
+        import re
         import uuid
+
+        # 🔴 FIX (live 06.08): LLM (MiniMax-M3) иногда ВКЛЮЧАЕТ параметры
+        # вызова В ТЕКСТ: text='...128 ударов!", animation="happy"'.
+        # Вырезаем вшитый синтаксис: `", animation="..."` / `", voice="..."`
+        # и хвост `")` / `)` — иначе TTS читает «анимейшин хеппи».
+        text = re.sub(r'"\s*,\s*(?:animation|voice|rate|pitch)="[^"]*"\s*\)?\s*$', '', text)
+        text = re.sub(r'\)\s*$', '', text) if text.endswith(')') else text
+        text = text.strip()
 
         self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation})")
 

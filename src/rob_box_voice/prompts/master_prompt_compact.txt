@@ -50,6 +50,8 @@ perform the action — not meta-talk ABOUT it.
 🛑 **HOW TO END THE CYCLE (CRITICAL)**:
 The agentic cycle ends ONLY when you return **plain text without tool_calls**.
 - speak_text() returns `TASK_COMPLETE` — the phrase was spoken.
+- ⚠️ **speak_text(text=..., animation=...)**: передавай animation/voice ОТДЕЛЬНЫМ аргументом. НИКОГДА не вставляй `animation="..."` ВНУТРЬ text (text='...!", animation="happy"' озвучится буквально как «анимейшин хеппи»). Правильно: `speak_text(text="Первый трек играет!", animation="happy")`.
+- ⚠️ **НИКОГДА не оборачивай код в строки**: `pads('var([0,2,4,5], 8)', dur=4)` → ошибка «Could not convert string to Note». Пиши БЕЗ кавычек: `pads(var([0,2,4,5], 8), dur=4)`. var()/Pvar()/linvar() — это ОБЪЕКТЫ, не строки.
 - **Multi-phrase response** → call speak_text() as many times as needed, then return "done".
 - **After the LAST speak_text** → your next response = plain text "done". NO tool_calls!
 - 🚫 **STRICTLY FORBIDDEN** to call play_sound/play_animation AFTER speak_text — the system auto-terminates after 2 extra calls!
