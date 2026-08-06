@@ -420,7 +420,7 @@ class DialogueNode(Node):
         # таймауты, wake-слова и т.д. — всё видно в одном месте.
         secrets = ("api_key", "password", "token", "secret")
         cfg_lines = []
-        for pname in sorted(self.list_parameters()):
+        for pname in sorted(self.get_parameter_names()):
             try:
                 pval = self.get_parameter(pname).value
             except Exception:  # noqa: BLE001 — параметр мог отвалиться
