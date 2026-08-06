@@ -192,16 +192,22 @@ priority: P<P0-P2>
 
 ## 5. Открытые вопросы (нужен ответ юзера / PM)
 
-| Q# | Вопрос |
-|----|--------|
-| **Q1** | Маркер на issue — **только лейбл `hermes`** или +обязательно `agent:<role>`? Если второе — как роль определяется (`assignee` от юзера / по другим лейблам)? |
-| **Q2** | E2E: триггерим **только при лейбле `needs-e2e`** (ручной контроль reviewer'а) или автоматом на любой PR в `agent/<id>/`? Юзер сказал «всегда», но в v2 e2e было отдельной фазой. |
-| **Q3** | OGG-генерация в CI или **offline**? Если в CI — нужно держать `MINIMAX_API_KEY` в GH Secrets, есть риск лимита (как сейчас с prod). Offline безопаснее, но дольше. |
-| **Q4** | Re-assign на исполнителя — **программно через bot** (комментарий «@user, проверь артефакты») или **на того же роль (по лейблу карточки)**? |
-| **Q5** | Авто-merge `gh pr merge --auto` после e2e-SUCCESS или **только re-assign** и merge ручной (юзер/ревьюер)? Юзер раньше говорил «не спешить с merge». |
-| **Q6** | TL;DR гипотеза: 8 фаз = 8 PR-ов? Нужен **мастер-план** или каждая issue — сама по себе карточка? |
-| **Q7** | Куда складывать артефакты (wav+mp3) — github-action artifacts (коротко, 90 дней), release assets или **отдельный репо/папка**? |
-| **Q8** | Observability: хочется ли dashboard (Live EOS spreadsheet) или достаточно «1 issue + 1 PR + 1 e2e run + 1 mp3»? |
+| Q# | Вопрос → **Решение** |
+|----|----------------------|
+| **Q1** | Маркер на issue — **только `hermes`** или +обязательно `agent:<role>`? → **ДВА маркера**: `hermes` + `agent:<role>` (default `architect`) |
+| **Q2** | E2E: **только при `needs-e2e`** (ручной) или **автомат** на любой PR? → **АВТОМАТ**: `agent-flow-merge-gate` cron — CI зелёные + merge_state=clean → label `needs-e2e` → `e2e-process` cron запускает |
+| **Q3** | OGG-генерация в CI или offline? → **OFFLINE на Katana** (MiniMax 429 сегодня; `MINIMAX_API_KEY` НЕ в GH Secrets) |
+| **Q4** | Re-assign в GH (через bot) или канбане? → **Только в канбане** + label `e2e-done` в PR; GH-assignee **не трогаем** |
+| **Q5** | Авто-merge `gh pr merge --auto`? → **НЕТ**, re-assign на reviewer → ручной `gh pr merge --squash` (юзер memory: «не рестартить без разрешения») |
+| **Q6** | Master-plan на N фаз или каждая issue сама? → **Каждая issue сама по себе**, master-plan в Phase 4+ |
+| **Q7** | Артефакты: GH artifacts / release / папка? → **GH Actions artifact** (wav) + PR-comment summary + issue-comment + Telegram-mp3 opt-in |
+| **Q8** | Dashboard? → **НЕТ в MVP** (Phase 4) |
+
+### §MVP scope (по итогам дискаса)
+
+Включает: **Phase 1** (agent-flow-triage cron) + **Phase 2** (sub-agent branch+PR) + **Phase 3 mini** (merge-gate cron + auto e2e через наш `rob-box-e2e-1` runner).
+
+НЕ включает: auto-merge, multi-model matrix (A42 OPEN), master-plan, dashboard.
 
 ---
 
