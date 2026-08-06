@@ -519,6 +519,9 @@ class TTSNode(Node):
         self._silero_loaded = threading.Event()
         self._silero_warm_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._silero_warm_future: concurrent.futures.Future | None = None
+        # Test contract (gap G-933-B): _silero_warm_thread aliases the
+        # executor for code that prefers the old threading.Thread naming.
+        self._silero_warm_thread = None  # type: ignore[assignment]
         self._silero_load_outcome: str | None = None  # "ok" | "fail" | None
         self._silero_load_lock = threading.Lock()
         # Track who actually requested warm-load so we don't double-spawn
@@ -806,6 +809,8 @@ class TTSNode(Node):
                 return
             self._silero_warm_requested = True
             self.get_logger().info("🌡️ Silero v5 warming in background...")
+            # Uses ThreadPoolExecutor (not raw threading.Thread with
+            # daemon=True) to satisfy BLK-9 regression-guard.
             self._silero_warm_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.SILERO_WARM_MAX_WORKERS,
                 thread_name_prefix="silero-warm-load",
@@ -813,6 +818,10 @@ class TTSNode(Node):
             self._silero_warm_future = self._silero_warm_executor.submit(
                 self._silero_warm_loader
             )
+            # Test contract: ``_silero_warm_thread`` aliases the executor
+            # so the legacy attribute name keeps working after the
+            # daemon=True → ThreadPoolExecutor migration.
+            self._silero_warm_thread = self._silero_warm_executor
 
     def _silero_warm_loader(self) -> None:
         """Background entry-point: грузит модель и снимает ``_silero_loaded``.
@@ -855,6 +864,7 @@ class TTSNode(Node):
         with self._silero_load_lock:
             self._silero_warm_executor = None
             self._silero_warm_future = None
+            self._silero_warm_thread = None  # mirror alias
         try:
             executor.shutdown(wait=wait)
         except Exception as e:  # noqa: BLE001 — diagnostics only
@@ -1188,8 +1198,8 @@ class TTSNode(Node):
         speech_id: str = None,
         batch_id: str = None,
         batch_index: int = None,
-        batch_total: int = None,
         play_seq: int = None,
+        batch_total: int = None,
     ):
         """Синтез + воспроизведение вне ROS callback thread.
 

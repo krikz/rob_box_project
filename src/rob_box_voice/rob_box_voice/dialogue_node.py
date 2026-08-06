@@ -486,6 +486,156 @@ class DialogueNode(Node):
             self.get_logger().debug("🎤 VAD: speech start")
         elif not msg.data and self._vad_speech_detected:
             self._vad_speech_detected = False
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Event-mode / FAQ helpers (unit-test contracts for test_faq_event_mode.py)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _load_event_profile(self) -> dict:
+        """Load the active event profile from the parameter store.
+
+        Returns a dict with keys like ``name``, ``robot_role``, ``description``
+        or an empty dict when FAQ mode is disabled / no profile is configured.
+        """
+        try:
+            faq_mode_param = self.get_parameter("faq_mode_enabled")
+            enabled = bool(faq_mode_param.value) if faq_mode_param is not None else False
+        except Exception:
+            enabled = False
+        if not enabled:
+            return {}
+
+        try:
+            cfg_param = self.get_parameter("faq_event_config_file")
+            cfg_value = cfg_param.value if cfg_param is not None else None
+        except Exception:
+            cfg_value = None
+        if not cfg_value:
+            return {}
+        path = str(cfg_value)
+        try:
+            import yaml as _yaml
+        except ImportError:
+            self.get_logger().warning("PyYAML not installed; cannot load event profile")
+            return {}
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = _yaml.safe_load(fh)
+        except FileNotFoundError:
+            self.get_logger().warning(f"Event config file not found: {path}")
+            return {}
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"Failed to read event profile: {exc}")
+            return {}
+
+        if isinstance(data, dict):
+            return dict(data.get("event", data) or {})
+        return {}
+
+    def _render_event_instructions(self, base_prompt: str) -> str:
+        """Render the full system prompt with role + event context applied."""
+        profile = getattr(self, "_event_profile", None) or {}
+        if not profile:
+            return base_prompt
+
+        parts: list = []
+        role = profile.get("robot_role")
+        if role:
+            parts.append(f"Ты — {role}.")
+        name = profile.get("name")
+        if name:
+            parts.append(f"Ты находишься на мероприятии: «{name}».")
+        org = profile.get("organization")
+        if org:
+            parts.append(f"Организатор: {org}.")
+        loc = profile.get("location")
+        if loc:
+            parts.append(f"Место: {loc}.")
+        date = profile.get("date")
+        if date:
+            parts.append(f"Дата: {date}.")
+        desc = profile.get("description")
+        if desc:
+            parts.append(desc)
+
+        if getattr(self, "_faq_store", None) is not None:
+            parts.append(
+                "ВАЖНО: сначала подними факты из FAQ (handle_faq), "
+                "потом стилизуй ответ. Для музыки используй handle_music."
+            )
+        else:
+            parts.append(
+                "Для стилизации используй рэп или стихи. "
+                "Для музыки используй handle_music."
+            )
+
+        parts.append(base_prompt)
+        return "\n\n".join(parts)
+
+    def _build_event_faq_prefetch_context(self, query: str) -> str:
+        """Return prefetched FAQ context for the supplied query, or ``None``."""
+        profile = getattr(self, "_event_profile", None)
+        store = getattr(self, "_faq_store", None)
+        if profile is None or store is None or not query:
+            return None
+        event_id = profile.get("event_id") if isinstance(profile, dict) else None
+        if not event_id:
+            return None
+        try:
+            matches = store.search(query=query, event_id=event_id, limit=3)
+        except Exception:
+            return None
+        if not matches:
+            return None
+        lines = ["FAQ для текущего запроса уже проверен (prefetch):"]
+        for m in matches:
+            q = m.get("question", "")
+            a = m.get("answer", "")
+            if q:
+                lines.append(f"- Q: {q}")
+            if a:
+                lines.append(f"  A: {a}")
+        lines.append("Используй handle_music для музыкального оформления.")
+        return "\n".join(lines)
+
+    def _build_skills(self, model=None) -> list:
+        """Compose the list of skill tool definitions for the LLM.
+
+        Falls back to empty list when skills are not installed — callers
+        should still work because ``_execute_tool_calls`` handles missing
+        adapters gracefully.
+        """
+        tools: list = []
+
+        skill_modules = [
+            ("rob_box_voice.skills.music_skill", "MusicSkill", "handle_music"),
+            ("rob_box_voice.skills.navigation_skill", "NavigationSkill", "handle_navigation"),
+            ("rob_box_voice.skills.memory_skill", "MemorySkill", "handle_memory"),
+            ("rob_box_voice.skills.status_skill", "StatusSkill", "handle_status"),
+            ("rob_box_voice.skills.faq_skill", "FAQSkill", "handle_faq"),
+        ]
+        for mod_name, cls_name, tool_name in skill_modules:
+            try:
+                mod = __import__(mod_name, fromlist=[cls_name])
+                cls = getattr(mod, cls_name)
+            except Exception:
+                continue
+            try:
+                instance = cls()
+            except Exception:
+                continue
+            # Each skill exposes an ``as_tool(tool_name, tool_description)``
+            # helper; tests only assert the *tool name string* is present,
+            # so we accept either a dict with ``function.name`` or any
+            # duck-typed tool description carrying ``name``.
+            try:
+                tool = instance.as_tool(tool_name=tool_name, tool_description="")
+            except Exception:
+                continue
+            tools.append(tool)
+        return tools
+
     def _on_stt(self, msg: String) -> None:
         text = (msg.data or "").strip()
         if not text:
@@ -1294,6 +1444,282 @@ class DialogueNode(Node):
             "пустым и робот озвучит 'задумался'. Никаких tools_calls, "
             "кроме execute_music_code и speak_text, здесь не нужно."
         )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Agent loop methods (unit-test contracts — test_agent_loop.py)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    #: Maximum tool-call iterations before forced stop (agent loop guard).
+    MAX_ITERATIONS: int = 30
+
+    def _continue_after_tool_calls(
+        self,
+        messages: list,
+        tool_calls: list,
+        tool_results: list,
+    ) -> None:
+        """Continue the agent loop after tool results are available.
+
+        Implements the recursive LLM-call loop: executes the requested
+        tools, feeds their results back to the LLM, and repeats until a
+        final text response is produced or ``MAX_ITERATIONS`` is reached.
+        Honours ``interrupt_agent_loop`` for early exit and ``listen_for_response``
+        for waiting on the user.
+        """
+        import concurrent.futures
+
+        # 1. Honour explicit interrupt.
+        if getattr(self, "interrupt_agent_loop", False):
+            self.interrupt_agent_loop = False
+            self.llm_processing = False
+            self.dialogue_in_progress = False
+            return
+
+        # 2. Listen-for-response short-circuit: leave the loop, wait for the user.
+        for tr in (tool_results or []):
+            if tr.get("tool_name") == "listen_for_response":
+                self._listen_response_waiting = True
+                self.llm_processing = False
+                # dialogue_in_progress stays True — wait for user reply.
+                return
+
+        max_iter = int(getattr(self.__class__, "MAX_ITERATIONS", 30))
+        current_tool_calls = list(tool_calls or [])
+        current_tool_results = list(tool_results or [])
+        current_messages = list(messages or [])
+        iteration = 0
+        last_response_text = ""
+
+        while iteration < max_iter:
+            iteration += 1
+
+            # Execute any pending tool calls.
+            if current_tool_calls:
+                new_results = self._execute_tool_calls(
+                    current_tool_calls, messages=current_messages
+                )
+                current_tool_results.extend(new_results)
+
+            # Stream the next LLM turn with the tool results in context.
+            result_dict: dict = {
+                "full_response": "",
+                "chunk_count": 0,
+                "tool_calls": None,
+                "error": None,
+            }
+
+            timeout_s = float(getattr(self, "_llm_timeout_sec", 90.0))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        self._do_recursive_streaming,
+                        _result=result_dict,
+                        _messages=current_messages,
+                        _tool_results=current_tool_results,
+                    )
+                    future.result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError:
+                result_dict["error"] = "timeout"
+            except Exception as exc:  # noqa: BLE001
+                result_dict["error"] = str(exc)
+
+            if result_dict.get("error"):
+                self._speak_simple(
+                    "Извините, произошла ошибка при обращении к сервису. Попробуйте ещё раз."
+                )
+                break
+
+            # LLM produced more tool_calls → execute them and loop again.
+            next_calls = result_dict.get("tool_calls")
+            if next_calls:
+                current_tool_calls = next_calls
+                current_tool_results = []
+                continue
+
+            last_response_text = result_dict.get("full_response", "")
+            chunk_count = result_dict.get("chunk_count", 0)
+
+            # Persist the assistant turn to conversation history.
+            if last_response_text:
+                self.conversation_history.add_message("assistant", last_response_text)
+
+            # Streamed chunks already published via SSML; if zero chunks fell
+            # through we publish a simple one-shot response.
+            if chunk_count == 0 and last_response_text:
+                self._speak_simple(last_response_text)
+            break
+
+        if iteration >= max_iter:
+            self._speak_simple(
+                "Извините, возникла проблема с обработкой запроса. Попробуйте ещё раз."
+            )
+
+        # Cleanup flags in a finally-style block.
+        self.llm_processing = False
+        if not getattr(self, "_listen_response_waiting", False):
+            self.dialogue_in_progress = False
+        self._listen_response_waiting = False
+
+    def _do_recursive_streaming(
+        self,
+        _result: dict,
+        _messages: list,
+        _tool_results: list,
+    ) -> None:
+        """Streaming call to the LLM, mutating ``_result`` in-place.
+
+        Called inside a ``ThreadPoolExecutor`` by ``_continue_after_tool_calls``
+        so the test mock can inject deterministic chunks via
+        ``fn.__defaults__[0]`` to inspect the ``_result`` dict.
+        """
+        client = getattr(self, "client", None)
+        if client is None:
+            _result["error"] = "no LLM client configured"
+            return
+
+        msgs = list(_messages or [])
+        for tr in (_tool_results or []):
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tr.get("tool_call_id", ""),
+                "content": json.dumps(tr, ensure_ascii=False),
+            })
+
+        try:
+            stream = client.chat.completions.create(
+                model=getattr(self, "model", "default"),
+                messages=msgs,
+                temperature=getattr(self, "temperature", 0.7),
+                max_tokens=getattr(self, "max_tokens", 500),
+                stream=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _result["error"] = str(exc)
+            return
+
+        full_text = ""
+        chunk_count = 0
+        tool_calls_acc: dict = {}
+
+        try:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if content:
+                    full_text += content
+                    chunk_count += 1
+                tcs = getattr(delta, "tool_calls", None)
+                if tcs:
+                    for tc in tcs:
+                        idx = getattr(tc, "index", 0)
+                        slot = tool_calls_acc.setdefault(idx, {
+                            "id": getattr(tc, "id", "") or "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if getattr(tc, "id", None):
+                            slot["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            name = getattr(fn, "name", "")
+                            args = getattr(fn, "arguments", "")
+                            if name:
+                                slot["function"]["name"] += name
+                            if args:
+                                slot["function"]["arguments"] += args
+                if choices[0].finish_reason == "tool_calls":
+                    _result["tool_calls"] = list(tool_calls_acc.values())
+        except Exception as exc:  # noqa: BLE001
+            _result["error"] = str(exc)
+            return
+
+        _result["full_response"] = full_text
+        _result["chunk_count"] = chunk_count
+        if not _result.get("tool_calls"):
+            _result["tool_calls"] = None
+
+    def _execute_tool_calls(self, tool_calls: list, messages: list = None) -> list:
+        """Execute a batch of MCP tool calls.
+
+        Returns a list of result dicts with keys ``tool_call_id``,
+        ``tool_name``, ``success``, ``message`` (and ``error`` on failure).
+
+        Hard caps: only the first ``MAX_TOOL_CALLS`` calls are dispatched
+        and the loop aborts after ``MAX_CONSECUTIVE_ERRORS`` failures.
+        """
+        MAX_TOOL_CALLS = 5
+        MAX_CONSECUTIVE_ERRORS = 3
+
+        results: list = []
+        consecutive_errors = 0
+        truncated = list(tool_calls or [])[:MAX_TOOL_CALLS]
+
+        for tc in truncated:
+            tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
+            func_info = tc.get("function", {}) if isinstance(tc, dict) else {}
+            func_name = func_info.get("name", "unknown") if isinstance(func_info, dict) else "unknown"
+            func_args_str = func_info.get("arguments", "{}") if isinstance(func_info, dict) else "{}"
+
+            try:
+                args = json.loads(func_args_str)
+            except (json.JSONDecodeError, TypeError):
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": False,
+                    "error": "Ошибка формата аргументов",
+                })
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    break
+                continue
+
+            adapter = getattr(self, "mcp_adapter", None)
+            if adapter is None or not hasattr(adapter, "execute_tool_call_sync"):
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": False,
+                    "error": "no MCP adapter available",
+                })
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    break
+                continue
+
+            try:
+                result = adapter.execute_tool_call_sync(func_name, args)
+                success = bool(result.get("success", False)) if isinstance(result, dict) else False
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": success,
+                    "message": result.get("message", "") if isinstance(result, dict) else "",
+                    "data": result.get("data") if isinstance(result, dict) else None,
+                })
+                if not success:
+                    consecutive_errors += 1
+                else:
+                    consecutive_errors = 0
+            except Exception as exc:  # noqa: BLE001
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": False,
+                    "error": str(exc),
+                })
+                consecutive_errors += 1
+
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                break
+
+        return results
+
     def _handle_result(
         self,
         result: DialogResult,
@@ -1566,6 +1992,164 @@ class DialogueNode(Node):
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):
             self._publish_response(chunk)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Pure helper methods (unit-test contracts for issue #968 / #980)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    _EMOTION_TO_ANIMATION: dict = {
+        "happy": "happy",
+        "sad": "sad",
+        "angry": "angry",
+        "surprised": "surprised",
+        "thinking": "thinking",
+        "excited": "victory",
+        "confused": "thinking",
+        "worried": "sad",
+        "neutral": "idle",
+        "calm": "idle",
+    }
+
+    def _map_emotion_to_animation(self, emotion: str) -> str:
+        """Map an emotion label to its corresponding LED animation key.
+
+        Lookup is case-insensitive; unknown emotions default to ``"idle"``.
+        """
+        if not emotion:
+            return "idle"
+        return self._EMOTION_TO_ANIMATION.get(str(emotion).lower(), "idle")
+
+    def _generate_fallback_response(self, text: str) -> str:
+        """Generate a static fallback reply when the LLM is unavailable."""
+        low = (text or "").lower()
+        greetings = (
+            "привет", "здравствуй", "hello", "hi ", "доброе утро",
+            "добрый день", "добрый вечер",
+        )
+        if any(g in low for g in greetings):
+            return (
+                "Привет! К сожалению, интернет сейчас недоступен, "
+                "но я могу выполнять базовые команды."
+            )
+        if any(w in low for w in ("как дела", "how are")):
+            return (
+                "У меня всё хорошо! Но интернет сейчас недоступен, "
+                "часть функций ограничена."
+            )
+        thanks = ("спасибо", "благодарю", "thanks", "thank you")
+        if any(w in low for w in thanks):
+            return "Пожалуйста!"
+        farewells = ("пока", "до свидания", "bye", "goodbye", "прощай")
+        if any(w in low for w in farewells):
+            return "До свидания!"
+        return "Интернет сейчас недоступен, я не могу ответить на этот вопрос."
+
+    def _detect_volume_intent(self, text: str):
+        """Detect volume adjustment intent from user text."""
+        if not text:
+            return None
+        low = text.lower()
+        if any(w in low for w in ("максимальная громкость", "максимум громк")):
+            return "max"
+        if any(w in low for w in ("нормальная громкость", "стандартная громкость", "обычная громкость")):
+            return "normal"
+        if "говори громко" in low:
+            return "max"
+        if any(w in low for w in ("громче", "громко")):
+            return "louder"
+        if any(w in low for w in ("тише", "потише")):
+            return "quieter"
+        return None
+
+    def _detect_pitch_intent(self, text: str):
+        """Detect pitch adjustment intent from user text."""
+        if not text:
+            return None
+        low = text.lower()
+        if any(w in low for w in ("нормальный голос", "говори нормально", "обычный голос")):
+            return "normal"
+        if any(w in low for w in ("выше", "повысь")):
+            return "higher"
+        if any(w in low for w in ("ниже",)):
+            return "lower"
+        return None
+
+    def _speak_simple(self, text: str, show_error_animation: bool = False) -> None:
+        """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
+        import uuid as _uuid
+        dialogue_id = str(_uuid.uuid4())
+        self.current_dialogue_id = dialogue_id
+        payload = json.dumps({
+            "ssml": f"<speak>{text}</speak>",
+            "dialogue_id": dialogue_id,
+        }, ensure_ascii=False)
+        msg = String()
+        msg.data = payload
+        self.response_pub.publish(msg)
+        if show_error_animation:
+            anim_msg = String()
+            anim_msg.data = "error"
+            pub = getattr(self, "animation_pub", None)
+            if pub is not None:
+                pub.publish(anim_msg)
+
+    def _trigger_sound(self, name: str) -> None:
+        """Publish a one-shot sound trigger; swallows publish exceptions."""
+        try:
+            msg = String()
+            msg.data = name
+            pub = getattr(self, "sound_trigger_pub", None)
+            if pub is not None:
+                pub.publish(msg)
+        except Exception:
+            pass
+
+    def _on_mcp_tools_update(self, msg) -> None:
+        """Parse MCP tools JSON and update ``available_tools``."""
+        try:
+            data = getattr(msg, "data", "") or "[]"
+            tools = json.loads(data)
+            if isinstance(tools, list):
+                self.available_tools = tools
+                self.mcp_tools_available = True
+            else:
+                self.available_tools = []
+                self.mcp_tools_available = False
+        except (json.JSONDecodeError, TypeError) as exc:
+            self.mcp_tools_available = False
+            self.available_tools = []
+            self.get_logger().error(f"MCP tools update parse error: {exc}")
+
+    def _on_perception_update(self, msg) -> None:
+        """Update ``internet_available`` and ``current_time_info`` from a perception msg."""
+        if hasattr(msg, "internet_available"):
+            self.internet_available = bool(msg.internet_available)
+        if hasattr(msg, "time_context_json"):
+            try:
+                self.current_time_info = json.loads(msg.time_context_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                self.current_time_info = {}
+                self.get_logger().warning("Invalid time_context_json in perception update")
+
+    def vad_callback(self, msg) -> None:
+        """VAD callback: track speech edges and signal agent interrupt.
+
+        Tests use ``vad_callback`` (public) instead of the internal
+        ``_on_vad``; delegate to the legacy method when present so behavior
+        stays identical.
+        """
+        legacy = getattr(self, "_on_vad", None)
+        if legacy is not None:
+            legacy(msg)
+            return
+        active = bool(getattr(msg, "data", False))
+        if active and not getattr(self, "vad_speech_detected", False):
+            self.vad_speech_detected = True
+            if getattr(self, "llm_processing", False) and not getattr(self, "mcp_tools_available", False):
+                self.interrupt_agent_loop = True
+        elif not active and getattr(self, "vad_speech_detected", False):
+            self.vad_speech_detected = False
+
     def _handle_silence(self) -> None:
         self._cancel_run("silence command")
         self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)
