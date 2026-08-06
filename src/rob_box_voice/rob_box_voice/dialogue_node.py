@@ -1203,6 +1203,17 @@ class DialogueNode(Node):
             return
         if self._user_wants_music(user_input):
             tools_now = set(tools_called or ())
+            # 🔴 FIX (live 06.08): стоп-команды («хватит диджеить»,
+            # «выключи музыку») — это НЕ запрос включения музыки!
+            # Bug C видел «диджеить» → думал «юзер просит музыку» →
+            # ретраил с промптом «вызови execute_music_code» (включал
+            # музыку заново). Стоп-команды пропускаем полностью.
+            if any(kw in user_input.lower() for kw in self._MUSIC_STOP_OVERRIDES):
+                self.get_logger().debug(
+                    "🎵 [issue 992 Bug C] stop-command — skipping music "
+                    "guard entirely"
+                )
+                return
             # 🔴 FIX (live 10:00): вокальные запросы («спой/пой/песня»)
             # — speak_text уже есть (песня озвучена), бит не обязателен:
             # не нудить. Только если LLM вообще ничего не сделала
@@ -1378,6 +1389,27 @@ class DialogueNode(Node):
             if not tools_called:
                 fr = getattr(result, "finish_reason", None)
                 raw = getattr(result, "raw_response", None)
+                # 🔴 FIX (live 06.08): стоп-команда («хватит диджеить»,
+                # «выключи музыку») + пустой ответ LLM → ВСЁ РАВНО
+                # останавливаем музыку/DJ. LLM иногда возвращает пустоту
+                # (DeepSeek empty), и без этого fallback музыка играет
+                # бесконечно (юзер: «сказал хорошо молчу, музло ебашит»).
+                if user_input and any(
+                    kw in user_input.lower()
+                    for kw in self._MUSIC_STOP_OVERRIDES
+                ):
+                    self.get_logger().warning(
+                        "🎵 [issue 992 Bug C] stop-command + empty LLM "
+                        "response — forcing music_cleanup + DJ off"
+                    )
+                    # Публикуем cleanup — mcp_server остановит музыку
+                    # (MusicManager.stop_music_on_session_end).
+                    try:
+                        self._publish_music_cleanup(reason="user_stop_command")
+                    except Exception as exc:  # noqa: BLE001
+                        self.get_logger().warning(
+                            f"🎵 stop fallback failed: {exc}"
+                        )
                 # Короткая диагностика: что именно вернул провайдер.
                 raw_hint = ""
                 if raw is not None:
