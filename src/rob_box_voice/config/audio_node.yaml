@@ -1,0 +1,27 @@
+# audio_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Сгенерировано из voice_assistant.yaml при разделении на per-node файлы.
+# Меняйте именно этот файл (или src/rob_box_voice/config/<node>.yaml для
+# других нод), НЕ voice_assistant.yaml — он остаётся как легаси/источник
+# правды для совместимости с тестами test_dialogue_shell.
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+
+audio_node:
+  ros__parameters:
+    sample_rate: 16000
+    channels: 1
+    chunk_size: 1024
+    vad_threshold: 3.5
+    publish_rate: 10
+    device_index: -1
+    device_name: ReSpeaker 4 Mic Array
+    speech_continuation: 3.0
+    speech_prefetch: 0.5
+    speech_min_duration: 0.3
+    speech_max_duration: 10.0
+    tts_grace_s: 2.5
+    music_vad_threshold: 6.0
+    music_vad_min_db: -35.0
