@@ -381,11 +381,29 @@ class DialogueNode(Node):
         temperature = float(self.get_parameter("temperature").value or 0.7)
         max_tokens = int(self.get_parameter("max_tokens").value or 500)
 
-        # 🔴 FIX (live 06.08): логируем LLM-конфиг при старте — раньше
-        # конфиг выводился, потом потерялся. Без этого непонятно, какой
-        # провайдер/модель реально активны (MiniMax vs DeepSeek), какой
-        # max_tokens (256 резал ответы). Провайдер виден в каждом запросе
-        # (HTTP Request), а модель/temperature/max_tokens — только тут.
+        # 🔴 FIX (live 06.08): выводим ВЕСЬ конфиг при старте — раньше
+        # конфиг выводился, потом потерялся. Это главный источник правды:
+        # какой провайдер/модель реально активны (MiniMax vs DeepSeek),
+        # какой max_tokens (256 резал ответы обрывками), температура,
+        # таймауты, wake-слова и т.д. — всё видно в одном месте.
+        secrets = ("api_key", "password", "token", "secret")
+        cfg_lines = []
+        for pname in sorted(self.list_parameters()):
+            try:
+                pval = self.get_parameter(pname).value
+            except Exception:  # noqa: BLE001 — параметр мог отвалиться
+                continue
+            if pval is None:
+                continue
+            if any(s in pname.lower() for s in secrets) and pval:
+                pval = "***"
+            cfg_lines.append(f"{pname}={pval}")
+        self.get_logger().info(
+            "⚙️ STARTUP CONFIG:\n%s",
+            "\n".join(cfg_lines),
+        )
+
+        # LLM-параметры отдельно — они критичны для диагностики обрывков.
         self.get_logger().info(
             "⚙️ LLM CONFIG: provider=%s model=%s base_url=%s "
             "temperature=%s max_tokens=%s",
