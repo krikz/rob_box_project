@@ -420,16 +420,18 @@ class DialogueNode(Node):
         # таймауты, wake-слова и т.д. — всё видно в одном месте.
         secrets = ("api_key", "password", "token", "secret")
         cfg_lines = []
-        for p in sorted(self.get_parameters(), key=lambda p: p.name):
-            try:
-                pval = p.value
-            except Exception:  # noqa: BLE001 — параметр мог отвалиться
-                continue
+        # get_parameters_by_prefix("") возвращает ВСЕ объявленные параметры
+        # как dict {имя: значение} — единственный способ без явного списка имён
+        # (rclpy get_parameters требует names=[...], а declare_parameter
+        # регистрирует в _parameters).
+        all_params = self.get_parameters_by_prefix("")
+        for pname in sorted(all_params):
+            pval = all_params[pname]
             if pval is None:
                 continue
-            if any(s in p.name.lower() for s in secrets) and pval:
+            if any(s in pname.lower() for s in secrets) and pval:
                 pval = "***"
-            cfg_lines.append(f"{p.name}={pval}")
+            cfg_lines.append(f"{pname}={pval}")
         self.get_logger().info(
             "⚙️ STARTUP CONFIG:\n%s",
             "\n".join(cfg_lines),
