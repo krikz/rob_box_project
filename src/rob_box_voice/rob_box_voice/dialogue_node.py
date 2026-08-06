@@ -583,11 +583,15 @@ class DialogueNode(Node):
         # unit tests assert against ``vad_speech_detected``. The legacy
         # ``_vad_speech_detected`` alias is kept for backwards compatibility
         # with any introspection that still looks at the underscored form.
-        if msg.data and not self._vad_speech_detected:
+        # Pure-method tests use ``object.__new__(DialogueNode)`` so the
+        # attributes are NOT initialised in ``__init__`` — we lazily
+        # create them on first VAD edge.
+        detected = getattr(self, "_vad_speech_detected", False)
+        if msg.data and not detected:
             self._vad_speech_detected = True
             self.vad_speech_detected = True
             self.get_logger().debug("🎤 VAD: speech start")
-        elif not msg.data and self._vad_speech_detected:
+        elif not msg.data and detected:
             self._vad_speech_detected = False
             self.vad_speech_detected = False
 
@@ -711,30 +715,33 @@ class DialogueNode(Node):
         Falls back to empty list when skills are not installed — callers
         should still work because ``_execute_tool_calls`` handles missing
         adapters gracefully.
+
+        Test contract: skill classes are resolved via **module-level
+        aliases** on ``rob_box_voice.dialogue_node`` (``MusicSkill``,
+        ``NavigationSkill``, ``MemorySkill``, ``StatusSkill``,
+        ``FAQSkill``).  Tests use ``monkeypatch.setattr(..., raising=False)``
+        to inject ``FakeSkill`` instances, so the lookup must go through
+        plain ``getattr`` on the module, NOT a dynamic
+        ``__import__("rob_box_voice.skills.faq_skill", ...)`` which
+        would bypass the monkeypatch.
         """
         tools: list = []
 
-        skill_modules = [
-            ("rob_box_voice.skills.music_skill", "MusicSkill", "handle_music"),
-            ("rob_box_voice.skills.navigation_skill", "NavigationSkill", "handle_navigation"),
-            ("rob_box_voice.skills.memory_skill", "MemorySkill", "handle_memory"),
-            ("rob_box_voice.skills.status_skill", "StatusSkill", "handle_status"),
-            ("rob_box_voice.skills.faq_skill", "FAQSkill", "handle_faq"),
+        skill_aliases = [
+            ("MusicSkill", "handle_music"),
+            ("NavigationSkill", "handle_navigation"),
+            ("MemorySkill", "handle_memory"),
+            ("StatusSkill", "handle_status"),
+            ("FAQSkill", "handle_faq"),
         ]
-        for mod_name, cls_name, tool_name in skill_modules:
-            try:
-                mod = __import__(mod_name, fromlist=[cls_name])
-                cls = getattr(mod, cls_name)
-            except Exception:
+        for cls_name, tool_name in skill_aliases:
+            cls = globals().get(cls_name)
+            if cls is None:
                 continue
             try:
                 instance = cls()
             except Exception:
                 continue
-            # Each skill exposes an ``as_tool(tool_name, tool_description)``
-            # helper; tests only assert the *tool name string* is present,
-            # so we accept either a dict with ``function.name`` or any
-            # duck-typed tool description carrying ``name``.
             try:
                 tool = instance.as_tool(tool_name=tool_name, tool_description="")
             except Exception:
@@ -1620,19 +1627,30 @@ class DialogueNode(Node):
             }
 
             timeout_s = float(getattr(self, "_llm_timeout_sec", 90.0))
-            try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        self._do_recursive_streaming,
-                        _result=result_dict,
-                        _messages=current_messages,
-                        _tool_results=current_tool_results,
-                    )
-                    future.result(timeout=timeout_s)
-            except concurrent.futures.TimeoutError:
-                result_dict["error"] = "timeout"
-            except Exception as exc:  # noqa: BLE001
-                result_dict["error"] = str(exc)
+            # Retry-once for transient LLM errors (timeout / 5xx). Test
+            # contract (``test_timeout_then_success_on_retry``): the first
+            # attempt may fail with ``error='timeout'``; the second attempt
+            # mutates ``result_dict`` to a clean success payload. We
+            # therefore retry as long as the producer left an error AND
+            # we still have attempts left, and stop on the first success.
+            max_attempts = 2
+            for _attempt in range(max_attempts):
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(
+                            self._do_recursive_streaming,
+                            _result=result_dict,
+                            _messages=current_messages,
+                            _tool_results=current_tool_results,
+                        )
+                        future.result(timeout=timeout_s)
+                except concurrent.futures.TimeoutError:
+                    result_dict["error"] = "timeout"
+                except Exception as exc:  # noqa: BLE001
+                    result_dict["error"] = str(exc)
+                # Stop retrying on first success.
+                if not result_dict.get("error"):
+                    break
 
             if result_dict.get("error"):
                 self._speak_simple(
@@ -1652,7 +1670,18 @@ class DialogueNode(Node):
 
             # Persist the assistant turn to conversation history.
             if last_response_text:
-                self.conversation_history.add_message("assistant", last_response_text)
+                # ``ConversationHistory`` exposes ``add_assistant_message``
+                # (not a generic ``add_message``); use the typed helper
+                # so the test ``test_plain_text_saved_to_history`` can find
+                # the entry via ``get_messages()``.
+                add_assistant = getattr(
+                    self.conversation_history, "add_assistant_message", None
+                )
+                if add_assistant is not None:
+                    add_assistant(last_response_text)
+                else:
+                    # Fallback to a generic attribute (older harnesses).
+                    self.conversation_history.add_message("assistant", last_response_text)
 
             # Streamed chunks already published via SSML; if zero chunks fell
             # through we publish a simple one-shot response.
@@ -1754,18 +1783,25 @@ class DialogueNode(Node):
         if not _result.get("tool_calls"):
             _result["tool_calls"] = None
 
-    def _execute_tool_calls(self, tool_calls: list) -> list:
+    def _execute_tool_calls(self, tool_calls: list, messages: list = None) -> list:
         """Execute a batch of MCP tool calls.
 
         Returns a list of result dicts with keys ``tool_call_id``,
         ``tool_name``, ``success``, ``message`` (and ``error`` on failure).
 
-        Test contract: the only positional argument is ``tool_calls``;
-        tests pass a ``lambda tc: [...]`` that ignores any second arg.
+        Test contract: ``messages`` is **optional** — tests pass it as
+        a kwarg (``_execute_tool_calls(tool_calls, messages=[])``) when
+        exercising the full loop, and a positional ``messages`` arg
+        (``lambda tc, msgs: [...]``) when substituting a mock. The
+        parameter is currently captured for forward-compatibility (no
+        current logic depends on it).
 
         Hard caps: only the first ``MAX_TOOL_CALLS`` calls are dispatched
         and the loop aborts after ``MAX_CONSECUTIVE_ERRORS`` failures.
         """
+        # Silence the "unused argument" lint while keeping the test-
+        # compatible signature.
+        del messages
         MAX_TOOL_CALLS = 5
         MAX_CONSECUTIVE_ERRORS = 3
 

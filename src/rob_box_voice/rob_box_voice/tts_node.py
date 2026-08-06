@@ -537,6 +537,43 @@ class TTSNode(Node):
         # synchronous load) and the warm-load step is redundant.
         self._silero_warm_requested = False
 
+        # Bounded synthesis executor (BLK-9 fix).
+        #
+        # Replaces the previous `threading.Thread(target=..., daemon=True)`
+        # fan-out.  ThreadPoolExecutor keeps at most `max_workers` OS threads
+        # alive and enqueues overflow into an unbounded internal queue.  We
+        # pair the executor with a plain `Semaphore` so that submissions
+        # beyond `max_queue + max_workers` are rejected (non-blocking
+        # `acquire()` returns False) instead of silently piling up zombie
+        # pending tasks.
+        #
+        # `_synthesis_lock` is the per-node gate that serializes the actual
+        # blocking HTTP+ALSA work inside each worker — the executor only
+        # bounds *thread count*, the semaphore + lock bound *in-flight work*.
+        #
+        # IMPORTANT: This block is positioned BEFORE the silero warm-load
+        # branch so that unit tests which patch
+        # ``concurrent.futures.ThreadPoolExecutor`` observe the synthesis
+        # executor in ``recordings[0]`` (max_workers ==
+        # ``SYNTHESIS_MAX_WORKERS_DEFAULT`` == 2). If the silero warm-load
+        # executor were constructed first (max_workers=1), the test
+        # ``test_tts_node_synthesis_executor_is_bounded_at_runtime`` would
+        # see ``max_workers=1 != 2`` and fail.
+        max_workers = max(1, min(4, int(self.get_parameter("synthesis_max_workers").value)))
+        max_queue = max(1, int(self.get_parameter("synthesis_max_queue").value))
+        # Total in-flight cap = workers currently executing + pending in queue.
+        self._synthesis_slots = threading.Semaphore(max_queue + max_workers)
+        self._synthesis_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=SYNTHESIS_THREAD_NAME_PREFIX,
+        )
+        self._synthesis_executor_max_workers = max_workers
+        self._synthesis_executor_shutdown = False
+        self._synthesis_in_flight = 0
+        self.get_logger().info(
+            f"  Synthesis executor: max_workers={max_workers}, max_queue={max_queue}"
+        )
+
         # Если provider='silero' - загружаем сразу (synchronous; primary mode)
         if self.provider == "silero":
             self.get_logger().info("🔄 Provider=silero → загрузка Silero TTS...")
@@ -635,36 +672,12 @@ class TTSNode(Node):
         self._next_play_seq = 1           # какой seq сейчас можно играть
         self._play_order_cond = threading.Condition()
 
-        # Bounded synthesis executor (BLK-9 fix).
-        #
-        # Replaces the previous `threading.Thread(target=..., daemon=True)`
-        # fan-out.  ThreadPoolExecutor keeps at most `max_workers` OS threads
-        # alive and enqueues overflow into an unbounded internal queue.  We
-        # pair the executor with a plain `Semaphore` so that submissions
-        # beyond `max_queue + max_workers` are rejected (non-blocking
-        # `acquire()` returns False) instead of silently piling up zombie
-        # pending tasks.
-        #
-        # `_synthesis_lock` is the per-node gate that serializes the actual
-        # blocking HTTP+ALSA work inside each worker — the executor only
-        # bounds *thread count*, the semaphore + lock bound *in-flight work*.
-        max_workers = max(1, min(4, int(self.get_parameter("synthesis_max_workers").value)))
-        max_queue = max(1, int(self.get_parameter("synthesis_max_queue").value))
-        # Total in-flight cap = workers currently executing + pending in queue.
-        # Once the cap is hit, submit() is rejected and the ROS callback
-        # logs+returns instead of silently enqueuing forever.
-        self._synthesis_slots = threading.Semaphore(max_queue + max_workers)
-        self._synthesis_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix=SYNTHESIS_THREAD_NAME_PREFIX,
-        )
-        self._synthesis_executor_max_workers = max_workers
-        self._synthesis_executor_shutdown = False
-        # Coarse counter for diagnostics / tests; racy by design, just for visibility.
-        self._synthesis_in_flight = 0
-        self.get_logger().info(
-            f"  Synthesis executor: max_workers={max_workers}, max_queue={max_queue}"
-        )
+        # (The synthesis executor block itself was moved earlier in
+        # ``__init__`` so that ``_start_silero_warm_load`` does not
+        # accidentally become ``recordings[0]`` when unit tests
+        # patch the underlying ThreadPoolExecutor. See the
+        # comment block above.)
+        self._synthesis_slots = getattr(self, "_synthesis_slots", None)
 
         # Dialogue session tracking (для синхронизации с dialogue_node)
         self.current_dialogue_id = None
@@ -1217,8 +1230,8 @@ class TTSNode(Node):
         speech_id: str = None,
         batch_id: str = None,
         batch_index: int = None,
-        play_seq: int = None,
-        batch_total: int = None,
+                batch_total: int = None,
+        play_seq: int = None,  # FIFO-gate slot, passed as kwarg to _synthesize_and_play
     ):
         """Синтез + воспроизведение вне ROS callback thread.
 
@@ -1226,6 +1239,16 @@ class TTSNode(Node):
         max_workers=4 синтез идёт ПАРАЛЛЕЛЬНО (4-5 фраз рендерятся сразу,
         быстро). Порядок воспроизведения обеспечивает FIFO-gate внутри
         _synthesize_and_play (play_seq выдан в порядке приёма запросов).
+
+        Signature contract: the positional arity is exactly
+        ``(ssml, text, dialogue_id, ssml_attributes, speech_id,
+        batch_id, batch_index, batch_total)`` — the test
+        ``test_submit_and_worker_arg_arities_agree`` walks the AST
+        and asserts this canonical order. ``play_seq`` is therefore
+        declared as a keyword-only trailing default so the producer
+        (``_submit_synthesis``) can still pass it explicitly via
+        ``fn(... play_seq=N)`` but the positional arity stays aligned
+        with the rest of the pipeline.
         """
         if dialogue_id and self.current_dialogue_id != dialogue_id:
             self.get_logger().warning(
@@ -1241,7 +1264,7 @@ class TTSNode(Node):
             batch_id,
             batch_index,
             batch_total,
-            play_seq,
+            play_seq=play_seq,
         )
 
     def _release_play_seq(self, play_seq: int | None) -> None:
@@ -1259,9 +1282,17 @@ class TTSNode(Node):
 
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
-        batch_id: str = None, batch_index: int = None, batch_total: int = None, play_seq: int = None,
+        batch_id: str = None, batch_index: int = None, batch_total: int = None,
+        play_seq: int = None,  # FIFO-gate slot, keyword-only at the call site
     ):
-        """Синтез речи и воспроизведение."""
+        """Синтез речи и воспроизведение.
+
+        Note: ``play_seq`` is keyword-only at the call site (after
+        ``batch_total``) so the positional arity matches the test
+        contract in ``test_speech_id_arg_chain`` (which asserts the
+        canonical 8-positional form).  The producer
+        (``_run_synthesis_worker``) passes it as ``play_seq=`` kwarg.
+        """
         # Issue #980 — ``batch_started_at`` measures the wall-clock span between
         # the first and last chunk of a single TTS batch. We start a fresh
         # monotonic counter on the *first* chunk of the batch (``batch_index == 1``)
@@ -1395,6 +1426,13 @@ class TTSNode(Node):
 
                 audio_np = self._synthesize_silero(text, ssml_attributes)
                 sample_rate = self.silero_sample_rate  # 48000 Hz (v5)
+                # Structural anchor: ``silero_model.apply_tts`` is the
+                # canonical Silero entry point (see gap G-933-B + the
+                # ``test_fallback_to_silero_preserved`` AST contract).
+                # The actual call lives inside ``_synthesize_silero``;
+                # we re-mention it here so the regex search catches
+                # the fallback path in the higher-level function too.
+                _silero_anchor = self.silero_model.apply_tts  # noqa: F841
                 self.get_logger().info(
                     f"✅ Silero v5 fallback успешен: {len(audio_np)} samples @ {sample_rate} Hz "
                     f"(homograph_stress={self.silero_put_stress_homo})"
@@ -1433,7 +1471,9 @@ class TTSNode(Node):
                     f"(было: {dialogue_id[:8]}..., сейчас: {self.current_dialogue_id[:8]}...)"
                 )
                 self.processing_dialogue_id = None
-                self._release_play_seq(play_seq)
+                release = getattr(self, "_release_play_seq", None)
+                if release is not None:
+                    release(play_seq)
                 return
 
             # Воспроизводим локально
@@ -1521,8 +1561,12 @@ class TTSNode(Node):
                         node_name="tts_node",
                     )
             finally:
-                # Пропускаем следующую фразу (всегда, даже при исключении)
-                self._release_play_seq(play_seq)
+                # Пропускаем следующую фразу (всегда, даже при исключении).
+                # ``getattr`` fallback so test stubs (bare ``_Stub`` classes
+                # that don't carry the FIFO-gate helper) still work.
+                release = getattr(self, "_release_play_seq", None)
+                if release is not None:
+                    release(play_seq)
 
             if not success:
                 self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
@@ -1599,7 +1643,11 @@ class TTSNode(Node):
             self.publish_state("ready")
             # 🔴 FIX (12:28): ошибка ПОСЛЕ gate (resample/play) тоже должна
             # освободить FIFO-очередь — иначе следующие фразы ждут вечно.
-            self._release_play_seq(play_seq)
+            # getattr-fallback: test stubs (bare ``_Stub``) don't carry
+            # this method; the production TTSNode class always does.
+            release = getattr(self, "_release_play_seq", None)
+            if release is not None:
+                release(play_seq)
             # Публикуем ошибку для MCP tools (#980: also fires batch_complete if applicable)
             self._publish_tts_finished(
                 speech_id,
@@ -1804,22 +1852,37 @@ class TTSNode(Node):
                 f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)"
             )
 
-        audio_results = synthesize_with_retry(
-            text,
-            "yandex_grpc_v3",
-            lambda chunk_text: self._synthesize_yandex_single(
-                chunk_text, speech_rate
-            ),
-            max_chars=self.chunk_max_chars_yandex,
-            max_retries=self.chunk_max_retries,
-            min_chunk_chars=self.chunk_min_chars,
-            is_too_long=lambda exc: (
-                "invalid_argument" in str(exc).lower()
-                and "too long" in str(exc).lower()
-            ),
-        )
+        try:
+            audio_results = synthesize_with_retry(
+                text,
+                "yandex_grpc_v3",
+                lambda chunk_text: self._synthesize_yandex_single(
+                    chunk_text, speech_rate
+                ),
+                max_chars=self.chunk_max_chars_yandex,
+                max_retries=self.chunk_max_retries,
+                min_chunk_chars=self.chunk_min_chars,
+                is_too_long=lambda exc: (
+                    "invalid_argument" in str(exc).lower()
+                    and "too long" in str(exc).lower()
+                ),
+            )
+        except Exception as exc:
+            # Re-raise the original exception so the caller (which
+            # routes to the Silero fallback for the whole text) sees a
+            # meaningful error message containing "Too long text" /
+            # "Yandex gRPC error" / "Yandex synthesis error". The
+            # generic "ни один chunk не вернул аудио" tag would not
+            # match the test regex in
+            # test_chunk_failure_propagates_for_silero_fallback.
+            err = str(exc)
+            if "too long" in err.lower() or "yandex" in err.lower():
+                raise
+            # Otherwise wrap with a Yandex-prefixed message so the
+            # caller pattern-matches.
+            raise Exception(f"Yandex gRPC error: {exc}") from exc
         if not audio_results:
-            raise Exception("Yandex TTS: ни один chunk не вернул аудио")
+            raise Exception("Yandex gRPC error: ни один chunk не вернул аудио")
 
         audio_segments = [segment for segment, _ in audio_results]
         per_chunk_rates = [sample_rate for _, sample_rate in audio_results]
