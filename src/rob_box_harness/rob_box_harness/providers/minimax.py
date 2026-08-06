@@ -309,7 +309,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # разумный дефолт 4096 для голоса (промпт 39K символов,
         # музыкальный код + речь не влезают в 256).
         if settings is None:
-            settings = LLMSettings(model=self.model, max_tokens=4096)
+            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
         elif settings.max_tokens is None:
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
