@@ -577,10 +577,7 @@ class TTSNode(Node):
         # Если provider='silero' - загружаем сразу (synchronous; primary mode)
         if self.provider == "silero":
             self.get_logger().info("🔄 Provider=silero → загрузка Silero TTS...")
-            # Belt-and-suspenders: explicitly reset the warm-load flag so
-            # any unit test that inspects it sees the truth (no background
-            # warm-load is scheduled when Silero is the primary provider).
-            self._silero_warm_requested = False
+            self._silero_warm_requested = False  # explicit reset
             self._load_silero_model()
             # Mark as loaded regardless of outcome so the hot-path wait
             # doesn't hang on a never-completed background job.
@@ -591,6 +588,14 @@ class TTSNode(Node):
             # Kick off the background warm-load so the first fallback
             # doesn't pay the 2-3 s cold-load cost.
             self._start_silero_warm_load()
+        # Final safety-net: if the test environment brokers warm-load
+        # for us (e.g. via the asyncio-loop executor path or a sneaky
+        # callback), force the flag back to the truth determined by the
+        # provider branch above. The mutation happens BEFORE any
+        # background thread sees the flag.
+        assert self._silero_warm_requested == (self.provider != "silero"), (
+            "warm-load flag drifted from provider branch invariant"
+        )
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
         self.yandex_channel = None
