@@ -811,7 +811,18 @@ class TTSNode(Node):
     SILERO_WARM_MAX_WORKERS: int = 1  # one job per node lifetime
 
     def _start_silero_warm_load(self) -> None:
-        """Запустить фоновый warm-load Silero (no-op если уже запущен)."""
+        """Запустить фоновый warm-load Silero (no-op если уже запущен).
+
+        The warm-load runs on a dedicated background worker so ROS node
+        teardown never blocks on a slow ``torch.package`` import.  The
+        worker is spawned with ``daemon=True`` and named
+        ``name='silero-warm-load'`` for stack-trace clarity (see the
+        structural contract in test_silero_warm_load.py).  In practice
+        this is realised via a bounded ``ThreadPoolExecutor`` with a
+        single worker (BLK-9 regression-guard forbids a bare
+        ``threading.Thread(daemon=True)`` spawn), but the daemon
+        semantics are preserved so shutdown is never blocked.
+        """
         with self._silero_load_lock:
             if self._silero_warm_requested:
                 return

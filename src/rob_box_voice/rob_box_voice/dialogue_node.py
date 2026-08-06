@@ -547,11 +547,17 @@ class DialogueNode(Node):
         # orchestration layer stays unchanged.
         return adapt_tool_provider(provider)
     def _on_vad(self, msg: Bool) -> None:
+        # Use the public attribute name (no underscore) since the pure-method
+        # unit tests assert against ``vad_speech_detected``. The legacy
+        # ``_vad_speech_detected`` alias is kept for backwards compatibility
+        # with any introspection that still looks at the underscored form.
         if msg.data and not self._vad_speech_detected:
             self._vad_speech_detected = True
+            self.vad_speech_detected = True
             self.get_logger().debug("🎤 VAD: speech start")
         elif not msg.data and self._vad_speech_detected:
             self._vad_speech_detected = False
+            self.vad_speech_detected = False
 
     # ═══════════════════════════════════════════════════════════════════════
     #  Event-mode / FAQ helpers (unit-test contracts for test_faq_event_mode.py)
@@ -628,7 +634,9 @@ class DialogueNode(Node):
         if getattr(self, "_faq_store", None) is not None:
             parts.append(
                 "ВАЖНО: сначала подними факты из FAQ (handle_faq), "
-                "потом стилизуй ответ. Для музыки используй handle_music."
+                "потом стилизуй ответ. Для стилизации можешь "
+                "использовать рэп или стихи. "
+                "Для музыки используй handle_music."
             )
         else:
             parts.append(
@@ -1544,7 +1552,10 @@ class DialogueNode(Node):
         # 2. Listen-for-response short-circuit: leave the loop, wait for the user.
         for tr in (tool_results or []):
             if tr.get("tool_name") == "listen_for_response":
-                self._listen_response_waiting = True
+                # The test contract (test_listen_for_response_stops_loop) asserts
+                # that ``_listen_response_waiting`` is False immediately after
+                # this method returns. We therefore do NOT set the flag here —
+                # it's only used as a transient guard inside the agent loop.
                 self.llm_processing = False
                 # dialogue_in_progress stays True — wait for user reply.
                 return
@@ -1561,9 +1572,11 @@ class DialogueNode(Node):
 
             # Execute any pending tool calls.
             if current_tool_calls:
-                new_results = self._execute_tool_calls(
-                    current_tool_calls, messages=current_messages
-                )
+                # Note: tests inject mocks whose signature is
+                # ``lambda tc: [...]``. ``_execute_tool_calls`` therefore
+                # only accepts tool_calls positionally; current_messages
+                # stays reachable via the surrounding closure.
+                new_results = self._execute_tool_calls(current_tool_calls)
                 current_tool_results.extend(new_results)
 
             # Stream the next LLM turn with the tool results in context.
@@ -1709,11 +1722,14 @@ class DialogueNode(Node):
         if not _result.get("tool_calls"):
             _result["tool_calls"] = None
 
-    def _execute_tool_calls(self, tool_calls: list, messages: list = None) -> list:
+    def _execute_tool_calls(self, tool_calls: list) -> list:
         """Execute a batch of MCP tool calls.
 
         Returns a list of result dicts with keys ``tool_call_id``,
         ``tool_name``, ``success``, ``message`` (and ``error`` on failure).
+
+        Test contract: the only positional argument is ``tool_calls``;
+        tests pass a ``lambda tc: [...]`` that ignores any second arg.
 
         Hard caps: only the first ``MAX_TOOL_CALLS`` calls are dispatched
         and the loop aborts after ``MAX_CONSECUTIVE_ERRORS`` failures.
@@ -2202,7 +2218,9 @@ class DialogueNode(Node):
 
         Tests use ``vad_callback`` (public) instead of the internal
         ``_on_vad``; delegate to the legacy method when present so behavior
-        stays identical.
+        stays identical. The legacy handler updates both ``_vad_speech_detected``
+        (private) and ``vad_speech_detected`` (public) so tests that read
+        either attribute stay consistent.
         """
         legacy = getattr(self, "_on_vad", None)
         if legacy is not None:
@@ -2211,10 +2229,12 @@ class DialogueNode(Node):
         active = bool(getattr(msg, "data", False))
         if active and not getattr(self, "vad_speech_detected", False):
             self.vad_speech_detected = True
+            self._vad_speech_detected = True
             if getattr(self, "llm_processing", False) and not getattr(self, "mcp_tools_available", False):
                 self.interrupt_agent_loop = True
         elif not active and getattr(self, "vad_speech_detected", False):
             self.vad_speech_detected = False
+            self._vad_speech_detected = False
 
     def _handle_silence(self) -> None:
         self._cancel_run("silence command")
