@@ -1,0 +1,246 @@
+name: "L: Build All & Push to GHCR"
+
+# Полная локальная сборка ВСЕХ образов на self-hosted Katana (native arm64, без QEMU)
+# и push в ghcr.io для последующего деплоя через L-Deploy and Verify.yml --ref main.
+#
+# Использует существующие L-Build workflows для сборки, потом пушит всё в ghcr.io.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+      - 'src/**'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+permissions:
+  contents: write
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  GHCR_REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  # Сборка ВСЕХ образов в local-registry на Katana
+  build-all-local:
+    runs-on: [self-hosted, Linux, X64, rob-box]
+    steps:
+      - name: Build all services locally
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DOCKER_TAG="latest"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # Список сервисов с их build context
+          # Формат: "service-name|dockerfile-path|context-path"
+          declare -a SERVICES=(
+            "rtabmap|docker/base/Dockerfile.rtabmap|docker/base"
+            "ros2-zenoh|docker/base/Dockerfile.ros2-zenoh|docker/base"
+            "depthai|docker/base/Dockerfile.depthai|docker/base"
+            "pcl|docker/base/Dockerfile.pcl|docker/base"
+            "robot-state-publisher|docker/main/robot_state_publisher/Dockerfile|docker/main/robot_state_publisher"
+            "rtabmap-sync|docker/main/rtabmap/Dockerfile|docker/main/rtabmap"
+            "twist-mux|docker/main/twist_mux/Dockerfile|docker/main/twist_mux"
+            "teleop|docker/main/teleop/Dockerfile|docker/main/teleop"
+            "micro-ros-agent|docker/main/micro_ros_agent/Dockerfile|docker/main/micro_ros_agent"
+            "ros2-control|docker/main/ros2_control/Dockerfile|docker/main/ros2_control"
+            "nav2|docker/main/nav2/Dockerfile|docker/main/nav2"
+            "lslidar|docker/main/lslidar/Dockerfile|docker/main/lslidar"
+            "perception|docker/main/perception/Dockerfile|docker/main/perception"
+            "oak-d|docker/vision/oak-d/Dockerfile|docker/vision"
+            "led-matrix|docker/vision/led_matrix/Dockerfile|."
+            "ceiling-camera|docker/vision/ceiling-camera/Dockerfile|docker/vision"
+            "voice-base|docker/vision/voice_base/Dockerfile|docker/vision/voice_base"
+            "voice-resources|docker/vision/voice_resources/Dockerfile|docker/vision"
+            "voice-assistant|docker/vision/voice_assistant/Dockerfile|."
+            "telegram-bot|docker/vision/telegram_bot/Dockerfile|."
+          )
+
+          for SERVICE_DEF in "${SERVICES[@]}"; do
+            IFS='|' read -ra PARTS <<< "$SERVICE_DEF"
+            SERVICE="${PARTS[0]}"
+            DOCKERFILE="${PARTS[1]}"
+            CONTEXT="${PARTS[2]}"
+
+            LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${DOCKER_TAG}"
+            LOCAL_SHA_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${NEW_TAG}"
+
+            # Build
+            docker buildx build \
+              --platform linux/arm64 \
+              --file "${DOCKERFILE}" \
+              --tag "${LOCAL_TAG}" \
+              --tag "${LOCAL_SHA_TAG}" \
+              --load \
+              "${CONTEXT}" || {
+                echo "❌ Failed to build ${SERVICE}"
+                continue
+              }
+
+            echo "✅ Built ${LOCAL_TAG}"
+          done
+
+      - name: Verify local registry contents
+        run: |
+          echo "📦 Local Registry Contents:"
+          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read repo; do
+            echo "  📁 $repo"
+            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read tag; do
+              echo "    🏷️  $tag"
+            done
+          done
+
+  # Push всех собранных images в ghcr.io
+  push-to-ghcr:
+    needs: build-all-local
+    runs-on: [self-hosted, Linux, X64, rob-box]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push all images to GHCR with latest + SHA tags
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DOCKER_TAG="latest"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # Тот же список сервисов
+          declare -a SERVICES=(
+            "rtabmap"
+            "ros2-zenoh"
+            "depthai"
+            "pcl"
+            "robot-state-publisher"
+            "rtabmap-sync"
+            "twist-mux"
+            "teleop"
+            "micro-ros-agent"
+            "ros2-control"
+            "nav2"
+            "lslidar"
+            "perception"
+            "oak-d"
+            "led-matrix"
+            "ceiling-camera"
+            "voice-base"
+            "voice-resources"
+            "voice-assistant"
+            "telegram-bot"
+          )
+
+          push_image() {
+            local SERVICE="$1"
+            local LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${DOCKER_TAG}"
+            local GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-latest"
+            local GHCR_SHA_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${NEW_TAG}"
+
+            if ! docker buildx imagetools inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
+              echo "⚠️  ${LOCAL_TAG} not in local registry, skipping"
+              return
+            fi
+
+            # Push latest
+            docker buildx imagetools create --tag "${GHCR_TAG}" "${LOCAL_TAG}"
+            docker buildx imagetools push "${GHCR_TAG}"
+            echo "✅ Pushed ${GHCR_TAG}"
+
+            # Push SHA-immutable
+            docker buildx imagetools create --tag "${GHCR_SHA_TAG}" "${LOCAL_TAG}"
+            docker buildx imagetools push "${GHCR_SHA_TAG}"
+            echo "✅ Pushed ${GHCR_SHA_TAG}"
+          }
+
+          for SERVICE in "${SERVICES[@]}"; do
+            push_image "$SERVICE"
+          done
+
+          echo ""
+          echo "🎉 All images pushed to ghcr.io"
+
+      - name: Update .image-versions.latest
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DOCKER_TAG="latest"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # Main Pi versions
+          MAIN_VERSIONS="docker/main/.image-versions.${DOCKER_TAG}"
+          if [ -f "$MAIN_VERSIONS" ]; then
+            sed -i \
+              -e "s|^ROBOT_STATE_PUBLISHER_TAG=.*|ROBOT_STATE_PUBLISHER_TAG=${NEW_TAG}|" \
+              -e "s|^RTABMAP_TAG=.*|RTABMAP_TAG=${NEW_TAG}|" \
+              -e "s|^TWIST_MUX_TAG=.*|TWIST_MUX_TAG=${NEW_TAG}|" \
+              -e "s|^MICRO_ROS_AGENT_TAG=.*|MICRO_ROS_AGENT_TAG=${NEW_TAG}|" \
+              -e "s|^ROS2_CONTROL_TAG=.*|ROS2_CONTROL_TAG=${NEW_TAG}|" \
+              -e "s|^LSLIDAR_TAG=.*|LSLIDAR_TAG=${NEW_TAG}|" \
+              -e "s|^PERCEPTION_TAG=.*|PERCEPTION_TAG=${NEW_TAG}|" \
+              -e "s|^BASE_RTABMAP_TAG=.*|BASE_RTABMAP_TAG=${NEW_TAG}|" \
+              "$MAIN_VERSIONS"
+            git add "$MAIN_VERSIONS"
+            echo "✅ Updated $MAIN_VERSIONS"
+          else
+            echo "⚠️  $MAIN_VERSIONS not found"
+          fi
+
+          # Vision Pi versions
+          VISION_VERSIONS="docker/vision/.image-versions.${DOCKER_TAG}"
+          if [ -f "$VISION_VERSIONS" ]; then
+            sed -i \
+              -e "s|^OAK_D_TAG=.*|OAK_D_TAG=${NEW_TAG}|" \
+              -e "s|^RTABMAP_SYNC_TAG=.*|RTABMAP_SYNC_TAG=${NEW_TAG}|" \
+              -e "s|^LED_MATRIX_TAG=.*|LED_MATRIX_TAG=${NEW_TAG}|" \
+              -e "s|^CEILING_CAMERA_TAG=.*|CEILING_CAMERA_TAG=${NEW_TAG}|" \
+              -e "s|^VOICE_RESOURCES_TAG=.*|VOICE_RESOURCES_TAG=${NEW_TAG}|" \
+              -e "s|^VOICE_ASSISTANT_TAG=.*|VOICE_ASSISTANT_TAG=${NEW_TAG}|" \
+              -e "s|^TELEGRAM_BOT_TAG=.*|TELEGRAM_BOT_TAG=${NEW_TAG}|" \
+              "$VISION_VERSIONS"
+            git add "$VISION_VERSIONS"
+            echo "✅ Updated $VISION_VERSIONS"
+          else
+            echo "⚠️  $VISION_VERSIONS not found"
+          fi
+
+          # Commit & push
+          git config user.email "ci@rob-box.local"
+          git config user.name "Rob Box CI"
+          if ! git diff --cached --quiet; then
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            git commit -m "ci: SHA tags → ${NEW_TAG} [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin "$BRANCH"
+            echo "✅ Committed and pushed .image-versions"
+          else
+            echo "ℹ️  No changes to .image-versions"
+          fi
+
+  # Итоговая сводка
+  summary:
+    needs: [build-all-local, push-to-ghcr]
+    runs-on: [self-hosted, Linux, X64, rob-box]
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Build All & Push to GHCR Complete!"
+          echo ""
+          echo "Results:"
+          echo "  Build All Local: ${{ needs.build-all-local.result }}"
+          echo "  Push to GHCR: ${{ needs.push-to-ghcr.result }}"
+          echo ""
+          echo "🚀 Готово к деплою через:"
+          echo "   gh workflow run 'L-Deploy and Verify.yml' --ref main -f environment=test"
