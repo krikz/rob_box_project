@@ -31,7 +31,7 @@ jobs:
   build-base-images:
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
-      push_to_registry: 'true'
+      push_to_registry: true
 
   # Параллельная сборка Main Pi сервисов (как в L-Build All Services)
   build-main-services:
@@ -39,7 +39,7 @@ jobs:
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Main Pi Services.yml
     with:
-      push_to_registry: 'true'
+      push_to_registry: true
 
   # Параллельная сборка Vision Pi сервисов (как в L-Build All Services)
   build-vision-services:
@@ -47,7 +47,7 @@ jobs:
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Vision Pi Services.yml
     with:
-      push_to_registry: 'true'
+      push_to_registry: true
 
   # Push всех собранных images в ghcr.io с latest + SHA-тегами
   push-to-ghcr:
@@ -74,32 +74,28 @@ jobs:
           DOCKER_TAG="latest"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Полный список сервисов (как в L-Build Base/Main/Vision Pi Services)
-          # Формат: "service-name|is-base-image"
+          # Полный список сервисов
           declare -a SERVICES=(
-            # Base images
-            "rtabmap|true"
-            "ros2-zenoh|true"
-            "depthai|true"
-            "pcl|true"
-            # Main Pi сервисы
-            "robot-state-publisher|false"
-            "rtabmap-sync|false"
-            "twist-mux|false"
-            "teleop|false"
-            "micro-ros-agent|false"
-            "ros2-control|false"
-            "nav2|false"
-            "lslidar|false"
-            "perception|false"
-            # Vision Pi сервисы
-            "oak-d|false"
-            "led-matrix|false"
-            "ceiling-camera|false"
-            "voice-base|false"
-            "voice-resources|false"
-            "voice-assistant|false"
-            "telegram-bot|false"
+            "rtabmap"
+            "ros2-zenoh"
+            "depthai"
+            "pcl"
+            "robot-state-publisher"
+            "rtabmap-sync"
+            "twist-mux"
+            "teleop"
+            "micro-ros-agent"
+            "ros2-control"
+            "nav2"
+            "lslidar"
+            "perception"
+            "oak-d"
+            "led-matrix"
+            "ceiling-camera"
+            "voice-base"
+            "voice-resources"
+            "voice-assistant"
+            "telegram-bot"
           )
 
           push_image() {
@@ -113,19 +109,16 @@ jobs:
               return
             fi
 
-            # Push latest
             docker buildx imagetools create --tag "${GHCR_TAG}" "${LOCAL_TAG}"
             docker buildx imagetools push "${GHCR_TAG}"
             echo "✅ Pushed ${GHCR_TAG}"
 
-            # Push SHA-immutable
             docker buildx imagetools create --tag "${GHCR_SHA_TAG}" "${LOCAL_TAG}"
             docker buildx imagetools push "${GHCR_SHA_TAG}"
             echo "✅ Pushed ${GHCR_SHA_TAG}"
           }
 
-          for SERVICE_DEF in "${SERVICES[@]}"; do
-            IFS='|' read -r SERVICE _ <<< "$SERVICE_DEF"
+          for SERVICE in "${SERVICES[@]}"; do
             push_image "$SERVICE"
           done
 
@@ -138,7 +131,6 @@ jobs:
           DOCKER_TAG="latest"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Main Pi versions
           MAIN_VERSIONS="docker/main/.image-versions.${DOCKER_TAG}"
           if [ -f "$MAIN_VERSIONS" ]; then
             sed -i \
@@ -153,11 +145,8 @@ jobs:
               "$MAIN_VERSIONS"
             git add "$MAIN_VERSIONS"
             echo "✅ Updated $MAIN_VERSIONS"
-          else
-            echo "⚠️  $MAIN_VERSIONS not found"
           fi
 
-          # Vision Pi versions
           VISION_VERSIONS="docker/vision/.image-versions.${DOCKER_TAG}"
           if [ -f "$VISION_VERSIONS" ]; then
             sed -i \
@@ -171,11 +160,8 @@ jobs:
               "$VISION_VERSIONS"
             git add "$VISION_VERSIONS"
             echo "✅ Updated $VISION_VERSIONS"
-          else
-            echo "⚠️  $VISION_VERSIONS not found"
           fi
 
-          # Commit & push
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           if ! git diff --cached --quiet; then
