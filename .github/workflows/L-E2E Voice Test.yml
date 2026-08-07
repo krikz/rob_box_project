@@ -12,29 +12,49 @@ on:
           - test
           - staging
       voice_file:
-        description: Voice command file on build machine
+        description: Voice command file (repo file from .github/e2e/voice_commands/ or /tmp on build machine)
         required: false
-        default: /tmp/voice_new.ogg
+        default: .github/e2e/voice_commands/spoy_peasenku_pro_enotika.ogg
+        type: string
+      voice_text:
+        description: Voice command text (auto-generated if voice_file missing)
+        required: false
+        default: 'Робот, спой песенку про енотика'
       volume:
         description: Speaker volume percent
         required: false
-        default: '125'
+        default: '150'
       record_seconds:
         description: Recording duration seconds
         required: false
         default: '90'
+      llm:
+        description: LLM model id (e.g. minimax-m2, deepseek-r1)
+        required: false
+        default: 'minimax-m2'
+        type: string
+      tts:
+        description: TTS voice id (e.g. minimax-male-qn-qingse, edge-ru-female)
+        required: false
+        default: 'minimax-male-qn-qingse'
+        type: string
+      stt:
+        description: STT provider (e.g. yandex, silero-vosk)
+        required: false
+        default: 'yandex'
+        type: string
 
 jobs:
   e2e-voice:
-    runs-on: self-hosted
+    # 🔴 FIX (live 06.08): отдельный раннер с лейблом e2e — параллельный
+    # билд (5+ docker-runner контейнеров) ломал e2e и e2e ломал билды.
+    # Лейбл ТОЛЬКО e2e (без self-hosted) — чтобы раннер не участвовал в билдах.
+    runs-on: e2e
     timeout-minutes: 10
 
     steps:
-      - name: Checkout scripts
-        uses: actions/checkout@v7
-        with:
-          sparse-checkout: .github/workflows/scripts/e2e_remote.sh
-          sparse-checkout-cone-mode: false
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -53,9 +73,19 @@ jobs:
           echo "Wait 15s for silence..."
           sleep 15
 
+      - name: Ensure voice command file
+        env:
+          SSHPASS: open
+        run: |
+          chmod +x .github/workflows/scripts/ensure_voice_file.sh
+          .github/workflows/scripts/ensure_voice_file.sh "${{ inputs.voice_text }}" "${{ inputs.voice_file }}"
+
       - name: E2E voice test
         env:
           SSHPASS: open
+          VOICE_LLM: ${{ inputs.llm }}
+          VOICE_TTS: ${{ inputs.tts }}
+          VOICE_STT: ${{ inputs.stt }}
         run: |
           chmod +x .github/workflows/scripts/e2e_remote.sh
           RID="${{ github.run_id }}"
@@ -66,9 +96,10 @@ jobs:
           # Copy script to build machine
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_remote.sh ros2@10.1.1.249:/tmp/e2e_remote.sh
 
-          # Run via nohup
+          # Run via nohup — forward model env so recorder writes model.json
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "nohup /tmp/e2e_remote.sh ${REC} ${DUR} ${VOL} > /tmp/e2e_out.log 2>&1 &"
+            "VOICE_LLM='${VOICE_LLM}' VOICE_TTS='${VOICE_TTS}' VOICE_STT='${VOICE_STT}' \
+             nohup /tmp/e2e_remote.sh ${REC} ${DUR} ${VOL} > /tmp/e2e_out.log 2>&1 &"
 
           WAIT=$((DUR + 25))
           echo "Waiting ${WAIT}s..."
@@ -77,12 +108,33 @@ jobs:
           echo "=== Remote output ==="
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_out.log"
 
+      - name: Write model.json (multi-model provenance)
+        env:
+          SSHPASS: open
+        run: |
+          RID="${{ github.run_id }}"
+          cat > "model.json" <<EOF
+          {
+            "llm":  "${{ inputs.llm }}",
+            "tts":  "${{ inputs.tts }}",
+            "stt":  "${{ inputs.stt }}",
+            "ts":   "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "run_id": "${RID}"
+          }
+          EOF
+          echo "model.json written:"
+          cat model.json
+
       - name: Fetch recording
         env:
           SSHPASS: open
         run: |
-          sshpass -e scp -o StrictHostKeyChecking=no "ros2@10.1.1.249:/tmp/dialog_e2e_${{ github.run_id }}.wav" "/tmp/dialog_e2e_${{ github.run_id }}.wav"
-          ls -la "/tmp/dialog_e2e_${{ github.run_id }}.wav"
+          FILE="/tmp/dialog_e2e_${{ github.run_id }}.wav"
+          echo "Checking remote file..."
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la $FILE && echo REMOTE_OK || echo REMOTE_MISSING"
+          echo "Attempting scp..."
+          sshpass -e scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 "ros2@10.1.1.249:$FILE" "$FILE" && echo "SCP_OK" || echo "SCP_FAILED"
+          ls -la "$FILE" 2>/dev/null || echo "No local copy"
 
       - name: Collect robot logs
         env:
@@ -96,21 +148,31 @@ jobs:
           echo "Log lines: $(wc -l < "$LOG")"
 
       - name: Upload recording
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-voice-recording-${{ github.run_id }}
           path: /tmp/dialog_e2e_${{ github.run_id }}.wav
           retention-days: 7
 
       - name: Upload logs
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-voice-logs-${{ github.run_id }}
           path: /tmp/voice_e2e_${{ github.run_id }}.log
           retention-days: 7
+
+      - name: Upload model.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-voice-model-${{ github.run_id }}
+          path: model.json
+          retention-days: 30
 
       - name: Summary
         run: |
           echo "## E2E Voice Test Complete" >> $GITHUB_STEP_SUMMARY
           echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- Volume: ${{ inputs.volume }}%" >> $GITHUB_STEP_SUMMARY
+          echo "- LLM: \`${{ inputs.llm }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- TTS: \`${{ inputs.tts }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- STT: \`${{ inputs.stt }}\`" >> $GITHUB_STEP_SUMMARY

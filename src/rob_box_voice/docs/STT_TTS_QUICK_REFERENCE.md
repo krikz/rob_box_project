@@ -54,9 +54,14 @@ pip install vosk piper-tts faster-whisper
 ### 2. Скачивание моделей
 
 ```bash
-# Vosk STT (45 MB)
+# Vosk STT (45 MB) — bundled in voice_base image at
+# /models/vosk-model-small-ru-0.22 by docker/vision/voice_base/Dockerfile.
+# Manual install only needed for bare-metal / dev runs:
 wget https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
 unzip vosk-model-small-ru-0.22.zip -d /models/
+# NB: путь должен в точности совпадать с тем, что указан в
+# stt_node.model_path и voice_assistant.yaml (G-VOSK, см. ARCHITECT-REVIEW-V3)
+# — НЕ переименовывайте распакованную директорию в /models/vosk-model-ru.
 
 # Piper TTS (63 MB × 2)
 wget https://github.com/rhasspy/piper/releases/download/v1.2.0/ru_RU-dmitri-medium.onnx

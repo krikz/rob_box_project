@@ -277,6 +277,32 @@ services:
       - registry
       - apt-cacher-ng
 
+  # Runner E2E - отдельный раннер для e2e-тестов (не мешает билдам)
+  github-runner-e2e:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-e2e
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner-e2e:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local
+    environment:
+      - RUNNER_NAME=rob-box-e2e-1
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=e2e
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
   # Portainer - опциональный веб-интерфейс для управления
   # Доступ: http://<build-machine-ip>:9000
   # Отключен по умолчанию, раскомментируйте для использования

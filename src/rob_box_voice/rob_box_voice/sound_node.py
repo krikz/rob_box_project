@@ -26,7 +26,7 @@ from .audio_playback_manager import AudioPlaybackManager
 
 @contextmanager
 def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от PyAudio (как в audio_node)"""
+    """Подавить ALSA ошибки от PyAudio (как в audio_node)."""
     if enable:
         devnull = None
         try:
@@ -47,7 +47,7 @@ def ignore_stderr(enable=True):
 
 
 class SoundNode(Node):
-    """Нода для воспроизведения звуковых эффектов"""
+    """Нода для воспроизведения звуковых эффектов."""
 
     def __init__(self):
         super().__init__("sound_node")
@@ -80,11 +80,11 @@ class SoundNode(Node):
         # Опционально: триггер анимаций
         if self.trigger_animations:
             self.animation_pub = self.create_publisher(String, self.animation_topic, 10)
-            
+
         # Инициализация аудио устройства
         self.device_index = None
         self.initialize_audio_device()
-        
+
         # Менеджер воспроизведения (предотвращает ALSA конфликты)
         self.playback_manager = AudioPlaybackManager.get_instance()
 
@@ -128,7 +128,7 @@ class SoundNode(Node):
             self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
 
     def load_sounds(self):
-        """Загрузка всех звуковых файлов из sound_pack/"""
+        """Загрузка всех звуковых файлов из sound_pack/."""
         if not os.path.exists(self.sound_pack_dir):
             self.get_logger().error(f"❌ Директория sound_pack не найдена: {self.sound_pack_dir}")
             self.publish_state("error_no_dir")
@@ -142,7 +142,7 @@ class SoundNode(Node):
             try:
                 with open(catalog_path, 'r', encoding='utf-8') as f:
                     catalog = json.load(f)
-                    
+
                 # Построить trigger_map из catalog['sounds']
                 sounds = catalog.get('sounds', {})
                 for filename, info in sounds.items():
@@ -151,9 +151,9 @@ class SoundNode(Node):
                     if 'trigger' in info:
                         sound_name = filename.replace(".mp3", "")
                         self.trigger_map[info['trigger']] = sound_name
-                        
+
                 self.get_logger().info(f"✅ Загружено {len(self.trigger_map)} trigger mappings из catalog.json")
-                
+
             except Exception as e:
                 self.get_logger().error(f"❌ Ошибка чтения catalog.json: {e}")
         else:
@@ -197,7 +197,7 @@ class SoundNode(Node):
             self.publish_state("error_no_sounds")
 
     def trigger_callback(self, msg: String):
-        """Обработка триггера звукового эффекта"""
+        """Обработка триггера звукового эффекта."""
         trigger = msg.data.strip()
 
         self.get_logger().info(f"🔔 Триггер: {trigger}")
@@ -219,13 +219,13 @@ class SoundNode(Node):
         self.play_thread.start()
 
     def select_sound(self, trigger: str) -> Optional[str]:
-        """Выбрать звук по триггеру"""
+        """Выбрать звук по триггеру."""
         # 1. Проверить trigger_map (из catalog.json)
         if trigger in self.trigger_map:
             sound_name = self.trigger_map[trigger]
             if sound_name in self.sounds:
                 return sound_name
-        
+
         # 2. Прямое совпадение с filename (для обратной совместимости)
         if trigger in self.sounds:
             return trigger
@@ -244,7 +244,7 @@ class SoundNode(Node):
         return None
 
     def play_sound_thread(self, sound_name: str, trigger: str):
-        """Воспроизведение звука в отдельном потоке"""
+        """Воспроизведение звука в отдельном потоке."""
         self.is_playing = True
         self.current_sound = sound_name
         self.publish_state(f"playing_{sound_name}")
@@ -286,7 +286,7 @@ class SoundNode(Node):
                 timeout=3.0,  # Меньший timeout для звуковых эффектов
                 node_name="sound_node"
             )
-            
+
             if not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
             else:
@@ -330,7 +330,7 @@ class SoundNode(Node):
             self.get_logger().warn(f"⚠️ Noise cleanup failed: {e}")
 
     def trigger_animation(self, trigger: str):
-        """Триггер соответствующей анимации"""
+        """Триггер соответствующей анимации."""
         # Маппинг звуков на анимации (расширенный для новых звуков)
         animation_map = {
             # Legacy names
@@ -347,7 +347,7 @@ class SoundNode(Node):
             "talk_2": "talking",
             "talk_3": "talking",
             "talk_4": "talking",
-            
+
             # BASE robot emotional sounds
             "robot_thinking": "thinking",
             "robot_surprise": "surprise",
@@ -366,13 +366,13 @@ class SoundNode(Node):
             "robot_talk_2": "talking",
             "robot_talk_3": "talking",
             "robot_talk_4": "talking",
-            
+
             # Drip sounds - no specific animation
             "robot_drip_a1": None,
             "robot_drip_d4": None,
             "robot_drip_d5": None,
             "robot_drip_e4": None,
-            
+
             # UI sounds - no animations
             "ui_activate": None,
             "ui_bell": None,
@@ -386,7 +386,7 @@ class SoundNode(Node):
             "ui_radio_start": None,
             "ui_random": None,
             "ui_roger": None,
-            
+
             # Robot special effects
             "robot_glitch": "error",
             "robot_alert": "error",
@@ -409,7 +409,7 @@ class SoundNode(Node):
         }
 
         animation = animation_map.get(trigger, trigger)
-        
+
         # Skip animation trigger if explicitly set to None
         if animation is None:
             return
@@ -423,13 +423,13 @@ class SoundNode(Node):
             self.get_logger().warn(f"⚠️ Ошибка триггера анимации: {e}")
 
     def publish_state(self, state: str):
-        """Публикация состояния ноды"""
+        """Публикация состояния ноды."""
         msg = String()
         msg.data = state
         self.state_pub.publish(msg)
 
     def parameters_callback(self, params):
-        """Callback для изменения параметров во время работы"""
+        """Callback для изменения параметров во время работы."""
         from rcl_interfaces.msg import SetParametersResult
 
         for param in params:

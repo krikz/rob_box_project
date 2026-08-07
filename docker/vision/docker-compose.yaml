@@ -138,6 +138,9 @@ services:
       - ./config/audio/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
       # Shared renardo samples — supercollider должен читать WAV файлы по тому же пути что renardo
       - renardo_samples:/root/.config/renardo/samples:ro
+      # Shared synthdefs — sclang/Renardo в voice-assistant компилирует .scsyndef сюда,
+      # scsynth должен читать их по тому же пути (иначе "bassguitar.scsyndef could not be opened")
+      - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
     command: ["/scripts/start_supercollider.sh"]
     depends_on:
       voice-resources-init:
@@ -216,12 +219,37 @@ services:
       - ./data/voice:/data
       # Shared renardo samples — предварительно заполняются one-shot контейнером voice-resources-init
       - renardo_samples:/root/.config/renardo/samples
+      # Shared synthdefs — sclang/Renardo компилирует SynthDefs сюда, scsynth в контейнере
+      # supercollider читает их по тому же пути (issue 986)
+      - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
       # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
       - ../../migrations:/migrations:ro
-    mem_limit: 2g  # Voice Assistant + Animations
-    memswap_limit: 2.5g
+    mem_limit: 4g  # Voice Assistant + Animations
+    # 4 GiB because the container hosts 9 respawn-able nodes including:
+    #   - audio_node (PyAudio + ReSpeaker 6ch buffers)
+    #   - stt_node (Vosk model ~200-500 MB)
+    #   - sound_node (sclang + scsynth + FoxDot pipeline ~300-500 MB)
+    #   - tts_node (PyTorch + Silero v5 fallback model ~150-200 MB)
+    #   - dialogue_node + mcp_server + animation_player + led + command
+    # 2 GiB was hitting OOM kill (#929) when Silero v5 tried to lazy-load
+    # after Yandex gRPC fallback.  Investigated 2026-07-30 in t_42726db6:
+    # heap_snapshot_repro confirmed no leak in _synthesize_and_play itself
+    # (+3.7 MB over 50 mock iterations = noise); root cause is the
+    # combined RSS of all 9 nodes + PyTorch + Silero v5 > 2 GiB under
+    # bursty dialogue traffic.  Bumping to 4 GiB gives ~1 GiB headroom
+    # for Silero v5 load (and any one respawn transient).
+    #
+    # Gap G-933-B (PR #933 follow-up, t_5ef52557): since 2026-07-31 the
+    # tts_node warm-loads Silero at __init__ in a background daemon thread,
+    # so the model is resident for the entire container lifetime while
+    # Yandex is primary.  Net RSS effect vs old lazy-load: roughly the
+    # same peak (model is ~150-200 MB either way) but the user no longer
+    # hears the cold-load pause on first fallback.  The 4 GiB ceiling
+    # comfortably holds Yandex gRPC client (negligible) + warm Silero
+    # (~200 MB) + the other 8 nodes; no further increase needed.
+    memswap_limit: 4.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:
       zenoh-router:
@@ -236,6 +264,30 @@ services:
       interval: 15s
       timeout: 5s
       start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # Phase 4: isolated action/PASTE control plane. The current voice node can
+  # migrate incrementally; this sidecar has an independent health lifecycle.
+  voice-action-server:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
+    container_name: voice-action-server
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ACTION_SERVER_HOST=127.0.0.1
+      - ACTION_SERVER_PORT=${ACTION_SERVER_PORT:-8765}
+    command: ["/bin/bash", "-lc", "python3 -m rob_box_voice.action_server.http_server"]
+    depends_on:
+      voice-assistant:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:${ACTION_SERVER_PORT:-8765}/healthz\")'"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
       retries: 3
     labels:
       logging: "promtail"
@@ -353,3 +405,7 @@ volumes:
   # Without this, scsynth can't find WAV files by path → "Buffer UGen: no buffer data".
   # Initialized by one-shot voice-resources-init container from bundled sample image.
   renardo_samples:
+  # Shared SuperCollider synthdefs between voice-assistant (sclang/Renardo compiles .scsyndef)
+  # and supercollider (scsynth reads them). Without this, scsynth can't find SynthDefs by name
+  # → "bassguitar.scsyndef could not be opened" + negative node IDs (issue 986).
+  sc_synthdefs:

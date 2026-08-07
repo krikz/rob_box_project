@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 krikz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Audio-Reactive Animation Node
 
@@ -90,7 +104,7 @@ class AudioReactiveAnimationNode(Node):
         self.get_logger().info('Audio-Reactive Animation Node started')
 
     def audio_enable_callback(self, msg: String):
-        """Enable/disable audio-reactive animation"""
+        """Enable/disable audio-reactive animation."""
         animation_name = msg.data
 
         if animation_name == 'stop':
@@ -134,7 +148,7 @@ class AudioReactiveAnimationNode(Node):
             self.get_logger().error(f'Failed to load animation: {e}')
 
     def start_audio_monitoring(self):
-        """Start monitoring audio output"""
+        """Start monitoring audio output."""
         if not PYAUDIO_AVAILABLE or self.pyaudio is None:
             self.get_logger().error('Cannot start audio monitoring - PyAudio not available')
             return
@@ -170,7 +184,7 @@ class AudioReactiveAnimationNode(Node):
             )
 
     def stop_audio_monitoring(self):
-        """Stop monitoring audio output"""
+        """Stop monitoring audio output."""
         self.running = False
 
         if self.audio_stream is not None:
@@ -181,7 +195,7 @@ class AudioReactiveAnimationNode(Node):
             self.get_logger().info('Audio monitoring stopped')
 
     def audio_callback(self, in_data, frame_count, time_info, status):
-        """Callback for audio stream processing"""
+        """Handle for audio stream processing."""
         if not self.audio_reactive_enabled:
             return (in_data, pyaudio.paContinue)
 
@@ -214,7 +228,7 @@ class AudioReactiveAnimationNode(Node):
         return (in_data, pyaudio.paContinue)
 
     def destroy_node(self):
-        """Cleanup on node shutdown"""
+        """Cleanup on node shutdown."""
         self.stop_audio_monitoring()
 
         if self.pyaudio is not None:

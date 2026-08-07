@@ -58,44 +58,6 @@ services:
     labels:
       logging: "promtail"
 
-  # micro-ROS Agent - связь с ESP32 Sensor Hub по UART
-  # Транслирует сообщения между ROS2 (DDS/Zenoh) и micro-ROS (XRCE-DDS)
-  micro-ros-agent:
-    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:micro-ros-agent-${ROS_DISTRO:-humble}-${MICRO_ROS_AGENT_TAG:-${IMAGE_TAG}}
-    container_name: micro-ros-agent
-    network_mode: host
-    privileged: true  # Нужен для доступа к serial устройствам
-    environment:
-      - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
-      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
-      # micro-ROS специфичные переменные
-      - MICROROS_SERIAL_PORT=/dev/ttyUSB0  # ESP32 USB serial (измените на /dev/ttyAMA0 для GPIO UART)
-      - MICROROS_BAUDRATE=115200
-    volumes:
-      - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
-      - ./scripts/micro_ros_agent:/scripts:ro
-    devices:
-      - /dev/ttyUSB0:/dev/ttyUSB0  # ESP32 через USB (измените при необходимости)
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_micro_ros_agent.sh"]
-    depends_on:
-      - zenoh-router
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f micro_ros_agent || exit 1"]
-      interval: 15s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-    labels:
-      logging: "promtail"
-
   # Robot State Publisher - публикует TF дерево робота из URDF
   robot-state-publisher:
     # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
@@ -313,7 +275,8 @@ services:
       - zenoh-router
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'source /ws/install/setup.bash && ros2 node list | grep -q reflection_node'"]
+      # W11 (Phase 6 v2): reflection_node removed in W10; check the sensor bridge instead
+      test: ["CMD-SHELL", "bash -c 'source /ws/install/setup.bash && ros2 node list | grep -q perception_bridge'"]
       interval: 15s
       timeout: 5s
       start_period: 20s

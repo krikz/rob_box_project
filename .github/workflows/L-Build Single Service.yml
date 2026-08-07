@@ -29,7 +29,6 @@ on:
           - robot-state-publisher
           - rtabmap
           - twist-mux
-          - micro-ros-agent
           - ros2-control
           - nav2
           - lslidar
@@ -138,13 +137,6 @@ jobs:
                   IMAGE_NAME="twist-mux"
                   DOCKERFILE="docker/main/twist_mux/Dockerfile"
                   BUILD_CONTEXT="docker/main/twist_mux"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
-                  ;;
-                "micro-ros-agent"|"micro_ros_agent")
-                  SERVICE_NAME="micro_ros_agent"
-                  IMAGE_NAME="micro-ros-agent"
-                  DOCKERFILE="docker/main/micro_ros_agent/Dockerfile"
-                  BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
                   ;;
                 "ros2-control"|"ros2_control")
@@ -443,7 +435,6 @@ jobs:
             ceiling-camera)        VERSION_VAR="CEILING_CAMERA_TAG" ;;
             rtabmap) [ "$PI_TYPE" = "vision" ] && VERSION_VAR="RTABMAP_SYNC_TAG" || VERSION_VAR="RTABMAP_TAG" ;;
             twist_mux)             VERSION_VAR="TWIST_MUX_TAG" ;;
-            micro_ros_agent)       VERSION_VAR="MICRO_ROS_AGENT_TAG" ;;
             robot_state_publisher) VERSION_VAR="ROBOT_STATE_PUBLISHER_TAG" ;;
             ros2_control)          VERSION_VAR="ROS2_CONTROL_TAG" ;;
             lslidar)               VERSION_VAR="LSLIDAR_TAG" ;;
@@ -505,7 +496,6 @@ jobs:
           echo "  - robot-state-publisher (robot_state_publisher)"
           echo "  - rtabmap"
           echo "  - twist-mux (twist_mux)"
-          echo "  - micro-ros-agent (micro_ros_agent)"
           echo "  - ros2-control (ros2_control)"
           echo "  - nav2"
           echo "  - lslidar"

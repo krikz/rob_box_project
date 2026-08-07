@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 krikz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Animation Player Node
 
@@ -18,7 +32,7 @@ from rob_box_animations.animation_player import AnimationPlayer
 
 
 class AnimationPlayerNode(Node):
-    """ROS2 node for animation playback"""
+    """ROS2 node for animation playback."""
 
     def __init__(self):
         super().__init__('animation_player')
@@ -116,11 +130,10 @@ class AnimationPlayerNode(Node):
         autostart = self.get_parameter('autostart_animation').value
         if autostart:
             self.get_logger().info(f'Autostarting animation: {autostart}')
-            if self.player.load_animation(f'{autostart}.yaml'):
-                self.player.play()
+            self.player.play_animation(f'{autostart}.yaml')
 
     def load_animation_callback(self, msg):
-        """Load animation callback (subscription)"""
+        """Load animation callback (subscription)."""
         manifest_path = msg.data
 
         if not manifest_path.endswith('.yaml'):
@@ -134,15 +147,15 @@ class AnimationPlayerNode(Node):
             self.get_logger().error(f'Failed to load animation: {manifest_path}')
 
     def voice_animation_callback(self, msg):
-        """Handle voice animation requests from GUI or dialogue node"""
+        """Handle voice animation requests from GUI or dialogue node."""
         animation_request = msg.data.strip()
-        
+
         self.get_logger().info(f'🎨 Получен запрос на анимацию: {animation_request}')
-        
+
         # Парсим формат: "animation_name" или "animation_name:duration"
         animation_name = animation_request
         duration = None
-        
+
         if ':' in animation_request:
             parts = animation_request.split(':', 1)
             animation_name = parts[0].strip()
@@ -151,23 +164,25 @@ class AnimationPlayerNode(Node):
                 self.get_logger().info(f'📏 Указана длительность: {duration}s')
             except ValueError:
                 self.get_logger().warn(f'⚠️  Некорректный формат длительности: {parts[1]}, игнорирую')
-        
+
         if not animation_name.endswith('.yaml'):
             animation_name += '.yaml'
-        
+
         # Отменяем предыдущий таймер если есть
         if self.emotion_timer is not None:
             self.emotion_timer.cancel()
             self.emotion_timer = None
-        
+
         # Устанавливаем флаг ручной анимации
         self.manual_animation_active = True
-        
-        # Load and play the animation
-        if self.player.load_animation(animation_name):
-            self.player.play()
+
+        # Atomic load+cancel+play: replaces any currently playing animation
+        # cleanly. Previously this was load_animation() + play(), which
+        # produced 'Animation already playing' WARNs and visual overlap
+        # when the previous thread was still alive.
+        if self.player.play_animation(animation_name):
             self.get_logger().info(f'✅ Анимация {animation_name} загружена и запущена (ручной режим)')
-            
+
             # Используем указанную длительность или случайную (5-10 секунд)
             if duration is not None and duration > 0:
                 timeout = duration
@@ -175,37 +190,36 @@ class AnimationPlayerNode(Node):
             else:
                 timeout = random.uniform(5.0, 10.0)
                 self.get_logger().info(f'⏱️  Таймер возврата к idle (случайный): {timeout:.1f}s')
-            
+
             self.emotion_timer = self.create_timer(timeout, self._return_to_idle)
         else:
             self.get_logger().error(f'❌ Не удалось загрузить анимацию: {animation_name}')
             self.manual_animation_active = False
-    
+
     def _return_to_idle(self):
-        """Callback для возврата к idle анимации после эмоциональной анимации"""
+        """Callback для возврата к idle анимации после эмоциональной анимации."""
         if self.emotion_timer is not None:
             self.emotion_timer.cancel()
             self.emotion_timer = None
-        
+
         self.manual_animation_active = False
-        
+
         # Если робот не говорит - возвращаемся к idle
         if not self.is_robot_speaking:
             self.get_logger().info('⏰ Таймер истёк - возврат к idle анимации')
-            if self.player.load_animation(f'{self.idle_animation}.yaml'):
-                self.player.play()
-            else:
+            # play_animation() is atomic (cancel + load + play), so we
+            # cleanly replace any still-playing emotion animation rather
+            # than racing against it.
+            if not self.player.play_animation(f'{self.idle_animation}.yaml'):
                 self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
         else:
             # Если робот говорит - переключаемся на talking
             self.get_logger().info('⏰ Таймер истёк - переключение на talking (робот говорит)')
-            if self.player.load_animation(f'{self.talking_animation}.yaml'):
-                self.player.play()
-            else:
+            if not self.player.play_animation(f'{self.talking_animation}.yaml'):
                 self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
     def tts_state_callback(self, msg):
-        """Handle TTS state changes - switch between idle and talking animations"""
+        """Handle TTS state changes - switch between idle and talking animations."""
         state = msg.data
 
         # Если активна ручная анимация - не переключаем автоматически
@@ -222,9 +236,7 @@ class AnimationPlayerNode(Node):
             if not self.is_robot_speaking:
                 self.get_logger().info('🗣️ Робот говорит - переключаюсь на talking анимацию')
                 self.is_robot_speaking = True
-                if self.player.load_animation(f'{self.talking_animation}.yaml'):
-                    self.player.play()
-                else:
+                if not self.player.play_animation(f'{self.talking_animation}.yaml'):
                     self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
         elif state in ['ready', 'idle', 'stopped']:
@@ -232,13 +244,11 @@ class AnimationPlayerNode(Node):
             if self.is_robot_speaking:
                 self.get_logger().info('🤐 Робот замолчал - возвращаюсь на idle анимацию')
                 self.is_robot_speaking = False
-                if self.player.load_animation(f'{self.idle_animation}.yaml'):
-                    self.player.play()
-                else:
+                if not self.player.play_animation(f'{self.idle_animation}.yaml'):
                     self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
 
     def play_callback(self, request, response):
-        """Play animation service callback"""
+        """Play animation service callback."""
         success = self.player.play()
 
         response.success = success
@@ -250,7 +260,7 @@ class AnimationPlayerNode(Node):
         return response
 
     def stop_callback(self, request, response):
-        """Stop animation service callback"""
+        """Stop animation service callback."""
         self.player.stop()
 
         response.success = True
@@ -259,7 +269,7 @@ class AnimationPlayerNode(Node):
         return response
 
     def pause_callback(self, request, response):
-        """Pause/resume animation service callback"""
+        """Pause/resume animation service callback."""
         if request.data:
             self.player.pause()
             response.success = True
@@ -272,7 +282,7 @@ class AnimationPlayerNode(Node):
         return response
 
     def list_animations_callback(self, request, response):
-        """List animations service callback"""
+        """List animations service callback."""
         animations = self.player.list_animations()
 
         response.success = True
@@ -281,7 +291,7 @@ class AnimationPlayerNode(Node):
         return response
 
     def publish_status(self):
-        """Publish current status"""
+        """Publish current status."""
         status = self.player.get_status()
 
         msg = String()

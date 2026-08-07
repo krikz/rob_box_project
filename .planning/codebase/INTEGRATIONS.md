@@ -114,7 +114,7 @@
     - `rob_box_base:pcl-humble-{tag}`
   - Service images: `ghcr.io/krikz/rob_box:{service}-humble-{tag}`
     - Vision Pi: `oak-d`, `led-matrix`, `ceiling-camera`, `supercollider`, `voice-assistant`, `voice-resources`, `telegram-bot`
-    - Main Pi: `twist-mux`, `micro-ros-agent`, `robot-state-publisher`, `rtabmap`, `ros2-control`, `lslidar`, `perception`, `nav2`, `teleop`
+    - Main Pi: `twist-mux`, `robot-state-publisher`, `rtabmap`, `ros2-control`, `lslidar`, `perception`, `nav2`, `teleop`
 
 **CI Pipeline:**
 - GitHub Actions (`.github/workflows/`)
@@ -166,12 +166,6 @@
 - Driver: `src/vesc_nexus/` — ros2_control `hardware_interface` plugin
 - Container: `ros2-control` on Main Pi
 - Systemd service: `host/main/can-setup.service`
-
-**ESP32 Sensor Hub (micro-ROS):**
-- Protocol: UART 115200 baud
-- Device: `/dev/ttyUSB0` (USB CDC)
-- Bridge: `micro-ros-agent` container (micro-ROS XRCE-DDS ↔ ROS 2 Zenoh)
-- Container: `micro-ros-agent` on Main Pi
 
 **LSLIDAR N10 (2D LiDAR):**
 - Protocol: USB CDC ACM serial

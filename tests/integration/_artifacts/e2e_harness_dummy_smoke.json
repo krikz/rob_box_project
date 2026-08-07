@@ -1,0 +1,6 @@
+{
+  "scenario": "e2e_harness_dummy_smoke",
+  "llm_type": "DummyLLMProvider",
+  "output": "echo: sanity",
+  "status": "PASS"
+}

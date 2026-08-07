@@ -168,12 +168,42 @@
 
 ### [MAPPING_PRACTICES_RESEARCH.md](MAPPING_PRACTICES_RESEARCH.md)
 **Исследование практик маппинга** 🆕 (октябрь 2025)
-
 - Лучшие практики для RTAB-Map SLAM
 - Рекомендации по настройке параметров
 - Техники улучшения качества карты
 - Процедуры картографии
 - Tips and tricks
+
+### [MINIMAX.md](MINIMAX.md)
+**MiniMax LLM-провайдер (text + vision)** 🆕 (июль 2026, PR #907)
+- Подключение `MiniMaxProvider` в `rob_box_llm` registry
+- Получение API ключа, ENV-переменные, factory YAML-конфиг
+- Capabilities: `text` / `streaming_text` / `tools` / `image_input`,
+  ограничение `streaming_tools=False` (fail-fast gate)
+- Мультимодальный `LLMMessage.content`: `TextPart` + `ImagePart`
+- Image input: лимиты, `MINIMAX_MAX_IMAGE_BYTES = 10 MB`,
+  перечень vision-capable моделей
+- Thinking policy (latency-sensitive default) и tool calling
+- Troubleshooting: `AuthError` / `RateLimitError` /
+  `ContentFilterError` / `CapabilityUnavailableError`
+
+### [MINIMAX_TTS.md](MINIMAX_TTS.md)
+**MiniMax TTS (text → speech через `/v1/t2a_v2`)** (июль 2026, PR #907 / ADR-0007)
+- Подключение `MiniMaxTTSProvider` к `tts_node` (opt-in, поверх Yandex/Silero)
+- Получение API key + Group ID, ENV-переменные, ROS-параметры
+- Голоса, языки, форматы (pcm/wav/mp3/ogg), sample rates
+- Синхронный и стриминговый вызовы, обработка ошибок
+- Troubleshooting для типовых TTS-сценариев
+
+### [examples/](examples/)
+Копируемые YAML-шаблоны конфигов:
+- `minimax_tts.yaml` — ROS-конфиг для `tts_node` с провайдером MiniMax
+- `minimax_llm.yaml` — factory-конфиг для `rob_box_llm` registry
+  (`llm.providers: [minimax, mimo, deepseek]`)
+
+Исполняемый Python-пример находится в
+[`examples/tts_minimax_example.py`](../../examples/tts_minimax_example.py):
+registry/factory → MiniMax TTS → валидный WAV.
 
 ## 🎨 Дополнительные возможности
 

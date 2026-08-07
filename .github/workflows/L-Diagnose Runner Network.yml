@@ -1,0 +1,90 @@
+name: L-Diagnose Runner Network
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_connect:
+        description: "Попробовать подключить раннер к ROS2 wifi"
+        required: false
+        default: "true"
+  push:
+    branches:
+      - "feature/*"
+
+jobs:
+  diagnose:
+    runs-on: self-hosted
+    steps:
+      - name: "Сетевая диагностика"
+        shell: bash
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 RUNNER NETWORK DIAGNOSTIC"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "HOSTNAME: $(hostname)"
+          echo ""
+          echo "--- ip addr ---"
+          ip -4 addr show 2>/dev/null | grep -E 'inet |^[0-9]+:' || echo "(нет прав/ip)"
+          echo ""
+          echo "--- ip route ---"
+          ip route 2>/dev/null || echo "(нет прав)"
+          echo ""
+          echo "--- активный wifi ---"
+          nmcli -t -f ACTIVE,SSID,SIGNAL device wifi 2>/dev/null | grep '^yes' || echo "(nmcli недоступен)"
+
+      - name: "Список wifi сетей"
+        shell: bash
+        run: |
+          echo "--- wifi list (nmcli) ---"
+          nmcli -f SSID,SIGNAL device wifi list --rescan yes 2>/dev/null | head -15 || echo "(nmcli недоступен)"
+          echo ""
+          echo "--- сохранённые коннекшены ---"
+          nmcli -f NAME,TYPE connection show 2>/dev/null | grep -iE 'wifi|ros2|krikz' | head -10 || echo "(nmcli недоступен)"
+
+      - name: "Пинг ROS2-сети (до подключения)"
+        shell: bash
+        run: |
+          for ip in 10.1.1.1 10.1.1.21 10.1.1.10 10.1.1.11; do
+            if ping -c 1 -W 2 $ip >/dev/null 2>&1; then
+              echo "✅ $ip ALIVE"
+            else
+              echo "❌ $ip dead"
+            fi
+          done
+
+      - name: "Попытка подключения к ROS2 wifi"
+        if: ${{ inputs.auto_connect == 'true' }}
+        shell: bash
+        run: |
+          echo "--- пробую ROS2 / ROS2HIVE коннекшены ---"
+          for CONN in ROS2 ROS2HIVE; do
+            echo ">>> nmcli connection up $CONN"
+            OUT=$(nmcli connection up "$CONN" 2>&1)
+            RC=$?
+            echo "$OUT" | tail -2
+            echo "RC=$RC"
+            if [ $RC -eq 0 ]; then
+              echo "✅ Подключился к $CONN"
+              break
+            fi
+          done
+
+      - name: "Пинг ROS2-сети (после подключения)"
+        if: ${{ inputs.auto_connect == 'true' }}
+        shell: bash
+        run: |
+          sleep 5
+          echo "--- ip после ---"
+          ip -4 addr show 2>/dev/null | grep 'inet ' | head -5
+          echo "--- пинг ---"
+          for ip in 10.1.1.1 10.1.1.21 10.1.1.249; do
+            if ping -c 1 -W 2 $ip >/dev/null 2>&1; then
+              echo "✅ $ip ALIVE"
+            else
+              echo "❌ $ip dead"
+            fi
+          done
+          echo ""
+          echo "📋 РЕЗЮМЕ:"
+          nmcli -t -f ACTIVE,SSID,SIGNAL device wifi 2>/dev/null | grep '^yes' || echo "wifi not connected"
+          ip route | head -3

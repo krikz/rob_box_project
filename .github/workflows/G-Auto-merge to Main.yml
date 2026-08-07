@@ -54,7 +54,7 @@ jobs:
 
           ### Built Services:
           - ✓ Vision Pi services (oak-d with AprilTag, lslidar, led-matrix, voice-assistant)
-          - ✓ Main Pi services (micro-ros-agent, zenoh-router)
+          - ✓ Main Pi services (zenoh-router)
           - ✓ Base images (ros2-zenoh)
 
           ### Docker Images:

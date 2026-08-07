@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-handlers/messages.py — Handlers for text messages (LLM chat) and voice messages.
+handlers/messages.py — Handlers for text messages and voice messages.
 
-Text messages without "/" are routed to the LLM chat.
-Voice messages are transcribed and then processed as text or spoken by the robot.
+After Phase 6 v2 / W7 this module is a *thin transport*: every text and
+voice message is forwarded to ``/voice/stt/result`` so the unified
+DialogCore/harness pipeline (in ``dialogue_node``) can decide what to
+do with it. There is no LLM call here.
 
 Features:
 - 👀 reaction on message receive (processing indicator)
-- Message debouncing: split messages are merged before LLM processing
+- Message debouncing: split messages are merged before forwarding
 """
 
 import asyncio
@@ -39,15 +41,17 @@ async def _react_eyes(update: Update) -> None:
         logger.debug("set_reaction(👀) not available or failed: %s", e)
 
 
-# ─── Text messages → LLM Chat ───────────────────────────────────────────────
+# ─── Text messages → forward to /voice/stt/result ─────────────────────────
 
 
 @authorized
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle plain text messages — route to LLM chat with tool support.
+    """Handle plain text messages — forward to the unified dialogue pipeline.
 
     Implements message debouncing: if user sends multiple messages quickly
-    (e.g. Telegram splits a long message), they are merged into one request.
+    (e.g. Telegram splits a long message), they are merged before
+    forwarding. The dialogue_node (downstream) decides what to do with
+    the text — chat with LLM, run a tool, or ignore.
     """
     chat_id = update.effective_chat.id
     user_text = update.message.text.strip()
@@ -63,16 +67,15 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if buf is not None:
         # Already buffering — append text and reset timer
         buf["texts"].append(user_text)
-        buf["last_update"] = update  # keep most recent update for reply
         # Cancel previous scheduled task
         if buf.get("task") and not buf["task"].done():
             buf["task"].cancel()
-        # Schedule processing after delay
+        # Schedule forward after delay
         loop = asyncio.get_event_loop()
         buf["task"] = loop.call_later(
             _DEBOUNCE_DELAY,
             lambda: asyncio.ensure_future(
-                _process_buffered(chat_id, context)
+                _flush_buffer(chat_id, context)
             ),
         )
         logger.debug("Buffered message part %d for chat %d", len(buf["texts"]), chat_id)
@@ -81,65 +84,49 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # First message — start buffering
     context.user_data["msg_buffer"] = {
         "texts": [user_text],
-        "last_update": update,
         "task": None,
     }
     loop = asyncio.get_event_loop()
     context.user_data["msg_buffer"]["task"] = loop.call_later(
         _DEBOUNCE_DELAY,
         lambda: asyncio.ensure_future(
-            _process_buffered(chat_id, context)
+            _flush_buffer(chat_id, context)
         ),
     )
     logger.debug("Started message buffer for chat %d", chat_id)
 
 
-async def _process_buffered(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Process buffered messages after debounce delay."""
+async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Forward buffered messages to the dialogue pipeline after debounce."""
     buf = context.user_data.pop("msg_buffer", None)
     if not buf or not buf["texts"]:
         return
 
     node = _node(context)
-    update = buf["last_update"]
     combined_text = "\n".join(buf["texts"])
 
     if len(buf["texts"]) > 1:
         logger.info("Merged %d message parts for chat %d", len(buf["texts"]), chat_id)
 
-    # Show typing indicator
-    try:
-        await update.message.chat.send_action("typing")
-    except (TimedOut, NetworkError) as e:
-        logger.warning("send_action typing failed (ignored): %s", e)
-
-    # Execute LLM chat with MCP tool support
-    async def tool_executor(tool_name: str, args: dict) -> str:
-        return await node.mcp_bridge.execute_simple(tool_name, args)
-
-    response = await node.llm_chat.chat_with_tools(chat_id, combined_text, tool_executor)
-
-    # Send response (split if too long for Telegram's 4096 char limit)
-    if len(response) <= 4096:
-        await update.message.reply_text(response)
-    else:
-        for i in range(0, len(response), 4096):
-            await update.message.reply_text(response[i : i + 4096])
+    # Forward to the unified dialogue pipeline. We keep the chat_id as a
+    # debug suffix so downstream can correlate messages even though the
+    # current /voice/stt/result channel is plain text. dialogue_node will
+    # strip anything after the marker before wake-word matching.
+    node.forward_to_stt(combined_text)
 
 
-# ─── Voice messages ──────────────────────────────────────────────────────────
+# ─── Voice messages ──────────────────────────────────────────────────────
 
 
 @authorized
 async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle voice messages — transcribe and process.
+    """Handle voice messages — transcribe and forward.
 
     Two modes:
-    1. Normal: transcribe → LLM chat (same as text)
+    1. Normal: transcribe → forward to /voice/stt/result (same as text)
     2. Playvoice: transcribe → robot speaks the text (TTS)
     """
     node = _node(context)
-    chat_id = update.effective_chat.id
     voice = update.message.voice
 
     if not voice:
@@ -185,15 +172,6 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown",
         )
     else:
-        # Mode A: Route to LLM chat
+        # Mode A: Forward to the unified dialogue pipeline.
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
-        try:
-            await update.message.chat.send_action("typing")
-        except (TimedOut, NetworkError) as e:
-            logger.warning("send_action typing failed (ignored): %s", e)
-
-        async def tool_executor(tool_name: str, args: dict) -> str:
-            return await node.mcp_bridge.execute_simple(tool_name, args)
-
-        response = await node.llm_chat.chat_with_tools(chat_id, text, tool_executor)
-        await update.message.reply_text(f"💬 {response}")
+        node.forward_to_stt(text)

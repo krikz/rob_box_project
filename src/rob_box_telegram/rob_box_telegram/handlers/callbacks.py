@@ -2,7 +2,11 @@
 """
 handlers/callbacks.py — Inline keyboard callback handlers (movement, quick actions, volume).
 
-Processes callback_data from inline buttons defined in keyboard_layouts.py.
+After Phase 6 v2 / W7 the Telegram node is a thin transport: every
+callback intent that needs to invoke a tool (status / pose / waypoints /
+stop / volume) is forwarded as plain text to ``/voice/stt/result`` so
+the unified dialogue pipeline can run it. Movement and camera callback
+actions stay here because they talk directly to ROS topics.
 """
 
 import asyncio
@@ -85,7 +89,12 @@ def _publish_stop(node) -> None:
 
 
 async def _handle_quick(query, context, action: str) -> None:
-    """Handle quick action buttons (photo, status, etc.)."""
+    """Handle quick action buttons (photo, status, etc.).
+
+    Photo / map actions read straight from the cached frames (no tool
+    bridge). Status / pose / waypoints / stop_nav forward an intent to
+    the unified dialogue pipeline.
+    """
     node = _node(context)
     import io
 
@@ -135,31 +144,29 @@ async def _handle_quick(query, context, action: str) -> None:
             await query.message.reply_text("⚠️ Карта ещё не построена")
 
     elif action == "status":
-        await query.message.reply_text("⏳ Запрашиваю статус...")
-        result = await node.mcp_bridge.execute_simple("get_robot_status")
-        await query.message.reply_text(f"📊 {result}")
+        node.forward_to_stt("/status")
+        await query.message.reply_text("📤 Запрос статуса отправлен...")
 
     elif action == "pose":
-        result = await node.mcp_bridge.execute_simple("get_current_pose")
-        await query.message.reply_text(f"📍 {result}")
+        node.forward_to_stt("/pose")
+        await query.message.reply_text("📤 Запрос позиции отправлен...")
 
     elif action == "waypoints":
-        result = await node.mcp_bridge.execute_simple("list_waypoints")
-        await query.message.reply_text(f"📍 Вейпоинты:\n{result}")
+        node.forward_to_stt("/waypoints")
+        await query.message.reply_text("📤 Запрос списка вейпоинтов отправлен...")
 
     elif action == "control":
         await query.message.reply_text("🎮 Пульт управления:", reply_markup=MOVEMENT_KEYBOARD)
 
     elif action == "stop_nav":
-        result = await node.mcp_bridge.execute_simple("stop_navigation")
-        await query.message.reply_text(f"⏹ {result}")
+        node.forward_to_stt("/stop")
+        await query.message.reply_text("⏹ Команда остановки отправлена...")
 
 
 async def _handle_volume(query, context, direction: str) -> None:
-    """Handle volume up/down buttons."""
+    """Handle volume up/down buttons — forward the intent to the dialogue pipeline."""
     node = _node(context)
 
-    # Get current volume, adjust by 10
     delta = 10 if direction == "up" else -10
-    result = await node.mcp_bridge.execute_simple("set_volume", {"volume_delta": delta})
-    await query.message.reply_text(f"🔊 {result}")
+    node.forward_to_stt(f"/volume {direction}")
+    await query.message.reply_text(f"🔊 Volume {direction} (Δ={delta:+d}) — forwarded")

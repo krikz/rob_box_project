@@ -12,6 +12,9 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Long-running action protocol and optional HTTP/PASTE adapter.
+        (os.path.join('share', package_name, 'action_server'),
+            glob('rob_box_voice/action_server/*.py')),
         # Launch files
         (os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')),
@@ -28,7 +31,11 @@ setup(
         (os.path.join('share', package_name, 'srv'),
             glob('srv/*.srv')),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        'rob_box_core>=0.1.0',
+        'rob_box_harness>=0.1.0',
+    ],
     zip_safe=True,
     maintainer='krikz',
     maintainer_email='kukoreken@rob-box.local',

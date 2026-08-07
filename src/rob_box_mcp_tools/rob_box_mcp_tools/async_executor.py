@@ -21,60 +21,60 @@ from .base import ToolExecutionType
 
 @dataclass
 class InterruptibleTask:
-    """Прерываемая задача для LONG операций"""
-    
+    """Прерываемая задача для LONG операций."""
+
     task: asyncio.Task
     interrupt_event: asyncio.Event
     tool_name: str
     request_id: str
     parameters: Dict[str, Any]
     created_at: float
-    
+
     async def cancel(self) -> bool:
         """
         Прервать выполнение задачи
-        
+
         Returns:
             True если задача была успешно отменена
         """
         if not self.task.done():
             self.interrupt_event.set()  # Сигнал для проверки внутри задачи
             self.task.cancel()
-            
+
             try:
                 await self.task
             except asyncio.CancelledError:
                 return True
-            
+
         return False
 
 
 class ToolCallAccumulator:
     """
     Накопитель tool_calls из streaming chunks
-    
+
     LLM API возвращает tool_calls по частям в streaming режиме:
     - chunk 1: {tool_calls: [{index: 0, id: "call_123", type: "function", function: {name: "play_animation"}}]}
     - chunk 2: {tool_calls: [{index: 0, function: {arguments: '{"ani'}}]}
     - chunk 3: {tool_calls: [{index: 0, function: {arguments: 'mation": '}}]}
     - chunk 4: {tool_calls: [{index: 0, function: {arguments: '"happy"}'}}]}
-    
+
     Accumulator собирает всё в единую структуру
     """
-    
+
     def __init__(self):
         self.tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
-        
+
     def add_chunk(self, delta_tool_calls: List[Any]) -> None:
         """
         Добавить chunk tool_calls из streaming response
-        
+
         Args:
             delta_tool_calls: Список tool_call delta objects из OpenAI API
         """
         for tc in delta_tool_calls:
             index = tc.index
-            
+
             if index not in self.tool_calls_buffer:
                 # Инициализация новой tool_call
                 self.tool_calls_buffer[index] = {
@@ -85,35 +85,35 @@ class ToolCallAccumulator:
                         "arguments": ""
                     }
                 }
-            
+
             # Обновление существующей tool_call
             if hasattr(tc, "id") and tc.id:
                 self.tool_calls_buffer[index]["id"] = tc.id
-                
+
             if hasattr(tc, "function") and tc.function:
                 func = tc.function
                 if hasattr(func, "name") and func.name:
                     self.tool_calls_buffer[index]["function"]["name"] = func.name
                 if hasattr(func, "arguments") and func.arguments:
                     self.tool_calls_buffer[index]["function"]["arguments"] += func.arguments
-    
+
     def get_complete_tool_calls(self) -> List[Dict[str, Any]]:
         """
         Получить полный список собранных tool_calls
-        
+
         Returns:
             Список tool_calls в формате {id, type, function: {name, arguments}}
         """
         # Сортируем по index
         sorted_calls = [self.tool_calls_buffer[idx] for idx in sorted(self.tool_calls_buffer.keys())]
-        
+
         # Парсим arguments из JSON string
         result = []
         for call in sorted_calls:
             try:
                 arguments_str = call["function"]["arguments"]
                 parsed_args = json.loads(arguments_str) if arguments_str else {}
-                
+
                 result.append({
                     "id": call["id"],
                     "type": call["type"],
@@ -125,18 +125,18 @@ class ToolCallAccumulator:
             except json.JSONDecodeError:
                 # Если не смогли распарсить - оставляем как есть
                 result.append(call)
-        
+
         return result
-    
+
     def clear(self) -> None:
-        """Очистить буфер"""
+        """Очистить буфер."""
         self.tool_calls_buffer.clear()
 
 
 class AsyncToolExecutor:
     """
     Асинхронный executor для MCP инструментов
-    
+
     Обеспечивает:
     - Параллельное выполнение независимых tool_calls
     - Fire-and-forget для INSTANT операций
@@ -144,7 +144,7 @@ class AsyncToolExecutor:
     - Правильные timeouts для каждого типа
     - Sequence ID для отмены устаревших tool_calls при прерываниях
     """
-    
+
     def __init__(self, execute_pub, result_callback: Callable, logger):
         """
         Args:
@@ -155,17 +155,17 @@ class AsyncToolExecutor:
         self.execute_pub = execute_pub
         self.result_callback = result_callback
         self.logger = logger
-        
+
         # Sequence ID для отслеживания актуальности tool_calls
         self._current_sequence_id: int = 0
         self._sequence_lock = asyncio.Lock()
-        
+
         # Реестр активных LONG задач
         self.long_tasks: Dict[str, InterruptibleTask] = {}
-        
+
         # Кэш результатов: request_id -> result
         self.results_cache: Dict[str, Dict[str, Any]] = {}
-        
+
         # Timeouts по типам (seconds)
         self.timeouts = {
             ToolExecutionType.INSTANT: 0.1,   # Fire-and-forget, не ждём
@@ -173,14 +173,14 @@ class AsyncToolExecutor:
             ToolExecutionType.MEDIUM: 10.0,    # Запросы данных
             ToolExecutionType.LONG: 300.0,     # Навигация, mapping (5 минут)
         }
-    
+
     async def new_sequence(self) -> int:
         """
         Создать новую sequence для нового пользовательского запроса
-        
+
         При новом запросе пользователя increment sequence_id, тем самым
         помечая все предыдущие tool_calls как устаревшие.
-        
+
         Returns:
             Новый sequence ID
         """
@@ -188,41 +188,41 @@ class AsyncToolExecutor:
             self._current_sequence_id += 1
             self.logger.info(f"🔄 Новая sequence #{self._current_sequence_id}")
             return self._current_sequence_id
-    
+
     def get_current_sequence_id(self) -> int:
-        """Получить текущий sequence ID"""
+        """Получить текущий sequence ID."""
         return self._current_sequence_id
-    
+
     def is_sequence_valid(self, sequence_id: int) -> bool:
         """
         Проверить актуальность sequence ID
-        
+
         Args:
             sequence_id: ID для проверки
-        
+
         Returns:
             True если sequence актуальна (совпадает с текущей)
         """
         return sequence_id == self._current_sequence_id
-    
+
     def on_result_received(self, request_id: str, result: Dict[str, Any]) -> None:
         """
         Callback когда получен результат от MCP сервера
-        
+
         Args:
             request_id: ID запроса
             result: Результат выполнения
         """
         self.results_cache[request_id] = result
-        
+
         # Удаляем из long_tasks если там был
         if request_id in self.long_tasks:
             del self.long_tasks[request_id]
-        
+
         # Вызываем внешний callback
         if self.result_callback:
             self.result_callback(request_id, result)
-    
+
     async def execute_tool_async(
         self,
         tool_name: str,
@@ -233,20 +233,20 @@ class AsyncToolExecutor:
     ) -> Dict[str, Any]:
         """
         Асинхронное выполнение одного инструмента
-        
+
         Args:
             tool_name: Имя инструмента
             parameters: Параметры
             execution_type: Тип выполнения
             request_id: ID запроса (опционально)
             sequence_id: Sequence ID для проверки актуальности (опционально)
-        
+
         Returns:
             Результат выполнения
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
-        
+
         # Проверка актуальности sequence
         if sequence_id is not None and not self.is_sequence_valid(sequence_id):
             self.logger.warning(
@@ -259,22 +259,22 @@ class AsyncToolExecutor:
                 "cancelled": True,
                 "sequence_id": sequence_id
             }
-        
+
         # Формируем запрос
         request = {
             "tool_name": tool_name,
             "parameters": parameters,
             "request_id": request_id
         }
-        
+
         # Публикуем запрос в ROS
         from std_msgs.msg import String
         msg = String()
         msg.data = json.dumps(request, ensure_ascii=False)
         self.execute_pub.publish(msg)
-        
+
         self.logger.info(f"📤 Отправлен {execution_type.value} запрос {request_id[:8]}: {tool_name}")
-        
+
         # Логика в зависимости от типа
         if execution_type == ToolExecutionType.INSTANT:
             # Fire-and-forget: не ждём результата
@@ -284,11 +284,11 @@ class AsyncToolExecutor:
                 "message": f"{tool_name} запущен (fire-and-forget)",
                 "request_id": request_id
             }
-        
+
         elif execution_type in [ToolExecutionType.FAST, ToolExecutionType.MEDIUM]:
             # Await с timeout
             timeout = self.timeouts[execution_type]
-            
+
             try:
                 result = await self._wait_for_result(request_id, timeout)
                 return result
@@ -299,16 +299,16 @@ class AsyncToolExecutor:
                     "error": f"Timeout {timeout}s",
                     "request_id": request_id
                 }
-        
+
         elif execution_type == ToolExecutionType.LONG:
             # Background task с возможностью прерывания
             interrupt_event = asyncio.Event()
-            
+
             # Создаём задачу с interrupt check
             task = asyncio.create_task(
                 self._execute_long_with_interrupt(request_id, interrupt_event, self.timeouts[execution_type])
             )
-            
+
             # Регистрируем в long_tasks
             import time
             interruptible_task = InterruptibleTask(
@@ -320,7 +320,7 @@ class AsyncToolExecutor:
                 created_at=time.time()
             )
             self.long_tasks[request_id] = interruptible_task
-            
+
             # Не ждём завершения - возвращаем сразу
             return {
                 "success": True,
@@ -328,35 +328,35 @@ class AsyncToolExecutor:
                 "request_id": request_id,
                 "background": True
             }
-        
+
         else:
             # Unknown type
             self.logger.warning(f"⚠️ Неизвестный execution_type: {execution_type}")
             return await self._wait_for_result(request_id, 5.0)
-    
+
     async def _wait_for_result(self, request_id: str, timeout: float) -> Dict[str, Any]:
         """
         Ожидание результата с timeout
-        
+
         Args:
             request_id: ID запроса
             timeout: Timeout в секундах
-        
+
         Returns:
             Результат выполнения
         """
         start_time = asyncio.get_event_loop().time()
-        
+
         while request_id not in self.results_cache:
             if asyncio.get_event_loop().time() - start_time > timeout:
                 raise asyncio.TimeoutError()
-            
+
             await asyncio.sleep(0.05)  # Poll interval
-        
+
         # Получаем результат из кэша
         result_data = self.results_cache.pop(request_id)
         return result_data.get("result", {"success": False, "error": "Пустой результат"})
-    
+
     async def _execute_long_with_interrupt(
         self,
         request_id: str,
@@ -365,12 +365,12 @@ class AsyncToolExecutor:
     ) -> Dict[str, Any]:
         """
         Выполнение LONG задачи с проверкой прерывания
-        
+
         Args:
             request_id: ID запроса
             interrupt_event: Event для прерывания
             timeout: Timeout
-        
+
         Returns:
             Результат выполнения
         """
@@ -378,16 +378,16 @@ class AsyncToolExecutor:
             # Ждём результата или прерывания
             result_task = asyncio.create_task(self._wait_for_result(request_id, timeout))
             interrupt_task = asyncio.create_task(interrupt_event.wait())
-            
+
             done, pending = await asyncio.wait(
                 [result_task, interrupt_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
-            
+
             # Отменяем pending задачи
             for task in pending:
                 task.cancel()
-            
+
             # Проверяем что завершилось
             if interrupt_task in done:
                 # Прерывание
@@ -400,7 +400,7 @@ class AsyncToolExecutor:
             else:
                 # Результат получен
                 return result_task.result()
-                
+
         except asyncio.CancelledError:
             self.logger.warning(f"🛑 LONG задача {request_id[:8]} отменена")
             return {
@@ -408,7 +408,7 @@ class AsyncToolExecutor:
                 "error": "Операция отменена",
                 "cancelled": True
             }
-    
+
     async def execute_tools_parallel(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -417,24 +417,24 @@ class AsyncToolExecutor:
     ) -> List[Dict[str, Any]]:
         """
         Параллельное выполнение множества tool_calls
-        
+
         Группирует инструменты по execution_type и выполняет оптимально:
         - INSTANT: Fire-and-forget параллельно
         - FAST: Await параллельно через gather()
         - MEDIUM: Await параллельно через gather()
         - LONG: Запуск в фоне без ожидания
-        
+
         Args:
             tool_calls: Список tool_calls в формате {id, function: {name, arguments}}
             tool_registry: Опциональный реестр инструментов для определения execution_type
             sequence_id: Sequence ID для проверки актуальности
-        
+
         Returns:
             Список результатов выполнения
         """
         if not tool_calls:
             return []
-        
+
         # Проверка актуальности sequence перед началом выполнения
         if sequence_id is not None and not self.is_sequence_valid(sequence_id):
             self.logger.warning(
@@ -446,23 +446,23 @@ class AsyncToolExecutor:
                 "error": "Tool calls cancelled - outdated sequence",
                 "cancelled": True
             } for _ in tool_calls]
-        
+
         self.logger.info(
             f"🔧 Параллельное выполнение {len(tool_calls)} инструментов "
             f"(sequence #{sequence_id if sequence_id else 'N/A'})"
         )
-        
+
         # Группировка по execution_type
         instant_tasks = []
         fast_tasks = []
         medium_tasks = []
         long_tasks = []
-        
+
         for tool_call in tool_calls:
             tool_name = tool_call["function"]["name"]
             parameters = tool_call["function"]["arguments"]
             tool_call_id = tool_call.get("id", str(uuid.uuid4()))
-            
+
             # Определяем execution_type
             # TODO: Получать из tool_registry когда будет доступен
             # Пока используем эвристику по имени
@@ -474,7 +474,7 @@ class AsyncToolExecutor:
                 execution_type = ToolExecutionType.LONG
             else:
                 execution_type = ToolExecutionType.MEDIUM
-            
+
             task_info = {
                 "tool_name": tool_name,
                 "parameters": parameters,
@@ -482,7 +482,7 @@ class AsyncToolExecutor:
                 "request_id": tool_call_id,
                 "sequence_id": sequence_id
             }
-            
+
             if execution_type == ToolExecutionType.INSTANT:
                 instant_tasks.append(task_info)
             elif execution_type == ToolExecutionType.FAST:
@@ -491,105 +491,105 @@ class AsyncToolExecutor:
                 medium_tasks.append(task_info)
             elif execution_type == ToolExecutionType.LONG:
                 long_tasks.append(task_info)
-        
+
         # Выполнение
         results = []
-        
+
         # 1. INSTANT - fire-and-forget параллельно
         if instant_tasks:
             instant_coros = [
                 self.execute_tool_async(
-                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["tool_name"], t["parameters"], t["execution_type"],
                     t["request_id"], t.get("sequence_id")
                 )
                 for t in instant_tasks
             ]
             instant_results = await asyncio.gather(*instant_coros, return_exceptions=True)
             results.extend(instant_results)
-        
+
         # 2. FAST - await параллельно
         if fast_tasks:
             fast_coros = [
                 self.execute_tool_async(
-                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["tool_name"], t["parameters"], t["execution_type"],
                     t["request_id"], t.get("sequence_id")
                 )
                 for t in fast_tasks
             ]
             fast_results = await asyncio.gather(*fast_coros, return_exceptions=True)
             results.extend(fast_results)
-        
+
         # 3. MEDIUM - await параллельно
         if medium_tasks:
             medium_coros = [
                 self.execute_tool_async(
-                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["tool_name"], t["parameters"], t["execution_type"],
                     t["request_id"], t.get("sequence_id")
                 )
                 for t in medium_tasks
             ]
             medium_results = await asyncio.gather(*medium_coros, return_exceptions=True)
             results.extend(medium_results)
-        
+
         # 4. LONG - запуск в фоне, не ждём
         if long_tasks:
             for t in long_tasks:
                 result = await self.execute_tool_async(
-                    t["tool_name"], t["parameters"], t["execution_type"], 
+                    t["tool_name"], t["parameters"], t["execution_type"],
                     t["request_id"], t.get("sequence_id")
                 )
                 results.append(result)
-        
+
         self.logger.info(f"✅ Выполнено {len(results)} инструментов (parallel)")
         return results
-    
+
     async def interrupt_all_long_tasks(self) -> int:
         """
         Прервать все активные LONG задачи
-        
+
         Returns:
             Количество прерванных задач
         """
         if not self.long_tasks:
             return 0
-        
+
         self.logger.warning(f"🛑 Прерывание {len(self.long_tasks)} LONG задач")
-        
+
         cancelled_count = 0
         tasks_to_cancel = list(self.long_tasks.values())
-        
+
         for task in tasks_to_cancel:
             if await task.cancel():
                 cancelled_count += 1
-        
+
         self.long_tasks.clear()
-        
+
         self.logger.info(f"✅ Прервано {cancelled_count} задач")
         return cancelled_count
-    
+
     async def interrupt_task_by_name(self, tool_name: str) -> int:
         """
         Прервать все LONG задачи с указанным именем
-        
+
         Args:
             tool_name: Имя инструмента
-        
+
         Returns:
             Количество прерванных задач
         """
         cancelled_count = 0
         tasks_to_cancel = [
-            (request_id, task) 
-            for request_id, task in self.long_tasks.items() 
+            (request_id, task)
+            for request_id, task in self.long_tasks.items()
             if task.tool_name == tool_name
         ]
-        
+
         for request_id, task in tasks_to_cancel:
             if await task.cancel():
                 cancelled_count += 1
                 del self.long_tasks[request_id]
-        
+
         if cancelled_count > 0:
             self.logger.info(f"🛑 Прервано {cancelled_count} задач {tool_name}")
-        
+
         return cancelled_count

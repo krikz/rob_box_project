@@ -1,62 +1,72 @@
 #!/usr/bin/env python3
 """
-internal_dialogue.launch.py - Запуск Internal Dialogue Agent v2.0
+internal_dialogue.launch.py - Launch perception pipeline (local dev).
 
-НОВАЯ АРХИТЕКТУРА (Event-Driven):
+Phase 6 v2 / W11. Perception package is now a thin sensor bridge — no LLM,
+no reflection node, no vision stub. The dialogue shell (src/rob_box_voice)
+owns all reasoning via DialogCore + MemoryStore.
 
-Запускает:
-1. vision_stub_node - заглушка для vision context (пока нет AI HAT)
-2. context_aggregator - сборщик контекста (MPC lite)
-3. reflection_node - ядро внутреннего диалога (event-driven)
+Launches:
+1. perception_bridge - UART sensor bridge -> /sensors/data + /perception/health
+2. context_aggregator - aggregates subscribed topics into /perception/context_update
+3. health_monitor - watches /rosout, publishes status on /voice/sound/trigger
 
-Поток данных:
-  [Sensors] → context_aggregator → [PerceptionEvent] → reflection_node → [Speech]
+Data flow (current — Phase 6 v2):
+  [Sensor board (UART)] -> perception_bridge -> /sensors/data (orphan publisher, Phase 7+ wiring)
+                          perception_bridge -> /perception/health (orphan publisher)
+  [9 ROS2 topics] -------> context_aggregator -> /perception/context_update
+                          (vision, pose, odom, joint_states, rosout,
+                           voice/stt/result, voice/dialogue/response,
+                           voice/command/intent, voice/command/feedback)
+                                                                          |
+                                                                          v
+                                              /perception/context_update -> mcp_server.py (harness MCP-bridge) -> DialogCore -> LLM
 
-Параметры загружаются из config файла (если доступен)
+Data flow (target — Phase 7+, после готовности sensor board firmware):
+  [Sensor board (UART)] -> perception_bridge -> /sensors/data \
+                                                            >-> context_aggregator
+  [Other ROS2 topics] ------------------------------> /       \
+                                                                          |
+                                                                          v
+                                              /perception/context_update -> dialogue_node
+
+Config file is loaded from /config/perception/context_aggregator.yaml if
+present, otherwise inline defaults are used.
 """
+
+import os
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
-import os
 
 
 def generate_launch_description():
-    # Config file path (для локальной разработки может не существовать)
-    # Path to config file (may not exist for local development)
     config_file = '/config/perception/context_aggregator.yaml'
-
-    # Check if config file exists, otherwise use inline parameters
-    # Проверяем существование config файла, иначе используем параметры по умолчанию
     use_config_file = os.path.exists(config_file)
 
     if use_config_file:
-        # Load from config file
         context_aggregator_params = [config_file]
     else:
-        # Use inline parameters (fallback for local development)
         context_aggregator_params = [{
-            'publish_rate': 2.0,  # 2 Hz - частота событий
-            'memory_window': 60,  # 60 сек
-            'timezone': 'Europe/Moscow',  # Default: Moscow (MSK)
+            'publish_rate': 2.0,
+            'memory_window': 60,
+            'timezone': 'Europe/Moscow',
         }]
 
     return LaunchDescription([
-        # Vision Stub - заглушка для камеры
+        # Perception Bridge - UART sensor reader -> /sensors/data
         Node(
             package='rob_box_perception',
-            executable='vision_stub_node',
-            name='vision_stub_node',
+            executable='perception_bridge',
+            name='perception_bridge',
             output='screen',
             parameters=[{
-                'publish_rate': 1.0,  # 1 Hz
+                'sensor_read_period': 0.1,   # 10 Hz
+                'health_period': 1.0,        # 1 Hz
             }],
-            remappings=[
-                ('/oak/rgb/image_raw/compressed', '/oak/rgb/image_raw/compressed'),
-            ]
         ),
 
-        # Context Aggregator - сборщик контекста (MPC lite)
-        # Параметры загружаются из config файла (если доступен)
+        # Context Aggregator - collects subscribed topics, publishes /perception/context_update
         Node(
             package='rob_box_perception',
             executable='context_aggregator',
@@ -65,17 +75,18 @@ def generate_launch_description():
             parameters=context_aggregator_params,
         ),
 
-        # Reflection Node v2.0 - внутренний диалог (event-driven)
+        # Health Monitor - watches /rosout, publishes status sounds
         Node(
             package='rob_box_perception',
-            executable='reflection_node',
-            name='reflection_node',
+            executable='health_monitor',
+            name='health_monitor',
             output='screen',
             parameters=[{
-                'dialogue_timeout': 10.0,  # 10 сек
-                'enable_speech': True,
-                'system_prompt_file': 'reflection_prompt.txt',
-                'urgent_response_timeout': 2.0,  # 2 сек для срочных ответов
+                'check_rate': 1.0,
+                'error_window': 30,
+                'degraded_threshold': 5,
+                'critical_threshold': 10,
+                'enable_sounds': True,
             }],
         ),
     ])

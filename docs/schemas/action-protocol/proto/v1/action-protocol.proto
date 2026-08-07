@@ -1,0 +1,185 @@
+// Action protocol wire schema for rob_box_voice.action_server
+//
+// Version: 1.0.0
+// Date:    2026-08-04
+// ADR:     docs/adr/0011-action-protocol.md
+// Kanban:  t_6d0e1dfe (definition), t_21f11e76 (implementation)
+//
+// This is the protobuf reference schema. The HTTP+JSON binding is the primary
+// transport (see action-protocol.openapi.yaml); this proto file is provided
+// for future gRPC clients in non-Python languages (Go, C++, Node) and as a
+// machine-readable contract summary.
+//
+// Design notes:
+//  - ActionState enum is append-only. New states go at the end.
+//  - Goal.kind is a string (plugin registry key), not an enum, so new handlers
+//    can be added without bumping the wire version.
+//  - Goal.params is google.protobuf.Struct (open shape) for handler-specific
+//    fields. Strongly-typed params (TTSGoalParams, etc.) are provided as
+//    oneof options for tools that want them.
+//  - feedback is google.protobuf.Struct, also open.
+//  - result is google.protobuf.Any so handlers can return typed payloads.
+
+syntax = "proto3";
+
+package rob_box_voice.action.v1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/krikz/rob_box_project/proto/action/v1;actionv1";
+option java_package = "com.krikz.robbox.action.v1";
+
+// =============================================================================
+// Service
+// =============================================================================
+
+service ActionService {
+  // Submit a new goal. Returns the goal_id and initial state (ACCEPTED).
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+
+  // Poll for status. Returns current state, feedback history and result if terminal.
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+
+  // Cancel a goal. Cooperative + asyncio task cancel; returns immediately.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Liveness/readiness (200 in normal state, 503 while shutting down).
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Streaming feedback for long-running goals (Phase 5+). Bidirectional.
+  rpc WatchFeedback(WatchFeedbackRequest) returns (stream FeedbackEvent);
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum ActionState {
+  ACTION_STATE_UNSPECIFIED = 0;
+  ACTION_STATE_ACCEPTED = 1;
+  ACTION_STATE_RUNNING = 2;
+  ACTION_STATE_SUCCEEDED = 3;
+  ACTION_STATE_CANCELLED = 4;
+  ACTION_STATE_FAILED = 5;
+}
+
+// =============================================================================
+// Goal envelope
+// =============================================================================
+
+message Goal {
+  // Optional client-provided goal ID (UUID v4). If empty, server generates one.
+  string goal_id = 1;
+
+  // Handler selector (plugin registry key). Open string, not an enum.
+  // Examples: "tts.speak", "music.play", "nav.navigate_to_pose".
+  string kind = 2;
+
+  // Handler-specific parameters. Shape depends on `kind`.
+  // Use the typed oneof below for tools that want strong typing.
+  google.protobuf.Struct params = 3;
+
+  // Hint: this goal may be discarded before commit. Handlers MUST be
+  // side-effect free when speculative=true (see ADR-0011 §3.6).
+  bool speculative = 4;
+
+  // Optional client-side deadline. After this, server MAY force-cancel.
+  google.protobuf.Timestamp deadline = 5;
+
+  // Strongly-typed params for known tool kinds. Exactly one of `params` or
+  // `typed_params` should be set; if both, `typed_params` wins.
+  oneof typed_params_oneof {
+    TTSGoalParams tts_params = 10;
+    MusicGoalParams music_params = 11;
+    NavGoalParams nav_params = 12;
+  }
+}
+
+// =============================================================================
+// Goal params (typed, per tool)
+// =============================================================================
+
+message TTSGoalParams {
+  string text = 1;
+  string voice = 2;          // MiniMax voice_id
+  string model = 3;          // speech-02-hd, speech-02-turbo, ...
+  uint32 sample_rate = 4;    // 8000, 16000, 22050, 24000, 32000
+  string format = 5;         // pcm, mp3, wav
+  float speed = 6;           // 0.5 to 2.0
+  float volume = 7;          // 0.0 to 10.0
+  int32 pitch = 8;           // semitones
+  string language = 9;       // BCP-47
+}
+
+message MusicGoalParams {
+  string score = 1;
+  uint32 duration_ms = 2;
+  uint32 fade_out_ms = 3;
+}
+
+message NavGoalParams {
+  double x = 1;
+  double y = 2;
+  double theta = 3;
+  string safe_boundary_policy = 4;  // soft, hard
+}
+
+// =============================================================================
+// Service request/response messages
+// =============================================================================
+
+message SubmitRequest {
+  Goal goal = 1;
+}
+
+message SubmitResponse {
+  string goal_id = 1;
+  ActionState state = 2;
+}
+
+message StatusRequest {
+  string goal_id = 1;
+}
+
+message StatusResponse {
+  string goal_id = 1;
+  ActionState state = 2;
+  repeated google.protobuf.Struct feedback = 3;
+  google.protobuf.Any result = 4;       // only populated when state = SUCCEEDED
+  string error = 5;                    // only populated when state = FAILED
+}
+
+message CancelRequest {
+  string goal_id = 1;
+}
+
+message CancelResponse {
+  bool cancelled = 1;
+}
+
+message HealthRequest {
+}
+
+message HealthResponse {
+  bool ok = 1;
+  uint32 active_goals = 2;
+  bool shutting_down = 3;
+}
+
+message WatchFeedbackRequest {
+  string goal_id = 1;
+}
+
+// =============================================================================
+// Reference: strongly-typed TTS result (for handlers that want it)
+// =============================================================================
+
+message TTSGoalResult {
+  string audio_uri = 1;
+  uint32 sample_rate = 2;
+  string format = 3;
+  uint32 duration_ms = 4;
+  string text = 5;
+}

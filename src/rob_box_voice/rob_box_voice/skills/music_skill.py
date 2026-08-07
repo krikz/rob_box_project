@@ -7,6 +7,7 @@ Tools exposed to the sub-agent:
   stop_music         — stop a pattern or all music
   set_vibe_preset    — apply a named vibe preset (chill/energetic/ambient/jazz/dark)
   get_music_state    — query current music state
+  search_artist_style — DuckDuckGo search for artist/concept style (issue #1000)
 
 The Renardo reference documentation is loaded at init time from a configurable
 path (RENARDO_REF_PATH env var or the renardo_ref_path constructor argument) and
@@ -22,6 +23,20 @@ from pathlib import Path
 from agents import function_tool
 
 from .base_skill import BaseSkill
+
+# ── DuckDuckGo search (free, no API key) — issue #1000 ──────────────────────
+# Used by search_artist_style for DJ-mode "research first" workflow.
+# Tries the new ``ddgs`` package first, then falls back to the legacy
+# ``duckduckgo_search`` name (pre-8.0).
+try:
+    from ddgs import DDGS
+    _DDGS_AVAILABLE = True
+except ImportError:
+    try:
+        from duckduckgo_search import DDGS  # legacy name
+        _DDGS_AVAILABLE = True
+    except ImportError:
+        _DDGS_AVAILABLE = False
 
 # ── Default paths ─────────────────────────────────────────────────────────────
 _DEFAULT_RENARDO_REF_PATH = os.getenv(
@@ -113,94 +128,26 @@ class MusicSkill(BaseSkill):
             Returns:
                 JSON with found results: letter, sample_index, filename, play_code.
             """
-            if not samples_root.exists():
-                return json.dumps(
-                    {"error": f"Samples dir not found: {samples_root}",
-                     "hint": "Mount RENARDO_SAMPLES_PATH volume in Docker"},
-                    ensure_ascii=False,
+            from rob_box_voice.core.sample_search import search_renardo_samples
+
+            result = search_renardo_samples(samples_root, query, pack, case)
+
+            # Enrich with hints for the LLM before serialising
+            if "error" in result:
+                if "available_packs" not in result and "hint" not in result:
+                    result["hint"] = "Mount RENARDO_SAMPLES_PATH volume in Docker"
+            elif "letters" in result:
+                # overview mode
+                result["hint"] = (
+                    'Search by word: search_samples("kick") or '
+                    'search_samples("synth", pack="1_pitchglitch_samples")'
+                )
+            elif result.get("found", 0) == 0:
+                result["hint"] = (
+                    'Try: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*"'
                 )
 
-            pack_path = samples_root / pack
-            if not pack_path.exists():
-                available = [d.name for d in samples_root.iterdir() if d.is_dir()]
-                return json.dumps(
-                    {"error": f"Pack '{pack}' not found", "available_packs": available},
-                    ensure_ascii=False,
-                )
-
-            exts = {".wav", ".aif", ".aiff", ".mp3"}
-
-            # Calculate spack index (0-based position in sorted pack list)
-            all_packs = sorted([d.name for d in samples_root.iterdir() if d.is_dir()])
-            spack_num = all_packs.index(pack) if pack in all_packs else 0
-            spack_suffix = f", spack={spack_num}" if spack_num != 0 else ""
-
-            # query="*" → compact overview of letters and counts
-            if query.strip() == "*":
-                overview = {}
-                for folder in sorted(pack_path.iterdir()):
-                    if not folder.is_dir() or folder.name.startswith("."):
-                        continue
-                    sub = folder / case
-                    if not sub.exists():
-                        sub = folder
-                    count = sum(1 for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts)
-                    if count:
-                        overview[folder.name] = count
-                return json.dumps(
-                    {
-                        "pack": pack,
-                        "case": case,
-                        "letters": overview,
-                        "hint": 'Search by word: search_samples("kick") or search_samples("synth", pack="1_pitchglitch_samples")',
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-
-            # Keyword search
-            q = query.lower().strip()
-            results = []
-            for folder in sorted(pack_path.iterdir()):
-                if not folder.is_dir() or folder.name.startswith("."):
-                    continue
-                sub = folder / case
-                if not sub.exists():
-                    sub = folder
-                files = sorted(
-                    [f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in exts]
-                )
-                for idx, f in enumerate(files):
-                    if q in f.name.lower():
-                        play_letter = folder.name.upper() if case == "upper" else folder.name
-                        results.append(
-                            {
-                                "letter": play_letter,
-                                "sample_index": idx,
-                                "spack": spack_num,
-                                "filename": f.name,
-                                "play_code": f'd1 >> play("{play_letter}", sample={idx}{spack_suffix})',
-                            }
-                        )
-                if len(results) >= 30:
-                    break
-
-            if not results:
-                return json.dumps(
-                    {
-                        "query": query,
-                        "pack": pack,
-                        "found": 0,
-                        "hint": 'Try: "kick", "snare", "hat", "bass", "synth", "dist", "loop", "*"',
-                    },
-                    ensure_ascii=False,
-                )
-
-            return json.dumps(
-                {"query": query, "pack": pack, "case": case, "found": len(results), "results": results},
-                ensure_ascii=False,
-                indent=2,
-            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
 
         # ── MCP-backed music tools ─────────────────────────────────────────
 
@@ -229,20 +176,111 @@ class MusicSkill(BaseSkill):
             return await _call("stop_music", params)
 
         @function_tool
-        async def set_vibe_preset(preset: str) -> str:
+        async def set_vibe_preset(preset_name: str) -> str:
             """Apply a vibe preset that configures BPM, scale, and root key.
 
             Args:
-                preset: One of 'chill', 'energetic', 'ambient', 'jazz', 'dark',
-                        'rock', 'latin', 'electronic', 'cinematic', 'funk',
-                        'reggae', 'classical'.
+                preset_name: One of 'chill', 'energetic', 'ambient', 'jazz',
+                             'dark', 'rock', 'latin', 'electronic', 'cinematic',
+                             'funk', 'reggae', 'classical'. Must be passed as
+                             ``preset_name`` (NOT ``preset`` — issue #935: prior
+                             ``preset`` naming made the LLM think the MCP tool
+                             expected ``preset`` and got rejected with
+                             "Отсутствует обязательный параметр: preset_name").
             """
-            return await _call("set_vibe_preset", {"preset_name": preset})
+            return await _call("set_vibe_preset", {"preset_name": preset_name})
 
         @function_tool
         async def get_music_state() -> str:
             """Get current music state: SC availability, active patterns, preset."""
             return await _call("get_music_state", {})
+
+        # ── search_artist_style (DuckDuckGo, free) — issue #1000 ──────────
+        # MANDATORY FIRST STEP in DJ-mode before execute_music_code / handle_music.
+        # Research style, genre, BPM, key, instruments and mood by artist name
+        # OR concept (DJ themes like "летняя дискотека хаус", "ритуальная музыка").
+        @function_tool
+        def search_artist_style(artist_name: str, song_names: str = "") -> str:
+            """Search for music style, genre, BPM, key, instruments and mood by artist name OR concept.
+
+            Use this for:
+            - Artists/bands: "Егор Летов", "Radiohead", "Kraftwerk", "Daft Punk"
+            - DJ themes/concepts: "летняя дискотека хаус", "робот-диджей"
+            - Performer roles: "Пастырь культа" → "ритуальная музыка хоралы"
+            - Any music request: always research the style first!
+
+            Args:
+                artist_name: Name of the artist, band, OR concept/persona to research.
+                    For concepts: describe the style/mood/associations (e.g. "ритуальная
+                    музыка культ хоралы" for a cult preacher persona).
+                song_names: Optional comma-separated song/album names if user
+                    mentioned specific tracks (e.g. "Русское поле экспериментов,
+                    Гражданская оборона"). Searches for chords and structure.
+            """
+            if not _DDGS_AVAILABLE:
+                return json.dumps(
+                    {"error": "duckduckgo-search not installed", "artist": artist_name},
+                    ensure_ascii=False,
+                )
+
+            # Core queries for artist style
+            queries = [
+                f"{artist_name} жанр стиль музыки",
+                f"{artist_name} звучание инструменты темп",
+                f"{artist_name} music genre BPM key instruments",
+            ]
+
+            # If user mentioned specific songs/albums — search for chords and structure
+            if song_names and song_names.strip():
+                for song in song_names.split(","):
+                    song = song.strip()
+                    if song:
+                        queries.append(f"{song} {artist_name} аккорды тональность")
+                        queries.append(f"{song} {artist_name} song structure tempo")
+
+            snippets = []
+            try:
+                with DDGS() as ddgs:
+                    for q in queries:
+                        for r in ddgs.text(q, max_results=3, region="wt-wt"):
+                            title = r.get("title", "")
+                            body = r.get("body", "")
+                            if body:
+                                snippets.append(f"**{title}**: {body}")
+            except Exception as e:
+                return json.dumps(
+                    {"error": str(e), "artist": artist_name},
+                    ensure_ascii=False,
+                )
+
+            if not snippets:
+                return json.dumps(
+                    {"artist": artist_name, "found": False,
+                     "hint": "Try spelling the name differently or use the original language name."},
+                    ensure_ascii=False,
+                )
+
+            # Trim to keep token usage reasonable
+            combined = "\n\n".join(snippets[:10])
+            # ~2500 chars max to avoid bloating the context
+            if len(combined) > 2500:
+                combined = combined[:2500] + "..."
+
+            return json.dumps(
+                {
+                    "artist": artist_name,
+                    "found": True,
+                    "research": combined,
+                    "instruction": (
+                        "Based on the above, adapt your Renardo code: "
+                        "match the genre (BPM, scale, rhythm pattern), "
+                        "use appropriate instruments/sounds, "
+                        "recreate the characteristic mood and energy."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
 
         @function_tool
         async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
@@ -346,6 +384,6 @@ class MusicSkill(BaseSkill):
 
         return [
             search_samples, execute_music_code, stop_music, set_vibe_preset,
-            get_music_state, list_tracks, save_track, load_track, delete_track,
-            set_dj_mode,
+            get_music_state, search_artist_style, list_tracks, save_track,
+            load_track, delete_track, set_dj_mode,
         ]

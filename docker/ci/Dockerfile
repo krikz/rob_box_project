@@ -19,11 +19,16 @@ FROM ubuntu:22.04
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-# ── Locale ─────────────────────────────────────────────────────────────
+# ── Locale & timezone (non-interactive) ─────────────────────────────────
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends locales && \
+    apt-get install -y --no-install-recommends locales tzdata && \
     locale-gen en_US.UTF-8 && \
-    update-locale LANG=en_US.UTF-8
+    update-locale LANG=en_US.UTF-8 && \
+    ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
@@ -38,8 +43,10 @@ RUN apt-get update && \
         sudo \
         rsync && \
     curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-        -o /usr/share/keyrings/ros-archive-keyring.asc && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.asc] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+        -o /tmp/ros.key && \
+    gpg --dearmor < /tmp/ros.key > /usr/share/keyrings/ros-archive-keyring.gpg && \
+    rm /tmp/ros.key && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
         > /etc/apt/sources.list.d/ros2.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -55,7 +62,8 @@ RUN apt-get update && \
         clang \
         lcov \
         libasio-dev \
-        libtinyxml2-dev && \
+        libtinyxml2-dev \
+        python3-pip && \
     rosdep init && rosdep update && \
     rm -rf /var/lib/apt/lists/*
 
@@ -63,8 +71,6 @@ RUN apt-get update && \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-humble-ament-cmake-pytest \
-        ros-humble-launch-testing \
-        ros-humble-launch-testing-ament-cmake \
         python3-flake8-docstrings \
         python3-flake8-blind-except \
         python3-flake8-builtins \
@@ -87,7 +93,7 @@ RUN apt-get update && \
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir \
         'pytest>=8' pytest-asyncio pytest-cov pytest-mock \
-        openai httpx
+        openai httpx requests pyyaml
 
 # ── Verify ─────────────────────────────────────────────────────────────
 RUN python3 -c "import pytest; assert pytest.__version__ >= '8', f'pytest={pytest.__version__}'" && \

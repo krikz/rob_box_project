@@ -1,4 +1,4 @@
-"""Utils package для rob_box_voice"""
+"""Utils package для rob_box_voice."""
 
 from .audio_utils import (
     find_respeaker_device,
@@ -17,6 +17,7 @@ from .respeaker_interface import (
     ReSpeakerInterface,
     ReSpeakerTuning,
 )
+from .redact import redact_upstream_body
 
 __all__ = [
     'find_respeaker_device',
@@ -31,4 +32,5 @@ __all__ = [
     'AudioBuffer',
     'ReSpeakerInterface',
     'ReSpeakerTuning',
+    'redact_upstream_body',
 ]

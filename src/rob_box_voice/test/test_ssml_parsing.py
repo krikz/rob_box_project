@@ -11,19 +11,19 @@ import re
 def _parse_ssml_attributes(ssml: str) -> dict:
     """
     Извлекает атрибуты из SSML тегов (pitch, rate/speed)
-    
+
     Returns:
         dict: {'pitch': float, 'rate': float} или пустой dict
     """
     attributes = {}
-    
+
     # Ищем <prosody> теги с атрибутами
     prosody_pattern = r'<prosody\s+([^>]+)>'
     matches = re.finditer(prosody_pattern, ssml, re.IGNORECASE)
-    
+
     for match in matches:
         attrs_str = match.group(1)
-        
+
         # Парсим pitch
         pitch_match = re.search(r'pitch\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
         if pitch_match:
@@ -46,7 +46,7 @@ def _parse_ssml_attributes(ssml: str) -> dict:
                     attributes['pitch'] = float(pitch_value)
                 except ValueError:
                     pass
-        
+
         # Парсим rate
         rate_match = re.search(r'rate\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
         if rate_match:
@@ -68,13 +68,13 @@ def _parse_ssml_attributes(ssml: str) -> dict:
                     attributes['rate'] = float(rate_value)
                 except ValueError:
                     pass
-    
+
     return attributes
 
 
 def test_ssml_parsing():
-    """Тестирование различных SSML форматов"""
-    
+    """Тестирование различных SSML форматов."""
+
     test_cases = [
         # (SSML, Expected attributes)
         ('<speak><prosody rate="1.5">Быстрая речь</prosody></speak>', {'rate': 1.5}),
@@ -91,15 +91,15 @@ def test_ssml_parsing():
         ),
         ('<speak>Обычная речь без атрибутов</speak>', {}),
     ]
-    
+
     print("🧪 Тест SSML парсинга\n")
-    
+
     passed = 0
     failed = 0
-    
+
     for ssml, expected in test_cases:
         result = _parse_ssml_attributes(ssml)
-        
+
         if result == expected:
             print(f"✅ PASS: {ssml[:60]}...")
             print(f"   Результат: {result}")
@@ -109,9 +109,9 @@ def test_ssml_parsing():
             print(f"   Ожидалось: {expected}")
             print(f"   Получено:  {result}")
             failed += 1
-    
+
     print(f"\n📊 Результаты: {passed} passed, {failed} failed")
-    
+
     return failed == 0
 
 

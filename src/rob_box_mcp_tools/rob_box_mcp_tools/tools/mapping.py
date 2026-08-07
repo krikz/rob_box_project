@@ -41,7 +41,7 @@ def _create_service_client(node, srv_type, srv_name, callback_group):
 
 
 class StartMappingTool(MCPTool):
-    """Инструмент для начала нового картографирования"""
+    """Инструмент для начала нового картографирования."""
 
     def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
         super().__init__(node)
@@ -50,7 +50,7 @@ class StartMappingTool(MCPTool):
         self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
-        
+
         # Service clients для RTABMap
         self.backup_client = _create_service_client(
             node, Empty, "/rtabmap/rtabmap/backup", self._service_cb_group
@@ -101,7 +101,7 @@ class StartMappingTool(MCPTool):
         ]
 
     def execute(self, map_name: str = "", new_location: Optional[bool] = None) -> MCPToolResult:
-        """Начать картографирование"""
+        """Начать картографирование."""
         # Если new_location не указан явно — выводим из map_name
         if new_location is None:
             new_location = bool(map_name.strip())
@@ -169,7 +169,7 @@ class StartMappingTool(MCPTool):
         )
 
     def _create_backup(self) -> bool:
-        """Создать backup RTABMap базы данных через ROS 2 сервис /rtabmap/rtabmap/backup (fire-and-forget)"""
+        """Создать backup RTABMap базы данных через ROS 2 сервис /rtabmap/rtabmap/backup (fire-and-forget)."""
         try:
             if not self.backup_client.service_is_ready():
                 self.log_warning("⚠️ RTABMap backup service ещё не готов, пропускаем")
@@ -186,14 +186,14 @@ class StartMappingTool(MCPTool):
 
 
 class ContinueMappingTool(MCPTool):
-    """Инструмент для продолжения картографирования"""
+    """Инструмент для продолжения картографирования."""
 
     def __init__(self, node):
         super().__init__(node)
         self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         # Динамический импорт во время выполнения
         from std_srvs.srv import Empty
-        
+
         self.set_mode_mapping_client = _create_service_client(
             node, Empty, "/rtabmap/rtabmap/set_mode_mapping", self._service_cb_group
         )
@@ -215,7 +215,7 @@ class ContinueMappingTool(MCPTool):
         return ToolExecutionType.MEDIUM  # Переключение режима 2-10s
 
     def execute(self) -> MCPToolResult:
-        """Продолжить картографирование"""
+        """Продолжить картографирование."""
         self.log_info("Продолжение картографирования")
 
         if not self.set_mode_mapping_client.service_is_ready():
@@ -231,7 +231,7 @@ class ContinueMappingTool(MCPTool):
 
 
 class FinishMappingTool(MCPTool):
-    """Инструмент для завершения картографирования"""
+    """Инструмент для завершения картографирования."""
 
     def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
         super().__init__(node)
@@ -244,7 +244,7 @@ class FinishMappingTool(MCPTool):
             from rtabmap_msgs.srv import PublishMap  # type: ignore
         except ImportError:
             PublishMap = None
-        
+
         self.set_mode_localization_client = _create_service_client(
             node, Empty, "/rtabmap/rtabmap/set_mode_localization", self._service_cb_group
         )
@@ -282,7 +282,7 @@ class FinishMappingTool(MCPTool):
         return ToolExecutionType.MEDIUM
 
     def execute(self, map_name: str = "") -> MCPToolResult:
-        """Завершить картографирование"""
+        """Завершить картографирование."""
         self.log_info("Завершение картографирования")
 
         # Имя карты (если указано) — до переключения, пока ещё знаем map_id
@@ -332,7 +332,7 @@ class FinishMappingTool(MCPTool):
 
 
 class OptimizeMapTool(MCPTool):
-    """Постобработка карты: loop closures + bundle adjustment + cleanup + backup"""
+    """Постобработка карты: loop closures + bundle adjustment + cleanup + backup."""
 
     def __init__(self, node):
         super().__init__(node)
@@ -480,7 +480,7 @@ class OptimizeMapTool(MCPTool):
 
 
 class LoadMapTool(MCPTool):
-    """Загрузить существующую карту и перейти в режим локализации"""
+    """Загрузить существующую карту и перейти в режим локализации."""
 
     def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
         super().__init__(node)
@@ -528,7 +528,7 @@ class LoadMapTool(MCPTool):
         return ToolExecutionType.LONG
 
     def execute(self, map_name: str = "") -> MCPToolResult:
-        """Загрузить карту и переключиться в режим локализации"""
+        """Загрузить карту и переключиться в режим локализации."""
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         from std_srvs.srv import Empty
 

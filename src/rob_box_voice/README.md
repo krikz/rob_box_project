@@ -458,6 +458,33 @@ COMMANDS = {
 
 3. Перезапустить dialogue_node и command_node
 
+## Concurrency model
+
+Голосовые ноды (`tts_node`, `dialogue_node`) намеренно ограничивают fan-out, чтобы burst-поток от STT или внешних клиентов не порождал неограниченное число потоков. Все executor-ы — `concurrent.futures.ThreadPoolExecutor` с фиксированным `max_workers`.
+
+| Нода          | Executor                         | `max_workers` | Что делает один worker                              |
+|---------------|----------------------------------|---------------|-----------------------------------------------------|
+| `tts_node`    | `_synthesis_executor`            | 2 (1..4)*     | Один TTS HTTP/gRPC synthesis request + publish      |
+| `tts_node`    | async-bridge (per-call `with`)   | 1             | Хост для `asyncio.run(...)` MiniMax stream          |
+| `dialogue_node` | `_asyncio_loop_driver`         | 1             | Хост для asyncio event loop + agent tasks          |
+
+\* ROS-параметр `synthesis_max_workers` (см. ниже).
+
+Семафор `max_workers + max_queue` на синтезе (`synthesis_max_queue=16` по умолчанию) даёт back-pressure: при переполнении новые задачи дропаются, а не плодят потоки. В `dialogue_node` одновременно может выполняться только один `Runner.run` — параллельные STT-chunks не плодят новые loops, а отменяются/ставятся в очередь через `_cancel_run`.
+
+### Operational limits
+
+- **TTS:** при burst rate выше ~`synthesis_max_workers` synthesis/s задачи встают в очередь семафора; выше `synthesis_max_workers + synthesis_max_queue` (~18 msg/s при дефолтах) — дропаются.
+- **Dialogue:** один LLM-stream в любой момент. Rate STT-результатов выше ~1 chunk/s (типичный streaming latency DeepSeek — 1–3 s) даёт линейный рост очереди и задержки ответа. Это намеренный back-pressure.
+- **Thread explosion под нагрузкой невозможен** — все worker-пулы bounded.
+
+### Tuning
+
+- **TTS:** параметры `synthesis_max_workers` (1..4, default 2) и `synthesis_max_queue` (default 16) объявляются в `tts_node` через `declare_parameter`; меняются через `ros2 param set` без перезапуска.
+- **Dialogue:** `ASYNCIO_LOOP_DRIVER_MAX_WORKERS` — module-level константа (default 1); меняется только пересборкой, намеренно снята с ROS-параметра.
+
+Полные детали — в module docstring `tts_node.py` / `dialogue_node.py` и в комментарии «Concurrency primitives» рядом с константами.
+
 ## Troubleshooting
 
 ### ReSpeaker не распознаётся

@@ -1,9 +1,24 @@
+# Copyright 2026 krikz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Animation Player
 
 Plays animation sequences and publishes frames to LED panels.
 """
 
+import os
 import time
 from typing import Optional, Dict, List
 from threading import Thread, Lock, Event
@@ -60,30 +75,141 @@ class AnimationPlayer:
         """
         Load animation from manifest file
 
+        Skips reload if the same manifest is already loaded (avoids
+        needless publishers churn when the same animation is requested
+        repeatedly).
+
         Args:
             manifest_path: Path to manifest YAML
 
         Returns:
             True if loaded successfully
         """
-        try:
-            self.current_animation = self.loader.load_manifest(manifest_path)
-            self.node.get_logger().info(
-                f'Loaded animation: {self.current_animation.name} '
-                f'({len(self.current_animation.panels)} panels)'
-            )
+        # Skip reload if the same manifest is already loaded. Holding the
+        # state_lock prevents a parallel play() thread from observing a
+        # half-written current_animation reference.
+        with self.state_lock:
+            if (self.current_animation is not None
+                    and self.current_animation.name
+                    == self._manifest_name(manifest_path)):
+                self.node.get_logger().debug(
+                    f'Animation {self.current_animation.name} already loaded'
+                )
+                return True
 
-            # Create publishers for required logical groups
-            self._create_publishers()
+            try:
+                self.current_animation = self.loader.load_manifest(manifest_path)
+                self.node.get_logger().info(
+                    f'Loaded animation: {self.current_animation.name} '
+                    f'({len(self.current_animation.panels)} panels)'
+                )
 
-            return True
+                # Create publishers for required logical groups
+                self._create_publishers_locked()
 
-        except Exception as e:
-            self.node.get_logger().error(f'Failed to load animation: {e}')
+                return True
+
+            except Exception as e:
+                self.node.get_logger().error(f'Failed to load animation: {e}')
+                return False
+
+    @staticmethod
+    def _manifest_name(manifest_path: str) -> str:
+        """Extract the bare animation name from a manifest path or name.
+
+        ``idle.yaml`` -> ``idle``; ``/abs/path/to/happy.yaml`` -> ``happy``.
+        Used by load_animation() to decide whether a reload is needed.
+        """
+        base = os.path.basename(manifest_path)
+        if base.endswith('.yaml'):
+            base = base[:-len('.yaml')]
+        return base
+
+    def play_animation(self, manifest_path: str) -> bool:
+        """
+        Atomically load (if needed) and play the requested animation.
+
+        This is the entry point callers should use when they want a
+        specific animation to start *right now*. Compared to the
+        load-then-play pattern, it:
+
+        * Cancels any in-flight playback thread before starting a new
+          one — eliminates the "Animation already playing" WARN race
+          and the visual overlap caused by two threads racing over
+          ``current_animation``.
+        * Holds ``state_lock`` across the whole sequence so a
+          concurrent stop()/play() cannot tear the state.
+        * Skips the manifest reload when the same animation is already
+          loaded (see ``load_animation``).
+
+        Args:
+            manifest_path: Path to manifest YAML (``.yaml`` optional).
+
+        Returns:
+            True if the animation is now playing (either already was, or
+            was started by this call).
+        """
+        # Cancellation + reload + thread spawn all happen under the same
+        # lock so a second concurrent play_animation() cannot interleave
+        # with us. We release the lock before joining the old thread
+        # (joining under the lock would let the playback loop self-
+        # deadlock the moment it tries to acquire state_lock).
+        with self.state_lock:
+            was_playing = self.is_playing
+
+            # Signal any running playback loop to exit. The thread will
+            # see stop_event set on its next iteration check and clear
+            # is_playing under the lock in its finally block.
+            if was_playing:
+                self.stop_event.set()
+                self.pause_event.set()  # unblock if paused
+
+        # If there was a playback thread, wait for it to finish so we
+        # don't have two threads racing over current_animation / frame
+        # publishes. Bounded join to avoid hanging if the loop is stuck.
+        if was_playing and self.playback_thread is not None:
+            self.playback_thread.join(timeout=2.0)
+            self.playback_thread = None
+
+        # Load (may be a no-op if the same manifest is already cached).
+        if not self.load_animation(manifest_path):
             return False
 
-    def _create_publishers(self):
-        """Create ROS2 publishers for all panels in animation"""
+        # Start playback. We deliberately don't call self.play()
+        # because it would re-acquire the lock and re-check is_playing
+        # — under our new state, that path is fine, but inlining keeps
+        # the intent obvious: after cancel+reload, start a fresh loop.
+        with self.state_lock:
+            if not self.current_animation:
+                self.node.get_logger().error('No animation loaded')
+                return False
+
+            self.is_playing = True
+            self.is_paused = False
+            self.stop_event.clear()
+            self.pause_event.clear()
+            self.frames_played = 0
+            self.loops_completed = 0
+
+            self.playback_thread = Thread(
+                target=self._playback_loop, daemon=True,
+            )
+            self.playback_thread.start()
+
+            self.node.get_logger().info(
+                f'Started playing: {self.current_animation.name}'
+                + (' (replaced previous)' if was_playing else '')
+            )
+            return True
+
+    def _create_publishers_locked(self):
+        """Create ROS2 publishers for all panels in animation.
+
+        Must be called with ``state_lock`` held; the caller (load_animation
+        / play_animation) already owns it. Renamed from
+        ``_create_publishers`` to make the lock contract obvious at the
+        call site.
+        """
         if not self.current_animation:
             return
 
@@ -132,7 +258,7 @@ class AnimationPlayer:
             return True
 
     def stop(self):
-        """Stop playback"""
+        """Stop playback."""
         with self.state_lock:
             if not self.is_playing:
                 return
@@ -148,7 +274,7 @@ class AnimationPlayer:
         self.node.get_logger().info('Playback stopped')
 
     def pause(self):
-        """Pause playback"""
+        """Pause playback."""
         with self.state_lock:
             if not self.is_playing or self.is_paused:
                 return
@@ -157,7 +283,7 @@ class AnimationPlayer:
             self.node.get_logger().info('Playback paused')
 
     def resume(self):
-        """Resume playback"""
+        """Resume playback."""
         with self.state_lock:
             if not self.is_playing or not self.is_paused:
                 return
@@ -167,7 +293,7 @@ class AnimationPlayer:
             self.node.get_logger().info('Playback resumed')
 
     def _playback_loop(self):
-        """Main playback loop (runs in separate thread)"""
+        """Main playback loop (runs in separate thread)."""
         animation = self.current_animation
 
         if not animation:
@@ -192,7 +318,7 @@ class AnimationPlayer:
                 self.is_playing = False
 
     def _play_cycle(self):
-        """Play one complete animation cycle"""
+        """Play one complete animation cycle."""
         animation = self.current_animation
 
         if not animation:
@@ -283,5 +409,5 @@ class AnimationPlayer:
             }
 
     def list_animations(self) -> List[str]:
-        """List available animations"""
+        """List available animations."""
         return self.loader.list_available_animations()

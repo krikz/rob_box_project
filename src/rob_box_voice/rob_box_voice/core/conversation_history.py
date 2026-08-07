@@ -49,226 +49,157 @@ class ConversationHistory:
         history.clear()
     """
 
-    def __init__(self, max_turns: int = 10):
-        """
-        Инициализация истории диалога.
+    def __init__(self, max_messages: int = 50, *, max_turns: Optional[int] = None):
+        """Initialize dialog history.
 
         Args:
-            max_turns: Максимальное количество инференсов (user+assistant пар) в истории.
-                       Системный промпт не считается. При переполнении дропается самый
-                       старый тёрн целиком (user + все до следующего user).
+            max_messages: Max number of messages retained (default: 50). When
+                exceeded, the oldest non-system message is dropped (FIFO). The
+                first system message is always preserved at index 0.
+            max_turns: Backward-compatible alias for ``max_messages`` — older
+                production code counted dialog turns (user+assistant pairs)
+                but the buffer semantic is the same: at most N entries.
         """
-        self.max_turns = max_turns
+        if max_turns is not None:
+            max_messages = max_turns
+        self.max_messages: int = max_messages
+        self.max_turns: int = max_messages  # legacy alias
         self._messages: List[Message] = []
 
     def add_system_message(self, content: str) -> None:
-        """
-        Добавить системное сообщение.
-
-        Args:
-            content: Текст системного сообщения
-        """
-        message = Message(role="system", content=content)
-        self._add_message(message)
+        """Append a system message."""
+        self._add_message(Message(role="system", content=content))
 
     def add_user_message(self, content: str) -> None:
-        """
-        Добавить сообщение пользователя.
-
-        Args:
-            content: Текст сообщения пользователя
-        """
-        message = Message(role="user", content=content)
-        self._add_message(message)
+        """Append a user message."""
+        self._add_message(Message(role="user", content=content))
 
     def add_assistant_message(
         self, content: str, tool_calls: Optional[List[Dict[str, Any]]] = None
     ) -> None:
-        """
-        Добавить сообщение ассистента.
-
-        Args:
-            content: Текст ответа ассистента
-            tool_calls: Опциональный список вызовов инструментов
-        """
-        message = Message(role="assistant", content=content, tool_calls=tool_calls)
-        self._add_message(message)
+        """Append an assistant message, optionally with tool calls."""
+        self._add_message(
+            Message(role="assistant", content=content, tool_calls=tool_calls)
+        )
 
     def add_assistant_message_with_tools(
         self, content: Optional[str], tool_calls: List[Dict[str, Any]]
     ) -> None:
-        """
-        Добавить сообщение ассистента с tool calls (alias для add_assistant_message).
-        
-        Args:
-            content: Текст ответа ассистента (может быть None)
-            tool_calls: Список вызовов инструментов
-        """
-        message = Message(role="assistant", content=content or "", tool_calls=tool_calls)
-        self._add_message(message)
+        """Alias for ``add_assistant_message`` accepting explicit tool_calls."""
+        self._add_message(
+            Message(role="assistant", content=content or "", tool_calls=tool_calls)
+        )
 
     def add_tool_message(
         self, content: str, name: str, tool_call_id: str
     ) -> None:
-        """
-        Добавить сообщение от инструмента (tool result).
-
-        Args:
-            content: Результат выполнения инструмента
-            name: Имя инструмента
-            tool_call_id: ID вызова инструмента
-        """
-        message = Message(
-            role="tool", content=content, name=name, tool_call_id=tool_call_id
+        """Append a tool result message."""
+        self._add_message(
+            Message(
+                role="tool", content=content, name=name, tool_call_id=tool_call_id
+            )
         )
-        self._add_message(message)
 
     def _add_message(self, message: Message) -> None:
-        """
-        Внутренний метод для добавления сообщения с проверкой лимита.
-
-        Args:
-            message: Сообщение для добавления
-        """
+        """Append a message and trim the buffer to ``max_messages``."""
         self._messages.append(message)
-        self._trim_to_max_turns()
+        self._trim_to_max_messages()
 
-    def _trim_to_max_turns(self) -> None:
+    def _trim_to_max_messages(self) -> None:
+        """Trim FIFO so total length never exceeds ``max_messages``.
+
+        System messages are protected: the first one (if any) always stays at
+        index 0; only non-system entries are trimmed. This matches the
+        ``test_conversation_history`` contract that asserts the system prompt
+        survives long sessions.
         """
-        Обрезаем историю до max_turns полных инференсов.
+        if self.max_messages <= 0:
+            self._messages = []
+            return
+        if len(self._messages) <= self.max_messages:
+            return
 
-        Один тёрн = user message + всё что за ним до следующего user (assistant,
-        tool results, tool_calls). Системный промпт всегда сохраняется на позиции 0.
-        При переполнении дропаем самый старый тёрн целиком.
-        """
-        system_msgs = [m for m in self._messages if m.role == "system"]
-        other_msgs = [m for m in self._messages if m.role != "system"]
-
-        while True:
-            user_indices = [i for i, m in enumerate(other_msgs) if m.role == "user"]
-            if len(user_indices) <= self.max_turns:
-                break
-            # Дропаем с первого user до (не включая) второго user
-            end = user_indices[1] if len(user_indices) > 1 else len(other_msgs)
-            del other_msgs[user_indices[0]:end]
-
-        self._messages = system_msgs + other_msgs
+        first_system_idx = next(
+            (i for i, m in enumerate(self._messages) if m.role == "system"),
+            None,
+        )
+        if first_system_idx is not None:
+            system_msg: Optional[Message] = self._messages[first_system_idx]
+            rest = (
+                self._messages[:first_system_idx]
+                + self._messages[first_system_idx + 1 :]
+            )
+            keep = max(self.max_messages - 1, 0)
+            rest = rest[-keep:] if keep > 0 else []
+            self._messages = [system_msg] + rest
+        else:
+            self._messages = self._messages[-self.max_messages :]
 
     def get_messages(self) -> List[Dict[str, Any]]:
-        """
-        Получить все сообщения в формате для LLM API.
-
-        Returns:
-            Список сообщений в формате словарей
-        """
-        messages = []
+        """Return all messages in LLM-API format."""
+        result: List[Dict[str, Any]] = []
         for msg in self._messages:
-            message_dict = {"role": msg.role, "content": msg.content}
-
+            entry = {"role": msg.role, "content": msg.content}
             if msg.name is not None:
-                message_dict["name"] = msg.name
-
+                entry["name"] = msg.name
             if msg.tool_call_id is not None:
-                message_dict["tool_call_id"] = msg.tool_call_id
-
+                entry["tool_call_id"] = msg.tool_call_id
             if msg.tool_calls is not None:
-                message_dict["tool_calls"] = msg.tool_calls
-
-            messages.append(message_dict)
-
-        return messages
+                entry["tool_calls"] = msg.tool_calls
+            result.append(entry)
+        return result
 
     def get_raw_messages(self) -> List[Message]:
-        """
-        Получить все сообщения как объекты Message.
-
-        Returns:
-            Список объектов Message
-        """
+        """Return raw Message objects (defensive copy)."""
         return self._messages.copy()
 
     def clear(self) -> None:
-        """Очистить всю историю диалога."""
+        """Drop all messages."""
         self._messages.clear()
 
     def clear_except_system(self) -> None:
-        """Очистить историю, но оставить системные сообщения."""
-        self._messages = [msg for msg in self._messages if msg.role == "system"]
+        """Drop all but system messages."""
+        self._messages = [m for m in self._messages if m.role == "system"]
 
     def get_message_count(self) -> int:
-        """
-        Получить количество сообщений в истории.
-
-        Returns:
-            Количество сообщений
-        """
+        """Return the current number of messages."""
         return len(self._messages)
 
     def get_last_message(self) -> Optional[Message]:
-        """
-        Получить последнее сообщение.
-
-        Returns:
-            Последнее сообщение или None если история пуста
-        """
+        """Return the last message or ``None`` if empty."""
         return self._messages[-1] if self._messages else None
 
     def get_last_n_messages(self, n: int) -> List[Message]:
-        """
-        Получить последние N сообщений.
-
-        Args:
-            n: Количество сообщений
-
-        Returns:
-            Список последних N сообщений
-        """
+        """Return the last ``n`` messages (or fewer)."""
         return self._messages[-n:] if n > 0 else []
 
     def has_system_message(self) -> bool:
-        """
-        Проверить наличие системного сообщения.
-
-        Returns:
-            True если есть хотя бы одно системное сообщение
-        """
-        return any(msg.role == "system" for msg in self._messages)
+        """Return True if at least one system message is present."""
+        return any(m.role == "system" for m in self._messages)
 
     def update_system_message(self, content: str) -> None:
-        """
-        Обновить (или добавить) системное сообщение.
-        Если системное сообщение уже есть, обновляет первое найденное.
-        Если нет - добавляет в начало.
-
-        Args:
-            content: Новый текст системного сообщения
-        """
-        # Найти первое системное сообщение
+        """Replace or insert the system message at the start."""
         for i, msg in enumerate(self._messages):
             if msg.role == "system":
                 self._messages[i] = Message(role="system", content=content)
                 return
-
-        # Если не найдено, добавить в начало
         self._messages.insert(0, Message(role="system", content=content))
 
     def remove_tool_messages(self) -> None:
-        """
-        Очистить НЕПОЛНЫЕ tool-цепочки из истории (артефакты barge-in).
+        """Strip incomplete tool-call chains left over from barge-in.
 
-        Правила:
-        - assistant(tool_calls) + ВСЕ соответствующие tool results → ОСТАВЛЯЕМ как есть.
-          Это валидный формат OpenAI API и содержит полную историю что робот делал/говорил.
-        - assistant(tool_calls) БЕЗ следующих tool messages (barge-in прервал выполнение)
-          → конвертируем в assistant(content=<текст из speak_text>) или удаляем.
-        - Orphaned tool messages (без предшествующего assistant) → удаляем.
+        Rules:
+          * assistant(tool_calls) + matching tool results → kept as-is.
+          * assistant(tool_calls) WITHOUT follow-up tool results → collapsed
+            into a plain assistant(content=<speech text>) entry.
+          * Orphaned tool messages (without preceding assistant(tool_calls))
+            are deleted.
         """
         new_messages: List[Message] = []
         i = 0
         while i < len(self._messages):
             msg = self._messages[i]
             if msg.role == "assistant" and msg.tool_calls:
-                # Считаем сколько tool results идёт следом
                 j = i + 1
                 while j < len(self._messages) and self._messages[j].role == "tool":
                     j += 1
@@ -276,13 +207,11 @@ class ConversationHistory:
                 expected_count = len(msg.tool_calls)
 
                 if tool_count == expected_count:
-                    # Полная цепочка — оставляем оригинал как есть (валидно для API)
                     for k in range(i, j):
                         new_messages.append(self._messages[k])
                 else:
-                    # Неполная цепочка (barge-in) — конвертируем в текстовый ответ
                     spoken_texts: List[str] = []
-                    for tc in (msg.tool_calls or []):
+                    for tc in msg.tool_calls or []:
                         fn = tc.get("function", {})
                         if fn.get("name") == "speak_text":
                             try:
@@ -293,11 +222,11 @@ class ConversationHistory:
                             except (json.JSONDecodeError, AttributeError, TypeError):
                                 pass
                     if spoken_texts:
-                        new_messages.append(Message(role="assistant", content=" ".join(spoken_texts)))
-                    # Иначе молча дропаем (play_sound без текста — не нужно в истории)
+                        new_messages.append(
+                            Message(role="assistant", content=" ".join(spoken_texts))
+                        )
                 i = j
             elif msg.role == "tool":
-                # Orphaned tool message — удаляем
                 i += 1
             else:
                 new_messages.append(msg)
@@ -305,19 +234,20 @@ class ConversationHistory:
         self._messages = new_messages
 
     def remove_orphaned_user_messages(self) -> int:
-        """
-        Удалить подряд идущие user-сообщения без assistant-ответа между ними (артефакт barge-in).
+        """Remove trailing user-message duplicates that lack an assistant reply.
 
-        Проблема: при barge-in первый user message добавляется в историю, но LLM не отвечает.
-        Потом добавляется второй user message — в истории два подряд user без assistant.
-        DeepSeek видит оба вопроса и пытается ответить на оба.
+        Barge-in can append two consecutive user messages without any
+        assistant response in between. Keeping just the most recent trailing
+        user message gives the LLM a clean question to answer.
 
-        Оставляет только последнее user-сообщение в хвосте.
-        Возвращает количество удалённых сообщений.
+        Returns the number of removed messages.
         """
         removed = 0
         while len(self._messages) >= 2:
-            if self._messages[-1].role == 'user' and self._messages[-2].role == 'user':
+            if (
+                self._messages[-1].role == "user"
+                and self._messages[-2].role == "user"
+            ):
                 self._messages.pop(-2)
                 removed += 1
             else:

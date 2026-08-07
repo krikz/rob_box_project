@@ -21,9 +21,15 @@ import re
 import socket
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from rob_box_voice.core.music_stack_validation import (
+    MusicStackStatus,
+    load_sclang_health,
+)
 from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -77,7 +83,60 @@ class MusicManager:
     SC_HOST: str = "127.0.0.1"
     SC_PORT: int = 57110
 
-    def __init__(self, max_amp: float = 0.7) -> None:
+    # ------------------------------------------------------------------
+    # Issue #990 — segments safety-net contract
+    # ------------------------------------------------------------------
+    # The LLM must NOT pass duration_sec anymore (it cannot know the real
+    # TTS duration — that was the root cause of music cutting off mid-song).
+    # Instead it passes ``segments`` (number of bars) which is ONLY a
+    # backstop: the system stops the music at tts_batch_complete; segments
+    # caps playback only if the TTS batch hangs.
+    #: 1 bar = 4 beats in Renardo's default meter.
+    BEATS_PER_BAR: int = 4
+    #: Floor for the segments deadline (seconds). A tiny LLM guess (e.g.
+    #: segments=2) must not cut a real song off after 2 seconds — the
+    #: deadline is a TTS-hang backstop, not a song-length contract.
+    MIN_SEGMENTS_DEADLINE_SECONDS: float = 15.0
+    #: Upper bound for accepted segments (guard against absurd values).
+    MAX_SEGMENTS: int = 512
+    #: Backward-compat clamp for the deprecated ``duration_sec`` param
+    #: (#949 → #990). If an old LLM still passes duration_sec we only use it
+    #: to define ``__total_beats`` so legacy generated code does not
+    #: NameError, but we clamp it to at least this many seconds so it can
+    #: never stop the music before the song ends. No stop is scheduled from
+    #: duration_sec.
+    DEPRECATED_DURATION_SEC_CLAMP: float = 60.0
+
+    #: ``ROB_BOX_MUSIC_REQUIRE_HEALTHY=1`` → degraded sclang runtime blocks
+    #: ``execute_music_code`` / ``set_vibe_preset`` instead of letting the LLM
+    #: fight a broken Renardo stack. Defaults to ``False`` — music tools work
+    #: in degraded mode (non-critical SynthDef parse errors don't block).
+    #: Set to ``1`` to fail-fast on any sclang startup error.
+    REQUIRE_HEALTHY_DEFAULT = False
+    #: Critical SynthDefs the music subsystem depends on. Mirrors the list
+    #: used by ``start_voice_assistant.sh`` — keep them in sync.
+    DEFAULT_CRITICAL_SYNTHS: Tuple[str, ...] = (
+        "strings",
+        "wobblebass",
+        "pianovel",
+        "warmpad",
+        "retrobass",
+        "supersawlead",
+        "imperialbrass",
+        "marchstrings",
+        "strangerpulsepad",
+        "strangerarp",
+        "strangerbrass",
+    )
+
+    def __init__(
+        self,
+        max_amp: float = 0.7,
+        *,
+        critical_synths: Optional[List[str]] = None,
+        require_healthy: Optional[bool] = None,
+        sclang_log_path: Optional[str] = None,
+    ) -> None:
         #: максимальная амплитуда для любого паттерна (0.0-1.0)
         self._max_amp: float = max(0.0, min(1.0, max_amp))
         #: pattern_name -> последний выполненный код
@@ -92,7 +151,96 @@ class MusicManager:
         self._renardo_available: Optional[bool] = None
         #: Последняя ошибка инициализации renardo для диагностики
         self._renardo_last_error: Optional[str] = None
+        #: Music-stack health snapshot (from ``load_sclang_health``). When
+        #: ``is_healthy is False``, ``execute_music_code`` / ``set_vibe_preset``
+        #: short-circuit with a clear "music unavailable" error so the LLM
+        #: doesn't keep retrying against a broken Renardo/FoxDot upstream.
+        self._music_stack_status: MusicStackStatus = MusicStackStatus(
+            is_healthy=True,
+            oscdef_registered=True,
+            missing_synths=(),
+            fatal_errors=(),
+        )
+        #: When True, ``execute_code`` / ``set_vibe_preset`` reject calls when
+        #: ``_music_stack_status.is_healthy`` is False. Set False only for
+        #: tests / dev environments where we explicitly want degraded mode.
+        if require_healthy is None:
+            env_flag = os.environ.get("ROB_BOX_MUSIC_REQUIRE_HEALTHY")
+            if env_flag is None:
+                self._require_healthy: bool = self.REQUIRE_HEALTHY_DEFAULT
+            else:
+                self._require_healthy: bool = env_flag.strip().lower() not in {"0", "false", "no", "off"}
+        else:
+            self._require_healthy = bool(require_healthy)
+        #: Critical SynthDef set used by the boot-time health check.
+        if critical_synths is None:
+            env_synths = os.environ.get("ROB_BOX_MUSIC_CRITICAL_SYNTHS")
+            if env_synths:
+                self._critical_synths: Tuple[str, ...] = tuple(
+                    name.strip() for name in env_synths.split(",") if name.strip()
+                )
+            else:
+                self._critical_synths = self.DEFAULT_CRITICAL_SYNTHS
+        else:
+            self._critical_synths = tuple(critical_synths)
+        # ------------------------------------------------------------------
+        # Music session lifecycle tracking — issue #935
+        # Tracks wall-clock timestamps for "music session" so a safety-net
+        # watchdog can auto-stop music when the LLM forgets to call
+        # ``stop_music`` after a rap/poem/spoken-word sequence, e.g. when
+        # ``_MAX_TOOL_ITERATIONS=5`` is hit and the loop returns the last
+        # spoken text without flushing stop_music.
+        # ------------------------------------------------------------------
+        # default 5 min — overridable via MUSIC_AUTO_STOP_TTL_SECONDS env
+        default_ttl = 300
+        try:
+            env_ttl = int(os.environ.get("MUSIC_AUTO_STOP_TTL_SECONDS", str(default_ttl)))
+            self._auto_stop_ttl_seconds: int = max(1, env_ttl)
+        except (TypeError, ValueError):
+            self._auto_stop_ttl_seconds = default_ttl
+        # wall-clock timestamps — None until the first music activity in
+        # the session. Stored as float seconds since epoch.
+        self._music_session_active_since: Optional[float] = None
+        self._last_music_activity_at: Optional[float] = None
+        self._last_stop_at: Optional[float] = None
+        # Issue #990 — segments safety-net deadline. Wall-clock monotonic
+        # timestamp (from ``_schedule_stop``) after which the watchdog stops
+        # music if the TTS batch never completed (no tts_batch_complete).
+        # None = no deadline (music plays until tts_batch_complete / idle TTL).
+        self._music_deadline_at: Optional[float] = None
+        #: segments value that produced the deadline (diagnostics only).
+        self._music_deadline_segments: Optional[int] = None
+        # stats — surfaced via get_state() for the DialogCore safety-net
+        self._auto_stop_count: int = 0
+        # ------------------------------------------------------------------
+        # Issue #1000 — DJ mode flag. When True, ``execute_code`` strips
+        # ``Clock.future(outro/Clock.clear())`` patterns because the LLM
+        # keeps planning its own stop (banned by contract #992) — only the
+        # system clock + watchdog should stop DJ transitions.
+        # ------------------------------------------------------------------
+        self._dj_mode_enabled: bool = False
+        # ------------------------------------------------------------------
+        # Music stack health (issue G-MUSIC, architect review v3)
+        # ------------------------------------------------------------------
+        # If sclang already wrote a startup log and it's degraded, refuse to
+        # initialize Renardo and surface a clear "music unavailable" error.
+        # We do this BEFORE calling _initialize_renardo() so a broken
+        # upstream .scd file cannot manifest as silent exec errors later.
+        self._evaluate_music_stack_health(sclang_log_path=sclang_log_path)
         self._initialize_renardo()
+
+    # ------------------------------------------------------------------
+    # DJ Mode — issue #1000
+    # ------------------------------------------------------------------
+
+    @property
+    def dj_mode_enabled(self) -> bool:
+        """True when DJ mode is active — ``Clock.future`` stop patterns are stripped."""
+        return self._dj_mode_enabled
+
+    def set_dj_mode(self, enabled: bool) -> None:
+        """Set DJ mode flag. Called by :class:`SetDjModeTool`."""
+        self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -183,6 +331,17 @@ class MusicManager:
             for sdef in _rt.SynthDefs.values():
                 sdef.add()
 
+            # Загружаем эффекты (reverb/volume) — иначе scsynth отвечает
+            # "SynthDef reverb not found" / "SynthDef volume not found" на каждый
+            # Player с room=/amp-fx и музыка молчит (live 05.08: все e2e-прогоны
+            # после деплоя тихие, TTS работает, музыка нет).
+            # EffectManager.reload() = effect.load() для каждого эффекта +
+            # In() + Out() (служебные bus-ноды).
+            try:
+                _rt.effect_manager.reload()
+            except Exception as exc:  # noqa: BLE001
+                self._renardo_last_error = f"effect_manager.reload failed: {exc}"
+
             # Ждём компиляции всех 188 SynthDef-ов через sclang.
             # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
             _time.sleep(5)
@@ -208,6 +367,73 @@ class MusicManager:
 
         self._initialize_renardo()
         return bool(self._renardo_available)
+
+    # ------------------------------------------------------------------
+    # Music-stack health (issue G-MUSIC, architect review v3)
+    # ------------------------------------------------------------------
+
+    def _evaluate_music_stack_health(
+        self,
+        sclang_log_path: Optional[str] = None,
+    ) -> MusicStackStatus:
+        """Snapshot sclang health from the startup log and mark the manager.
+
+        When ``is_healthy is False`` AND ``_require_healthy`` is True, this
+        will also clear ``_renardo_available`` (without touching
+        ``_renardo_last_error``) so downstream tools see consistent state.
+
+        Args:
+            sclang_log_path: Override log location. Falls back to
+                ``SCLANG_LOG_PATH`` env var, then ``/tmp/sclang.log``.
+
+        Returns:
+            The :class:`MusicStackStatus` that was applied.
+        """
+
+        status = load_sclang_health(
+            sclang_log_path,
+            critical_synths=list(self._critical_synths),
+        )
+        self._music_stack_status = status
+
+        if not status.is_healthy and self._require_healthy:
+            # Mark Renardo as unavailable WITHOUT clearing the existing
+            # last_error (which might be informative for diagnostics). The
+            # operator should see both "music stack degraded" AND any
+            # subsequent renardo init failure that follows.
+            self._renardo_available = False
+
+        return status
+
+    def is_music_stack_healthy(self) -> bool:
+        """True if the sclang startup log was healthy at the last check."""
+
+        return bool(self._music_stack_status.is_healthy)
+
+    def music_stack_unavailable_error(self) -> Dict[str, str]:
+        """Build a stable error payload for ``music unavailable`` replies.
+
+        Used by ``execute_code`` / ``set_vibe_preset`` / ``stop_music`` so
+        the LLM gets a single, recognizable error message rather than
+        a different string for each entry-point.
+        """
+
+        status = self._music_stack_status
+        details: List[str] = []
+        if status.fatal_errors:
+            details.append("; ".join(status.fatal_errors[:3]))
+        if status.missing_synths:
+            details.append(f"missing SynthDefs: {', '.join(status.missing_synths)}")
+        detail_str = (" — " + "; ".join(details)) if details else ""
+        log_path = os.environ.get("SCLANG_LOG_PATH", "/tmp/sclang.log")
+        return {
+            "success": False,
+            "error": (
+                "Музыка недоступна: sclang стартовал в degraded-режиме "
+                "(syntax error в startup-логе Renardo/FoxDot)"
+                f"{detail_str}. См. {log_path}."
+            ),
+        }
 
     # ------------------------------------------------------------------
     # SuperCollider check
@@ -253,14 +479,18 @@ class MusicManager:
         return True, ""
 
     def _cap_amp(self, code: str) -> str:
-        """Ограничить все amp= значения в коде до self._max_amp.
+        """Ограничить громкость/октаву в коде до безопасных пределов.
 
-        Обрабатывает:
-        - ``amp=0.9``          → ``amp=0.7`` (если max_amp=0.7)
-        - ``amp=P[0.5, 1.0]``  → ``amp=P[0.5, 0.7]``
-        - ``amp=1``            → ``amp=0.7``
+        Issue #1000 — phase-3.2 anti-click caps:
+        - ``amp=0.9``               → ``amp=0.7`` (если max_amp=0.7)
+        - ``amp=P[0.5, 1.0]``       → ``amp=P[0.5, 0.7]``
+        - ``amp=1``                 → ``amp=0.7``
+        - ``amplify=var([1,0.3])``  → ``amplify=var([0.7,0.3])``
+        - ``amplify=0.8``           → ``amplify=0.7``
+        - ``oct=5``                 → ``oct=4`` (макс 4 — oct=5 очень резкое/громкое)
         """
         max_amp = self._max_amp
+        max_oct = 4  # oct=5 и выше слишком резкое/громкое (issue #1000)
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -270,18 +500,78 @@ class MusicManager:
 
         code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
 
-        # 2. Затем простые числа
+        # 2. amp= простые числа
         def _cap_n(m: re.Match) -> str:
             return f"amp={min(float(m.group(1)), max_amp):.3g}"
 
         code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
+
+        # 3. amplify=var([...]) — ограничиваем числа внутри var() (issue #1000)
+        def _cap_amplify_var(m: re.Match) -> str:
+            inner = m.group(1)
+            def _cap_num(n: re.Match) -> str:
+                return f"{min(float(n.group()), max_amp):.3g}"
+            inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
+            return f"amplify=var({inner})"
+
+        code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
+
+        # 4. amplify= простые числа
+        def _cap_amplify_n(m: re.Match) -> str:
+            return f"amplify={min(float(m.group(1)), max_amp):.3g}"
+
+        code = re.sub(r"amplify\s*=\s*(\d+(?:\.\d*)?)", _cap_amplify_n, code)
+
+        # 5. oct= — ограничиваем до max_oct (issue #1000)
+        def _cap_oct(m: re.Match) -> str:
+            return f"oct={min(int(m.group(1)), max_oct)}"
+
+        code = re.sub(r"oct\s*=\s*(\d+)", _cap_oct, code)
         return code
+
+    # ------------------------------------------------------------------
+    # Issue #990 — segments safety-net
+    # ------------------------------------------------------------------
+
+    def _renardo_bpm(self) -> float:
+        """Current Renardo BPM (default 120 when Clock is unavailable)."""
+        try:
+            clock = self._renardo_context.get("Clock", None)
+            bpm = float(getattr(clock, "bpm", 120) or 120)
+        except Exception:
+            bpm = 120.0
+        return bpm if bpm > 0 else 120.0
+
+    def _schedule_stop(self, *, segments: int, bpm: float) -> None:
+        """Set the segments safety-net deadline (issue #990).
+
+        The deadline is a wall-clock backstop only: the system normally
+        stops the music at ``tts_batch_complete`` (dialogue_node →
+        ``/mcp/music_cleanup`` → ``stop_music_on_session_end``). If the TTS
+        batch hangs (or the batch_complete event is lost), the mcp_server
+        watchdog calls ``auto_stop_idle_music`` and stops music once the
+        deadline passes, so it cannot play forever.
+
+        A floor (``MIN_SEGMENTS_DEADLINE_SECONDS``) guarantees a tiny LLM
+        guess cannot cut a real song off prematurely.
+        """
+        bar_duration_s = self.BEATS_PER_BAR * 60.0 / max(1.0, float(bpm))
+        timeout_s = max(segments * bar_duration_s, self.MIN_SEGMENTS_DEADLINE_SECONDS)
+        self._music_deadline_at = time.monotonic() + timeout_s
+        self._music_deadline_segments = int(segments)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def execute_code(self, code: str, pattern_name: Optional[str] = None) -> Dict[str, Any]:
+    def execute_code(
+        self,
+        code: str,
+        pattern_name: Optional[str] = None,
+        *,
+        segments: Optional[int] = None,
+        duration_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Безопасно выполнить Renardo-код.
 
         Перед выполнением проверяется:
@@ -292,6 +582,19 @@ class MusicManager:
         Args:
             code: Строка Python/Renardo-кода.
             pattern_name: Имя паттерна для хранения в истории (опционально).
+            segments: Количество тактов (баров, 1 бар = 4 бита) — ТОЛЬКО
+                предохранитель (issue #990). Если задан, в контекст Renardo
+                добавляются переменные ``__total_beats`` (segments * 4),
+                ``__total_segments``, ``__bpm``, ``__bar_duration``, и
+                устанавливается дедлайн ``_schedule_stop`` — watchdog
+                остановит музыку, если TTS-батч завис. Музыка ВСЕГДА живёт
+                до ``tts_batch_complete``; segments лишь ограничивает время
+                игры при зависшем TTS.
+            duration_sec: DEPRECATED (#949 → #990). Игнорируется для
+                остановки музыки. Оставлен только для обратной
+                совместимости: ``__total_beats`` определяется из него со
+                сдвигом вверх (clamp ≥ 60s), чтобы старый код не падал с
+                NameError, но и не мог оборвать музыку раньше конца песни.
 
         Returns:
             dict с ключами ``success``, ``message`` (или ``error``), ``code``.
@@ -300,8 +603,37 @@ class MusicManager:
         if not is_safe:
             return {"success": False, "error": filter_error}
 
+        # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
+        # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
+        # компилируемый и чистый). LLM продолжает писать pianovel несмотря
+        # на запрет в промпте → защита на уровне кода. Взято из ветки
+        # phase-3.2-music-testing (проверено в live-экспериментах юзера).
+        if "pianovel" in code:
+            code = code.replace("pianovel", "rhpiano")
+        # piano заменяем только если это отдельное слово (не rhpiano, pianovel и т.д.)
+        code = re.sub(r"(?<![a-zA-Z])piano(?![a-zA-Z])", "rhpiano", code)
+
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
+
+        # 🔴 DEBUG (live 15:44 «Error in Player: 'amp'»): полный код ПОСЛЕ
+        # всех трансформаций (pianovel→rhpiano, amp-caps) — чтобы видеть,
+        # что реально уходит в renardo. Ошибка KeyError('amp') в Players.py
+        # означает, что в event плеера нет ключа amp — нужен полный код
+        # для воспроизведения.
+        import sys as _sys
+        _sys.stderr.write(
+            f"🎵 [execute_music_code] FINAL CODE:\n{code}\n"
+            f"🎵 [execute_music_code] FINAL CODE END (len={len(code)})\n"
+        )
+        _sys.stderr.flush()
+
+        # Issue G-MUSIC: short-circuit before sending anything to Renardo if
+        # the sclang startup log shows the music stack is degraded. This
+        # prevents the LLM from retrying code that will keep failing because
+        # of an upstream-renardo syntax error in a .scd file.
+        if self._require_healthy and not self.is_music_stack_healthy():
+            return self.music_stack_unavailable_error()
 
         if not self._check_supercollider():
             return {
@@ -335,6 +667,38 @@ class MusicManager:
         # забивается → "too many nodes" / "negative node IDs" → тишина.
         has_clock_clear = "Clock.clear()" in code
 
+        # Issue #990: the music lifecycle is owned by the system
+        # (tts_batch_complete → music_cleanup → stop_music_on_session_end).
+        # The LLM must pass ``segments`` (bars) as a *safety net* only: the
+        # deadline below stops music if the TTS batch hangs. The old
+        # ``duration_sec`` contract (#949) is deprecated — it is clamped and
+        # never used to schedule an early stop (the LLM cannot know the real
+        # TTS duration; that was the root cause of music cutting off at 6s
+        # while the song was 51s).
+        if segments is not None and int(segments) > 0:
+            segments_i = max(1, min(int(segments), self.MAX_SEGMENTS))
+            current_bpm = self._renardo_bpm()
+            beats_per_bar = self.BEATS_PER_BAR
+            total_beats = segments_i * beats_per_bar
+            bar_duration_s = beats_per_bar * 60.0 / current_bpm
+            self._renardo_context["__total_segments"] = segments_i
+            self._renardo_context["__total_beats"] = total_beats
+            self._renardo_context["__bpm"] = current_bpm
+            self._renardo_context["__bar_duration"] = bar_duration_s
+            self._schedule_stop(segments=segments_i, bpm=current_bpm)
+        elif duration_sec is not None and duration_sec > 0:
+            # Backward compat (#949 → #990): keep the context variables
+            # alive so legacy generated code referencing __total_beats does
+            # not NameError — but clamp the value so an LLM guess (e.g. 6.0s)
+            # can never stop the music before the song ends. No stop is
+            # scheduled from duration_sec.
+            clamped = max(float(duration_sec), self.DEPRECATED_DURATION_SEC_CLAMP)
+            current_bpm = self._renardo_bpm()
+            total_beats = (clamped * current_bpm) / 60.0
+            self._renardo_context["__total_beats"] = total_beats
+            self._renardo_context["__duration_sec"] = clamped
+            self._renardo_context["__bpm"] = current_bpm
+
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
@@ -365,6 +729,15 @@ class MusicManager:
             self._pattern_history[pattern_name] = code
             self._active_patterns.add(pattern_name)
 
+        # Stamp music-session lifecycle (issue #935). Always mark activity
+        # when code executes successfully — even without pattern_name — so
+        # the safety nets (dialogue-end hook + watchdog) can stop music that
+        # the LLM started but didn't name.
+        now = time.monotonic()
+        self._last_music_activity_at = now
+        if self._music_session_active_since is None:
+            self._music_session_active_since = now
+
         return {"success": True, "message": "Код выполнен успешно", "code": code}
 
     def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
@@ -373,6 +746,11 @@ class MusicManager:
         Не требует наличия паттерна в истории — LLM может вызвать stop для
         любого player (d1, p1, ...) даже если execute_code не сохранял по имени.
 
+        Issue G-MUSIC: even when the sclang startup is degraded we still drop
+        ``pattern_name`` from ``_active_patterns`` (no live SC nodes to worry
+        about), but we tell the caller that music is unavailable so the LLM
+        can short-circuit further tool calls.
+
         Args:
             pattern_name: Имя паттерна/плеера (d1, p1, bass и т.д.).
 
@@ -380,36 +758,83 @@ class MusicManager:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
         stop_code = f"{pattern_name}.stop()"
+        stop_error: Optional[str] = None
+        degraded = self._require_healthy and not self.is_music_stack_healthy()
 
-        if self._renardo_available and self._check_supercollider():
+        if not degraded and self._renardo_available and self._check_supercollider():
             try:
                 exec(stop_code, self._renardo_context)  # noqa: S102
-            except Exception as exc:
-                return {"success": False, "error": f"Ошибка остановки паттерна: {exc}"}
+            except Exception as exc:  # noqa: BLE001
+                # Renardo may not know this player (e.g. we never started it),
+                # or SC is degraded. Log and continue: we still want to drop
+                # the pattern from our internal active set so the watchdog
+                # sees that the session is over (issue #935 safety-net).
+                stop_error = f"Ошибка остановки паттерна: {exc}"
 
         self._active_patterns.discard(pattern_name)
+        # Auto-close the music session if there are no patterns left (issue #935).
+        if not self._active_patterns:
+            self._last_stop_at = time.monotonic()
+        if stop_error:
+            return {
+                "success": False,
+                "error": stop_error,
+                "warning": (
+                    "Паттерн исключён из active_patterns (issue #935 safety-net) "
+                    f"несмотря на ошибку Renardo: {pattern_name}."
+                ),
+            }
+        if degraded:
+            return {
+                "success": False,
+                "error": (
+                    "Музыка недоступна — Renardo в degraded-режиме. "
+                    f"Локальное состояние для '{pattern_name}' всё равно очищено "
+                    "чтобы не блокировать watchdog."
+                ),
+            }
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
     def stop_all(self) -> Dict[str, Any]:
-        """Остановить всю музыку: остановить все плееры + Clock.clear() + SC freeAll.
+        """Остановить всю музыку: плавный gate=0 ramp-down → freeAll.
 
-        Трёхэтапная остановка:
-        1. Вызвать .stop() на каждом известном плеере (d1-d9, p1-p9, s1-s9, l1-l9)
-           чтобы снять их с Clock до очистки.
-        2. Clock.clear() — убрать все запланированные события из шедулера.
-        3. OSC /g_freeAll — убить все живые синтезаторы в scsynth (Group 1).
+        Issue #1000 (phase-3.2 anti-click):
+            Hard ``/g_freeAll`` без ramp-down даёт щелчки на MdaPiano/rhpiano
+            (физ-модели — release-фаза ADSR не успевает затухнуть). Делаем
+            ``amp=0`` на всех плеерах → release → ~50ms → ``/g_freeAll``.
+
+        Этапы:
+        1. ``amp=0`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
+           запускает release-фазу ADSR, синты затухают естественно.
+        2. ``Clock.clear()`` — убрать все запланированные события.
+        3. ~50ms sleep — дать ADSR release затухнуть.
+        4. OSC ``/g_freeAll`` — убить все живые синтезаторы в scsynth.
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
-        if self._renardo_available and self._check_supercollider():
-            # Шаг 1: остановить все плееры которые есть в контексте
+        # Track Clock.clear() failures so we can warn the operator while
+        # still tearing down our internal session state (issue #935).
+        clock_error: Optional[str] = None
+        degraded = self._require_healthy and not self.is_music_stack_healthy()
+
+        if not degraded and self._renardo_available and self._check_supercollider():
+            # 🔴 FIX (live 15:44 «Error in Player: 'amp'»): ramp-down через
+            # ``{name}.amp = 0`` УБРАН. Renardo Player.__setattr__ оборачивает
+            # любое присваивание в asStream() → attr["amp"] становится PGroup,
+            # а не скаляром → get_event() строит event с PGroup-amp →
+            # send_osc_message не находит скаляр → KeyError('amp') на каждом
+            # кадре → музыка мертва (рэп/Бах/DJ — всё) с деплоя 15:26, когда
+            # влился 3cc04a0c. Останавливаем плееры только через .stop()
+            # (как работало в 12:27), без трюка с amp.
             player_names = (
                 [f"d{i}" for i in range(1, 10)]
                 + [f"p{i}" for i in range(1, 10)]
                 + [f"s{i}" for i in range(1, 10)]
                 + [f"l{i}" for i in range(1, 10)]
             )
+
+            # Шаг 1: остановить все плееры
             stop_code = "\n".join(
                 f"try:\n  {name}.stop()\nexcept Exception:\n  pass"
                 for name in player_names
@@ -422,10 +847,20 @@ class MusicManager:
             # Шаг 2: очистить Clock
             try:
                 exec("Clock.clear()", self._renardo_context)  # noqa: S102
-            except Exception as exc:
-                return {"success": False, "error": f"Ошибка остановки Clock: {exc}"}
+            except Exception as exc:  # noqa: BLE001
+                # Clock.clear() failure is non-fatal for our internal state —
+                # the patterns are still held in Renardo's namespace, but
+                # ``/g_freeAll`` below terminates the live synths and we
+                # still need to reset our own lifecycle fields. Issue #935.
+                clock_error = f"Clock.clear() failed: {exc}"
 
-            # Шаг 3: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
+            # Шаг 3: ~50ms на release ADSR (issue #1000 anti-click)
+            try:
+                time.sleep(0.05)
+            except Exception:
+                pass
+
+            # Шаг 4: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
             osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
@@ -434,6 +869,34 @@ class MusicManager:
                 pass  # если SC недоступен — не страшно, Clock уже очищен
 
         self._active_patterns.clear()
+        self._last_stop_at = time.monotonic()
+        # Issue #990 — a stop cancels the segments safety-net deadline:
+        # music is no longer playing, so there is nothing to backstop.
+        self._music_deadline_at = None
+        self._music_deadline_segments = None
+        # Reset session only when the *whole* session is over so a partial
+        # ``stop_pattern``-then-restart sequence doesn't lose the timer
+        # (issue #935 — keeps audit trail of when music was active).
+        self._music_session_active_since = None
+        self._last_music_activity_at = None
+        if clock_error:
+            return {
+                "success": False,
+                "error": clock_error,
+                "warning": (
+                    "Внутреннее состояние всё равно сброшено (issue #935 "
+                    "safety-net): active_patterns=[], session_active=None."
+                ),
+            }
+        if degraded:
+            return {
+                "success": False,
+                "error": (
+                    "Музыка недоступна — Renardo в degraded-режиме. "
+                    "Локальное состояние (active_patterns, session_active) "
+                    "всё равно сброшено (issue #935 safety-net)."
+                ),
+            }
         return {"success": True, "message": "Вся музыка остановлена"}
 
     def set_vibe_preset(self, preset_name: str) -> Dict[str, Any]:
@@ -456,6 +919,18 @@ class MusicManager:
 
         preset = self.VIBE_PRESETS[preset_name]
         self._current_preset = preset_name
+
+        # Issue G-MUSIC: in degraded mode there's no point sending
+        # ``Clock.bpm = …`` / ``Scale.default = …`` to Renardo — sclang
+        # may not even have compiled the required SynthDefs. Refuse and
+        # tell the operator / LLM to fall back to speech-only mode.
+        if self._require_healthy and not self.is_music_stack_healthy():
+            err = self.music_stack_unavailable_error()
+            err["warning"] = (
+                "Пресет не применён — Renardo в degraded-режиме. "
+                "Проверьте /tmp/sclang.log и сообщите оператору."
+            )
+            return err
 
         if self._renardo_available and self._check_supercollider():
             # Root.default принимает целое число (полутонов от C) или строку "C"
@@ -494,6 +969,146 @@ class MusicManager:
             "pattern_history": dict(self._pattern_history),
             "active_patterns": list(self._active_patterns),
             "renardo_last_error": getattr(self, "_renardo_last_error", None),
+            # Music-stack health snapshot — surfaced so the LLM can see
+            # ``music_stack_healthy: false`` and avoid retrying calls that
+            # will be rejected by ``execute_music_code`` / ``set_vibe_preset``.
+            "music_stack_healthy": self._music_stack_status.is_healthy,
+            "music_stack_oscdef_registered": self._music_stack_status.oscdef_registered,
+            "music_stack_missing_synths": list(self._music_stack_status.missing_synths),
+            "music_stack_fatal_errors": list(self._music_stack_status.fatal_errors),
+            "music_stack_require_healthy": self._require_healthy,
+            # ---- music session lifecycle (issue #935) ----
+            # ``music_session_active_since`` is monotonic seconds since first
+            # ``execute_code`` after the most recent ``stop_all``. ``None``
+            # when no music session is currently open.
+            # ``last_music_activity_at`` is the most recent timestamp that a
+            # pattern was started/restarted. ``auto_stop_ttl_seconds`` is the
+            # configured idle threshold used by ``auto_stop_idle_music``.
+            "music_session_active_since": self._music_session_active_since,
+            "last_music_activity_at": self._last_music_activity_at,
+            "last_stop_at": self._last_stop_at,
+            "auto_stop_ttl_seconds": self._auto_stop_ttl_seconds,
+            "auto_stop_count": self._auto_stop_count,
+            # Issue #990 — segments safety-net deadline (None = no deadline).
+            "music_deadline_at": self._music_deadline_at,
+            "music_deadline_segments": self._music_deadline_segments,
+            "idle_seconds": (
+                time.monotonic() - self._last_music_activity_at
+                if self._last_music_activity_at is not None
+                else None
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # Music session cleanup — safety-net for issue #935
+    # ------------------------------------------------------------------
+    def auto_stop_idle_music(
+        self,
+        ttl_seconds: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Auto-stop music if no activity for ``ttl_seconds``.
+
+        The DialogCore / watchdog should call this periodically (e.g. once
+        per second, or once per turn boundary). If music is currently
+        active AND the time since the last ``execute_code`` exceeds the
+        configured TTL, this method calls ``stop_all()`` and increments
+        ``auto_stop_count`` for diagnostics. It is **safe to call
+        arbitrarily often**: when there is no music session, or the TTL
+        has not been exceeded, it is a no-op.
+
+        Args:
+            ttl_seconds: Idle threshold (default: ``self._auto_stop_ttl_seconds``).
+            now: Override for ``time.monotonic()`` (used in tests).
+
+        Returns:
+            dict with keys ``stopped`` (bool), ``idle_seconds`` (float | None),
+            ``ttl_seconds`` (float), ``active_patterns`` (list[str]),
+            ``auto_stop_count`` (int).
+        """
+        ttl = self._auto_stop_ttl_seconds if ttl_seconds is None else float(ttl_seconds)
+        now_m = time.monotonic() if now is None else float(now)
+        result: Dict[str, Any] = {
+            "stopped": False,
+            "idle_seconds": None,
+            "ttl_seconds": ttl,
+            "active_patterns": list(self._active_patterns),
+            "auto_stop_count": self._auto_stop_count,
+        }
+        # Fast path: no music activity recorded → nothing to auto-stop.
+        # NOTE: deliberately *not* gating on _active_patterns — the LLM
+        # may have executed music code without a pattern_name (issue #935
+        # regression), so _active_patterns can be empty while music IS
+        # playing.  We rely on _last_music_activity_at alone.
+        if self._last_music_activity_at is None:
+            return result
+        idle = now_m - self._last_music_activity_at
+        result["idle_seconds"] = idle
+        # Issue #990 — segments safety-net: if the LLM passed ``segments``
+        # and the deadline has passed, the TTS batch likely hung (no
+        # tts_batch_complete → no music_cleanup). Stop music so it cannot
+        # play forever. This takes priority over the idle TTL because the
+        # deadline is the more precise contract the LLM asked for.
+        # 🔴 FIX (live 10:13 DJ): при активном DJ-режиме дедлайн
+        # ИГНОРИРУЕТСЯ — DJ-сет непрерывен (переходы каждые 30-120с),
+        # segments-дедлайн #990 (~30с) убивал музыку посреди сета.
+        # DJ-флаг приходит из mcp_server (подписка на /voice/dj_mode).
+        deadline = self._music_deadline_at
+        if deadline is not None and now_m >= deadline:
+            if getattr(self, "_dj_active", False):
+                # DJ живёт по idle-TTL; сбросим дедлайн — следующий
+                # переход продлит сессию.
+                self._music_deadline_at = None
+                self._music_deadline_segments = None
+                return result
+            stop_result = self.stop_all()
+            result["stopped"] = True
+            result["stop_reason"] = "segments_deadline"
+            result["stop_result"] = stop_result
+            self._auto_stop_count += 1
+            result["auto_stop_count"] = self._auto_stop_count
+            return result
+        if idle < ttl:
+            return result
+        # Auto-stop — call the existing stop_all() so the closure logic
+        # (3-stage clean: per-player stop + Clock.clear() + /g_freeAll)
+        # is reused as-is.
+        stop_result = self.stop_all()
+        result["stopped"] = True
+        result["stop_result"] = stop_result
+        self._auto_stop_count += 1
+        result["auto_stop_count"] = self._auto_stop_count
+        return result
+
+    def stop_music_on_session_end(self) -> Dict[str, Any]:
+        """Force-stop all music when the dialogue ends.
+
+        Convenience hook for DialogCore / dialogue_node to call on
+        DIALOGUE_END. Always calls ``stop_all()`` unconditionally — the
+        LLM may have started music without a ``pattern_name``, in which
+        case ``_active_patterns`` is empty but music IS playing (issue #935
+        regression: safety net was blind to unnamed patterns).
+
+        ``stop_all()`` is idempotent and safe to call even when nothing is
+        playing.
+
+        Returns:
+            dict with keys ``was_active`` (bool), ``stopped_patterns``
+            (list[str]), ``message`` (str).
+        """
+        was_active = self._music_session_active_since is not None
+        stopped = list(self._active_patterns)  # may be empty (unnamed patterns)
+        result = self.stop_all()
+        return {
+            "was_active": was_active,
+            "stopped_patterns": stopped,
+            "stop_result": result,
+            "message": (
+                f"Диалог завершился с активной музыкой ({len(stopped)} именованных, "
+                f"+ безымянные паттерны). Автоматический stop_music сработал (issue #935)."
+            ) if was_active else (
+                "Активной музыки не обнаружено — stop_all вызван профилактически (issue #935)."
+            ),
         }
 
 
@@ -542,6 +1157,29 @@ class ExecuteMusicCodeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="segments",
+                type="integer",
+                description=(
+                    "Сколько тактов (баров) должна играть фоновая музыка "
+                    "(1 бар = 4 бита). Это ТОЛЬКО предохранитель: система "
+                    "сама останавливает музыку после tts_batch_complete, "
+                    "segments лишь ограничивает время игры, если TTS завис. "
+                    "Для песни обычно 8-16 тактов. Если не знаешь — НЕ "
+                    "указывай (дефолт: музыка играет до конца озвучки). #990"
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="duration_sec",
+                type="number",
+                description=(
+                    "DEPRECATED (#990) — игнорируется для остановки музыки, "
+                    "оставлен для обратной совместимости. НЕ используй. "
+                    "Вместо него передавай segments."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -552,13 +1190,36 @@ class ExecuteMusicCodeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, code: str, pattern_name: Optional[str] = None) -> MCPToolResult:
-        """Выполнить Renardo-код."""
+    def execute(
+        self,
+        code: str,
+        pattern_name: Optional[str] = None,
+        segments: Optional[int] = None,
+        duration_sec: Optional[float] = None,
+    ) -> MCPToolResult:
+        """Выполнить Renardo-код (#990: segments как предохранитель)."""
         self.log_info(f"Выполнение музыкального кода: {code[:80]}...")
-        result = self._manager.execute_code(code, pattern_name)
+        result = self._manager.execute_code(
+            code, pattern_name, segments=segments, duration_sec=duration_sec
+        )
         if result["success"]:
+            # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
+            # активна — VAD threshold поднимается без ожидания watchdog.
+            self._notify_music_state()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
+
+    def _notify_music_state(self) -> None:
+        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
+        if self.node is None:
+            return
+        publisher = getattr(self.node, "publish_music_state", None)
+        if publisher is None:
+            return
+        try:
+            publisher()
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
 class StopMusicTool(MCPTool):
@@ -612,8 +1273,23 @@ class StopMusicTool(MCPTool):
             result = self._manager.stop_pattern(pattern_name)
 
         if result["success"]:
+            # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
+            # остановлена — VAD threshold возвращается к обычному.
+            self._notify_music_state()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
+
+    def _notify_music_state(self) -> None:
+        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
+        if self.node is None:
+            return
+        publisher = getattr(self.node, "publish_music_state", None)
+        if publisher is None:
+            return
+        try:
+            publisher()
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
 class SetVibePresetTool(MCPTool):
@@ -1239,6 +1915,142 @@ class DeleteTrackTool(MCPTool):
         return MCPToolResult(success=False, error=result["error"])
 
 
+# ---------------------------------------------------------------------------
+# SearchSamplesTool — filesystem search over Renardo sample packs
+# ---------------------------------------------------------------------------
+
+# Default samples path (same as MusicSkill._DEFAULT_SAMPLES_PATH)
+_SEARCH_SAMPLES_DEFAULT_PATH = os.environ.get(
+    "RENARDO_SAMPLES_PATH",
+    "/root/.config/renardo/samples",
+)
+
+
+class SearchSamplesTool(MCPTool):
+    """Search Renardo sample packs by keyword in filename.
+
+    Returns letter, sample_index, and ready-to-use play_code for ``d1 >> play(...)``.
+    Ported from ``MusicSkill.search_samples`` (filesystem-based, no Renardo runtime needed).
+    """
+
+    def __init__(self, node, samples_path: Optional[str] = None) -> None:
+        super().__init__(node)
+        self._samples_path = Path(samples_path or _SEARCH_SAMPLES_DEFAULT_PATH)
+
+    @property
+    def name(self) -> str:
+        return "search_samples"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Поиск Renardo-сэмплов по ключевому слову в имени файла. "
+            "Возвращает букву, sample_index и готовый play_code. "
+            "Используй когда нужно найти неизвестную букву/индекс сэмпла. "
+            "query='*' — обзор всех доступных букв и количества сэмплов в паке."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description=(
+                    "Ключевое слово: kick, snare, hat, bass, synth, vocal, glitch, dist, loop. "
+                    "'*' — компактный обзор всех букв."
+                ),
+                required=True,
+            ),
+            MCPToolParameter(
+                name="pack",
+                type="string",
+                description=(
+                    "Имя пакета: '0_foxdot_default' (стандартный) или "
+                    "'1_pitchglitch_samples' (расширенный, включает вокал/FX)."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="case",
+                type="string",
+                description="Регистр буквы: 'lower' или 'upper'.",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self,
+        query: str,
+        pack: str = "0_foxdot_default",
+        case: str = "lower",
+    ) -> MCPToolResult:
+        """Search samples by keyword."""
+        from rob_box_voice.core.sample_search import search_renardo_samples
+
+        result = search_renardo_samples(self._samples_path, query, pack, case)
+
+        if "error" in result:
+            hint = result.get("hint", "")
+            available = result.get("available_packs")
+            detail = f" Доступны: {available}" if available else ""
+            return MCPToolResult(
+                success=False,
+                error=f"{result['error']}.{detail} {hint}".strip(),
+            )
+
+        if "letters" in result:
+            letters = result["letters"]
+            return MCPToolResult(
+                success=True,
+                data=result,
+                message=(
+                    f"Пак '{pack}': {len(letters)} букв, "
+                    f"всего сэмплов: {result.get('total_samples', sum(letters.values()))}"
+                ),
+            )
+
+        found = result.get("found", 0)
+        results_list = result.get("results", [])
+
+        if found == 0:
+            return MCPToolResult(
+                success=True,
+                data=result,
+                message=(
+                    f"По запросу '{query}' в паке '{pack}' ничего не найдено. "
+                    "Попробуй: kick, snare, hat, bass, synth, '*'."
+                ),
+            )
+
+        self.log_info(
+            f"[search_samples] query={query!r} pack={pack} → {found} results"
+        )
+        play_codes = [r["play_code"] for r in results_list[:5]]
+        suffix = f" ... и ещё {found - 5}" if found > 5 else ""
+        return MCPToolResult(
+            success=True,
+            data=result,
+            message=(
+                f"Найдено {found} сэмплов по запросу '{query}': "
+                + ", ".join(play_codes)
+                + suffix
+            ),
+        )
+
+
 class SetDjModeTool(MCPTool):
     """Включить или выключить режим DJ — автономные плавные переходы между треками."""
 
@@ -1294,6 +2106,29 @@ class SetDjModeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="persona",
+                type="string",
+                description=(
+                    "DJ-образ / персона, которую юзер задал словами "
+                    "(например 'диджей Пёс', 'диджей Кот'). Передавай когда "
+                    "юзер назначил роль — робот будет представляться этим "
+                    "образом. По умолчанию 'ДиДжей РОббокс'."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="plan",
+                type="string",
+                description=(
+                    "План DJ-сета: список треков/блоков через новую строку, "
+                    "каждый начинается с 'Трек N:', например: "
+                    "'Трек 1: энергичный старт 128bpm\\nТрек 2: диско-хит 90-х\\nТрек 3: финальный вальс'. "
+                    "Передавай при ПЕРВОМ включении DJ — робот пройдёт по плану "
+                    "и на последнем треке объявит 'вечеринка заканчивается' и сам выключит DJ."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -1304,18 +2139,32 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
+        # LLM иногда шлёт transition_seconds вместо next_transition_sec
+        if transition_seconds is not None and next_transition_sec is None:
+            next_transition_sec = transition_seconds
         payload: dict = {"enabled": enabled}
         if next_transition_sec is not None:
             payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
         if theme and isinstance(theme, str) and theme.strip():
             payload["theme"] = theme.strip()
+        # 🔴 FIX (live 10:13 DJ): персона юзера («ты диджей Пёс») —
+        # пробрасываем в DJState, чтобы автопромпты не перезаписывали
+        # её дефолтом «ДиДжей РОббокс».
+        if persona and isinstance(persona, str) and persona.strip():
+            payload["persona"] = persona.strip()
+        # 🔴 FIX (live 15:30 06.08): план сета — DJ проходит по плану и
+        # корректно завершается с финальным объявлением, а не молча по лимиту.
+        if plan and isinstance(plan, str) and plan.strip():
+            payload["plan"] = plan.strip()
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
         action = "включён" if enabled else "выключен"
         interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
-        self.log_info(f"🎧 DJ-режим {action}{interval_info}")
-        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}")
+        persona_info = f", персона: {persona}" if persona else ""
+        plan_info = f", план: {len(plan.splitlines())} треков" if plan else ""
+        self.log_info(f"🎧 DJ-режим {action}{interval_info}{persona_info}{plan_info}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}{persona_info}{plan_info}")

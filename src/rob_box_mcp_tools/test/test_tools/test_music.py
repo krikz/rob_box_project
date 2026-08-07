@@ -8,6 +8,8 @@ test_music.py - Unit тесты для инструментов управлен
 """
 
 import sys
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -46,6 +48,8 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
 
 def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) -> MusicManager:
     """Create a MusicManager with patched infrastructure."""
+    from rob_box_voice.core.music_stack_validation import MusicStackStatus
+
     mgr = MusicManager.__new__(MusicManager)
     mgr._max_amp = 0.7
     mgr._pattern_history = {}
@@ -54,6 +58,29 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._renardo_available = renardo_available
     mgr._renardo_last_error = None
     mgr._renardo_context = {}
+    # issue G-MUSIC — music-stack health (must match __init__ defaults).
+    # Tests that need a degraded manager should overwrite _music_stack_status
+    # and/or _require_healthy directly.
+    mgr._music_stack_status = MusicStackStatus(
+        is_healthy=True,
+        oscdef_registered=True,
+        missing_synths=(),
+        fatal_errors=(),
+    )
+    mgr._require_healthy = True
+    mgr._critical_synths = MusicManager.DEFAULT_CRITICAL_SYNTHS
+    # issue #935 — music session lifecycle (must match __init__ defaults
+    # to keep tests faithful; see ``MusicManager.__init__``)
+    mgr._auto_stop_ttl_seconds = 300
+    mgr._music_session_active_since = None
+    mgr._last_music_activity_at = None
+    mgr._last_stop_at = None
+    mgr._auto_stop_count = 0
+    # issue #990 — segments safety-net deadline
+    mgr._music_deadline_at = None
+    mgr._music_deadline_segments = None
+    # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
+    mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
 
@@ -145,6 +172,67 @@ class TestMusicManagerFilter:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — issue #1000 anti-click caps (oct, amplify, ramp-down)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerCaps:
+    """``_cap_amp`` ограничивает amp / amplify / oct — фазa-3.2 anti-click.
+
+    Issue #1000: ``pianovel/piano → rhpiano`` (MdaPiano цокает) уже
+    автозаменяется в ``execute_code``. Капы ``oct <= 4`` и ``amplify`` ≤
+    ``max_amp`` — защита от громких/резких звуков.
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    def test_oct_is_capped_at_4(self):
+        # oct=5 (резкий диапазон) → oct=4
+        code = "p1 >> pluck([0,2,4], oct=5)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=4" in out
+        assert "oct=5" not in out
+
+    def test_oct_unchanged_when_leq_4(self):
+        code = "p1 >> pluck([0,2,4], oct=3)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=3" in out
+
+    def test_amplify_var_is_capped(self):
+        # amplify=var([1, 0.3]) → amplify=var([0.7, 0.3])
+        code = "d1 >> play('X', amplify=var([1,0.3]))"
+        out = self.mgr._cap_amp(code)
+        assert "0.7" in out
+        # внутри var() 1.0 должно быть заменено на 0.7, 0.3 остаётся
+        assert "amplify=var([0.7,0.3])" in out.replace(" ", "")
+
+    def test_amplify_simple_is_capped(self):
+        # amplify=0.8 → amplify=0.7
+        code = "d1 >> play('X', amplify=0.8)"
+        out = self.mgr._cap_amp(code)
+        assert "amplify=0.7" in out
+
+    def test_amp_simple_is_capped(self):
+        # amp=0.9 → amp=0.7 (default max_amp=0.7)
+        code = "p1 >> pluck([0], amp=0.9)"
+        out = self.mgr._cap_amp(code)
+        assert "amp=0.7" in out
+
+    def test_dj_mode_flag_default_off(self):
+        # Issue #1000 — DJ mode flag should default to False
+        assert self.mgr.dj_mode_enabled is False
+
+    def test_set_dj_mode_toggles_flag(self):
+        # Issue #1000 — set_dj_mode(True) → dj_mode_enabled True
+        self.mgr.set_dj_mode(True)
+        assert self.mgr.dj_mode_enabled is True
+        self.mgr.set_dj_mode(False)
+        assert self.mgr.dj_mode_enabled is False
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — SuperCollider check
 # ---------------------------------------------------------------------------
 
@@ -160,6 +248,16 @@ class TestMusicManagerSCCheck:
         mgr._current_preset = None
         mgr._renardo_available = False
         mgr._renardo_context = {}
+        # issue #935 — music session lifecycle defaults
+        mgr._auto_stop_ttl_seconds = 300
+        mgr._dj_mode_enabled = False
+        mgr._music_session_active_since = None
+        mgr._last_music_activity_at = None
+        mgr._last_stop_at = None
+        mgr._auto_stop_count = 0
+        # issue #990 — segments safety-net deadline
+        mgr._music_deadline_at = None
+        mgr._music_deadline_segments = None
         return mgr
 
     def test_sc_running_returns_true(self):
@@ -229,6 +327,10 @@ class TestMusicManagerExecuteCode:
 
     def test_execute_fails_if_renardo_not_available(self):
         mgr = _make_manager(sc_running=True, renardo_available=False)
+        # Must mock _ensure_renardo_available — the real method calls
+        # _initialize_renardo() which may succeed on machines where
+        # Renardo is installed, overriding the manual False setting.
+        mgr._ensure_renardo_available = Mock(return_value=False)
         result = mgr.execute_code("p1 >> pluck([0])")
         assert result["success"] is False
         assert "Renardo" in result["error"]
@@ -282,6 +384,67 @@ class TestMusicManagerExecuteCode:
             result = mgr.execute_code("p1 >> bad()")
         assert result["success"] is False
         assert "boom" in result["error"]
+
+    # ----- Issue #990 — segments contract ---------------------------------
+
+    def test_execute_with_segments_injects_total_beats_and_schedules_deadline(self):
+        """``segments`` (bars) → __total_beats = segments*4 + deadline set."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=110)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0])", segments=16)
+        assert result["success"] is True
+        assert mgr._renardo_context["__total_segments"] == 16
+        assert mgr._renardo_context["__total_beats"] == 64  # 16 bars * 4 beats
+        assert mgr._renardo_context["__bpm"] == 110
+        assert mgr._renardo_context["__bar_duration"] == pytest.approx(4 * 60.0 / 110.0)
+        # 16 bars @110bpm = 34.9s → deadline in the future
+        assert mgr._music_deadline_at is not None
+        assert mgr._music_deadline_at > time.monotonic()
+        assert mgr._music_deadline_segments == 16
+
+    def test_execute_with_small_segments_respects_deadline_floor(self):
+        """A tiny segments guess must not cut a song off after ~1s (#990)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=1)
+        # 1 bar @120bpm = 2s, but the floor is 15s
+        remaining = mgr._music_deadline_at - time.monotonic()
+        assert remaining >= MusicManager.MIN_SEGMENTS_DEADLINE_SECONDS - 0.5
+
+    def test_execute_with_segments_clamps_absurd_values(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=10_000)
+        assert mgr._renardo_context["__total_segments"] == MusicManager.MAX_SEGMENTS
+
+    def test_execute_duration_sec_is_deprecated_and_does_not_schedule_stop(self):
+        """Backward compat: duration_sec is clamped, never schedules a stop."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=110)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0])", duration_sec=6.0)
+        assert result["success"] is True
+        # clamped up so legacy Clock.future(__total_beats) cannot cut early
+        assert mgr._renardo_context["__duration_sec"] == pytest.approx(
+            MusicManager.DEPRECATED_DURATION_SEC_CLAMP
+        )
+        # __total_beats derives from the CLAMPED duration, not the LLM guess
+        expected_beats = (MusicManager.DEPRECATED_DURATION_SEC_CLAMP * 110.0) / 60.0
+        assert mgr._renardo_context["__total_beats"] == pytest.approx(expected_beats)
+        # No safety-net deadline from duration_sec
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_execute_without_segments_keeps_previous_deadline(self):
+        """A follow-up pattern change without segments keeps the backstop."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=16)
+        deadline_before = mgr._music_deadline_at
+        with patch("builtins.exec"):
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        assert mgr._music_deadline_at == deadline_before
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +600,164 @@ class TestMusicManagerGetState:
 
         assert state["renardo_available"] is True
         mgr._initialize_renardo.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — degraded sclang runtime (issue G-MUSIC)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerDegradedStack:
+    """Tests for the G-MUSIC fail-fast behaviour when sclang reports
+    syntax errors during startup. The acceptance criterion is: mcp_server
+    must answer "music unavailable" instead of letting the LLM fight a
+    broken Renardo stack.
+    """
+
+    @staticmethod
+    def _mark_degraded(mgr, *, require_healthy: bool = True) -> None:
+        """Simulate a degraded sclang startup log snapshot.
+
+        Note: we leave ``_renardo_available`` alone unless the caller
+        explicitly overrides it — that lets us test the degraded-guard
+        independently from the renardo-init guard.
+        """
+        from rob_box_voice.core.music_stack_validation import MusicStackStatus
+
+        mgr._music_stack_status = MusicStackStatus(
+            is_healthy=False,
+            oscdef_registered=True,
+            missing_synths=("strings",),
+            fatal_errors=(
+                "ERROR: syntax error, unexpected '.', expecting '}'",
+            ),
+        )
+        mgr._require_healthy = require_healthy
+
+    def test_execute_code_is_blocked_when_stack_is_degraded(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        self._mark_degraded(mgr)
+
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+
+        assert result["success"] is False
+        assert "Музыка недоступна" in result["error"]
+        assert "syntax error" in result["error"]
+        # exec must not be called — we never want to talk to Renardo
+        # while sclang itself is in degraded mode.
+        exec_mock.assert_not_called()
+
+    def test_set_vibe_preset_is_blocked_when_stack_is_degraded(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        self._mark_degraded(mgr)
+
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.set_vibe_preset("chill")
+
+        assert result["success"] is False
+        assert "Музыка недоступна" in result["error"]
+        assert "warning" in result
+        exec_mock.assert_not_called()
+
+    def test_stop_pattern_returns_unavailable_but_clears_active_set(self):
+        """In degraded mode we still drop the pattern from active_patterns
+        so the safety-net watchdog (issue #935) sees an empty session."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._active_patterns = {"p1"}
+        self._mark_degraded(mgr)
+
+        result = mgr.stop_pattern("p1")
+
+        assert "p1" not in mgr._active_patterns
+        assert result["success"] is False
+        assert "degraded" in result["error"].lower() or "Музыка недоступна" in result["error"]
+
+    def test_stop_all_returns_unavailable_but_clears_active_set(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._active_patterns = {"p1", "p2"}
+        self._mark_degraded(mgr)
+
+        result = mgr.stop_all()
+
+        assert mgr._active_patterns == set()
+        assert result["success"] is False
+        assert "Музыка недоступна" in result["error"]
+
+    def test_require_healthy_false_lets_degraded_stack_execute(self):
+        """Operator opt-out: ROB_BOX_MUSIC_REQUIRE_HEALTHY=0 → degraded
+        mode does NOT block the LLM from calling execute_code. This is
+        useful for debugging a known-broken stack or running with a
+        patched Renardo.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        self._mark_degraded(mgr, require_healthy=False)
+
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+
+        # Guard explicitly disabled → degraded-guard does NOT short-circuit.
+        # exec runs (mocked); we only care that the error message is NOT
+        # the G-MUSIC one.
+        assert result["success"] is True
+        assert "Музыка недоступна" not in result.get("error", "")
+        exec_mock.assert_called_once()
+
+    def test_get_state_surfaces_music_stack_health(self):
+        """The LLM can read get_music_state and see the failure reason."""
+        mgr = _make_manager(sc_running=False, renardo_available=False)
+        self._mark_degraded(mgr)
+
+        state = mgr.get_state()
+
+        assert state["music_stack_healthy"] is False
+        assert state["music_stack_require_healthy"] is True
+        assert any("syntax error" in err for err in state["music_stack_fatal_errors"])
+        assert "strings" in state["music_stack_missing_synths"]
+
+    def test_evaluate_music_stack_health_clears_renardo_when_degraded(self, tmp_path, monkeypatch):
+        """Integration: end-to-end degraded snapshot from a real log file."""
+        log_path = tmp_path / "sclang.log"
+        log_path.write_text(
+            "\n".join([
+                "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+                "ERROR: syntax error, unexpected '.', expecting '}'",
+                "ERROR: Command line parse failed",
+            ]),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        status = mgr._evaluate_music_stack_health()
+
+        assert status.is_healthy is False
+        assert mgr._renardo_available is False
+        assert not mgr.is_music_stack_healthy()
+
+    def test_evaluate_music_stack_health_keeps_renardo_when_healthy(self, tmp_path, monkeypatch):
+        # Narrow the critical-synths list so a 2-synth log counts as healthy.
+        log_path = tmp_path / "sclang.log"
+        log_path.write_text(
+            "\n".join([
+                "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+                "SynthDef preload ok: strings",
+                "SynthDef preload ok: wobblebass",
+            ]),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SCLANG_LOG_PATH", str(log_path))
+
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._critical_synths = ("strings", "wobblebass")
+        status = mgr._evaluate_music_stack_health()
+
+        assert status.is_healthy is True
+        # We don't promise renardo_available stays True — that flag is
+        # the result of the heavier _initialize_renardo() flow — but
+        # the degraded-mode path must not flip it to False.
+        assert mgr._renardo_available is True
 
 
 # ---------------------------------------------------------------------------
@@ -615,3 +936,310 @@ class TestGetMusicStateTool:
         assert result.success is True
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — music session lifecycle / safety-net (issue #935)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicSessionLifecycle:
+    """Тесты session lifecycle + safety-net (issue #935):
+
+    * ``get_state`` exposes lifecycle fields (timestamps, ttl, counter)
+    * ``execute_code`` stamps ``_last_music_activity_at`` (and starts a session
+      on the first pattern)
+    * ``stop_pattern`` / ``stop_all`` reset / close the session correctly
+    * ``auto_stop_idle_music`` no-ops when nothing is active, no-ops when the
+      idle interval is below the configured TTL, and **does** call
+      ``stop_all`` (incrementing the counter) once the TTL is exceeded
+    * ``stop_music_on_session_end`` is idempotent and reports what was active
+    """
+
+    # ----- get_state lifecycle fields ---------------------------------------
+
+    def test_get_state_exposes_lifecycle_fields(self):
+        mgr = _make_manager(sc_running=True, renardo_available=False)
+        state = mgr.get_state()
+        # default-from-__init__ values
+        assert state["music_session_active_since"] is None
+        assert state["last_music_activity_at"] is None
+        assert state["last_stop_at"] is None
+        assert state["auto_stop_ttl_seconds"] == 300
+        assert state["auto_stop_count"] == 0
+        # nothing is active yet → no idle window
+        assert state["idle_seconds"] is None
+        assert state["active_patterns"] == []
+
+    # ----- execute_code stamps lifecycle ------------------------------------
+
+    def test_execute_code_stamps_last_activity(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # No session yet → after execute_code, both timestamps populated.
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert result["success"] is True
+        assert mgr._music_session_active_since is not None
+        assert mgr._last_music_activity_at is not None
+        # session start == first activity (monotonic)
+        assert (
+            mgr._music_session_active_since <= mgr._last_music_activity_at
+        )
+
+    def test_execute_code_without_pattern_opens_session(self):
+        """Any successful code execution (even without pattern_name) stamps
+        lifecycle timestamps so safety nets can stop unnamed music (issue #935 fix)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("Clock.bpm = 120")
+        assert result["success"] is True
+        # Session IS opened — safety nets need the timestamps even for unnamed code.
+        assert mgr._music_session_active_since is not None
+        assert mgr._last_music_activity_at is not None
+        # But _active_patterns stays empty (no pattern_name given).
+        assert len(mgr._active_patterns) == 0
+
+    def test_execute_code_continues_existing_session(self):
+        """Second execute keeps session_open but bumps last_activity."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+            first_session = mgr._music_session_active_since
+            first_activity = mgr._last_music_activity_at
+            # Execute again — same session, but activity bumped.
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        assert mgr._music_session_active_since == first_session
+        assert mgr._last_music_activity_at >= first_activity
+
+    # ----- stop_all resets session ------------------------------------------
+
+    def test_stop_all_resets_session(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert mgr._music_session_active_since is not None
+        mgr.stop_all()
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+        assert mgr._last_stop_at is not None
+
+    def test_stop_pattern_partial_does_not_reset_session(self):
+        """stop_pattern leaves lifecycle intact until ALL patterns are gone."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        session_before = mgr._music_session_active_since
+        activity_before = mgr._last_music_activity_at
+        mgr.stop_pattern("p1")
+        # session & activity should still be set — p2 is still active
+        assert mgr._music_session_active_since == session_before
+        assert mgr._last_music_activity_at == activity_before
+        assert "p1" not in mgr._active_patterns
+        assert "p2" in mgr._active_patterns
+
+    # ----- auto_stop_idle_music --------------------------------------------
+
+    def test_auto_stop_is_noop_when_inactive(self):
+        mgr = _make_manager()
+        # Nothing was ever executed → _last_music_activity_at is None → no-op.
+        result = mgr.auto_stop_idle_music()
+        assert result["stopped"] is False
+        assert result["active_patterns"] == []
+        assert result["auto_stop_count"] == 0
+        assert result["idle_seconds"] is None
+
+    def test_auto_stop_works_with_unnamed_patterns(self):
+        """Issue #935 regression: auto_stop must work even when the LLM
+        executed music code without a pattern_name (active_patterns empty)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # Simulate: music was executed, but without pattern_name.
+        mgr._last_music_activity_at = 100.0
+        mgr._music_session_active_since = 100.0
+        # _active_patterns is empty — the exact bug scenario.
+        assert len(mgr._active_patterns) == 0
+        # Idle for 400 s, TTL=300 s → should auto-stop.
+        result = mgr.auto_stop_idle_music(now=500.0)
+        assert result["stopped"] is True
+        assert result["auto_stop_count"] == 1
+
+    def test_stop_music_on_session_end_always_calls_stop_all(self):
+        """Issue #935 regression: stop_music_on_session_end must call stop_all
+        even when _active_patterns is empty (unnamed patterns)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # Simulate: music was executed without pattern_name.
+        mgr._last_music_activity_at = 100.0
+        mgr._music_session_active_since = 100.0
+        assert len(mgr._active_patterns) == 0
+        # Should still report was_active=True and call stop_all().
+        result = mgr.stop_music_on_session_end()
+        assert result["was_active"] is True
+        # After stop_all, session is reset.
+        assert mgr._music_session_active_since is None
+        assert mgr._last_music_activity_at is None
+        assert mgr._last_stop_at is not None
+
+    def test_auto_stop_is_noop_when_within_ttl(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        # 10 s idle, ttl 300 s → no auto-stop.
+        result = mgr.auto_stop_idle_music(ttl_seconds=300, now=time.monotonic() + 10)
+        assert result["stopped"] is False
+        assert mgr._auto_stop_count == 0
+
+    def test_auto_stop_stops_when_ttl_exceeded(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert "p1" in mgr._active_patterns
+        # Inject a future "now" so idle = ttl+10.
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=time.monotonic() + 310
+        )
+        assert result["stopped"] is True
+        assert mgr._auto_stop_count == 1
+        assert mgr._active_patterns == set()
+        assert mgr._music_session_active_since is None
+
+    def test_auto_stop_count_increments_on_repeat(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # Round 1: trigger an auto-stop, then re-arm by adding a pattern.
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        now_offset = 0.0
+        t0 = time.monotonic() + now_offset
+        mgr._last_music_activity_at = t0
+        result1 = mgr.auto_stop_idle_music(ttl_seconds=1, now=t0 + 10)
+        assert result1["stopped"] is True
+        assert mgr._auto_stop_count == 1
+        # Round 2: re-create a session and trigger again.
+        with patch("builtins.exec"):
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        t1 = time.monotonic()
+        result2 = mgr.auto_stop_idle_music(ttl_seconds=1, now=t1 + 10)
+        assert result2["stopped"] is True
+        assert mgr._auto_stop_count == 2
+
+    def test_auto_stop_default_ttl_matches_env_or_300(self):
+        """The default TTL constant must be 300 seconds when env unset."""
+        mgr = _make_manager()
+        mgr._auto_stop_ttl_seconds = 300
+        assert mgr._auto_stop_ttl_seconds == 300
+
+    def test_auto_stop_returns_diagnostic_fields(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=time.monotonic() + 999
+        )
+        # Returning all keys makes it easy for DialogueCore to log without
+        # touching internals.
+        for key in (
+            "stopped", "idle_seconds", "ttl_seconds",
+            "active_patterns", "auto_stop_count", "stop_result",
+        ):
+            assert key in result, f"missing key: {key}"
+        assert result["stopped"] is True
+        assert isinstance(result["idle_seconds"], float)
+        assert result["idle_seconds"] >= 300.0
+
+    # ----- Issue #990 — segments safety-net deadline -----------------------
+
+    def test_auto_stop_fires_at_segments_deadline(self):
+        """If the TTS batch never completes, music stops at the deadline."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        # Simulate the watchdog firing after the deadline (idle < TTL).
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "segments_deadline"
+        assert mgr._auto_stop_count == 1
+        # stop_all cleared the deadline.
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_auto_stop_noop_before_segments_deadline(self):
+        """Before the deadline, the segments backstop must NOT fire."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        deadline = mgr._music_deadline_at
+        # now is just BEFORE the deadline and idle is within the high TTL.
+        result = mgr.auto_stop_idle_music(ttl_seconds=999, now=deadline - 1)
+        assert result["stopped"] is False
+        assert result.get("stop_reason") is None
+
+    def test_auto_stop_uses_deadline_before_idle_ttl(self):
+        """The deadline takes priority over the idle TTL (#990)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        now = mgr._music_deadline_at + 0.5
+        result = mgr.auto_stop_idle_music(ttl_seconds=999, now=now)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "segments_deadline"
+
+    def test_stop_all_clears_segments_deadline(self):
+        """tts_batch_complete → stop_all must cancel the backstop."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        mgr.stop_all()
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_get_state_exposes_segments_deadline(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=8)
+        state = mgr.get_state()
+        assert state["music_deadline_segments"] == 8
+        assert state["music_deadline_at"] == mgr._music_deadline_at
+
+    # ----- stop_music_on_session_end ---------------------------------------
+
+    def test_session_end_hook_noop_when_silent(self):
+        mgr = _make_manager()
+        result = mgr.stop_music_on_session_end()
+        assert result["was_active"] is False
+        assert result["stopped_patterns"] == []
+        # Always calls stop_all (prophylactic), message reflects that.
+        assert "профилактически" in result["message"]
+
+    def test_session_end_hook_stops_active_music(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        result = mgr.stop_music_on_session_end()
+        assert result["was_active"] is True
+        assert set(result["stopped_patterns"]) == {"p1", "p2"}
+        # Message describes auto-stop (mixed RU/EN keywords).
+        msg_lower = result["message"].lower()
+        assert "stop_music" in msg_lower or "стоп" in msg_lower
+        # Lifecycle is fully closed.
+        assert mgr._active_patterns == set()
+        assert mgr._music_session_active_since is None
+        assert mgr._last_stop_at is not None
+
+    def test_session_end_hook_is_idempotent(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        first = mgr.stop_music_on_session_end()
+        second = mgr.stop_music_on_session_end()
+        assert first["was_active"] is True
+        # Second call: session already closed, but stop_all still called.
+        assert second["was_active"] is False
+        assert second["stopped_patterns"] == []
+        assert "профилактически" in second["message"]

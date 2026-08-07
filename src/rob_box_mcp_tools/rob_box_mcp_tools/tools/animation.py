@@ -16,7 +16,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class PlayAnimationTool(MCPTool):
-    """Инструмент для запуска LED анимации"""
+    """Инструмент для запуска LED анимации."""
 
     # Доступные анимации
     AVAILABLE_ANIMATIONS = [
@@ -33,6 +33,10 @@ class PlayAnimationTool(MCPTool):
         "error",
         "low_battery",
         "charging",
+        # 🔴 FIX (live 17:20): MiniMax M3 систематически шлёт "excited" —
+        # он в общем LLM-словаре эмоций, но тут его не было → валидация
+        # падала каждый раз. "excited" маппим на "happy" (та же эмоция).
+        "excited",
         # Дорожные
         "police_lights",
         "ambulance",
@@ -48,7 +52,7 @@ class PlayAnimationTool(MCPTool):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
-        
+
         # Publisher для запроса анимаций
         self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
 
@@ -88,16 +92,16 @@ class PlayAnimationTool(MCPTool):
 
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Анимации - мгновенные (fire-and-forget)"""
+        """Анимации - мгновенные (fire-and-forget)."""
         return ToolExecutionType.INSTANT
 
     @property
     def blocking(self) -> bool:
-        """Анимации не блокируют диалог"""
+        """Анимации не блокируют диалог."""
         return False
 
     def execute(self, animation: str, duration: Optional[float] = None) -> MCPToolResult:
-        """Запустить анимацию"""
+        """Запустить анимацию."""
         self.log_info(f"Запуск анимации: {animation}, длительность: {duration}s")
 
         if animation not in self.AVAILABLE_ANIMATIONS:
@@ -106,6 +110,12 @@ class PlayAnimationTool(MCPTool):
                 error=f"Неизвестная анимация: {animation}",
                 message=f"Доступные: {', '.join(self.AVAILABLE_ANIMATIONS)}",
             )
+
+        # 🔴 FIX (live 17:20): MiniMax M3 шлёт "excited" — его НЕТ на
+        # стороне робота (animation_player знает только happy и др.).
+        # Маппим на happy, чтобы и валидация прошла, и робот понял.
+        if animation == "excited":
+            animation = "happy"
 
         # Валидация длительности - если вне диапазона, устанавливаем минимальную
         if duration is not None:
@@ -131,4 +141,3 @@ class PlayAnimationTool(MCPTool):
             result_data["duration"] = duration
 
         return MCPToolResult(success=True, data=result_data, message=f"Показываю анимацию: {animation}")
-

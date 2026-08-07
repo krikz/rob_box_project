@@ -1,0 +1,53 @@
+%% docs/diagrams/minimax-tts-sequence.mmd
+%% Sequence diagram for MiniMax TTS end-to-end flow.
+%% Rendered inline in docs/architecture/minimax-tts-architecture.md
+%% and docs/adr/0003-minimax-tts-architecture.md.
+
+sequenceDiagram
+    autonumber
+    actor User
+    participant DN as dialogue_node
+    participant TN as tts_node (ROS)
+    participant TX as TTSProvider ABC
+    participant MM as MiniMaxTTSProvider
+    participant API as api.minimax.io<br/>(T2A v2)
+    participant Pub as /voice/audio/speech<br/>(AudioData msg)
+    participant Sink as audio_playback<br/>(ReSpeaker/dmix)
+
+    User->>DN: voice command / text
+    DN->>TN: publish /voice/dialogue/response<br/>(JSON chunks, dialogue_id)
+    Note over TN: SSML parse →<br/>normalize_for_tts()
+    TN->>TX: TTSProvider.synthesize(<br/>  text, settings=TTSSettings(<br/>    voice, model, language,<br/>    speed, sample_rate, format=PCM))
+
+    TX->>MM: dispatch (TTSProvider ABC)
+    MM->>API: POST /v1/t2a_v2<br/>Authorization: Bearer <key><br/>?GroupId=<id><br/>{voice_setting, audio_setting}
+
+    alt 2xx & base_resp.status_code == 0
+        API-->>MM: 200 OK<br/>{data: {audio: <hex PCM>,<br/>  audio_sample_rate: 32000},<br/> base_resp: {status_code: 0}}
+        MM->>MM: bytes.fromhex(audio)<br/>→ TTSAudio(samples, sr, format=PCM)
+        MM-->>TX: TTSAudio
+        TX-->>TN: TTSAudio(samples: bytes, sample_rate: 32000)
+        TN->>TN: np.frombuffer(int16) → float32 [-1,1]
+        Note over TN: resample 32 kHz → 16 kHz<br/>(mono → stereo для ReSpeaker)
+        TN->>Pub: publish AudioData(<br/>  data=int16 LE tobytes())
+        TN->>Sink: sd.play() (локальное<br/>воспроизведение параллельно)
+        Sink-->>User: 🔊 audio
+
+    else HTTP 4xx / 5xx (транспорт)
+        API-->>MM: 4xx/5xx + body
+        MM->>MM: _map_exception →<br/>TTSAuthError / TTSRateLimitError /<br/>TTSBadRequestError / TTSError
+        MM-->>TX: raise TTSError
+        TX-->>TN: raise TTSError
+        TN->>TN: НЕТ fallback в Silero<br/>(пользователь явно выбрал MiniMax)
+        TN->>DN: /voice/tts/status=error<br/>(+ лог в ROS)
+        DN-->>User: ответ об ошибке через<br/>основной канал
+
+    else base_resp.status_code != 0 (бизнес-ошибка API)
+        API-->>MM: 200 OK но status_code ≠ 0
+        MM->>MM: эвристика по status_msg →<br/>TTSAuthError / TTSRateLimitError /<br/>TTSBadRequestError / TTSError
+        MM-->>TX: raise TTSError
+        TX-->>TN: raise TTSError
+        TN->>DN: /voice/tts/status=error
+    end
+
+    Note over TN,MM: retry-policy:<br/>• ConnectError/Timeout —<br/>  до 2 ретраев с exp backoff<br/>  (0.5s, 1.5s),<br/>  реализуется на стороне TN<br/>  вокруг synthesize()<br/>• 4xx (кроме 429) — NO RETRY<br/>• 429 — exp backoff 1 ретрай<br/>• base_resp.status_code != 0<br/>  (бизнес-ошибка) — NO RETRY<br/>• aclose() — idempotent

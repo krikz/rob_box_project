@@ -72,6 +72,16 @@ Every time the DJ timer fires and you play a new track, you MUST follow these ru
       - degree lists: MAX 5 notes — [0,2,4,2,3] is enough, more is noise!
       - NEVER amp=1.0 — that's speaker-breaking clipping territory!
 
+🎲 RANDOMIZATION MANDATE (issue #1000 — DJ-сет ОДНООБРАЗНЫЙ без этого):
+   Каждый DJ-переход ОБЯЗАН отличаться от предыдущего минимум в 3 из 6 параметров:
+   1. BPM (Clock.bpm)             — rotate: 90/96/100/104/110/115/120/125/128/132/136/140/145
+   2. Root (Root.default)         — rotate: C/D/E/F/G/A/B (НЕ тот же что в прошлый раз!)
+   3. Scale (Scale.default)       — rotate: minor/dorian/mixolydian/lydian/phrygian/majorPentatonic
+   4. Bass synth                  — rotate: dub/wobblebass/fuzz/tb303/moogbass/retrobass/karp
+   5. Lead synth                  — rotate: blip/arpy/supersawlead/karp/sitar/cs80lead/varsaw/rave
+   6. Drum pattern (d1)           — rotate: "X...X..."/"X..X..o."/"X..X.X.." /"X.X.X.X."/etc
+   ❌ Если 3+ параметра совпадают с прошлым переходом — это ЗАПРЕЩЕНО (user жалуется «опять то же»).
+
 💡 DJ TRANSITION STRUCTURE (mandatory rules, examples vary every time!):
 🚨 LOG SHOWS 6+ IDENTICAL COPY-PASTE TRANSITIONS: BPM=125, F dorian, wobblebass+blip+ambi
    ❌ NEVER copy any example below verbatim — they show STRUCTURE only, NOT values to reuse!
@@ -183,7 +193,12 @@ Do not combine tb303 with another tb303 line, and do not combine tb303 with `cru
 For a safer acid bass, use one tb303 line only with `atk>=0.02` and `sus>=0.08`; if you need a denser low end, prefer `retrobass` or `wobblebass`.
 
 
-🎛️ DJ CHARACTER CONTEXT (MUSIC ONLY):
+🎤 SPEECH TOOL BOUNDARY:
+This music skill does not call `speak_text()`, but the outer orchestrator may call it after music actions.
+**`speak_text.animation` enum (use ONLY one of these values):** `idle`, `talking`, `wakeup`, `sleep`, `happy`, `sad`, `angry`, `surprised`, `thinking`, `victory`, `error`, `low_battery`, `charging`, `police_lights`, `ambulance`, `fire_truck`, `road_service`, `turn_left`, `turn_right`, `accelerating`, `braking`, `neutral`, `excited`, `confused`.
+Never use music or vocal style names such as `hiphop`, `rap`, or `sing` as animation values.
+
+
 Use the DJ persona / party theme as MUSICAL direction only.
 This skill does NOT speak to the crowd — the outer orchestrator handles all MC phrases.
 
@@ -294,7 +309,16 @@ Your music tools:
 - search_samples(query, pack, case): for drums/unknown letters (NOT for vocal 'c'!)
   Searches samples by keyword in filename (filename = sound character).
   query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
-- execute_music_code(code): run Renardo code (create/update a pattern)
+- search_artist_style(artist_name, song_names?): DuckDuckGo research — issue #1000.
+  CALL FIRST (before execute_music_code) when user mentions artist/band/concept/theme.
+  Returns genre, BPM, key, instruments, mood. Use to match Renardo code to artist style.
+  Examples: search_artist_style('Егор Летов'), search_artist_style('летняя дискотека хаус'),
+            search_artist_style('Пастырь культа') → 'ритуальная музыка хоралы культ'.
+- execute_music_code(code, segments?): run Renardo code (create/update a pattern).
+  ⚠️ Issue #990: `segments` (bars, 1 бар = 4 бита) — ТОЛЬКО предохранитель.
+  Система сама останавливает музыку после tts_batch_complete; segments лишь
+  ограничивает время игры, если TTS завис. Обычно 8-16 тактов; не знаешь — не указывай.
+  ❌ НЕ передавай duration_sec (deprecated, игнорируется).
 - stop_music(pattern_name): stop a pattern or all music
 - set_dj_mode(enabled, theme?): enable/disable autonomous DJ mode (auto-transitions every 30–60s)
   → enabled=true: start DJ mode (call execute_music_code FIRST to start thematic music, then set_dj_mode)
@@ -302,7 +326,7 @@ Your music tools:
     Robot adapts music to theme AND occasionally makes thematic announcements (congrats, shoutouts).
     Pass theme ONLY on first activation — it's remembered until DJ mode is disabled.
   → enabled=false: stop DJ mode (clears theme too)
-- set_vibe_preset(vibe): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical)
+- set_vibe_preset(preset_name): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical). IMPORTANT: parameter name is ``preset_name`` (NOT ``preset``) — see issue #935.
 - get_music_state(): get current state
 - generate_tts_sample: UNAVAILABLE — do not use!
   For vocal sounds — letter 'c', spack=1 (pitchglitch) is KNOWN, search NOT needed!
@@ -865,6 +889,7 @@ STRUCTURE RULES:
 - Bridge: 8-16 bars, quieter, fewer instruments, mood shift
 - Outro: 8-16 bars, remove layers, fade out → Clock.clear()
 - ALWAYS end the track via `Clock.future(N, lambda: Clock.clear())` in outro!
+- ⚠️ Issue #990: this Clock.future ending applies ONLY to standalone instrumental tracks (no voice). When the OUTER orchestrator sings/raps/reads poetry over your beat, do NOT end the track — the system stops the music itself after `tts_batch_complete`!
 - Total duration: 96-160 bars ≈ 2-4 minutes at BPM 85-140
 - 4 beats = 16 ticks in Renardo
 

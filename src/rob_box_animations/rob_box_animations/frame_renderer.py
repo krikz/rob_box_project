@@ -1,3 +1,17 @@
+# Copyright 2026 krikz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Frame Renderer
 
@@ -11,10 +25,10 @@ from typing import Tuple
 
 
 class FrameRenderer:
-    """Renders animation frames to ROS2 messages"""
+    """Renders animation frames to ROS2 messages."""
 
     def __init__(self):
-        """Initialize renderer"""
+        """Initialize renderer."""
         self.image_cache = {}
 
     def load_image(self, image_path: str) -> np.ndarray:
@@ -136,11 +150,11 @@ class FrameRenderer:
             return False, str(e)
 
     def clear_cache(self):
-        """Clear image cache to free memory"""
+        """Clear image cache to free memory."""
         self.image_cache.clear()
 
     def get_cache_size(self) -> int:
-        """Get number of cached images"""
+        """Get number of cached images."""
         return len(self.image_cache)
 
 

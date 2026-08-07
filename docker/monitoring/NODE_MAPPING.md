@@ -112,8 +112,6 @@ ceiling-camera [Vision Pi]
 ├── usb_cam (USB camera driver)
 └── ceiling_camera (camera publisher)
 
-micro-ros-agent [Main Pi]
-└── micro_ros_agent (ESP32 bridge)
 
 perception [Main Pi]
 ├── health_monitor (система мониторинга)
@@ -156,7 +154,7 @@ zenoh-router-vision [Vision Pi]
 
 ### Main Pi (10.1.1.10)
 - **Навигация:** rtabmap, nav2, robot-state-publisher, twist-mux, lslidar
-- **Управление:** ros2-control, micro-ros-agent
+- **Управление:** ros2-control
 - **Восприятие:** perception (health, context, reflection)
 
 ### Vision Pi (10.1.1.11)
@@ -230,7 +228,7 @@ ros2 node list | grep -E "(rtabmap|nav2|control|twist|lidar|state)"
 **Восприятие:**
 ```bash
 # Найти ноду в Dashboard 3
-ros2 node list | grep -E "(oak|camera|micro_ros|health|context|reflection|vision)"
+ros2 node list | grep -E "(oak|camera|health|context|reflection|vision)"
 ```
 
 **Голос:**

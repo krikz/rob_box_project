@@ -36,7 +36,7 @@ class LLMToolCallAdapter:
 
     Преобразует tool_calls в запросы к MCP серверу и ожидает результаты.
     Работает с любым LLM, поддерживающим OpenAI tool_calls формат.
-    
+
     Версия 2.0: Поддержка async execution, параллельное выполнение, прерывания
     """
 
@@ -61,7 +61,7 @@ class LLMToolCallAdapter:
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
-        
+
         # Publisher для запросов выполнения инструментов
         self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
 
@@ -76,31 +76,31 @@ class LLMToolCallAdapter:
 
         # Кэш результатов: request_id -> result
         self.results_cache: Dict[str, Dict[str, Any]] = {}
-        
+
         # Event'ы для синхронного ожидания: request_id -> Event
         self.result_events: Dict[str, threading.Event] = {}
 
         # Timeout для ожидания результата (секунды)
         self.timeout = 5.0
-        
+
         # ============ Async Execution Engine ============
         self.async_executor = AsyncToolExecutor(
             execute_pub=self.execute_pub,
             result_callback=self._on_async_result,
             logger=node.get_logger()
         )
-        
+
         # Tool Call Accumulator для streaming
         self.tool_call_accumulator = ToolCallAccumulator()
 
         self.node.get_logger().info("✅ LLM Tool Call Adapter v2.0 инициализирован (async + interrupts)")
 
     def on_result(self, msg: String):
-        """Обработка результата выполнения инструмента"""
+        """Обработка результата выполнения инструмента."""
         try:
             result = json.loads(msg.data)
             request_id = result.get("request_id", "")
-            
+
             self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8] if request_id else 'empty'}")
 
             if not request_id:
@@ -110,12 +110,12 @@ class LLMToolCallAdapter:
             # Сохраняем результат в кэш
             self.results_cache[request_id] = result
             self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
-            
+
             # Уведомляем ждущий поток через Event
             if request_id in self.result_events:
                 self.result_events[request_id].set()
                 self.node.get_logger().info(f"✅ Event установлен для {request_id[:8]}")
-            
+
             # Уведомляем async executor
             self.async_executor.on_result_received(request_id, result)
 
@@ -129,11 +129,11 @@ class LLMToolCallAdapter:
             self.node.get_logger().error(f"❌ Ошибка парсинга результата: {e}")
         except Exception as e:
             self.node.get_logger().error(f"❌ Ошибка обработки результата: {e}")
-    
+
     def _on_async_result(self, request_id: str, result: Dict[str, Any]) -> None:
         """
         Callback для async executor когда получен результат
-        
+
         Args:
             request_id: ID запроса
             result: Результат выполнения
@@ -210,7 +210,7 @@ class LLMToolCallAdapter:
         # Используем простой wait() вместо spin_once, т.к. node уже управляется MultiThreadedExecutor
         # который автоматически вызовет on_result() callback в фоновом потоке
         result_received = result_event.wait(timeout=timeout)
-        
+
         # Проверяем финальный статус
         if not result_received:
             # Timeout - очищаем Event
@@ -225,14 +225,14 @@ class LLMToolCallAdapter:
         if request_id not in self.results_cache:
             self.node.get_logger().error(f"❌ Результат для {request_id[:8]} не найден в кэше после Event.set()")
             return {"success": False, "error": "Результат не найден в кэше"}
-            
+
         result_data = self.results_cache.pop(request_id)
         tool_result = result_data.get("result", {"success": False, "error": "Пустой результат"})
-        
+
         # Проверка: если инструмент async (возвращает сразу), то не ждем завершения
         if tool_result.get("data", {}).get("async"):
             self.node.get_logger().info(f"⚡ Инструмент {tool_name} асинхронный - возвращаем результат сразу")
-        
+
         return tool_result
 
     def process_tool_calls_from_message(self, message: Any) -> List[Dict[str, Any]]:
@@ -297,36 +297,36 @@ class LLMToolCallAdapter:
             messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": content})
 
         return messages
-    
+
     # ============================================================
     # Async Execution Methods (v2.0)
     # ============================================================
-    
+
     async def new_user_request(self) -> int:
         """
         Отметить начало нового пользовательского запроса
-        
+
         Увеличивает sequence_id, тем самым помечая все предыдущие
         tool_calls как устаревшие. Используется при прерывании.
-        
+
         Returns:
             Новый sequence ID
         """
         sequence_id = await self.async_executor.new_sequence()
-        
+
         # Также прерываем все активные LONG задачи
         cancelled = await self.async_executor.interrupt_all_long_tasks()
         if cancelled > 0:
             self.node.get_logger().info(
                 f"🔄 Новый запрос (sequence #{sequence_id}): прервано {cancelled} задач"
             )
-        
+
         return sequence_id
-    
+
     def get_current_sequence_id(self) -> int:
-        """Получить текущий sequence ID"""
+        """Получить текущий sequence ID."""
         return self.async_executor.get_current_sequence_id()
-    
+
     async def execute_tools_parallel_async(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -335,67 +335,67 @@ class LLMToolCallAdapter:
     ) -> List[Dict[str, Any]]:
         """
         Асинхронное параллельное выполнение tool_calls
-        
+
         Использует AsyncToolExecutor для оптимального выполнения:
         - INSTANT: Fire-and-forget
         - FAST/MEDIUM: Parallel await
         - LONG: Background tasks
-        
+
         Args:
             tool_calls: Список tool_calls
             tool_registry: Опциональный реестр для определения execution_type
             sequence_id: Sequence ID для проверки актуальности
-        
+
         Returns:
             Список результатов выполнения
         """
         return await self.async_executor.execute_tools_parallel(
             tool_calls, tool_registry, sequence_id
         )
-    
+
     async def interrupt_all_long_tasks(self) -> int:
         """
         Прервать все активные LONG задачи
-        
+
         Returns:
             Количество прерванных задач
         """
         return await self.async_executor.interrupt_all_long_tasks()
-    
+
     async def interrupt_task_by_name(self, tool_name: str) -> int:
         """
         Прервать все LONG задачи с указанным именем
-        
+
         Args:
             tool_name: Имя инструмента
-        
+
         Returns:
             Количество прерванных задач
         """
         return await self.async_executor.interrupt_task_by_name(tool_name)
-    
+
     def accumulate_tool_call_chunk(self, delta_tool_calls: List[Any]) -> None:
         """
         Добавить chunk tool_calls из streaming response
-        
+
         Args:
             delta_tool_calls: Список tool_call delta objects из OpenAI API
         """
         self.tool_call_accumulator.add_chunk(delta_tool_calls)
-    
+
     def get_accumulated_tool_calls(self) -> List[Dict[str, Any]]:
         """
         Получить полный список накопленных tool_calls
-        
+
         Returns:
             Список tool_calls готовых к выполнению
         """
         return self.tool_call_accumulator.get_complete_tool_calls()
-    
+
     def clear_tool_call_accumulator(self) -> None:
-        """Очистить accumulator для нового streaming запроса"""
+        """Очистить accumulator для нового streaming запроса."""
         self.tool_call_accumulator.clear()
-    
+
     async def process_tool_calls_from_message_async(
         self,
         message: Any,
@@ -403,17 +403,17 @@ class LLMToolCallAdapter:
     ) -> List[Dict[str, Any]]:
         """
         Обработать tool_calls из ответа LLM API асинхронно с параллельным выполнением
-        
+
         Args:
             message: OpenAI message object с tool_calls
             tool_registry: Опциональный реестр инструментов
-        
+
         Returns:
             Список результатов выполнения инструментов
         """
         if not hasattr(message, "tool_calls") or not message.tool_calls:
             return []
-        
+
         # Конвертируем tool_calls в нужный формат
         tool_calls = []
         for tool_call in message.tool_calls:
@@ -422,7 +422,7 @@ class LLMToolCallAdapter:
             except json.JSONDecodeError:
                 self.node.get_logger().error(f"❌ Не удалось распарсить аргументы для {tool_call.function.name}")
                 continue
-            
+
             tool_calls.append({
                 "id": tool_call.id,
                 "type": "function",
@@ -431,14 +431,14 @@ class LLMToolCallAdapter:
                     "arguments": parameters
                 }
             })
-        
+
         # Параллельное выполнение
         results = await self.execute_tools_parallel_async(tool_calls, tool_registry)
-        
+
         # Добавляем tool_call_id и tool_name к результатам
         for i, result in enumerate(results):
             if i < len(tool_calls):
                 result["tool_call_id"] = tool_calls[i]["id"]
                 result["tool_name"] = tool_calls[i]["function"]["name"]
-        
+
         return results

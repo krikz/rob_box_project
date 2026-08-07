@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 def check_requirements():
-    """Проверка установленных зависимостей"""
+    """Проверка установленных зависимостей."""
     try:
         import torch
         import piper_train
@@ -38,61 +38,61 @@ def prepare_dataset(dataset_dir: str, output_dir: str):
     dataset_path = Path(dataset_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     metadata_file = dataset_path / "metadata.csv"
     if not metadata_file.exists():
         print(f"❌ Metadata file not found: {metadata_file}")
         print("Run record_yandex_voice.py first to create the dataset!")
         return False
-    
+
     print(f"Reading metadata from: {metadata_file}")
-    
+
     # Читаем metadata.csv и создаём Piper формат
     # Формат Piper: audio_file|text|speaker_id
     # Наш формат: filename|text|duration
-    
+
     piper_metadata = []
     with open(metadata_file, 'r', encoding='utf-8') as f:
         for line in f:
             if not line.strip():
                 continue
-            
+
             parts = line.strip().split('|')
             if len(parts) < 2:
                 continue
-            
+
             filename = parts[0]
             text = parts[1]
-            
+
             # Полный путь к аудио файлу
             audio_path = dataset_path / filename
             if not audio_path.exists():
                 print(f"⚠️  Audio file not found: {audio_path}")
                 continue
-            
+
             # Формат Piper: относительный путь|текст|speaker_id
             piper_metadata.append(f"{filename}|{text}|robbox")
-    
+
     # Сохраняем в формате Piper
     piper_metadata_file = output_path / "metadata.csv"
     with open(piper_metadata_file, 'w', encoding='utf-8') as f:
         f.write('\n'.join(piper_metadata))
-    
+
     print(f"✅ Prepared {len(piper_metadata)} samples")
     print(f"   Piper metadata: {piper_metadata_file}")
-    
+
     # Создаём символьный линк на аудио файлы
     audio_link = output_path / "wavs"
     if not audio_link.exists():
         audio_link.symlink_to(dataset_path, target_is_directory=True)
         print(f"✅ Created audio link: {audio_link} -> {dataset_path}")
-    
+
     return True
 
 def create_config(output_dir: str, dataset_dir: str, language: str = "ru"):
-    """Создание конфигурационного файла для Piper"""
+    """Создание конфигурационного файла для Piper."""
     output_path = Path(output_dir)
-    
+
     config = {
         "audio": {
             "sample_rate": 22050,
@@ -132,38 +132,38 @@ def create_config(output_dir: str, dataset_dir: str, language: str = "ru"):
             "num_workers": 4
         }
     }
-    
+
     config_file = output_path / "config.json"
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-    
+
     print(f"✅ Config created: {config_file}")
     return config_file
 
 def train(dataset_dir: str, output_dir: str, resume_from: Optional[str] = None):
-    """Запуск обучения Piper модели"""
-    
+    """Запуск обучения Piper модели."""
+
     print("\n" + "=" * 60)
     print("PIPER TTS TRAINING - ROBBOX")
     print("=" * 60)
     print()
-    
+
     # Проверка зависимостей
     if not check_requirements():
         return 1
-    
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Подготовка датасета
     print("\n[1/4] Preparing dataset...")
     if not prepare_dataset(dataset_dir, output_path):
         return 1
-    
+
     # Создание конфигурации
     print("\n[2/4] Creating configuration...")
     config_file = create_config(output_path, dataset_dir)
-    
+
     # Проверка GPU
     print("\n[3/4] Checking GPU...")
     import torch
@@ -176,11 +176,11 @@ def train(dataset_dir: str, output_dir: str, resume_from: Optional[str] = None):
         gpu_name = torch.cuda.get_device_name(0)
         gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
         print(f"✅ GPU: {gpu_name} ({gpu_memory:.1f} GB)")
-    
+
     # Запуск обучения
     print("\n[4/4] Starting training...")
     print("=" * 60)
-    
+
     # Команда для обучения Piper
     cmd = [
         "python3", "-m", "piper_train",
@@ -188,13 +188,13 @@ def train(dataset_dir: str, output_dir: str, resume_from: Optional[str] = None):
         "--checkpoint-dir", str(output_path / "checkpoints"),
         "--config", str(config_file),
     ]
-    
+
     if resume_from:
         cmd.extend(["--resume-from", resume_from])
-    
+
     print(f"Command: {' '.join(cmd)}")
     print()
-    
+
     # Запуск
     try:
         subprocess.run(cmd, check=True)
@@ -248,26 +248,26 @@ Training time:
   - Full training (3-5 h): ~5-14 days on RTX 3060
         """
     )
-    
+
     parser.add_argument(
         "--dataset",
         required=True,
         help="Path to dataset directory with metadata.csv and WAV files"
     )
-    
+
     parser.add_argument(
         "--output",
         required=True,
         help="Output directory for model, checkpoints, and logs"
     )
-    
+
     parser.add_argument(
         "--resume-from",
         help="Resume training from checkpoint"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Проверка датасета
     dataset_path = Path(args.dataset)
     if not dataset_path.exists():
@@ -276,12 +276,12 @@ Training time:
         print("  cd src/rob_box_voice/scripts")
         print("  python3 record_yandex_voice.py --input dataset/sentences.txt --output ~/robbox_tts_training/datasets/robbox_voice/")
         return 1
-    
+
     metadata_file = dataset_path / "metadata.csv"
     if not metadata_file.exists():
         print(f"❌ Metadata file not found: {metadata_file}")
         return 1
-    
+
     # Запуск обучения
     return train(args.dataset, args.output, args.resume_from)
 
