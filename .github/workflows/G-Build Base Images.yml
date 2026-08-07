@@ -9,10 +9,8 @@ permissions:
   contents: read
 
 env:
-  # APT_PROXY настраивается на self-hosted runner'е (Katana) автоматически.
-  # Не хардкодим адрес — GitHub Actions runner изолирован от локальной сети,
-  # apt-cacher должен быть на самом runner'е через setup_buildx_with_apt_cache.sh.
-  APT_PROXY: ""
+  APT_PROXY: ${{ secrets.APT_PROXY || 'http://10.1.1.5:3142' }}
+  REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box_base
   ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
 
@@ -103,7 +101,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            APT_PROXY=${{ env.APT_PROXY }}
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
 
       - name: Collect build logs on failure
         if: failure()
@@ -157,7 +155,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            APT_PROXY=${{ env.APT_PROXY }}
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
 
   # Сборка базового образа DepthAI (для OAK-D камеры)
   build-depthai:
@@ -204,7 +202,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            APT_PROXY=${{ env.APT_PROXY }}
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
 
   # Сборка базового образа PCL (для лидаров)
   build-pcl:
@@ -252,5 +250,5 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            APT_PROXY=${{ env.APT_PROXY }}
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
             BASE_IMAGE=${{ env.IMAGE_PREFIX }}:ros2-zenoh
