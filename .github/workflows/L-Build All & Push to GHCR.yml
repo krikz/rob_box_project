@@ -3,7 +3,8 @@ name: "L: Build All & Push to GHCR"
 # Полная локальная сборка ВСЕХ образов на self-hosted Katana (native arm64, без QEMU)
 # и push в ghcr.io для последующего деплоя через L-Deploy and Verify.yml --ref main.
 #
-# Использует существующие L-Build workflows для сборки, потом пушит всё в ghcr.io.
+# Стиль как у L-Build All Services: 3 параллельных workflow_call'а (base + main + vision),
+# затем push всех собранных images в ghcr.io с SHA-тегами + обновление .image-versions.
 on:
   push:
     branches:
@@ -26,79 +27,33 @@ env:
   ROS_DISTRO: humble
 
 jobs:
-  # Сборка ВСЕХ образов в local-registry на Katana
-  build-all-local:
-    runs-on: [self-hosted, Linux, X64, rob-box]
-    steps:
-      - name: Build all services locally
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          DOCKER_TAG="latest"
-          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+  # Параллельная сборка базовых образов (как в L-Build All Services)
+  build-base-images:
+    uses: ./.github/workflows/L-Build Base Images.yml
+    with:
+      push_to_registry: 'true'
 
-          # Список сервисов с их build context
-          # Формат: "service-name|dockerfile-path|context-path"
-          declare -a SERVICES=(
-            "rtabmap|docker/base/Dockerfile.rtabmap|docker/base"
-            "ros2-zenoh|docker/base/Dockerfile.ros2-zenoh|docker/base"
-            "depthai|docker/base/Dockerfile.depthai|docker/base"
-            "pcl|docker/base/Dockerfile.pcl|docker/base"
-            "robot-state-publisher|docker/main/robot_state_publisher/Dockerfile|docker/main/robot_state_publisher"
-            "rtabmap-sync|docker/main/rtabmap/Dockerfile|docker/main/rtabmap"
-            "twist-mux|docker/main/twist_mux/Dockerfile|docker/main/twist_mux"
-            "teleop|docker/main/teleop/Dockerfile|docker/main/teleop"
-            "micro-ros-agent|docker/main/micro_ros_agent/Dockerfile|docker/main/micro_ros_agent"
-            "ros2-control|docker/main/ros2_control/Dockerfile|docker/main/ros2_control"
-            "nav2|docker/main/nav2/Dockerfile|docker/main/nav2"
-            "lslidar|docker/main/lslidar/Dockerfile|docker/main/lslidar"
-            "perception|docker/main/perception/Dockerfile|docker/main/perception"
-            "oak-d|docker/vision/oak-d/Dockerfile|docker/vision"
-            "led-matrix|docker/vision/led_matrix/Dockerfile|."
-            "ceiling-camera|docker/vision/ceiling-camera/Dockerfile|docker/vision"
-            "voice-base|docker/vision/voice_base/Dockerfile|docker/vision/voice_base"
-            "voice-resources|docker/vision/voice_resources/Dockerfile|docker/vision"
-            "voice-assistant|docker/vision/voice_assistant/Dockerfile|."
-            "telegram-bot|docker/vision/telegram_bot/Dockerfile|."
-          )
+  # Параллельная сборка Main Pi сервисов (как в L-Build All Services)
+  build-main-services:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Main Pi Services.yml
+    with:
+      push_to_registry: 'true'
 
-          for SERVICE_DEF in "${SERVICES[@]}"; do
-            IFS='|' read -ra PARTS <<< "$SERVICE_DEF"
-            SERVICE="${PARTS[0]}"
-            DOCKERFILE="${PARTS[1]}"
-            CONTEXT="${PARTS[2]}"
+  # Параллельная сборка Vision Pi сервисов (как в L-Build All Services)
+  build-vision-services:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Vision Pi Services.yml
+    with:
+      push_to_registry: 'true'
 
-            LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${DOCKER_TAG}"
-            LOCAL_SHA_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${NEW_TAG}"
-
-            # Build
-            docker buildx build \
-              --platform linux/arm64 \
-              --file "${DOCKERFILE}" \
-              --tag "${LOCAL_TAG}" \
-              --tag "${LOCAL_SHA_TAG}" \
-              --load \
-              "${CONTEXT}" || {
-                echo "❌ Failed to build ${SERVICE}"
-                continue
-              }
-
-            echo "✅ Built ${LOCAL_TAG}"
-          done
-
-      - name: Verify local registry contents
-        run: |
-          echo "📦 Local Registry Contents:"
-          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read repo; do
-            echo "  📁 $repo"
-            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read tag; do
-              echo "    🏷️  $tag"
-            done
-          done
-
-  # Push всех собранных images в ghcr.io
+  # Push всех собранных images в ghcr.io с latest + SHA-тегами
   push-to-ghcr:
-    needs: build-all-local
+    needs: [build-main-services, build-vision-services]
     runs-on: [self-hosted, Linux, X64, rob-box]
+    if: success()
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -113,34 +68,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push all images to GHCR with latest + SHA tags
+      - name: Push all images to GHCR
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           DOCKER_TAG="latest"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Тот же список сервисов
+          # Полный список сервисов (как в L-Build Base/Main/Vision Pi Services)
+          # Формат: "service-name|is-base-image"
           declare -a SERVICES=(
-            "rtabmap"
-            "ros2-zenoh"
-            "depthai"
-            "pcl"
-            "robot-state-publisher"
-            "rtabmap-sync"
-            "twist-mux"
-            "teleop"
-            "micro-ros-agent"
-            "ros2-control"
-            "nav2"
-            "lslidar"
-            "perception"
-            "oak-d"
-            "led-matrix"
-            "ceiling-camera"
-            "voice-base"
-            "voice-resources"
-            "voice-assistant"
-            "telegram-bot"
+            # Base images
+            "rtabmap|true"
+            "ros2-zenoh|true"
+            "depthai|true"
+            "pcl|true"
+            # Main Pi сервисы
+            "robot-state-publisher|false"
+            "rtabmap-sync|false"
+            "twist-mux|false"
+            "teleop|false"
+            "micro-ros-agent|false"
+            "ros2-control|false"
+            "nav2|false"
+            "lslidar|false"
+            "perception|false"
+            # Vision Pi сервисы
+            "oak-d|false"
+            "led-matrix|false"
+            "ceiling-camera|false"
+            "voice-base|false"
+            "voice-resources|false"
+            "voice-assistant|false"
+            "telegram-bot|false"
           )
 
           push_image() {
@@ -165,7 +124,8 @@ jobs:
             echo "✅ Pushed ${GHCR_SHA_TAG}"
           }
 
-          for SERVICE in "${SERVICES[@]}"; do
+          for SERVICE_DEF in "${SERVICES[@]}"; do
+            IFS='|' read -r SERVICE _ <<< "$SERVICE_DEF"
             push_image "$SERVICE"
           done
 
@@ -230,7 +190,7 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [build-all-local, push-to-ghcr]
+    needs: [build-base-images, build-main-services, build-vision-services, push-to-ghcr]
     runs-on: [self-hosted, Linux, X64, rob-box]
     if: always()
     steps:
@@ -238,8 +198,10 @@ jobs:
         run: |
           echo "🎉 Build All & Push to GHCR Complete!"
           echo ""
-          echo "Results:"
-          echo "  Build All Local: ${{ needs.build-all-local.result }}"
+          echo "Build Results:"
+          echo "  Base Images: ${{ needs.build-base-images.result }}"
+          echo "  Main Services: ${{ needs.build-main-services.result }}"
+          echo "  Vision Services: ${{ needs.build-vision-services.result }}"
           echo "  Push to GHCR: ${{ needs.push-to-ghcr.result }}"
           echo ""
           echo "🚀 Готово к деплою через:"
