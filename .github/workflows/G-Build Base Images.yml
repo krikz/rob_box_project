@@ -251,5 +251,4 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
-          build-args: |
             BASE_IMAGE=${{ env.IMAGE_PREFIX }}:ros2-zenoh
