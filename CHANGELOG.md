@@ -5,6 +5,28 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [v1.0.0-1-bfe71bf-humble-rc1] - 2026-08-06
+
+Первый релиз v1.0.0 на ROS 2 Humble. RC (release candidate) — обкатка после
+выставок и ДОДов. Build `bfe71bf` (short SHA от `origin/main`).
+
+**Что включено:** состояние `main` (HEAD `bfe71bfb`) — рабочая лошадка,
+которую гоняли на ДОДах и выставках. Стабильный baseline для hotfix'ов.
+
+**НЕ включено:** `feature/harness-p0-foundation` (MiniMax LLM-интеграция,
+llm_streaming, fallback'и, DJ-план, agent-flow proposal) — в активной
+разработке, требует стабилизации. Дойдёт в `develop` → `main` после.
+
+**Теги:** `v1.0.0-1-bfe71bf-humble-rc1` (annotated, не подписан)
+
+**Платформа:** ROS 2 Humble (`humble`) — единственная поддерживаемая.
+
+**Hotfix-процедура:**
+1. `git checkout v1.0.0-1-bfe71bf-humble-rc1`
+2. Создать ветку `hotfix/<short-name>` от тега
+3. Fix → push → PR в этот тег (или в новый RC)
+4. Новый релиз как `v1.0.0-2-<build>-humble-rc1` (build++)
+
 ## [Unreleased]
 
 ### MiniMax TTS-провайдер
