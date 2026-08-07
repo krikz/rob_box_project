@@ -9,6 +9,7 @@ permissions:
   contents: read
 
 env:
+  APT_PROXY: ${{ secrets.APT_PROXY || 'http://10.1.1.5:3142' }}
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box_base
   ROS_DISTRO: humble  # Изменить при переходе на другую версию ROS 2 (jazzy, kilted, и т.д.)
@@ -99,6 +100,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
 
       - name: Collect build logs on failure
         if: failure()
@@ -151,6 +154,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
 
   # Сборка базового образа DepthAI (для OAK-D камеры)
   build-depthai:
@@ -196,6 +201,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
 
   # Сборка базового образа PCL (для лидаров)
   build-pcl:
@@ -242,5 +249,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            APT_PROXY=${{ env.APT_PROXY || 'http://10.1.1.5:3142' }}
           build-args: |
             BASE_IMAGE=${{ env.IMAGE_PREFIX }}:ros2-zenoh
