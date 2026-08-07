@@ -38,18 +38,23 @@ jobs:
       - name: Set build configuration
         id: set-config
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          if [ "$BRANCH_NAME" = "main" ]; then
+          # 🔴 FIX (06.08): для refs/tags/* используем DOCKER_TAG=latest
+          # (release builds на тегах должны отслеживаться через .image-versions.latest).
+          # Раньше refs/tags/* попадал в else → DOCKER_TAG=local → "file not found" warning.
+          REF_NAME="${GITHUB_REF#refs/}"
+          if [[ "$REF_NAME" == tags/v* ]]; then
             DOCKER_TAG="latest"
-          elif [ "$BRANCH_NAME" = "develop" ]; then
+          elif [ "${REF_NAME#heads/}" = "main" ]; then
+            DOCKER_TAG="latest"
+          elif [ "${REF_NAME#heads/}" = "develop" ]; then
             DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
+          elif [[ "${REF_NAME#heads/}" == feature/* ]] || [[ "${REF_NAME#heads/}" == feat/* ]] || [[ "${REF_NAME#heads/}" == copilot/* ]]; then
             DOCKER_TAG="test"
           else
             DOCKER_TAG="local"
           fi
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
-          echo "Docker Tag: $DOCKER_TAG"
+          echo "Docker Tag: $DOCKER_TAG (ref: $GITHUB_REF)"
 
   # Параллельная сборка всех сервисов Main Pi (до 8 одновременно)
   build-robot-state-publisher:
