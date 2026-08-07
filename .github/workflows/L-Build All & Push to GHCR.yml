@@ -120,12 +120,10 @@ jobs:
 
             # Push latest (только для non-base, для base используем latest-DOCKER_TAG)
             docker buildx imagetools create --tag "${GHCR_TAG}" "${LOCAL_TAG}"
-            docker buildx imagetools push "${GHCR_TAG}"
             echo "✅ Pushed ${GHCR_TAG}"
 
             # Push SHA-immutable
             docker buildx imagetools create --tag "${GHCR_SHA_TAG}" "${LOCAL_TAG}"
-            docker buildx imagetools push "${GHCR_SHA_TAG}"
             echo "✅ Pushed ${GHCR_SHA_TAG}"
           }
 
