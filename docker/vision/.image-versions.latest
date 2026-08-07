@@ -4,9 +4,9 @@
 # After build: SERVICE_TAG=latest-{gitsha}  (immutable, specific to that commit)
 # Initial/fallback: SERVICE_TAG=latest       (mutable, always points to last build)
 
-OAK_D_TAG=latest-b9fc41e
-RTABMAP_SYNC_TAG=latest-b9fc41e
-LED_MATRIX_TAG=latest-b9fc41e
-CEILING_CAMERA_TAG=latest-b9fc41e
-VOICE_ASSISTANT_TAG=latest-b9fc41e
-TELEGRAM_BOT_TAG=latest-b9fc41e
+OAK_D_TAG=latest-571f8a6
+RTABMAP_SYNC_TAG=latest-571f8a6
+LED_MATRIX_TAG=latest-571f8a6
+CEILING_CAMERA_TAG=latest-571f8a6
+VOICE_ASSISTANT_TAG=latest-571f8a6
+TELEGRAM_BOT_TAG=latest-571f8a6
