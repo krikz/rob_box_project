@@ -107,11 +107,12 @@ jobs:
           done
 
           # Сохраняем через JSON для передачи в needs
+          # Используем -c (compact) чтобы GITHUB_OUTPUT был однострочным
           if [ ${#MISSING_SERVICES[@]} -eq 0 ]; then
             echo "✅ All requested services already built for SHA ${SHORT_SHA}"
             echo "services=[]" >> $GITHUB_OUTPUT
           else
-            SERVICES_JSON=$(printf '%s\n' "${MISSING_SERVICES[@]}" | jq -R . | jq -s 'map(select(length > 0))')
+            SERVICES_JSON=$(printf '%s\n' "${MISSING_SERVICES[@]}" | jq -R . | jq -sc 'map(select(length > 0))')
             echo "services=${SERVICES_JSON}" >> $GITHUB_OUTPUT
             echo "Missing services: ${MISSING_SERVICES[@]}"
           fi
