@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           sparse-checkout: .github/workflows/scripts/e2e_remote.sh
           sparse-checkout-cone-mode: false
@@ -96,14 +96,14 @@ jobs:
           echo "Log lines: $(wc -l < "$LOG")"
 
       - name: Upload recording
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-recording-${{ github.run_id }}
           path: /tmp/dialog_e2e_${{ github.run_id }}.wav
           retention-days: 7
 
       - name: Upload logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-logs-${{ github.run_id }}
           path: /tmp/voice_e2e_${{ github.run_id }}.log
