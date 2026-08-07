@@ -65,7 +65,7 @@ gh workflow run "L-Deploy and Verify.yml" \
 ### Build All Services Manually
 
 ```bash
-gh workflow run "G-Build All Services.yml"
+gh workflow run "L-Build All Services.yml"
 ```
 
 ### Build Single Service Locally
