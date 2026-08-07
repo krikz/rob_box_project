@@ -23,17 +23,16 @@ env:
   LOCAL_REGISTRY: localhost:5000
   GHCR_REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+  BASE_IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box_base
   LOCAL_PREFIX: localhost:5000/krikz/rob_box
   ROS_DISTRO: humble
 
 jobs:
-  # Параллельная сборка базовых образов (как в L-Build All Services)
   build-base-images:
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
       push_to_registry: true
 
-  # Параллельная сборка Main Pi сервисов (как в L-Build All Services)
   build-main-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
@@ -41,7 +40,6 @@ jobs:
     with:
       push_to_registry: true
 
-  # Параллельная сборка Vision Pi сервисов (как в L-Build All Services)
   build-vision-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
@@ -49,7 +47,6 @@ jobs:
     with:
       push_to_registry: true
 
-  # Push всех собранных images в ghcr.io с latest + SHA-тегами
   push-to-ghcr:
     needs: [build-main-services, build-vision-services]
     runs-on: [self-hosted, Linux, X64, rob-box]
@@ -74,52 +71,67 @@ jobs:
           DOCKER_TAG="latest"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Полный список сервисов
+          # Список сервисов: service-name|is-base-image
+          # Base images живут в отдельном пакете ghcr.io/krikz/rob_box_base
+          # (другой GitHub Package — нужны явные права)
           declare -a SERVICES=(
-            "rtabmap"
-            "ros2-zenoh"
-            "depthai"
-            "pcl"
-            "robot-state-publisher"
-            "rtabmap-sync"
-            "twist-mux"
-            "teleop"
-            "micro-ros-agent"
-            "ros2-control"
-            "nav2"
-            "lslidar"
-            "perception"
-            "oak-d"
-            "led-matrix"
-            "ceiling-camera"
-            "voice-base"
-            "voice-resources"
-            "voice-assistant"
-            "telegram-bot"
+            "rtabmap|true"
+            "ros2-zenoh|true"
+            "depthai|true"
+            "pcl|true"
+            "robot-state-publisher|false"
+            "rtabmap-sync|false"
+            "twist-mux|false"
+            "teleop|false"
+            "micro-ros-agent|false"
+            "ros2-control|false"
+            "nav2|false"
+            "lslidar|false"
+            "perception|false"
+            "oak-d|false"
+            "led-matrix|false"
+            "ceiling-camera|false"
+            "voice-base|false"
+            "voice-resources|false"
+            "voice-assistant|false"
+            "telegram-bot|false"
           )
 
           push_image() {
             local SERVICE="$1"
+            local IS_BASE="$2"
             local LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${DOCKER_TAG}"
-            local GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-latest"
-            local GHCR_SHA_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${NEW_TAG}"
+            local PREFIX GHCR_TAG GHCR_SHA_TAG
+
+            if [ "$IS_BASE" = "true" ]; then
+              PREFIX="$BASE_IMAGE_PREFIX"
+              GHCR_TAG="${PREFIX}:${SERVICE}-${ROS_DISTRO}-${DOCKER_TAG}"
+              GHCR_SHA_TAG="${PREFIX}:${SERVICE}-${ROS_DISTRO}-${NEW_TAG}"
+            else
+              PREFIX="$IMAGE_PREFIX"
+              GHCR_TAG="${PREFIX}:${SERVICE}-${ROS_DISTRO}-latest"
+              GHCR_SHA_TAG="${PREFIX}:${SERVICE}-${ROS_DISTRO}-${NEW_TAG}"
+            fi
 
             if ! docker buildx imagetools inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
               echo "⚠️  ${LOCAL_TAG} not in local registry, skipping"
               return
             fi
 
+            # Push latest (только для non-base, для base используем latest-DOCKER_TAG)
             docker buildx imagetools create --tag "${GHCR_TAG}" "${LOCAL_TAG}"
             docker buildx imagetools push "${GHCR_TAG}"
             echo "✅ Pushed ${GHCR_TAG}"
 
+            # Push SHA-immutable
             docker buildx imagetools create --tag "${GHCR_SHA_TAG}" "${LOCAL_TAG}"
             docker buildx imagetools push "${GHCR_SHA_TAG}"
             echo "✅ Pushed ${GHCR_SHA_TAG}"
           }
 
-          for SERVICE in "${SERVICES[@]}"; do
-            push_image "$SERVICE"
+          for SERVICE_DEF in "${SERVICES[@]}"; do
+            IFS='|' read -r SERVICE IS_BASE <<< "$SERVICE_DEF"
+            push_image "$SERVICE" "$IS_BASE"
           done
 
           echo ""
@@ -174,7 +186,6 @@ jobs:
             echo "ℹ️  No changes to .image-versions"
           fi
 
-  # Итоговая сводка
   summary:
     needs: [build-base-images, build-main-services, build-vision-services, push-to-ghcr]
     runs-on: [self-hosted, Linux, X64, rob-box]
