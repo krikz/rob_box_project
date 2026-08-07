@@ -14,7 +14,7 @@ soundfile>=0.14.0      # Чтение/запись WAV
 numpy>=2.5.1          # Конвертация audio buffers (int16 -> float32)
 
 # Utilities
-tqdm>=4.69.1           # Progress bar для batch recording
+tqdm>=4.70.0           # Progress bar для batch recording
 
 # Опционально для тестирования воспроизведения
 # sounddevice>=0.4.6   # Для play_audio_segment (как в вашем скрипте)
