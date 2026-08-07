@@ -188,10 +188,37 @@ jobs:
           set -eo pipefail
           source /opt/ros/humble/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
+
           cd ${{ github.workspace }}/test_ws
-          python3 -c "import pytest; assert pytest.__version__>='8'"
+
+          # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+          # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
+          # Same workaround as the unit-tests job above — without it pytest 9.x
+          # fails at plugin registration with:
+          #   PluginValidationError: Plugin 'launch_testing' for hook
+          #   'pytest_pycollect_makemodule'
+          # Cannot be blocklisted via PYTEST_ADDOPTS or pytest.ini — only removal works.
+          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+          python3 -m pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+
+          # Block launch_testing plugin (apt, compiled for pytest 6, crashes pytest 9)
+          printf '[tool:pytest]\naddopts = -p no:launch_testing\n' > ${{ github.workspace }}/test_ws/pytest.ini
+          python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
+
+          # Ensure runtime deps for unit tests (defensive — Dockerfile already has these,
+          # but a stale image may not. Pinned to known-good versions.)
+          python3 -m pip install --quiet --no-cache-dir requests pyyaml 2>/dev/null || true
+
+          # Run tests — NO `|| true`, failures MUST surface
+          # Filter to only tests marked @pytest.mark.integration.
+          # ``rob_box_harness`` is included because ``test_integration_offline.py``
+          # lives there (``pytestmark = pytest.mark.integration``); without it
+          # the -m filter would collect 0 tests for rob_box_voice alone and
+          # colcon would fail with exit code 5.
           colcon test \
-            --packages-select rob_box_voice \
+            --packages-select rob_box_voice rob_box_harness \
             --pytest-args '-m integration' \
             --event-handlers console_direct+ \
             --return-code-on-test-failure
