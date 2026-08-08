@@ -17,6 +17,9 @@ jobs:
   build-and-test:
     uses: ./.github/workflows/L-Build All Services.yml
     secrets: inherit
+    with:
+      build_base_images: false
+      push_to_registry: true
 
   # Шаг 2: Если ВСЕ сборки успешны, создаём PR в main
   create-pr-to-main:
