@@ -15,6 +15,18 @@ on:
         required: false
         default: 'true'
         type: boolean
+  workflow_call:  # Reusable — вызывается из G-Auto-merge to Main
+    inputs:
+      build_base_images:
+        description: 'Build base images first'
+        required: false
+        default: 'false'
+        type: boolean
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
+        required: false
+        default: 'true'
+        type: boolean
 
 permissions:
   contents: write  # Required for git push of .image-versions files

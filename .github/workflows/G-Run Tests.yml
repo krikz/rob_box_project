@@ -27,6 +27,7 @@ jobs:
   unit-tests:
     name: Unit Tests (ROS2 Humble)
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     container:
       image: ghcr.io/krikz/rob-box-ci:humble
       options: --user root
@@ -103,12 +104,21 @@ jobs:
             --event-handlers console_direct+ \
             --return-code-on-test-failure
 
-          # rob_box_animations + rob_box_perception: pytest only.
-          # Linting skipped — pre-existing style debt, tracked separately.
-          colcon test \
-            --packages-select rob_box_animations rob_box_perception \
+          # rob_box_animations + rob_box_perception: pytest only, split so a
+          # hang in one package doesn't block the other. Each wrapped in
+          # `timeout 300` so a stuck test fails fast instead of hanging the
+          # job for hours (see runs 1293/1300-1302: 6h+ hangs).
+          echo "=== colcon test: rob_box_animations (timeout 300s) ==="
+          timeout 300 colcon test \
+            --packages-select rob_box_animations \
             --event-handlers console_direct+ \
-            --return-code-on-test-failure || true
+            --return-code-on-test-failure || { echo "❌ rob_box_animations FAILED or TIMEOUT (rc=$?)"; exit 1; }
+
+          echo "=== colcon test: rob_box_perception (timeout 300s) ==="
+          timeout 300 colcon test \
+            --packages-select rob_box_perception \
+            --event-handlers console_direct+ \
+            --return-code-on-test-failure || { echo "❌ rob_box_perception FAILED or TIMEOUT (rc=$?)"; exit 1; }
 
       - name: Display test results
         if: always()
