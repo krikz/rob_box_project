@@ -87,12 +87,11 @@ issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + ti
 | Служебные e2e | `~e2e/test-round-N`, `~e2e/wip-<id>-<slug>` | `~e2e/wip-1050-audio-buffer` |
 | Служебные revert | `~revert/<id>` | `~revert/1050` |
 | Служебные hotfix | `~hotfix/<id>` | `~hotfix/1050` |
-| Служебные CI-fix | `~ci-fix/<id>-<slug>` | `~ci-fix/1052-g-run-tests` |
 
 **Правила:**
 - Тильда строго в начале имени (`~e2e/...`, не `e2e/~...`).
-- Воркер-ветки `agent/<id>-<slug>` — рабочие, БЕЗ тильды.
-- Служебные операции (e2e, revert, hotfix, CI-fix, релиз) — С тильдой.
+- **Все ветки БЕЗ тильды (`agent/...`, `feature/...`) — рабочие, агентские. Удаляются после merge.**
+- Служебные операции (e2e, revert, hotfix, релиз) — С тильдой.
 - `branch_for()` в triage.sh, префиксы в e2e-process.sh, поиск PR в merge-gate.sh — ВСЕ должны соблюдать эту схему.
 
 ---
@@ -131,7 +130,7 @@ priority: P<P0..P2>
 
 **Идемпотентность:** при создании карточки пишет **коммент в issue** с маркером `kanban: t_<task_id>`. На следующем тике cron смотрит на наличие такого комментария — пропускает.
 
-**Именование ветки (Q20):** `branch_for()` в triage.sh — рабочие `agent/<id>-<slug>` (без `~`); служебные роли (`~e2e/`, `~revert/`, `~hotfix/`, CI-fix) — с тильдой в начале.
+**Именование ветки (Q20):** `branch_for()` в triage.sh — рабочие `agent/<id>-<slug>` (без `~`); служебные роли (`~e2e/`, `~revert/`, `~hotfix/`) — с тильдой в начале.
 
 ### 3.2 Agent-исполнитель (sub-agent)
 
@@ -337,7 +336,7 @@ cronjob.create(
 | Q7 | **Ручной merge юзером** после просмотра артефактов |
 | Q8 | Богатый набор артефактов (verdict+run+log+audio+ASR+diff+acceptance+timing+RMS+baseline) |
 | Q9 | Номерованные проходы `~e2e/test-round-N`, N из предыдущей ветки или файлика |
-| Q20 | Именование веток: `~` для служебных (e2e/revert/hotfix/CI-fix), `agent/...` для рабочих |
+| Q20 | Именование веток: `~` для служебных (e2e/revert/hotfix), `agent/...` для рабочих; ветки без `~` удаляются после merge |
 | Q21 | НЕ создавать CI-fix карточки — block/unblock исходной карточки |
 | Q22 | Карточка block до e2e; `done` ТОЛЬКО после merge юзером |
 | Q23 | Воркер пишет комментарии о ходе в GitHub issue |
