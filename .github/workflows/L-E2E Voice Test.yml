@@ -145,6 +145,10 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
             "docker logs voice-assistant --since 10m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
+          # Дозаписываем вывод retry-скрипта (маркер E2E_REACTION_OK/NO_REACTION)
+          echo "--- E2E REMOTE OUTPUT ---" >> "$LOG"
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+            "cat /tmp/e2e_out.log 2>/dev/null" >> "$LOG" || true
           echo "Log lines: $(wc -l < "$LOG")"
       - name: Validate e2e result (real robot response)
         run: |
@@ -163,18 +167,28 @@ jobs:
             echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
             FAIL="stt-no-phrase"
           fi
-          # 2) ОТВЕТ: TTS должен быть ПОСЛЕ STT-фразы (ответ на команду).
-          #    Приветствие (startup greeting) идёт ДО фразы — не считается ответом!
-          stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-          tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-          if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
-            echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
-          elif grep -q "TTS finished" "$LOG"; then
-            echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
-            FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+          # 2) ОТВЕТ: робот должен РЕАГИРОВАТЬ на команду.
+          #    Приоритет — маркер retry-скрипта (E2E_REACTION_OK в e2e_out.log):
+          #    скрипт сам проверял docker logs робота ПОСЛЕ команды и повторял
+          #    команду, пока не увидел TTS finished. Это самая честная проверка.
+          if grep -q "E2E_REACTION_OK" "$LOG"; then
+            echo "✅ SPEECH: робот ответил (retry-скрипт видел TTS finished после команды)"
+          elif grep -q "E2E_NO_REACTION" "$LOG"; then
+            echo "❌ NO REACTION: retry-скрипт 3 раза проиграл команду — робот не ответил"
+            FAIL="${FAIL:+$FAIL,}no-reaction"
           else
-            echo "❌ NO SPEECH: робот не произнёс ответ"
-            FAIL="${FAIL:+$FAIL,}no-speech"
+            # Fallback (старая логика): TTS должен быть ПОСЛЕ STT-фразы.
+            stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+            tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+            if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
+              echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
+            elif grep -q "TTS finished" "$LOG"; then
+              echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
+              FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+            else
+              echo "❌ NO SPEECH: робот не произнёс ответ"
+              FAIL="${FAIL:+$FAIL,}no-speech"
+            fi
           fi
           # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
           if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
