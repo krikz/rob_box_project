@@ -146,6 +146,44 @@ def _stream_envelope(
     }
 
 
+def _stream_tool_call_envelope(
+    index: int,
+    *,
+    id: str | None = None,
+    name: str = "",
+    arguments: str = "",
+    base_resp: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Body of a single SSE chunk carrying a streaming tool-call delta.
+
+    OpenAI's wire format delivers tool-call arguments token-by-token across
+    multiple chunks, each with the same ``index``; the adapter is expected to
+    concatenate ``function.arguments`` fragments and ``function.name`` slices
+    (see ``_OpenAICompatibleProvider.stream``, live 06.08).
+    """
+    tool_call: dict[str, Any] = {"index": index}
+    if id is not None:
+        tool_call["id"] = id
+    function: dict[str, Any] = {}
+    if name:
+        function["name"] = name
+    if arguments:
+        function["arguments"] = arguments
+    if function:
+        tool_call["function"] = function
+    return {
+        "id": "chatcmpl-stream",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "tool_calls": [tool_call]},
+                "finish_reason": None,
+            }
+        ],
+        "base_resp": base_resp or {"status_code": 0, "status_msg": "ok"},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Wire-format: successful requests with varied payloads
 # ---------------------------------------------------------------------------
@@ -405,23 +443,48 @@ async def test_stream_yields_chunks_with_correct_deltas() -> None:
 
 @pytest.mark.minimax
 @pytest.mark.asyncio
-async def test_stream_with_tools_short_circuits_before_wire() -> None:
-    """Streaming + tools is capability-gated — no HTTP call is made."""
+async def test_stream_with_tools_reaches_wire_and_aggregates_tool_calls() -> None:
+    """Streaming + tools works (streaming_tools=True, live 06.08) — no capability gate, wire call made.
+
+    The OpenAI-compatible adapter aggregates streaming tool-call deltas by
+    index. The request must reach the wire with ``stream=True`` and the
+    ``tools`` payload; the resulting tool call must be reassembled across
+    SSE chunks (arguments arrive token-by-token).
+    """
     provider = _make_provider()
     try:
+        sse_lines = [
+            "data: " + json.dumps(_stream_tool_call_envelope(0, id="call_1", name="play_sound", arguments='{"volume":')),
+            "data: " + json.dumps(_stream_tool_call_envelope(0, arguments=" 0.5}")),
+            "data: " + json.dumps(_stream_envelope("", finish_reason="tool_calls")),
+            "data: [DONE]",
+        ]
+        sse_body = "\n\n".join(sse_lines) + "\n\n"
         with respx.mock(base_url=_BASE_URL, assert_all_called=False) as router:
             route = router.post(_CHAT_COMPLETIONS_PATH).mock(
-                return_value=httpx.Response(200, content=b"unused")
+                return_value=httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    content=sse_body.encode("utf-8"),
+                )
             )
-            from rob_box_llm.errors import CapabilityUnavailableError
+            chunks = []
+            async for ch in provider.stream(
+                [LLMMessage(role="user", content="hi")],
+                tools=({"type": "function", "function": {"name": "play_sound"}},),
+            ):
+                chunks.append(ch)
 
-            with pytest.raises(CapabilityUnavailableError):
-                async for _ in provider.stream(
-                    [LLMMessage(role="user", content="hi")],
-                    tools=({"type": "function", "function": {"name": "play_sound"}},),
-                ):
-                    pass
-        assert not route.called
+        assert route.called, "streaming with tools must reach the wire"
+        body = json.loads(route.calls.last.request.content)
+        assert body["stream"] is True
+        assert "tools" in body
+        # Tool-call deltas aggregated across chunks by index.
+        tool_chunks = [ch for ch in chunks if ch.tool_call_delta is not None]
+        assert len(tool_chunks) == 1
+        assert tool_chunks[0].tool_call_delta.name == "play_sound"
+        assert tool_chunks[0].tool_call_delta.arguments == {"volume": 0.5}
+        assert chunks[-1].finish_reason == "tool_calls"
     finally:
         await provider.aclose()
 
