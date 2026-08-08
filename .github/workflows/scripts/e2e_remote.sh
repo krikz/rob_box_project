@@ -19,7 +19,7 @@ VOICE_STT="${VOICE_STT:-yandex}"
 
 # Retry параметры
 E2E_MAX_ATTEMPTS="${E2E_MAX_ATTEMPTS:-3}"
-E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-20}"  # сек ждём после play
+E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-35}"  # сек ждём после play (LLM 429→fallback думает 15-20с)
 E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"          # пауза между попытками
 ROBOT_HOST="10.1.1.21"
 ROBOT_SSH="sshpass -p open ssh -o StrictHostKeyChecking=no ros2@${ROBOT_HOST}"

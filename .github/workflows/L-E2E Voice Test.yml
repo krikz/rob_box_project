@@ -101,7 +101,8 @@ jobs:
             "VOICE_LLM='${VOICE_LLM}' VOICE_TTS='${VOICE_TTS}' VOICE_STT='${VOICE_STT}' \
              nohup /tmp/e2e_remote.sh ${REC} ${DUR} ${VOL} > /tmp/e2e_out.log 2>&1 &"
 
-          WAIT=$((DUR + 25))
+          # retry-скрипт: до 3 попыток × (play + REACTION_WINDOW 35с + пауза 10с) ≈ 150-180с
+          WAIT=$((DUR + 170))
           echo "Waiting ${WAIT}s..."
           sleep ${WAIT}
 
