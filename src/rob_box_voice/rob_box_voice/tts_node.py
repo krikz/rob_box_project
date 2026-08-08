@@ -1697,6 +1697,37 @@ class TTSNode(Node):
         ssml_attributes = ssml_attributes or {}
         pitch = ssml_attributes.get("pitch", "medium")
 
+        # 🔴 FIX (live 08.08 «робот не ответил»): LLM/MiniMax-стиль SSML может
+        # дать числовой pitch ("1.2", "+10%") — Silero v5 принимает ТОЛЬКО
+        # x-low/low/medium/high/x-high/robot. Числовой pitch валил fallback:
+        #   ❌ Synthesis error: Invalid <prosody> tag, pitch should be in x-low...
+        # → нормализуем в ближайший Silero-совместимый уровень.
+        _SILERO_PITCH_LEVELS = {"x-low", "low", "medium", "high", "x-high", "robot"}
+        if isinstance(pitch, str) and pitch not in _SILERO_PITCH_LEVELS:
+            # Числовой/процентный pitch → маппим в Silero-уровень.
+            try:
+                pct = 0.0
+                pitch_str = pitch.strip().lower()
+                if pitch_str.endswith("%"):
+                    pct = float(pitch_str.rstrip("%")) / 100.0 - 1.0  # "+10%" → 0.1
+                else:
+                    pct = float(pitch_str) - 1.0  # "1.2" → 0.2 (выше нормы)
+                if pct <= -0.15:
+                    pitch = "low"
+                elif pct <= -0.05:
+                    pitch = "x-low" if pct < -0.1 else "low"
+                elif pct < 0.05:
+                    pitch = "medium"
+                elif pct < 0.15:
+                    pitch = "high"
+                else:
+                    pitch = "x-high"
+            except (ValueError, TypeError):
+                pitch = "medium"
+            self.get_logger().info(
+                f"🎚️  Silero: числовой pitch нормализован → '{pitch}'"
+            )
+
         def synthesize_chunk(chunk_text: str) -> np.ndarray:
             ssml_text = (
                 f'<speak><prosody pitch="{pitch}">'
