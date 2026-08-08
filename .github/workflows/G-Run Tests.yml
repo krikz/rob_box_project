@@ -108,9 +108,9 @@ jobs:
           # under the limit: green.  If `timeout` kills it (rc=124)
           # BUT the junitxml report shows 0 failures: treat as green
           # with a warning (the hang is post-test shutdown).
-          echo "=== pytest: rob_box_voice (timeout 240s) ==="
+          echo "=== pytest: rob_box_voice (timeout 60s) ==="
           PYTEST_RC=0
-          timeout 240 python3 -m pytest \
+          timeout 60 python3 -m pytest \
             -p no:launch_testing \
             -p no:ament_flake8 -p no:ament_pep257 \
             -p no:ament_copyright -p no:ament_xmllint \
