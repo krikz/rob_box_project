@@ -187,7 +187,10 @@ class _OpenAICompatibleProvider(LLMProvider):
         text=True,
         streaming_text=True,
         tools=True,
-        streaming_tools=False,
+        # 🔴 FIX (live 06.08): streaming_tools=True — OpenAI-совместимый API
+        # DeepSeek/MiniMax стримит tool-call deltas (id/name/arguments
+        # фрагментами), stream() теперь агрегирует их в ToolCall.
+        streaming_tools=True,
         image_input=False,
     )
 
@@ -294,8 +297,20 @@ class _OpenAICompatibleProvider(LLMProvider):
             kwargs["stop"] = list(s.stop)
         if s.tool_choice is not None:
             kwargs["tool_choice"] = s.tool_choice
+        # 🔴 FIX (live 06.08): кастомные поля провайдеров — через extra_body,
+        # НЕ в kwargs! OpenAI SDK строго типизирован: create(thinking=...) →
+        # TypeError → DialogCore error → «задумался» (коммит b5879b79).
+        # DeepSeek V4 думает по умолчанию (thinking mode) — отключаем.
+        extra_body: dict[str, Any] = {}
+        if self.name == "deepseek":
+            extra_body.setdefault("enable_thinking", False)
+        # s.extra (в т.ч. MiniMax thinking={"type":"disabled"} из
+        # DEFAULT_THINKING_POLICY) — тоже кастомные поля → extra_body.
         if s.extra:
-            kwargs.update(s.extra)
+            for k, v in s.extra.items():
+                extra_body.setdefault(k, v)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         if tools:
             kwargs["tools"] = [dict(t) for t in tools]
         return kwargs
@@ -429,16 +444,52 @@ class _OpenAICompatibleProvider(LLMProvider):
             stream_obj = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
             raise _map_exception(exc, provider=self.name) from exc
+
+        # 🔴 FIX (live 06.08): streaming tool-call aggregation (DeepSeek/
+        # MiniMax OpenAI-compatible APIs stream tool arguments token-by-token,
+        # e.g. '{"lo' + 'cat' + 'ion": "Tok' + 'yo"} — MUST concatenate before
+        # json.loads). Also ignore delta.reasoning_content (thinking models
+        # stream inner thoughts first). Previously streaming_tools=False —
+        # callers had to use complete() and lost ~20s latency on the first
+        # turn (MiniMax cold start + full non-streamed response).
+        pending: dict[int, dict] = {}  # index -> {id, name, arguments}
         async for event in stream_obj:
             self._post_process_response(event)
             choice = event.choices[0] if event.choices else None
             delta = choice.delta if choice else None
-            chunk = LLMChunk(
-                content_delta=getattr(delta, "content", "") or "",
-                finish_reason=getattr(choice, "finish_reason", None),
-            )
-            yield chunk
-            if chunk.finish_reason:
+            finish = getattr(choice, "finish_reason", None)
+            if delta is not None:
+                dcontent = getattr(delta, "content", None)
+                if dcontent:
+                    yield LLMChunk(content_delta=dcontent, finish_reason=None)
+                # Aggregate tool-call deltas by index (OpenAI wire format).
+                dtool_calls = getattr(delta, "tool_calls", None)
+                if dtool_calls:
+                    for tc in dtool_calls:
+                        idx = getattr(tc, "index", 0) or 0
+                        slot = pending.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if getattr(tc, "id", None):
+                            slot["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                slot["name"] += fn.name
+                            if getattr(fn, "arguments", None):
+                                slot["arguments"] += fn.arguments
+            if finish:
+                # Emit fully-assembled tool calls, then the terminal chunk.
+                for idx in sorted(pending):
+                    slot = pending[idx]
+                    name = slot["name"]
+                    if not name:
+                        continue
+                    args = _safe_json(slot["arguments"])
+                    yield LLMChunk(
+                        content_delta="",
+                        tool_call_delta=ToolCall(id=slot["id"] or f"call_{idx}", name=name, arguments=args),
+                        finish_reason=None,
+                    )
+                yield LLMChunk(content_delta="", finish_reason=finish)
                 return
 
     async def aclose(self) -> None:

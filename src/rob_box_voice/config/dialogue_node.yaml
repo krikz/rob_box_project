@@ -46,9 +46,15 @@ dialogue_node:
     enable_mcp_tools: true
     llm_timeout_sec: 90.0
     verbose_llm: true
+    llm_streaming: true
     history_excluded_tools:
     - handle_navigation
     sqlite_db_path: ~/.rob_box/voice.db
+    # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
+    # говорит приветствие через N секунд после старта (отдельная нода
+    # убрана — теряла фразу из-за гонки с инициализацией tts_node).
+    startup_greeting_sec: 12.0
+    startup_greeting_text: "Я на связи, все системы в норме!"
     # api_key — пусто → fallback на ENV (DEEPSEEK_API_KEY / MINIMAX_API_KEY / YANDEX_API_KEY).
     # Секреты не хранятся в YAML.
     api_key: ''

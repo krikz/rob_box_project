@@ -193,25 +193,10 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Startup Greeting Node (Issue #1003) ===
-    # Один раз при старте говорит случайную прикольную фразу через TTS и
-    # завершается. Ждёт, пока на /voice/dialogue/response появится подписчик
-    # (= tts_node жив), поэтому запускаем ПОСЛЕ tts_node.
-    startup_greeting_node = Node(
-        package='rob_box_voice',
-        executable='startup_greeting_node',
-        name='startup_greeting_node',
-        namespace=namespace,
-        output='screen',
-        respawn=False,  # одноразовая нода, респаун не нужен
-        arguments=['--ros-args', '--log-level', 'info'],
-        parameters=[{
-            'wait_time': 5.0,
-            'check_timeout': 30.0,
-            'enable_greeting': True,
-            'readiness_check_interval': 1.0,
-        }],
-    )
+    # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
+    # Отдельная startup_greeting_node убрана — страдала гонкой с
+    # инициализацией tts_node (фраза терялась). dialogue_node сам
+    # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
     # === MCP Server (Agentive Tools Integration) ===
     # ⚠️ Workaround: Python entry points not recognized by ROS 2
@@ -261,5 +246,4 @@ def generate_launch_description():
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition
         mcp_server,     # ✅ MCP Tools: Agentive LLM Integration
-        startup_greeting_node,  # ✅ Issue #1003: одноразовое приветствие при старте
     ])

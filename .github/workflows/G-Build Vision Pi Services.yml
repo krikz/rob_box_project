@@ -309,7 +309,7 @@ jobs:
       - name: Build and push voice-resources
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: docker/vision
           file: docker/vision/voice_resources/Dockerfile
           platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}

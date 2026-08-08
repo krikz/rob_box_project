@@ -22,8 +22,8 @@ tts_node:
     minimax_group_id: ''
     prosody_pitch: medium
     normalize_text: true
-    chipmunk_mode: true
-    pitch_shift: 2.0
+    chipmunk_mode: false
+    pitch_shift: 1.0
     volume_db: -3.0
     silero_put_accent: true
     silero_put_yo: true

@@ -2117,6 +2117,18 @@ class SetDjModeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="plan",
+                type="string",
+                description=(
+                    "План DJ-сета: список треков/блоков через новую строку, "
+                    "каждый начинается с 'Трек N:', например: "
+                    "'Трек 1: энергичный старт 128bpm\\nТрек 2: диско-хит 90-х\\nТрек 3: финальный вальс'. "
+                    "Передавай при ПЕРВОМ включении DJ — робот пройдёт по плану "
+                    "и на последнем треке объявит 'вечеринка заканчивается' и сам выключит DJ."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -2127,7 +2139,7 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
         # LLM иногда шлёт transition_seconds вместо next_transition_sec
@@ -2143,11 +2155,16 @@ class SetDjModeTool(MCPTool):
         # её дефолтом «ДиДжей РОббокс».
         if persona and isinstance(persona, str) and persona.strip():
             payload["persona"] = persona.strip()
+        # 🔴 FIX (live 15:30 06.08): план сета — DJ проходит по плану и
+        # корректно завершается с финальным объявлением, а не молча по лимиту.
+        if plan and isinstance(plan, str) and plan.strip():
+            payload["plan"] = plan.strip()
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
         action = "включён" if enabled else "выключен"
         interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
         persona_info = f", персона: {persona}" if persona else ""
-        self.log_info(f"🎧 DJ-режим {action}{interval_info}{persona_info}")
-        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}{persona_info}")
+        plan_info = f", план: {len(plan.splitlines())} треков" if plan else ""
+        self.log_info(f"🎧 DJ-режим {action}{interval_info}{persona_info}{plan_info}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}{persona_info}{plan_info}")

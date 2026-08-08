@@ -170,6 +170,11 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
+    # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
+    # Отдельная startup_greeting_node убрана — страдала гонкой с
+    # инициализацией tts_node (фраза терялась). dialogue_node сам
+    # говорит приветствие через startup_greeting_sec / startup_greeting_text.
+
     return LaunchDescription([
         config_dir_arg,
         namespace_arg,

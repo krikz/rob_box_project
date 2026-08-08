@@ -46,7 +46,10 @@ on:
 
 jobs:
   e2e-voice:
-    runs-on: self-hosted
+    # 🔴 FIX (live 06.08): отдельный раннер с лейблом e2e — параллельный
+    # билд (5+ docker-runner контейнеров) ломал e2e и e2e ломал билды.
+    # Лейбл ТОЛЬКО e2e (без self-hosted) — чтобы раннер не участвовал в билдах.
+    runs-on: e2e
     timeout-minutes: 10
 
     steps:

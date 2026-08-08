@@ -133,6 +133,7 @@ class DialogCore:
         inactivity_timeout: float | None = None,
         acceptance_gate: "AcceptanceGate | None" = None,
         system_prompt: str | None = None,
+        use_streaming: bool = False,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -186,6 +187,9 @@ class DialogCore:
         self._user_id = user_id
         self._system_prompt = system_prompt
         self._history_trim_limit = history_trim_limit
+        # 🔴 FIX (live 06.08): стриминг управляется конфигом (dialogue_node.yaml
+        # → llm_streaming). Дефолт False — консервативно, без стриминга.
+        self._use_streaming = use_streaming
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
 
@@ -361,7 +365,7 @@ class DialogCore:
 
         tools_called: list[str] = []
         seen: set[str] = set()
-        response: LLMResponse = await self._llm.complete(
+        response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
 
@@ -438,7 +442,7 @@ class DialogCore:
                     )
                 )
 
-            response = await self._llm.complete(messages, tools=openai_tools)
+            response = await self._stream_response(messages, tools=openai_tools)
 
         else:  # for-else: loop exhausted without breaking
             logging.getLogger(__name__).warning(
@@ -448,6 +452,39 @@ class DialogCore:
             )
 
         return response.content, tools_called, response.finish_reason, response.raw
+
+    async def _stream_response(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+    ) -> LLMResponse:
+        """Streaming LLM completion aggregated into a full :class:`LLMResponse`.
+
+        🔴 FIX (live 06.08): стриминг переключается конфигом (llm_streaming).
+        False → полный complete() (как раньше, до стриминга); True → stream()
+        с агрегацией tool-call deltas. Оба пути возвращают LLMResponse.
+        """
+        if not self._use_streaming:
+            return await self._llm.complete(messages, tools=tools)
+        parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        finish_reason: str | None = None
+        raw: Any = None
+        async for chunk in self._llm.stream(messages, tools=tools):
+            if chunk.content_delta:
+                parts.append(chunk.content_delta)
+            if chunk.tool_call_delta is not None:
+                tool_calls.append(chunk.tool_call_delta)
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
+        return LLMResponse(
+            content="".join(parts),
+            tool_calls=tuple(tool_calls),
+            finish_reason=finish_reason,
+            usage=None,
+            raw=raw,
+        )
 
     async def _resolve_history(
         self,

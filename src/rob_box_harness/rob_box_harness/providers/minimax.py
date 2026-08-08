@@ -46,7 +46,7 @@ import asyncio
 import logging
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, AsyncIterator, Iterable, Mapping
 
 from openai import AsyncOpenAI
@@ -302,6 +302,18 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         (``AuthError`` / ``ContentFilterError`` /
         ``CapabilityUnavailableError``) propagate immediately.
         """
+        # 🔴 FIX (live 06.08): MiniMax API режет ответ на своём дефолте
+        # 256 токенов, когда max_tokens не задан — робот отвечал
+        # обрывками («[INSTR», пустота). dialog_core зовёт
+        # complete(messages, tools=...) без settings → здесь ставим
+        # разумный дефолт 4096 для голоса (промпт 39K символов,
+        # музыкальный код + речь не влезают в 256).
+        if settings is None:
+            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+        elif settings.max_tokens is None:
+            settings = LLMSettings(
+                **{**asdict(settings), "max_tokens": 4096}
+            )
         return await self._call_with_retry(
             self._inner.complete, messages, tools=tools, settings=settings
         )
@@ -323,6 +335,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         If the initial request fails, the upstream provider raises
         before yielding, and we DO retry the same way as ``complete``.
         """
+        # 🔴 FIX (live 06.08): тот же max_tokens-дефолт, что в complete —
+        # MiniMax режет на 256 токенах без max_tokens (обрывки «[INSTR»).
+        if settings is None:
+            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+        elif settings.max_tokens is None:
+            settings = LLMSettings(
+                **{**asdict(settings), "max_tokens": 4096}
+            )
         # We can't decorate an async generator with the retry loop
         # without buffering chunks, so we isolate the initial request
         # call in a retryable wrapper. The upstream AsyncOpenAI stream
@@ -602,11 +622,11 @@ def build_minimax_provider(
         timeout=timeout,
         retry=retry,
         client=client,
-        # 🔴 FIX (live 15:27): thinking=None — DEFAULT_THINKING_POLICY
-        # ({"type": "disabled"}) просачивался в settings.extra →
-        # _build_kwargs → create(thinking=...) → MiniMax API не принимает
-        # аргумент thinking → AsyncCompletions.create() TypeError →
-        # DialogCore error → Empty → «задумался». Voice-путь latency-sensitive,
-        # thinking не нужен.
-        thinking=None,
+        # 🔴 FIX (live 06.08): вернули DEFAULT_THINKING_POLICY — вчера (b5879b79)
+        # thinking={"type":"disabled"} падал TypeError, т.к. шёл в kwargs →
+        # create(thinking=...) → AsyncOpenAI SDK строго типизирован. Теперь
+        # _build_kwargs кладёт кастомные поля в extra_body → API принимает.
+        # MiniMax-M3 по умолчанию включает adaptive thinking → <think> блоки
+        # в каждом ответе = +10-20с на turn. Voice-путь latency-sensitive.
+        thinking=DEFAULT_THINKING_POLICY,
     )

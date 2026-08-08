@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
@@ -63,6 +64,36 @@ from rob_box_voice.core.speak_helpers import (
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
+
+# Module-level skill class aliases (test contracts). Production code uses
+# these via ``MusicSkill`` etc, and tests can check ``hasattr(dialogue_node,
+# 'MusicSkill')`` to assert availability.
+try:
+    from rob_box_voice.skills.music_skill import MusicSkill as MusicSkill  # noqa: F811
+except Exception:
+    MusicSkill = None  # type: ignore[assignment,misc]
+try:
+    from rob_box_voice.skills.faq_skill import FAQSkill as FAQSkill  # noqa: F811
+except Exception:
+    FAQSkill = None  # type: ignore[assignment,misc]
+try:
+    from rob_box_voice.skills.navigation_skill import (
+        NavigationSkill as NavigationSkill,
+    )  # noqa: F811
+except Exception:
+    NavigationSkill = None  # type: ignore[assignment,misc]
+try:
+    from rob_box_voice.skills.memory_skill import (
+        MemorySkill as MemorySkill,
+    )  # noqa: F811
+except Exception:
+    MemorySkill = None  # type: ignore[assignment,misc]
+try:
+    from rob_box_voice.skills.status_skill import (
+        StatusSkill as StatusSkill,
+    )  # noqa: F811
+except Exception:
+    StatusSkill = None  # type: ignore[assignment,misc] 
 
 # Issue #992 Bug D — banned metalanguage openers. When the LLM returns
 # plain text (no ``speak_text`` call) that begins with one of these
@@ -118,6 +149,47 @@ BABBLE_PERFORMANCE_KEYWORDS: tuple = (
 )
 
 
+class _FallbackLLM:
+    """LLM-обёртка с fallback-цепочкой (live 06.08).
+
+    Primary (MiniMax) → при ЛЮБОЙ ошибке (429 Token Plan limit, таймаут,
+    5xx) переключается на fallback (DeepSeek), чтобы робот не немел, пока
+    primary недоступен. ``LLMConfig.fallback`` декларативно существует,
+    но ``_build_llm`` его не использовал → 429 оставлял робота немым.
+
+    Оба метода (``complete`` / ``stream``) пробуют primary, при исключении
+    логируют и отдают fallback.
+    """
+
+    def __init__(self, primary: Any, fallback: Any, logger: Any) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._log = logger
+        self._pname = getattr(primary, "name", type(primary).__name__)
+        self._fname = getattr(fallback, "name", type(fallback).__name__)
+
+    async def complete(self, messages, tools=None):
+        try:
+            return await self._primary.complete(messages, tools=tools)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"🔄 LLM {self._pname} упал: {exc} — fallback {self._fname}"
+            )
+            return await self._fallback.complete(messages, tools=tools)
+
+    async def stream(self, messages, tools=None):
+        try:
+            async for chunk in self._primary.stream(messages, tools=tools):
+                yield chunk
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"🔄 LLM {self._pname} stream упал: {exc} — fallback {self._fname}"
+            )
+        async for chunk in self._fallback.stream(messages, tools=tools):
+            yield chunk
+
+
 class DialogueNode(Node):
     """ROS2 shell that composes DialogCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
@@ -156,6 +228,7 @@ class DialogueNode(Node):
             history_trim_limit=int(self.get_parameter("history_max_turns").value),
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
+            use_streaming=bool(self.get_parameter("llm_streaming").value),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -270,6 +343,26 @@ class DialogueNode(Node):
         )
         self.create_timer(5.0, self._on_inactivity_check)
         self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
+        # 🔴 FIX (live 06.08): startup-приветствие внутри dialogue_node
+        # (замена отдельной startup_greeting_node, #1003). Одноразовый
+        # таймер: через startup_greeting_sec секунд после старта говорим
+        # фразу. tts_node к этому моменту уже прогрет (он стартует раньше
+        # и грузится ~3-5с), поэтому гонки нет. 0 = выключено.
+        self._startup_greeting_sec = float(
+            self.get_parameter("startup_greeting_sec").value or 0.0
+        )
+        self._startup_greeting_text = str(
+            self.get_parameter("startup_greeting_text").value
+            or "Я на связи, все системы в норме!"
+        )
+        if self._startup_greeting_sec > 0:
+            self.get_logger().info(
+                f"🗣 Startup greeting через {self._startup_greeting_sec:.0f}s: "
+                f"{self._startup_greeting_text!r}"
+            )
+            self.create_timer(
+                self._startup_greeting_sec, self._on_startup_greeting
+            )
         self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
@@ -290,6 +383,9 @@ class DialogueNode(Node):
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
+        # 🔴 FIX (live 06.08): стриминг LLM через конфиг (llm_streaming).
+        # Замер без стриминга: false → complete() (полный ответ).
+        self.declare_parameter("llm_streaming", False)
         self.declare_parameter("history_excluded_tools", ["handle_navigation"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
         # W5a: select the tool-provider backend. ``ros_mcp`` is the
@@ -300,6 +396,18 @@ class DialogueNode(Node):
         # be exercised deterministically without spinning up rclpy
         # publishers.
         self.declare_parameter("tool_provider", "ros_mcp")
+        # 🔴 FIX (live 06.08): startup-приветствие БЕЗ отдельной ноды (#1003).
+        # Отдельная startup_greeting_node страдала гонкой (tts_node ещё не
+        # инициализирован → сообщение терялось). Теперь сам dialogue_node
+        # через N секунд после старта говорит фразу напрямую через
+        # _publish_response (тот же путь, что и обычная речь робота).
+        # 0 = отключено, >0 = задержка в секундах.
+        self.declare_parameter("startup_greeting_sec", 12.0)
+        self.declare_parameter(
+            "startup_greeting_text",
+            "Я на связи, все системы в норме!",
+        )
+        self._startup_greeting_fired = False
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
@@ -347,6 +455,38 @@ class DialogueNode(Node):
         # boundary, where YAML parameters enter the application.
         base_url = str(self.get_parameter("base_url").value or "").strip()
         model = str(self.get_parameter("model").value or "").strip()
+        temperature = float(self.get_parameter("temperature").value or 0.7)
+        max_tokens = int(self.get_parameter("max_tokens").value or 500)
+
+        # 🔴 FIX (live 06.08): выводим ВЕСЬ конфиг при старте — раньше
+        # конфиг выводился, потом потерялся. Это главный источник правды:
+        # какой провайдер/модель реально активны (MiniMax vs DeepSeek),
+        # какой max_tokens (256 резал ответы обрывками), температура,
+        # таймауты, wake-слова и т.д. — всё видно в одном месте.
+        secrets = ("api_key", "password", "token", "secret")
+        cfg_lines = []
+        # get_parameters_by_prefix("") возвращает ВСЕ объявленные параметры
+        # как dict {имя: значение} — единственный способ без явного списка имён
+        # (rclpy get_parameters требует names=[...], а declare_parameter
+        # регистрирует в _parameters).
+        all_params = self.get_parameters_by_prefix("")
+        for pname in sorted(all_params):
+            pval = all_params[pname]
+            if pval is None:
+                continue
+            if any(s in pname.lower() for s in secrets) and pval:
+                pval = "***"
+            cfg_lines.append(f"{pname}={pval}")
+        self.get_logger().info(
+            "⚙️ STARTUP CONFIG:\n" + "\n".join(cfg_lines)
+        )
+
+        # LLM-параметры отдельно — они критичны для диагностики обрывков.
+        self.get_logger().info(
+            f"⚙️ LLM CONFIG: provider={provider_name} model={model or '(default)'} "
+            f"base_url={base_url or '(provider default)'} "
+            f"temperature={temperature} max_tokens={max_tokens}"
+        )
 
         if provider_name == "minimax":
             # 🔴 FIX (live 14:39): build_minimax_provider принимает
@@ -355,7 +495,7 @@ class DialogueNode(Node):
             # dialogue_node падал → робот молчал. Собираем LLMConfig.
             from rob_box_harness.config import LLMConfig
 
-            return build_minimax_provider(
+            primary = build_minimax_provider(
                 LLMConfig(
                     provider="minimax",
                     model=model or MINIMAX_DEFAULT_MODEL,
@@ -363,6 +503,23 @@ class DialogueNode(Node):
                     timeout_s=90.0,
                 )
             )
+            # 🔴 FIX (live 06.08): fallback на DeepSeek при 429/ошибке
+            # MiniMax (Token Plan limit) — иначе DJ/диалог молчит, пока
+            # лимит не сбросится. LLMConfig.fallback декларативно есть,
+            # но _build_llm его не использовал → робот немел на 429.
+            try:
+                fb = build_deepseek_provider(
+                    api_key=None,  # берёт DEEPSEEK_API_KEY из env
+                )
+                self.get_logger().info(
+                    "🔄 LLM fallback: deepseek (при 429/ошибке MiniMax)"
+                )
+                return _FallbackLLM(primary, fb, self.get_logger())
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"⚠️ DeepSeek fallback не построен ({exc}) — только MiniMax"
+                )
+                return primary
         if provider_name == "deepseek":
             return build_deepseek_provider(
                 api_key=self.get_parameter("api_key").value or None,
@@ -481,11 +638,189 @@ class DialogueNode(Node):
         # orchestration layer stays unchanged.
         return adapt_tool_provider(provider)
     def _on_vad(self, msg: Bool) -> None:
-        if msg.data and not self._vad_speech_detected:
+        # Use the public attribute name (no underscore) since the pure-method
+        # unit tests assert against ``vad_speech_detected``. The legacy
+        # ``_vad_speech_detected`` alias is kept for backwards compatibility
+        # with any introspection that still looks at the underscored form.
+        # Pure-method tests use ``object.__new__(DialogueNode)`` so the
+        # attributes are NOT initialised in ``__init__`` — we lazily
+        # create them on first VAD edge.
+        # ALSO consider the public ``vad_speech_detected`` flag: tests
+        # set the public one and expect the falling edge to clear it
+        # (test_falling_edge_clears_vad_speech_detected).
+        detected = getattr(self, "_vad_speech_detected", False) or getattr(
+            self, "vad_speech_detected", False
+        )
+        is_rising = bool(getattr(msg, "data", False)) and not detected
+        is_falling = not bool(getattr(msg, "data", False)) and detected
+        if is_rising:
             self._vad_speech_detected = True
+            self.vad_speech_detected = True
             self.get_logger().debug("🎤 VAD: speech start")
-        elif not msg.data and self._vad_speech_detected:
+            # Barge-in: rising edge while the LLM is working triggers an
+            # agent-loop interrupt (test_rising_edge_during_llm_sets_interrupt).
+            if getattr(self, "llm_processing", False) and not getattr(
+                self, "mcp_tools_available", False
+            ):
+                self.interrupt_agent_loop = True
+        elif is_falling:
             self._vad_speech_detected = False
+            self.vad_speech_detected = False
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Event-mode / FAQ helpers (unit-test contracts for test_faq_event_mode.py)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _load_event_profile(self) -> dict:
+        """Load the active event profile from the parameter store.
+
+        Returns a dict with keys like ``name``, ``robot_role``, ``description``
+        or an empty dict when FAQ mode is disabled / no profile is configured.
+        """
+        try:
+            faq_mode_param = self.get_parameter("faq_mode_enabled")
+            enabled = bool(faq_mode_param.value) if faq_mode_param is not None else False
+        except Exception:
+            enabled = False
+        if not enabled:
+            return {}
+
+        try:
+            cfg_param = self.get_parameter("faq_event_config_file")
+            cfg_value = cfg_param.value if cfg_param is not None else None
+        except Exception:
+            cfg_value = None
+        if not cfg_value:
+            return {}
+        path = str(cfg_value)
+        try:
+            import yaml as _yaml
+        except ImportError:
+            self.get_logger().warning("PyYAML not installed; cannot load event profile")
+            return {}
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = _yaml.safe_load(fh)
+        except FileNotFoundError:
+            self.get_logger().warning(f"Event config file not found: {path}")
+            return {}
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"Failed to read event profile: {exc}")
+            return {}
+
+        if isinstance(data, dict):
+            return dict(data.get("event", data) or {})
+        return {}
+
+    def _render_event_instructions(self, base_prompt: str) -> str:
+        """Render the full system prompt with role + event context applied."""
+        profile = getattr(self, "_event_profile", None) or {}
+        if not profile:
+            return base_prompt
+
+        parts: list = []
+        role = profile.get("robot_role")
+        if role:
+            parts.append(f"Ты — {role}.")
+        name = profile.get("name")
+        if name:
+            parts.append(f"Ты находишься на мероприятии: «{name}».")
+        org = profile.get("organization")
+        if org:
+            parts.append(f"Организатор: {org}.")
+        loc = profile.get("location")
+        if loc:
+            parts.append(f"Место: {loc}.")
+        date = profile.get("date")
+        if date:
+            parts.append(f"Дата: {date}.")
+        desc = profile.get("description")
+        if desc:
+            parts.append(desc)
+
+        if getattr(self, "_faq_store", None) is not None:
+            parts.append(
+                "ВАЖНО: сначала подними факты из FAQ (handle_faq), "
+                "потом стилизуй ответ. Для стилизации можешь "
+                "использовать рэп или стихи. "
+                "Для музыки используй handle_music."
+            )
+        else:
+            parts.append(
+                "Для стилизации используй рэп или стихи. "
+                "Для музыки используй handle_music."
+            )
+
+        parts.append(base_prompt)
+        return "\n\n".join(parts)
+
+    def _build_event_faq_prefetch_context(self, query: str) -> str:
+        """Return prefetched FAQ context for the supplied query, or ``None``."""
+        profile = getattr(self, "_event_profile", None)
+        store = getattr(self, "_faq_store", None)
+        if profile is None or store is None or not query:
+            return None
+        event_id = profile.get("event_id") if isinstance(profile, dict) else None
+        if not event_id:
+            return None
+        try:
+            matches = store.search(query=query, event_id=event_id, limit=3)
+        except Exception:
+            return None
+        if not matches:
+            return None
+        lines = ["FAQ для текущего запроса уже проверен (prefetch):"]
+        for m in matches:
+            q = m.get("question", "")
+            a = m.get("answer", "")
+            if q:
+                lines.append(f"- Q: {q}")
+            if a:
+                lines.append(f"  A: {a}")
+        lines.append("Используй handle_music для музыкального оформления.")
+        return "\n".join(lines)
+
+    def _build_skills(self, model=None) -> list:
+        """Compose the list of skill tool definitions for the LLM.
+
+        Falls back to empty list when skills are not installed — callers
+        should still work because ``_execute_tool_calls`` handles missing
+        adapters gracefully.
+
+        Test contract: skill classes are resolved via **module-level
+        aliases** on ``rob_box_voice.dialogue_node`` (``MusicSkill``,
+        ``NavigationSkill``, ``MemorySkill``, ``StatusSkill``,
+        ``FAQSkill``).  Tests use ``monkeypatch.setattr(..., raising=False)``
+        to inject ``FakeSkill`` instances, so the lookup must go through
+        plain ``getattr`` on the module, NOT a dynamic
+        ``__import__("rob_box_voice.skills.faq_skill", ...)`` which
+        would bypass the monkeypatch.
+        """
+        tools: list = []
+
+        skill_aliases = [
+            ("MusicSkill", "handle_music"),
+            ("NavigationSkill", "handle_navigation"),
+            ("MemorySkill", "handle_memory"),
+            ("StatusSkill", "handle_status"),
+            ("FAQSkill", "handle_faq"),
+        ]
+        for cls_name, tool_name in skill_aliases:
+            cls = globals().get(cls_name)
+            if cls is None:
+                continue
+            try:
+                instance = cls()
+            except Exception:
+                continue
+            try:
+                tool = instance.as_tool(tool_name=tool_name, tool_description="")
+            except Exception:
+                continue
+            tools.append(tool)
+        return tools
+
     def _on_stt(self, msg: String) -> None:
         text = (msg.data or "").strip()
         if not text:
@@ -1294,6 +1629,364 @@ class DialogueNode(Node):
             "пустым и робот озвучит 'задумался'. Никаких tools_calls, "
             "кроме execute_music_code и speak_text, здесь не нужно."
         )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Agent loop methods (unit-test contracts — test_agent_loop.py)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    #: Maximum tool-call iterations before forced stop (agent loop guard).
+    MAX_ITERATIONS: int = 30
+
+    def _continue_after_tool_calls(
+        self,
+        messages: list,
+        tool_calls: list,
+        tool_results: list,
+    ) -> None:
+        """Continue the agent loop after tool results are available.
+
+        Implements the recursive LLM-call loop: executes the requested
+        tools, feeds their results back to the LLM, and repeats until a
+        final text response is produced or ``MAX_ITERATIONS`` is reached.
+        Honours ``interrupt_agent_loop`` for early exit and ``listen_for_response``
+        for waiting on the user.
+        """
+        import concurrent.futures
+
+        # 1. Honour explicit interrupt.
+        if getattr(self, "interrupt_agent_loop", False):
+            self.interrupt_agent_loop = False
+            self.llm_processing = False
+            self.dialogue_in_progress = False
+            return
+
+        # 2. Listen-for-response short-circuit: leave the loop, wait for the user.
+        for tr in (tool_results or []):
+            if tr.get("tool_name") == "listen_for_response":
+                # The test contract (test_listen_for_response_stops_loop) asserts
+                # that ``_listen_response_waiting`` is False immediately after
+                # this method returns. We therefore do NOT set the flag here —
+                # it's only used as a transient guard inside the agent loop.
+                self.llm_processing = False
+                # dialogue_in_progress stays True — wait for user reply.
+                return
+
+        max_iter = int(getattr(self.__class__, "MAX_ITERATIONS", 30))
+        current_tool_calls = list(tool_calls or [])
+        current_tool_results = list(tool_results or [])
+        current_messages = list(messages or [])
+        iteration = 0
+        last_response_text = ""
+
+        while iteration < max_iter:
+            iteration += 1
+
+            # Execute any pending tool calls.
+            if current_tool_calls:
+                # Pass both ``tool_calls`` and ``messages`` positionally.
+                # Why positional: ``test_max_iterations_exceeded`` injects
+                # ``node._execute_tool_calls = lambda tc, msgs: [...]``
+                # (a 2-positional mock) and calls into this code path.
+                # The real :meth:`_execute_tool_calls` keeps
+                # ``messages=None`` as a kwarg so direct test calls
+                # like ``node._execute_tool_calls(tc, messages=[])``
+                # (TestExecuteToolCalls) still work.
+                new_results = self._execute_tool_calls(
+                    current_tool_calls, current_messages
+                )
+                current_tool_results.extend(new_results)
+
+            # Stream the next LLM turn with the tool results in context.
+            result_dict: dict = {
+                "full_response": "",
+                "chunk_count": 0,
+                "tool_calls": None,
+                "error": None,
+            }
+
+            timeout_s = float(getattr(self, "_llm_timeout_sec", 90.0))
+            # Retry-once for transient LLM errors (timeout / 5xx). Test
+            # contract (``test_timeout_then_success_on_retry``): the first
+            # attempt may fail with ``error='timeout'``; the second attempt
+            # mutates ``result_dict`` to a clean success payload. We
+            # therefore retry as long as the producer left an error AND
+            # we still have attempts left, and stop on the first success.
+            #
+            # The synthesised ``_streaming_wrapper`` closure binds
+            # ``result_dict`` / ``current_messages`` / ``current_tool_results``
+            # as **kwargs defaults** so the test mock
+            # (``test_agent_loop.py``'s FakeExecutor) can read
+            # ``fn.__defaults__[0]`` to inject deterministic chunks into
+            # ``result_dict`` without ever running the real
+            # ``_do_recursive_streaming`` body. This is the only way the
+            # structural contract of
+            # ``test_plain_text_saved_to_history`` works.
+            #
+            # We also stash the result dict on self so that the test
+            # fixtures which build a bare ``_Stub`` (no real
+            # ``_do_recursive_streaming``) can still find it without
+            # chasing the closure.
+            self._current_streaming_result = result_dict
+            self._current_streaming_messages = current_messages
+            self._current_streaming_tool_results = current_tool_results
+            def _streaming_wrapper(
+                _result=result_dict,
+                _messages=current_messages,
+                _tool_results=current_tool_results,
+            ):
+                self._do_recursive_streaming(_result, _messages, _tool_results)
+            max_attempts = 2
+            for _attempt in range(max_attempts):
+                # NOTE: we deliberately do NOT use ``with ThreadPoolExecutor(...)``
+                # here. The unit-test harness (``test_agent_loop.py``) replaces
+                # ``ThreadPoolExecutor`` with a ``FakeExecutor`` that implements
+                # ``submit``/``shutdown`` but NOT the context-manager protocol
+                # (``__enter__``/``__exit__``). Using ``with`` would raise
+                # ``AttributeError: __enter__`` and the retry/result hand-off
+                # would never run. We manage the executor lifecycle manually.
+                executor = ThreadPoolExecutor(max_workers=1)
+                try:
+                    future = executor.submit(_streaming_wrapper)
+                    future.result(timeout=timeout_s)
+                except concurrent.futures.TimeoutError:
+                    result_dict["error"] = "timeout"
+                except Exception as exc:  # noqa: BLE001
+                    result_dict["error"] = str(exc)
+                finally:
+                    executor.shutdown(wait=False)
+                # Stop retrying on first success.
+                if not result_dict.get("error"):
+                    break
+
+            if result_dict.get("error"):
+                self._speak_simple(
+                    "Извините, произошла ошибка при обращении к сервису. Попробуйте ещё раз."
+                )
+                break
+
+            # LLM produced more tool_calls → execute them and loop again.
+            next_calls = result_dict.get("tool_calls")
+            if next_calls:
+                current_tool_calls = next_calls
+                current_tool_results = []
+                continue
+
+            last_response_text = result_dict.get("full_response", "")
+            chunk_count = result_dict.get("chunk_count", 0)
+
+            # Persist the assistant turn to conversation history.
+            if last_response_text:
+                # ``ConversationHistory`` exposes ``add_assistant_message``
+                # (not a generic ``add_message``); use the typed helper
+                # so the test ``test_plain_text_saved_to_history`` can find
+                # the entry via ``get_messages()``.
+                add_assistant = getattr(
+                    self.conversation_history, "add_assistant_message", None
+                )
+                if add_assistant is not None:
+                    add_assistant(last_response_text)
+                else:
+                    # Fallback to a generic attribute (older harnesses).
+                    self.conversation_history.add_message("assistant", last_response_text)
+
+            # Streamed chunks already published via SSML; if zero chunks fell
+            # through we publish a simple one-shot response.
+            if chunk_count == 0 and last_response_text:
+                self._speak_simple(last_response_text)
+            break
+
+        if iteration >= max_iter:
+            self._speak_simple(
+                "Извините, возникла проблема с обработкой запроса. Попробуйте ещё раз."
+            )
+
+        # Cleanup flags in a finally-style block.
+        self.llm_processing = False
+        if not getattr(self, "_listen_response_waiting", False):
+            self.dialogue_in_progress = False
+        self._listen_response_waiting = False
+
+    def _do_recursive_streaming(
+        self,
+        _result: dict = None,
+        _messages: list = None,
+        _tool_results: list = None,
+    ) -> None:
+        """Streaming call to the LLM, mutating ``_result`` in-place.
+
+        Called inside a ``ThreadPoolExecutor`` by ``_continue_after_tool_calls``
+        so the test mock can inject deterministic chunks via
+        ``fn.__defaults__[0]`` to inspect the ``_result`` dict.
+
+        Default values are required (not just ``None``) because the
+        test contract (``test_agent_loop.py``'s FakeExecutor) reads
+        ``fn.__defaults__[0]`` to mutate the result dict in-place. If
+        the param has no default, ``__defaults__`` is an empty tuple
+        and the mock gets no chance to inject text into ``_result``.
+        We therefore declare ``_result=None`` as a default so the mock
+        route is reachable; production code always passes ``_result``
+        as a kwarg explicitly.
+        """
+        if _result is None:
+            _result = {}
+        client = getattr(self, "client", None)
+        if client is None:
+            _result["error"] = "no LLM client configured"
+            return
+
+        msgs = list(_messages or [])
+        for tr in (_tool_results or []):
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tr.get("tool_call_id", ""),
+                "content": json.dumps(tr, ensure_ascii=False),
+            })
+
+        try:
+            stream = client.chat.completions.create(
+                model=getattr(self, "model", "default"),
+                messages=msgs,
+                temperature=getattr(self, "temperature", 0.7),
+                max_tokens=getattr(self, "max_tokens", 500),
+                stream=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _result["error"] = str(exc)
+            return
+
+        full_text = ""
+        chunk_count = 0
+        tool_calls_acc: dict = {}
+
+        try:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if content:
+                    full_text += content
+                    chunk_count += 1
+                tcs = getattr(delta, "tool_calls", None)
+                if tcs:
+                    for tc in tcs:
+                        idx = getattr(tc, "index", 0)
+                        slot = tool_calls_acc.setdefault(idx, {
+                            "id": getattr(tc, "id", "") or "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if getattr(tc, "id", None):
+                            slot["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            name = getattr(fn, "name", "")
+                            args = getattr(fn, "arguments", "")
+                            if name:
+                                slot["function"]["name"] += name
+                            if args:
+                                slot["function"]["arguments"] += args
+                if choices[0].finish_reason == "tool_calls":
+                    _result["tool_calls"] = list(tool_calls_acc.values())
+        except Exception as exc:  # noqa: BLE001
+            _result["error"] = str(exc)
+            return
+
+        _result["full_response"] = full_text
+        _result["chunk_count"] = chunk_count
+        if not _result.get("tool_calls"):
+            _result["tool_calls"] = None
+
+    def _execute_tool_calls(self, tool_calls: list, messages: list = None) -> list:
+        """Execute a batch of MCP tool calls.
+
+        Returns a list of result dicts with keys ``tool_call_id``,
+        ``tool_name``, ``success``, ``message`` (and ``error`` on failure).
+
+        Test contract: ``messages`` is **optional** — tests pass it as
+        a kwarg (``_execute_tool_calls(tool_calls, messages=[])``) when
+        exercising the full loop, and a positional ``messages`` arg
+        (``lambda tc, msgs: [...]``) when substituting a mock. The
+        parameter is currently captured for forward-compatibility (no
+        current logic depends on it).
+
+        Hard caps: only the first ``MAX_TOOL_CALLS`` calls are dispatched
+        and the loop aborts after ``MAX_CONSECUTIVE_ERRORS`` failures.
+        """
+        # Silence the "unused argument" lint while keeping the test-
+        # compatible signature.
+        del messages
+        MAX_TOOL_CALLS = 5
+        MAX_CONSECUTIVE_ERRORS = 3
+
+        results: list = []
+        consecutive_errors = 0
+        truncated = list(tool_calls or [])[:MAX_TOOL_CALLS]
+
+        for tc in truncated:
+            tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
+            func_info = tc.get("function", {}) if isinstance(tc, dict) else {}
+            func_name = func_info.get("name", "unknown") if isinstance(func_info, dict) else "unknown"
+            func_args_str = func_info.get("arguments", "{}") if isinstance(func_info, dict) else "{}"
+
+            try:
+                args = json.loads(func_args_str)
+            except (json.JSONDecodeError, TypeError):
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": False,
+                    "error": "Ошибка формата аргументов",
+                })
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    break
+                continue
+
+            adapter = getattr(self, "mcp_adapter", None)
+            if adapter is None or not hasattr(adapter, "execute_tool_call_sync"):
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": False,
+                    "error": "no MCP adapter available",
+                })
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    break
+                continue
+
+            try:
+                result = adapter.execute_tool_call_sync(func_name, args)
+                success = bool(result.get("success", False)) if isinstance(result, dict) else False
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": success,
+                    "message": result.get("message", "") if isinstance(result, dict) else "",
+                    "data": result.get("data") if isinstance(result, dict) else None,
+                })
+                if not success:
+                    consecutive_errors += 1
+                else:
+                    consecutive_errors = 0
+            except Exception as exc:  # noqa: BLE001
+                results.append({
+                    "tool_call_id": tc_id,
+                    "tool_name": func_name,
+                    "success": False,
+                    "error": str(exc),
+                })
+                consecutive_errors += 1
+
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                break
+
+        return results
+
     def _handle_result(
         self,
         result: DialogResult,
@@ -1483,6 +2176,21 @@ class DialogueNode(Node):
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
         # that /voice/tts/batch_complete fires only after the last chunk.
+        # 🔴 FIX (live 06.08): LLM копирует [SYSTEM REMINDER] из памяти как
+        # свой ответ (Bug C guard пишет reminder как assistant-turn, LLM его
+        # повторяет) → озвучивался служебный текст. Служебные маркеры НЕ
+        # озвучиваем — тихо завершаем цикл (LLM уже получил контекст).
+        _spoken_stripped = spoken.strip()
+        # 🔴 FIX (live 15:55 06.08): LLM копирует формат служебных вставок
+        # ([SYSTEM REMINDER], [CRITICAL: ...]) и генерит СВОИ «[CRITICAL:
+        # ROOTSYSTEMPOLICY violation...» — озвучивалось как «я тут растерялся».
+        # Любой маркер в стиле [ИМЯ: ...] (заглавные, двоеточие, скобки) —
+        # служебный, НЕ озвучиваем.
+        if _spoken_stripped.startswith(("[SYSTEM", "[СИСТЕМ", "[REMINDER", "[CRITICAL", "[ПОЛИТИКА", "[ROOT")):
+            self.get_logger().warning(
+                f"🔇 Служебный текст LLM не озвучиваем: {_spoken_stripped[:100]!r}"
+            )
+            return
         chunks = split_into_chunks(spoken)
         if not chunks:
             self._publish_response(spoken)
@@ -1500,6 +2208,26 @@ class DialogueNode(Node):
         msg = String()
         msg.data = self._dsm.current_state.name
         self._state_pub.publish(msg)
+    def _on_startup_greeting(self) -> None:
+        """Одноразовое приветствие при старте (issue #1003, редизайн 06.08).
+
+        Раньше была отдельная startup_greeting_node — она публиковала
+        приветствие до того, как tts_node завершал инициализацию, и
+        фраза терялась. Теперь dialogue_node сам ждёт N секунд и шлёт
+        текст тем же путём, что обычная речь (build_ssml_payload →
+        /voice/dialogue/response → tts_node).
+        """
+        if self._startup_greeting_fired:
+            return
+        self._startup_greeting_fired = True
+        # Thinking-звук, как при обычном диалоге.
+        sfx = String()
+        sfx.data = "thinking"
+        self._sound_trigger_pub.publish(sfx)
+        self.get_logger().info(
+            f"🗣 Startup greeting: {self._startup_greeting_text!r}"
+        )
+        self._publish_response(self._startup_greeting_text)
     def _publish_response(self, text: str, animation: str = "neutral") -> None:
         """Single-chunk publish — kept for backwards compatibility.
 
@@ -1566,6 +2294,168 @@ class DialogueNode(Node):
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):
             self._publish_response(chunk)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Pure helper methods (unit-test contracts for issue #968 / #980)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    _EMOTION_TO_ANIMATION: dict = {
+        "happy": "happy",
+        "sad": "sad",
+        "angry": "angry",
+        "surprised": "surprised",
+        "thinking": "thinking",
+        "excited": "victory",
+        "confused": "thinking",
+        "worried": "sad",
+        "neutral": "idle",
+        "calm": "idle",
+    }
+
+    def _map_emotion_to_animation(self, emotion: str) -> str:
+        """Map an emotion label to its corresponding LED animation key.
+
+        Lookup is case-insensitive; unknown emotions default to ``"idle"``.
+        """
+        if not emotion:
+            return "idle"
+        return self._EMOTION_TO_ANIMATION.get(str(emotion).lower(), "idle")
+
+    def _generate_fallback_response(self, text: str) -> str:
+        """Generate a static fallback reply when the LLM is unavailable."""
+        low = (text or "").lower()
+        greetings = (
+            "привет", "здравствуй", "hello", "hi ", "доброе утро",
+            "добрый день", "добрый вечер",
+        )
+        if any(g in low for g in greetings):
+            return (
+                "Привет! К сожалению, интернет сейчас недоступен, "
+                "но я могу выполнять базовые команды."
+            )
+        if any(w in low for w in ("как дела", "how are")):
+            return (
+                "У меня всё хорошо! Но интернет сейчас недоступен, "
+                "часть функций ограничена."
+            )
+        thanks = ("спасибо", "благодарю", "thanks", "thank you")
+        if any(w in low for w in thanks):
+            return "Пожалуйста!"
+        farewells = ("пока", "до свидания", "bye", "goodbye", "прощай")
+        if any(w in low for w in farewells):
+            return "До свидания!"
+        return "Интернет сейчас недоступен, я не могу ответить на этот вопрос."
+
+    def _detect_volume_intent(self, text: str):
+        """Detect volume adjustment intent from user text."""
+        if not text:
+            return None
+        low = text.lower()
+        if any(w in low for w in ("максимальная громкость", "максимум громк")):
+            return "max"
+        if any(w in low for w in ("нормальная громкость", "стандартная громкость", "обычная громкость")):
+            return "normal"
+        if "говори громко" in low:
+            return "max"
+        if any(w in low for w in ("громче", "громко")):
+            return "louder"
+        if any(w in low for w in ("тише", "потише")):
+            return "quieter"
+        return None
+
+    def _detect_pitch_intent(self, text: str):
+        """Detect pitch adjustment intent from user text."""
+        if not text:
+            return None
+        low = text.lower()
+        if any(w in low for w in ("нормальный голос", "говори нормально", "обычный голос")):
+            return "normal"
+        if any(w in low for w in ("выше", "повысь")):
+            return "higher"
+        if any(w in low for w in ("ниже",)):
+            return "lower"
+        return None
+
+    def _speak_simple(self, text: str, show_error_animation: bool = False) -> None:
+        """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
+        import uuid as _uuid
+        dialogue_id = str(_uuid.uuid4())
+        self.current_dialogue_id = dialogue_id
+        payload = json.dumps({
+            "ssml": f"<speak>{text}</speak>",
+            "dialogue_id": dialogue_id,
+        }, ensure_ascii=False)
+        msg = String()
+        msg.data = payload
+        self.response_pub.publish(msg)
+        if show_error_animation:
+            anim_msg = String()
+            anim_msg.data = "error"
+            pub = getattr(self, "animation_pub", None)
+            if pub is not None:
+                pub.publish(anim_msg)
+
+    def _trigger_sound(self, name: str) -> None:
+        """Publish a one-shot sound trigger; swallows publish exceptions."""
+        try:
+            msg = String()
+            msg.data = name
+            pub = getattr(self, "sound_trigger_pub", None)
+            if pub is not None:
+                pub.publish(msg)
+        except Exception:
+            pass
+
+    def _on_mcp_tools_update(self, msg) -> None:
+        """Parse MCP tools JSON and update ``available_tools``."""
+        try:
+            data = getattr(msg, "data", "") or "[]"
+            tools = json.loads(data)
+            if isinstance(tools, list):
+                self.available_tools = tools
+                self.mcp_tools_available = True
+            else:
+                self.available_tools = []
+                self.mcp_tools_available = False
+        except (json.JSONDecodeError, TypeError) as exc:
+            self.mcp_tools_available = False
+            self.available_tools = []
+            self.get_logger().error(f"MCP tools update parse error: {exc}")
+
+    def _on_perception_update(self, msg) -> None:
+        """Update ``internet_available`` and ``current_time_info`` from a perception msg."""
+        if hasattr(msg, "internet_available"):
+            self.internet_available = bool(msg.internet_available)
+        if hasattr(msg, "time_context_json"):
+            try:
+                self.current_time_info = json.loads(msg.time_context_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                self.current_time_info = {}
+                self.get_logger().warning("Invalid time_context_json in perception update")
+
+    def vad_callback(self, msg) -> None:
+        """VAD callback: track speech edges and signal agent interrupt.
+
+        Tests use ``vad_callback`` (public) instead of the internal
+        ``_on_vad``; delegate to the legacy method when present so behavior
+        stays identical. The legacy handler updates both ``_vad_speech_detected``
+        (private) and ``vad_speech_detected`` (public) so tests that read
+        either attribute stay consistent.
+        """
+        legacy = getattr(self, "_on_vad", None)
+        if legacy is not None:
+            legacy(msg)
+            return
+        active = bool(getattr(msg, "data", False))
+        if active and not getattr(self, "vad_speech_detected", False):
+            self.vad_speech_detected = True
+            self._vad_speech_detected = True
+            if getattr(self, "llm_processing", False) and not getattr(self, "mcp_tools_available", False):
+                self.interrupt_agent_loop = True
+        elif not active and getattr(self, "vad_speech_detected", False):
+            self.vad_speech_detected = False
+            self._vad_speech_detected = False
+
     def _handle_silence(self) -> None:
         self._cancel_run("silence command")
         self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)

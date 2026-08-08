@@ -11,7 +11,7 @@
 
 sound_node:
   ros__parameters:
-    sound_pack_dir: ~/rob_box_project/sound_pack
-    volume_db: 0
+    sound_pack_dir: /ws/sound_pack
+    volume_db: -12.0
     trigger_animations: true
     animation_topic: /animations/trigger

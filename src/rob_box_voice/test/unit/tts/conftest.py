@@ -18,8 +18,23 @@ import types
 from unittest.mock import MagicMock
 
 
+_MOCKS_INSTALLED = False
+
+
 def _install_all_mocks():
-    """Install ALL mocks needed to import ``rob_box_voice.tts_node``."""
+    """Install ALL mocks needed to import ``rob_box_voice.tts_node``.
+
+    Idempotent — repeated calls (e.g. when a test module also calls
+    ``_install_all_mocks()`` at module level) must NOT recreate the
+    stub classes, otherwise ``TTSNode`` (a subclass of the
+    first-import-time ``FakeNode``) and the test's
+    ``patch.object(... ``FakeNode``, ...)`` would target *different*
+    classes and the patch would never fire.
+    """
+    global _MOCKS_INSTALLED
+    if _MOCKS_INSTALLED:
+        return
+    _MOCKS_INSTALLED = True
 
     # ── rclpy ─────────────────────────────────────────────────────────────
     mock_rclpy = MagicMock()
