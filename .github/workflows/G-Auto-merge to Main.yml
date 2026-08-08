@@ -23,6 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Create PR to main
-        run: gh pr create --base main --head develop --title "chore: release develop to main" --body "Auto-merge from develop" --label release,autobuild || true
+        run: |
+          gh pr create \
+            --base main \
+            --head develop \
+            --title "chore: release develop to main" \
+            --body "Auto-merge from develop" \
+            --label release,autobuild \
+            || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
