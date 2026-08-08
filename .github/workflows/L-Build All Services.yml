@@ -28,7 +28,7 @@ on:
         default: 'true'
         type: boolean
 
-permissions: {}
+permissions: read-all
 
 env:
   LOCAL_REGISTRY: localhost:5000

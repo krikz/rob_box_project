@@ -5,6 +5,8 @@ on:
     branches:
       - develop
 
+permissions: read-all
+
 jobs:
   build-and-test:
     uses: ./.github/workflows/L-Build All Services.yml
