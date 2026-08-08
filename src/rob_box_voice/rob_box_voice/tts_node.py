@@ -1698,13 +1698,28 @@ class TTSNode(Node):
         pitch = ssml_attributes.get("pitch", "medium")
 
         # 🔴 FIX (live 08.08 «робот не ответил»): LLM/MiniMax-стиль SSML может
-        # дать числовой pitch ("1.2", "+10%") — Silero v5 принимает ТОЛЬКО
-        # x-low/low/medium/high/x-high/robot. Числовой pitch валил fallback:
+        # дать числовой pitch ("1.2", "+10%", float 1.2) — Silero v5 принимает
+        # ТОЛЬКО x-low/low/medium/high/x-high/robot. Числовой pitch валил fallback:
         #   ❌ Synthesis error: Invalid <prosody> tag, pitch should be in x-low...
-        # → нормализуем в ближайший Silero-совместимый уровень.
+        # parse_ssml_attributes возвращает pitch КАК FLOAT (1.2/1.0/0.8), поэтому
+        # нормализуем и float, и str — в ближайший Silero-совместимый уровень.
         _SILERO_PITCH_LEVELS = {"x-low", "low", "medium", "high", "x-high", "robot"}
-        if isinstance(pitch, str) and pitch not in _SILERO_PITCH_LEVELS:
-            # Числовой/процентный pitch → маппим в Silero-уровень.
+        pitch_orig = pitch
+        if isinstance(pitch, (int, float)):
+            # float от parse_ssml_attributes: 1.0 = medium, 1.2 = выше, 0.8 = ниже
+            pct = float(pitch) - 1.0
+            if pct <= -0.15:
+                pitch = "low"
+            elif pct < -0.05:
+                pitch = "low"
+            elif pct < 0.05:
+                pitch = "medium"
+            elif pct < 0.15:
+                pitch = "high"
+            else:
+                pitch = "x-high"
+        elif isinstance(pitch, str) and pitch not in _SILERO_PITCH_LEVELS:
+            # Числовой/процентный pitch в строке → маппим в Silero-уровень.
             try:
                 pct = 0.0
                 pitch_str = pitch.strip().lower()
@@ -1724,8 +1739,9 @@ class TTSNode(Node):
                     pitch = "x-high"
             except (ValueError, TypeError):
                 pitch = "medium"
+        if pitch != pitch_orig:
             self.get_logger().info(
-                f"🎚️  Silero: числовой pitch нормализован → '{pitch}'"
+                f"🎚️  Silero: pitch {pitch_orig!r} нормализован → '{pitch}'"
             )
 
         def synthesize_chunk(chunk_text: str) -> np.ndarray:
