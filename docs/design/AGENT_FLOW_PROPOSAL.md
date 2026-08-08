@@ -20,10 +20,10 @@ human → Issue[hermes+agent:role]
    ↓ cron `agent-flow-triage` (every 5m)
 kanban-карточка (assignee, инструкция, branch-naming)
    ↓ sub-agent по карточке
-worktree → рабочая ветка `agent/<id>-<slug>` → push + **комменты в issue о ходе** (Q23)
+worktree → рабочая ветка `agent/<id>-<slug>` → push + **комменты в issue о ходе** (Q23) → `kanban complete` → карточка в блок (ждёт CI)
    ↓ cron `agent-flow-merge-gate` (every 5m)
-CI красный → `kanban block` + коммент в issue → воркер чинит в ТОЙ ЖЕ карточке (Q21)
-CI зелёные + mergeable → `kanban unblock` + label `needs-e2e` → карточка block «ожидает e2e» (Q22)
+CI красный → коммент в карточку «⛔ красный» + `kanban unblock` → воркер чинит в ТОЙ ЖЕ карточке (Q21)
+CI зелёный → merge-gate ничего не делает (карточка в блоке, ждёт e2e)
    ↓ cron `e2e-process` (rolling-round, every 1h)
 resolver берёт задачу → мержит в `~e2e/wip-<id>-<slug>` → PR в `~e2e/test-round-N` → CI → merge в test-round-N → e2e прогон
    ↓ артефакты
@@ -163,24 +163,17 @@ priority: P<P0..P2>
 
 ### 3.3 `agent-flow-merge-gate` (cron, every 5 min)
 
-**Inputs:** PR из `agent/<id>-*` в `feature/harness-p0-foundation` или комментарий-триггер от agent.
+**Inputs:** PR из `agent/<id>-*` (карточка выполнилась → ушла в блок).
 
 **Checks:**
 - `gh pr checks <NUM> --watch --exit-status` — все passed.
 - `gh pr view <NUM> --json mergeable` — `MERGEABLE=true`.
 
-**Action (Q21 — НЕ создавать CI-fix карточки!):**
+**Action (Q21):**
 
-1. **CI красный / pending** → `kanban block <task_id> --reason "CI red: <check> <url>"` + **коммент в issue**:
-   ```
-   ⛔ CI красный: <check_name> (<run_url>)
-   Исправь в ветке <branch> и запуши — merge-gate разблокирует сам.
-   ```
-   Воркер чинит в ТОЙ ЖЕ карточке (без новых карточек).
-2. **CI зелёные + mergeable** → `kanban unblock <task_id>` + label `needs-e2e` + **коммент в issue**: «✅ CI зелёный, карточка разблокирована, ждёт e2e».
-3. Если карточка уже была в block «ожидает e2e» — не трогать (Q22).
-
-**Идемпотентность:** block/unblock — идемпотентны (повторный block с той же причиной — no-op; unblock без block — no-op). Дочерние карточки НЕ создаются.
+1. **CI красный** → пишет коммент в карточку (и issue): «⛔ CI красный: <check_name> (<run_url>) — исправь в ветке <branch>» + `kanban unblock` → воркер снова берёт карточку и чинит в ТОЙ ЖЕ (без новых карточек).
+2. **CI зелёный** → **ничего не делает** (карточка остаётся в блоке — ждёт e2e).
+3. Дочерние CI-fix карточки НЕ создаются никогда.
 
 ### 3.4 `e2e-process` (cron, every 1 hour)
 
@@ -221,7 +214,7 @@ priority: P<P0..P2>
    gh run download --name run-<id>-dialog_e2e.wav
    ffmpeg -i run-<id>-dialog_e2e.wav -c:a libmp3lame -b:a 64k e2e_<id>.mp3
    ```
-6. **Comment в issue** с артефактами (см. §5) + коммент в карточку.
+6. **Comment в issue** с артефактами (см. §5) + коммент в карточку + **`kanban unblock`** (карточка выходит из блока с результатами → юзер смотрит и решает).
 7. **Создать новый round:**
    ```
    if e2e SUCCESS: 
@@ -236,7 +229,7 @@ priority: P<P0..P2>
    else:
      # FAIL — добавить label `e2e:rejected`, ничего не создавать
    ```
-8. **Карточка остаётся в block** «ожидает merge» (Q22). Только юзер, влив PR вручную, даёт право на `kanban complete`.
+8. **После e2e** карточка разблокирована с результатами (шаг 6) → юзер смотрит артефакты, вливает PR вручную → `kanban complete`. Пока юзер не влил — карточка не done.
 
 **State:** хранить `N` (текущий round) можно в **имени ветки** (max N) либо в файлике `state/e2e_round.txt` в репо (fallback).
 
