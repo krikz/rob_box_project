@@ -33,8 +33,9 @@ ffmpeg -y -i /tmp/voice_new.ogg -af "highpass=f=200,volume=3.0,alimiter=limit=0.
 pactl set-sink-volume @DEFAULT_SINK@ ${V}%
 
 # Метка времени ДО команды — ответы робота ищем только ПОСЛЕ неё.
-# Записываем текущее время робота (сек) — до проигрывания команды.
-BEFORE="$( ${ROBOT_SSH} "date +%s" 2>/dev/null || echo 0 )"
+# RFC3339 (не epoch!): docker на роботе НЕ парсит --since @<unix> —
+# «failed to parse value as time or duration: @1786220844» → пустой лог → NO_REACTION.
+BEFORE="$( ${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ )"
 echo ">>> ROBOT_TIME_BEFORE ${BEFORE}"
 
 # Record raw PCM then convert to proper WAV
@@ -50,8 +51,8 @@ while [ "$ATTEMPT" -le "$E2E_MAX_ATTEMPTS" ]; do
     sleep "$E2E_REACTION_WINDOW"
 
     # Проверяем реакцию робота: TTS finished с timestamp ПОЗЖЕ нашей команды.
-    # Фильтруем по времени --since @BEFORE — приветствие (до команды) не считается.
-    REACTION_LOG="$( ${ROBOT_SSH} "docker logs voice-assistant --since @${BEFORE} 2>&1 | grep 'TTS finished' | tail -3" 2>/dev/null )"
+    # Фильтруем по времени --since "${BEFORE}" — приветствие (до команды) не считается.
+    REACTION_LOG="$( ${ROBOT_SSH} "docker logs voice-assistant --since '${BEFORE}' 2>&1 | grep 'TTS finished' | tail -3" 2>/dev/null )"
     if [ -n "$REACTION_LOG" ]; then
         # Уточняем: TTS finished в контейнере имеет ROS timestamp (сек с эпохи).
         # Сравниваем с BEFORE — ответ должен быть ПОСЛЕ нашей команды.
