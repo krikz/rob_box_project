@@ -105,17 +105,19 @@ jobs:
           # colcon test spawns ament linters as separate subprocesses after
           # pytest and waits for ALL of them, causing 4+ minute hangs.
           #
-          # --no-header skips the pytest version/platform banner (already
-          # printed by the summary line above).
+          # Even when running pytest directly, the ament_* pytest plugins
+          # hook into pytest_sessionfinish and hang for 4+ min scanning
+          # ~200 source files.  -p no:ament_* disables them entirely.
           #
           # Coverage is NOT collected here — it's generated separately by
-          # the `Generate coverage report` step that merges existing
-          # .coverage files produced by earlier colcon builds.
+          # the `Generate coverage report` step.
           #
           # Wrapped in timeout 240 so a stuck test fails fast.
           echo "=== pytest: rob_box_voice (timeout 240s) ==="
           timeout 240 python3 -m pytest \
             -p no:launch_testing \
+            -p no:ament_flake8 -p no:ament_pep257 \
+            -p no:ament_copyright -p no:ament_xmllint \
             --rootdir "${{ github.workspace }}/test_ws/src/rob_box_voice" \
             --junitxml "${{ github.workspace }}/test_ws/build/rob_box_voice/pytest.xml" \
             --tb=short --strict-markers -ra -v --no-header \
