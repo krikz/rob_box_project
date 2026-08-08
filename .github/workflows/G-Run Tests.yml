@@ -101,20 +101,29 @@ jobs:
 
           # Run tests — NO `|| true`, failures MUST surface
           #
-          # rob_box_voice: pytest ONLY.  Linting is intentionally SKIPPED in CI
-          # (`--pytest-args '-p no:ament_*'`) because the ament_* plugins run
-          # AFTER the pytest suite and routinely hang for 4+ minutes scanning
-          # ~200 source files (flake8/pep257/copyright/xmllint).  Linting is
-          # covered by the separate `G-Lint Code` workflow.
+          # rob_box_voice: pytest run directly (NOT via `colcon test`).
+          # `colcon test` spawns ament linters (flake8, pep257, copyright,
+          # xmllint) as *separate subprocesses* after pytest finishes
+          # and waits for ALL of them.  Those linters hang for 4+ minutes
+          # scanning ~200 source files and `--pytest-args '-p no:ament_*'`
+          # can't suppress them because they aren't pytest plugins — they
+          # are independent colcon test types.
           #
-          # Wrapped in `timeout 240` so a stuck test fails fast instead of
-          # hanging the job until the `timeout-minutes` cap.
-          echo "=== colcon test: rob_box_voice (timeout 240s, pytest only) ==="
-          timeout 240 colcon test \
-            --packages-select rob_box_voice \
-            --pytest-args '-p no:ament_flake8 -p no:ament_pep257 -p no:ament_copyright -p no:ament_xmllint' \
-            --event-handlers console_direct+ \
-            --return-code-on-test-failure || { echo "❌ rob_box_voice FAILED or TIMEOUT (rc=$?)"; exit 1; }
+          # Running pytest directly skips the colcon/ament test harness
+          # overhead entirely.  Linting is covered by the separate
+          # `G-Lint Code` workflow.
+          #
+          # Wrapped in `timeout 240` so a stuck test fails fast.
+          echo "=== pytest: rob_box_voice (timeout 240s) ==="
+          timeout 240 python3 -m pytest \
+            -p no:launch_testing \
+            --rootdir "${{ github.workspace }}/test_ws/src/rob_box_voice" \
+            --junitxml "${{ github.workspace }}/test_ws/build/rob_box_voice/pytest.xml" \
+            --cov=rob_box_voice \
+            --cov-report "xml:${{ github.workspace }}/test_ws/build/rob_box_voice/coverage.xml" \
+            --tb=short --strict-markers -ra -v \
+            "${{ github.workspace }}/test_ws/src/rob_box_voice/test/" \
+            || { echo "❌ rob_box_voice FAILED or TIMEOUT (rc=$?)"; exit 1; }
           echo "✅ rob_box_voice passed"
 
           # rob_box_animations + rob_box_perception: pytest only, split so a
