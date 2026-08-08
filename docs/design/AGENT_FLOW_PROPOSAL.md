@@ -29,7 +29,7 @@ resolver берёт задачу → мержит в `z-{e2e}/wip-<id>-<slug>` �
    ↓ артефакты
 issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + timing + RMS + baseline
    ↓ человек (юзер)
-ручной merge `z-{agent}/<id>-<slug>` → `feature/harness-p0-foundation`
+ручной merge `z-{agent}/<id>-<slug>` → `develop`
    ↓ cleanup (ТОЛЬКО после merge — R6)
 удалить `z-{agent}/<id>-<slug>` и `z-{e2e}/wip-<id>-<slug>`, `kanban complete`, issue close
 ```
@@ -139,9 +139,9 @@ priority: P<P0..P2>
 
 0. **Стартовый коммент в issue** (Q23): «взял в работу, ветка `z-{agent}/<id>-<slug>`, worktree <путь>».
 1. Получает карточку через kanban-tool.
-2. Создаёт worktree (свой собственный, не `_work`!) от `feature/harness-p0-foundation`:
+2. Создаёт worktree (свой собственный, не `_work`!) от `develop`:
    ```
-   git worktree add -b z-{agent}/<id>-<slug> /home/builder/wt-<id> origin/feature/harness-p0-foundation
+   git worktree add -b z-{agent}/<id>-<slug> /home/builder/wt-<id> origin/develop
    ```
 3. Делает код по инструкции из карточки. Если нужно — читает родительский issue.
 4. **Commit style:** `feat/fix/docs(scope): ...`.
@@ -188,7 +188,7 @@ priority: P<P0..P2>
 
 1. **Определить N** — текущий номер round:
    - `git ls-remote origin | grep z-{e2e}/test-round-` → max N.
-   - Если нет веток → создать `z-{e2e}/test-round-1` от `feature/harness-p0-foundation`.
+   - Если нет веток → создать `z-{e2e}/test-round-1` от `develop`.
    - Иначе → использовать `z-{e2e}/test-round-N` (max N).
 2. **Резолв всех PR** с `needs-e2e` — `e2e-process` сам мержит:
    ```
@@ -224,7 +224,7 @@ priority: P<P0..P2>
    ```
    if e2e SUCCESS: 
      git fetch origin
-     git checkout feature/harness-p0-foundation
+     git checkout develop
      git branch z-{e2e}/test-round-$((N+1))
      git push origin z-{e2e}/test-round-$((N+1))
      # Удалить старые:
@@ -247,7 +247,7 @@ priority: P<P0..P2>
 1. Создаёт issue с `hermes` label (может + `agent:<role>` и `priority:P*`).
 2. Ждёт пока PR появится (не обязательно, опционально смотреть) — воркер комментит о ходе (Q23).
 3. **Когда issue получает коммент с артефактами** (`e2e-done` label) — слушает mp3, читает diff, проверяет acceptance.
-4. Если ОК → `gh pr merge --squash z-{agent}/<id>-<slug> → feature/harness-p0-foundation` **→ ТОЛЬКО ПОСЛЕ этого карточка `kanban complete`** (Q22).
+4. Если ОК → `gh pr merge --squash z-{agent}/<id>-<slug> → develop` **→ ТОЛЬКО ПОСЛЕ этого карточка `kanban complete`** (Q22).
 5. Если НЕ ОК → `e2e:rejected` label + коммент «что не так», agent делает следующую итерацию.
 
 ---
@@ -410,7 +410,7 @@ cronjob.create(
 1. **Selection logic** — `select_agent(role)` — какой sub-agent делает (architect/backend/devops). Определяется по label `agent:<role>` на issue или default `hermes`.
 2. **Worktree management** — изоляция от race (как было с билд-раннерами 06.08). Один worktree на agent'а.
 3. **Commit conventions** — `feat/fix/docs(scope): ...`.
-4. **Push через rebase** — `git fetch + rebase origin/feature/harness-p0-foundation + push + pop stash` (паттерн уже воркеры используют).
+4. **Push через rebase** — `git fetch + rebase origin/develop + push + pop stash` (паттерн уже воркеры используют).
 5. **Hand-off протокол** — sub-agent получает карточку, читает issue, делает код, оставляет статус.
 
 **Acceptance для Phase 2:**
