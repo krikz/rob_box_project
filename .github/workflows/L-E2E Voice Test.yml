@@ -163,20 +163,25 @@ jobs:
             echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
             FAIL="stt-no-phrase"
           fi
-          # 2) TTS: если fallback (MiniMax квота) — WARNING, не FAIL.
-          #    FAIL только если робот ВООБЩЕ не произнёс ответ (no-speech).
-          if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
-            echo "⚠️  TTS FALLBACK: MiniMax квота/ошибка → Silero. Это НЕ провал теста (робот может отвечать запасным голосом), но основному голосу нужно внимание."
-            WARN="tts-fallback"
-          else
-            echo "✅ TTS: основной голос без fallback"
-          fi
-          # 3) Ответ: TTS реально произнесён — ГЛАВНЫЙ критерий
-          if grep -q "TTS finished" "$LOG" || grep -q "Воспроизведение завершено" "$LOG"; then
-            echo "✅ SPEECH: робот ответил (TTS finished)"
+          # 2) ОТВЕТ: TTS должен быть ПОСЛЕ STT-фразы (ответ на команду).
+          #    Приветствие (startup greeting) идёт ДО фразы — не считается ответом!
+          stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+          tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+          if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
+            echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
+          elif grep -q "TTS finished" "$LOG"; then
+            echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
+            FAIL="${FAIL:+$FAIL,}no-speech-after-command"
           else
             echo "❌ NO SPEECH: робот не произнёс ответ"
             FAIL="${FAIL:+$FAIL,}no-speech"
+          fi
+          # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
+          if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
+            echo "⚠️  TTS FALLBACK: MiniMax квота/ошибка → Silero. Основному голосу нужно внимание."
+            WARN="tts-fallback"
+          else
+            echo "✅ TTS: основной голос без fallback"
           fi
           if [ -n "$FAIL" ]; then
             echo ""
@@ -185,13 +190,11 @@ jobs:
           fi
           if [ -n "$WARN" ]; then
             echo ""
-            echo "⚠️  E2E ПРОШЁЛ с предупреждением: $WARN (STT ок + речь произнесена, но TTS fallback)"
+            echo "⚠️  E2E ПРОШЁЛ с предупреждением: $WARN (STT ок + ответ после команды, но TTS fallback)"
             exit 0
           fi
           echo ""
-          echo "✅ E2E ПРОШЁЛ: STT распознал + TTS основной голос + речь произнесена"
-
-
+          echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
       - name: Upload recording
         uses: actions/upload-artifact@v4
         with:
