@@ -15,6 +15,18 @@ on:
         required: false
         default: 'true'
         type: boolean
+  workflow_call:  # Reusable — вызывается из G-Auto-merge to Main
+    inputs:
+      build_base_images:
+        description: 'Build base images first'
+        required: false
+        default: 'false'
+        type: boolean
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
+        required: false
+        default: 'true'
+        type: boolean
 
 permissions:
   contents: write  # Required for git push of .image-versions files
@@ -27,10 +39,10 @@ env:
 jobs:
   # Сборка базовых образов (если нужно)
   build-base-images:
-    if: github.event.inputs.build_base_images == 'true'
+    if: inputs.build_base_images == 'true'
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
-      push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
+      push_to_registry: ${{ inputs.push_to_registry == 'true' }}
 
   # Main Pi сервисы
   build-main-services:
@@ -38,7 +50,7 @@ jobs:
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Main Pi Services.yml
     with:
-      push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
+      push_to_registry: ${{ inputs.push_to_registry == 'true' }}
 
   # Vision Pi сервисы
   build-vision-services:
@@ -46,7 +58,7 @@ jobs:
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Vision Pi Services.yml
     with:
-      push_to_registry: ${{ github.event.inputs.push_to_registry == 'true' }}
+      push_to_registry: ${{ inputs.push_to_registry == 'true' }}
 
   # Итоговая сводка
   summary:

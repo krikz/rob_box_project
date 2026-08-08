@@ -12,3 +12,4 @@ import fails with ``ModuleNotFoundError: No module named 'test.unit'``.
 The file is intentionally empty — tests are not part of the runtime package;
 this marker only tells pytest 9.x that the namespace exists.
 """
+

@@ -55,7 +55,10 @@ class AudioNode(Node):
         # Параметры
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('channels', 1)
-        self.declare_parameter('chunk_size', 1024)
+        # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
+        # мал для Python-callback — GIL/публикация/USB VAD приводили к
+        # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
+        self.declare_parameter('chunk_size', 4096)
         self.declare_parameter('vad_threshold', 3.5)
         self.declare_parameter('publish_rate', 10)
         self.declare_parameter('device_index', -1)  # -1 = auto-detect
@@ -138,6 +141,13 @@ class AudioNode(Node):
             self.speech_prefetch * self.sample_rate * 2)  # 16-bit = 2 bytes
         self.prev_vad = False
 
+        # Issue 1050: счётчики paInputOverflow для rate-limited диагностики.
+        # Не пишем в лог каждый overflow (спам), а раз в окно — с числом
+        # случаев и размером чанка, чтобы по live-логам видеть динамику.
+        self._overflow_count = 0
+        self._overflow_last_logged = 0.0
+        self._overflow_log_window_s = 60.0
+
         # Issue 989: анти-эхо состояние.
         # TTS: True пока робот говорит (synthesizing/playing); после перехода
         # в ready/idle запоминаем момент окончания для grace period.
@@ -218,7 +228,9 @@ class AudioNode(Node):
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream."""
         if status:
-            self.get_logger().warn(f'PyAudio status: {status}')
+            # Issue 1050: status=2 (paInputOverflow) — входной буфер
+            # переполнен, сэмплы потеряны. Rate-limited лог + диагностика.
+            self._log_overflow(frame_count, in_data)
 
         # Публиковать RAW аудио данные
         if in_data and self.is_running:
@@ -261,6 +273,32 @@ class AudioNode(Node):
                 self.speech_prefetch_buffer = self.speech_prefetch_buffer[-self.speech_prefetch_bytes:]
 
         return (None, pyaudio.paContinue)
+
+    def _log_overflow(self, frame_count: int, in_data) -> None:
+        """Rate-limited лог paInputOverflow (issue #1050).
+
+        Статус 2 (paInputOverflow) означает, что входной буфер переполнен
+        и сэмплы потеряны — обычно Python-callback не успел за периодом
+        (GIL, тяжёлая публикация AudioData, блокирующие USB VAD/DoA чтения
+        в check_vad_and_doa). Считаем каждый случай, но пишем в лог не
+        чаще раза в ``_overflow_log_window_s`` секунд: строка не спамит,
+        а по числу случаев и размеру чанка видно динамику после фикса
+        (увеличение frames_per_buffer 1024 → 4096).
+        """
+        self._overflow_count += 1
+        now = time.monotonic()
+        if now - self._overflow_last_logged < self._overflow_log_window_s:
+            return
+        self._overflow_last_logged = now
+        expected = frame_count * self.channels * 2
+        got = len(in_data) if in_data else 0
+        lost = max(0, expected - got)
+        self.get_logger().warning(
+            f"[issue 1050] PyAudio paInputOverflow (status=2): "
+            f"{self._overflow_count} случаев за окно "
+            f"{self._overflow_log_window_s:.0f}с, "
+            f"chunk {got}/{expected} байт (потеряно ~{lost} байт)"
+        )
 
     # ------------------------------------------------------------------
     # Issue 989: анти-эхо гейты (Fix B — grace после TTS, Fix C — музыка)

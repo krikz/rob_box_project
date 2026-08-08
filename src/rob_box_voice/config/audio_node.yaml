@@ -13,7 +13,12 @@ audio_node:
   ros__parameters:
     sample_rate: 16000
     channels: 1
-    chunk_size: 1024
+    # chunk_size = frames_per_buffer (issue #1050). 1024 (64ms @16kHz) — слишком
+    # мал для Python-callback: GIL/публикация AudioData/USB VAD не успевали,
+    # PortAudio падал в paInputOverflow (PyAudio status 2), сэмплы терялись и
+    # STT получал обрывки фраз («ы ещё» вместо «давай ещё»). 4096 = 256ms —
+    # запас на джиттер без потери кадров.
+    chunk_size: 4096
     vad_threshold: 3.5
     publish_rate: 10
     device_index: -1

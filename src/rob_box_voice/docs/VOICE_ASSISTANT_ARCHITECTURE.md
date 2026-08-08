@@ -189,7 +189,7 @@ unconfigured → configuring → inactive → activating → active
 ```yaml
 sample_rate: 16000
 channels: 1  # обработанный канал
-chunk_size: 1024
+chunk_size: 4096  # frames per buffer (issue #1050: 1024 → 4096, paInputOverflow)
 vad_threshold: 3.5  # dB (GAMMAVAD_SR)
 publish_rate: 10  # Hz для VAD/DOA
 ```
