@@ -265,12 +265,15 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Retry git operations (Pi WiFi to github.com can be flaky)
+          # Use reset --hard because this is a robot deployment, not a dev workstation.
+          # The branch may have been force-pushed (e.g. e2e test rounds reuse branches),
+          # so git pull would fail on divergent histories.
           for attempt in 1 2 3; do
             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git pull origin ${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }}" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
@@ -327,12 +330,15 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Retry git operations (Pi WiFi to github.com can be flaky)
+          # Use reset --hard because this is a robot deployment, not a dev workstation.
+          # The branch may have been force-pushed (e.g. e2e test rounds reuse branches),
+          # so git pull would fail on divergent histories.
           for attempt in 1 2 3; do
             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git pull origin ${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }}" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
