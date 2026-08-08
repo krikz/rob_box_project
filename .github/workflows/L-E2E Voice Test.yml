@@ -146,6 +146,44 @@ jobs:
             "docker logs voice-assistant --since 10m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
+      - name: Validate e2e result (real robot response)
+        run: |
+          RID="${{ github.run_id }}"
+          LOG="/tmp/voice_e2e_${RID}.log"
+          FAIL=""
+          echo "--- e2e validation markers ---"
+          # 1) STT: команда должна быть РАСПОЗНАНА (не empty/rejected)
+          if grep -qE "ОТКЛОНЕНО \(пустое\)|Пустой STT" "$LOG"; then
+            echo "❌ STT EMPTY: команда не распознана (все провайдеры пустые)"
+            FAIL="stt-empty"
+          elif grep -q "Получена фраза" "$LOG"; then
+            echo "✅ STT: фраза получена"
+          else
+            echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
+            FAIL="stt-no-phrase"
+          fi
+          # 2) TTS: ответ должен быть через ОСНОВНОЙ голос (MiniMax), не fallback
+          if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
+            echo "❌ TTS FALLBACK: MiniMax отвалился, ответ Silero (или тишина)"
+            FAIL="${FAIL:+$FAIL,}tts-fallback"
+          else
+            echo "✅ TTS: основной голос без fallback"
+          fi
+          # 3) Ответ: TTS реально произнесён
+          if grep -q "TTS finished" "$LOG" || grep -q "Воспроизведение завершено" "$LOG"; then
+            echo "✅ SPEECH: робот ответил (TTS finished)"
+          else
+            echo "❌ NO SPEECH: робот не произнёс ответ"
+            FAIL="${FAIL:+$FAIL,}no-speech"
+          fi
+          if [ -n "$FAIL" ]; then
+            echo ""
+            echo "❌❌ E2E НЕ ПРОШЁЛ: $FAIL — нужен повторный прогон (e2e:rejected)"
+            exit 1
+          fi
+          echo ""
+          echo "✅ E2E ПРОШЁЛ: STT распознал + TTS основной голос + речь произнесена"
+
 
       - name: Upload recording
         uses: actions/upload-artifact@v4
