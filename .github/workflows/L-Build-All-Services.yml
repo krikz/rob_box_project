@@ -42,7 +42,7 @@ jobs:
     if: inputs.build_base_images == 'true'
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
-      push_to_registry: ${{ inputs.push_to_registry == 'true' }}
+      push_to_registry: true
 
   # Main Pi сервисы
   build-main-services:
@@ -50,7 +50,7 @@ jobs:
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Main Pi Services.yml
     with:
-      push_to_registry: ${{ inputs.push_to_registry == 'true' }}
+      push_to_registry: true
 
   # Vision Pi сервисы
   build-vision-services:
@@ -58,7 +58,7 @@ jobs:
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Vision Pi Services.yml
     with:
-      push_to_registry: ${{ inputs.push_to_registry == 'true' }}
+      push_to_registry: true
 
   # Итоговая сводка
   summary:
