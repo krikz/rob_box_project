@@ -31,7 +31,10 @@ class _RecordedCompletions:
         self.calls.append(kwargs)
         assert kwargs["model"] == "MiniMax-M3"
         assert kwargs["messages"] == [{"role": "user", "content": "hello MiniMax"}]
-        assert kwargs["thinking"] == {"type": "disabled"}
+        # 🔴 FIX (live 06.08): кастомные поля провайдера (thinking policy) идут
+        # через extra_body, НЕ в kwargs — OpenAI SDK строго типизирован
+        # (create(thinking=...) → TypeError, см. b5879b79 / 6901a14e).
+        assert kwargs.get("extra_body", {}).get("thinking") == {"type": "disabled"}
         return MagicMock(
             choices=[
                 MagicMock(
