@@ -63,7 +63,7 @@ jobs:
   # Итоговая сводка
   summary:
     needs: [build-base-images, build-main-services, build-vision-services]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary

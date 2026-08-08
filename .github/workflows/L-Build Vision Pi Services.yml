@@ -31,7 +31,7 @@ env:
 jobs:
   # Определение тега
   prepare:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     outputs:
       docker_tag: ${{ steps.set-config.outputs.docker_tag }}
     steps:
@@ -54,7 +54,7 @@ jobs:
   # Параллельная сборка всех сервисов Vision Pi (до 8 одновременно)
   build-oak-d:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -92,7 +92,7 @@ jobs:
 
   build-led-matrix:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -134,7 +134,7 @@ jobs:
 
   build-ceiling-camera:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -172,7 +172,7 @@ jobs:
 
   build-voice-assistant:
     needs: [prepare, build-voice-base]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -214,7 +214,7 @@ jobs:
 
   build-voice-resources:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -251,7 +251,7 @@ jobs:
 
   build-voice-base:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -288,7 +288,7 @@ jobs:
 
   build-telegram-bot:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -330,7 +330,7 @@ jobs:
 
   build-supercollider:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
         run: |
@@ -368,7 +368,7 @@ jobs:
   # Обновление .image-versions — SHA-тег после успешной сборки
   update-image-versions:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     steps:
       - name: Clean stale submodules
@@ -442,7 +442,7 @@ jobs:
   # Итоговая сводка
   summary:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary

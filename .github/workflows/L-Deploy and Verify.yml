@@ -43,7 +43,7 @@ jobs:
     # - Raspberry Pi устройства в локальной сети (10.1.1.x) недоступны из GitHub hosted runners
     # - Требуется SSH доступ к устройствам
     # - Локальный registry (10.1.1.249:5000) доступен только на self-hosted машине
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     permissions:
       contents: read
       issues: write
