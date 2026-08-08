@@ -6,7 +6,10 @@
     audio_node:
       sample_rate: 16000          # Hz (ReSpeaker max)
       channels: 1                 # обработанный канал из 1_channel_firmware
-      chunk_size: 1024            # frames per buffer
+      # chunk_size = frames per buffer (issue #1050). 1024 → 4096:
+      # при 1024 Python-callback не успевал за периодом → paInputOverflow
+      # (PyAudio status 2), терялись сэмплы, STT получал обрывки фраз.
+      chunk_size: 4096            # frames per buffer
       vad_threshold: 3.5          # dB (GAMMAVAD_SR parameter)
       publish_rate: 10            # Hz для VAD/DOA topics
       device_index: -1            # -1 = auto-detect ReSpeaker

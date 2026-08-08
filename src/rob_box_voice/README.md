@@ -151,7 +151,7 @@ dialogue_node:
 audio_node:
   sample_rate: 16000
   channels: 1
-  chunk_size: 1024
+  chunk_size: 4096  # frames per buffer (issue #1050: 1024 → 4096, paInputOverflow)
   vad_threshold: 3.5
   device_index: 2  # Проверить через pyaudio
 

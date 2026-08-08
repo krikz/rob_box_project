@@ -34,7 +34,7 @@ LEDNode              CommandNode     Animations
 |-----------|------|---------|-------------|
 | `sample_rate` | int | 16000 | Audio sample rate (Hz) |
 | `channels` | int | 1 | Audio channels |
-| `chunk_size` | int | 1024 | Buffer chunk size |
+| `chunk_size` | int | 4096 | Buffer chunk size (issue #1050: 1024 → 4096, paInputOverflow) |
 | `vad_threshold` | float | 3.5 | VAD sensitivity (dB) |
 | `publish_rate` | int | 10 | VAD/DoA poll rate (Hz) |
 | `device_index` | int | -1 | Audio device (-1 = auto) |

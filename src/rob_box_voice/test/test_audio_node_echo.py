@@ -145,7 +145,7 @@ def _make_audio_node_stub(**param_overrides):
     defaults = dict(
         sample_rate=16000,
         channels=1,
-        chunk_size=1024,
+        chunk_size=4096,  # issue #1050: 1024 → 4096 (paInputOverflow fix)
         vad_threshold=3.5,
         publish_rate=10,
         device_index=-1,
@@ -327,3 +327,76 @@ class TestMusicStrictGate:
 
         # Повторный "playing" не дёргает set_vad_threshold снова
         audio_node.respeaker.set_vad_threshold.assert_not_called()
+
+
+class TestInputOverflowHandling:
+    """Issue 1050: paInputOverflow (PyAudio status=2) — rate-limited лог.
+
+    status=2 == paInputOverflow: входной буфер переполнен, сэмплы потеряны
+    (Python-callback не успел за периодом). Callback должен (а) не падать
+    на коротком in_data, (б) продолжать публикацию, (в) логировать не чаще
+    раза в окно, (г) сообщать сколько байт потеряно.
+    """
+
+    @staticmethod
+    def _capture_warnings(audio_node):
+        warnings = []
+
+        def _logger():
+            return MagicMock(
+                info=lambda *a, **kw: None,
+                warning=lambda *a, **kw: warnings.append(a[0] if a else ""),
+                warn=lambda *a, **kw: None,
+                error=lambda *a, **kw: None,
+                debug=lambda *a, **kw: None,
+            )
+
+        audio_node.get_logger = _logger
+        return warnings
+
+    def test_overflow_short_chunk_no_crash_and_publishes(self, audio_node):
+        """Короткий in_data при overflow (потеря кадров) — без исключений."""
+        audio_node.is_running = True
+        short_data = b"\x00\x00" * 256  # 512 байт вместо ожидаемых 2048
+        audio_node.audio_callback(short_data, 1024, {}, 2)
+        audio_node.audio_pub.publish.assert_called_once()
+        # prefetch продолжает накапливаться
+        assert len(audio_node.speech_prefetch_buffer) == 512
+
+    def test_overflow_no_log_when_status_0(self, audio_node):
+        audio_node.is_running = True
+        warnings = self._capture_warnings(audio_node)
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 0)
+        assert audio_node._overflow_count == 0
+        assert warnings == []
+
+    def test_overflow_rate_limited_log(self, audio_node):
+        """100 переполнений подряд → одна строка в лог, счётчик растёт."""
+        audio_node.is_running = True
+        warnings = self._capture_warnings(audio_node)
+        for _ in range(100):
+            audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert audio_node._overflow_count == 100
+        assert len(warnings) == 1
+        assert "paInputOverflow" in warnings[0]
+
+    def test_overflow_log_again_after_window(self, audio_node):
+        """После окончания окна следующее переполнение снова логируется."""
+        audio_node.is_running = True
+        warnings = self._capture_warnings(audio_node)
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert len(warnings) == 1
+        # «Окно» прошло — следующее переполнение даёт вторую строку
+        audio_node._overflow_last_logged = 0.0
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert audio_node._overflow_count == 2
+        assert len(warnings) == 2
+
+    def test_overflow_log_reports_lost_bytes(self, audio_node):
+        """В логе видно сколько байт ожидалось/пришло/потеряно."""
+        audio_node.is_running = True
+        warnings = self._capture_warnings(audio_node)
+        audio_node.audio_callback(b"\x00\x00" * 256, 1024, {}, 2)
+        assert len(warnings) == 1
+        assert "512/2048" in warnings[0]  # got/expected
+        assert "потеряно ~1536" in warnings[0]
