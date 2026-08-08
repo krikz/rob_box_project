@@ -28,8 +28,7 @@ on:
         default: 'true'
         type: boolean
 
-permissions:
-  contents: write  # Required for git push of .image-versions files
+permissions: {}
 
 env:
   LOCAL_REGISTRY: localhost:5000
