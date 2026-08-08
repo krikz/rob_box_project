@@ -8,15 +8,15 @@ on:
     branches:
       - develop
 
+permissions:
+  contents: read
+
 jobs:
   # Шаг 1: Проверяем что ВСЕ образы собираются успешно
   # Используем L-Build All Services (self-hosted Katana, native arm64, без QEMU).
   build-and-test:
     uses: ./.github/workflows/L-Build All Services.yml
     secrets: inherit
-    permissions:
-      contents: read
-      packages: write
 
   # Шаг 2: Если ВСЕ сборки успешны, создаём PR в main
   create-pr-to-main:
