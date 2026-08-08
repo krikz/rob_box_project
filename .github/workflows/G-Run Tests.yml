@@ -118,6 +118,7 @@ jobs:
             -p no:launch_testing \
             -p no:ament_flake8 -p no:ament_pep257 \
             -p no:ament_copyright -p no:ament_xmllint \
+            -p no:ament_lint -p no:colcon_core \
             --rootdir "${{ github.workspace }}/test_ws/src/rob_box_voice" \
             --junitxml "${{ github.workspace }}/test_ws/build/rob_box_voice/pytest.xml" \
             --tb=short --strict-markers -ra -v --no-header \
