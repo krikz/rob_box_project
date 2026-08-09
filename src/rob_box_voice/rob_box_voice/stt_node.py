@@ -530,6 +530,17 @@ class STTNode(Node):
                     ),
                     audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME,
                 ),
+                # Issue #1077 — ВАЖНО: включаем speech_analysis, иначе Yandex
+                # НЕ присылает speaker_analysis (по умолчанию выключен!).
+                # Проверено probe на 10.1.1.21: конфиг без этой опции даёт 0
+                # speaker_events при yandex:ok; с enable_speaker_analysis=True
+                # приходят события speaker_analysis (speaker_tag + границы).
+                # speaker_labeling (SpeakerLabelingOptions) НЕ используем: он
+                # требует FULL_DATA и несовместим с REAL_TIME (INVALID_ARGUMENT).
+                speech_analysis=stt_pb2.SpeechAnalysisOptions(
+                    enable_speaker_analysis=True,
+                    enable_conversation_analysis=True,
+                ),
                 # ВАЖНО! Настройка EOU (End of Utterance) - определение конца фразы
                 # Используем выбранный profile (fast/balanced/patient)
                 eou_classifier=stt_pb2.EouClassifierOptions(
