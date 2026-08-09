@@ -43,6 +43,7 @@ class PerceptionBridge(Node):
     """Reads UART sensor stream, republishes as JSON on /sensors/data."""
 
     def __init__(self) -> None:
+        """Инициализировать perception bridge."""
         super().__init__('perception_bridge')
 
         # ---- Parameters (overridable from launch) -------------------------
@@ -186,6 +187,7 @@ class PerceptionBridge(Node):
     # -----------------------------------------------------------------------
 
     def destroy_node(self) -> None:
+        """Остановить таймеры, закрыть UART и уничтожить ноду."""
         try:
             if self._sensor_timer is not None:
                 self._sensor_timer.cancel()
@@ -202,6 +204,7 @@ class PerceptionBridge(Node):
 
 
 def main(args=None) -> None:
+    """Запустить ноду perception bridge."""
     rclpy.init(args=args)
     node = PerceptionBridge()
     try:

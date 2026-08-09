@@ -47,6 +47,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """Сформировать launch-описание perception pipeline."""
     config_file = '/config/perception/context_aggregator.yaml'
     use_config_file = os.path.exists(config_file)
 

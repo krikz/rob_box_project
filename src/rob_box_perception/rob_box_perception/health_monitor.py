@@ -21,6 +21,7 @@ class HealthMonitor(Node):
     """Простой монитор здоровья системы."""
 
     def __init__(self):
+        """Инициализировать монитор здоровья системы."""
         super().__init__('health_monitor')
 
         # Параметры
@@ -90,9 +91,9 @@ class HealthMonitor(Node):
 
     def print_report(self):
         """Печать отчёта о здоровье системы."""
-        print('\n' + '='*70)
+        print('\n' + '=' * 70)
         print('🏥 HEALTH REPORT')
-        print('='*70)
+        print('=' * 70)
 
         # Статус
         now = time.time()
@@ -143,7 +144,7 @@ class HealthMonitor(Node):
                 age = int(time.time() - w['time'])
                 print(f"  [WARN] {w['node']} ({age}s ago): {w['msg'][:60]}")
 
-        print('='*70)
+        print('=' * 70)
 
     def _play_sound(self, sound_name: str):
         """Проиграть звуковой эффект."""
@@ -157,6 +158,7 @@ class HealthMonitor(Node):
 
 
 def main(args=None):
+    """Запустить ноду монитора здоровья."""
     rclpy.init(args=args)
     node = HealthMonitor()
 
