@@ -47,7 +47,9 @@ class HealthMonitor(Node):
         )
 
         # Publisher для звуков
-        self.sound_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
+        self.sound_pub = self.create_publisher(
+            String, '/voice/sound/trigger', 10
+        )
 
         # Таймер для отчётов
         self.report_timer = self.create_timer(5.0, self.print_report)
@@ -111,13 +113,17 @@ class HealthMonitor(Node):
                 self._play_sound('error')
             elif status == '⚠️  DEGRADED':
                 self._play_sound('confused')
-            elif status == '✅ HEALTHY' and self.last_status is not None:  # Восстановление
+            elif status == '✅ HEALTHY' and self.last_status is not None:
+                # Восстановление
                 self._play_sound('cute')
 
             self.last_status = status
 
         print(f'Status: {status}')
-        print(f'Total Errors: {len(self.errors)} (последние {recent_errors} за минуту)')
+        print(
+            f'Total Errors: {len(self.errors)} '
+            f'(последние {recent_errors} за минуту)'
+        )
         print(f'Total Warnings: {len(self.warnings)}')
 
         # Последние ошибки
@@ -125,7 +131,10 @@ class HealthMonitor(Node):
             print('\n--- Recent Errors ---')
             for e in self.errors[-5:]:
                 age = int(time.time() - e['time'])
-                print(f"  [{e['level']}] {e['node']} ({age}s ago): {e['msg'][:60]}")
+                print(
+                    f"  [{e['level']}] {e['node']} ({age}s ago): "
+                    f"{e['msg'][:60]}"
+                )
 
         # Последние предупреждения
         if self.warnings:

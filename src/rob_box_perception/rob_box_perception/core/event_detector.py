@@ -60,7 +60,8 @@ class EventDetector:
     - Cooldown-based event filtering
 
     Attributes:
-        cooldown_interval: Minimum time between reactions to same event (seconds)
+        cooldown_interval: Minimum time between reactions to same event
+            (seconds)
         event_states: Current state of each event
         event_last_reaction: Timestamp of last reaction to each event
     """
