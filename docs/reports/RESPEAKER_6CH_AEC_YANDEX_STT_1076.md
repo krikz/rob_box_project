@@ -136,3 +136,40 @@
 - Дополнительно в `audio_node.py` добавлен лог `✓ mix_channels=[...]` при
   инициализации — чтобы e2e-валидация могла подтвердить применение фикса
   без чтения кода.
+
+## Проверка после ревью (2026-08-09, raw-вывод с робота 10.1.1.21)
+
+Юзер в ревью PR #1079 запросил доказательства работы фичи. Raw-вывод с робота:
+
+**На роботе развёрнут develop БЕЗ PR #1079** (фичи физически нет в проде):
+
+```
+docker inspect voice-assistant:
+  Created=2026-08-09T16:28:40Z  Started=2026-08-09T17:08:34Z
+  image=10.1.1.249:5000/krikz/rob_box:voice-assistant-humble-test
+  # образ собран 16:26Z из develop (коммит 6fbe96f1 = merge #1077 speaker-tag)
+
+внутри контейнера:
+  grep -c mix_channels audio_node.py        → 0 (нет нашего параметра)
+  grep -c silence_to_phrase audio_node.py   → 0 (нет телеметрии)
+  grep -c phrase_to_accept stt_node.py      → 0
+  config/audio_node.yaml: channels: 1       (legacy; наш: channels: 6 + mix_channels)
+лог запуска: «Аудио поток открыт: 16000Hz, 1ch» — один микрофон
+```
+
+**Root cause `yandex:empty` в проде сейчас:** `channels: 1` → PyAudio берёт
+только Ch1 (самый слабый микрофон, RMS 288 / 49dB; Ch2-4 в 8-16 раз громче).
+Слабый сигнал одного микрофона → Yandex STT v3 стабильно `empty`. Это ровно
+баг из отчёта, который лечит PR #1079 (`channels: 6` + `mix_channels=[0,1,2,3]`).
+
+**Почему e2e FAILURE 16:31Z (run #31324014595):** юзерский `L: Deploy and
+Verify` в 16:27Z ставил develop (6fbe96f1) без нашего кода; `L: E2E Voice Test`
+в 16:31Z гонялся на том же develop → упал на «Validate e2e result» — ожидаемо.
+
+**Фича в e2e round-7 работала** (артефакт e2e-voice-logs-31318541317):
+`16000Hz, 6ch` + `silence_to_phrase_s=3.10` + `phrase_to_accept_ms=3734/3437/4930`.
+Остался только тихий сигнал (volume=125) → контракт исправлен на 150.
+
+**Как проверить в проде после merge:** в docker logs voice-assistant должны
+появиться `✓ mix_channels=[0, 1, 2, 3]`, `Аудио поток открыт: 16000Hz, 6ch`,
+`silence_to_phrase_s=`, `phrase_to_accept_ms=` — и `yandex:ok` на чистом сигнале.
