@@ -22,7 +22,11 @@
       # Устройство
       device_name: "ReSpeaker"  # Автопоиск по имени
       sample_rate: 16000
-      channels: 1  # 1-channel firmware с AEC
+      # Issue 1076: 6-канальный RAW-режим ReSpeaker (Ch1-4 = микрофоны,
+      # Ch5-6 = playback-референс AEC). mix_channels исключает референс
+      # из STT-сигнала — иначе собственный голос/музыка робота уходят в STT.
+      channels: 6
+      mix_channels: [0, 1, 2, 3]
       chunk_size: 512
       format: "PCM16"
 
