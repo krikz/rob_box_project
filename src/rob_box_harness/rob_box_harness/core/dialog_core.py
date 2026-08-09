@@ -201,6 +201,8 @@ class DialogCore:
         *,
         history: Iterable[LLMMessage] | None = None,
         is_dj_auto: bool = False,
+        speaker_tag: str | None = None,
+        speaker_context: str | None = None,
     ) -> DialogResult:
         """Process a single user turn.
 
@@ -294,6 +296,21 @@ class DialogCore:
                 # new turn — otherwise ``load_recent`` would echo
                 # the just-stored user message back into the prompt.
                 messages = await self._resolve_history(history)
+                # Issue #1077 — контекст о спикере (профиль + факты из
+                # scope=speaker:<tag>). Вставляем system-сообщением сразу
+                # после основного системного промпта, чтобы LLM знала,
+                # с кем разговаривает (имя, предпочтения, история).
+                if speaker_context:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
                 messages.append(LLMMessage(role="user", content=text))
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
                 # пишутся в долгую память — иначе каждый переход (#1..#N)
@@ -303,9 +320,17 @@ class DialogCore:
                 # → пустые ответы → «Что-то я задумался». Системный
                 # DJ-триггер — не реплика юзера, он не должен загрязнять
                 # контекст диалога.
+                user_metadata = {}
+                if speaker_tag is not None:
+                    user_metadata["speaker_tag"] = speaker_tag
                 if not is_dj_auto:
                     await self._memory.append_turn(
-                        self._user_id, Turn(role="user", content=text)
+                        self._user_id,
+                        Turn(
+                            role="user",
+                            content=text,
+                            metadata=user_metadata,
+                        ),
                     )
                 spoken, tools_called, finish_reason, raw_response = (
                     await self._run_with_tools(messages)
@@ -316,7 +341,12 @@ class DialogCore:
                 result.raw_response = raw_response
                 if not is_dj_auto:
                     await self._memory.append_turn(
-                        self._user_id, Turn(role="assistant", content=spoken)
+                        self._user_id,
+                        Turn(
+                            role="assistant",
+                            content=spoken,
+                            metadata=dict(user_metadata),
+                        ),
                     )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 import traceback as _tb

@@ -41,7 +41,15 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
-from rob_box_harness.memory import InMemoryStore, MemoryStore, SQLiteVoiceMemory
+from rob_box_harness.memory import (
+    Fact,
+    InMemoryStore,
+    MemoryStore,
+    SQLiteVoiceMemory,
+    get_speaker_profile,
+    speaker_scope,
+    touch_speaker,
+)
 from rob_box_harness.providers import (
     DEFAULT_BASE_URL as MINIMAX_DEFAULT_BASE_URL,
     DEFAULT_MODEL as MINIMAX_DEFAULT_MODEL,
@@ -59,6 +67,11 @@ from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
     strip_history_marker, strip_markdown, strip_thinking_blocks,
+)
+from rob_box_voice.speaker_profiles import (
+    SpeakerTracker,
+    extract_speaker_name,
+    format_speaker_context,
 )
 
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
@@ -265,6 +278,11 @@ class DialogueNode(Node):
         )
 
         self._memory: MemoryStore = self._build_memory()
+        # Issue #1077 — speaker profiles: подтверждённый speaker_tag →
+        # профиль (scope=speaker:<tag>). SpeakerTracker подтверждает tag
+        # после 2+ фраз подряд (защита от нестабильных tags Yandex).
+        self._speaker_by_text: Dict[str, dict] = {}
+        self._speaker_tracker = SpeakerTracker()
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
@@ -306,6 +324,14 @@ class DialogueNode(Node):
             )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
+        # Issue #1077 — speaker_tag от Yandex speaker_analysis (отдельный
+        # топик, чтобы не ломать plain-text контракт /voice/stt/result).
+        # JSON: {"speaker_tag", "text", "duration_s"}. stt_node публикует
+        # speaker ПЕРЕД result, поэтому _on_speaker обычно приходит раньше
+        # _on_stt; храним по тексту и забираем в _on_stt.
+        self.create_subscription(
+            String, "/voice/stt/speaker", self._on_speaker, qos_r,
+            callback_group=cbg)
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg)
         self.create_subscription(
@@ -920,10 +946,48 @@ class DialogueNode(Node):
             tools.append(tool)
         return tools
 
+    def _on_speaker(self, msg: String) -> None:
+        """Issue #1077 — speaker_tag от Yandex speaker_analysis.
+
+        JSON: ``{"speaker_tag": "0", "text": "...", "duration_s": 1.2}``.
+        stt_node публикует speaker ПЕРЕД result, поэтому обычно этот
+        callback приходит раньше ``_on_stt`` с тем же текстом. Храним по
+        тексту; ``_on_stt`` забирает и создаёт/обновляет профиль спикера.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        tag = payload.get("speaker_tag")
+        text = (payload.get("text") or "").strip()
+        if not tag or not text:
+            return
+        # Ограничиваем словарь — старые (невостребованные) записи выкидываем.
+        if len(self._speaker_by_text) >= 50:
+            self._speaker_by_text.clear()
+        self._speaker_by_text[text] = payload
+        self.get_logger().debug(
+            f"👤 [issue 1077] Speaker event: tag={tag!r} "
+            f"duration={payload.get('duration_s')}s text={text[:40]!r}"
+        )
+
     def _on_stt(self, msg: String) -> None:
         text = (msg.data or "").strip()
         if not text:
             return
+        # Issue #1077 — забираем speaker_tag для ЭТОГО текста (если stt_node
+        # успел прислать speaker-событие). pop: один текст — один tag.
+        speaker_event = self._speaker_by_text.pop(text, None)
+        speaker_tag: Optional[str] = None
+        speaker_duration_s: float = 0.0
+        if speaker_event:
+            speaker_tag = str(speaker_event.get("speaker_tag") or "")
+            try:
+                speaker_duration_s = float(speaker_event.get("duration_s") or 0.0)
+            except (TypeError, ValueError):
+                speaker_duration_s = 0.0
+            if not speaker_tag:
+                speaker_tag = None
         text_lower = text.lower()
         # Issue 989 Fix A: dialogue_node НЕ должен реагировать на
         # rejected(empty) — это эхо собственной музыки/голоса, а не речь
@@ -984,7 +1048,13 @@ class DialogueNode(Node):
         # команду юзера, а не текст с DJ-preamble. Preamble содержит
         # «диджей: ...» — guard видел его и думал «юзер просит музыку»,
         # нудил Bug C и LLM начинала DJ-сессию вместо анекдота.
-        self._dispatch_turn(clean, was_idle=was_idle, raw_user_command=raw_user_command)
+        self._dispatch_turn(
+            clean,
+            was_idle=was_idle,
+            raw_user_command=raw_user_command,
+            speaker_tag=speaker_tag,
+            speaker_duration_s=speaker_duration_s,
+        )
     def _on_tts_finished(self, msg: String) -> None:
         """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
 
@@ -1178,6 +1248,8 @@ class DialogueNode(Node):
         was_idle: bool = False,
         is_babble_retry: bool = False,
         raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
     ) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
@@ -1207,9 +1279,81 @@ class DialogueNode(Node):
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
                 raw_user_command=raw_user_command,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
             ),
             self._loop,
         )
+
+    async def _handle_speaker_turn(
+        self,
+        tag: str,
+        *,
+        user_input: str,
+        duration_s: float = 0.0,
+    ) -> Optional[str]:
+        """Issue #1077 — профиль спикера: подтверждение, touch, контекст.
+
+        Вызывается из ``_run_turn`` перед LLM-вызовом, когда STT прокинул
+        speaker_tag (Yandex speaker_analysis).
+
+        Логика:
+        1. ``SpeakerTracker.note_phrase`` — подтверждение tag после 2+ фраз
+           подряд (>= 0.8с). Короткие (<0.8с) не создают профиль.
+        2. Подтверждённый tag → ``touch_speaker``: создаёт/обновляет профиль
+           (scope=speaker:<tag>, first_seen/last_seen/dialog_count).
+        3. Имя из «меня зовут X» сохраняется в профиль.
+        4. Факты спикера (list_facts) форматируются в LLM-контекст.
+
+        Returns:
+            Строка-контекст о спикере для system-сообщения, или ``None``
+            (tag не подтверждён / профиля ещё нет / ошибка памяти).
+        """
+        try:
+            just_confirmed = self._speaker_tracker.note_phrase(tag, duration_s)
+            if not self._speaker_tracker.is_confirmed(tag):
+                self.get_logger().debug(
+                    f"👤 [issue 1077] tag={tag!r} ещё не подтверждён "
+                    f"(streak < {self._speaker_tracker.min_phrases}) — "
+                    "профиль не создаём"
+                )
+                return None
+
+            profile = await touch_speaker(self._memory, tag)
+            # Имя из «меня зовут X» — сохраняем в профиль (acceptance #1077).
+            name = extract_speaker_name(user_input)
+            if name and profile.get("name") != name:
+                profile["name"] = name
+                await self._memory.save_fact(
+                    speaker_scope(tag),
+                    Fact(
+                        key="profile",
+                        value=profile,
+                        tags=("speaker", "profile"),
+                    ),
+                )
+                self.get_logger().info(
+                    f"👤 [issue 1077] Спикер {tag!r} представился: {name!r}"
+                )
+
+            # Факты спикера → контекст LLM (list_facts: все факты scope).
+            facts = await self._memory.list_facts(speaker_scope(tag), limit=20)
+            context = format_speaker_context(
+                profile,
+                facts,
+                is_new=just_confirmed,
+            )
+            if context:
+                self.get_logger().info(
+                    f"👤 [issue 1077] Спикер {tag!r}: диалог "
+                    f"#{profile.get('dialog_count', 0)} — контекст загружен"
+                )
+            return context
+        except Exception as exc:  # noqa: BLE001 — память не должна валить диалог
+            self.get_logger().warning(
+                f"⚠️ [issue 1077] Speaker profile error for tag={tag!r}: {exc}"
+            )
+            return None
 
     async def _run_turn(
         self,
@@ -1218,6 +1362,8 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
         raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
@@ -1254,12 +1400,27 @@ class DialogueNode(Node):
         # LLM is never called — the user hears nothing.
         babble_retry_pending = False
         try:
+            # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
+            # собираем контекст о нём (имя, факты, число диалогов). Только
+            # для подтверждённых tags (2+ фразы подряд, >= 0.8с) — защита
+            # от нестабильных tags Yandex. Vosk fallback (tag=None) —
+            # профиль не трогаем (edge case #4).
+            speaker_context: Optional[str] = None
+            if speaker_tag and not is_dj_auto:
+                speaker_context = await self._handle_speaker_turn(
+                    speaker_tag,
+                    user_input=user_input,
+                    duration_s=speaker_duration_s,
+                )
             # Issue #992 — DJ auto-turns must bypass the wake-word
             # classifier so the LLM is actually called. The DJ prompt
             # intentionally mentions "роббокс" / "диджей" which would
             # otherwise short-circuit into a no-op transition.
             result: DialogResult = await self._core.process_input(
-                user_input, is_dj_auto=was_dj_auto,
+                user_input,
+                is_dj_auto=was_dj_auto,
+                speaker_tag=speaker_tag,
+                speaker_context=speaker_context,
             )
             self._handle_result(result, user_input=user_input)
             babble_retry_pending = bool(self._babble_retry_used)

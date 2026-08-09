@@ -310,6 +310,9 @@ class _TestableDialogueNode(DialogueNode):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
+        raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
     ) -> None:
         """Schedule the turn on the test loop directly.
 
@@ -343,6 +346,8 @@ class _TestableDialogueNode(DialogueNode):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
             ),
         )
 
