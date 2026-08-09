@@ -41,6 +41,7 @@ def last_ts(log: str, pattern: str):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/voice_e2e.log"
+    voice_text = sys.argv[2] if len(sys.argv) > 2 else ""
     try:
         log = open(path, encoding="utf-8", errors="replace").read()
     except OSError as exc:
@@ -54,7 +55,16 @@ def main():
     synth_t = first_ts(log, r"🔊 Синтез через", after_ts=llm_in_t)
     tts_ok_t = first_ts(log, r"TTS finished.*success=True", after_ts=synth_t)
 
+    # Распознанная фраза (последний ПРИНЯТО)
+    recognized = ""
+    for line in log.splitlines():
+        m = re.search(r"✅ ПРИНЯТО:\s*(.+)", line)
+        if m:
+            recognized = m.group(1).strip()
+
     print("--- e2e response timing (from robot logs) ---")
+    print(f"COMMAND:      {voice_text or '(не задан)'}")
+    print(f"RECOGNIZED:   {recognized or '(нет в логе)'}")
     if phrase_t and accept_t and accept_t > phrase_t:
         print(f"T_accept: {accept_t - phrase_t:.1f}s  (STT: фраза → ПРИНЯТО)")
     if llm_in_t and synth_t and synth_t > llm_in_t:
