@@ -159,6 +159,13 @@ class _FallbackLLM:
 
     Оба метода (``complete`` / ``stream``) пробуют primary, при исключении
     логируют и отдают fallback.
+
+    .. deprecated::
+        Заменён на :class:`rob_box_harness.health.HealthAwareFallbackLLM`
+        (issue #1082) — реактивная цепочка «пробуем → падаем →
+        переключаемся» тратила 15-19с на retry мёртвого MiniMax.
+        Класс оставлен для обратной совместимости, ``_build_llm`` его
+        больше не использует.
     """
 
     def __init__(self, primary: Any, fallback: Any, logger: Any) -> None:
@@ -416,6 +423,12 @@ class DialogueNode(Node):
         self.declare_parameter("llm_streaming", False)
         self.declare_parameter("history_excluded_tools", ["handle_navigation"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
+        # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
+        # рестарт робота: если MiniMax мёртв (2056 Token Plan), первый же
+        # запрос после ребута идёт на deepseek, а не тратит время на
+        # мёртвого. Пусто = кэш только в памяти.
+        self.declare_parameter("health_cache_path", "~/.rob_box/llm_health.json")
+        self.declare_parameter("health_ttl_s", 300.0)
         # W5a: select the tool-provider backend. ``ros_mcp`` is the
         # production path (LLMToolCallAdapter → ROSMCPToolProvider);
         # ``fake`` swaps in FakeToolProvider for unit tests; ``none``
@@ -535,14 +548,59 @@ class DialogueNode(Node):
             # MiniMax (Token Plan limit) — иначе DJ/диалог молчит, пока
             # лимит не сбросится. LLMConfig.fallback декларативно есть,
             # но _build_llm его не использовал → робот немел на 429.
+            # 🔴 FIX (issue #1082): цепочка стала health-aware — состояние
+            # провайдера проверяется ДО первого запроса: MiniMax с
+            # исчерпанной квотой (2056/429) помечается unavailable (TTL ~5
+            # мин) и первый же запрос уходит на deepseek без retry-цикла и
+            # без 15-19с потерь. Кэш персистентный — переживает рестарт.
             try:
                 fb = build_deepseek_provider(
                     api_key=None,  # берёт DEEPSEEK_API_KEY из env
                 )
-                self.get_logger().info(
-                    "🔄 LLM fallback: deepseek (при 429/ошибке MiniMax)"
+                # Lazy-import: health-модуль подтягиваем только в ветке
+                # minimax (deepseek-only путь не трогаем).
+                from rob_box_harness.health import (
+                    DEFAULT_HEALTH_TTL_S,
+                    HealthAwareFallbackLLM,
+                    HealthCache,
+                    check_deepseek_balance,
                 )
-                return _FallbackLLM(primary, fb, self.get_logger())
+
+                cache_path = str(
+                    self.get_parameter("health_cache_path").value or ""
+                ).strip()
+                try:
+                    health_ttl = float(
+                        self.get_parameter("health_ttl_s").value
+                        or DEFAULT_HEALTH_TTL_S
+                    )
+                except (TypeError, ValueError):
+                    health_ttl = DEFAULT_HEALTH_TTL_S
+                cache = HealthCache(
+                    ttl_s=health_ttl,
+                    persist_path=cache_path or None,
+                )
+                # DeepSeek имеет публичный /user/balance — проверяем ДО
+                # первого запроса (TTL-кэш, ~5 мин). У MiniMax публичного
+                # balance-API нет → реактивный детект по коду 2056/429
+                # внутри HealthAwareFallbackLLM.
+
+                def _deepseek_balance_probe() -> Any:
+                    return check_deepseek_balance(
+                        DEEPSEEK_DEFAULT_BASE_URL,
+                        os.environ.get("DEEPSEEK_API_KEY", ""),
+                        timeout_s=5.0,
+                    )
+
+                self.get_logger().info(
+                    f"🔄 LLM fallback: deepseek (health-aware, TTL {health_ttl:.0f}s)"
+                )
+                return HealthAwareFallbackLLM(
+                    [primary, fb],
+                    cache=cache,
+                    balance_checkers={"deepseek": _deepseek_balance_probe},
+                    logger=self.get_logger(),
+                )
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(
                     f"⚠️ DeepSeek fallback не построен ({exc}) — только MiniMax"
