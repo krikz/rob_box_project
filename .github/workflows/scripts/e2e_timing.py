@@ -62,6 +62,24 @@ def main():
         if m:
             recognized = m.group(1).strip()
 
+    # 🎯 ГЛАВНАЯ МЕТРИКА: сколько уходит на инференс ОТ КОНЦА РЕЧИ пользователя
+    # ДО НАЧАЛА ответа. «Получена фраза: X.XXс» — ts = момент, когда юзер замолчал
+    # (запись фразы завершена). Начало ответа ≈ первый TTS finished − duration
+    # (синтез закончен → начинается воспроизведение).
+    answer_start_t = None
+    tts_duration = 0.0
+    last_tts_line = ""
+    if tts_ok_t is not None:
+        for line in log.splitlines():
+            if re.search(r"TTS finished.*success=True", line) and ts_of_line(line) == tts_ok_t:
+                last_tts_line = line
+                break
+    if tts_ok_t and last_tts_line:
+        dm = re.search(r"duration=([\d.]+)s", last_tts_line)
+        if dm:
+            tts_duration = float(dm.group(1))
+        answer_start_t = tts_ok_t - tts_duration
+
     print("--- e2e response timing (from robot logs) ---")
     print(f"COMMAND:      {voice_text or '(не задан)'}")
     print(f"RECOGNIZED:   {recognized or '(нет в логе)'}")
@@ -71,9 +89,11 @@ def main():
         print(f"T_llm:    {synth_t - llm_in_t:.1f}s  (LLM INPUT → Синтез)")
     if synth_t and tts_ok_t and tts_ok_t > synth_t:
         print(f"T_tts:    {tts_ok_t - synth_t:.1f}s  (Синтез → TTS finished)")
+    if phrase_t and answer_start_t and answer_start_t > phrase_t:
+        print(f"T_inference: {answer_start_t - phrase_t:.1f}s  ⭐ конец речи → начало ответа")
     if accept_t and tts_ok_t and tts_ok_t > accept_t:
         total = tts_ok_t - accept_t
-        print(f"T_total:  {total:.1f}s  (акцепт → ответ робота)")
+        print(f"T_total:  {total:.1f}s  (акцепт → конец синтеза)")
         print(f"SUMMARY_MARKER T_total={total:.1f}s")
     print("--- end timing ---")
     return 0
