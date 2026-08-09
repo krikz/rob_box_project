@@ -175,7 +175,9 @@ def _make_audio_node_stub(**param_overrides):
     node.create_publisher = lambda *a, **kw: MagicMock()
     node.create_subscription = lambda *a, **kw: MagicMock()
     node.create_timer = lambda *a, **kw: MagicMock()
-    node.get_clock = lambda: MagicMock(now=MagicMock(return_value=MagicMock(nanoseconds=0)))
+    node.get_clock = lambda: MagicMock(
+        now=MagicMock(return_value=MagicMock(nanoseconds=0))
+    )
 
     audio_node_module.AudioNode.__init__(node)
 
@@ -196,6 +198,7 @@ def _make_audio_node_stub(**param_overrides):
 # ─────────────────────────────────────────────────────────────────────────────
 #  interleaved_to_mono — чистая функция даунмикса
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _interleaved(frames: list[list[int]]) -> bytes:
     """Собрать interleaved PCM16 bytes из списка фреймов (список каналов)."""
@@ -229,14 +232,18 @@ class TestInterleavedToMono:
 
     def test_6ch_playback_value_irrelevant(self, mono_fn):
         """Изменение playback-каналов НЕ меняет mono (главный acceptance)."""
-        base = _interleaved([
-            [1000, 2000, 3000, 4000, 0, 0],
-            [1000, 2000, 3000, 4000, 0, 0],
-        ])
-        loud = _interleaved([
-            [1000, 2000, 3000, 4000, 32767, -32768],
-            [1000, 2000, 3000, 4000, 32767, -32768],
-        ])
+        base = _interleaved(
+            [
+                [1000, 2000, 3000, 4000, 0, 0],
+                [1000, 2000, 3000, 4000, 0, 0],
+            ]
+        )
+        loud = _interleaved(
+            [
+                [1000, 2000, 3000, 4000, 32767, -32768],
+                [1000, 2000, 3000, 4000, 32767, -32768],
+            ]
+        )
         assert mono_fn(base, 6, 4) == mono_fn(loud, 6, 4)
 
     def test_output_is_int16_mono(self, mono_fn):
@@ -287,6 +294,7 @@ class TestInterleavedToMono:
 # ─────────────────────────────────────────────────────────────────────────────
 #  audio_callback — публикация mono через ноду
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestAudioCallbackMono:
     def _run_callback(self, frames, channels, mic_channels):
