@@ -259,7 +259,7 @@ class TestPerceptionBridge(unittest.TestCase):
 
     # ---------------------------------------------------------------- spec 1
     def test_sensor_data_published_to_sensors_data(self) -> None:
-        """Spec 1: a single UART frame becomes one String msg on /sensors/data."""
+        """Spec 1: one UART frame becomes one String msg on /sensors/data."""
         frame = json.dumps({'seq': 1, 'imu': {'ax': 0.1, 'ay': -0.2}})
         self.node._uart = _FakeUART([frame])
 
@@ -330,7 +330,7 @@ class TestPerceptionBridge(unittest.TestCase):
 
     # ---------------------------------------------------------------- spec 4
     def test_multiple_sensor_types_in_one_message(self) -> None:
-        """Spec 4: one JSON frame carrying imu + lidar + bumper publishes intact."""
+        """Spec 4: one JSON frame with imu + lidar + bumper stays intact."""
         frame = json.dumps({
             'seq': 42,
             'imu': {'ax': 0.0, 'ay': 0.0, 'az': 9.81},
@@ -385,7 +385,9 @@ class TestPerceptionBridge(unittest.TestCase):
         try:
             self.node._read_sensors()
         except Exception as exc:
-            self.fail(f'_read_sensors must not propagate UART exceptions: {exc!r}')
+            self.fail(
+                f'_read_sensors must not propagate UART exceptions: {exc!r}'
+            )
 
         self.assertEqual(self.node._bad_reads, 1)
         self.assertEqual(self.node._ok_reads, 0)
@@ -405,8 +407,10 @@ class TestPerceptionBridge(unittest.TestCase):
         self.assertEqual(snapshot['status'], STATUS_UNKNOWN)
         self.assertTrue(snapshot['stub_mode'])
 
-    def test_stub_mode_registers_no_timers_and_publishes_one_health_snapshot(self) -> None:
-        """Stub mode must avoid periodic callbacks and emit one UNKNOWN snapshot."""
+    def test_stub_mode_registers_no_timers_and_publishes_one_health_snapshot(
+        self,
+    ) -> None:
+        """Stub mode avoids timers and emits one UNKNOWN snapshot."""
         self.assertIsNone(self.node._sensor_timer)
         self.assertIsNone(self.node._health_timer)
         self.assertEqual(len(self.health_pub.published), 1)
@@ -442,7 +446,7 @@ class TestPerceptionBridge(unittest.TestCase):
         self.assertEqual(snapshot['status'], STATUS_DEGRADED)
 
     def test_timer_callbacks_registered_with_correct_periods(self) -> None:
-        """Bridge registers both timers with the configured periods in hardware mode."""
+        """Bridge schedules both timers with the configured periods."""
         with patch(
             'rob_box_perception.perception_bridge._open_uart',
             return_value=_FakeUART(),
@@ -468,7 +472,9 @@ class TestPerceptionBridge(unittest.TestCase):
             node = PerceptionBridge()
         try:
             self.assertFalse(node._stub_mode)
-            self.assertAlmostEqual(node._sensor_timer.period, SENSOR_READ_PERIOD)
+            self.assertAlmostEqual(
+                node._sensor_timer.period, SENSOR_READ_PERIOD
+            )
             self.assertAlmostEqual(node._health_timer.period, HEALTH_PERIOD)
             self.assertEqual(len(node._health_pub.published), 0)
         finally:

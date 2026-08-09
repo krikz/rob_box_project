@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-internal_dialogue.launch.py - Launch perception pipeline (local dev).
+internal_dialogue.launch.py - Launch perception pipeline (dev).
 
 Phase 6 v2 / W11. Perception package is now a thin sensor bridge — no LLM,
 no reflection node, no vision stub. The dialogue shell (src/rob_box_voice)
@@ -8,27 +8,33 @@ owns all reasoning via DialogCore + MemoryStore.
 
 Launches:
 1. perception_bridge - UART sensor bridge -> /sensors/data + /perception/health
-2. context_aggregator - aggregates subscribed topics into /perception/context_update
-3. health_monitor - watches /rosout, publishes status on /voice/sound/trigger
+2. context_aggregator - aggregates topics into /perception/context_update
+3. health_monitor - watches /rosout, publishes on /voice/sound/trigger
 
 Data flow (current — Phase 6 v2):
-  [Sensor board (UART)] -> perception_bridge -> /sensors/data (orphan publisher, Phase 7+ wiring)
-                          perception_bridge -> /perception/health (orphan publisher)
-  [9 ROS2 topics] -------> context_aggregator -> /perception/context_update
+  [Sensor board (UART)] -> perception_bridge -> /sensors/data
+                          (orphan publisher, Phase 7+ wiring)
+                          perception_bridge -> /perception/health
+                          (orphan publisher)
+  [9 ROS2 topics] ---> context_aggregator -> /perception/context_update
                           (vision, pose, odom, joint_states, rosout,
-                           voice/stt/result, voice/dialogue/response,
+                           voice/stt/result,
+                           voice/dialogue/response,
                            voice/command/intent, voice/command/feedback)
                                      |
                                      v
-        /perception/context_update -> mcp_server.py (harness MCP-bridge) -> DialogCore -> LLM
+        /perception/context_update -> mcp_server.py (harness MCP-bridge)
+                                     -> DialogCore -> LLM
 
 Data flow (target — Phase 7+, после готовности sensor board firmware):
-  [Sensor board (UART)] -> perception_bridge -> /sensors/data \
-                                                            >-> context_aggregator
-  [Other ROS2 topics] ------------------------------> /       \
+  [Sensor board (UART)] -> perception_bridge -> /sensors/data
+                          \
+  [Other ROS2 topics] ------------------------------> /
+                                                      \
                                                                           |
                                                                           v
-                                              /perception/context_update -> dialogue_node
+                                              /perception/context_update
+                                              -> dialogue_node
 
 Config file is loaded from /config/perception/context_aggregator.yaml if
 present, otherwise inline defaults are used.
@@ -66,7 +72,8 @@ def generate_launch_description():
             }],
         ),
 
-        # Context Aggregator - collects subscribed topics, publishes /perception/context_update
+        # Context Aggregator - collects topics, publishes
+        # /perception/context_update
         Node(
             package='rob_box_perception',
             executable='context_aggregator',

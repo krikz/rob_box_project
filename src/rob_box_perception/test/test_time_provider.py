@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test for TimeAwarenessProvider - ensures timezone support works correctly."""
+"""Test for TimeAwarenessProvider - timezone support works correctly."""
 
 import pytest
 
@@ -13,7 +13,9 @@ def test_time_provider_imports():
 def test_pytz_available():
     """Test that pytz is available for timezone support."""
     from rob_box_perception.utils.time_provider import PYTZ_AVAILABLE
-    assert PYTZ_AVAILABLE is True, 'pytz must be installed for timezone support'
+    assert PYTZ_AVAILABLE is True, (
+        'pytz must be installed for timezone support'
+    )
 
 
 def test_moscow_timezone():
@@ -29,7 +31,8 @@ def test_moscow_timezone():
     # Verify all required fields are present
     required_fields = [
         'timestamp', 'datetime', 'human_readable', 'time_only', 'date_only',
-        'hour', 'minute', 'weekday', 'weekday_ru', 'period', 'period_ru', 'timezone'
+        'hour', 'minute', 'weekday', 'weekday_ru', 'period', 'period_ru',
+        'timezone',
     ]
     for field in required_fields:
         assert field in time_context, f'Missing field: {field}'
@@ -78,12 +81,14 @@ def test_time_consistency():
     time_only_hour = int(time_context['time_only'].split(':')[0])
 
     # Should match the hour field
-    assert time_only_hour == time_context['hour'], \
-        f"time_only hour ({time_only_hour}) doesn't match hour field ({time_context['hour']})"
+    assert time_only_hour == time_context['hour'], (
+        f"time_only hour ({time_only_hour}) doesn't match "
+        f"hour field ({time_context['hour']})"
+    )
 
 
 def test_timezone_parameter_flexibility():
-    """Test that TimeAwarenessProvider accepts different timezone parameters."""
+    """TimeAwarenessProvider accepts different timezone parameters."""
     from rob_box_perception.utils.time_provider import TimeAwarenessProvider
 
     # Test multiple timezones
@@ -107,8 +112,10 @@ def test_timezone_parameter_flexibility():
 
         # Verify offset is in expected range
         dt_str = time_context['datetime']
-        assert any(offset in dt_str for offset in expected_offsets), \
-            f'Timezone {timezone} should have offset in {expected_offsets}, got: {dt_str}'
+        assert any(offset in dt_str for offset in expected_offsets), (
+            f'Timezone {timezone} should have offset in '
+            f'{expected_offsets}, got: {dt_str}'
+        )
 
 
 if __name__ == '__main__':
