@@ -222,7 +222,7 @@ jobs:
           echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
 
       - name: Verify feature acceptance (issue #1077 speaker profiles)
-        if: ${{ inputs.acceptance_check == 'speaker_profile' }}
+        if: ${{ always() && inputs.acceptance_check == 'speaker_profile' }}
         env:
           SSHPASS: open
         run: |
@@ -308,7 +308,7 @@ jobs:
           retention-days: 30
 
       - name: Upload acceptance evidence (issue #1077)
-        if: ${{ inputs.acceptance_check == 'speaker_profile' }}
+        if: ${{ always() && inputs.acceptance_check == 'speaker_profile' }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-acceptance-${{ github.run_id }}
