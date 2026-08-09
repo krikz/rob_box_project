@@ -37,8 +37,9 @@ class TestHealthMonitor(unittest.TestCase):
     def setUp(self):
         """Подготовка перед каждым тестом."""
         self.node = HealthMonitor()
-        # Startup grace period (90s) is a production feature — tests simulate a
-        # node that has been running long enough for status transitions to apply.
+        # Startup grace period (90s) is a production feature — tests
+        # simulate a node that has been running long enough for status
+        # transitions to apply.
         self.node._startup_grace_sec = 0
 
     def tearDown(self):
@@ -373,7 +374,9 @@ class TestHealthMonitor(unittest.TestCase):
     def test_play_sound_exception_handling(self):
         """Тест: Обработка ошибок в _play_sound()."""
         # Мокаем publisher чтобы выбросить исключение
-        self.node.sound_pub.publish = MagicMock(side_effect=Exception('Publish failed'))
+        self.node.sound_pub.publish = MagicMock(
+            side_effect=Exception('Publish failed')
+        )
 
         # Вызываем _play_sound - не должен упасть
         try:
