@@ -55,17 +55,6 @@ class AudioNode(Node):
         # Параметры
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('channels', 1)
-        # Issue 1076: какие каналы усреднять для моно (0-based). ReSpeaker
-        # в 6-канальном RAW-режиме: Ch1-4 = сырые микрофоны, Ch5-6 =
-        # playback-референс (AEC-референс, то, что играет робот). Усреднять
-        # референс в STT-сигнал НЕЛЬЗЯ — собственный голос/музыка робота
-        # смешиваются в сигнал → Yandex `empty`, vosk-галлюцинации.
-        # Пустой список = все каналы (legacy). Для ReSpeaker 6ch укажите
-        # [0, 1, 2, 3] (только микрофоны).
-        # НЕПУСТОЙ дефолт обязателен: rclpy Humble объявляет пустой список [] как
-        # BYTE_ARRAY, а yaml даёт [0,1,2,3] INTEGER_ARRAY → InvalidParameterTypeException
-        # (audio_node падал в цикле, робот не слышал речь — 09.08, live-фикс).
-        self.declare_parameter('mix_channels', [0, 1, 2, 3])
         # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
         # мал для Python-callback — GIL/публикация/USB VAD приводили к
         # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
@@ -88,7 +77,6 @@ class AudioNode(Node):
 
         self.sample_rate = self.get_parameter('sample_rate').value
         self.channels = self.get_parameter('channels').value
-        self.mix_channels = list(self.get_parameter('mix_channels').value or [])
         self.chunk_size = self.get_parameter('chunk_size').value
         self.vad_threshold = self.get_parameter('vad_threshold').value
         self.publish_rate = self.get_parameter('publish_rate').value
@@ -224,12 +212,6 @@ class AudioNode(Node):
             )
 
             self.get_logger().info(f'✓ Аудио поток открыт: {self.sample_rate}Hz, {self.channels}ch')
-            if self.mix_channels:
-                self.get_logger().info(
-                    f'✓ mix_channels={self.mix_channels} — playback-референс '
-                    f'Ch{max(self.mix_channels)+2}-{self.channels} исключён из STT-сигнала '
-                    f'(issue 1076)'
-                )
             self.publish_state('ready')
 
         except Exception as e:
@@ -261,18 +243,7 @@ class AudioNode(Node):
                 audio_data = np.frombuffer(in_data, dtype=np.int16)
                 # Разделяем на каналы: [ch1, ch2, ..., ch6, ch1, ch2, ...]
                 audio_data = audio_data.reshape(-1, self.channels)
-                # Issue 1076: усредняем ТОЛЬКО микрофонные каналы.
-                # ReSpeaker в 6-канальном RAW-режиме: Ch1-4 = микрофоны,
-                # Ch5-6 = playback-референс (AEC-референс — то, что играет
-                # робот). Если усреднять ВСЕ каналы, собственный голос/музыка
-                # робота смешиваются в STT-сигнал → Yandex `empty`, vosk
-                # галлюцинирует. mix_channels=[0,1,2,3] исключает референс.
-                if self.mix_channels:
-                    # Берём только запрошенные каналы (валидные индексы)
-                    channels = [c for c in self.mix_channels if 0 <= c < self.channels]
-                    if channels:
-                        audio_data = audio_data[:, channels]
-                # Усреднение по выбранным каналам для получения моно
+                # Усреднение по каналам для получения моно
                 mono_data = audio_data.mean(axis=1).astype(np.int16)
                 # Конвертируем обратно в bytes
                 audio_bytes = mono_data.tobytes()
@@ -499,15 +470,6 @@ class AudioNode(Node):
 
                 if self.speech_min_duration <= duration <= self.speech_max_duration:
                     self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
-                    # Issue 1076 (телеметрия): честный «замолчал → фраза готова»
-                    # = time_since_stop (>= speech_continuation), а НЕ 0. Раньше
-                    # T_accept считался от «Получена фраза» (после 3с паузы) —
-                    # итоговый «замолчал → акцепт» занижался на speech_continuation.
-                    # Этот лог + «фраза→ПРИНЯТО» в stt_node дают честный полный замер.
-                    self.get_logger().info(
-                        f"📊 [telemetry] silence_to_phrase_s={time_since_stop:.2f} "
-                        f"(speech_continuation={self.speech_continuation})"
-                    )
                     # Публикуем speech_audio
                     msg = AudioData()
                     msg.data = list(buf)

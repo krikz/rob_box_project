@@ -351,11 +351,6 @@ class STTNode(Node):
                 )
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
-        # Issue 1076 (телеметрия): фиксируем момент получения фразы, чтобы
-        # замерить честный «фраза → ПРИНЯТО». Полный «замолчал → акцепт» =
-        # silence_to_phrase_s (audio_node, включает speech_continuation)
-        # + phrase_to_accept_ms (здесь).
-        _phrase_received_at = time.monotonic()
         self.publish_state("recognizing")
 
         # Идём через единый select_recognition: primary=Yandex, fallback=Vosk,
@@ -372,12 +367,6 @@ class STTNode(Node):
 
         # Публикация результата
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
-            # Issue 1076 (телеметрия): честный «фраза → ПРИНЯТО» (STT-часть).
-            _accept_ms = int((time.monotonic() - _phrase_received_at) * 1000)
-            self.get_logger().info(
-                f"📊 [telemetry] phrase_to_accept_ms={_accept_ms} "
-                f"(text={text!r})"
-            )
             self.get_logger().info(f"✅ ПРИНЯТО: {text}")
             self.publish_result(text)
             self.publish_state("ready")
