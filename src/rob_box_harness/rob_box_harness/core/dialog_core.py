@@ -319,7 +319,8 @@ class DialogCore:
                         self._user_id, Turn(role="assistant", content=spoken)
                     )
             except Exception as exc:  # noqa: BLE001 — wrap into result
-                result.error = exc
+                import traceback as _tb
+                result.error = Exception(f"{exc}\n{_tb.format_exc()}")
                 # The user turn was already appended BEFORE the LLM call
                 # (line above). On error, do NOT append again — that
                 # would produce a duplicate row in the conversation
