@@ -46,12 +46,16 @@ class InternetConnectivityMonitor:
         ]
 
         # Таймер проверки
-        self.check_timer = self.node.create_timer(self.check_interval, self.check_connectivity)
+        self.check_timer = self.node.create_timer(
+            self.check_interval, self.check_connectivity
+        )
 
         # Первая проверка сразу
         self.check_connectivity()
 
-        self.node.get_logger().info(f'🌐 Internet Monitor: проверка каждые {check_interval}s')
+        self.node.get_logger().info(
+            f'🌐 Internet Monitor: проверка каждые {check_interval}s'
+        )
 
     def check_connectivity(self) -> bool:
         """
@@ -62,7 +66,8 @@ class InternetConnectivityMonitor:
         """
         for host in self.test_hosts:
             try:
-                # Используем curl вместо ping (ping не доступен в Docker контейнере)
+                # Используем curl вместо ping (ping не доступен
+                # в Docker контейнере)
                 # curl -s -I --connect-timeout 2 --max-time 3 http://8.8.8.8
                 result = subprocess.run(
                     [
@@ -84,7 +89,9 @@ class InternetConnectivityMonitor:
                     return True
 
             except (subprocess.TimeoutExpired, Exception) as e:
-                self.node.get_logger().debug(f'🔍 Проверка {host} неудачна: {e}')
+                self.node.get_logger().debug(
+                    f'🔍 Проверка {host} неудачна: {e}'
+                )
                 continue
 
         # Интернет недоступен
@@ -103,7 +110,9 @@ class InternetConnectivityMonitor:
             Словарь со статусом подключения
         """
         return {
-            'is_online': self.is_online if self.is_online is not None else False,
+            'is_online': (
+                self.is_online if self.is_online is not None else False
+            ),
             'last_check': self.last_check_time,
             'check_interval': self.check_interval,
         }

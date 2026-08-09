@@ -48,7 +48,9 @@ class PerceptionBridge(Node):
         # ---- Parameters (overridable from launch) -------------------------
         self.declare_parameter('sensor_read_period', SENSOR_READ_PERIOD)
         self.declare_parameter('health_period', HEALTH_PERIOD)
-        self._sensor_period = float(self.get_parameter('sensor_read_period').value)
+        self._sensor_period = float(
+            self.get_parameter('sensor_read_period').value
+        )
         self._health_period = float(self.get_parameter('health_period').value)
 
         # ---- UART ---------------------------------------------------------
@@ -63,8 +65,12 @@ class PerceptionBridge(Node):
             )
 
         # ---- Publishers ---------------------------------------------------
-        self._sensor_pub = self.create_publisher(String, '/sensors/data', 10)
-        self._health_pub = self.create_publisher(String, '/perception/health', 10)
+        self._sensor_pub = self.create_publisher(
+            String, '/sensors/data', 10
+        )
+        self._health_pub = self.create_publisher(
+            String, '/perception/health', 10
+        )
 
         # ---- Counters -----------------------------------------------------
         self._ok_reads = 0
@@ -147,7 +153,10 @@ class PerceptionBridge(Node):
 
     def _publish_health(self) -> None:
         now = time.time()
-        age = None if self._last_data_ts is None else (now - self._last_data_ts)
+        if self._last_data_ts is None:
+            age = None
+        else:
+            age = now - self._last_data_ts
 
         if self._ok_reads == 0 and self._bad_reads == 0:
             status = STATUS_UNKNOWN
