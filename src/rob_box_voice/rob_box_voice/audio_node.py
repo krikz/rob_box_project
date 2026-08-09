@@ -62,7 +62,10 @@ class AudioNode(Node):
         # смешиваются в сигнал → Yandex `empty`, vosk-галлюцинации.
         # Пустой список = все каналы (legacy). Для ReSpeaker 6ch укажите
         # [0, 1, 2, 3] (только микрофоны).
-        self.declare_parameter('mix_channels', [])
+        # НЕПУСТОЙ дефолт обязателен: rclpy Humble объявляет пустой список [] как
+        # BYTE_ARRAY, а yaml даёт [0,1,2,3] INTEGER_ARRAY → InvalidParameterTypeException
+        # (audio_node падал в цикле, робот не слышал речь — 09.08, live-фикс).
+        self.declare_parameter('mix_channels', [0, 1, 2, 3])
         # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
         # мал для Python-callback — GIL/публикация/USB VAD приводили к
         # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
