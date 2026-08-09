@@ -29,7 +29,10 @@ RUN_ID="$(basename "$R" .wav | sed -e 's/^dialog_e2e_//')"
 ARTIFACTS_DIR="/home/ros2/rob_box_project/tests/e2e/_artifacts/${RUN_ID}"
 mkdir -p "$ARTIFACTS_DIR"
 
-ffmpeg -y -i /tmp/voice_new.ogg -af "highpass=f=200,volume=3.0,alimiter=limit=0.98" -ac 1 -ar 16000 /tmp/voice_eq.wav 2>/dev/null
+# 🔴 FIX (09.08, issue 1076): клиппинг → yandex:empty. volume=3.0 + pactl>100%
+# давали max 0.0dB на входе STT — Yandex стабильно пустой. volume=1.2 + pactl≤100.
+V=$(( ${V} > 100 ? 100 : ${V} ))
+ffmpeg -y -i /tmp/voice_new.ogg -af "highpass=f=200,volume=1.2,alimiter=limit=0.98" -ac 1 -ar 16000 /tmp/voice_eq.wav 2>/dev/null
 pactl set-sink-volume @DEFAULT_SINK@ ${V}%
 
 # Метка времени ДО команды — ответы робота ищем только ПОСЛЕ неё.
