@@ -286,6 +286,62 @@ install_dependencies() {
     log_success "Зависимости установлены"
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# СИНХРОНИЗАЦИЯ ВРЕМЕНИ (NTP)
+# ═══════════════════════════════════════════════════════════════════════════
+# Часы на Pi должны быть синхронизированы, иначе zenoh-router режет входящие
+# данные ("Error treating timestamp ... exceeding delta 500ms is rejected") и
+# ROS2/TF ломается ("extrapolation into the future").
+# Дефолтный ntp.ubuntu.com из локальной сети 10.1.1.x часто недоступен,
+# поэтому прописываем ru.pool.ntp.org (проверено) и FallbackNTP.
+
+setup_time_sync() {
+    log_step "Настройка синхронизации времени (NTP)"
+    
+    if command -v timedatectl &> /dev/null; then
+        log_info "Включение NTP синхронизации..."
+        sudo timedatectl set-ntp true 2>/dev/null || log_warning "Не удалось включить NTP через timedatectl"
+        
+        # Прописываем рабочие NTP-серверы (ntp.ubuntu.com недоступен из 10.1.1.x)
+        TIMESYNCD_CONF="/etc/systemd/timesyncd.conf"
+        if ! grep -q "ru.pool.ntp.org" "$TIMESYNCD_CONF" 2>/dev/null; then
+            log_info "Прописываем рабочие NTP-серверы (ru.pool.ntp.org)..."
+            sudo tee "$TIMESYNCD_CONF" > /dev/null << 'TIMESYNCDEOF'
+[Time]
+NTP=ru.pool.ntp.org 0.ru.pool.ntp.org 1.ru.pool.ntp.org
+FallbackNTP=pool.ntp.org ntp.ubuntu.com
+RootDistanceMaxSec=5
+PollIntervalMinSec=32
+PollIntervalMaxSec=2048
+TIMESYNCDEOF
+        else
+            log_info "NTP-серверы уже настроены"
+        fi
+        
+        log_info "Перезапуск systemd-timesyncd..."
+        sudo systemctl restart systemd-timesyncd 2>/dev/null || log_warning "Не удалось перезапустить systemd-timesyncd"
+        
+        # Ожидаем синхронизацию (до 30с)
+        log_info "Ожидание синхронизации времени..."
+        for i in $(seq 1 30); do
+            if timedatectl 2>/dev/null | grep -q "System clock synchronized: yes"; then
+                break
+            fi
+            sleep 1
+        done
+        
+        if timedatectl 2>/dev/null | grep -q "System clock synchronized: yes"; then
+            log_success "Часы синхронизированы ✓"
+        else
+            log_warning "Часы пока не синхронизированы. Проверьте доступность NTP-серверов:"
+            log_warning "  timeout 3 bash -c 'echo > /dev/udp/ru.pool.ntp.org/123'"
+            log_warning "  Подробнее: scripts/maintenance/sync_time.sh --check"
+        fi
+    else
+        log_warning "timedatectl не найден — пропускаем настройку NTP"
+    fi
+}
+
 clone_repository() {
     log_step "Клонирование репозитория rob_box_project"
     
@@ -699,6 +755,9 @@ main() {
     install_docker
     check_docker_compose
     clone_repository
+    
+    # Синхронизация времени (важно до запуска zenoh-router)
+    setup_time_sync
     
     # Настройка узла
     setup_motd

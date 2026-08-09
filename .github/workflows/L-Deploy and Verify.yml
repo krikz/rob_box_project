@@ -295,6 +295,30 @@ jobs:
              docker compose pull --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
+      # ==================== TIME SYNC ====================
+
+      - name: "[Vision Pi] Sync System Time"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🕐 Syncing system time (NTP) on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Why: desynced clocks make zenoh-router reject incoming data"
+          echo "     ('Error treating timestamp ... exceeding delta 500ms is rejected')"
+          echo "     and the deploy workflow reports false critical_log issues."
+          echo "     ntp.ubuntu.com is often unreachable from 10.1.1.x; the"
+          echo "     sync_time.sh script switches to ru.pool.ntp.org."
+          echo ""
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
+               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+             else \
+               echo '⚠️  sync_time.sh not found (old code) — skipping'; \
+             fi" \
+            || echo "⚠️  Warning: time sync failed on Vision Pi"
+
       - name: "[Vision Pi] Start Containers"
         if: '!inputs.dry_run'
         run: |
@@ -359,6 +383,30 @@ jobs:
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              docker compose pull --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
+
+      # ==================== TIME SYNC ====================
+
+      - name: "[Main Pi] Sync System Time"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🕐 Syncing system time (NTP) on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Why: desynced clocks make zenoh-router reject incoming data"
+          echo "     ('Error treating timestamp ... exceeding delta 500ms is rejected')"
+          echo "     and the deploy workflow reports false critical_log issues."
+          echo "     ntp.ubuntu.com is often unreachable from 10.1.1.x; the"
+          echo "     sync_time.sh script switches to ru.pool.ntp.org."
+          echo ""
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
+               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+             else \
+               echo '⚠️  sync_time.sh not found (old code) — skipping'; \
+             fi" \
+            || echo "⚠️  Warning: time sync failed on Main Pi"
 
       - name: "[Main Pi] Start Containers"
         if: '!inputs.dry_run'
