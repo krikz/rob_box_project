@@ -16,10 +16,13 @@ audio_node:
     # Ch1-4 = сырые микрофоны, Ch5-6 = playback-референс (AEC-референс).
     # channels=1 (legacy) брал только один сырой микрофон БЕЗ AEC — при
     # собственной речи/музыке робот слышал эхо → Yandex `empty`, vosk-мусор.
-    # channels=6 + mix_channels=[0,1,2,3] даёт усреднение 4 микрофонов и
-    # ИСКЛЮЧАЕТ playback-референс из STT-сигнала.
+    # ⚠️ A/B 09.08 (робот): mix_channels=[0,1,2,3] (только микрофоны) →
+    # yandex:empty СТАБИЛЬНО; все 6 каналов [0,1,2,3,4,5] → yandex:ok.
+    # Фраза пользователя в e2e/реальной работе идёт через динамик робота
+    # в playback-референс Ch5-6 — исключать его НЕЛЬЗЯ. Эхо-защита на уровне
+    # VAD (tts_grace_s, music_vad_threshold), не микшера.
     channels: 6
-    mix_channels: [0, 1, 2, 3]
+    mix_channels: [0, 1, 2, 3, 4, 5]
     # chunk_size = frames_per_buffer (issue #1050). 1024 (64ms @16kHz) — слишком
     # мал для Python-callback: GIL/публикация AudioData/USB VAD не успевали,
     # PortAudio падал в paInputOverflow (PyAudio status 2), сэмплы терялись и

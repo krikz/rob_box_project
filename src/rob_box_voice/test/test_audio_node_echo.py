@@ -408,9 +408,12 @@ class TestMixChannels:
 
     ReSpeaker Mic Array v2.0 в 6-канальном режиме отдаёт:
       Ch1-4 = сырые микрофоны, Ch5-6 = playback-референс (AEC-референс).
-    Раньше audio_callback усреднял ВСЕ 6 каналов, из-за чего собственный
-    голос/музыка робота смешивались в STT-сигнал (Yandex `empty`, vosk
-    галлюцинировал). mix_channels=[0,1,2,3] исключает референс.
+    ⚠️ A/B-проверка 09.08 (робот 10.1.1.21): mix_channels=[0,1,2,3]
+    (только микрофоны) → Yandex STT стабильно `empty`; все 6 каналов
+    [0,1,2,3,4,5] → `yandex:ok` ПРИНЯТО. Фраза пользователя в e2e/реальной
+    работе попадает в playback-референс Ch5-6 (через динамик робота) —
+    это САМЫЙ чистый сигнал. ДЕФОЛТ = все 6 каналов; исключение референса
+    остаётся только как явный opt-in (и ломает STT).
     """
 
     @staticmethod
@@ -426,8 +429,29 @@ class TestMixChannels:
         frames[:, 5] = 20000  # playback-референс (Ch6)
         return frames.tobytes()
 
+    def test_default_all_channels_keeps_reference(self, audio_node):
+        """Дефолт mix_channels=[0,1,2,3,4,5] → референс (Ch5-6) В МИКСЕ.
+
+        A/B 09.08: без референса Yandex STT даёт empty, поэтому по умолчанию
+        усредняются ВСЕ 6 каналов (референс несёт чистую фразу).
+        """
+        audio_node.is_running = True
+        audio_node.channels = 6
+        audio_node.mix_channels = [0, 1, 2, 3, 4, 5]
+
+        audio_node.audio_callback(self._interleaved_6ch(256), 256, {}, 0)
+
+        published = audio_node.audio_pub.publish.call_args[0][0]
+        samples = bytes(published.data)
+        # 4 тихих + 2 громких канала → среднее ≈ 20000*2/6 ≈ 6667 > 0
+        assert any(b != 0 for b in samples), "референс должен быть в дефолтном миксе!"
+
     def test_mix_channels_excludes_playback_reference(self, audio_node):
-        """mix_channels=[0,1,2,3] → референс (Ch5-6) НЕ попадает в моно."""
+        """Явный opt-in mix_channels=[0,1,2,3] → референс (Ch5-6) НЕ в миксе.
+
+        Опция остаётся для экспериментов, но НЕ является дефолтом: A/B 09.08
+        показал, что без референса Yandex STT стабильно empty.
+        """
         audio_node.is_running = True
         audio_node.channels = 6
         audio_node.mix_channels = [0, 1, 2, 3]

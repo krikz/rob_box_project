@@ -57,15 +57,21 @@ class AudioNode(Node):
         self.declare_parameter('channels', 1)
         # Issue 1076: какие каналы усреднять для моно (0-based). ReSpeaker
         # в 6-канальном RAW-режиме: Ch1-4 = сырые микрофоны, Ch5-6 =
-        # playback-референс (AEC-референс, то, что играет робот). Усреднять
-        # референс в STT-сигнал НЕЛЬЗЯ — собственный голос/музыка робота
-        # смешиваются в сигнал → Yandex `empty`, vosk-галлюцинации.
+        # playback-референс (AEC-референс, то, что играет робот).
+        # ⚠️ A/B-проверка 09.08 (робот 10.1.1.21): mix_channels=[0,1,2,3]
+        # (только микрофоны) → Yandex STT стабильно `empty`; все 6 каналов
+        # [0,1,2,3,4,5] → `yandex:ok` ПРИНЯТО. Причина: в e2e/реальной
+        # работе фраза пользователя попадает в playback-референс Ch5-6
+        # (через динамик робота) — исключение референса выбрасывает
+        # САМЫЙ ЧИСТЫЙ сигнал фразы. Эхо-защита уже есть на уровне VAD
+        # (tts_grace_s, music_vad_threshold) и wake-word gate — НЕ на
+        # уровне микшера. Поэтому дефолт = все 6 каналов.
         # Пустой список = все каналы (legacy). Для ReSpeaker 6ch укажите
-        # [0, 1, 2, 3] (только микрофоны).
+        # [0, 1, 2, 3, 4, 5] (все каналы, подтверждено A/B).
         # НЕПУСТОЙ дефолт обязателен: rclpy Humble объявляет пустой список [] как
-        # BYTE_ARRAY, а yaml даёт [0,1,2,3] INTEGER_ARRAY → InvalidParameterTypeException
+        # BYTE_ARRAY, а yaml даёт [0,1,2,3,4,5] INTEGER_ARRAY → InvalidParameterTypeException
         # (audio_node падал в цикле, робот не слышал речь — 09.08, live-фикс).
-        self.declare_parameter('mix_channels', [0, 1, 2, 3])
+        self.declare_parameter('mix_channels', [0, 1, 2, 3, 4, 5])
         # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
         # мал для Python-callback — GIL/публикация/USB VAD приводили к
         # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
@@ -226,9 +232,9 @@ class AudioNode(Node):
             self.get_logger().info(f'✓ Аудио поток открыт: {self.sample_rate}Hz, {self.channels}ch')
             if self.mix_channels:
                 self.get_logger().info(
-                    f'✓ mix_channels={self.mix_channels} — playback-референс '
-                    f'Ch{max(self.mix_channels)+2}-{self.channels} исключён из STT-сигнала '
-                    f'(issue 1076)'
+                    f'✓ mix_channels={self.mix_channels} — каналы для моно-микса '
+                    f'(issue 1076; A/B 09.08: все 6 каналов включая playback-референс '
+                    f'Ch5-6 → yandex:ok)'
                 )
             self.publish_state('ready')
 
@@ -261,12 +267,15 @@ class AudioNode(Node):
                 audio_data = np.frombuffer(in_data, dtype=np.int16)
                 # Разделяем на каналы: [ch1, ch2, ..., ch6, ch1, ch2, ...]
                 audio_data = audio_data.reshape(-1, self.channels)
-                # Issue 1076: усредняем ТОЛЬКО микрофонные каналы.
+                # Issue 1076: усредняем ВЫБРАННЫЕ каналы.
                 # ReSpeaker в 6-канальном RAW-режиме: Ch1-4 = микрофоны,
                 # Ch5-6 = playback-референс (AEC-референс — то, что играет
-                # робот). Если усреднять ВСЕ каналы, собственный голос/музыка
-                # робота смешиваются в STT-сигнал → Yandex `empty`, vosk
-                # галлюцинирует. mix_channels=[0,1,2,3] исключает референс.
+                # робот). ⚠️ A/B 09.08: НЕЛЬЗЯ исключать референс — в e2e/
+                # реальной работе фраза пользователя идёт через динамик робота
+                # в Ch5-6 (самый чистый сигнал); mix [0,1,2,3] → yandex:empty,
+                # все 6 каналов → yandex:ok. Эхо-защита — на уровне VAD
+                # (tts_grace_s, music_vad_threshold) и wake-word gate.
+                # mix_channels=[0,1,2,3,4,5] включает все каналы (дефолт).
                 if self.mix_channels:
                     # Берём только запрошенные каналы (валидные индексы)
                     channels = [c for c in self.mix_channels if 0 <= c < self.channels]

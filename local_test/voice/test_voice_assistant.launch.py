@@ -26,7 +26,7 @@ def generate_launch_description():
             parameters=[{
                 'device_index': 6,
                 'channels': 6,  # RAW режим - 6 каналов (issue 1076)
-                'mix_channels': [0, 1, 2, 3],  # только микрофоны, без playback-референса
+                'mix_channels': [0, 1, 2, 3, 4, 5],  # все 6 каналов (A/B 09.08: референс нужен, issue 1076)
                 'sample_rate': 16000,
                 'chunk_size': 1024,
                 'vad_threshold': 3.5,  # VAD порог в dB

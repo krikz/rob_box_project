@@ -23,10 +23,12 @@
       device_name: "ReSpeaker"  # Автопоиск по имени
       sample_rate: 16000
       # Issue 1076: 6-канальный RAW-режим ReSpeaker (Ch1-4 = микрофоны,
-      # Ch5-6 = playback-референс AEC). mix_channels исключает референс
-      # из STT-сигнала — иначе собственный голос/музыка робота уходят в STT.
+      # Ch5-6 = playback-референс AEC). ⚠️ A/B 09.08: mix_channels=[0,1,2,3]
+      # (только микрофоны) → yandex:empty; все 6 каналов → yandex:ok.
+      # Референс Ch5-6 несёт фразу пользователя (через динамик робота) —
+      # его НЕЛЬЗЯ исключать. Эхо-защита — VAD/tts_grace/music gate.
       channels: 6
-      mix_channels: [0, 1, 2, 3]
+      mix_channels: [0, 1, 2, 3, 4, 5]
       chunk_size: 512
       format: "PCM16"
 
