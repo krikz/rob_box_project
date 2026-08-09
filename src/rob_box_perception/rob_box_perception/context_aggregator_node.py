@@ -61,6 +61,7 @@ class ContextAggregatorNode(Node):
     """Агрегатор контекста восприятия (MPC lite)."""
 
     def __init__(self):
+        """Инициализировать агрегатор контекста восприятия."""
         super().__init__('context_aggregator')
 
         # ============ Параметры ============
@@ -567,6 +568,7 @@ class ContextAggregatorNode(Node):
 
 
 def main(args=None):
+    """Запустить ноду агрегатора контекста."""
     rclpy.init(args=args)
     node = ContextAggregatorNode()
 

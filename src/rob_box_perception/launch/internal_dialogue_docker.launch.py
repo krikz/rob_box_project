@@ -24,6 +24,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """Сформировать launch-описание perception pipeline (docker)."""
     # Context Aggregator config file path (mounted via docker)
     config_file = '/config/perception/context_aggregator.yaml'
 
