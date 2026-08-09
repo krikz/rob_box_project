@@ -841,17 +841,11 @@ jobs:
             fi
           fi
 
-      # ==================== ISSUE CREATION ====================
+      # ==================== ISSUE CREATION (DISABLED: creates too many duplicates) ====================
+      # To re-enable, remove 'if: false' and restore the original condition below
 
       - name: "Analyze Results and Create Issue"
-        if: >-
-          !inputs.dry_run &&
-          (steps.vision_logs.outputs.has_issues == 'true' ||
-           steps.main_logs.outputs.has_issues == 'true' ||
-           steps.vision_status.outputs.vision_healthy == 'false' ||
-           steps.main_status.outputs.main_healthy == 'false' ||
-           steps.vision_topics.outputs.topics_healthy != 'true' ||
-           steps.main_topics.outputs.topics_healthy != 'true')
+        if: false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
