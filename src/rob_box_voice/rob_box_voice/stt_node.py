@@ -535,11 +535,17 @@ class STTNode(Node):
 
         # Обрабатываем ответы
         final_text = None
+        last_partial = None
         for response in responses:
             event_type = response.WhichOneof("Event")
 
-            # partial - промежуточные результаты (игнорируем)
+            # partial - промежуточные результаты: запоминаем последний
+            # (Yandex может прислать только partial + пустой final — см. 09.08)
             if event_type == "partial":
+                if response.partial.alternatives:
+                    _pt = response.partial.alternatives[0].text
+                    if _pt and _pt.strip():
+                        last_partial = _pt
                 continue
 
             # final - финальный результат распознавания
@@ -554,7 +560,14 @@ class STTNode(Node):
                     final_text = response.final_refinement.normalized_text.alternatives[0].text
                     break  # Это последний результат
 
-        return final_text.strip() if final_text else None
+        if final_text and final_text.strip():
+            return final_text.strip()
+        # 🔴 FIX (09.08): Yandex шлёт partial с текстом, но final может быть
+        # пустым → раньше был ложный «yandex:empty», хотя речь распознавалась.
+        # Берём последний partial как результат.
+        if last_partial:
+            return last_partial.strip()
+        return None
 
     def _recognize_vosk(self, audio_bytes: bytes) -> Optional[str]:
         """Распознавание через Vosk (fallback)."""
