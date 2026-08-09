@@ -224,6 +224,12 @@ class AudioNode(Node):
             )
 
             self.get_logger().info(f'✓ Аудио поток открыт: {self.sample_rate}Hz, {self.channels}ch')
+            if self.mix_channels:
+                self.get_logger().info(
+                    f'✓ mix_channels={self.mix_channels} — playback-референс '
+                    f'Ch{max(self.mix_channels)+2}-{self.channels} исключён из STT-сигнала '
+                    f'(issue 1076)'
+                )
             self.publish_state('ready')
 
         except Exception as e:
