@@ -173,3 +173,43 @@ Verify` в 16:27Z ставил develop (6fbe96f1) без нашего кода; 
 **Как проверить в проде после merge:** в docker logs voice-assistant должны
 появиться `✓ mix_channels=[0, 1, 2, 3]`, `Аудио поток открыт: 16000Hz, 6ch`,
 `silence_to_phrase_s=`, `phrase_to_accept_ms=` — и `yandex:ok` на чистом сигнале.
+
+## Статус: round-7 устарел — ждём merge PR #1079 (2026-08-09, решение оператора)
+
+**Оператор (kanban, mid-run):** round-7 НЕ пересобирать — он собран на старом
+develop (до merge #1077-контекста и без volume-фикса). План: **merge PR #1079 в
+develop → новый e2e round (актуальный develop + наша фича) → проверять на нём.**
+
+**Почему round-7 больше не годится как источник «живого» доказательства:**
+- База round-7 — develop на момент 14:26Z (merge 90297b61 нашей ветки), НЕ
+  текущий develop (c6fb3cec, после merge #1077 speaker-tag и др.).
+- round-7 гонялся с `volume: 125` (тихий сигнал) → `yandex:empty` в 5/5
+  STT-попыток; vosk вытаскивал фразу искажённо. Это НЕ валидный прогон для
+  acceptance «без yandex:empty».
+- Деплой round-7 на робота поверх текущего develop затёр бы актуальный прод.
+
+**Raw-доказательство фичи из round-7 (артефакт e2e-voice-logs-31318541317):**
+
+```
+[audio_node-1] ✓ Аудио поток открыт: 16000Hz, 6ch                     ← наш конфиг (channels: 6)
+[audio_node-1] 📊 [telemetry] silence_to_phrase_s=3.10 (speech_continuation=3.0)   ← честный «замолчал→фраза»
+[stt_node-6]   📊 [telemetry] phrase_to_accept_ms=3734 (text='роу оскорбила')
+[stt_node-6]   📊 [telemetry] phrase_to_accept_ms=3437 (text='роберт как дела')
+[stt_node-6]   📊 [telemetry] phrase_to_accept_ms=4930 (text='роберт песенку открой ротик')
+```
+
+Фича (6ch + телеметрия) в round-7 доехала и работала; остался только тихий
+сигнал (volume=125) → контракт в issue #1076 исправлен на **volume: 150**
+(label `needs-e2e` стоит). Новый round после merge PR #1079 должен показать
+`yandex:ok` на чистом сигнале + те же telemetry-строки.
+
+**Acceptance criteria — честное состояние:**
+
+- [x] Решение по миксеру каналов (п.1) принято и реализовано (`mix_channels`,
+      PR #1079, CI зелёный, юнит-тесты 56 passed)
+- [ ] Прогон e2e без `yandex:empty` на чистом сигнале — **ждёт нового round
+      после merge PR #1079** (round-7 с volume=125 невалиден, пересборку
+      round-7 оператор запретил)
+- [x] Замер «замолчал → акцепт» в телеметрии отражён честно
+      (`silence_to_phrase_s` + `phrase_to_accept_ms`)
+- [x] Решение по частотам/фирмваре задокументировано (16kHz — потолок)
