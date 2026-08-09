@@ -190,6 +190,34 @@ class _FallbackLLM:
             yield chunk
 
 
+def _rclpy_logger_safe(orig):
+    """Monkey-patch: rclpy RcutilsLogger rejects %s-args (python-logging style).
+
+    09.08: ``RcutilsLogger.warning() takes 2 positional arguments but 5 were
+    given`` — TypeError внутри обработки LLM-ответа ломал цикл и давал
+    «Empty assistant response» → робот молчал. rclpy принимает только
+    message, а какой-то %s-вызов (python-logging стиль) в стеке это
+    нарушал. Обёртка склеивает args в message до вызова.
+    """
+    def wrapper(self, msg, *args, **kwargs):
+        if args:
+            try:
+                msg = msg % args if isinstance(msg, str) else msg
+            except Exception:
+                pass
+        return orig(self, msg, **kwargs)
+    return wrapper
+
+
+import rclpy.impl.rcutils_logger as _rl
+for _m in ("debug", "info", "warning", "error", "fatal"):
+    _orig = getattr(_rl.RcutilsLogger, _m)
+    if not getattr(_orig, "_rclpy_safe", False):
+        _w = _rclpy_logger_safe(_orig)
+        _w._rclpy_safe = True
+        setattr(_rl.RcutilsLogger, _m, _w)
+
+
 class DialogueNode(Node):
     """ROS2 shell that composes DialogCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
