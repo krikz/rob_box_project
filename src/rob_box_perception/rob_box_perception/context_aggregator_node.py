@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-context_aggregator_node.py - Perception Context Aggregator
+"""Perception Context Aggregator node.
 
 Легковесный агрегатор данных восприятия.
 Собирает данные со всех источников → публикует unified события.
@@ -28,22 +27,20 @@ context_aggregator_node.py - Perception Context Aggregator
 """
 
 import json
-import time
 import os
+import time
 from typing import Dict, List, Optional
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped, Twist
+from control_msgs.msg import DynamicJointState
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import Log
-from control_msgs.msg import DynamicJointState
-
-# Monitoring components
-from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
+import rclpy
+from rclpy.node import Node
 from rob_box_perception.utils.internet_monitor import InternetConnectivityMonitor
+from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
 from rob_box_perception.utils.time_provider import TimeAwarenessProvider
+from std_msgs.msg import String
 
 # Custom messages
 try:
@@ -306,7 +303,7 @@ class ContextAggregatorNode(Node):
             import json
             data = json.loads(msg.data)
             text = data.get('ssml', '').replace('<speak>', '').replace('</speak>', '').strip()
-        except:
+        except Exception:
             text = msg.data.strip()
 
         if text:
@@ -371,14 +368,14 @@ class ContextAggregatorNode(Node):
     def get_memory_summary(self) -> str:
         """Получить краткое резюме памяти."""
         if not self.recent_events:
-            return "Недавних событий нет"
+            return 'Недавних событий нет'
 
         # Последние 5 событий
         recent = self.recent_events[-5:]
         lines = []
         for event in recent:
             age = time.time() - event['time']
-            emoji = "❗" if event.get('important') else "•"
+            emoji = '❗' if event.get('important') else '•'
             lines.append(f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}")
 
         return '\n'.join(lines)
@@ -403,7 +400,7 @@ class ContextAggregatorNode(Node):
         if self.current_vision:
             event.vision_context = json.dumps(self.current_vision, ensure_ascii=False)
         else:
-            event.vision_context = ""
+            event.vision_context = ''
 
         # Pose
         if self.current_pose:
@@ -447,19 +444,19 @@ class ContextAggregatorNode(Node):
         event.missing_nodes = node_summary['missing_list']
 
         # Equipment summary (placeholder for Stage 2)
-        event.equipment_summary_json = "{}"
+        event.equipment_summary_json = '{}'
 
         # Mapping mode — читаем /maps/mapping_state.json (volume :ro)
         try:
-            _state_path = "/maps/mapping_state.json"
+            _state_path = '/maps/mapping_state.json'
             if os.path.exists(_state_path):
-                with open(_state_path, "r") as _f:
+                with open(_state_path, 'r') as _f:
                     _state = json.load(_f)
-                event.mapping_mode = _state.get("mode", "unknown")
+                event.mapping_mode = _state.get('mode', 'unknown')
             else:
-                event.mapping_mode = "unknown"
+                event.mapping_mode = 'unknown'
         except Exception:
-            event.mapping_mode = "unknown"
+            event.mapping_mode = 'unknown'
 
         # Memory
         event.memory_summary = self.get_memory_summary()
@@ -493,15 +490,15 @@ class ContextAggregatorNode(Node):
 
         # Проверка интернета (добавлено)
         if not self.internet_monitor.get_status()['is_online']:
-            issues.append("Нет интернета")
+            issues.append('Нет интернета')
 
         # Определяем статус
         if len(issues) == 0:
-            status = "HEALTHY"
+            status = 'HEALTHY'
         elif len(issues) <= 2:
-            status = "DEGRADED"
+            status = 'DEGRADED'
         else:
-            status = "UNHEALTHY"
+            status = 'UNHEALTHY'
 
         return status, issues
 

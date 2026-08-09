@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_context_aggregator.py - Unit тесты для ContextAggregatorNode
+test_context_aggregator.py - Unit тесты для ContextAggregatorNode.
 
 Тестирует (после W10: perception LLM-free):
 - Подписку на источники данных
@@ -18,20 +18,21 @@ Mirrors the pattern used by ``test_perception_bridge.py`` and
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 import types as _types
+from typing import Any, Callable, Dict, List
 import unittest
 from unittest.mock import MagicMock, patch
-
-from typing import Any, Callable, Dict, List, Optional
 
 # ── rclpy / std_msgs / geometry_msgs / nav_msgs shim ─────────────────────
 # Minimal stand-ins for the ROS2 message types that ContextAggregatorNode
 # exercises in tests. We only need the attributes that the test file
 # reads (PoseStamped.pose.position, Odometry.pose.pose.position, etc.).
+
+
 class _FakeNode:
+
     def __init__(self, name: str, **kwargs: Any) -> None:
         self._name = name
         self._logger = MagicMock()
@@ -49,6 +50,7 @@ class _FakeNode:
 
     def get_parameter(self, name: str) -> Any:
         class _Param:
+
             def __init__(self, value):
                 self.value = value
         return _Param(self._params.get(name))
@@ -71,7 +73,7 @@ class _FakeNode:
         return pub
 
     def create_subscription(self, msg_type, topic, callback, qos,
-                              callback_group=None) -> MagicMock:
+                            callback_group=None) -> MagicMock:
         sub = MagicMock()
         sub.topic = topic
         sub.callback = callback
@@ -97,65 +99,71 @@ class _FakeNode:
         return clock
 
 
-_mock_rclpy = _types.ModuleType("rclpy")
+_mock_rclpy = _types.ModuleType('rclpy')
 _mock_rclpy.init = lambda *a, **kw: None
 _mock_rclpy.shutdown = lambda *a, **kw: None
 _mock_rclpy.ok = lambda: True
-sys.modules.setdefault("rclpy", _mock_rclpy)
+sys.modules.setdefault('rclpy', _mock_rclpy)
 
-_mock_rclpy_node = _types.ModuleType("rclpy.node")
+_mock_rclpy_node = _types.ModuleType('rclpy.node')
 _mock_rclpy_node.Node = _FakeNode
-sys.modules.setdefault("rclpy.node", _mock_rclpy_node)
+sys.modules.setdefault('rclpy.node', _mock_rclpy_node)
 
-_interfaces = _types.ModuleType("rcl_interfaces")
+_interfaces = _types.ModuleType('rcl_interfaces')
 
 
 class _Log:
+
     def __init__(self):
         self.level = 0
-        self.name = ""
-        self.msg = ""
+        self.name = ''
+        self.msg = ''
         self.stamp = None
-_interfaces_msg = _types.ModuleType("rcl_interfaces.msg")
+
+
+_interfaces_msg = _types.ModuleType('rcl_interfaces.msg')
 _interfaces_msg.Log = _Log
-sys.modules.setdefault("rcl_interfaces", _interfaces)
-sys.modules.setdefault("rcl_interfaces.msg", _interfaces_msg)
+sys.modules.setdefault('rcl_interfaces', _interfaces)
+sys.modules.setdefault('rcl_interfaces.msg', _interfaces_msg)
 
-_cb_mod = _types.ModuleType("rclpy.callback_groups")
-_cb_mod.ReentrantCallbackGroup = type("ReentrantCallbackGroup", (), {})
-sys.modules.setdefault("rclpy.callback_groups", _cb_mod)
+_cb_mod = _types.ModuleType('rclpy.callback_groups')
+_cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
+sys.modules.setdefault('rclpy.callback_groups', _cb_mod)
 
-_qos_mod = _types.ModuleType("rclpy.qos")
-_qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
-_qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE="RELIABLE")
+_qos_mod = _types.ModuleType('rclpy.qos')
+_qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST='KEEP_LAST')
+_qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE='RELIABLE')
 _qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
-sys.modules.setdefault("rclpy.qos", _qos_mod)
+sys.modules.setdefault('rclpy.qos', _qos_mod)
 
-_std_msgs = _types.ModuleType("std_msgs")
-_std_msgs_msg = _types.ModuleType("std_msgs.msg")
+_std_msgs = _types.ModuleType('std_msgs')
+_std_msgs_msg = _types.ModuleType('std_msgs.msg')
 
 
 class _String:
-    def __init__(self, data=""):
+
+    def __init__(self, data=''):
         self.data = data
 
 
 class _Bool:
+
     def __init__(self, data=False):
         self.data = data
 
 
 _std_msgs_msg.String = _String
 _std_msgs_msg.Bool = _Bool
-sys.modules.setdefault("std_msgs", _std_msgs)
-sys.modules.setdefault("std_msgs.msg", _std_msgs_msg)
+sys.modules.setdefault('std_msgs', _std_msgs)
+sys.modules.setdefault('std_msgs.msg', _std_msgs_msg)
 
 # ── geometry_msgs shim ───────────────────────────────────────────────────
-_geom = _types.ModuleType("geometry_msgs")
-_geom_msg = _types.ModuleType("geometry_msgs.msg")
+_geom = _types.ModuleType('geometry_msgs')
+_geom_msg = _types.ModuleType('geometry_msgs.msg')
 
 
 class _Vector3:
+
     def __init__(self, x=0.0, y=0.0, z=0.0):
         self.x = x
         self.y = y
@@ -163,6 +171,7 @@ class _Vector3:
 
 
 class _Point:
+
     def __init__(self, x=0.0, y=0.0, z=0.0):
         self.x = x
         self.y = y
@@ -170,6 +179,7 @@ class _Point:
 
 
 class _Quaternion:
+
     def __init__(self, x=0.0, y=0.0, z=0.0, w=1.0):
         self.x = x
         self.y = y
@@ -178,24 +188,28 @@ class _Quaternion:
 
 
 class _Pose:
+
     def __init__(self):
         self.position = _Point()
         self.orientation = _Quaternion()
 
 
 class _PoseStamped:
+
     def __init__(self):
         self.pose = _Pose()
         self.header = MagicMock()
 
 
 class _Twist:
+
     def __init__(self):
         self.linear = _Vector3()
         self.angular = _Vector3()
 
 
 class _TwistWithCovariance:
+
     def __init__(self):
         self.twist = _Twist()
 
@@ -207,15 +221,16 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
-sys.modules.setdefault("geometry_msgs", _geom)
-sys.modules.setdefault("geometry_msgs.msg", _geom_msg)
+sys.modules.setdefault('geometry_msgs', _geom)
+sys.modules.setdefault('geometry_msgs.msg', _geom_msg)
 
 # ── nav_msgs shim ────────────────────────────────────────────────────────
-_nav = _types.ModuleType("nav_msgs")
-_nav_msg = _types.ModuleType("nav_msgs.msg")
+_nav = _types.ModuleType('nav_msgs')
+_nav_msg = _types.ModuleType('nav_msgs.msg')
 
 
 class _Odometry:
+
     def __init__(self):
         self.pose = _types.SimpleNamespace(
             pose=_Pose(),
@@ -226,17 +241,18 @@ class _Odometry:
 
 
 _nav_msg.Odometry = _Odometry
-sys.modules.setdefault("nav_msgs", _nav)
-sys.modules.setdefault("nav_msgs.msg", _nav_msg)
+sys.modules.setdefault('nav_msgs', _nav)
+sys.modules.setdefault('nav_msgs.msg', _nav_msg)
 
 # ── control_msgs shim ────────────────────────────────────────────────────
 # context_aggregator_node.py imports DynamicJointState from control_msgs.msg
 # (used in the /dynamic_joint_states subscriber for battery telemetry).
-_control = _types.ModuleType("control_msgs")
-_control_msg = _types.ModuleType("control_msgs.msg")
+_control = _types.ModuleType('control_msgs')
+_control_msg = _types.ModuleType('control_msgs.msg')
 
 
 class _DynamicJointState:
+
     def __init__(self):
         self.joint_names: List[str] = []
         self.interface_values: List[Any] = []
@@ -244,30 +260,31 @@ class _DynamicJointState:
 
 
 _control_msg.DynamicJointState = _DynamicJointState
-sys.modules.setdefault("control_msgs", _control)
-sys.modules.setdefault("control_msgs.msg", _control_msg)
+sys.modules.setdefault('control_msgs', _control)
+sys.modules.setdefault('control_msgs.msg', _control_msg)
 
 # ── rob_box_perception_msgs shim ─────────────────────────────────────────
 # context_aggregator_node.py tries to import ``PerceptionEvent`` from this
 # package and falls back to ``None`` if missing. Without the shim, the
 # ``publish_event`` test sees ``event_pub = None`` and the mock cannot
 # patch ``.publish``. Stub the class so the publisher is created.
-_msgs = _types.ModuleType("rob_box_perception_msgs")
-_msgs_msg = _types.ModuleType("rob_box_perception_msgs.msg")
+_msgs = _types.ModuleType('rob_box_perception_msgs')
+_msgs_msg = _types.ModuleType('rob_box_perception_msgs.msg')
 
 
 class _PerceptionEvent:
+
     def __init__(self):
         self.header = MagicMock()
         # The aggregator assigns arbitrary fields; MagicMock attributes
         # absorb any read.
         for f in (
-            "timestamp", "battery_level", "robot_pose_x", "robot_pose_y",
-            "current_location", "online_status", "node_health",
-            "active_nodes", "internet_connected", "system_health_status",
-            "system_health_issues", "memory_summary", "recent_events",
-            "important_event", "vision_description", "current_pose",
-            "current_sensors", "current_vision", "ssml_text",
+            'timestamp', 'battery_level', 'robot_pose_x', 'robot_pose_y',
+            'current_location', 'online_status', 'node_health',
+            'active_nodes', 'internet_connected', 'system_health_status',
+            'system_health_issues', 'memory_summary', 'recent_events',
+            'important_event', 'vision_description', 'current_pose',
+            'current_sensors', 'current_vision', 'ssml_text',
         ):
             setattr(self, f, None)
 
@@ -277,16 +294,15 @@ class _PerceptionEvent:
 
 
 _msgs_msg.PerceptionEvent = _PerceptionEvent
-sys.modules.setdefault("rob_box_perception_msgs", _msgs)
-sys.modules.setdefault("rob_box_perception_msgs.msg", _msgs_msg)
+sys.modules.setdefault('rob_box_perception_msgs', _msgs)
+sys.modules.setdefault('rob_box_perception_msgs.msg', _msgs_msg)
 
 # Import after the shim is registered.
-import rclpy  # noqa: E402  — resolves to the shim module registered above
-from std_msgs.msg import String, Bool  # noqa: E402
-from geometry_msgs.msg import PoseStamped, Point, Quaternion  # noqa: E402
+from geometry_msgs.msg import Point, PoseStamped, Quaternion  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
-
+import rclpy  # noqa: E402  — resolves to the shim module registered above
 from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 
 
 class TestContextAggregator(unittest.TestCase):
@@ -386,7 +402,7 @@ class TestContextAggregator(unittest.TestCase):
         """Тест: Подписка на результаты STT."""
         # Создаём STT сообщение
         stt_msg = String()
-        stt_msg.data = "Привет робот"
+        stt_msg.data = 'Привет робот'
 
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_user_speech'))
@@ -503,7 +519,7 @@ class TestCallbacks(unittest.TestCase):
     def test_on_command_intent(self):
         """Тест: callback command_intent (сохранён после W10)."""
         msg = String()
-        msg.data = "navigate:0.85"
+        msg.data = 'navigate:0.85'
 
         # on_command_intent — обычный command routing, без LLM.
         if hasattr(self.node, 'on_command_intent'):
@@ -511,12 +527,12 @@ class TestCallbacks(unittest.TestCase):
             # Команда попадает в recent_events через add_to_memory.
             self.assertGreater(len(self.node.recent_events), 0)
         else:
-            self.fail("on_command_intent should still exist after W10")
+            self.fail('on_command_intent should still exist after W10')
 
     def test_on_command_feedback(self):
         """Тест: callback command_feedback."""
         msg = String()
-        msg.data = "Иду к точке назначения"
+        msg.data = 'Иду к точке назначения'
 
         self.node.on_command_feedback(msg)
 
@@ -526,7 +542,7 @@ class TestCallbacks(unittest.TestCase):
     def test_on_user_speech_movement_command_filtered(self):
         """Тест: команды движения фильтруются."""
         msg = String()
-        msg.data = "вперёд"
+        msg.data = 'вперёд'
 
         initial_count = len(self.node.speech_events)
         self.node.on_user_speech(msg)
@@ -537,13 +553,13 @@ class TestCallbacks(unittest.TestCase):
     def test_on_user_speech_dialogue(self):
         """Тест: диалоговая речь добавляется."""
         msg = String()
-        msg.data = "Как дела?"
+        msg.data = 'Как дела?'
 
         self.node.on_user_speech(msg)
 
         # Диалоговая речь должна быть добавлена
         self.assertGreater(len(self.node.speech_events), 0)
-        self.assertEqual(self.node.speech_events[-1]['content'], "Как дела?")
+        self.assertEqual(self.node.speech_events[-1]['content'], 'Как дела?')
 
 
 class TestMemoryManagement(unittest.TestCase):
@@ -604,7 +620,7 @@ class TestMemoryManagement(unittest.TestCase):
     def test_get_memory_summary_empty(self):
         """Тест: summary пустой памяти."""
         summary = self.node.get_memory_summary()
-        self.assertEqual(summary, "Недавних событий нет")
+        self.assertEqual(summary, 'Недавних событий нет')
 
     def test_get_memory_summary_with_events(self):
         """Тест: summary с событиями."""
@@ -656,7 +672,10 @@ class TestPublishEvent(unittest.TestCase):
         status, issues = self.node.check_system_health()
 
         self.assertGreater(len(issues), 0)
-        self.assertTrue(any('батарея' in issue.lower() or 'батаре' in issue.lower() for issue in issues))
+        self.assertTrue(
+            any('батарея' in issue.lower() or 'батаре' in issue.lower()
+                for issue in issues)
+        )
 
     def test_check_system_health_critical_battery(self):
         """Тест: критическая батарея."""

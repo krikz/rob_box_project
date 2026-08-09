@@ -6,8 +6,7 @@
 """
 
 import time
-from typing import List, Dict, Optional
-from collections import deque
+from typing import Dict, List, Optional
 
 
 class MemoryManager:
@@ -15,10 +14,13 @@ class MemoryManager:
 
     def __init__(self, memory_window: float = 300.0):
         """
-        Инициализация менеджера памяти.
+        Инициализировать менеджера памяти.
 
-        Args:
-            memory_window: Временное окно хранения событий в секундах (default: 300s = 5min)
+        Args
+        ----
+        memory_window:
+            Временное окно хранения событий в секундах (default: 300s = 5min)
+
         """
         self.memory_window = memory_window
 
@@ -36,10 +38,15 @@ class MemoryManager:
         """
         Добавить событие в память с типизацией.
 
-        Args:
-            event_type: Тип события (user_speech, robot_response, robot_thought, vision, etc.)
-            content: Содержание события
-            important: Флаг важности события
+        Args
+        ----
+        event_type:
+            Тип события (user_speech, robot_response, robot_thought, vision, etc.)
+        content:
+            Содержание события
+        important:
+            Флаг важности события
+
         """
         event = {
             'time': time.time(),
@@ -81,21 +88,25 @@ class MemoryManager:
         """
         Получить краткое резюме последних событий.
 
-        Args:
-            count: Количество последних событий для включения в резюме
+        Args
+        ----
+        count:
+            Количество последних событий для включения в резюме
 
-        Returns:
-            Текстовое резюме событий
+        Returns
+        -------
+        Текстовое резюме событий
+
         """
         if not self.recent_events:
-            return "Недавних событий нет"
+            return 'Недавних событий нет'
 
         recent = self.recent_events[-count:]
         lines = []
 
         for event in recent:
             age = time.time() - event['time']
-            emoji = "❗" if event.get('important') else "•"
+            emoji = '❗' if event.get('important') else '•'
             lines.append(f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}")
 
         return '\n'.join(lines)
@@ -108,11 +119,15 @@ class MemoryManager:
         """
         Получить события определенного типа.
 
-        Args:
-            event_type: Тип событий для получения
+        Args
+        ----
+        event_type:
+            Тип событий для получения
 
-        Returns:
-            Список событий указанного типа
+        Returns
+        -------
+        Список событий указанного типа
+
         """
         if event_type == 'user_speech':
             return self.speech_events.copy()
@@ -131,11 +146,15 @@ class MemoryManager:
         """
         Получить количество событий.
 
-        Args:
-            event_type: Тип событий для подсчета (если None, подсчет всех событий)
+        Args
+        ----
+        event_type:
+            Тип событий для подсчета (если None, подсчет всех событий)
 
-        Returns:
-            Количество событий
+        Returns
+        -------
+        Количество событий
+
         """
         if event_type is None:
             return len(self.recent_events)

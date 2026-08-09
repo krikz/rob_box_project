@@ -1,7 +1,7 @@
 """Tests for MemoryManager."""
 
 import time
-import pytest
+
 from rob_box_perception.core.memory_manager import MemoryManager
 
 
@@ -65,7 +65,7 @@ class TestMemoryManager:
         manager = MemoryManager()
 
         summary = manager.get_summary()
-        assert summary == "Недавних событий нет"
+        assert summary == 'Недавних событий нет'
 
     def test_get_summary_with_events(self):
         """Test get_summary with events."""
