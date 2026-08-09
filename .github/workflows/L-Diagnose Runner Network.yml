@@ -13,7 +13,7 @@ on:
 
 jobs:
   diagnose:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: "Сетевая диагностика"
         shell: bash
