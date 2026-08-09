@@ -309,6 +309,16 @@ class TTSNode(Node):
         # yandex (primary) | silero (fallback) | minimax (HTTP, opt-in)
         self.declare_parameter("provider", "minimax")
 
+        # Issue #1083: цепочка приоритетов TTS (minimax → yandex → silero).
+        # Пустой список → выводится из ``provider`` (см. _chain_from_provider).
+        # Silero всегда последний в цепочке (офлайн fallback).
+        self.declare_parameter("provider_chain", [])
+        # TTL кэша «мёртвых» провайдеров (сек): квота/auth (2056 Token Plan)
+        # → длинный TTL, transient (сеть/timeout) → короткий. Пока провайдер
+        # в кэше — не долбим его на каждый ход (см. _mark_provider_dead).
+        self.declare_parameter("provider_dead_ttl_s", 300.0)
+        self.declare_parameter("provider_dead_ttl_transient_s", 30.0)
+
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
         self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
@@ -410,6 +420,31 @@ class TTSNode(Node):
                 "provider must be one of: yandex, silero, minimax; "
                 f"got {self.provider!r}"
             )
+
+        # Issue #1083: цепочка приоритетов TTS. Если provider_chain явно задан
+        # (например, из e2e-контракта) — используем его; иначе выводим из
+        # ``provider``. Silero всегда последний в цепочке (инвариант).
+        raw_chain = self.get_parameter("provider_chain").value
+        if raw_chain:
+            self.provider_chain = [str(p) for p in raw_chain]
+        else:
+            # provider параметр (minimax|yandex|silero) задаёт ПЕРВОГО
+            # в цепочке; остальные добираются дефолтным порядком, Silero
+            # всегда последний (см. _default_provider_chain / _provider_first).
+            self.provider_chain = self._chain_from_provider(self.provider)
+        self.provider_chain = self._normalize_provider_chain(self.provider_chain)
+
+        # TTL кэша «мёртвых» провайдеров (сек).
+        self.provider_dead_ttl_s = max(
+            1.0, float(self.get_parameter("provider_dead_ttl_s").value)
+        )
+        self.provider_dead_ttl_transient_s = max(
+            1.0, float(self.get_parameter("provider_dead_ttl_transient_s").value)
+        )
+        # Провайдеры, помеченные мёртвыми (quota/сеть/ошибка) до определённого
+        # момента времени (time.monotonic). Ключ — имя провайдера.
+        self._provider_dead_until: Dict[str, float] = {}
+        self._provider_dead_reason: Dict[str, str] = {}
 
         # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv("YANDEX_API_KEY", "")
@@ -1290,6 +1325,133 @@ class TTSNode(Node):
                 self._next_play_seq += 1
                 self._play_order_cond.notify_all()
 
+    # ── Issue #1083: цепочка приоритетов TTS (minimax → yandex → silero) ────
+
+    @staticmethod
+    def _default_provider_chain() -> list[str]:
+        """Дефолтная цепочка приоритетов TTS-провайдеров.
+
+        Порядок: MiniMax (HTTP) → Yandex (gRPC v3) → Silero (офлайн).
+        Silero всегда последний — это последний рубеж, он работает без
+        сети. Цепочка конфигурируется через ROS-параметр ``provider_chain``;
+        здесь — значение по умолчанию (не хардкод в hot-path).
+        """
+        return ["minimax", "yandex", "silero"]
+
+    @staticmethod
+    def _chain_from_provider(provider: str) -> list[str]:
+        """Цепочка приоритетов из параметра ``provider`` (issue #1083).
+
+        ``provider`` задаёт ПЕРВОГО в цепочке; остальные добираются
+        дефолтным порядком (``_default_provider_chain``), Silero всегда
+        последний. Примеры:
+
+        * provider=minimax → [minimax, yandex, silero] (дефолт, фикс #1083:
+          при квоте MiniMax идём на Yandex, а не сразу на Silero);
+        * provider=yandex  → [yandex, silero] (back-compat: e2e ``tts: yandex``
+          проверяет именно Yandex-голос, MiniMax не подмешиваем);
+        * provider=silero  → [silero] (только офлайн).
+        """
+        if provider == "silero":
+            return ["silero"]
+        if provider == "yandex":
+            # Back-compat: provider=yandex остаётся yandex → silero,
+            # без MiniMax (см. историческое поведение tts_node).
+            return ["yandex", "silero"]
+        return TTSNode._default_provider_chain()  # minimax → yandex → silero
+
+    def _effective_provider_chain(self) -> list[str]:
+        """Цепочка, по которой реально идёт синтез в ``_synthesize_and_play``.
+
+        Берёт ``self.provider_chain`` (уже нормализованную в ``__init__``);
+        для тестовых стабов без атрибута — дефолтную. Silero всегда последний.
+        """
+        chain = getattr(self, "provider_chain", None)
+        if chain:
+            return chain
+        provider = getattr(self, "provider", "minimax")
+        return TTSNode._normalize_provider_chain(
+            TTSNode._chain_from_provider(provider)
+        )
+
+    @staticmethod
+    def _normalize_provider_chain(chain: list[str]) -> list[str]:
+        """Привести цепочку к инвариантам: только известные провайдеры,
+        без дубликатов, Silero — всегда последний.
+
+        Edge cases (issue #1083):
+        * цепочка без Silero → Silero добавляется в конец;
+        * Silero в середине → переносится в конец;
+        * пустая/битая цепочка → дефолтная minimax → yandex → silero.
+        """
+        known = {"minimax", "yandex", "silero"}
+        deduped: list[str] = []
+        for p in chain:
+            if p in known and p not in deduped:
+                deduped.append(p)
+        # ``chain`` без единого известного провайдера — битая цепочка.
+        if not deduped:
+            return TTSNode._default_provider_chain()
+        # Явный provider=silero (только офлайн) — легитимный режим.
+        if deduped == ["silero"]:
+            return ["silero"]
+        # Silero всегда последний в цепочке (инвариант issue #1083).
+        if "silero" in deduped:
+            deduped.remove("silero")
+        deduped.append("silero")
+        return deduped
+
+    def _provider_is_dead(self, provider_name: str) -> bool:
+        """True, если провайдер лежит в кэше «мёртвых» (TTL не истёк).
+
+        Кэш «мёртвых» (как в LLM-health): если MiniMax ответил квотой 2056
+        (или сеть/таймаут), не долбим его на каждый ход — пропускаем до
+        истечения TTL, затем пробуем снова (провайдер мог «ожить»).
+        """
+        until = getattr(self, "_provider_dead_until", {}).get(provider_name, 0.0)
+        return time.monotonic() < until
+
+    def _mark_provider_dead(
+        self,
+        provider_name: str,
+        error: Exception,
+        ttl_s: float | None = None,
+    ) -> None:
+        """Пометить провайдера мёртвым на ttl_s секунд (по умолчанию —
+        из параметра provider_dead_ttl_s). Сохраняем причину для лога.
+
+        Классификация TTL (issue #1083):
+        * quota/auth (2056 Token Plan limit, 401/403) → длинный TTL
+          (provider_dead_ttl_s, default 300 с) — квота не кончится за секунды;
+        * всё остальное (сеть/таймаут/5xx) → короткий TTL
+          (provider_dead_ttl_transient_s, default 30 с).
+        """
+        if ttl_s is None:
+            if isinstance(error, (MiniMaxTTSAuthError, MiniMaxTTSRateLimitError)):
+                ttl_s = getattr(self, "provider_dead_ttl_s", 300.0)
+            else:
+                ttl_s = getattr(self, "provider_dead_ttl_transient_s", 30.0)
+        assert ttl_s is not None
+        dead_until = getattr(self, "_provider_dead_until", None)
+        if dead_until is None:
+            dead_until = {}
+            self._provider_dead_until = dead_until
+        dead_until[provider_name] = time.monotonic() + ttl_s
+        reasons = getattr(self, "_provider_dead_reason", None)
+        if reasons is None:
+            reasons = {}
+            self._provider_dead_reason = reasons
+        reasons[provider_name] = str(error)[:300]
+        self.get_logger().warn(
+            f"💀 {provider_name} помечен мёртвым на {ttl_s:.0f}s "
+            f"({type(error).__name__}: {error})"
+        )
+
+    def _provider_dead_until_s(self, provider_name: str) -> float:
+        """Сколько секунд осталось провайдеру в кэше «мёртвых» (для логов)."""
+        until = getattr(self, "_provider_dead_until", {}).get(provider_name, 0.0)
+        return max(0.0, until - time.monotonic())
+
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
         batch_id: str = None, batch_index: int = None, batch_total: int = None,
@@ -1335,47 +1497,101 @@ class TTSNode(Node):
             text = normalize_for_tts(text)
 
         try:
-            # Сначала пробуем Yandex
+            # Issue #1083: цепочка приоритетов TTS — minimax → yandex → silero.
+            # Раньше при provider=minimax ошибка MiniMax (в т.ч. 2056 Token
+            # Plan limit) вела СРАЗУ на Silero, пропуская рабочий Yandex
+            # (лог 09.08: MiniMax 2056 → «переключаюсь на Silero»). Теперь
+            # идём по цепочке: упал один провайдер → следующий по приоритету;
+            # Silero всегда последний (офлайн, работает всегда).
             audio_np = None
             sample_rate = 16000  # Yandex возвращает 16kHz
-
-            # MiniMax (HTTP) — opt-in через provider="minimax".
-            # 🔴 FIX (live 06.08): раньше любая ошибка MiniMax (в т.ч. 429
-            # Token Plan limit) пробрасывалась наверх → «Synthesis error»,
-            # тишина. Теперь падаем в Silero fallback ниже (audio_np=None) —
-            # робот говорит голосом Silero, пока MiniMax недоступен.
             result = {}
-            if self.provider == "minimax":
-                self.publish_state("synthesizing")
-                try:
-                    if self.minimax_streaming:
-                        self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
-                        result = self._synthesize_minimax_streaming_publish(text, ssml_attributes)
-                    else:
-                        self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
-                        result = self._synthesize_minimax(text, ssml_attributes)
-                    audio_np = result["audio_np"]
-                    sample_rate = result["sample_rate"]
-                    self.get_logger().info(
-                        f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
-                        f"(model={self.minimax_model}, voice={self.minimax_voice})"
-                    )
-                except Exception as e:
-                    self.get_logger().warn(
-                        f"⚠️  MiniMax T2A отвалился ({e}) — переключаюсь на Silero fallback"
-                    )
-                    audio_np = None
+            used_provider = None
+            # getattr-fallback: тестовые стабы (bare ``_Stub``) не несут
+            # ``provider_chain``/``_effective_provider_chain`` — выводим
+            # цепочку из ``provider`` (см. ``_chain_from_provider``).
+            provider_chain = getattr(self, "provider_chain", None)
+            if not provider_chain:
+                provider_chain = TTSNode._chain_from_provider(
+                    getattr(self, "provider", "minimax")
+                )
 
-            elif self.yandex_stub:  # Проверяем что gRPC канал инициализирован
-                try:
+            for provider_name in provider_chain:
+                # Кэш «мёртвых» (issue #1083): не долбим провайдера, который
+                # недавно упал (квота/сеть/таймаут) — пропускаем до TTL.
+                # getattr-fallback: стабы без кэша считают провайдера живым.
+                dead_check = getattr(self, "_provider_is_dead", None)
+                if dead_check is not None and dead_check(provider_name):
+                    self.get_logger().warn(
+                        f"⏭️  {provider_name} в кэше мёртвых "
+                        f"(ещё {self._provider_dead_until_s(provider_name):.0f}s) — пропускаю"
+                    )
+                    continue
+
+                if provider_name == "minimax":
                     self.publish_state("synthesizing")
-                    self.get_logger().info("🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...")
-                    audio_np = self._synthesize_yandex(text, ssml_attributes)
-                    sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
-                    # sample_rate уже получен в _synthesize_yandex, но пока захардкодим
-                except Exception as e:
-                    self.get_logger().warn(f"⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback")
-                    audio_np = None
+                    try:
+                        if self.minimax_streaming:
+                            self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
+                            result = self._synthesize_minimax_streaming_publish(text, ssml_attributes)
+                        else:
+                            self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
+                            result = self._synthesize_minimax(text, ssml_attributes)
+                        audio_np = result["audio_np"]
+                        sample_rate = result["sample_rate"]
+                        used_provider = "minimax"
+                        self.get_logger().info(
+                            f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
+                            f"(model={self.minimax_model}, voice={self.minimax_voice})"
+                        )
+                    except Exception as e:
+                        mark_dead = getattr(self, "_mark_provider_dead", None)
+                        if mark_dead is not None:
+                            mark_dead("minimax", e)
+                        # Честный лог: называем РЕАЛЬНОГО следующего в цепочке
+                        # (для дефолтной minimax → yandex → silero это Yandex —
+                        # ровно тот лог, который ждёт acceptance #1083).
+                        _next_provider = next(
+                            (p for p in provider_chain if p != "minimax"), "silero"
+                        )
+                        _display = {
+                            "minimax": "MiniMax",
+                            "yandex": "Yandex",
+                            "silero": "Silero",
+                        }.get(_next_provider, _next_provider)
+                        self.get_logger().warn(
+                            f"⚠️  MiniMax T2A отвалился ({e}) — "
+                            f"переключаюсь на {_display}"
+                        )
+                        audio_np = None
+                        continue
+
+                elif provider_name == "yandex":
+                    if not self.yandex_stub:  # Проверяем что gRPC канал инициализирован
+                        self.get_logger().warn("⚠️  Yandex gRPC не подключен — пропускаю")
+                        continue
+                    try:
+                        self.publish_state("synthesizing")
+                        self.get_logger().info("🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...")
+                        audio_np = self._synthesize_yandex(text, ssml_attributes)
+                        sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
+                        used_provider = "yandex"
+                    except Exception as e:
+                        mark_dead = getattr(self, "_mark_provider_dead", None)
+                        if mark_dead is not None:
+                            mark_dead("yandex", e)
+                        self.get_logger().warn(f"⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback")
+                        audio_np = None
+                        continue
+
+                elif provider_name == "silero":
+                    # Silero — последний рубеж: обработка ниже (warm-load,
+                    # lazy-load, синтез). Просто выходим из цикла.
+                    break
+
+                # Успешный синтез — выходим из цепочки.
+                if audio_np is not None:
+                    break
 
             # Fallback на Silero если Yandex не сработал
             if audio_np is None:
@@ -1456,8 +1672,9 @@ class TTSNode(Node):
 
             # Публикуем в ROS topic. В streaming-режиме каждый чанк уже
             # опубликован до чтения следующего, поэтому полный буфер повторно
-            # не отправляем.
-            if not (self.provider == "minimax" and result.get("already_published", False)):
+            # не отправляем. used_provider фиксирует, кто реально синтезировал
+            # (после цепочки fallback'ов это может быть не self.provider).
+            if not (used_provider == "minimax" and result.get("already_published", False)):
                 topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
                 self._publish_audio(topic_audio)
 
