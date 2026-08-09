@@ -84,7 +84,7 @@ def main():
     print(f"COMMAND:      {voice_text or '(не задан)'}")
     print(f"RECOGNIZED:   {recognized or '(нет в логе)'}")
     if phrase_t and accept_t and accept_t > phrase_t:
-        print(f"T_accept: {accept_t - phrase_t:.1f}s  (STT: фраза → ПРИНЯТО)")
+        print(f"T_accept: {accept_t - phrase_t:.1f}s  (замолчал → акцепт, STT)")
     if llm_in_t and synth_t and synth_t > llm_in_t:
         print(f"T_llm:    {synth_t - llm_in_t:.1f}s  (LLM INPUT → Синтез)")
     if synth_t and tts_ok_t and tts_ok_t > synth_t:
