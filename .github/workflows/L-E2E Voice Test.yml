@@ -210,6 +210,12 @@ jobs:
           fi
           echo ""
           echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
+
+      - name: E2E timing metrics (response speed)
+        run: |
+          RID="${{ github.run_id }}"
+          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log"
+
       - name: Upload recording
         uses: actions/upload-artifact@v4
         with:

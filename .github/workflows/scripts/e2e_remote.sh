@@ -38,9 +38,15 @@ pactl set-sink-volume @DEFAULT_SINK@ ${V}%
 BEFORE="$( ${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ )"
 echo ">>> ROBOT_TIME_BEFORE ${BEFORE}"
 
-# Record raw PCM then convert to proper WAV
-timeout ${D} parec --format=s16le --channels=1 --rate=16000 /tmp/e2e_raw.pcm &
+# Record raw PCM then convert to proper WAV.
+# 🔴 FIX (live 08.08 «SUCCESS без ответа в записи»): запись должна покрывать
+# ВЕСЬ retry-цикл (3 попытки × (play+35с окно) + паузы ≈ 150-180с), а не
+# record_seconds из карточки (90с) — иначе ответ на 3-ю попытку НЕ попадает
+# в wav, а валидатор видит TTS finished в логах → ложный SUCCESS.
+TOTAL_RECORD=$((E2E_MAX_ATTEMPTS * (E2E_REACTION_WINDOW + E2E_RETRY_PAUSE + 8) + 10))
+timeout ${TOTAL_RECORD} parec --format=s16le --channels=1 --rate=16000 /tmp/e2e_raw.pcm &
 RPID=$!
+echo ">>> RECORDING ${TOTAL_RECORD}s (полный retry-цикл)"
 sleep 3
 
 ATTEMPT=1
