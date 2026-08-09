@@ -328,7 +328,16 @@ class SQLiteVoiceMemory(MemoryStore):
         return await self._run_sync(_append)
 
     async def save_fact(self, scope: str, fact: Fact) -> None:
-        """Persist ``fact`` under ``scope``, replacing existing fact with the same key."""
+        """Persist ``fact`` under ``scope``, replacing existing fact with the same key.
+
+        The legacy ``INSERT OR REPLACE`` was a no-op upsert because the
+        ``facts`` table has no UNIQUE constraint on ``(scope, key)`` —
+        repeated saves created duplicate rows and readers returned stale
+        values (issue #1077 speaker profiles). Now we DELETE the old row
+        first, then INSERT: idempotent regardless of schema. Uses the
+        thread-safe ``_run_sync`` wrapper (commit+lock) introduced in
+        issue #1086 — see also ``_append``.
+        """
 
         def _save(conn: sqlite3.Connection) -> None:
             value_str = (
@@ -341,7 +350,11 @@ class SQLiteVoiceMemory(MemoryStore):
                 ensure_ascii=False,
             )
             conn.execute(
-                "INSERT OR REPLACE INTO facts (key, value, scope, metadata_json) "
+                "DELETE FROM facts WHERE scope = ? AND key = ?",
+                (scope, fact.key),
+            )
+            conn.execute(
+                "INSERT INTO facts (key, value, scope, metadata_json) "
                 "VALUES (?, ?, ?, ?)",
                 (fact.key, value_str, scope, metadata_json),
             )
@@ -395,6 +408,42 @@ class SQLiteVoiceMemory(MemoryStore):
             return facts
 
         return await self._run_sync(_search)
+
+    async def list_facts(
+        self,
+        scope: str,
+        *,
+        limit: int = 50,
+    ) -> list[Fact]:
+        """Return up to ``limit`` facts stored under ``scope`` (newest first).
+
+        Direct scan without a query — used to load ALL speaker facts into
+        the LLM context (issue #1077).
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+        cursor = await self._execute(
+            "SELECT key, value, metadata_json FROM facts "
+            "WHERE scope = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (scope, limit),
+        )
+        facts = []
+        for row in cursor.fetchall():
+            meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            value = row["value"]
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            facts.append(
+                Fact(
+                    key=row["key"],
+                    value=value,
+                    tags=tuple(meta.get("tags", ())),
+                    confidence=float(meta.get("confidence", 1.0)),
+                )
+            )
+        return facts
 
     async def aclose(self) -> None:
         """Alias for teardown."""
