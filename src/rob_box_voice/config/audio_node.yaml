@@ -24,9 +24,14 @@ audio_node:
     device_index: -1
     device_name: ReSpeaker 4 Mic Array
     speech_continuation: 3.0
-    speech_prefetch: 0.5
+    # Pre-roll перед началом речи: 1.0s покрывает латенцию аппаратного VAD
+    # (GAMMAVAD + опрос 10Hz + джиттер, на слабом сигнале 300-500ms) — иначе
+    # первый захват теряет начало фразы («робот» → «роберт»).
+    speech_prefetch: 1.0
     speech_min_duration: 0.3
-    speech_max_duration: 10.0
+    # 12.0 (было 10.0): pre-roll 1.0s входит в duration=len(buf)/sr,
+    # запас на длинные фразы (10s речи + 1s pre-roll ≤ 11s).
+    speech_max_duration: 12.0
     tts_grace_s: 2.5
     music_vad_threshold: 6.0
     music_vad_min_db: -35.0

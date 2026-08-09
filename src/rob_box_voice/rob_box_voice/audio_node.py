@@ -123,7 +123,13 @@ class AudioNode(Node):
 
         # Параметры VAD
         self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
-        self.declare_parameter('speech_prefetch', 0.5)      # Буфер перед началом речи
+        # Буфер перед началом речи (pre-roll). Должен покрывать ЛАТЕНЦИЮ VAD:
+        # аппаратный GAMMAVAD на ReSpeaker + опрос на 10Hz (100ms) + джиттер
+        # потока. На слабом/грязном сигнале (e2e через динамик) VAD срабатывает
+        # с задержкой 300-500ms — при 0.5s начало фразы («робот») выпадало из
+        # окна и STT слышал «оберт» → «роберт». 1.0s = 2x запас к требованиям
+        # (первые 300-500ms) и не раздувает длительность фразы (speech_max_duration).
+        self.declare_parameter('speech_prefetch', 1.0)      # Буфер перед началом речи
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
         self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
 
@@ -134,7 +140,20 @@ class AudioNode(Node):
 
         # Буферы для VAD
         self.is_speeching = False
-        self.speech_stopped_time = self.get_clock().now()
+        # ВАЖНО: speech_stopped_time должен быть в ПРОШЛОМ, а не «сейчас».
+        # Иначе первый же tick check_vad_and_doa увидит time_since_stop≈0
+        # (меньше speech_continuation) и включит is_speeching=True ещё до
+        # реальной речи: буфер наполнится ~3s шума при старте, а первый
+        # захват пользователя приклеится ПОСЛЕ этого шума (pre-roll уже не
+        # подставится — буфер непустой) → STT слышит «…роберт» вместо «робот».
+        try:
+            from rclpy.duration import Duration as _Duration
+
+            self.speech_stopped_time = self.get_clock().now() - _Duration(
+                seconds=self.speech_continuation + 1.0
+            )
+        except Exception:  # pragma: no cover — защита для тестовых моков
+            self.speech_stopped_time = self.get_clock().now()
         self.speech_audio_buffer = b""
         self.speech_prefetch_buffer = b""
         self.speech_prefetch_bytes = int(
@@ -325,6 +344,10 @@ class AudioNode(Node):
                 # Сбрасываем незавершённое накопление — это эхо, не речь.
                 self.speech_audio_buffer = b""
                 self.is_speeching = False
+                # Pre-roll тоже чистим: старый буфер мог содержать хвост
+                # предыдущей фразы, который не должен попасть в начало
+                # следующего захвата (иначе STT склеит «…роберт» из обрывка).
+                self.speech_prefetch_buffer = b""
             self.tts_active = True
         elif state in ("ready", "idle", "stopped"):
             if self.tts_active:
@@ -332,6 +355,10 @@ class AudioNode(Node):
                 self.get_logger().info(
                     f"🔇 [issue 989] TTS закончился — grace {self.tts_grace_s}s"
                 )
+                # Pre-roll очищаем ПОСЛЕ TTS: если этого не сделать, первый
+                # захват после ответа робота получит pre-roll с хвостом
+                # собственного голоса → STT слышит «…роберт» вместо «робот».
+                self.speech_prefetch_buffer = b""
             self.tts_active = False
 
     def _on_music_state(self, msg: String) -> None:
@@ -457,7 +484,11 @@ class AudioNode(Node):
             if time_since_stop < self.speech_continuation:
                 # Речь продолжается (или недавно закончилась)
                 if not self.is_speeching:
-                    self.get_logger().info('🗣️  Начало речи')
+                    pre_roll_s = len(self.speech_prefetch_buffer) / (self.sample_rate * 2)
+                    self.get_logger().info(
+                        f'🗣️  Начало речи (pre-roll {pre_roll_s*1000:.0f}ms '
+                        f'из {self.speech_prefetch*1000:.0f}ms)'
+                    )
                 self.is_speeching = True
             elif self.is_speeching:
                 # Речь закончилась - публикуем накопленный буфер
