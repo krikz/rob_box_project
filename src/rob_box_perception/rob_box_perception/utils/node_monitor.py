@@ -43,40 +43,54 @@ class NodeAvailabilityMonitor:
             '/context_aggregator',
             '/camera',               # OAK-D camera node (oak-d container)
             '/lslidar_driver_node',  # LS LiDAR driver node (lslidar container)
-            '/rtabmap/rtabmap',      # RTAB-Map SLAM node (rtabmap container, namespaced)
+            # RTAB-Map SLAM node (rtabmap container, namespaced)
+            '/rtabmap/rtabmap',
         ]
         self.node_status: Dict[str, Dict] = {}
 
         # Периодическая проверка (каждые 5 секунд)
         self.check_timer = self.node.create_timer(5.0, self.check_nodes)
 
-        self.node.get_logger().info(f'📡 Node Monitor: отслеживаем {len(self.expected_nodes)} нод')
+        self.node.get_logger().info(
+            f'📡 Node Monitor: отслеживаем {len(self.expected_nodes)} нод'
+        )
 
     def check_nodes(self):
         """
         Проверить доступность всех ожидаемых нод.
 
         Note: Uses subprocess to call 'ros2 node list' which may be slower on
-        resource-constrained devices like Raspberry Pi. Consider using rclpy's
-        node.get_node_names() API for better performance, or increase check_interval
-        to reduce CPU usage.
+        resource-constrained devices like Raspberry Pi. Consider using
+        rclpy's node.get_node_names() API for better performance, or increase
+        check_interval to reduce CPU usage.
         """
         try:
             result = subprocess.run(
-                ['ros2', 'node', 'list'], capture_output=True, text=True, timeout=2.0)
+                ['ros2', 'node', 'list'],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
 
             if result.returncode != 0:
-                self.node.get_logger().warning(f'⚠️ Ошибка вызова ros2 node list: {result.stderr}')
+                self.node.get_logger().warning(
+                    f'⚠️ Ошибка вызова ros2 node list: {result.stderr}'
+                )
                 return
 
-            active_nodes = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            stdout = result.stdout.strip()
+            active_nodes = stdout.split('\n') if stdout else []
 
             for expected_node in self.expected_nodes:
                 if expected_node in active_nodes:
                     # Нода активна
-                    prev_status = self.node_status.get(expected_node, {}).get('status')
+                    prev_status = (
+                        self.node_status.get(expected_node, {}).get('status')
+                    )
                     if prev_status != 'active':
-                        self.node.get_logger().info(f'✅ Нода восстановлена: {expected_node}')
+                        self.node.get_logger().info(
+                            f'✅ Нода восстановлена: {expected_node}'
+                        )
 
                     self.node_status[expected_node] = {
                         'status': 'active', 'last_seen': time.time()}
@@ -84,12 +98,18 @@ class NodeAvailabilityMonitor:
                     # Нода отсутствует
                     if expected_node not in self.node_status:
                         # Первая проверка - нода missing
-                        self.node_status[expected_node] = {'status': 'missing', 'last_seen': None}
-                        self.node.get_logger().warn(f'⚠️ Нода не найдена: {expected_node}')
+                        self.node_status[expected_node] = {
+                            'status': 'missing', 'last_seen': None
+                        }
+                        self.node.get_logger().warn(
+                            f'⚠️ Нода не найдена: {expected_node}'
+                        )
                     elif self.node_status[expected_node]['status'] == 'active':
                         # Нода была активна, теперь пропала
                         self.node_status[expected_node]['status'] = 'failed'
-                        self.node.get_logger().error(f'❌ Нода упала: {expected_node}')
+                        self.node.get_logger().error(
+                            f'❌ Нода упала: {expected_node}'
+                        )
 
         except subprocess.TimeoutExpired:
             self.node.get_logger().warn('⚠️ Timeout при вызове ros2 node list')
@@ -103,7 +123,10 @@ class NodeAvailabilityMonitor:
         Returns:
             Список названий активных нод
         """
-        return [node for node, status in self.node_status.items() if status['status'] == 'active']
+        return [
+            node for node, status in self.node_status.items()
+            if status['status'] == 'active'
+        ]
 
     def get_failed_nodes(self) -> List[str]:
         """
@@ -112,7 +135,10 @@ class NodeAvailabilityMonitor:
         Returns:
             Список названий упавших нод
         """
-        return [node for node, status in self.node_status.items() if status['status'] == 'failed']
+        return [
+            node for node, status in self.node_status.items()
+            if status['status'] == 'failed'
+        ]
 
     def get_missing_nodes(self) -> List[str]:
         """
@@ -121,7 +147,10 @@ class NodeAvailabilityMonitor:
         Returns:
             Список названий отсутствующих нод
         """
-        return [node for node, status in self.node_status.items() if status['status'] == 'missing']
+        return [
+            node for node, status in self.node_status.items()
+            if status['status'] == 'missing'
+        ]
 
     def get_status_summary(self) -> Dict:
         """

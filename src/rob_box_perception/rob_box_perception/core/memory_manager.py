@@ -34,14 +34,17 @@ class MemoryManager:
         self.vision_events: List[Dict] = []
         self.system_events: List[Dict] = []
 
-    def add_event(self, event_type: str, content: str, important: bool = False) -> None:
+    def add_event(
+        self, event_type: str, content: str, important: bool = False
+    ) -> None:
         """
         Добавить событие в память с типизацией.
 
         Args
         ----
         event_type:
-            Тип события (user_speech, robot_response, robot_thought, vision, etc.)
+            Тип события (user_speech, robot_response, robot_thought,
+            vision, etc.)
         content:
             Содержание события
         important:
@@ -77,12 +80,24 @@ class MemoryManager:
         """Удалить события старше memory_window."""
         cutoff = time.time() - self.memory_window
 
-        self.recent_events = [e for e in self.recent_events if e['time'] > cutoff]
-        self.speech_events = [e for e in self.speech_events if e['time'] > cutoff]
-        self.robot_response_events = [e for e in self.robot_response_events if e['time'] > cutoff]
-        self.robot_thought_events = [e for e in self.robot_thought_events if e['time'] > cutoff]
-        self.vision_events = [e for e in self.vision_events if e['time'] > cutoff]
-        self.system_events = [e for e in self.system_events if e['time'] > cutoff]
+        self.recent_events = [
+            e for e in self.recent_events if e['time'] > cutoff
+        ]
+        self.speech_events = [
+            e for e in self.speech_events if e['time'] > cutoff
+        ]
+        self.robot_response_events = [
+            e for e in self.robot_response_events if e['time'] > cutoff
+        ]
+        self.robot_thought_events = [
+            e for e in self.robot_thought_events if e['time'] > cutoff
+        ]
+        self.vision_events = [
+            e for e in self.vision_events if e['time'] > cutoff
+        ]
+        self.system_events = [
+            e for e in self.system_events if e['time'] > cutoff
+        ]
 
     def get_summary(self, count: int = 5) -> str:
         """
@@ -107,7 +122,9 @@ class MemoryManager:
         for event in recent:
             age = time.time() - event['time']
             emoji = '❗' if event.get('important') else '•'
-            lines.append(f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}")
+            lines.append(
+                f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}"
+            )
 
         return '\n'.join(lines)
 
@@ -177,7 +194,9 @@ class MemoryManager:
             event_type: Тип событий для очистки
         """
         # Удаляем из общей памяти
-        self.recent_events = [e for e in self.recent_events if e['type'] != event_type]
+        self.recent_events = [
+            e for e in self.recent_events if e['type'] != event_type
+        ]
 
         # Удаляем из типизированных очередей
         if event_type == 'user_speech':
@@ -201,7 +220,9 @@ class MemoryManager:
         Returns:
             Список важных событий
         """
-        important = [e for e in self.recent_events if e.get('important', False)]
+        important = [
+            e for e in self.recent_events if e.get('important', False)
+        ]
         if count is not None:
             return important[-count:]
         return important
