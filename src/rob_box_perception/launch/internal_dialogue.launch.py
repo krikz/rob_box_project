@@ -18,9 +18,9 @@ Data flow (current — Phase 6 v2):
                           (vision, pose, odom, joint_states, rosout,
                            voice/stt/result, voice/dialogue/response,
                            voice/command/intent, voice/command/feedback)
-                                                                          |
-                                                                          v
-                                              /perception/context_update -> mcp_server.py (harness MCP-bridge) -> DialogCore -> LLM
+                                     |
+                                     v
+        /perception/context_update -> mcp_server.py (harness MCP-bridge) -> DialogCore -> LLM
 
 Data flow (target — Phase 7+, после готовности sensor board firmware):
   [Sensor board (UART)] -> perception_bridge -> /sensors/data \

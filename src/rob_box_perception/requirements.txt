@@ -1,2 +1,4 @@
 # DeepSeek API (совместимо с OpenAI SDK)
 openai>=2.48.0
+# Timezone support (TimeAwarenessProvider)
+pytz

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-health_monitor.py - Простой мониторинг здоровья ROS2 системы
+health_monitor.py - Простой мониторинг здоровья ROS2 системы.
 
 Утилита для проверки активных нод, топиков и логов.
 Может использоваться для диагностики проблем.
@@ -9,11 +9,12 @@ Usage:
     ros2 run rob_box_perception health_monitor
 """
 
+import time
+
+from rcl_interfaces.msg import Log
 import rclpy
 from rclpy.node import Node
-from rcl_interfaces.msg import Log
 from std_msgs.msg import String
-import time
 
 
 class HealthMonitor(Node):
@@ -55,7 +56,7 @@ class HealthMonitor(Node):
         self.get_logger().info('   Слушаем /rosout...')
 
     def _is_noise(self, msg_text: str) -> bool:
-        """True если сообщение — известный стартап-шум, не реальный краш."""
+        """Проверяет, является ли сообщение известным стартап-шумом."""
         return any(pattern in msg_text for pattern in self._noise_patterns)
 
     def on_log(self, msg: Log):
@@ -87,9 +88,9 @@ class HealthMonitor(Node):
 
     def print_report(self):
         """Печать отчёта о здоровье системы."""
-        print("\n" + "="*70)
-        print("🏥 HEALTH REPORT")
-        print("="*70)
+        print('\n' + '='*70)
+        print('🏥 HEALTH REPORT')
+        print('='*70)
 
         # Статус
         now = time.time()
@@ -98,42 +99,42 @@ class HealthMonitor(Node):
         recent_errors = sum(1 for e in self.errors if now - e['time'] < 60)
 
         if critical > 0:
-            status = "🚨 CRITICAL"
+            status = '🚨 CRITICAL'
         elif recent_errors >= 5 and not in_grace:
-            status = "⚠️  DEGRADED"
+            status = '⚠️  DEGRADED'
         else:
-            status = "✅ HEALTHY"
+            status = '✅ HEALTHY'
 
         # Звуковой сигнал при изменении статуса
         if self.enable_sounds and status != self.last_status:
-            if status == "🚨 CRITICAL":
+            if status == '🚨 CRITICAL':
                 self._play_sound('error')
-            elif status == "⚠️  DEGRADED":
+            elif status == '⚠️  DEGRADED':
                 self._play_sound('confused')
-            elif status == "✅ HEALTHY" and self.last_status is not None:  # Восстановление
+            elif status == '✅ HEALTHY' and self.last_status is not None:  # Восстановление
                 self._play_sound('cute')
 
             self.last_status = status
 
-        print(f"Status: {status}")
-        print(f"Total Errors: {len(self.errors)} (последние {recent_errors} за минуту)")
-        print(f"Total Warnings: {len(self.warnings)}")
+        print(f'Status: {status}')
+        print(f'Total Errors: {len(self.errors)} (последние {recent_errors} за минуту)')
+        print(f'Total Warnings: {len(self.warnings)}')
 
         # Последние ошибки
         if self.errors:
-            print("\n--- Recent Errors ---")
+            print('\n--- Recent Errors ---')
             for e in self.errors[-5:]:
                 age = int(time.time() - e['time'])
                 print(f"  [{e['level']}] {e['node']} ({age}s ago): {e['msg'][:60]}")
 
         # Последние предупреждения
         if self.warnings:
-            print("\n--- Recent Warnings ---")
+            print('\n--- Recent Warnings ---')
             for w in self.warnings[-3:]:
                 age = int(time.time() - w['time'])
                 print(f"  [WARN] {w['node']} ({age}s ago): {w['msg'][:60]}")
 
-        print("="*70)
+        print('='*70)
 
     def _play_sound(self, sound_name: str):
         """Проиграть звуковой эффект."""

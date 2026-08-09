@@ -1,6 +1,7 @@
-from setuptools import find_packages, setup
-import os
 from glob import glob
+import os
+
+from setuptools import find_packages, setup
 
 package_name = 'rob_box_perception'
 
@@ -18,7 +19,7 @@ setup(
         (os.path.join('share', package_name, 'prompts'),
             glob('prompts/*.txt')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'pytz'],
     zip_safe=True,
     maintainer='ros2',
     maintainer_email='kukoreken@rob-box.local',

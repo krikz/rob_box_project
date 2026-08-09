@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test for TimeAwarenessProvider - ensures timezone support works correctly.
-"""
+"""Test for TimeAwarenessProvider - ensures timezone support works correctly."""
 
 import pytest
 
@@ -15,7 +13,7 @@ def test_time_provider_imports():
 def test_pytz_available():
     """Test that pytz is available for timezone support."""
     from rob_box_perception.utils.time_provider import PYTZ_AVAILABLE
-    assert PYTZ_AVAILABLE is True, "pytz must be installed for timezone support"
+    assert PYTZ_AVAILABLE is True, 'pytz must be installed for timezone support'
 
 
 def test_moscow_timezone():
@@ -34,7 +32,7 @@ def test_moscow_timezone():
         'hour', 'minute', 'weekday', 'weekday_ru', 'period', 'period_ru', 'timezone'
     ]
     for field in required_fields:
-        assert field in time_context, f"Missing field: {field}"
+        assert field in time_context, f'Missing field: {field}'
 
     # Verify hour is in valid range
     assert 0 <= time_context['hour'] <= 23
@@ -46,7 +44,10 @@ def test_moscow_timezone():
     assert time_context['period_ru'] in ['утро', 'день', 'вечер', 'ночь']
 
     # Verify weekday_ru is valid
-    valid_weekdays = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    valid_weekdays = [
+        'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница',
+        'Суббота', 'Воскресенье',
+    ]
     assert time_context['weekday_ru'] in valid_weekdays
 
 
@@ -63,7 +64,7 @@ def test_moscow_timezone_offset():
     # Parse the datetime with timezone info
     dt_str = time_context['datetime']
     assert '+03:00' in dt_str, \
-        f"Moscow time should have UTC+3 offset (MSK), got: {dt_str}"
+        f'Moscow time should have UTC+3 offset (MSK), got: {dt_str}'
 
 
 def test_time_consistency():
@@ -107,7 +108,7 @@ def test_timezone_parameter_flexibility():
         # Verify offset is in expected range
         dt_str = time_context['datetime']
         assert any(offset in dt_str for offset in expected_offsets), \
-            f"Timezone {timezone} should have offset in {expected_offsets}, got: {dt_str}"
+            f'Timezone {timezone} should have offset in {expected_offsets}, got: {dt_str}'
 
 
 if __name__ == '__main__':

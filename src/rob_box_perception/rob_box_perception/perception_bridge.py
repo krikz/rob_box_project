@@ -16,13 +16,13 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 
-DEFAULT_UART_PORT = "/dev/ttyAMA0"
+DEFAULT_UART_PORT = '/dev/ttyAMA0'
 DEFAULT_UART_BAUD = 115200
 SENSOR_READ_PERIOD = 0.1   # 10 Hz
 HEALTH_PERIOD = 1.0        # 1 Hz
-STATUS_HEALTHY = "HEALTHY"
-STATUS_DEGRADED = "DEGRADED"
-STATUS_UNKNOWN = "UNKNOWN"
+STATUS_HEALTHY = 'HEALTHY'
+STATUS_DEGRADED = 'DEGRADED'
+STATUS_UNKNOWN = 'UNKNOWN'
 
 
 def _open_uart(port: str, baud: int) -> Optional[Any]:
@@ -43,28 +43,28 @@ class PerceptionBridge(Node):
     """Reads UART sensor stream, republishes as JSON on /sensors/data."""
 
     def __init__(self) -> None:
-        super().__init__("perception_bridge")
+        super().__init__('perception_bridge')
 
         # ---- Parameters (overridable from launch) -------------------------
-        self.declare_parameter("sensor_read_period", SENSOR_READ_PERIOD)
-        self.declare_parameter("health_period", HEALTH_PERIOD)
-        self._sensor_period = float(self.get_parameter("sensor_read_period").value)
-        self._health_period = float(self.get_parameter("health_period").value)
+        self.declare_parameter('sensor_read_period', SENSOR_READ_PERIOD)
+        self.declare_parameter('health_period', HEALTH_PERIOD)
+        self._sensor_period = float(self.get_parameter('sensor_read_period').value)
+        self._health_period = float(self.get_parameter('health_period').value)
 
         # ---- UART ---------------------------------------------------------
-        port = os.getenv("SENSOR_UART_PORT", DEFAULT_UART_PORT)
-        baud = int(os.getenv("SENSOR_UART_BAUD", str(DEFAULT_UART_BAUD)))
+        port = os.getenv('SENSOR_UART_PORT', DEFAULT_UART_PORT)
+        baud = int(os.getenv('SENSOR_UART_BAUD', str(DEFAULT_UART_BAUD)))
         self._uart = _open_uart(port, baud)
         self._stub_mode = self._uart is None
         if self._stub_mode:
             self.get_logger().warn(
-                f"Sensor UART {port} not available; reads will no-op until "
-                f"hardware is attached."
+                f'Sensor UART {port} not available; reads will no-op until '
+                f'hardware is attached.'
             )
 
         # ---- Publishers ---------------------------------------------------
-        self._sensor_pub = self.create_publisher(String, "/sensors/data", 10)
-        self._health_pub = self.create_publisher(String, "/perception/health", 10)
+        self._sensor_pub = self.create_publisher(String, '/sensors/data', 10)
+        self._health_pub = self.create_publisher(String, '/perception/health', 10)
 
         # ---- Counters -----------------------------------------------------
         self._ok_reads = 0
@@ -91,8 +91,8 @@ class PerceptionBridge(Node):
             )
 
         self.get_logger().info(
-            f"perception_bridge up (port={port} baud={baud} "
-            f"stub={self._stub_mode} period={self._sensor_period}s)"
+            f'perception_bridge up (port={port} baud={baud} '
+            f'stub={self._stub_mode} period={self._sensor_period}s)'
         )
 
     # -----------------------------------------------------------------------
@@ -107,35 +107,35 @@ class PerceptionBridge(Node):
             raw = self._uart.readline()
         except Exception as exc:
             self._bad_reads += 1
-            self.get_logger().warn(f"UART read failed: {exc}")
+            self.get_logger().warn(f'UART read failed: {exc}')
             return
 
         if not raw:
             return
 
         try:
-            line = raw.decode("utf-8", errors="replace").strip()
+            line = raw.decode('utf-8', errors='replace').strip()
             data = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._bad_reads += 1
-            self.get_logger().warn(f"Bad sensor frame: {exc}")
+            self.get_logger().warn(f'Bad sensor frame: {exc}')
             return
 
         if not isinstance(data, dict):
             self._bad_reads += 1
-            self.get_logger().warn("Sensor frame is not a JSON object")
+            self.get_logger().warn('Sensor frame is not a JSON object')
             return
 
-        seq = data.get("seq")
+        seq = data.get('seq')
         if isinstance(seq, int):
             if self._last_seq is not None and seq <= self._last_seq:
                 self.get_logger().warn(
-                    f"Non-monotonic sensor seq: {seq} after {self._last_seq}"
+                    f'Non-monotonic sensor seq: {seq} after {self._last_seq}'
                 )
             self._last_seq = seq
 
         msg = String()
-        msg.data = json.dumps(data, separators=(",", ":"))
+        msg.data = json.dumps(data, separators=(',', ':'))
         self._sensor_pub.publish(msg)
         self._ok_reads += 1
         self._published += 1
@@ -160,16 +160,16 @@ class PerceptionBridge(Node):
 
         self._status = status
         snapshot: Dict[str, Any] = {
-            "status": status,
-            "ok_reads": self._ok_reads,
-            "bad_reads": self._bad_reads,
-            "published": self._published,
-            "stub_mode": self._stub_mode,
-            "data_age_s": age,
-            "ts": now,
+            'status': status,
+            'ok_reads': self._ok_reads,
+            'bad_reads': self._bad_reads,
+            'published': self._published,
+            'stub_mode': self._stub_mode,
+            'data_age_s': age,
+            'ts': now,
         }
         msg = String()
-        msg.data = json.dumps(snapshot, separators=(",", ":"))
+        msg.data = json.dumps(snapshot, separators=(',', ':'))
         self._health_pub.publish(msg)
 
     # -----------------------------------------------------------------------
@@ -204,5 +204,5 @@ def main(args=None) -> None:
         rclpy.shutdown()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
