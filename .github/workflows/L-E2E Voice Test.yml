@@ -43,6 +43,11 @@ on:
         required: false
         default: 'yandex'
         type: string
+      acceptance_check:
+        description: Optional feature acceptance check (e.g. speaker_profile). When set, the run FAILS if the evidence is missing.
+        required: false
+        default: ''
+        type: string
 
 jobs:
   e2e-voice:
@@ -216,6 +221,60 @@ jobs:
           echo ""
           echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
 
+      - name: Verify feature acceptance (issue #1077 speaker profiles)
+        if: ${{ inputs.acceptance_check == 'speaker_profile' }}
+        env:
+          SSHPASS: open
+        run: |
+          RID="${{ github.run_id }}"
+          LOG="/tmp/voice_e2e_${RID}.log"
+          ACCEPT_FILE="/tmp/e2e_acceptance_${RID}.txt"
+          : > "$ACCEPT_FILE"
+          FAIL=""
+          echo "--- e2e acceptance: speaker_profile (#1077) ---"
+          # 1) stt_node: Yandex speaker_analysis пришёл и опубликован на /voice/stt/speaker
+          if grep -qE "\[issue 1077\] (SPEAKER_ANALYSIS|Speaker:)" "$LOG"; then
+            echo "✅ STT speaker_analysis: получен speaker_tag от Yandex"
+            echo "STT_SPEAKER_ANALYSIS=ok" >> "$ACCEPT_FILE"
+            grep -E "\[issue 1077\] (SPEAKER_ANALYSIS|Speaker:)" "$LOG" | head -3 >> "$ACCEPT_FILE"
+          else
+            echo "❌ STT speaker_analysis НЕ найден в логе — Yandex не прислал speaker_tag"
+            FAIL="${FAIL:+$FAIL,}no-speaker-analysis"
+          fi
+          # 2) dialogue_node: профиль спикера создан/обновлён (touch_speaker)
+          if grep -qE "\[issue 1077\] (Спикер|Speaker .*диалог)" "$LOG"; then
+            echo "✅ dialogue_node: профиль спикера создан/обновлён (touch_speaker)"
+            echo "SPEAKER_PROFILE=ok" >> "$ACCEPT_FILE"
+            grep -E "\[issue 1077\] (Спикер|Speaker)" "$LOG" | head -3 >> "$ACCEPT_FILE"
+          else
+            echo "❌ dialogue_node: touch_speaker/профиль не найден в логе"
+            FAIL="${FAIL:+$FAIL,}no-profile"
+          fi
+          # 3) SQLite: факт scope=speaker:<tag> реально сохранён (самое честное доказательство)
+          DB_SPEAKER="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            "docker exec voice-assistant python3 -c \"import sqlite3; c=sqlite3.connect('/root/.rob_box/voice.db'); rows=c.execute(\\\"SELECT scope,key,value FROM facts WHERE scope LIKE 'speaker:%' ORDER BY created_at DESC LIMIT 5\\\").fetchall(); print(chr(10).join(str(r) for r in rows))\" 2>/dev/null || true")"
+          if [ -n "$DB_SPEAKER" ]; then
+            echo "✅ SQLite: факты scope=speaker:<tag> найдены в voice.db"
+            echo "SQLITE_SPEAKER_FACTS=ok" >> "$ACCEPT_FILE"
+            echo "$DB_SPEAKER" >> "$ACCEPT_FILE"
+          else
+            echo "❌ SQLite: факты scope=speaker:<tag> НЕ найдены в voice.db"
+            FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
+          fi
+          echo "--- acceptance evidence ---"
+          cat "$ACCEPT_FILE"
+          echo "---"
+          # Дублируем в step summary (видно в сводке run)
+          {
+            echo "### ✅/❌ Acceptance: speaker_profile (#1077)"
+            cat "$ACCEPT_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$FAIL" ]; then
+            echo "❌❌ ACCEPTANCE НЕ ПРОШЁЛ: $FAIL — фича #1077 не подтверждена"
+            exit 1
+          fi
+          echo "✅ ACCEPTANCE ПРОШЁЛ: speaker_tag → профиль scope=speaker:<tag> в SQLite"
+
       - name: E2E timing metrics (response speed)
         run: |
           RID="${{ github.run_id }}"
@@ -247,6 +306,14 @@ jobs:
           name: e2e-voice-model-${{ github.run_id }}
           path: model.json
           retention-days: 30
+
+      - name: Upload acceptance evidence (issue #1077)
+        if: ${{ inputs.acceptance_check == 'speaker_profile' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-acceptance-${{ github.run_id }}
+          path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
+          retention-days: 7
 
       - name: Summary
         run: |
