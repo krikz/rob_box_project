@@ -13,6 +13,14 @@ audio_node:
   ros__parameters:
     sample_rate: 16000
     channels: 1
+    # Количество микрофонных каналов для mono-даунмикса (issue #1076).
+    # ReSpeaker 6ch: [0..3]=микрофоны (Ch1-Ch4), [4]=playback (Ch5),
+    # [5]=loopback (Ch6). Playback-reference НЕ усредняется в mono, чтобы
+    # эхо TTS/музыки не попадало в STT. При channels=6 ставьте 4; для
+    # устройств с 1/2/4 каналами оставьте дефолт (или = channels).
+    # ⚠️ A/B 09.08 (PR #1079 откачен): если в e2e yandex:empty (фраза
+    # идёт через динамик робота в Ch5-6), поставьте mic_channels: 6.
+    mic_channels: 4
     # chunk_size = frames_per_buffer (issue #1050). 1024 (64ms @16kHz) — слишком
     # мал для Python-callback: GIL/публикация AudioData/USB VAD не успевали,
     # PortAudio падал в paInputOverflow (PyAudio status 2), сэмплы терялись и
