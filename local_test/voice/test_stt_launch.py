@@ -16,7 +16,8 @@ def generate_launch_description():
             name='audio_node',
             parameters=[{
                 'device_index': 6,  # ReSpeaker hw:1,0
-                'channels': 6,      # 6 каналов
+                'channels': 6,      # 6 каналов (RAW, issue 1076)
+                'mix_channels': [0, 1, 2, 3],  # только микрофоны, без playback-референса
                 'sample_rate': 16000,
             }],
             output='screen'

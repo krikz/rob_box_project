@@ -762,3 +762,68 @@ class TestSTTAttemptMetricInLogs:
         assert len(rejected) == 1
         assert "yandex:timeout" in rejected[0].getMessage()
         assert "vosk:low_confidence" in rejected[0].getMessage()
+
+
+class TestTelemetryPhraseToAccept:
+    """Issue 1076 (телеметрия): честный «замолчал → акцепт».
+
+    stt_node логирует phrase_to_accept_ms — время от получения фразы
+    (/audio/speech_audio) до ПРИНЯТО. Полный «замолчал → акцепт» =
+    silence_to_phrase_s (audio_node, включает speech_continuation)
+    + phrase_to_accept_ms (здесь).
+    """
+
+    def test_phrase_to_accept_logged_on_accept(self, stt_node, caplog):
+        """При успешном распознавании пишется telemetry-строка с latency."""
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = False
+        stt_node._tts_ended_at = 0.0
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = MagicMock()
+
+        # Публикация «не расслышал» не должна происходить при успехе
+        stt_node._maybe_speak_unclear = MagicMock()
+
+        caplog.set_level(logging.INFO, logger="test_stt_node_fallback")
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        telemetry = [
+            r.getMessage()
+            for r in caplog.records
+            if "phrase_to_accept_ms=" in r.getMessage()
+        ]
+        assert len(telemetry) == 1, f"ожидалась 1 telemetry-строка, получено: {telemetry}"
+        assert "phrase_to_accept_ms=" in telemetry[0]
+        assert "text='робок привет'" in telemetry[0]
+
+    def test_no_telemetry_on_rejected(self, stt_node, caplog):
+        """При отклонении (None) telemetry-строка НЕ пишется."""
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = False
+        stt_node._tts_ended_at = 0.0
+        stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node._maybe_speak_unclear = MagicMock()
+
+        caplog.set_level(logging.INFO, logger="test_stt_node_fallback")
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        telemetry = [
+            r.getMessage()
+            for r in caplog.records
+            if "phrase_to_accept_ms=" in r.getMessage()
+        ]
+        assert telemetry == []
