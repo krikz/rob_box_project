@@ -115,6 +115,9 @@ body:
   ## Branch + PR convention
   • branch: z-{agent}/<id>-<short-slug>  (процессная, с ~)
   • merge: PR `z-{e2e}/wip-<id>-<slug>` → `z-{e2e}/test-round-N` (служебные, с ~)
+  ## Контракт воркера (создаётся автоматически, triage.sh — ретро 09.08 #2)
+  • Коммить WIP каждые ~15-20 мин (или при половине max_runtime) — `wip(scope): ...` в свою ветку, push сразу
+  • PR один на задачу (WIP-коммиты в той же ветке; merge-gate/e2e работают по ветке/PR)
   ## Done criteria
   • CI all green
   • PR merged в test-round-N
@@ -125,6 +128,7 @@ body:
   repo, local_clone, base_branch, sources_of_truth, access
 assignee: <agent:<role> или hermes>
 priority: P<P0..P2>
+max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или body ≥ AGENT_FLOW_LARGE_BODY_CHARS=2000)
 ```
 
 **Идемпотентность:** при создании карточки пишет **коммент в issue** с маркером `kanban: t_<task_id>`. На следующем тике cron смотрит на наличие такого комментария — пропускает.
@@ -144,7 +148,7 @@ priority: P<P0..P2>
    git worktree add -b z-{agent}/<id>-<slug> /home/builder/wt-<id> origin/develop
    ```
 3. Делает код по инструкции из карточки. Если нужно — читает родительский issue.
-4. **Commit style:** `feat/fix/docs(scope): ...`.
+4. **Commit style:** `feat/fix/docs(scope): ...`. **WIP-коммиты (ретро 09.08 #2):** для крупных задач (max_runtime=3600) коммить промежуточно каждые ~15-20 мин (или при половине max_runtime) — `wip(scope): ...` в свою ветку, push сразу. Незакоммиченная работа пропадает при исчерпании бюджета (t_9435a3c5, t_0c0a98ac). WIP-коммиты идут в ту же ветку, PR остаётся один — merge-gate/e2e работают по ветке/PR, не по числу коммитов.
 5. Push в `origin/z-{agent}/<id>-<slug>`. Открывает PR (base = develop). **Коммент в issue** (Q23): «PR #N открыт».
 6. **Ждёт** merge-gate (см. §3.3).
 
