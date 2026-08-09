@@ -21,6 +21,47 @@ from .utils.audio_utils import find_respeaker_device, list_audio_devices, calcul
 from .utils.respeaker_interface import ReSpeakerInterface
 
 
+def interleaved_to_mono(data: bytes, channels: int, mic_channels: int) -> bytes:
+    """Даунмикс interleaved PCM16 в mono, используя только микрофонные каналы.
+
+    ReSpeaker Mic Array v2.0 в 6-канальном режиме отдаёт:
+      [0..3] — микрофоны (Ch1-Ch4)
+      [4]    — playback reference (Ch5): прямой сигнал с колонок
+      [5]    — loopback (Ch6)
+    Усреднять playback-каналы вместе с микрофонами нельзя: когда робот
+    говорит TTS или играет музыку (scsynth/jackd → dmix_respeaker),
+    эхо-референс попадает в STT-сигнал и вызывает yandex:empty / грязное
+    распознавание vosk. Берём только первые ``mic_channels`` каналов.
+
+    ⚠️ A/B-проверка 09.08 (робот 10.1.1.21, issue #1076, PR #1079):
+    mix только микрофонов [0..3] → Yandex STT стабильно `empty`; все 6
+    каналов → `yandex:ok`. Причина: в e2e/реальной работе фраза
+    пользователя попадает в playback-референс Ch5-6 (через динамик
+    робота) — исключение референса выбрасывает самый чистый сигнал
+    фразы. Поэтому если в e2e/STT снова появится `yandex:empty`,
+    ставьте mic_channels=6 (или = channels). Эхо-защита дополнительно
+    есть на уровне VAD (tts_grace_s, music_vad_threshold) и wake-word
+    gate — не только микшера.
+
+    Args:
+        data: PCM16 LE interleaved bytes.
+        channels: Общее число каналов во входном потоке.
+        mic_channels: Сколько первых каналов считать микрофонами
+            (Ch1..Ch{mic_channels}); остальные исключаются из mean.
+    """
+    import numpy as np
+
+    samples = np.frombuffer(data, dtype=np.int16)
+    n_mic = min(max(int(mic_channels), 1), channels)
+    frames = samples.size // channels
+    if frames == 0:
+        # Слишком короткий чанк (paInputOverflow) — нет ни одного полного
+        # фрейма, усреднять нечего. Отдаём как есть (моноканал не теряем).
+        return data
+    audio = samples[: frames * channels].reshape(frames, channels)
+    return audio[:, :n_mic].mean(axis=1).astype(np.int16).tobytes()
+
+
 @contextmanager
 def ignore_stderr(enable=True):
     """
@@ -55,6 +96,21 @@ class AudioNode(Node):
         # Параметры
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('channels', 1)
+        # Количество микрофонных каналов для mono-даунмикса (issue #1076).
+        # ReSpeaker 6ch: [0..3]=микрофоны (Ch1-Ch4), [4]=playback (Ch5),
+        # [5]=loopback (Ch6). Playback-reference НЕ должен усредняться в
+        # mono — иначе эхо TTS/музыки попадает в STT. Default 4; override
+        # через конфиг (audio_node.yaml) или env MIC_CHANNELS.
+        # ⚠️ A/B 09.08: если в e2e появится yandex:empty (фраза идёт через
+        # динамик робота в Ch5-6), ставьте mic_channels=6 — см. interleaved_to_mono.
+        _mic_channels_default = 4
+        _env_mic_channels = os.getenv('MIC_CHANNELS')
+        if _env_mic_channels is not None:
+            try:
+                _mic_channels_default = int(_env_mic_channels)
+            except ValueError:
+                _mic_channels_default = 4
+        self.declare_parameter('mic_channels', _mic_channels_default)
         # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
         # мал для Python-callback — GIL/публикация/USB VAD приводили к
         # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
@@ -77,6 +133,7 @@ class AudioNode(Node):
 
         self.sample_rate = self.get_parameter('sample_rate').value
         self.channels = self.get_parameter('channels').value
+        self.mic_channels = self.get_parameter('mic_channels').value
         self.chunk_size = self.get_parameter('chunk_size').value
         self.vad_threshold = self.get_parameter('vad_threshold').value
         self.publish_rate = self.get_parameter('publish_rate').value
@@ -238,15 +295,10 @@ class AudioNode(Node):
 
             # Если многоканальное аудио - конвертируем в моно
             if self.channels > 1:
-                import numpy as np
-                # Конвертируем bytes в numpy массив int16
-                audio_data = np.frombuffer(in_data, dtype=np.int16)
-                # Разделяем на каналы: [ch1, ch2, ..., ch6, ch1, ch2, ...]
-                audio_data = audio_data.reshape(-1, self.channels)
-                # Усреднение по каналам для получения моно
-                mono_data = audio_data.mean(axis=1).astype(np.int16)
-                # Конвертируем обратно в bytes
-                audio_bytes = mono_data.tobytes()
+                # Только микрофонные каналы Ch1..Ch{mic_channels} —
+                # playback-reference (Ch5/Ch6) исключается из mean, чтобы
+                # эхо TTS/музыки не попадало в STT (issue #1076).
+                audio_bytes = interleaved_to_mono(in_data, self.channels, self.mic_channels)
             else:
                 audio_bytes = in_data
 
