@@ -288,8 +288,10 @@ def test_capabilities_advertise_text_streaming_tools_and_image_input() -> None:
     assert caps.text is True
     assert caps.streaming_text is True
     assert caps.tools is True
-    # Streaming tool calls are deliberately off — see upstream docstring.
-    assert caps.streaming_tools is False
+    # 🔴 FIX (live 06.08): streaming_tools=True — MiniMax OpenAI-совместимый
+    # API стримит tool-call дельты; база _OpenAICompatibleProvider.stream
+    # агрегирует их в ToolCall (см. upstream minimax.py _CAPABILITIES).
+    assert caps.streaming_tools is True
     assert caps.image_input is True
 
 
@@ -696,6 +698,36 @@ async def test_complete_re_exhausts_retries_on_persistent_rate_limit(
         await p.complete([LLMMessage(role="user", content="hi")])
     assert len(client.chat.completions.calls) == 3
     assert sleeps == [0.1, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_retry_quota_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 FIX (issue #1082): 429 с ``Token Plan usage limit reached (2056)``
+    — это НЕ транзиент (длинное окно, часы), ретраить бессмысленно.
+    Провайдер должен подняться сразу, чтобы health-aware fallback-цепочка
+    переключила на deepseek без 15-19с потерь."""
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=3, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    async def always_quota(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        raise _FakeStatusError(
+            status=429,
+            body={
+                "error": {
+                    "message": "429: rate_limit_error Token Plan usage limit reached (2056)"
+                }
+            },
+        )
+
+    client.chat.completions.create = always_quota  # type: ignore[assignment]
+
+    with pytest.raises(RateLimitError):
+        await p.complete([LLMMessage(role="user", content="hi")])
+    assert len(client.chat.completions.calls) == 1  # ровно один вызов, без retry
+    assert sleeps == []
 
 
 @pytest.mark.asyncio

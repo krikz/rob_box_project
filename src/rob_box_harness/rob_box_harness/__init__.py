@@ -108,6 +108,17 @@ from rob_box_harness.errors import (
     ProviderNotFoundError,
 )
 from rob_box_harness.harness import Harness, HarnessRunResult
+from rob_box_harness.health import (
+    DEFAULT_HEALTH_TTL_S,
+    HealthAwareFallbackLLM,
+    HealthCache,
+    HealthRecord,
+    ProviderStatus,
+    TRANSIENT_TTL_S,
+    check_deepseek_balance,
+    is_auth_failure,
+    is_quota_exhausted,
+)
 from rob_box_harness.lifecycle import Hook, LifecycleHooks
 from rob_box_harness.memory import Fact, InMemoryStore, MemoryStore, Turn
 from rob_box_harness.providers import DummyLLMProvider, HarnessFakeLLMProvider
@@ -215,6 +226,16 @@ __all__ = [
     # Built-in dummy providers
     "DummyLLMProvider",
     "HarnessFakeLLMProvider",
+    # Provider health-check / fallback (issue #1082)
+    "ProviderStatus",
+    "HealthRecord",
+    "HealthCache",
+    "HealthAwareFallbackLLM",
+    "check_deepseek_balance",
+    "is_quota_exhausted",
+    "is_auth_failure",
+    "DEFAULT_HEALTH_TTL_S",
+    "TRANSIENT_TTL_S",
     # Errors
     "HarnessError",
     "ConfigError",
