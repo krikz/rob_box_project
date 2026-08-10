@@ -941,6 +941,137 @@ class TestLLMProviderWiring(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "llm_provider.*deepseek"):
             node._build_llm()
 
+    def test_minimax_init_failure_falls_back_to_deepseek_only(self):
+        """Issue #1089: если build_minimax_provider падает (нет ключа,
+        невалидный ключ, сетевой сбой при инициализации), _build_llm
+        должен graceful-вернуть deepseek-only провайдер, а не
+        пробрасывать исключение наружу.
+
+        Иначе dialogue_node крашится на init → ros2 launch не
+        рестартит успешно → робот молчит с приветствием.
+        """
+        from unittest.mock import patch
+
+        from rob_box_harness.errors import ConfigError
+
+        node = object.__new__(DialogueNode)
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        values = {
+            "llm_provider": "minimax",
+            "api_key": "missing-key",
+            "base_url": "https://api.minimax.io/v1",
+            "model": "MiniMax-M3",
+        }
+        node.get_parameter = lambda name: _Param(values.get(name))
+        # Минимальный логгер, чтобы warning был поглощён без падения.
+        node.get_logger = lambda: MagicMock()
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory:
+            mm_factory.side_effect = ConfigError(
+                "missing api key",
+                section="llm.api_key",
+            )
+            sentinel = object()
+            ds_factory.return_value = sentinel
+
+            provider = node._build_llm()
+
+        self.assertIs(provider, sentinel)
+        mm_factory.assert_called_once()
+        # Только deepseek (без health-aware обёртки — один провайдер).
+        ds_factory.assert_called_once_with(
+            api_key="missing-key",
+            base_url="https://api.minimax.io/v1",
+            model="MiniMax-M3",
+        )
+
+    def test_minimax_init_generic_exception_also_falls_back_to_deepseek(self):
+        """Та же гарантия для неожиданных ошибок (не только ConfigError):
+        build_minimax_provider может упасть с ImportError/TimeoutError/
+        любой RuntimeError — _build_llm всё равно не должен крашить
+        диалоговую ноду.
+        """
+        from unittest.mock import patch
+
+        node = object.__new__(DialogueNode)
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        values = {
+            "llm_provider": "minimax",
+            "api_key": "any",
+            "base_url": "",
+            "model": "",
+        }
+        node.get_parameter = lambda name: _Param(values.get(name))
+        node.get_logger = lambda: MagicMock()
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory:
+            mm_factory.side_effect = RuntimeError("upstream SDK exploded")
+            sentinel = object()
+            ds_factory.return_value = sentinel
+
+            provider = node._build_llm()
+
+        self.assertIs(provider, sentinel)
+        ds_factory.assert_called_once()
+
+    def test_minimax_init_success_still_wraps_in_health_aware_fallback(self):
+        """Зелёный путь не должен сломаться: если MiniMax собирается
+        без ошибок, _build_llm по-прежнему возвращает HealthAwareFallbackLLM
+        с двумя провайдерами (primary+fb).
+        """
+        from unittest.mock import patch
+
+        node = object.__new__(DialogueNode)
+
+        class _Param:
+            def __init__(self, value):
+                self.value = value
+
+        values = {
+            "llm_provider": "minimax",
+            "api_key": "valid-key",
+            "base_url": "https://api.minimax.io/v1",
+            "model": "MiniMax-M3",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        }
+        node.get_parameter = lambda name: _Param(values.get(name))
+        node.get_logger = lambda: MagicMock()
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory, patch(
+            "rob_box_harness.health.HealthAwareFallbackLLM"
+        ) as fb_cls:
+            mm_factory.return_value = "primary-sentinel"
+            ds_factory.return_value = "fb-sentinel"
+            fb_cls.return_value = "wrapper-sentinel"
+
+            provider = node._build_llm()
+
+        self.assertEqual(provider, "wrapper-sentinel")
+        mm_factory.assert_called_once()
+        ds_factory.assert_called_once()
+        fb_cls.assert_called_once()
+
     def test_both_voice_configs_route_dialogue_to_minimax(self):
         """Source and Docker configs expose the same dialogue_node params.
 
