@@ -131,6 +131,9 @@ class SpeakerIdNode(Node):
     def _on_speech_audio(self, msg: AudioData) -> None:
         """Received a complete speech utterance — run inference asynchronously."""
         pcm_bytes = bytes(msg.data)
+        self.get_logger().info(
+            f"🎤 Received speech audio: {len(pcm_bytes)} bytes ({len(pcm_bytes)/self._sample_rate/2:.1f}s)"
+        )
         self._executor.submit(self._process_utterance, pcm_bytes)
 
     def _on_register_request(self, msg: String) -> None:
@@ -184,6 +187,10 @@ class SpeakerIdNode(Node):
         embedding = self._db.embed_audio(pcm_bytes, self._sample_rate)
         if embedding is None:
             # resemblyzer unavailable or audio too short — publish unknown
+            self.get_logger().warning(
+                f"⚠️ embed_audio returned None for {len(pcm_bytes)} bytes "
+                f"({len(pcm_bytes)/self._sample_rate/2:.1f}s) — publishing unknown"
+            )
             self._publish_result(None)
             return
 
@@ -273,8 +280,12 @@ class SpeakerIdNode(Node):
                 "name": match.name,
                 "confidence": round(match.confidence, 4),
             }
+            self.get_logger().info(
+                f"📢 Publishing: is_known=true name={match.name!r} conf={match.confidence:.3f}"
+            )
         else:
             payload = {"is_known": False}
+            self.get_logger().info("📢 Publishing: is_known=false")
 
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
