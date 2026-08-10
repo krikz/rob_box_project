@@ -418,32 +418,37 @@ class SQLiteVoiceMemory(MemoryStore):
         """Return up to ``limit`` facts stored under ``scope`` (newest first).
 
         Direct scan without a query — used to load ALL speaker facts into
-        the LLM context (issue #1077).
+        the LLM context (issue #1077). Thread-safe via ``_run_sync``
+        (issue #1086).
         """
         if limit <= 0:
             raise ValueError(f"limit must be positive, got {limit}")
-        cursor = await self._execute(
-            "SELECT key, value, metadata_json FROM facts "
-            "WHERE scope = ? ORDER BY created_at DESC, id DESC LIMIT ?",
-            (scope, limit),
-        )
-        facts = []
-        for row in cursor.fetchall():
-            meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-            value = row["value"]
-            try:
-                value = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                pass
-            facts.append(
-                Fact(
-                    key=row["key"],
-                    value=value,
-                    tags=tuple(meta.get("tags", ())),
-                    confidence=float(meta.get("confidence", 1.0)),
-                )
+
+        def _list(conn: sqlite3.Connection) -> list[Fact]:
+            cursor = conn.execute(
+                "SELECT key, value, metadata_json FROM facts "
+                "WHERE scope = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (scope, limit),
             )
-        return facts
+            facts = []
+            for row in cursor.fetchall():
+                meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+                value = row["value"]
+                try:
+                    value = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                facts.append(
+                    Fact(
+                        key=row["key"],
+                        value=value,
+                        tags=tuple(meta.get("tags", ())),
+                        confidence=float(meta.get("confidence", 1.0)),
+                    )
+                )
+            return facts
+
+        return await self._run_sync(_list)
 
     async def aclose(self) -> None:
         """Alias for teardown."""
