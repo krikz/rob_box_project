@@ -230,3 +230,18 @@ def test_extract_relevant_log_line_ignores_workflow_section_headers() -> None:
 
     assert critical_line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
     assert warning_line is None
+
+
+def test_extract_relevant_log_line_ignores_zenoh_clock_skew_timestamp() -> None:
+    """zenoh router rejects future timestamps but replaces them — not an outage."""
+    log_text = (
+        "2026-08-07T14:45:52.034584Z ERROR rx-0 ThreadId(07) "
+        "zenoh::net::routing::dispatcher::pubsub: Error treating timestamp for received Data "
+        "(incoming timestamp from cb0a8201d7c4925928c54a14272b351e exceeding delta 500ms is rejected: "
+        "2026-08-07T16:16:53.876626388Z vs. now: 2026-08-07T14:45:52.034576841Z). "
+        "Replace timestamp: Some(7671301010917843184/86da0b2a0fb4bab4f4614d12676e1bdb)"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None

@@ -384,8 +384,11 @@ self.finished_pub.publish(finished_msg)
 | [ADR-0007b](../adr/0007b-minimax-tts-ros2-audio-contract-fragment.md) | frozen PCM-контракт v1, QoS, opt-in streaming | основной документ для §1.1 и §3 |
 | [ADR-0007a](../adr/0007a-minimax-tts-reliability-fragment.md) | retry/CB, error mapping | ссылка на §4.3 сценарии ошибок |
 | [ADR-0004](../adr/0004-minimax-tts-integration-design.md) | порт, registry, retry | базовая архитектура |
+| [ADR-0012](../adr/0012-respeaker-6ch-channel-map-and-mixer.md) | **ReSpeaker 6-канальный режим — карта каналов и `mix_channels` канонический дефолт** | cross-reference: контракт **выходного** потока STT → откуда берётся (`audio_node` capture) |
 | [architecture/minimax-tts-architecture.md](./minimax-tts-architecture.md) | реализационная детализация TTS | детальный маппинг полей TTSSettings → T2A body |
 | [analysis/tts-current-interface.md](../analysis/tts-current-interface.md) | as-is снапшот PR #907 | первоисточник по current state |
 | [research/tts-integration-research.md](../research/tts-integration-research.md) | сводный research-отчёт | первоисточник по MiniMax API |
 | [diagrams/minimax-tts-ros2-dataflow.mmd](../diagrams/minimax-tts-ros2-dataflow.mmd) | **Mermaid dataflow-диаграмма** | сопутствует этой спеке |
 | [diagrams/minimax-tts-ros2-audio-contract-sequence.mmd](../diagrams/minimax-tts-ros2-audio-contract-sequence.mmd) | sequence-диаграмма (ADR-0007b §2) | sequence-вариант; не дубликат |
+
+> **Cross-reference (capture-сторона).** Эта спецификация описывает **выходной** PCM-контракт от TTS до динамика. **Входной** capture-контракт (микрофон ReSpeaker → `/audio/audio`) живёт в [ADR-0012](../adr/0012-respeaker-6ch-channel-map-and-mixer.md). Новому разработчику: если вы видите 6-канальный capture и параметр `mix_channels` в `audio_node.py` — это **не баг** «лишние каналы». Ch5/Ch6 = playback-референс (несёт чистый цифровой сигнал фразы), A/B-валидированный дефолт `[0,1,2,3,4,5]` (PR #1093). Исключение Ch5-6 (`[0,1,2,3]`) ломает Yandex STT — откачено в `826fc128`.

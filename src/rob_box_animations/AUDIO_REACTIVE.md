@@ -168,7 +168,7 @@ panels:
 - `animations_dir` - Путь к директории анимаций
 - `audio_device_index` - Индекс аудио устройства (-1 = по умолчанию)
 - `sample_rate` - Частота дискретизации (44100 Hz)
-- `chunk_size` - Размер буфера (1024 samples)
+- `chunk_size` - Размер буфера (4096 samples, issue #1050: 1024 → 4096 против paInputOverflow)
 
 ## Примеры анимаций
 
@@ -198,8 +198,15 @@ sudo apt-get install python3-pyaudio
 
 ### Проблема: "Mouth animation lags"
 - Уменьшите `audio_smoothing` (меньше задержка, но больше дрожания)
-- Уменьшите `chunk_size` (меньше латентность)
+- Уменьшите `chunk_size` (меньше латентность, но выше риск paInputOverflow — см. issue #1050; 4096 = ~93ms @44.1kHz — проверенный компромисс)
 - Увеличьте приоритет ROS2 ноды
+
+### Проблема: "PyAudio status: 2 / paInputOverflow" в логах
+Status 2 (`paInputOverflow`) — входной буфер переполнен, сэмплы потеряны
+(см. issue #1050). Python-callback не успел за периодом буфера (GIL,
+numpy RMS, публикации). Лечится увеличением `chunk_size` (по умолчанию
+4096 = ~93ms @44.1kHz), а не уменьшением — маленький буфер (1024 = 23ms)
+только усугубляет переполнение.
 
 ## Интеграция с TTS
 

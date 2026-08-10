@@ -25,13 +25,14 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'device_index': 6,
-                'channels': 6,  # RAW режим - 6 каналов (используем channel 0)
+                'channels': 6,  # RAW режим - 6 каналов (issue 1076)
+                'mix_channels': [0, 1, 2, 3, 4, 5],  # все 6 каналов (A/B 09.08: референс нужен, issue 1076)
                 'sample_rate': 16000,
                 'chunk_size': 1024,
                 'vad_threshold': 3.5,  # VAD порог в dB
                 'publish_rate': 10,
                 'speech_continuation': 0.5,   # 500ms после речи
-                'speech_prefetch': 0.5,       # 500ms перед речью
+                'speech_prefetch': 1.0,       # 1000ms перед речью (латенция VAD 300-500ms — иначе «робот»→«роберт»)
                 'speech_min_duration': 0.3,   # Минимум 300ms
                 'speech_max_duration': 10.0,  # Максимум 10s
             }]

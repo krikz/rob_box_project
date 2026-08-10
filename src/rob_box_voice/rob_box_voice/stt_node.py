@@ -351,6 +351,11 @@ class STTNode(Node):
                 )
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
+        # Issue 1076 (телеметрия): фиксируем момент получения фразы, чтобы
+        # замерить честный «фраза → ПРИНЯТО». Полный «замолчал → акцепт» =
+        # silence_to_phrase_s (audio_node, включает speech_continuation)
+        # + phrase_to_accept_ms (здесь).
+        _phrase_received_at = time.monotonic()
         self.publish_state("recognizing")
 
         # Идём через единый select_recognition: primary=Yandex, fallback=Vosk,
@@ -367,6 +372,12 @@ class STTNode(Node):
 
         # Публикация результата
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
+            # Issue 1076 (телеметрия): честный «фраза → ПРИНЯТО» (STT-часть).
+            _accept_ms = int((time.monotonic() - _phrase_received_at) * 1000)
+            self.get_logger().info(
+                f"📊 [telemetry] phrase_to_accept_ms={_accept_ms} "
+                f"(text={text!r})"
+            )
             self.get_logger().info(f"✅ ПРИНЯТО: {text}")
             self.publish_result(text)
             self.publish_state("ready")
@@ -535,11 +546,17 @@ class STTNode(Node):
 
         # Обрабатываем ответы
         final_text = None
+        last_partial = None
         for response in responses:
             event_type = response.WhichOneof("Event")
 
-            # partial - промежуточные результаты (игнорируем)
+            # partial - промежуточные результаты: запоминаем последний
+            # (Yandex может прислать только partial + пустой final — см. 09.08)
             if event_type == "partial":
+                if response.partial.alternatives:
+                    _pt = response.partial.alternatives[0].text
+                    if _pt and _pt.strip():
+                        last_partial = _pt
                 continue
 
             # final - финальный результат распознавания
@@ -554,7 +571,14 @@ class STTNode(Node):
                     final_text = response.final_refinement.normalized_text.alternatives[0].text
                     break  # Это последний результат
 
-        return final_text.strip() if final_text else None
+        if final_text and final_text.strip():
+            return final_text.strip()
+        # 🔴 FIX (09.08): Yandex шлёт partial с текстом, но final может быть
+        # пустым → раньше был ложный «yandex:empty», хотя речь распознавалась.
+        # Берём последний partial как результат.
+        if last_partial:
+            return last_partial.strip()
+        return None
 
     def _recognize_vosk(self, audio_bytes: bytes) -> Optional[str]:
         """Распознавание через Vosk (fallback)."""

@@ -101,7 +101,8 @@ jobs:
             "VOICE_LLM='${VOICE_LLM}' VOICE_TTS='${VOICE_TTS}' VOICE_STT='${VOICE_STT}' \
              nohup /tmp/e2e_remote.sh ${REC} ${DUR} ${VOL} > /tmp/e2e_out.log 2>&1 &"
 
-          WAIT=$((DUR + 25))
+          # retry-скрипт: до 3 попыток × (play + REACTION_WINDOW 35с + пауза 10с) ≈ 150-180с
+          WAIT=$((DUR + 170))
           echo "Waiting ${WAIT}s..."
           sleep ${WAIT}
 
@@ -145,7 +146,86 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
             "docker logs voice-assistant --since 10m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
+          # Дозаписываем вывод retry-скрипта (маркер E2E_REACTION_OK/NO_REACTION)
+          echo "--- E2E REMOTE OUTPUT ---" >> "$LOG"
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+            "cat /tmp/e2e_out.log 2>/dev/null" >> "$LOG" || true
           echo "Log lines: $(wc -l < "$LOG")"
+      - name: Validate e2e result (real robot response)
+        run: |
+          RID="${{ github.run_id }}"
+          LOG="/tmp/voice_e2e_${RID}.log"
+          FAIL=""
+          WARN=""
+          echo "--- e2e validation markers ---"
+          # 1) STT: команда должна быть РАСПОЗНАНА (не empty/rejected).
+          #    При retry-цикле (3 попытки) в логе могут быть пустые попытки
+          #    («ОТКЛОНЕНО (пустое)») при успешной — фейлим ТОЛЬКО если
+          #    фраза ни разу не была принята (иначе ложный FAIL: 09.08 live).
+          if grep -q "✅ ПРИНЯТО" "$LOG"; then
+            echo "✅ STT: фраза распознана (ПРИНЯТО)"
+          elif grep -qE "ОТКЛОНЕНО \(пустое\)|Пустой STT" "$LOG"; then
+            echo "❌ STT EMPTY: ни одна фраза не распознана (все попытки пустые)"
+            FAIL="stt-empty"
+          elif grep -q "Получена фраза" "$LOG"; then
+            echo "✅ STT: фраза получена (VAD сработал, текст не распознан)"
+          else
+            echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
+            FAIL="stt-no-phrase"
+          fi
+          # 2) ОТВЕТ: робот должен РЕАГИРОВАТЬ на команду.
+          #    Приоритет — маркер retry-скрипта (E2E_REACTION_OK в e2e_out.log):
+          #    скрипт сам проверял docker logs робота ПОСЛЕ команды и повторял
+          #    команду, пока не увидел TTS finished. Это самая честная проверка.
+          if grep -q "E2E_REACTION_OK" "$LOG"; then
+            echo "✅ SPEECH: робот ответил (retry-скрипт видел TTS finished после команды)"
+          elif grep -q "E2E_NO_REACTION" "$LOG"; then
+            echo "❌ NO REACTION: retry-скрипт 3 раза проиграл команду — робот не ответил"
+            FAIL="${FAIL:+$FAIL,}no-reaction"
+          else
+            # Fallback (старая логика): TTS должен быть ПОСЛЕ STT-фразы.
+            stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+            tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+            if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
+              echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
+            elif grep -q "TTS finished" "$LOG"; then
+              echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
+              FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+            else
+              echo "❌ NO SPEECH: робот не произнёс ответ"
+              FAIL="${FAIL:+$FAIL,}no-speech"
+            fi
+          fi
+          # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
+          if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
+            echo "⚠️  TTS FALLBACK: MiniMax квота/ошибка → Silero. Основному голосу нужно внимание."
+            WARN="tts-fallback"
+          else
+            echo "✅ TTS: основной голос без fallback"
+          fi
+          if [ -n "$FAIL" ]; then
+            echo ""
+            echo "❌❌ E2E НЕ ПРОШЁЛ: $FAIL — нужен повторный прогон (e2e:rejected)"
+            exit 1
+          fi
+          if [ -n "$WARN" ]; then
+            echo ""
+            echo "⚠️  E2E ПРОШЁЛ с предупреждением: $WARN (STT ок + ответ после команды, но TTS fallback)"
+            exit 0
+          fi
+          echo ""
+          echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
+
+      - name: E2E timing metrics (response speed)
+        run: |
+          RID="${{ github.run_id }}"
+          VTXT="${{ inputs.voice_text }}"
+          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" | tee /tmp/e2e_timing.txt
+          # Дублируем в step summary (видно в сводке run, не только в логе)
+          {
+            echo "### ⏱ Response timing (команда → ответ)"
+            cat /tmp/e2e_timing.txt
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload recording
         uses: actions/upload-artifact@v4

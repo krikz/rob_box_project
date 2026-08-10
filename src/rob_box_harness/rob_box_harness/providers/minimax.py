@@ -53,6 +53,7 @@ from openai import AsyncOpenAI
 
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.errors import ConfigError
+from rob_box_harness.health import is_quota_exhausted
 
 # Re-export the upstream provider + helpers so callers can ``from
 # rob_box_harness.providers.minimax import MiniMaxProvider`` exactly
@@ -420,6 +421,15 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                             "ignoring (best-effort cleanup)",
                             close_exc,
                         )
+                # 🔴 FIX (issue #1082): quota-ошибка MiniMax (2056/1008) — не
+                # транзиент, ретраить бессмысленно; сразу в fallback-цепочку.
+                if is_quota_exhausted(exc):
+                    _log.warning(
+                        "minimax: quota exhausted on stream (%s) — не ретраим, "
+                        "передаём в fallback-цепочку",
+                        exc,
+                    )
+                    raise
                 if attempts >= self._retry.max_attempts:
                     raise
                 delay = self._retry.delay_for(attempts)
@@ -488,6 +498,19 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
             try:
                 return await fn(messages, tools=tools, settings=settings)
             except (RateLimitError, TimeoutError) as exc:
+                # 🔴 FIX (issue #1082): квота MiniMax (2056 Token Plan /
+                # 1008 insufficient balance) — это ДЛИННОЕ окно (часы), а не
+                # секундный burst. Ретраить её с backoff'ом бессмысленно:
+                # робот ждал 15-19с на трёх попытках, потом всё равно
+                # падал на deepseek. Quota-ошибка → сразу наружу, чтобы
+                # health-aware fallback переключил провайдера.
+                if is_quota_exhausted(exc):
+                    _log.warning(
+                        "minimax: quota exhausted (%s) — не ретраим, "
+                        "передаём в fallback-цепочку",
+                        exc,
+                    )
+                    raise
                 last_exc = exc
                 if attempts >= self._retry.max_attempts:
                     raise

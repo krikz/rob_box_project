@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-context_aggregator_node.py - Perception Context Aggregator
+"""Perception Context Aggregator node.
 
 Легковесный агрегатор данных восприятия.
 Собирает данные со всех источников → публикует unified события.
@@ -28,22 +27,28 @@ context_aggregator_node.py - Perception Context Aggregator
 """
 
 import json
-import time
 import os
+import time
 from typing import Dict, List, Optional
+
+from control_msgs.msg import DynamicJointState
+
+from geometry_msgs.msg import PoseStamped
+
+from nav_msgs.msg import Odometry
+
+from rcl_interfaces.msg import Log
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Odometry
-from rcl_interfaces.msg import Log
-from control_msgs.msg import DynamicJointState
 
-# Monitoring components
+from rob_box_perception.utils.internet_monitor import (
+    InternetConnectivityMonitor,
+)
 from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
-from rob_box_perception.utils.internet_monitor import InternetConnectivityMonitor
 from rob_box_perception.utils.time_provider import TimeAwarenessProvider
+
+from std_msgs.msg import String
 
 # Custom messages
 try:
@@ -56,12 +61,15 @@ class ContextAggregatorNode(Node):
     """Агрегатор контекста восприятия (MPC lite)."""
 
     def __init__(self):
+        """Инициализировать агрегатор контекста восприятия."""
         super().__init__('context_aggregator')
 
         # ============ Параметры ============
-        self.declare_parameter('publish_rate', 2.0)  # Hz - частота публикации событий
+        # Hz - частота публикации событий
+        self.declare_parameter('publish_rate', 2.0)
         self.declare_parameter('memory_window', 60)  # секунды
-        self.declare_parameter('timezone', 'Europe/Moscow')  # Часовой пояс для времени
+        # Часовой пояс для времени
+        self.declare_parameter('timezone', 'Europe/Moscow')
 
         self.publish_rate = self.get_parameter('publish_rate').value
         self.memory_window = self.get_parameter('memory_window').value
@@ -92,7 +100,9 @@ class ContextAggregatorNode(Node):
         self.node_monitor = NodeAvailabilityMonitor(self)
 
         # Internet connectivity monitor
-        self.internet_monitor = InternetConnectivityMonitor(self, check_interval=30.0)
+        self.internet_monitor = InternetConnectivityMonitor(
+            self, check_interval=30.0
+        )
 
         # Time awareness provider (using timezone parameter)
         self.time_provider = TimeAwarenessProvider(timezone=self.timezone)
@@ -199,12 +209,16 @@ class ContextAggregatorNode(Node):
                 10
             )
         else:
-            self.get_logger().warning('⚠️  PerceptionEvent message не найден! Соберите пакет.')
+            self.get_logger().warning(
+                '⚠️  PerceptionEvent message не найден! Соберите пакет.'
+            )
             self.event_pub = None
 
         # ============ Таймер публикации событий ============
         timer_period = 1.0 / self.publish_rate
-        self.publish_timer = self.create_timer(timer_period, self.publish_event)
+        self.publish_timer = self.create_timer(
+            timer_period, self.publish_event
+        )
 
         self.get_logger().info('📊 Context Aggregator запущен')
         self.get_logger().info(f'   Частота событий: {self.publish_rate} Hz')
@@ -218,14 +232,17 @@ class ContextAggregatorNode(Node):
         """Обновление vision context."""
         try:
             self.current_vision = json.loads(msg.data)
-            self.get_logger().debug(f'👁️  Vision: {self.current_vision.get("description", "N/A")}')
+            description = self.current_vision.get('description', 'N/A')
+            self.get_logger().debug(f'👁️  Vision: {description}')
         except json.JSONDecodeError:
             self.get_logger().error('❌ Ошибка парсинга vision_context')
 
     def on_robot_pose(self, msg: PoseStamped):
         """Обновление позиции."""
         self.current_pose = msg
-        self.get_logger().debug(f'📍 Pose: ({msg.pose.position.x:.2f}, {msg.pose.position.y:.2f})')
+        x = msg.pose.position.x
+        y = msg.pose.position.y
+        self.get_logger().debug(f'📍 Pose: ({x:.2f}, {y:.2f})')
 
     def on_odometry(self, msg: Odometry):
         """Обновление одометрии."""
@@ -241,7 +258,9 @@ class ContextAggregatorNode(Node):
     def on_apriltags(self, msg):
         """Обнаружены AprilTags."""
         self.last_apriltags = [det.id for det in msg.detections]
-        self.add_to_memory('apriltag', f'Обнаружены маркеры: {self.last_apriltags}')
+        self.add_to_memory(
+            'apriltag', f'Обнаружены маркеры: {self.last_apriltags}'
+        )
 
     def on_rosout(self, msg: Log):
         """Мониторинг системных логов."""
@@ -255,7 +274,9 @@ class ContextAggregatorNode(Node):
             self.recent_errors.append(error_info)
             if len(self.recent_errors) > 10:
                 self.recent_errors.pop(0)
-            self.get_logger().debug(f'⚠️  [{msg.name}] ERROR: {msg.msg[:50]}...')
+            self.get_logger().debug(
+                f'⚠️  [{msg.name}] ERROR: {msg.msg[:50]}...'
+            )
 
         elif msg.level == 30:  # WARN
             warn_info = {
@@ -280,19 +301,25 @@ class ContextAggregatorNode(Node):
         """Получена речь пользователя (STT)."""
         text = msg.data.strip()
         if text:
-            # Проверка: это команда движения или диалог?
-            # Команды движения (вперед, назад, налево, направо, стой) НЕ добавляем в память
-            # Они обрабатываются CommandNode и не нужны для диалога
+            # Команды движения (вперед, назад, налево, направо, стой)
+            # НЕ добавляем в память. Они обрабатываются CommandNode и не
+            # нужны для диалога.
             movement_keywords = [
-                'вперед', 'вперёд', 'назад', 'влево', 'вправо', 'налево', 'направо',
-                'поверни', 'повернись', 'разверн', 'двигайся', 'иди', 'поезжай', 'езжай',
-                'стой', 'стоп', 'остановись', 'останови'
+                'вперед', 'вперёд', 'назад', 'влево', 'вправо',
+                'налево', 'направо', 'поверни', 'повернись',
+                'разверн', 'двигайся', 'иди', 'поезжай', 'езжай',
+                'стой', 'стоп', 'остановись', 'останови',
             ]
 
-            is_movement_command = any(keyword in text.lower() for keyword in movement_keywords)
+            lowered = text.lower()
+            is_movement_command = any(
+                keyword in lowered for keyword in movement_keywords
+            )
 
             if is_movement_command:
-                self.get_logger().debug(f'🎮 Команда движения (пропускаем): "{text}"')
+                self.get_logger().debug(
+                    f'🎮 Команда движения (пропускаем): "{text}"'
+                )
                 # НЕ добавляем в память, НЕ транслируем в рефлексию
                 return
 
@@ -305,8 +332,13 @@ class ContextAggregatorNode(Node):
         try:
             import json
             data = json.loads(msg.data)
-            text = data.get('ssml', '').replace('<speak>', '').replace('</speak>', '').strip()
-        except:
+            text = (
+                data.get('ssml', '')
+                .replace('<speak>', '')
+                .replace('</speak>', '')
+                .strip()
+            )
+        except Exception:
             text = msg.data.strip()
 
         if text:
@@ -321,7 +353,9 @@ class ContextAggregatorNode(Node):
             intent, confidence = parts
             self.get_logger().debug(f'🎮 Команда: {intent} (conf={confidence})')
             # Добавляем в системные события (не важные для диалога)
-            self.add_to_memory('command', f'Команда: {intent}', important=False)
+            self.add_to_memory(
+                'command', f'Команда: {intent}', important=False
+            )
 
     def on_command_feedback(self, msg: String):
         """Получен feedback от команды (от CommandNode)."""
@@ -335,7 +369,9 @@ class ContextAggregatorNode(Node):
     # Память событий
     # ============================================================
 
-    def add_to_memory(self, event_type: str, content: str, important: bool = False):
+    def add_to_memory(
+        self, event_type: str, content: str, important: bool = False
+    ):
         """Добавить событие в память (с разделением по типам)."""
         event = {
             'time': time.time(),
@@ -361,25 +397,39 @@ class ContextAggregatorNode(Node):
 
         # Очистка старых событий
         cutoff = time.time() - self.memory_window
-        self.recent_events = [e for e in self.recent_events if e['time'] > cutoff]
-        self.speech_events = [e for e in self.speech_events if e['time'] > cutoff]
-        self.robot_response_events = [e for e in self.robot_response_events if e['time'] > cutoff]
-        self.robot_thought_events = [e for e in self.robot_thought_events if e['time'] > cutoff]
-        self.vision_events = [e for e in self.vision_events if e['time'] > cutoff]
-        self.system_events = [e for e in self.system_events if e['time'] > cutoff]
+        self.recent_events = [
+            e for e in self.recent_events if e['time'] > cutoff
+        ]
+        self.speech_events = [
+            e for e in self.speech_events if e['time'] > cutoff
+        ]
+        self.robot_response_events = [
+            e for e in self.robot_response_events if e['time'] > cutoff
+        ]
+        self.robot_thought_events = [
+            e for e in self.robot_thought_events if e['time'] > cutoff
+        ]
+        self.vision_events = [
+            e for e in self.vision_events if e['time'] > cutoff
+        ]
+        self.system_events = [
+            e for e in self.system_events if e['time'] > cutoff
+        ]
 
     def get_memory_summary(self) -> str:
         """Получить краткое резюме памяти."""
         if not self.recent_events:
-            return "Недавних событий нет"
+            return 'Недавних событий нет'
 
         # Последние 5 событий
         recent = self.recent_events[-5:]
         lines = []
         for event in recent:
             age = time.time() - event['time']
-            emoji = "❗" if event.get('important') else "•"
-            lines.append(f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}")
+            emoji = '❗' if event.get('important') else '•'
+            lines.append(
+                f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}"
+            )
 
         return '\n'.join(lines)
 
@@ -401,9 +451,11 @@ class ContextAggregatorNode(Node):
 
         # Vision
         if self.current_vision:
-            event.vision_context = json.dumps(self.current_vision, ensure_ascii=False)
+            event.vision_context = json.dumps(
+                self.current_vision, ensure_ascii=False
+            )
         else:
-            event.vision_context = ""
+            event.vision_context = ''
 
         # Pose
         if self.current_pose:
@@ -438,7 +490,9 @@ class ContextAggregatorNode(Node):
         event.time_context_json = json.dumps(time_context, ensure_ascii=False)
 
         # Internet connectivity
-        event.internet_available = self.internet_monitor.get_status()['is_online']
+        event.internet_available = (
+            self.internet_monitor.get_status()['is_online']
+        )
 
         # Node availability
         node_summary = self.node_monitor.get_status_summary()
@@ -447,66 +501,74 @@ class ContextAggregatorNode(Node):
         event.missing_nodes = node_summary['missing_list']
 
         # Equipment summary (placeholder for Stage 2)
-        event.equipment_summary_json = "{}"
+        event.equipment_summary_json = '{}'
 
         # Mapping mode — читаем /maps/mapping_state.json (volume :ro)
         try:
-            _state_path = "/maps/mapping_state.json"
+            _state_path = '/maps/mapping_state.json'
             if os.path.exists(_state_path):
-                with open(_state_path, "r") as _f:
+                with open(_state_path, 'r') as _f:
                     _state = json.load(_f)
-                event.mapping_mode = _state.get("mode", "unknown")
+                event.mapping_mode = _state.get('mode', 'unknown')
             else:
-                event.mapping_mode = "unknown"
+                event.mapping_mode = 'unknown'
         except Exception:
-            event.mapping_mode = "unknown"
+            event.mapping_mode = 'unknown'
 
         # Memory
         event.memory_summary = self.get_memory_summary()
 
         # Публикуем
         self.event_pub.publish(event)
-        self.get_logger().debug(f'📤 Event: health={health_status}, moving={event.is_moving}')
+        self.get_logger().debug(
+            f'📤 Event: health={health_status}, moving={event.is_moving}'
+        )
 
     def check_system_health(self) -> tuple[str, List[str]]:
         """Проверка здоровья системы."""
         issues = []
 
         # Проверка ошибок
-        recent_error_count = len([e for e in self.recent_errors if time.time() - e['time'] < 30])
+        recent_error_count = len(
+            [e for e in self.recent_errors if time.time() - e['time'] < 30]
+        )
         if recent_error_count >= 5:
             issues.append(f'Много ошибок: {recent_error_count} за 30 сек')
 
         # Проверка батареи
         battery = self.current_sensors.get('battery', 100.0)
         if battery > 0 and battery < 32.0:  # CRITICAL for 36V 10S
-            issues.append(f'КРИТИЧЕСКАЯ БАТАРЕЯ: {battery:.1f}V - СРОЧНО НА ЗАРЯДКУ!')
+            issues.append(
+                f'КРИТИЧЕСКАЯ БАТАРЕЯ: {battery:.1f}V - СРОЧНО НА ЗАРЯДКУ!'
+            )
         elif battery > 0 and battery < 34.0:  # LOW for 36V 10S
             issues.append(f'Низкая батарея: {battery:.1f}V')
 
         # Проверка нод (добавлено)
         node_summary = self.node_monitor.get_status_summary()
         if node_summary['failed']:
-            issues.append(f"Упавшие ноды: {', '.join(node_summary['failed_list'])}")
+            failed_nodes = ', '.join(node_summary['failed_list'])
+            issues.append(f'Упавшие ноды: {failed_nodes}')
         if node_summary['missing'] > 2:
             issues.append(f"Отсутствуют {node_summary['missing']} нод")
 
         # Проверка интернета (добавлено)
         if not self.internet_monitor.get_status()['is_online']:
-            issues.append("Нет интернета")
+            issues.append('Нет интернета')
 
         # Определяем статус
         if len(issues) == 0:
-            status = "HEALTHY"
+            status = 'HEALTHY'
         elif len(issues) <= 2:
-            status = "DEGRADED"
+            status = 'DEGRADED'
         else:
-            status = "UNHEALTHY"
+            status = 'UNHEALTHY'
 
         return status, issues
 
 
 def main(args=None):
+    """Запустить ноду агрегатора контекста."""
     rclpy.init(args=args)
     node = ContextAggregatorNode()
 

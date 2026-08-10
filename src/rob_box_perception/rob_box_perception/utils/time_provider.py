@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-time_provider.py - Time Awareness Provider
+time_provider.py - Time Awareness Provider.
 
 Провайдер осознания текущего времени и контекста времени суток.
 
 Dependencies:
-    - pytz (optional): For timezone support. If unavailable, falls back to local time
-                       without timezone awareness. Install with: pip install pytz
+    - pytz (optional): For timezone support. If unavailable, falls back to
+      local time without timezone awareness. Install with: pip install pytz
 
 When pytz is not available:
     - Timezone parameter is ignored
@@ -14,8 +14,8 @@ When pytz is not available:
     - All timezone-related features fall back to local time
 """
 
-import time
 from datetime import datetime
+import time
 from typing import Dict
 
 try:
@@ -37,7 +37,7 @@ class TimeAwarenessProvider:
         timezone: Часовой пояс (pytz timezone)
     """
 
-    def __init__(self, timezone: str = "Europe/Moscow"):
+    def __init__(self, timezone: str = 'Europe/Moscow'):
         """
         Инициализация провайдера.
 
@@ -82,31 +82,31 @@ class TimeAwarenessProvider:
 
         # Определяем период суток
         if 5 <= hour < 12:
-            period = "morning"
-            period_ru = "утро"
+            period = 'morning'
+            period_ru = 'утро'
         elif 12 <= hour < 17:
-            period = "day"
-            period_ru = "день"
+            period = 'day'
+            period_ru = 'день'
         elif 17 <= hour < 22:
-            period = "evening"
-            period_ru = "вечер"
+            period = 'evening'
+            period_ru = 'вечер'
         else:
-            period = "night"
-            period_ru = "ночь"
+            period = 'night'
+            period_ru = 'ночь'
 
         return {
-            "timestamp": time.time(),
-            "datetime": now.isoformat(),
-            "human_readable": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "time_only": now.strftime("%H:%M"),
-            "date_only": now.strftime("%Y-%m-%d"),
-            "hour": hour,
-            "minute": now.minute,
-            "weekday": now.strftime("%A"),
-            "weekday_ru": self._get_weekday_ru(now.weekday()),
-            "period": period,
-            "period_ru": period_ru,
-            "timezone": self.timezone_name if self.timezone else "local",
+            'timestamp': time.time(),
+            'datetime': now.isoformat(),
+            'human_readable': now.strftime('%Y-%m-%d %H:%M:%S'),
+            'time_only': now.strftime('%H:%M'),
+            'date_only': now.strftime('%Y-%m-%d'),
+            'hour': hour,
+            'minute': now.minute,
+            'weekday': now.strftime('%A'),
+            'weekday_ru': self._get_weekday_ru(now.weekday()),
+            'period': period,
+            'period_ru': period_ru,
+            'timezone': self.timezone_name if self.timezone else 'local',
         }
 
     def _get_weekday_ru(self, weekday: int) -> str:
@@ -116,16 +116,17 @@ class TimeAwarenessProvider:
         Args:
             weekday: Номер дня недели (0-6)
 
-        Returns:
-            Название дня недели на русском
+        Returns
+        -------
+        Название дня недели на русском
         """
         days = {
-            0: "Понедельник",
-            1: "Вторник",
-            2: "Среда",
-            3: "Четверг",
-            4: "Пятница",
-            5: "Суббота",
-            6: "Воскресенье",
+            0: 'Понедельник',
+            1: 'Вторник',
+            2: 'Среда',
+            3: 'Четверг',
+            4: 'Пятница',
+            5: 'Суббота',
+            6: 'Воскресенье',
         }
-        return days.get(weekday, "Неизвестно")
+        return days.get(weekday, 'Неизвестно')

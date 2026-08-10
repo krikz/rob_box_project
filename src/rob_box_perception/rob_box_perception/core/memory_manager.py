@@ -6,8 +6,7 @@
 """
 
 import time
-from typing import List, Dict, Optional
-from collections import deque
+from typing import Dict, List, Optional
 
 
 class MemoryManager:
@@ -15,10 +14,13 @@ class MemoryManager:
 
     def __init__(self, memory_window: float = 300.0):
         """
-        Инициализация менеджера памяти.
+        Инициализировать менеджера памяти.
 
-        Args:
-            memory_window: Временное окно хранения событий в секундах (default: 300s = 5min)
+        Args
+        ----
+        memory_window:
+            Временное окно хранения событий в секундах (default: 300s = 5min)
+
         """
         self.memory_window = memory_window
 
@@ -32,14 +34,22 @@ class MemoryManager:
         self.vision_events: List[Dict] = []
         self.system_events: List[Dict] = []
 
-    def add_event(self, event_type: str, content: str, important: bool = False) -> None:
+    def add_event(
+        self, event_type: str, content: str, important: bool = False
+    ) -> None:
         """
         Добавить событие в память с типизацией.
 
-        Args:
-            event_type: Тип события (user_speech, robot_response, robot_thought, vision, etc.)
-            content: Содержание события
-            important: Флаг важности события
+        Args
+        ----
+        event_type:
+            Тип события (user_speech, robot_response, robot_thought,
+            vision, etc.)
+        content:
+            Содержание события
+        important:
+            Флаг важности события
+
         """
         event = {
             'time': time.time(),
@@ -70,33 +80,51 @@ class MemoryManager:
         """Удалить события старше memory_window."""
         cutoff = time.time() - self.memory_window
 
-        self.recent_events = [e for e in self.recent_events if e['time'] > cutoff]
-        self.speech_events = [e for e in self.speech_events if e['time'] > cutoff]
-        self.robot_response_events = [e for e in self.robot_response_events if e['time'] > cutoff]
-        self.robot_thought_events = [e for e in self.robot_thought_events if e['time'] > cutoff]
-        self.vision_events = [e for e in self.vision_events if e['time'] > cutoff]
-        self.system_events = [e for e in self.system_events if e['time'] > cutoff]
+        self.recent_events = [
+            e for e in self.recent_events if e['time'] > cutoff
+        ]
+        self.speech_events = [
+            e for e in self.speech_events if e['time'] > cutoff
+        ]
+        self.robot_response_events = [
+            e for e in self.robot_response_events if e['time'] > cutoff
+        ]
+        self.robot_thought_events = [
+            e for e in self.robot_thought_events if e['time'] > cutoff
+        ]
+        self.vision_events = [
+            e for e in self.vision_events if e['time'] > cutoff
+        ]
+        self.system_events = [
+            e for e in self.system_events if e['time'] > cutoff
+        ]
 
     def get_summary(self, count: int = 5) -> str:
         """
         Получить краткое резюме последних событий.
 
-        Args:
-            count: Количество последних событий для включения в резюме
+        Args
+        ----
+        count:
+            Количество последних событий для включения в резюме
 
-        Returns:
-            Текстовое резюме событий
+        Returns
+        -------
+        Текстовое резюме событий
+
         """
         if not self.recent_events:
-            return "Недавних событий нет"
+            return 'Недавних событий нет'
 
         recent = self.recent_events[-count:]
         lines = []
 
         for event in recent:
             age = time.time() - event['time']
-            emoji = "❗" if event.get('important') else "•"
-            lines.append(f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}")
+            emoji = '❗' if event.get('important') else '•'
+            lines.append(
+                f"{emoji} [{age:.0f}s] {event['type']}: {event['content']}"
+            )
 
         return '\n'.join(lines)
 
@@ -108,11 +136,15 @@ class MemoryManager:
         """
         Получить события определенного типа.
 
-        Args:
-            event_type: Тип событий для получения
+        Args
+        ----
+        event_type:
+            Тип событий для получения
 
-        Returns:
-            Список событий указанного типа
+        Returns
+        -------
+        Список событий указанного типа
+
         """
         if event_type == 'user_speech':
             return self.speech_events.copy()
@@ -131,11 +163,15 @@ class MemoryManager:
         """
         Получить количество событий.
 
-        Args:
-            event_type: Тип событий для подсчета (если None, подсчет всех событий)
+        Args
+        ----
+        event_type:
+            Тип событий для подсчета (если None, подсчет всех событий)
 
-        Returns:
-            Количество событий
+        Returns
+        -------
+        Количество событий
+
         """
         if event_type is None:
             return len(self.recent_events)
@@ -158,7 +194,9 @@ class MemoryManager:
             event_type: Тип событий для очистки
         """
         # Удаляем из общей памяти
-        self.recent_events = [e for e in self.recent_events if e['type'] != event_type]
+        self.recent_events = [
+            e for e in self.recent_events if e['type'] != event_type
+        ]
 
         # Удаляем из типизированных очередей
         if event_type == 'user_speech':
@@ -182,7 +220,9 @@ class MemoryManager:
         Returns:
             Список важных событий
         """
-        important = [e for e in self.recent_events if e.get('important', False)]
+        important = [
+            e for e in self.recent_events if e.get('important', False)
+        ]
         if count is not None:
             return important[-count:]
         return important

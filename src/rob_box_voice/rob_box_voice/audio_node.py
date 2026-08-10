@@ -96,21 +96,23 @@ class AudioNode(Node):
         # Параметры
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('channels', 1)
-        # Количество микрофонных каналов для mono-даунмикса (issue #1076).
-        # ReSpeaker 6ch: [0..3]=микрофоны (Ch1-Ch4), [4]=playback (Ch5),
-        # [5]=loopback (Ch6). Playback-reference НЕ должен усредняться в
-        # mono — иначе эхо TTS/музыки попадает в STT. Default 4; override
-        # через конфиг (audio_node.yaml) или env MIC_CHANNELS.
-        # ⚠️ A/B 09.08: если в e2e появится yandex:empty (фраза идёт через
-        # динамик робота в Ch5-6), ставьте mic_channels=6 — см. interleaved_to_mono.
-        _mic_channels_default = 4
-        _env_mic_channels = os.getenv('MIC_CHANNELS')
-        if _env_mic_channels is not None:
-            try:
-                _mic_channels_default = int(_env_mic_channels)
-            except ValueError:
-                _mic_channels_default = 4
-        self.declare_parameter('mic_channels', _mic_channels_default)
+        # Issue 1076: какие каналы усреднять для моно (0-based). ReSpeaker
+        # в 6-канальном RAW-режиме: Ch1-4 = сырые микрофоны, Ch5-6 =
+        # playback-референс (AEC-референс, то, что играет робот).
+        # ⚠️ A/B-проверка 09.08 (робот 10.1.1.21): mix_channels=[0,1,2,3]
+        # (только микрофоны) → Yandex STT стабильно `empty`; все 6 каналов
+        # [0,1,2,3,4,5] → `yandex:ok` ПРИНЯТО. Причина: в e2e/реальной
+        # работе фраза пользователя попадает в playback-референс Ch5-6
+        # (через динамик робота) — исключение референса выбрасывает
+        # САМЫЙ ЧИСТЫЙ сигнал фразы. Эхо-защита уже есть на уровне VAD
+        # (tts_grace_s, music_vad_threshold) и wake-word gate — НЕ на
+        # уровне микшера. Поэтому дефолт = все 6 каналов.
+        # Пустой список = все каналы (legacy). Для ReSpeaker 6ch укажите
+        # [0, 1, 2, 3, 4, 5] (все каналы, подтверждено A/B).
+        # НЕПУСТОЙ дефолт обязателен: rclpy Humble объявляет пустой список [] как
+        # BYTE_ARRAY, а yaml даёт [0,1,2,3,4,5] INTEGER_ARRAY → InvalidParameterTypeException
+        # (audio_node падал в цикле, робот не слышал речь — 09.08, live-фикс).
+        self.declare_parameter('mix_channels', [0, 1, 2, 3, 4, 5])
         # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
         # мал для Python-callback — GIL/публикация/USB VAD приводили к
         # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
@@ -133,7 +135,7 @@ class AudioNode(Node):
 
         self.sample_rate = self.get_parameter('sample_rate').value
         self.channels = self.get_parameter('channels').value
-        self.mic_channels = self.get_parameter('mic_channels').value
+        self.mix_channels = list(self.get_parameter('mix_channels').value or [])
         self.chunk_size = self.get_parameter('chunk_size').value
         self.vad_threshold = self.get_parameter('vad_threshold').value
         self.publish_rate = self.get_parameter('publish_rate').value
@@ -180,7 +182,13 @@ class AudioNode(Node):
 
         # Параметры VAD
         self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
-        self.declare_parameter('speech_prefetch', 0.5)      # Буфер перед началом речи
+        # Буфер перед началом речи (pre-roll). Должен покрывать ЛАТЕНЦИЮ VAD:
+        # аппаратный GAMMAVAD на ReSpeaker + опрос на 10Hz (100ms) + джиттер
+        # потока. На слабом/грязном сигнале (e2e через динамик) VAD срабатывает
+        # с задержкой 300-500ms — при 0.5s начало фразы («робот») выпадало из
+        # окна и STT слышал «оберт» → «роберт». 1.0s = 2x запас к требованиям
+        # (первые 300-500ms) и не раздувает длительность фразы (speech_max_duration).
+        self.declare_parameter('speech_prefetch', 1.0)      # Буфер перед началом речи
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
         self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
 
@@ -191,7 +199,20 @@ class AudioNode(Node):
 
         # Буферы для VAD
         self.is_speeching = False
-        self.speech_stopped_time = self.get_clock().now()
+        # ВАЖНО: speech_stopped_time должен быть в ПРОШЛОМ, а не «сейчас».
+        # Иначе первый же tick check_vad_and_doa увидит time_since_stop≈0
+        # (меньше speech_continuation) и включит is_speeching=True ещё до
+        # реальной речи: буфер наполнится ~3s шума при старте, а первый
+        # захват пользователя приклеится ПОСЛЕ этого шума (pre-roll уже не
+        # подставится — буфер непустой) → STT слышит «…роберт» вместо «робот».
+        try:
+            from rclpy.duration import Duration as _Duration
+
+            self.speech_stopped_time = self.get_clock().now() - _Duration(
+                seconds=self.speech_continuation + 1.0
+            )
+        except Exception:  # pragma: no cover — защита для тестовых моков
+            self.speech_stopped_time = self.get_clock().now()
         self.speech_audio_buffer = b""
         self.speech_prefetch_buffer = b""
         self.speech_prefetch_bytes = int(
@@ -269,6 +290,12 @@ class AudioNode(Node):
             )
 
             self.get_logger().info(f'✓ Аудио поток открыт: {self.sample_rate}Hz, {self.channels}ch')
+            if self.mix_channels:
+                self.get_logger().info(
+                    f'✓ mix_channels={self.mix_channels} — каналы для моно-микса '
+                    f'(issue 1076; A/B 09.08: все 6 каналов включая playback-референс '
+                    f'Ch5-6 → yandex:ok)'
+                )
             self.publish_state('ready')
 
         except Exception as e:
@@ -295,10 +322,29 @@ class AudioNode(Node):
 
             # Если многоканальное аудио - конвертируем в моно
             if self.channels > 1:
-                # Только микрофонные каналы Ch1..Ch{mic_channels} —
-                # playback-reference (Ch5/Ch6) исключается из mean, чтобы
-                # эхо TTS/музыки не попадало в STT (issue #1076).
-                audio_bytes = interleaved_to_mono(in_data, self.channels, self.mic_channels)
+                import numpy as np
+                # Конвертируем bytes в numpy массив int16
+                audio_data = np.frombuffer(in_data, dtype=np.int16)
+                # Разделяем на каналы: [ch1, ch2, ..., ch6, ch1, ch2, ...]
+                audio_data = audio_data.reshape(-1, self.channels)
+                # Issue 1076: усредняем ВЫБРАННЫЕ каналы.
+                # ReSpeaker в 6-канальном RAW-режиме: Ch1-4 = микрофоны,
+                # Ch5-6 = playback-референс (AEC-референс — то, что играет
+                # робот). ⚠️ A/B 09.08: НЕЛЬЗЯ исключать референс — в e2e/
+                # реальной работе фраза пользователя идёт через динамик робота
+                # в Ch5-6 (самый чистый сигнал); mix [0,1,2,3] → yandex:empty,
+                # все 6 каналов → yandex:ok. Эхо-защита — на уровне VAD
+                # (tts_grace_s, music_vad_threshold) и wake-word gate.
+                # mix_channels=[0,1,2,3,4,5] включает все каналы (дефолт).
+                if self.mix_channels:
+                    # Берём только запрошенные каналы (валидные индексы)
+                    channels = [c for c in self.mix_channels if 0 <= c < self.channels]
+                    if channels:
+                        audio_data = audio_data[:, channels]
+                # Усреднение по выбранным каналам для получения моно
+                mono_data = audio_data.mean(axis=1).astype(np.int16)
+                # Конвертируем обратно в bytes
+                audio_bytes = mono_data.tobytes()
             else:
                 audio_bytes = in_data
 
@@ -377,6 +423,10 @@ class AudioNode(Node):
                 # Сбрасываем незавершённое накопление — это эхо, не речь.
                 self.speech_audio_buffer = b""
                 self.is_speeching = False
+                # Pre-roll тоже чистим: старый буфер мог содержать хвост
+                # предыдущей фразы, который не должен попасть в начало
+                # следующего захвата (иначе STT склеит «…роберт» из обрывка).
+                self.speech_prefetch_buffer = b""
             self.tts_active = True
         elif state in ("ready", "idle", "stopped"):
             if self.tts_active:
@@ -384,6 +434,10 @@ class AudioNode(Node):
                 self.get_logger().info(
                     f"🔇 [issue 989] TTS закончился — grace {self.tts_grace_s}s"
                 )
+                # Pre-roll очищаем ПОСЛЕ TTS: если этого не сделать, первый
+                # захват после ответа робота получит pre-roll с хвостом
+                # собственного голоса → STT слышит «…роберт» вместо «робот».
+                self.speech_prefetch_buffer = b""
             self.tts_active = False
 
     def _on_music_state(self, msg: String) -> None:
@@ -509,7 +563,11 @@ class AudioNode(Node):
             if time_since_stop < self.speech_continuation:
                 # Речь продолжается (или недавно закончилась)
                 if not self.is_speeching:
-                    self.get_logger().info('🗣️  Начало речи')
+                    pre_roll_s = len(self.speech_prefetch_buffer) / (self.sample_rate * 2)
+                    self.get_logger().info(
+                        f'🗣️  Начало речи (pre-roll {pre_roll_s*1000:.0f}ms '
+                        f'из {self.speech_prefetch*1000:.0f}ms)'
+                    )
                 self.is_speeching = True
             elif self.is_speeching:
                 # Речь закончилась - публикуем накопленный буфер
@@ -522,6 +580,15 @@ class AudioNode(Node):
 
                 if self.speech_min_duration <= duration <= self.speech_max_duration:
                     self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
+                    # Issue 1076 (телеметрия): честный «замолчал → фраза готова»
+                    # = time_since_stop (>= speech_continuation), а НЕ 0. Раньше
+                    # T_accept считался от «Получена фраза» (после 3с паузы) —
+                    # итоговый «замолчал → акцепт» занижался на speech_continuation.
+                    # Этот лог + «фраза→ПРИНЯТО» в stt_node дают честный полный замер.
+                    self.get_logger().info(
+                        f"📊 [telemetry] silence_to_phrase_s={time_since_stop:.2f} "
+                        f"(speech_continuation={self.speech_continuation})"
+                    )
                     # Публикуем speech_audio
                     msg = AudioData()
                     msg.data = list(buf)

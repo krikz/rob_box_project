@@ -145,6 +145,7 @@ def _make_audio_node_stub(**param_overrides):
     defaults = dict(
         sample_rate=16000,
         channels=1,
+        mix_channels=[],  # issue 1076: пусто = все каналы (legacy)
         chunk_size=4096,  # issue #1050: 1024 → 4096 (paInputOverflow fix)
         vad_threshold=3.5,
         publish_rate=10,
@@ -400,3 +401,170 @@ class TestInputOverflowHandling:
         assert len(warnings) == 1
         assert "512/2048" in warnings[0]  # got/expected
         assert "потеряно ~1536" in warnings[0]
+
+
+class TestMixChannels:
+    """Issue 1076: миксер каналов ReSpeaker 6-канального RAW-режима.
+
+    ReSpeaker Mic Array v2.0 в 6-канальном режиме отдаёт:
+      Ch1-4 = сырые микрофоны, Ch5-6 = playback-референс (AEC-референс).
+    ⚠️ A/B-проверка 09.08 (робот 10.1.1.21): mix_channels=[0,1,2,3]
+    (только микрофоны) → Yandex STT стабильно `empty`; все 6 каналов
+    [0,1,2,3,4,5] → `yandex:ok` ПРИНЯТО. Фраза пользователя в e2e/реальной
+    работе попадает в playback-референс Ch5-6 (через динамик робота) —
+    это САМЫЙ чистый сигнал. ДЕФОЛТ = все 6 каналов; исключение референса
+    остаётся только как явный opt-in (и ломает STT).
+    """
+
+    @staticmethod
+    def _interleaved_6ch(frame_count: int) -> bytes:
+        """Синтетический 6-канальный кадр: Ch0-3 = тишина, Ch4-5 = громкий тон.
+
+        Возвращает bytes (int16 LE, interleaved) как от PyAudio в RAW-режиме.
+        """
+        import numpy as np
+
+        frames = np.zeros((frame_count, 6), dtype=np.int16)
+        frames[:, 4] = 20000  # playback-референс (Ch5)
+        frames[:, 5] = 20000  # playback-референс (Ch6)
+        return frames.tobytes()
+
+    def test_default_all_channels_keeps_reference(self, audio_node):
+        """Дефолт mix_channels=[0,1,2,3,4,5] → референс (Ch5-6) В МИКСЕ.
+
+        A/B 09.08: без референса Yandex STT даёт empty, поэтому по умолчанию
+        усредняются ВСЕ 6 каналов (референс несёт чистую фразу).
+        """
+        audio_node.is_running = True
+        audio_node.channels = 6
+        audio_node.mix_channels = [0, 1, 2, 3, 4, 5]
+
+        audio_node.audio_callback(self._interleaved_6ch(256), 256, {}, 0)
+
+        published = audio_node.audio_pub.publish.call_args[0][0]
+        samples = bytes(published.data)
+        # 4 тихих + 2 громких канала → среднее ≈ 20000*2/6 ≈ 6667 > 0
+        assert any(b != 0 for b in samples), "референс должен быть в дефолтном миксе!"
+
+    def test_mix_channels_excludes_playback_reference(self, audio_node):
+        """Явный opt-in mix_channels=[0,1,2,3] → референс (Ch5-6) НЕ в миксе.
+
+        Опция остаётся для экспериментов, но НЕ является дефолтом: A/B 09.08
+        показал, что без референса Yandex STT стабильно empty.
+        """
+        audio_node.is_running = True
+        audio_node.channels = 6
+        audio_node.mix_channels = [0, 1, 2, 3]
+
+        audio_node.audio_callback(self._interleaved_6ch(256), 256, {}, 0)
+
+        published = audio_node.audio_pub.publish.call_args[0][0]
+        samples = bytes(published.data)
+        # Все сэмплы = 0 (микрофоны тихие, референс исключён)
+        assert all(b == 0 for b in samples), "playback-референс попал в моно-микс!"
+
+    def test_legacy_all_channels_keeps_reference(self, audio_node):
+        """Пустой mix_channels (legacy) → усредняются ВСЕ каналы, как раньше."""
+        audio_node.is_running = True
+        audio_node.channels = 6
+        audio_node.mix_channels = []
+
+        audio_node.audio_callback(self._interleaved_6ch(256), 256, {}, 0)
+
+        published = audio_node.audio_pub.publish.call_args[0][0]
+        samples = bytes(published.data)
+        # 4 тихих + 2 громких канала → среднее ≈ 20000*2/6 ≈ 6667 > 0
+        assert any(b != 0 for b in samples), "legacy-микс должен содержать референс"
+
+    def test_invalid_mix_channel_index_ignored(self, audio_node):
+        """Индексы вне диапазона каналов отбрасываются без падения."""
+        audio_node.is_running = True
+        audio_node.channels = 6
+        audio_node.mix_channels = [0, 1, 2, 3, 99, -1]
+
+        audio_node.audio_callback(self._interleaved_6ch(128), 128, {}, 0)
+
+        published = audio_node.audio_pub.publish.call_args[0][0]
+        samples = bytes(published.data)
+        assert all(b == 0 for b in samples), "невалидные индексы не должны ломать микс"
+
+    def test_single_channel_passthrough(self, audio_node):
+        """channels=1 → данные публикуются как есть (legacy путь, без микса)."""
+        audio_node.is_running = True
+        audio_node.channels = 1
+        audio_node.mix_channels = [0, 1, 2, 3]  # игнорируется для 1 канала
+
+        raw = b"\x10\x00" * 64  # 64 сэмпла int16 = 2000... нет, 0x0010=16
+        audio_node.audio_callback(raw, 64, {}, 0)
+
+        published = audio_node.audio_pub.publish.call_args[0][0]
+        assert bytes(published.data) == raw
+
+
+class TestTelemetrySilenceToPhrase:
+    """Issue 1076 (телеметрия): честный «замолчал → акцепт».
+
+    audio_node логирует silence_to_phrase_s (включает speech_continuation),
+    stt_node логирует phrase_to_accept_ms. Полный замер = сумма.
+    """
+
+    class _FakeTime:
+        """Мини-заменитель rclpy Time: поддерживает вычитание."""
+
+        def __init__(self, nanos: float):
+            self._nanos = nanos
+
+        @property
+        def nanoseconds(self) -> float:
+            return self._nanos
+
+        def __sub__(self, other: "TestTelemetrySilenceToPhrase._FakeTime"):
+            return TestTelemetrySilenceToPhrase._FakeTime(
+                self._nanos - other._nanos
+            )
+
+    def test_silence_to_phrase_logged(self, audio_node):
+        """При публикации speech_audio пишется telemetry-строка с паузой."""
+        logs = []
+
+        def _logger():
+            return MagicMock(
+                info=lambda *a, **kw: logs.append(a[0] if a else ""),
+                warning=lambda *a, **kw: None,
+                warn=lambda *a, **kw: None,
+                error=lambda *a, **kw: None,
+                debug=lambda *a, **kw: None,
+            )
+
+        audio_node.get_logger = _logger
+        audio_node.sample_rate = 16000
+        audio_node.speech_min_duration = 0.3
+        audio_node.speech_max_duration = 10.0
+        audio_node.speech_continuation = 3.0
+        audio_node.is_speeching = True
+        audio_node.speech_audio_buffer = b"\x00\x00" * 16000  # 1с речи
+        audio_node.speech_stopped_time = self._FakeTime(0)
+        audio_node.get_clock = lambda: MagicMock(
+            now=MagicMock(return_value=self._FakeTime(int(3.5 * 1e9)))
+        )
+        audio_node.vad_pub = MagicMock()
+        audio_node.direction_pub = MagicMock()
+        audio_node.speech_audio_pub = MagicMock()
+        audio_node.prev_vad = False
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = False
+        audio_node.respeaker = MagicMock()
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.get_vad = MagicMock(return_value=False)
+        audio_node.respeaker.get_direction = MagicMock(return_value=None)
+
+        audio_node.check_vad_and_doa()
+
+        assert any("silence_to_phrase_s=" in line for line in logs), (
+            f"ожидалась telemetry-строка silence_to_phrase_s, логи: {logs}"
+        )
+        telemetry_line = next(l for l in logs if "silence_to_phrase_s=" in l)
+        assert "speech_continuation=3.0" in telemetry_line
+        # time_since_stop = 3.5с (>= speech_continuation)
+        assert "silence_to_phrase_s=3.50" in telemetry_line
