@@ -500,6 +500,10 @@ class DialogueNode(Node):
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
         self.declare_parameter("speaker_id_enabled", True)
         self.declare_parameter("speaker_db_path", "/data/speakers.db")
+        # issue #1077: сколько фраз подряд с одним speaker_tag нужно для
+        # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
+        # 1 = мгновенное подтверждение (если tag стабилен).
+        self.declare_parameter("speaker_min_phrases", 2)
         # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
         # рестарт робота: если MiniMax мёртв (2056 Token Plan), первый же
         # запрос после ребута идёт на deepseek, а не тратит время на
