@@ -466,12 +466,21 @@ class DialogueNode(Node):
         # DEEPSEEK_API_KEY в env voice-assistant.
         self.declare_parameter("llm_provider", "deepseek")
         # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
-        # Формат: "minimax,deepseek,mimo" — порядок = приоритет (primary → fallbacks).
-        # Каждый провайдер использует СВОЙ well-known base_url/model из модульных
-        # констант (НЕ из YAML), поэтому параметры base_url/model больше не используются
-        # как глобальные — они хранятся в секции каждого провайдера.
+        # Формат: "minimax,deepseek" — порядок = приоритет (primary → fallbacks).
+        # Каждый провайдер настраивается в своей YAML-секции (<name>.base_url и т.д.).
         # Пустая строка → fallback на старый llm_provider (обратная совместимость).
         self.declare_parameter("llm_providers", "")
+        # Per-provider параметры — каждая YAML-секция провайдера
+        # (minimax:, deepseek:, mimo:, qwen:) отдаёт свои настройки
+        # через dotted-имена.  Пустая строка → используются
+        # well-known defaults из _LLM_PROVIDER_REGISTRY.
+        for pname in ("minimax", "deepseek", "mimo", "qwen"):
+            self.declare_parameter(f"{pname}.api_key", "")
+            self.declare_parameter(f"{pname}.base_url", "")
+            self.declare_parameter(f"{pname}.model", "")
+            self.declare_parameter(f"{pname}.temperature", 0.0)
+            self.declare_parameter(f"{pname}.max_tokens", 0)
+            self.declare_parameter(f"{pname}.timeout_s", 0.0)
         self.declare_parameter("api_key", "")
         self.declare_parameter("base_url", "")
         self.declare_parameter("model", "")
@@ -555,27 +564,39 @@ class DialogueNode(Node):
     # ── LLM provider registry (well-known defaults) ────────────────────
     # Each entry maps a provider name to its factory and constants.
     # Extend this dict to add new providers (mimo, qwen, etc.).
+    # ── LLM provider registry (metadata + well-known defaults) ──────────
+    # Each entry maps a provider name to its metadata.  Per-call overrides
+    # (base_url, model, api_key) are read from the YAML section
+    # ``<provider_name>.base_url`` etc., falling back to these defaults.
+    # Extend this dict to add new providers.
     _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "minimax": {
-            "factory": lambda self: build_minimax_provider(
-                LLMConfig(
-                    provider="minimax",
-                    model=MINIMAX_DEFAULT_MODEL,
-                    api_key=self.get_parameter("api_key").value or None,
-                    timeout_s=90.0,
-                )
-            ),
-            "has_balance_api": False,
             "display_name": "MiniMax",
+            "has_balance_api": False,
+            "default_base_url": "https://api.minimax.io/v1",
+            "default_model": "MiniMax-M3",
+            "env_key_var": "MINIMAX_API_KEY",
         },
         "deepseek": {
-            "factory": lambda self: build_deepseek_provider(
-                api_key=None,  # берёт DEEPSEEK_API_KEY из env
-                base_url=DEEPSEEK_DEFAULT_BASE_URL,
-                model=DEEPSEEK_DEFAULT_MODEL,
-            ),
-            "has_balance_api": True,
             "display_name": "DeepSeek",
+            "has_balance_api": True,
+            "default_base_url": "https://api.deepseek.com",
+            "default_model": "deepseek-chat",
+            "env_key_var": "DEEPSEEK_API_KEY",
+        },
+        "mimo": {
+            "display_name": "MiMo",
+            "has_balance_api": False,
+            "default_base_url": "https://api.xiaomimimo.com/v1",
+            "default_model": "mimo-v2.5",
+            "env_key_var": "MIMO_API_KEY",
+        },
+        "qwen": {
+            "display_name": "Qwen",
+            "has_balance_api": False,
+            "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "default_model": "qwen-turbo",
+            "env_key_var": "DASHSCOPE_API_KEY",
         },
     }
 
@@ -608,11 +629,20 @@ class DialogueNode(Node):
         return [single]
 
     def _build_single_provider(self, name: str) -> Any | None:
-        """Build one LLM provider by name. Returns ``None`` on failure (logged).
+        """Build one LLM provider from its YAML section + registry defaults.
 
-        Each provider uses its own well-known ``base_url`` / ``model`` from
-        the registry — the YAML ``base_url`` parameter is NOT forwarded.
+        Resolution order (per field):
+        1. YAML param ``<name>.base_url`` (etc.) — если задан
+        2. Registry default (``_LLM_PROVIDER_REGISTRY[name]``)
+        3. Module-level constant (``MINIMAX_DEFAULT_BASE_URL`` etc.)
+
+        API key resolution:
+        1. YAML ``<name>.api_key`` (явный)
+        2. Env var из registry ``env_key_var`` (напр. ``MINIMAX_API_KEY``)
+        3. ``None`` — провайдер сам разберётся (или кинет ConfigError)
         """
+        import os as _os
+
         name = name.strip().lower()
         entry = self._LLM_PROVIDER_REGISTRY.get(name)
         if entry is None:
@@ -621,15 +651,75 @@ class DialogueNode(Node):
                 f"Known: {sorted(self._LLM_PROVIDER_REGISTRY.keys())!r}"
             )
             return None
+
+        display = entry["display_name"]
+
+        # Resolve per-field: YAML → registry default → module constant
+        def _p(key: str, default: str = "") -> str:
+            """Read ``<name>.<key>`` from ROS param, fallback chain."""
+            try:
+                val = str(self.get_parameter(f"{name}.{key}").value or "").strip()
+            except Exception:
+                val = ""
+            return val or default
+
+        base_url = (
+            _p("base_url", entry.get("default_base_url", ""))
+            or MINIMAX_DEFAULT_BASE_URL  # fallback для minimax
+        )
+        model = (
+            _p("model", entry.get("default_model", ""))
+            or MINIMAX_DEFAULT_MODEL
+        )
+
+        # API key: YAML explicit → env var → None
+        api_key = _p("api_key") or None
+        if not api_key:
+            env_var = entry.get("env_key_var", "")
+            if env_var:
+                api_key = _os.environ.get(env_var) or None
+
+        # Timeout / temperature / max_tokens — only if YAML set non-zero
         try:
-            provider = entry["factory"](self)
+            timeout_s = float(self.get_parameter(f"{name}.timeout_s").value or 0)
+        except Exception:
+            timeout_s = 0.0
+        try:
+            temperature = float(self.get_parameter(f"{name}.temperature").value or 0)
+        except Exception:
+            temperature = 0.0
+        try:
+            max_tokens = int(self.get_parameter(f"{name}.max_tokens").value or 0)
+        except Exception:
+            max_tokens = 0
+
+        # ── Build ──────────────────────────────────────────────────
+        try:
+            if name == "minimax":
+                provider = build_minimax_provider(
+                    LLMConfig(
+                        provider="minimax",
+                        model=model or MINIMAX_DEFAULT_MODEL,
+                        api_key=api_key,
+                        timeout_s=timeout_s or 90.0,
+                    )
+                )
+            else:
+                # OpenAI-совместимые: deepseek, mimo, qwen
+                provider = build_deepseek_provider(
+                    api_key=api_key,
+                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
+                    model=model or DEEPSEEK_DEFAULT_MODEL,
+                )
+
             self.get_logger().info(
-                f"✅ LLM provider built: {entry['display_name']} ({name})"
+                f"✅ LLM provider built: {display} ({name}) "
+                f"base_url={base_url or '(default)'} model={model or '(default)'}"
             )
             return provider
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"⚠️ LLM provider {name!r} ({entry['display_name']}) "
+                f"⚠️ LLM provider {name!r} ({display}) "
                 f"не построен: {type(exc).__name__}: {exc}"
             )
             return None
