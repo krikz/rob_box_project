@@ -914,14 +914,20 @@ class TestLLMProviderWiring(unittest.TestCase):
         return node
 
     def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
-        """The legacy ``llm_provider`` config must never fall through to OpenAI."""
+        """DeepSeek провайдер всегда использует свой well-known base_url (НЕ из YAML).
+
+        Issue #1089: YAML ``base_url: "https://api.minimax.io/v1"`` больше
+        не протекает в deepseek-провайдер — каждый провайдер жёстко
+        привязан к своему endpoint через модульные константы.
+        """
         from unittest.mock import patch
 
+        from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
+
         node = self._stub_node({
+            "llm_providers": "",           # fallback на llm_provider
             "llm_provider": "deepseek",
             "api_key": "test-key",
-            "base_url": "",
-            "model": "",
         })
 
         with patch(
@@ -933,41 +939,42 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         self.assertIs(provider, sentinel)
         factory.assert_called_once_with(
-            api_key="test-key",
-            base_url="https://api.deepseek.com",
-            model="deepseek-chat",
+            api_key=None,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            model=DEEPSEEK_DEFAULT_MODEL,
         )
 
     def test_unknown_llm_provider_fails_before_any_client_is_built(self):
         """A typo must fail loudly instead of sending credentials to OpenAI."""
         node = self._stub_node({
+            "llm_providers": "",           # fallback на llm_provider
             "llm_provider": "openai",
             "api_key": "test-key",
-            "base_url": "",
-            "model": "",
         })
 
-        with self.assertRaisesRegex(ValueError, "llm_provider.*deepseek"):
+        with self.assertRaisesRegex(RuntimeError, "No LLM providers"):
             node._build_llm()
 
     def test_minimax_init_failure_falls_back_to_deepseek_only(self):
         """Issue #1089: если build_minimax_provider падает (нет ключа,
         невалидный ключ, сетевой сбой при инициализации), _build_llm
-        должен graceful-вернуть deepseek-only провайдер, а не
-        пробрасывать исключение наружу.
+        должен graceful-пропустить MiniMax и вернуть deepseek как
+        единственного провайдера (без health-aware обёртки).
 
-        Иначе dialogue_node крашится на init → ros2 launch не
-        рестартит успешно → робот молчит с приветствием.
+        DeepSeek получает СВОЙ well-known base_url, а не MiniMax URL
+        из YAML (issue #1089 fix).
         """
         from unittest.mock import patch
 
         from rob_box_harness.errors import ConfigError
+        from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
 
         node = self._stub_node({
+            "llm_providers": "minimax,deepseek",   # приоритетная цепочка
             "llm_provider": "minimax",
             "api_key": "missing-key",
-            "base_url": "https://api.minimax.io/v1",
-            "model": "MiniMax-M3",
+            "health_cache_path": "",
+            "health_ttl_s": "",
         })
 
         with patch(
@@ -984,28 +991,30 @@ class TestLLMProviderWiring(unittest.TestCase):
 
             provider = node._build_llm()
 
+        # Один провайдер → без health-aware обёртки.
         self.assertIs(provider, sentinel)
         mm_factory.assert_called_once()
-        # Только deepseek (без health-aware обёртки — один провайдер).
+        # DeepSeek использует СВОЙ base_url (НЕ minimax из YAML!).
         ds_factory.assert_called_once_with(
-            api_key="missing-key",
-            base_url="https://api.minimax.io/v1",
-            model="MiniMax-M3",
+            api_key=None,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            model=DEEPSEEK_DEFAULT_MODEL,
         )
 
     def test_minimax_init_generic_exception_also_falls_back_to_deepseek(self):
         """Та же гарантия для неожиданных ошибок (не только ConfigError):
         build_minimax_provider может упасть с ImportError/TimeoutError/
-        любой RuntimeError — _build_llm всё равно не должен крашить
-        диалоговую ноду.
+        любой RuntimeError — _build_llm пропускает сломавшийся провайдер
+        и продолжает цепочку.
         """
         from unittest.mock import patch
 
         node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
             "llm_provider": "minimax",
             "api_key": "any",
-            "base_url": "",
-            "model": "",
+            "health_cache_path": "",
+            "health_ttl_s": "",
         })
 
         with patch(
@@ -1019,21 +1028,20 @@ class TestLLMProviderWiring(unittest.TestCase):
 
             provider = node._build_llm()
 
+        # Один провайдер → без обёртки.
         self.assertIs(provider, sentinel)
         ds_factory.assert_called_once()
 
     def test_minimax_init_success_still_wraps_in_health_aware_fallback(self):
-        """Зелёный путь не должен сломаться: если MiniMax собирается
-        без ошибок, _build_llm по-прежнему возвращает HealthAwareFallbackLLM
-        с двумя провайдерами (primary+fb).
+        """Зелёный путь: оба провайдера собираются → HealthAwareFallbackLLM
+        с цепочкой [minimax, deepseek]. Каждый со своим base_url.
         """
         from unittest.mock import patch
 
         node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
             "llm_provider": "minimax",
             "api_key": "valid-key",
-            "base_url": "https://api.minimax.io/v1",
-            "model": "MiniMax-M3",
             "health_cache_path": "",
             "health_ttl_s": "",
         })
@@ -1082,9 +1090,8 @@ class TestLLMProviderWiring(unittest.TestCase):
             repo_root / "docker/vision/config/voice_assistant/voice_assistant.yaml",
         )
         expected = {
+            "llm_providers": "minimax,deepseek",
             "llm_provider": "minimax",
-            "base_url": "https://api.minimax.io/v1",
-            "model": "MiniMax-M3",
         }
 
         for path in paths:
