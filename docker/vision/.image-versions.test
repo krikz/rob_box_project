@@ -1,10 +1,10 @@
 # Vision Pi image versions — test (feature/* branches)
 # Managed automatically by CI (L-Build Single Service workflow)
 
-OAK_D_TAG=test-17d8e40
-RTABMAP_SYNC_TAG=test-17d8e40
-LED_MATRIX_TAG=test-17d8e40
-CEILING_CAMERA_TAG=test-17d8e40
-VOICE_RESOURCES_TAG=test-17d8e40
-VOICE_ASSISTANT_TAG=test-17d8e40
-TELEGRAM_BOT_TAG=test-17d8e40
+OAK_D_TAG=test-8f712b8
+RTABMAP_SYNC_TAG=test-8f712b8
+LED_MATRIX_TAG=test-8f712b8
+CEILING_CAMERA_TAG=test-8f712b8
+VOICE_RESOURCES_TAG=test-8f712b8
+VOICE_ASSISTANT_TAG=test-8f712b8
+TELEGRAM_BOT_TAG=test-8f712b8
