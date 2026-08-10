@@ -219,19 +219,23 @@ def _rclpy_logger_safe(orig):
 # Apply the RcutilsLogger monkey-patch defensively. ROS2 Humble does not
 # expose ``rclpy.impl.rcutils_logger`` (only newer distros do), so we must
 # guard the import — otherwise unit tests on Humble fail at import time
-# (``ModuleNotFoundError: No module named 'rclpy.impl'``).
-try:
+# (``ModuleNotFoundError: No module named 'rclpy.impl'``). The explicit
+# ``_rl is None`` branch keeps the patch a no-op when the module is missing
+# (unit/CI environment) while still running on the robot runtime.
+try:  # pragma: no cover — rclpy.impl отсутствует в unit-окружении CI
     import rclpy.impl.rcutils_logger as _rl
+except (ImportError, AttributeError):
+    # ROS2 distro without rclpy.impl — original logger is %s-safe enough
+    # (no RcutilsLogger bug to work around here).
+    _rl = None
+
+if _rl is not None:  # pragma: no cover — runtime-робот (rclpy доступен)
     for _m in ("debug", "info", "warning", "error", "fatal"):
         _orig = getattr(_rl.RcutilsLogger, _m)
         if not getattr(_orig, "_rclpy_safe", False):
             _w = _rclpy_logger_safe(_orig)
             _w._rclpy_safe = True
             setattr(_rl.RcutilsLogger, _m, _w)
-except (ImportError, AttributeError):
-    # ROS2 distro without rclpy.impl — original logger is %s-safe enough
-    # (no RcutilsLogger bug to work around here).
-    pass
 
 
 class DialogueNode(Node):

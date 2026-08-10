@@ -31,7 +31,7 @@ def generate_launch_description():
                 'vad_threshold': 3.5,  # VAD порог в dB
                 'publish_rate': 10,
                 'speech_continuation': 0.5,   # 500ms после речи
-                'speech_prefetch': 0.5,       # 500ms перед речью
+                'speech_prefetch': 1.0,       # 1000ms перед речью (латенция VAD 300-500ms — иначе «робот»→«роберт»)
                 'speech_min_duration': 0.3,   # Минимум 300ms
                 'speech_max_duration': 10.0,  # Максимум 10s
             }]
