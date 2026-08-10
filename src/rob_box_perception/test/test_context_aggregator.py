@@ -301,7 +301,7 @@ sys.modules.setdefault('rob_box_perception_msgs.msg', _msgs_msg)
 from geometry_msgs.msg import Point, PoseStamped, Quaternion  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 import rclpy  # noqa: E402  — resolves to the shim module registered above
-from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402
+from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402, E501
 from std_msgs.msg import String  # noqa: E402
 
 
@@ -509,7 +509,9 @@ class TestCallbacks(unittest.TestCase):
 
         # Проверяем что добавлено в robot_response_events
         self.assertGreater(len(self.node.robot_response_events), 0)
-        self.assertEqual(self.node.robot_response_events[-1]['type'], 'robot_response')
+        self.assertEqual(
+            self.node.robot_response_events[-1]['type'], 'robot_response'
+        )
 
     def test_on_robot_thought(self):
         """Тест: callback robot_thought (удалён в W10 — пропускаем)."""
@@ -615,7 +617,9 @@ class TestMemoryManagement(unittest.TestCase):
 
         # Старое событие должно быть удалено
         self.assertEqual(len(self.node.speech_events), 1)
-        self.assertEqual(self.node.speech_events[0]['content'], 'Новое событие')
+        self.assertEqual(
+            self.node.speech_events[0]['content'], 'Новое событие'
+        )
 
     def test_get_memory_summary_empty(self):
         """Тест: summary пустой памяти."""

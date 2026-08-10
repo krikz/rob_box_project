@@ -21,6 +21,7 @@ class HealthMonitor(Node):
     """Простой монитор здоровья системы."""
 
     def __init__(self):
+        """Инициализировать монитор здоровья системы."""
         super().__init__('health_monitor')
 
         # Параметры
@@ -47,7 +48,9 @@ class HealthMonitor(Node):
         )
 
         # Publisher для звуков
-        self.sound_pub = self.create_publisher(String, '/voice/sound/trigger', 10)
+        self.sound_pub = self.create_publisher(
+            String, '/voice/sound/trigger', 10
+        )
 
         # Таймер для отчётов
         self.report_timer = self.create_timer(5.0, self.print_report)
@@ -88,9 +91,9 @@ class HealthMonitor(Node):
 
     def print_report(self):
         """Печать отчёта о здоровье системы."""
-        print('\n' + '='*70)
+        print('\n' + '=' * 70)
         print('🏥 HEALTH REPORT')
-        print('='*70)
+        print('=' * 70)
 
         # Статус
         now = time.time()
@@ -111,13 +114,17 @@ class HealthMonitor(Node):
                 self._play_sound('error')
             elif status == '⚠️  DEGRADED':
                 self._play_sound('confused')
-            elif status == '✅ HEALTHY' and self.last_status is not None:  # Восстановление
+            elif status == '✅ HEALTHY' and self.last_status is not None:
+                # Восстановление
                 self._play_sound('cute')
 
             self.last_status = status
 
         print(f'Status: {status}')
-        print(f'Total Errors: {len(self.errors)} (последние {recent_errors} за минуту)')
+        print(
+            f'Total Errors: {len(self.errors)} '
+            f'(последние {recent_errors} за минуту)'
+        )
         print(f'Total Warnings: {len(self.warnings)}')
 
         # Последние ошибки
@@ -125,7 +132,10 @@ class HealthMonitor(Node):
             print('\n--- Recent Errors ---')
             for e in self.errors[-5:]:
                 age = int(time.time() - e['time'])
-                print(f"  [{e['level']}] {e['node']} ({age}s ago): {e['msg'][:60]}")
+                print(
+                    f"  [{e['level']}] {e['node']} ({age}s ago): "
+                    f"{e['msg'][:60]}"
+                )
 
         # Последние предупреждения
         if self.warnings:
@@ -134,7 +144,7 @@ class HealthMonitor(Node):
                 age = int(time.time() - w['time'])
                 print(f"  [WARN] {w['node']} ({age}s ago): {w['msg'][:60]}")
 
-        print('='*70)
+        print('=' * 70)
 
     def _play_sound(self, sound_name: str):
         """Проиграть звуковой эффект."""
@@ -148,6 +158,7 @@ class HealthMonitor(Node):
 
 
 def main(args=None):
+    """Запустить ноду монитора здоровья."""
     rclpy.init(args=args)
     node = HealthMonitor()
 

@@ -43,12 +43,15 @@ class PerceptionBridge(Node):
     """Reads UART sensor stream, republishes as JSON on /sensors/data."""
 
     def __init__(self) -> None:
+        """Инициализировать perception bridge."""
         super().__init__('perception_bridge')
 
         # ---- Parameters (overridable from launch) -------------------------
         self.declare_parameter('sensor_read_period', SENSOR_READ_PERIOD)
         self.declare_parameter('health_period', HEALTH_PERIOD)
-        self._sensor_period = float(self.get_parameter('sensor_read_period').value)
+        self._sensor_period = float(
+            self.get_parameter('sensor_read_period').value
+        )
         self._health_period = float(self.get_parameter('health_period').value)
 
         # ---- UART ---------------------------------------------------------
@@ -63,8 +66,12 @@ class PerceptionBridge(Node):
             )
 
         # ---- Publishers ---------------------------------------------------
-        self._sensor_pub = self.create_publisher(String, '/sensors/data', 10)
-        self._health_pub = self.create_publisher(String, '/perception/health', 10)
+        self._sensor_pub = self.create_publisher(
+            String, '/sensors/data', 10
+        )
+        self._health_pub = self.create_publisher(
+            String, '/perception/health', 10
+        )
 
         # ---- Counters -----------------------------------------------------
         self._ok_reads = 0
@@ -147,7 +154,10 @@ class PerceptionBridge(Node):
 
     def _publish_health(self) -> None:
         now = time.time()
-        age = None if self._last_data_ts is None else (now - self._last_data_ts)
+        if self._last_data_ts is None:
+            age = None
+        else:
+            age = now - self._last_data_ts
 
         if self._ok_reads == 0 and self._bad_reads == 0:
             status = STATUS_UNKNOWN
@@ -177,6 +187,7 @@ class PerceptionBridge(Node):
     # -----------------------------------------------------------------------
 
     def destroy_node(self) -> None:
+        """Остановить таймеры, закрыть UART и уничтожить ноду."""
         try:
             if self._sensor_timer is not None:
                 self._sensor_timer.cancel()
@@ -193,6 +204,7 @@ class PerceptionBridge(Node):
 
 
 def main(args=None) -> None:
+    """Запустить ноду perception bridge."""
     rclpy.init(args=args)
     node = PerceptionBridge()
     try:

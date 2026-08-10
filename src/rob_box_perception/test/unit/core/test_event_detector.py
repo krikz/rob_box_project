@@ -142,7 +142,9 @@ class TestEventDetectorCooldown(unittest.TestCase):
 
         # Should react if not checking cooldown
         self.assertTrue(
-            self.detector.should_react_to_event('test_event', check_cooldown=False)
+            self.detector.should_react_to_event(
+                'test_event', check_cooldown=False
+            )
         )
 
 
@@ -261,10 +263,14 @@ class TestEventDetectorEdgeCases(unittest.TestCase):
         # Dict
         self.detector.check_state_change('event4', {'key': 'value'})
 
-        self.assertEqual(self.detector.get_current_state('event1'), 'string_value')
+        self.assertEqual(
+            self.detector.get_current_state('event1'), 'string_value'
+        )
         self.assertEqual(self.detector.get_current_state('event2'), 42)
         self.assertEqual(self.detector.get_current_state('event3'), True)
-        self.assertEqual(self.detector.get_current_state('event4'), {'key': 'value'})
+        self.assertEqual(
+            self.detector.get_current_state('event4'), {'key': 'value'}
+        )
 
 
 if __name__ == '__main__':

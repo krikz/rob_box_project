@@ -8,8 +8,8 @@ no reflection node, no vision stub, no startup greeting. The dialogue shell
 
 Launches:
 1. perception_bridge - UART sensor bridge -> /sensors/data + /perception/health
-2. context_aggregator - aggregates subscribed topics into /perception/context_update
-3. health_monitor - watches /rosout, publishes status on /voice/sound/trigger
+2. context_aggregator - aggregates topics into /perception/context_update
+3. health_monitor - watches /rosout, publishes on /voice/sound/trigger
 
 UART port and baud come from SENSOR_UART_PORT / SENSOR_UART_BAUD env vars
 (falling back to /dev/ttyAMA0 @ 115200). Context aggregator params are
@@ -24,13 +24,16 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """Сформировать launch-описание perception pipeline (docker)."""
     # Context Aggregator config file path (mounted via docker)
     config_file = '/config/perception/context_aggregator.yaml'
 
     # Environment variable overrides for context_aggregator
     env_overrides = {}
     if 'CONTEXT_PUBLISH_RATE' in os.environ:
-        env_overrides['publish_rate'] = float(os.environ['CONTEXT_PUBLISH_RATE'])
+        env_overrides['publish_rate'] = float(
+            os.environ['CONTEXT_PUBLISH_RATE']
+        )
     if 'MEMORY_WINDOW' in os.environ:
         env_overrides['memory_window'] = int(os.environ['MEMORY_WINDOW'])
     if 'TIMEZONE' in os.environ:
