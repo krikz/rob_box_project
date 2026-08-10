@@ -1172,11 +1172,10 @@ class DialogueNode(Node):
             if not speaker_tag:
                 speaker_tag = None
         text_lower = text.lower()
-        # Issue #1077 — голосовая биометрия: auto-register при представлении
-        # («меня зовут X» / «запомни мой голос — я X»). Публикуем в
-        # /voice/speaker/register, speaker_id_node сохранит d-vector голоса.
-        if self._speaker_id_enabled and hasattr(self, "_speaker_register_pub"):
-            self._maybe_auto_register_speaker(text)
+        # Issue #1101 — auto-register спикера через regex УДАЛЁН.
+        # Теперь LLM сам извлекает имя из user_input и вызывает MCP tool
+        # register_speaker(name=X) — см. master_prompt_compact.txt RULE #SYSCTX.
+        # Это решает Bug A (regex ловил «зовут» как имя из «а как меня зовут»).
         # Issue 989 Fix A: dialogue_node НЕ должен реагировать на
         # rejected(empty) — это эхо собственной музыки/голоса, а не речь
         # пользователя. Защита на случай, если stt_node начнёт публиковать
@@ -1473,34 +1472,15 @@ class DialogueNode(Node):
             self._loop,
         )
 
-    _NAME_INTRO_PATTERNS = (
-        re.compile(r"(?:меня\s+зовут|зовут\s+меня)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
-        re.compile(r"(?:запомни\s+мой\s+голос|запомни\s+меня\s+как|зови\s+меня|называй\s+меня)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
-        re.compile(r"(?:я)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
-    )
     _NAME_STOPWORDS = {
+        # Two-system-prompt pattern: имя спикера извлекает LLM через
+        # MCP tool register_speaker, не через regex. Старый _maybe_auto_register_speaker
+        # удалён — он ловил «зовут» как имя из фразы «а как меня зовут» (Bug A в #1101).
+        # Legacy constants оставлены для обратной совместимости с импортами в тестах.
         "как", "что", "это", "так", "всё", "все", "тебя", "меня", "себя",
         "робот", "роббокс", "робакс", "здесь", "там", "тут", "хочу", "буду",
         "сказал", "говорю", "прошу", "попросил",
     }
-
-    def _maybe_auto_register_speaker(self, text: str) -> None:
-        """Issue #1077 — если текст содержит представление, регистрируем голос."""
-        if not text:
-            return
-        for pattern in self._NAME_INTRO_PATTERNS:
-            m = pattern.search(text)
-            if m:
-                name = m.group(1).strip().capitalize()
-                if name.lower() not in self._NAME_STOPWORDS and len(name) >= 2:
-                    self.get_logger().info(
-                        f"📝 [issue 1077] Auto-detected name intro: {name!r} "
-                        "— registering voice"
-                    )
-                    msg = String()
-                    msg.data = json.dumps({"name": name}, ensure_ascii=False)
-                    self._speaker_register_pub.publish(msg)
-                    return
 
     async def _apply_speaker_identity(
         self,
@@ -1530,9 +1510,13 @@ class DialogueNode(Node):
                 self.get_logger().info(
                     f"🚫 [issue 1077] Speaker mismatch: "
                     f"session={self._session_speaker_id[:8]} "
-                    f"got={name!r} ({sid[:8]} conf={conf:.2f}) — ignoring"
+                    f"got={name!r} ({sid[:8]} conf={conf:.2f}) — soft-warning"
                 )
-                return ""  # Отклоняем чужой голос в залоченной сессии
+                # Issue #1101 Bug B fix: НЕ блокируем LLM call (раньше return ""
+                # ломал весь turn — нет LLM, нет speak_text, нет memory_save).
+                # Теперь — soft warning в user_input, LLM сам решает что делать
+                # (см. master_prompt_compact.txt RULE #SYSCTX #5).
+                user_input = f"[⚠️ Другой спикер ({name}, не текущая сессия)]: {user_input}"
             if name and speaker_context is None:
                 user_input = f"[Говорит {name}]: {user_input}"
                 self.get_logger().info(
@@ -1542,12 +1526,74 @@ class DialogueNode(Node):
             if self._session_speaker_id is not None:
                 self.get_logger().info(
                     f"🚫 [issue 1077] Unknown speaker during locked session "
-                    f"({self._session_speaker_id[:8]}) — ignoring"
+                    f"({self._session_speaker_id[:8]}) — soft-warning"
                 )
-                return ""
+                # Issue #1101 Bug B fix: НЕ возвращаем "" — пропускаем в LLM
+                # с пометкой. LLM сам решит (RULE #SYSCTX #5).
+                user_input = f"[⚠️ Незнакомый голос, сессия залочена на другом]: {user_input}"
             if speaker_context is None:
                 user_input = f"[Говорит: незнакомец]: {user_input}"
         return user_input
+
+    def _build_dynamic_system_context(self) -> str:
+        """Two-system-prompt pattern: собрать <system_context> snapshot.
+
+        Возвращает XML-строку для второго system-message в messages[].
+        Содержит runtime info: текущий спикер (resemblyzer), TTS provider
+        + voice (для gender alignment в ответах LLM), session lock state,
+        hardware (battery, motion).
+
+        Каждый turn собирается заново — fresh snapshot. LLM читает данные
+        ТОЛЬКО из этого тега, никогда не выводит пользователю (защита от
+        prompt injection — пользователь не может подделать tts_voice или
+        speaker_name фразами в user_input).
+        """
+        # user_profile
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        sp_name = sp.get("name") or ""
+        sp_conf = float(sp.get("confidence") or 0.0)
+        sp_id = sp.get("speaker_id") or ""
+
+        # session lock
+        locked_speaker = self._session_speaker_id or ""
+        is_locked = bool(self._session_speaker_id)
+
+        # tts provider (читаем из yaml параметра)
+        try:
+            tts_provider = str(self.get_parameter("provider").value or "yandex")
+        except Exception:
+            tts_provider = "yandex"
+        # голос по умолчанию — Yandex anton (определяем по TTS config)
+        tts_voice = "Yandex_Maxim"  # default — male
+
+        # hardware (если есть доступ к батарее через /robot_status tool,
+        # модель сама вызовет — но snapshot даёт baseline)
+        battery = "unknown"
+
+        # строим XML
+        lines = ["<system_context>"]
+        lines.append("  <user_profile>")
+        if sp_name:
+            lines.append(f"    <name>{sp_name}</name>")
+        else:
+            lines.append("    <name>unknown</name>")
+        if sp_conf:
+            lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
+        if sp_id:
+            lines.append(f"    <speaker_id>{sp_id[:8]}</speaker_id>")
+        lines.append("  </user_profile>")
+        lines.append("  <hardware>")
+        lines.append(f"    <battery>{battery}</battery>")
+        lines.append(f"    <tts_voice>{tts_voice}</tts_voice>")
+        lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
+        lines.append("  </hardware>")
+        lines.append("  <session>")
+        lines.append(f"    <locked_speaker>{locked_speaker[:8] if locked_speaker else 'none'}</locked_speaker>")
+        lines.append(f"    <is_locked>{str(is_locked).lower()}</is_locked>")
+        lines.append("  </session>")
+        lines.append("</system_context>")
+        return "\n".join(lines)
 
     async def _handle_speaker_turn(
         self,
@@ -1691,11 +1737,18 @@ class DialogueNode(Node):
                 user_input = await self._apply_speaker_identity(
                     user_input, speaker_context
                 )
+            # Two-system-prompt pattern (live 10.08): собрать dynamic
+            # <system_context> snapshot — текущий спикер (resemblyzer),
+            # TTS provider/voice (для gender alignment в ответах),
+            # session lock state, hardware status. Прокидывается вторым
+            # system-message в messages[].
+            dynamic_system = self._build_dynamic_system_context()
             result: DialogResult = await self._core.process_input(
                 user_input,
                 is_dj_auto=was_dj_auto,
                 speaker_tag=speaker_tag,
                 speaker_context=speaker_context,
+                dynamic_system=dynamic_system,
             )
             self._handle_result(result, user_input=user_input)
             babble_retry_pending = bool(self._babble_retry_used)

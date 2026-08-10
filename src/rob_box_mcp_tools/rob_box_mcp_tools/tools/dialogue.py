@@ -609,3 +609,85 @@ class EstimateTtsDurationTool(MCPTool):
                 f"({len(text)} символов при {cps} симв/с)"
             ),
         )
+
+
+class RegisterSpeakerTool(MCPTool):
+    """Issue #1077 + #1101 — регистрация голоса спикера через LLM tool.
+
+    LLM вызывает этот tool когда:
+    - Пользователь сказал «меня зовут X» (LLM извлёк имя из контекста)
+    - LLM хочет спросить имя незнакомца (name=null → publish ask_event)
+
+    Tool публикует в /voice/speaker/register JSON {"name": "..."}
+    speaker_id_node получает d-vector текущей фразы и сохраняет embedding.
+    """
+
+    def __init__(self, node):
+        super().__init__(node)
+        from std_msgs.msg import String
+        self._speaker_register_pub = node.create_publisher(
+            String, "/voice/speaker/register", 10
+        )
+
+    @property
+    def name(self) -> str:
+        return "register_speaker"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Зарегистрировать голос текущего спикера в voice biometric DB. "
+            "Вызывай когда: (1) пользователь представился («меня зовут X») — "
+            "передай name=X, (2) хочешь узнать имя незнакомца — передай name=null "
+            "и спроси «Как вас зовут?» через speak_text. "
+            "Имя сохранится в БД вместе с эмбеддингом голоса (resemblyzer d-vector), "
+            "после этого пользователя можно будет узнавать по голосу."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description=(
+                    "Имя спикера для регистрации (Cyrillic). "
+                    "Передай null/None если хочешь спросить имя незнакомца — "
+                    "робот спросит «Как вас зовут?» и ждёт ответа."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, name: str | None = None) -> MCPToolResult:
+        import json
+        from std_msgs.msg import String
+        if name is None or name.strip() == "":
+            # LLM попросил узнать имя — робот сам спросит через speak_text
+            self.log_info("[register_speaker] name=None → ask user")
+            return MCPToolResult(
+                success=True,
+                data={"ask_required": True, "name": None},
+                message="Спроси имя у пользователя через speak_text и вызови register_speaker(name=X) ещё раз",
+            )
+        name_clean = name.strip().capitalize()
+        if len(name_clean) < 2:
+            return MCPToolResult(
+                success=False,
+                data={"error": "name_too_short"},
+                message=f"Имя '{name}' слишком короткое — минимум 2 символа",
+            )
+        # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
+        msg = String()
+        msg.data = json.dumps({"name": name_clean}, ensure_ascii=False)
+        self._speaker_register_pub.publish(msg)
+        self.log_info(f"[register_speaker] published name={name_clean!r}")
+        return MCPToolResult(
+            success=True,
+            data={"registered_name": name_clean, "speaker_id": "pending"},
+            message=f"Голос зарегистрирован как '{name_clean}'. Теперь этого пользователя можно узнавать по голосу.",
+        )
