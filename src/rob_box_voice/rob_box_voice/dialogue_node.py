@@ -34,6 +34,7 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
+from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -464,6 +465,13 @@ class DialogueNode(Node):
         # в коде единственный живой путь → переключаем на deepseek.
         # DEEPSEEK_API_KEY в env voice-assistant.
         self.declare_parameter("llm_provider", "deepseek")
+        # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
+        # Формат: "minimax,deepseek,mimo" — порядок = приоритет (primary → fallbacks).
+        # Каждый провайдер использует СВОЙ well-known base_url/model из модульных
+        # констант (НЕ из YAML), поэтому параметры base_url/model больше не используются
+        # как глобальные — они хранятся в секции каждого провайдера.
+        # Пустая строка → fallback на старый llm_provider (обратная совместимость).
+        self.declare_parameter("llm_providers", "")
         self.declare_parameter("api_key", "")
         self.declare_parameter("base_url", "")
         self.declare_parameter("model", "")
@@ -544,180 +552,174 @@ class DialogueNode(Node):
             except Exception:
                 pass
             return store
-    def _build_llm(self) -> Any:
-        # Keep the provider selector explicit.  ``AsyncOpenAI`` defaults to
-        # api.openai.com when ``base_url`` is omitted, so silently accepting an
-        # unknown provider can leak a DeepSeek key to the wrong endpoint.
-        provider_name = str(
+    # ── LLM provider registry (well-known defaults) ────────────────────
+    # Each entry maps a provider name to its factory and constants.
+    # Extend this dict to add new providers (mimo, qwen, etc.).
+    _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+        "minimax": {
+            "factory": lambda self: build_minimax_provider(
+                LLMConfig(
+                    provider="minimax",
+                    model=MINIMAX_DEFAULT_MODEL,
+                    api_key=self.get_parameter("api_key").value or None,
+                    timeout_s=90.0,
+                )
+            ),
+            "has_balance_api": False,
+            "display_name": "MiniMax",
+        },
+        "deepseek": {
+            "factory": lambda self: build_deepseek_provider(
+                api_key=None,  # берёт DEEPSEEK_API_KEY из env
+                base_url=DEEPSEEK_DEFAULT_BASE_URL,
+                model=DEEPSEEK_DEFAULT_MODEL,
+            ),
+            "has_balance_api": True,
+            "display_name": "DeepSeek",
+        },
+    }
+
+    def _resolve_provider_chain(self) -> list[str]:
+        """Resolve the ordered list of LLM provider names from config.
+
+        Priority: ``llm_providers`` (comma-separated) → ``llm_provider`` (single, legacy).
+        Empty / unknown entries are filtered out.
+        """
+        providers_str = str(
+            self.get_parameter("llm_providers").value or ""
+        ).strip()
+        if providers_str:
+            chain = [
+                p.strip().lower()
+                for p in providers_str.split(",")
+                if p.strip()
+            ]
+            self.get_logger().info(
+                f"🔗 LLM provider chain from llm_providers: {chain}"
+            )
+            return chain
+        # Legacy fallback: single llm_provider parameter
+        single = str(
             self.get_parameter("llm_provider").value or "deepseek"
         ).strip().lower()
+        self.get_logger().info(
+            f"🔗 LLM provider chain from llm_provider (legacy): [{single}]"
+        )
+        return [single]
 
-        # Resolve the endpoint here instead of relying on SDK defaults.  This
-        # makes the production route visible and testable at the ROS shell
-        # boundary, where YAML parameters enter the application.
-        base_url = str(self.get_parameter("base_url").value or "").strip()
-        model = str(self.get_parameter("model").value or "").strip()
+    def _build_single_provider(self, name: str) -> Any | None:
+        """Build one LLM provider by name. Returns ``None`` on failure (logged).
+
+        Each provider uses its own well-known ``base_url`` / ``model`` from
+        the registry — the YAML ``base_url`` parameter is NOT forwarded.
+        """
+        name = name.strip().lower()
+        entry = self._LLM_PROVIDER_REGISTRY.get(name)
+        if entry is None:
+            self.get_logger().warning(
+                f"⚠️ Unknown LLM provider: {name!r} — skipped. "
+                f"Known: {sorted(self._LLM_PROVIDER_REGISTRY.keys())!r}"
+            )
+            return None
+        try:
+            provider = entry["factory"](self)
+            self.get_logger().info(
+                f"✅ LLM provider built: {entry['display_name']} ({name})"
+            )
+            return provider
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ LLM provider {name!r} ({entry['display_name']}) "
+                f"не построен: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _build_llm(self) -> Any:
+        # ── Resolve provider chain ──────────────────────────────────────
+        chain_names: list[str] = self._resolve_provider_chain()
+
+        # ── Build each provider (skip failures) ─────────────────────────
+        built: list[Any] = []
+        chain_display: list[str] = []
+        for name in chain_names:
+            provider = self._build_single_provider(name)
+            if provider is not None:
+                built.append(provider)
+                chain_display.append(name)
+
+        if not built:
+            raise RuntimeError(
+                f"No LLM providers could be built from chain {chain_names!r}. "
+                "Check API keys and environment variables."
+            )
+
+        # ── Start-up config log ─────────────────────────────────────────
         temperature = float(self.get_parameter("temperature").value or 0.7)
         max_tokens = int(self.get_parameter("max_tokens").value or 500)
-
-        # 🔴 FIX (live 06.08): выводим ВЕСЬ конфиг при старте — раньше
-        # конфиг выводился, потом потерялся. Это главный источник правды:
-        # какой провайдер/модель реально активны (MiniMax vs DeepSeek),
-        # какой max_tokens (256 резал ответы обрывками), температура,
-        # таймауты, wake-слова и т.д. — всё видно в одном месте.
-        secrets = ("api_key", "password", "token", "secret")
-        cfg_lines = []
-        # get_parameters_by_prefix("") возвращает ВСЕ объявленные параметры
-        # как dict {имя: значение} — единственный способ без явного списка имён
-        # (rclpy get_parameters требует names=[...], а declare_parameter
-        # регистрирует в _parameters).
-        all_params = self.get_parameters_by_prefix("")
-        for pname in sorted(all_params):
-            pval = all_params[pname]
-            if pval is None:
-                continue
-            if any(s in pname.lower() for s in secrets) and pval:
-                pval = "***"
-            cfg_lines.append(f"{pname}={pval}")
         self.get_logger().info(
-            "⚙️ STARTUP CONFIG:\n" + "\n".join(cfg_lines)
-        )
-
-        # LLM-параметры отдельно — они критичны для диагностики обрывков.
-        self.get_logger().info(
-            f"⚙️ LLM CONFIG: provider={provider_name} model={model or '(default)'} "
-            f"base_url={base_url or '(provider default)'} "
+            f"⚙️ LLM CONFIG: chain={chain_display} "
             f"temperature={temperature} max_tokens={max_tokens}"
         )
 
-        if provider_name == "minimax":
-            # 🔴 FIX (live 14:39): build_minimax_provider принимает
-            # LLMConfig, а не kwargs (api_key=...) как deepseek. Коммит
-            # 7d3e95c9 скопировал deepseek-стиль → TypeError при старте →
-            # dialogue_node падал → робот молчал. Собираем LLMConfig.
-            from rob_box_harness.config import LLMConfig
-
-            # 🔴 FIX (live 10.08, issue #1089): build_minimax_provider НЕ
-            # падает на None api_key (создаёт провайдер, который упадёт уже
-            # при первом runtime-запросе — 401 от api.minimax.io). Поэтому
-            # ранний guard по env-переменной: если MINIMAX_API_KEY пуст →
-            # сразу deepseek-only без попытки собрать MiniMax-провайдер.
-            import os as _os
-            _minimax_key = (
-                self.get_parameter("api_key").value
-                or _os.environ.get("MINIMAX_API_KEY", "")
-                or ""
+        # ── Single provider — no fallback needed ────────────────────────
+        if len(built) == 1:
+            self.get_logger().info(
+                "[health] build_llm: provider_chain=%s active=%s (single)",
+                chain_display,
+                chain_display[0],
             )
-            if not _minimax_key.strip():
-                self.get_logger().info(
-                    "⚠️ MINIMAX_API_KEY пуст → deepseek-only режим (без попытки MiniMax)"
-                )
-                self.get_logger().info(
-                    "[health] build_llm: provider_chain=[deepseek] active=deepseek"
-                )
-                return build_deepseek_provider(
-                    api_key=_os.environ.get("DEEPSEEK_API_KEY") or None,
-                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
-                    model=model or DEEPSEEK_DEFAULT_MODEL,
-                )
+            return built[0]
 
-            try:
-                primary = build_minimax_provider(
-                    LLMConfig(
-                        provider="minimax",
-                        model=model or MINIMAX_DEFAULT_MODEL,
-                        api_key=self.get_parameter("api_key").value or None,
-                        timeout_s=90.0,
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().info(
-                    f"⚠️ MiniMax недоступен ({type(exc).__name__}: {exc}) — "
-                    f"переход в deepseek-only режим"
-                )
-                return build_deepseek_provider(
-                    api_key=self.get_parameter("api_key").value or None,
-                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
-                    model=model or DEEPSEEK_DEFAULT_MODEL,
-                )
-            # 🔴 FIX (live 06.08): fallback на DeepSeek при 429/ошибке
-            # MiniMax (Token Plan limit) — иначе DJ/диалог молчит, пока
-            # лимит не сбросится. LLMConfig.fallback декларативно есть,
-            # но _build_llm его не использовал → робот немел на 429.
-            # 🔴 FIX (issue #1082): цепочка стала health-aware — состояние
-            # провайдера проверяется ДО первого запроса: MiniMax с
-            # исчерпанной квотой (2056/429) помечается unavailable (TTL ~5
-            # мин) и первый же запрос уходит на deepseek без retry-цикла и
-            # без 15-19с потерь. Кэш персистентный — переживает рестарт.
-            try:
-                fb = build_deepseek_provider(
-                    api_key=None,  # берёт DEEPSEEK_API_KEY из env
-                )
-                # Lazy-import: health-модуль подтягиваем только в ветке
-                # minimax (deepseek-only путь не трогаем).
-                from rob_box_harness.health import (
-                    DEFAULT_HEALTH_TTL_S,
-                    HealthAwareFallbackLLM,
-                    HealthCache,
-                    check_deepseek_balance,
-                )
+        # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
+        from rob_box_harness.health import (
+            DEFAULT_HEALTH_TTL_S,
+            HealthAwareFallbackLLM,
+            HealthCache,
+            check_deepseek_balance,
+        )
 
-                cache_path = str(
-                    self.get_parameter("health_cache_path").value or ""
-                ).strip()
-                try:
-                    health_ttl = float(
-                        self.get_parameter("health_ttl_s").value
-                        or DEFAULT_HEALTH_TTL_S
-                    )
-                except (TypeError, ValueError):
-                    health_ttl = DEFAULT_HEALTH_TTL_S
-                cache = HealthCache(
-                    ttl_s=health_ttl,
-                    persist_path=cache_path or None,
-                )
-                # DeepSeek имеет публичный /user/balance — проверяем ДО
-                # первого запроса (TTL-кэш, ~5 мин). У MiniMax публичного
-                # balance-API нет → реактивный детект по коду 2056/429
-                # внутри HealthAwareFallbackLLM.
+        # Health cache (persistent — survives robot restart)
+        cache_path = str(
+            self.get_parameter("health_cache_path").value or ""
+        ).strip()
+        try:
+            health_ttl = float(
+                self.get_parameter("health_ttl_s").value
+                or DEFAULT_HEALTH_TTL_S
+            )
+        except (TypeError, ValueError):
+            health_ttl = DEFAULT_HEALTH_TTL_S
+        cache = HealthCache(
+            ttl_s=health_ttl,
+            persist_path=cache_path or None,
+        )
 
-                def _deepseek_balance_probe() -> Any:
+        # Balance probes: only for providers that expose a balance API
+        balance_checkers: dict[str, Any] = {}
+        for i, name in enumerate(chain_display):
+            entry = self._LLM_PROVIDER_REGISTRY.get(name, {})
+            if entry.get("has_balance_api") and name == "deepseek":
+                def _deepseek_balance_probe(
+                    _name: str = name,
+                ) -> Any:
                     return check_deepseek_balance(
                         DEEPSEEK_DEFAULT_BASE_URL,
                         os.environ.get("DEEPSEEK_API_KEY", ""),
                         timeout_s=5.0,
                     )
+                balance_checkers["deepseek"] = _deepseek_balance_probe
 
-                self.get_logger().info(
-                    f"🔄 LLM fallback: deepseek (health-aware, TTL {health_ttl:.0f}s)"
-                )
-                self.get_logger().info(
-                    "[health] build_llm: provider_chain=[%s, %s] active=%s",
-                    "minimax",
-                    "deepseek",
-                    "minimax",
-                )
-                return HealthAwareFallbackLLM(
-                    [primary, fb],
-                    cache=cache,
-                    balance_checkers={"deepseek": _deepseek_balance_probe},
-                    logger=self.get_logger(),
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"⚠️ DeepSeek fallback не построен ({exc}) — только MiniMax"
-                )
-                return primary
-        if provider_name == "deepseek":
-            return build_deepseek_provider(
-                api_key=self.get_parameter("api_key").value or None,
-                base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
-                model=model or DEEPSEEK_DEFAULT_MODEL,
-            )
-
-        raise ValueError(
-            f"Unsupported llm_provider={provider_name!r}; "
-            "supported: 'minimax', 'deepseek'"
+        self.get_logger().info(
+            "[health] build_llm: provider_chain=%s active=%s (health-aware, TTL %.0fs)",
+            chain_display,
+            chain_display[0],
+            health_ttl,
+        )
+        return HealthAwareFallbackLLM(
+            built,
+            cache=cache,
+            balance_checkers=balance_checkers,
+            logger=self.get_logger(),
         )
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
