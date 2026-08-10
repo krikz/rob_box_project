@@ -49,6 +49,7 @@ def generate_launch_description():
     stt_node_yaml = PathJoinSubstitution([config_dir, 'stt_node.yaml'])
     sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
     command_node_yaml = PathJoinSubstitution([config_dir, 'command_node.yaml'])
+    speaker_id_node_yaml = PathJoinSubstitution([config_dir, 'speaker_id_node.yaml'])
 
     # === Audio Node ===
     audio_node = Node(
@@ -175,6 +176,19 @@ def generate_launch_description():
     # инициализацией tts_node (фраза терялась). dialogue_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
+    # === Speaker ID Node (issue #1077 — голосовая биометрия resemblyzer) ===
+    speaker_id_node = Node(
+        package='rob_box_voice',
+        executable='speaker_id_node',
+        name='speaker_id_node',
+        namespace=namespace,
+        parameters=[speaker_id_node_yaml],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+
     return LaunchDescription([
         config_dir_arg,
         namespace_arg,
@@ -186,5 +200,6 @@ def generate_launch_description():
         stt_node,
         sound_node,
         command_node,
+        speaker_id_node,
         mcp_server
     ])
