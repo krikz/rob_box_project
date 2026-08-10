@@ -464,12 +464,11 @@ class DialogueNode(Node):
         # 'Token Plan usage limit reached'). YAML мёртв (#1004) — дефолт
         # в коде единственный живой путь → переключаем на deepseek.
         # DEEPSEEK_API_KEY в env voice-assistant.
-        self.declare_parameter("llm_provider", "deepseek")
         # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
-        # Формат: "minimax,deepseek" — порядок = приоритет (primary → fallbacks).
+        # Формат: "minimax,deepseek" — порядок = приоритет.
+        # Первый в списке = primary, остальные = fallbacks.
         # Каждый провайдер настраивается в своей YAML-секции (<name>.base_url и т.д.).
-        # Пустая строка → fallback на старый llm_provider (обратная совместимость).
-        self.declare_parameter("llm_providers", "")
+        self.declare_parameter("llm_providers", "deepseek")
         # Per-provider параметры — каждая YAML-секция провайдера
         # (minimax:, deepseek:, mimo:, qwen:) отдаёт свои настройки
         # через dotted-имена.  Пустая строка → используются
@@ -603,30 +602,22 @@ class DialogueNode(Node):
     def _resolve_provider_chain(self) -> list[str]:
         """Resolve the ordered list of LLM provider names from config.
 
-        Priority: ``llm_providers`` (comma-separated) → ``llm_provider`` (single, legacy).
-        Empty / unknown entries are filtered out.
+        Reads ``llm_providers`` (comma-separated).
+        Первый в списке = primary, остальные = fallbacks.
+        Default: ``["deepseek"]``.
         """
         providers_str = str(
-            self.get_parameter("llm_providers").value or ""
+            self.get_parameter("llm_providers").value or "deepseek"
         ).strip()
-        if providers_str:
-            chain = [
-                p.strip().lower()
-                for p in providers_str.split(",")
-                if p.strip()
-            ]
-            self.get_logger().info(
-                f"🔗 LLM provider chain from llm_providers: {chain}"
-            )
-            return chain
-        # Legacy fallback: single llm_provider parameter
-        single = str(
-            self.get_parameter("llm_provider").value or "deepseek"
-        ).strip().lower()
+        chain = [
+            p.strip().lower()
+            for p in providers_str.split(",")
+            if p.strip()
+        ]
         self.get_logger().info(
-            f"🔗 LLM provider chain from llm_provider (legacy): [{single}]"
+            f"🔗 LLM provider chain: {chain} (primary={chain[0] if chain else '?'})"
         )
-        return [single]
+        return chain
 
     def _build_single_provider(self, name: str) -> Any | None:
         """Build one LLM provider from its YAML section + registry defaults.

@@ -925,8 +925,7 @@ class TestLLMProviderWiring(unittest.TestCase):
         from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
 
         node = self._stub_node({
-            "llm_providers": "",           # fallback на llm_provider
-            "llm_provider": "deepseek",
+            "llm_providers": "deepseek",
             "api_key": "test-key",
         })
 
@@ -947,8 +946,7 @@ class TestLLMProviderWiring(unittest.TestCase):
     def test_unknown_llm_provider_fails_before_any_client_is_built(self):
         """A typo must fail loudly instead of sending credentials to OpenAI."""
         node = self._stub_node({
-            "llm_providers": "",           # fallback на llm_provider
-            "llm_provider": "openai",
+            "llm_providers": "openai",
             "api_key": "test-key",
         })
 
@@ -970,8 +968,7 @@ class TestLLMProviderWiring(unittest.TestCase):
         from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
 
         node = self._stub_node({
-            "llm_providers": "minimax,deepseek",   # приоритетная цепочка
-            "llm_provider": "minimax",
+            "llm_providers": "minimax,deepseek",
             "api_key": "missing-key",
             "health_cache_path": "",
             "health_ttl_s": "",
@@ -1011,7 +1008,6 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         node = self._stub_node({
             "llm_providers": "minimax,deepseek",
-            "llm_provider": "minimax",
             "api_key": "any",
             "health_cache_path": "",
             "health_ttl_s": "",
@@ -1040,7 +1036,6 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         node = self._stub_node({
             "llm_providers": "minimax,deepseek",
-            "llm_provider": "minimax",
             "api_key": "valid-key",
             "health_cache_path": "",
             "health_ttl_s": "",
@@ -1091,7 +1086,6 @@ class TestLLMProviderWiring(unittest.TestCase):
         )
         expected = {
             "llm_providers": "minimax,deepseek",
-            "llm_provider": "minimax",
         }
 
         for path in paths:
