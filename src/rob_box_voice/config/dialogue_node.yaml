@@ -52,6 +52,10 @@ dialogue_node:
     history_excluded_tools:
     - handle_navigation
     sqlite_db_path: ~/.rob_box/voice.db
+    # Issue #1077 — голосовая биометрия (speaker_id_node, resemblyzer):
+    # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
+    speaker_id_enabled: true
+    speaker_db_path: /data/speakers.db
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).

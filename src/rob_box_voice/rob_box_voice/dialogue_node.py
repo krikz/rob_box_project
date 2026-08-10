@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -283,6 +284,17 @@ class DialogueNode(Node):
         # после 2+ фраз подряд (защита от нестабильных tags Yandex).
         self._speaker_by_text: Dict[str, dict] = {}
         self._speaker_tracker = SpeakerTracker()
+        # Issue #1077 — голосовая биометрия (resemblyzer d-vectors, TASK-048):
+        # speaker_id_node публикует /voice/speaker/result (JSON: is_known,
+        # speaker_id, name, confidence). LLM-контекст получает префикс
+        # [Говорит <имя>] / [Говорит: незнакомец] — робот различает
+        # собеседников по голосу, а не только по Yandex tag (который
+        # присваивается per-session и не стабилен между сессиями).
+        self._speaker_id_enabled: bool = bool(
+            self.get_parameter("speaker_id_enabled").value)
+        self._current_speaker: dict = {"is_known": False}
+        self._speaker_lock = threading.Lock()
+        self._session_speaker_id: Optional[str] = None
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
@@ -332,6 +344,14 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/stt/speaker", self._on_speaker, qos_r,
             callback_group=cbg)
+        # Issue #1077 — голосовая биометрия: результат speaker_id_node
+        # (resemblyzer d-vector, JSON: is_known/speaker_id/name/confidence).
+        if self._speaker_id_enabled:
+            self.create_subscription(
+                String, "/voice/speaker/result", self._on_speaker_result, qos_r,
+                callback_group=cbg)
+            self._speaker_register_pub = self.create_publisher(
+                String, "/voice/speaker/register", 10)
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg)
         self.create_subscription(
@@ -462,6 +482,8 @@ class DialogueNode(Node):
         self.declare_parameter("llm_streaming", False)
         self.declare_parameter("history_excluded_tools", ["handle_navigation"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
+        self.declare_parameter("speaker_id_enabled", True)
+        self.declare_parameter("speaker_db_path", "/data/speakers.db")
         # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
         # рестарт робота: если MiniMax мёртв (2056 Token Plan), первый же
         # запрос после ребута идёт на deepseek, а не тратит время на
@@ -971,6 +993,28 @@ class DialogueNode(Node):
             f"duration={payload.get('duration_s')}s text={text[:40]!r}"
         )
 
+    def _on_speaker_result(self, msg: String) -> None:
+        """Issue #1077 — результат голосовой биометрии (speaker_id_node).
+
+        JSON: ``{"is_known": true, "speaker_id": "...", "name": "...",
+        "confidence": 0.93}`` или ``{"is_known": false}``. Храним
+        последний результат; _run_turn использует его для префикса
+        [Говорит <имя>] / [Говорит: незнакомец] и session lock.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        # Registration ack — не speaker match.
+        if data.get("event") == "registered":
+            self.get_logger().info(
+                f"✅ [issue 1077] Speaker registered: "
+                f"{data.get('name')!r} id={str(data.get('speaker_id', ''))[:8]}"
+            )
+            return
+        with self._speaker_lock:
+            self._current_speaker = data
+
     def _on_stt(self, msg: String) -> None:
         text = (msg.data or "").strip()
         if not text:
@@ -989,6 +1033,11 @@ class DialogueNode(Node):
             if not speaker_tag:
                 speaker_tag = None
         text_lower = text.lower()
+        # Issue #1077 — голосовая биометрия: auto-register при представлении
+        # («меня зовут X» / «запомни мой голос — я X»). Публикуем в
+        # /voice/speaker/register, speaker_id_node сохранит d-vector голоса.
+        if self._speaker_id_enabled and hasattr(self, "_speaker_register_pub"):
+            self._maybe_auto_register_speaker(text)
         # Issue 989 Fix A: dialogue_node НЕ должен реагировать на
         # rejected(empty) — это эхо собственной музыки/голоса, а не речь
         # пользователя. Защита на случай, если stt_node начнёт публиковать
@@ -1285,6 +1334,82 @@ class DialogueNode(Node):
             self._loop,
         )
 
+    _NAME_INTRO_PATTERNS = (
+        re.compile(r"(?:меня\s+зовут|зовут\s+меня)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
+        re.compile(r"(?:запомни\s+мой\s+голос|запомни\s+меня\s+как|зови\s+меня|называй\s+меня)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
+        re.compile(r"(?:я)\s+([а-яёa-z][а-яёa-z\-]{1,20})", re.I),
+    )
+    _NAME_STOPWORDS = {
+        "как", "что", "это", "так", "всё", "все", "тебя", "меня", "себя",
+        "робот", "роббокс", "робакс", "здесь", "там", "тут", "хочу", "буду",
+        "сказал", "говорю", "прошу", "попросил",
+    }
+
+    def _maybe_auto_register_speaker(self, text: str) -> None:
+        """Issue #1077 — если текст содержит представление, регистрируем голос."""
+        if not text:
+            return
+        for pattern in self._NAME_INTRO_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                name = m.group(1).strip().capitalize()
+                if name.lower() not in self._NAME_STOPWORDS and len(name) >= 2:
+                    self.get_logger().info(
+                        f"📝 [issue 1077] Auto-detected name intro: {name!r} "
+                        "— registering voice"
+                    )
+                    msg = String()
+                    msg.data = json.dumps({"name": name}, ensure_ascii=False)
+                    self._speaker_register_pub.publish(msg)
+                    return
+
+    async def _apply_speaker_identity(
+        self,
+        user_input: str,
+        speaker_context: Optional[str],
+    ) -> str:
+        """Issue #1077 — префикс [Говорит <имя>] / [Говорит: незнакомец].
+
+        Данные берём из последнего результата speaker_id_node (/voice/speaker/result,
+        resemblyzer d-vector). Если LLM-контекст уже содержит имя (speaker_context
+        из Yandex tag), не дублируем префикс.
+        """
+        # Даём speaker_id_node время закончить inference (STT быстрее resemblyzer).
+        await asyncio.sleep(0.30)
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        if sp.get("is_known"):
+            sid = str(sp.get("speaker_id") or "")
+            name = str(sp.get("name") or "")
+            conf = float(sp.get("confidence") or 0.0)
+            if self._session_speaker_id is None:
+                self._session_speaker_id = sid
+                self.get_logger().info(
+                    f"🔐 [issue 1077] Session locked to {name!r} ({sid[:8]})"
+                )
+            elif self._session_speaker_id != sid:
+                self.get_logger().info(
+                    f"🚫 [issue 1077] Speaker mismatch: "
+                    f"session={self._session_speaker_id[:8]} "
+                    f"got={name!r} ({sid[:8]} conf={conf:.2f}) — ignoring"
+                )
+                return ""  # Отклоняем чужой голос в залоченной сессии
+            if name and speaker_context is None:
+                user_input = f"[Говорит {name}]: {user_input}"
+                self.get_logger().info(
+                    f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
+                )
+        else:
+            if self._session_speaker_id is not None:
+                self.get_logger().info(
+                    f"🚫 [issue 1077] Unknown speaker during locked session "
+                    f"({self._session_speaker_id[:8]}) — ignoring"
+                )
+                return ""
+            if speaker_context is None:
+                user_input = f"[Говорит: незнакомец]: {user_input}"
+        return user_input
+
     async def _handle_speaker_turn(
         self,
         tag: str,
@@ -1416,6 +1541,17 @@ class DialogueNode(Node):
             # classifier so the LLM is actually called. The DJ prompt
             # intentionally mentions "роббокс" / "диджей" which would
             # otherwise short-circuit into a no-op transition.
+            # Issue #1077 — голосовая биометрия: префикс [Говорит <имя>] /
+            # [Говорит: незнакомец] из speaker_id_node (resemblyzer d-vector).
+            # Yandex speaker_tag присваивается per-session и не стабилен между
+            # сессиями, поэтому для ответа «как меня зовут?» полагаемся на
+            # биометрию. Session lock: первый известный спикер сессии
+            # фиксируется; чужие известные/незнакомцы в той же сессии
+            # игнорируются (TASK-048).
+            if self._speaker_id_enabled and not was_dj_auto:
+                user_input = await self._apply_speaker_identity(
+                    user_input, speaker_context
+                )
             result: DialogResult = await self._core.process_input(
                 user_input,
                 is_dj_auto=was_dj_auto,
