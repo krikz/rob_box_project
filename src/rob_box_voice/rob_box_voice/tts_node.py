@@ -177,6 +177,60 @@ def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.nd
     return resampled
 
 
+_SILERO_PITCH_LEVELS = ("x-low", "low", "medium", "high", "x-high", "robot")
+
+
+def normalize_silero_pitch(pitch) -> str:
+    """Привести SSML pitch к уровню, который принимает Silero v5.
+
+    Silero v5 ``apply_tts`` понимает в ``<prosody pitch="...">`` только
+    ``x-low|low|medium|high|x-high|robot``. LLM/MiniMax-стиль SSML
+    генерирует числовые множители (``1.2``, ``+10%``) — их прямая
+    передача роняет Silero с ``Invalid <prosody> tag``, и fallback
+    молчит (issue #1064). Здесь любой вход (число, процент, слово,
+    мусор) приводится к ближайшему допустимому уровню; нераспознанное
+    значение даёт безопасный дефолт ``medium``.
+
+    Args:
+        pitch: значение из ``ssml_attributes`` (float, int, str или None).
+
+    Returns:
+        Один из ``_SILERO_PITCH_LEVELS``.
+    """
+    if pitch is None:
+        return "medium"
+    if isinstance(pitch, str):
+        value = pitch.strip().lower()
+        if value in _SILERO_PITCH_LEVELS:
+            return value
+        if value.endswith("%"):
+            try:
+                factor = 1.0 + float(value[:-1]) / 100.0
+            except ValueError:
+                return "medium"
+        else:
+            try:
+                factor = float(value)
+            except ValueError:
+                return "medium"
+    elif isinstance(pitch, (int, float)):
+        factor = float(pitch)
+    else:
+        return "medium"
+
+    # Числовой множитель → ближайший уровень (симметрично _parse_ssml_attributes:
+    # "high"→1.2, "low"→0.8, "medium"→1.0).
+    if factor <= 0.6:
+        return "x-low"
+    if factor <= 0.85:
+        return "low"
+    if factor <= 1.15:
+        return "medium"
+    if factor <= 1.4:
+        return "high"
+    return "x-high"
+
+
 # Импортируем text_normalizer и Yandex gRPC
 scripts_path = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(scripts_path))
@@ -1912,7 +1966,10 @@ class TTSNode(Node):
             raise Exception("Silero TTS model не инициализирована")
 
         ssml_attributes = ssml_attributes or {}
-        pitch = ssml_attributes.get("pitch", "medium")
+        # Нормализуем pitch в Silero-совместимый уровень (x-low|low|medium|high|x-high|robot).
+        # LLM/MiniMax-стиль SSML даёт числовые множители (1.2, +10%) — Silero v5
+        # падает с "Invalid <prosody> tag", если передать их как есть (issue #1064).
+        pitch = normalize_silero_pitch(ssml_attributes.get("pitch"))
 
         # 🔴 FIX (live 08.08 «робот не ответил»): LLM/MiniMax-стиль SSML может
         # дать числовой pitch ("1.2", "+10%", float 1.2) — Silero v5 принимает
