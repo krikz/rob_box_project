@@ -1,0 +1,15 @@
+# speaker_id_node.yaml — голосовая биометрия (issue #1077, resemblyzer d-vectors)
+#
+# speaker_id_node подписывается на /audio/speech_audio (audio_node), вычисляет
+# d-vector голоса (resemblyzer), идентифицирует говорящего по /data/speakers.db
+# и публикует /voice/speaker/result. dialogue_node использует результат для
+# префикса [Говорит <имя>] / [Говорит: незнакомец] — робот различает
+# собеседников по голосу, а не только по Yandex speaker_tag (который
+# присваивается per-session и не стабилен между сессиями).
+
+speaker_id_node:
+  ros__parameters:
+    enabled: true
+    db_path: "/data/speakers.db"
+    identify_threshold: 0.75
+    sample_rate: 16000
