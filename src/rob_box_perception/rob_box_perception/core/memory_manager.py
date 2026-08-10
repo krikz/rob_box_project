@@ -16,9 +16,9 @@ class MemoryManager:
         """
         Инициализировать менеджера памяти.
 
-        Args
-        ----
-        memory_window:
+        Parameters
+        ----------
+        memory_window : float
             Временное окно хранения событий в секундах (default: 300s = 5min)
 
         """
@@ -40,14 +40,14 @@ class MemoryManager:
         """
         Добавить событие в память с типизацией.
 
-        Args
-        ----
-        event_type:
+        Parameters
+        ----------
+        event_type : str
             Тип события (user_speech, robot_response, robot_thought,
             vision, etc.)
-        content:
+        content : str
             Содержание события
-        important:
+        important : bool
             Флаг важности события
 
         """
@@ -103,14 +103,15 @@ class MemoryManager:
         """
         Получить краткое резюме последних событий.
 
-        Args
-        ----
-        count:
+        Parameters
+        ----------
+        count : int
             Количество последних событий для включения в резюме
 
         Returns
         -------
-        Текстовое резюме событий
+        str
+            Текстовое резюме событий
 
         """
         if not self.recent_events:
@@ -136,14 +137,15 @@ class MemoryManager:
         """
         Получить события определенного типа.
 
-        Args
-        ----
-        event_type:
+        Parameters
+        ----------
+        event_type : str
             Тип событий для получения
 
         Returns
         -------
-        Список событий указанного типа
+        List[Dict]
+            Список событий указанного типа
 
         """
         if event_type == 'user_speech':
@@ -163,14 +165,15 @@ class MemoryManager:
         """
         Получить количество событий.
 
-        Args
-        ----
-        event_type:
+        Parameters
+        ----------
+        event_type : Optional[str]
             Тип событий для подсчета (если None, подсчет всех событий)
 
         Returns
         -------
-        Количество событий
+        int
+            Количество событий
 
         """
         if event_type is None:
@@ -190,8 +193,11 @@ class MemoryManager:
         """
         Очистить события определенного типа.
 
-        Args:
-            event_type: Тип событий для очистки
+        Parameters
+        ----------
+        event_type : str
+            Тип событий для очистки
+
         """
         # Удаляем из общей памяти
         self.recent_events = [
@@ -214,11 +220,16 @@ class MemoryManager:
         """
         Получить важные события.
 
-        Args:
-            count: Количество событий (если None, все важные события)
+        Parameters
+        ----------
+        count : Optional[int]
+            Количество событий (если None, все важные события)
 
-        Returns:
+        Returns
+        -------
+        List[Dict]
             Список важных событий
+
         """
         important = [
             e for e in self.recent_events if e.get('important', False)

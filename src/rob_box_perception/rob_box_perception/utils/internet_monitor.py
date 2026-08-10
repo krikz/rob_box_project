@@ -19,20 +19,30 @@ class InternetConnectivityMonitor:
     Периодически проверяет доступность через ping к
     надёжным DNS серверам (Google, Cloudflare).
 
-    Attributes:
-        node: ROS2 нода для логирования
-        is_online: Текущий статус подключения
-        last_check_time: Время последней проверки
-        test_hosts: Список хостов для ping-теста
+    Attributes
+    ----------
+    node : Node
+        ROS2 нода для логирования
+    is_online : Optional[bool]
+        Текущий статус подключения
+    last_check_time : Optional[float]
+        Время последней проверки
+    test_hosts : List[str]
+        Список хостов для ping-теста
+
     """
 
     def __init__(self, node: Node, check_interval: float = 30.0):
         """
         Инициализация монитора.
 
-        Args:
-            node: ROS2 нода для логирования
-            check_interval: Интервал проверки в секундах
+        Parameters
+        ----------
+        node : Node
+            ROS2 нода для логирования
+        check_interval : float
+            Интервал проверки в секундах
+
         """
         self.node = node
         self.is_online = None
@@ -61,8 +71,11 @@ class InternetConnectivityMonitor:
         """
         Проверить доступность интернета.
 
-        Returns:
+        Returns
+        -------
+        bool
             True если интернет доступен, False иначе
+
         """
         for host in self.test_hosts:
             try:
@@ -106,8 +119,11 @@ class InternetConnectivityMonitor:
         """
         Получить статус подключения.
 
-        Returns:
+        Returns
+        -------
+        Dict
             Словарь со статусом подключения
+
         """
         return {
             'is_online': (
