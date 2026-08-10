@@ -597,16 +597,27 @@ class DialogueNode(Node):
             # dialogue_node падал → робот молчал. Собираем LLMConfig.
             from rob_box_harness.config import LLMConfig
 
-            # 🔴 FIX (live 10.08, issue #1089): build_minimax_provider
-            # падает с ConfigError, если MINIMAX_API_KEY не выставлен
-            # (или невалиден). Раньше исключение вырывалось из _build_llm
-            # наружу → dialogue_node крашился на init → ros2 launch не
-            # рестартил успешно → робот молчал с приветствием. Теперь
-            # ловим любую ошибку MiniMax-сборки и gracefully переключаемся
-            # на deepseek-only путь — робот живёт и говорит «Я на связи»
-            # даже без активной подписки MiniMax. Это та же стратегия,
-            # что у TTS-цепочки (Yandex→Silero): первичный провайдер
-            # опционален, работоспособность гарантируется fallback'ом.
+            # 🔴 FIX (live 10.08, issue #1089): build_minimax_provider НЕ
+            # падает на None api_key (создаёт провайдер, который упадёт уже
+            # при первом runtime-запросе — 401 от api.minimax.io). Поэтому
+            # ранний guard по env-переменной: если MINIMAX_API_KEY пуст →
+            # сразу deepseek-only без попытки собрать MiniMax-провайдер.
+            import os as _os
+            _minimax_key = (
+                self.get_parameter("api_key").value
+                or _os.environ.get("MINIMAX_API_KEY", "")
+                or ""
+            )
+            if not _minimax_key.strip():
+                self.get_logger().info(
+                    "⚠️ MINIMAX_API_KEY пуст → deepseek-only режим (без попытки MiniMax)"
+                )
+                return build_deepseek_provider(
+                    api_key=_os.environ.get("DEEPSEEK_API_KEY") or None,
+                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
+                    model=model or DEEPSEEK_DEFAULT_MODEL,
+                )
+
             try:
                 primary = build_minimax_provider(
                     LLMConfig(
@@ -617,7 +628,7 @@ class DialogueNode(Node):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
+                self.get_logger().info(
                     f"⚠️ MiniMax недоступен ({type(exc).__name__}: {exc}) — "
                     f"переход в deepseek-only режим"
                 )
