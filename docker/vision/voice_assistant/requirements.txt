@@ -66,6 +66,13 @@ vosk
 # =============================================================================
 resemblyzer
 scikit-learn
+# Issue #1101 — runtime pin: resemblyzer 0.1.4 → librosa → numba импортирует
+# `coverage.types` (Tracer API). Debian Bullseye ships coverage 6.2 без
+# `types` submodule → AttributeError: module 'coverage' has no attribute
+# 'types' → embed_audio returns None. Pin coverage>=7.0 (где types.Tracer
+# сохранён). Также pin pyyaml>=6.0 (resemblyzer models.yaml требует C-парсер).
+coverage>=7.0
+pyyaml>=6.0
 
 # =============================================================================
 # gRPC for Yandex Cloud API v3 (STT + TTS)

@@ -132,6 +132,15 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "ddgs>=9.0.0"
 # pre-built wheel. Без resemblyzer speaker_id_node молча падает при импорте.
 RUN pip3 install --no-cache-dir --retries 5 --timeout 300 resemblyzer
 # --------------------------------------------------------------------------
+# Issue #1101 — runtime pin для resemblyzer. Без coverage>=7.0 resemblyzer
+# → librosa → numba → coverage.types.Tracer → AttributeError
+# (`module 'coverage' has no attribute 'types'`). Без pyyaml>=6.0 — старый
+# C-парсер, resemblyzer не может загрузить модели. Пин нужно здесь, в
+# app-layer, иначе voice_base cache останется старым и пересборка не
+# подцепит. Установлено ДО ребилда rob_box_voice чтобы зависимости уже
+# были видны для speaker_id_node.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "coverage>=7.0" "pyyaml>=6.0"
+# --------------------------------------------------------------------------
 
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
