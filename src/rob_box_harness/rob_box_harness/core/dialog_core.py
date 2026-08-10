@@ -203,8 +203,16 @@ class DialogCore:
         is_dj_auto: bool = False,
         speaker_tag: str | None = None,
         speaker_context: str | None = None,
+        dynamic_system: str | None = None,
     ) -> DialogResult:
         """Process a single user turn.
+
+        ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
+        ``<system_context>...</system_context>`` snapshot собирается
+        dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
+        Вставляется вторым system-message в messages[] после статичного
+        system_prompt и до user input. Если None — dynamic system не
+        добавляется (backward-compatible).
 
         Returns a :class:`DialogResult` describing the assistant's
         reply, the new DSM state, and any error. Never raises — LLM
@@ -310,6 +318,22 @@ class DialogCore:
                         messages.insert(
                             0,
                             LLMMessage(role="system", content=speaker_context),
+                        )
+                # Two-system-prompt pattern (live 10.08) — dynamic
+                # <system_context> snapshot: текущий спикер (resemblyzer),
+                # TTS-voice (gender alignment), session lock state.
+                # Вставляется ПОСЛЕ speaker_context и ДО user input, чтобы
+                # модель получала свежий runtime каждый turn.
+                if dynamic_system:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=dynamic_system),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=dynamic_system),
                         )
                 messages.append(LLMMessage(role="user", content=text))
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
