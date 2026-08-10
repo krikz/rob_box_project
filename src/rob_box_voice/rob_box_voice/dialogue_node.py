@@ -216,13 +216,22 @@ def _rclpy_logger_safe(orig):
     return wrapper
 
 
-import rclpy.impl.rcutils_logger as _rl
-for _m in ("debug", "info", "warning", "error", "fatal"):
-    _orig = getattr(_rl.RcutilsLogger, _m)
-    if not getattr(_orig, "_rclpy_safe", False):
-        _w = _rclpy_logger_safe(_orig)
-        _w._rclpy_safe = True
-        setattr(_rl.RcutilsLogger, _m, _w)
+# Apply the RcutilsLogger monkey-patch defensively. ROS2 Humble does not
+# expose ``rclpy.impl.rcutils_logger`` (only newer distros do), so we must
+# guard the import — otherwise unit tests on Humble fail at import time
+# (``ModuleNotFoundError: No module named 'rclpy.impl'``).
+try:
+    import rclpy.impl.rcutils_logger as _rl
+    for _m in ("debug", "info", "warning", "error", "fatal"):
+        _orig = getattr(_rl.RcutilsLogger, _m)
+        if not getattr(_orig, "_rclpy_safe", False):
+            _w = _rclpy_logger_safe(_orig)
+            _w._rclpy_safe = True
+            setattr(_rl.RcutilsLogger, _m, _w)
+except (ImportError, AttributeError):
+    # ROS2 distro without rclpy.impl — original logger is %s-safe enough
+    # (no RcutilsLogger bug to work around here).
+    pass
 
 
 class DialogueNode(Node):
