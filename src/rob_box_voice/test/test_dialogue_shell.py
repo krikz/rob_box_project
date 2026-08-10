@@ -890,23 +890,39 @@ class TestShellImportSanity(unittest.TestCase):
 class TestLLMProviderWiring(unittest.TestCase):
     """Regression coverage for issue #925 provider routing."""
 
-    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
-        """The legacy ``llm_provider`` config must never fall through to OpenAI."""
-        from unittest.mock import patch
+    def setUp(self):
+        # ``object.__new__(DialogueNode)`` не вызывает ``__init__`` —
+        # у ноды нет ни ``_logger``, ни ``_parameters``. Стабы ниже
+        # обеспечивают совместимость с локальным запуском pytest
+        # (без реального rclpy): в CI оба метода приходят из
+        # ``rclpy.node.Node``, так что эта защита не мешает.
+        from unittest.mock import MagicMock as _M
 
-        node = object.__new__(DialogueNode)
+        self._logger_stub = _M()
+
+    def _stub_node(self, values):
+        """Construct a DialogueNode shim with all rclpy hooks stubbed."""
 
         class _Param:
             def __init__(self, value):
                 self.value = value
 
-        values = {
+        node = object.__new__(DialogueNode)
+        node.get_parameter = lambda name: _Param(values.get(name))
+        node.get_parameters_by_prefix = lambda prefix: values
+        node.get_logger = lambda: self._logger_stub
+        return node
+
+    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
+        """The legacy ``llm_provider`` config must never fall through to OpenAI."""
+        from unittest.mock import patch
+
+        node = self._stub_node({
             "llm_provider": "deepseek",
             "api_key": "test-key",
             "base_url": "",
             "model": "",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
+        })
 
         with patch(
             "rob_box_voice.dialogue_node.build_deepseek_provider"
@@ -924,19 +940,12 @@ class TestLLMProviderWiring(unittest.TestCase):
 
     def test_unknown_llm_provider_fails_before_any_client_is_built(self):
         """A typo must fail loudly instead of sending credentials to OpenAI."""
-        node = object.__new__(DialogueNode)
-
-        class _Param:
-            def __init__(self, value):
-                self.value = value
-
-        values = {
+        node = self._stub_node({
             "llm_provider": "openai",
             "api_key": "test-key",
             "base_url": "",
             "model": "",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
+        })
 
         with self.assertRaisesRegex(ValueError, "llm_provider.*deepseek"):
             node._build_llm()
@@ -954,21 +963,12 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         from rob_box_harness.errors import ConfigError
 
-        node = object.__new__(DialogueNode)
-
-        class _Param:
-            def __init__(self, value):
-                self.value = value
-
-        values = {
+        node = self._stub_node({
             "llm_provider": "minimax",
             "api_key": "missing-key",
             "base_url": "https://api.minimax.io/v1",
             "model": "MiniMax-M3",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
-        # Минимальный логгер, чтобы warning был поглощён без падения.
-        node.get_logger = lambda: MagicMock()
+        })
 
         with patch(
             "rob_box_voice.dialogue_node.build_minimax_provider"
@@ -1001,20 +1001,12 @@ class TestLLMProviderWiring(unittest.TestCase):
         """
         from unittest.mock import patch
 
-        node = object.__new__(DialogueNode)
-
-        class _Param:
-            def __init__(self, value):
-                self.value = value
-
-        values = {
+        node = self._stub_node({
             "llm_provider": "minimax",
             "api_key": "any",
             "base_url": "",
             "model": "",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
-        node.get_logger = lambda: MagicMock()
+        })
 
         with patch(
             "rob_box_voice.dialogue_node.build_minimax_provider"
@@ -1037,22 +1029,14 @@ class TestLLMProviderWiring(unittest.TestCase):
         """
         from unittest.mock import patch
 
-        node = object.__new__(DialogueNode)
-
-        class _Param:
-            def __init__(self, value):
-                self.value = value
-
-        values = {
+        node = self._stub_node({
             "llm_provider": "minimax",
             "api_key": "valid-key",
             "base_url": "https://api.minimax.io/v1",
             "model": "MiniMax-M3",
             "health_cache_path": "",
             "health_ttl_s": "",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
-        node.get_logger = lambda: MagicMock()
+        })
 
         with patch(
             "rob_box_voice.dialogue_node.build_minimax_provider"
