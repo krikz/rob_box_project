@@ -709,10 +709,21 @@ class DialogueNode(Node):
             )
             return provider
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
+            # 🔴 FIX (live 10.08): self.get_logger() может крашнуться
+            # внутри except-блока из-за _rclpy_logger_safe monkey-patch
+            # (ValueError: Logger severity cannot be changed between calls).
+            # Защитный fallback: пробуем rclpy-логер, при ошибке → print.
+            warn_msg = (
                 f"⚠️ LLM provider {name!r} ({display}) "
                 f"не построен: {type(exc).__name__}: {exc}"
             )
+            try:
+                self.get_logger().warning(warn_msg)
+            except Exception:
+                try:
+                    logging.warning(warn_msg)
+                except Exception:
+                    print(warn_msg, flush=True)
             return None
 
     def _build_llm(self) -> Any:
