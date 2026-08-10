@@ -29,10 +29,8 @@ dialogue_node:
     - не меша
     silence_timeout: 3.5
     max_question_time: 20.0
-    llm_providers: "minimax,deepseek"   # issue #1089: приоритетная цепочка
+    llm_providers: "minimax,deepseek"   # issue #1089: приоритетная цепочка (ключи — см. voice_assistant.yaml)
     llm_provider: minimax               # легаси (используется только если llm_providers пуст)
-    base_url: https://api.minimax.io/v1  # больше не используется провайдерами
-    model: MiniMax-M3                    # больше не используется провайдерами
     system_prompt_file: master_prompt_compact.txt
     history_max_turns: 20
     dialogue_timeout: 300.0
