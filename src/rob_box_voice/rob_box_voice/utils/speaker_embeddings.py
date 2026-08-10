@@ -136,9 +136,13 @@ class SpeakerDatabase:
 
             wav = preprocess_wav(pcm, source_sr=SAMPLE_RATE)
             embedding = _encoder.embed_utterance(wav)
+            logger.info(
+                f"✅ embed_audio: {len(pcm_bytes)} bytes → "
+                f"{len(embedding)}-dim vector (norm={float((embedding**2).sum()**0.5):.3f})"
+            )
             return embedding.astype(np.float32)
         except Exception as exc:
-            logger.error(f"embed_audio failed: {exc}")
+            logger.error(f"embed_audio failed: {type(exc).__name__}: {exc}")
             return None
 
     def identify(self, embedding: np.ndarray) -> Optional[SpeakerMatch]:
