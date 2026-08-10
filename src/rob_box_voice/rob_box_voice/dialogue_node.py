@@ -612,6 +612,9 @@ class DialogueNode(Node):
                 self.get_logger().info(
                     "⚠️ MINIMAX_API_KEY пуст → deepseek-only режим (без попытки MiniMax)"
                 )
+                self.get_logger().info(
+                    "[health] build_llm: provider_chain=[deepseek] active=deepseek"
+                )
                 return build_deepseek_provider(
                     api_key=_os.environ.get("DEEPSEEK_API_KEY") or None,
                     base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
@@ -687,6 +690,12 @@ class DialogueNode(Node):
 
                 self.get_logger().info(
                     f"🔄 LLM fallback: deepseek (health-aware, TTL {health_ttl:.0f}s)"
+                )
+                self.get_logger().info(
+                    "[health] build_llm: provider_chain=[%s, %s] active=%s",
+                    "minimax",
+                    "deepseek",
+                    "minimax",
                 )
                 return HealthAwareFallbackLLM(
                     [primary, fb],
