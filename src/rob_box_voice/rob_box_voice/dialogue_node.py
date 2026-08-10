@@ -295,7 +295,6 @@ class DialogueNode(Node):
             self.get_parameter("speaker_id_enabled").value)
         self._current_speaker: dict = {"is_known": False}
         self._speaker_lock = threading.Lock()
-        self._session_speaker_id: Optional[str] = None
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
@@ -1498,39 +1497,14 @@ class DialogueNode(Node):
         with self._speaker_lock:
             sp = dict(self._current_speaker)
         if sp.get("is_known"):
-            sid = str(sp.get("speaker_id") or "")
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
-            if self._session_speaker_id is None:
-                self._session_speaker_id = sid
-                self.get_logger().info(
-                    f"🔐 [issue 1077] Session locked to {name!r} ({sid[:8]})"
-                )
-            elif self._session_speaker_id != sid:
-                self.get_logger().info(
-                    f"🚫 [issue 1077] Speaker mismatch: "
-                    f"session={self._session_speaker_id[:8]} "
-                    f"got={name!r} ({sid[:8]} conf={conf:.2f}) — soft-warning"
-                )
-                # Issue #1101 Bug B fix: НЕ блокируем LLM call (раньше return ""
-                # ломал весь turn — нет LLM, нет speak_text, нет memory_save).
-                # Теперь — soft warning в user_input, LLM сам решает что делать
-                # (см. master_prompt_compact.txt RULE #SYSCTX #5).
-                user_input = f"[⚠️ Другой спикер ({name}, не текущая сессия)]: {user_input}"
             if name and speaker_context is None:
                 user_input = f"[Говорит {name}]: {user_input}"
                 self.get_logger().info(
                     f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
                 )
         else:
-            if self._session_speaker_id is not None:
-                self.get_logger().info(
-                    f"🚫 [issue 1077] Unknown speaker during locked session "
-                    f"({self._session_speaker_id[:8]}) — soft-warning"
-                )
-                # Issue #1101 Bug B fix: НЕ возвращаем "" — пропускаем в LLM
-                # с пометкой. LLM сам решит (RULE #SYSCTX #5).
-                user_input = f"[⚠️ Незнакомый голос, сессия залочена на другом]: {user_input}"
             if speaker_context is None:
                 user_input = f"[Говорит: незнакомец]: {user_input}"
         return user_input
@@ -1554,10 +1528,6 @@ class DialogueNode(Node):
         sp_name = sp.get("name") or ""
         sp_conf = float(sp.get("confidence") or 0.0)
         sp_id = sp.get("speaker_id") or ""
-
-        # session lock
-        locked_speaker = self._session_speaker_id or ""
-        is_locked = bool(self._session_speaker_id)
 
         # tts provider (читаем из yaml параметра)
         try:
@@ -1588,10 +1558,6 @@ class DialogueNode(Node):
         lines.append(f"    <tts_voice>{tts_voice}</tts_voice>")
         lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
         lines.append("  </hardware>")
-        lines.append("  <session>")
-        lines.append(f"    <locked_speaker>{locked_speaker[:8] if locked_speaker else 'none'}</locked_speaker>")
-        lines.append(f"    <is_locked>{str(is_locked).lower()}</is_locked>")
-        lines.append("  </session>")
         lines.append("</system_context>")
         return "\n".join(lines)
 
