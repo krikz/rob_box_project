@@ -118,6 +118,12 @@ RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
 # ~10 GB pytorch etc. cache for every consumer.
 RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "aiohttp>=3.9.1,<4.0"
 # --------------------------------------------------------------------------
+# 🔴 FIX (issue #1077): resemblyzer для speaker_id_node (голосовая биометрия).
+# Установлен в app-layer (не в voice_base) чтобы не инвалидировать кеш
+# pytorch/vosk/yandex. На ARM64 компилирует llvmlite (~3 min), на x86 —
+# pre-built wheel. Без resemblyzer speaker_id_node молча падает при импорте.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 300 resemblyzer
+# --------------------------------------------------------------------------
 
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
