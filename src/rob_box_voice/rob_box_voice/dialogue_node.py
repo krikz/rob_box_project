@@ -597,14 +597,35 @@ class DialogueNode(Node):
             # dialogue_node падал → робот молчал. Собираем LLMConfig.
             from rob_box_harness.config import LLMConfig
 
-            primary = build_minimax_provider(
-                LLMConfig(
-                    provider="minimax",
-                    model=model or MINIMAX_DEFAULT_MODEL,
-                    api_key=self.get_parameter("api_key").value or None,
-                    timeout_s=90.0,
+            # 🔴 FIX (live 10.08, issue #1089): build_minimax_provider
+            # падает с ConfigError, если MINIMAX_API_KEY не выставлен
+            # (или невалиден). Раньше исключение вырывалось из _build_llm
+            # наружу → dialogue_node крашился на init → ros2 launch не
+            # рестартил успешно → робот молчал с приветствием. Теперь
+            # ловим любую ошибку MiniMax-сборки и gracefully переключаемся
+            # на deepseek-only путь — робот живёт и говорит «Я на связи»
+            # даже без активной подписки MiniMax. Это та же стратегия,
+            # что у TTS-цепочки (Yandex→Silero): первичный провайдер
+            # опционален, работоспособность гарантируется fallback'ом.
+            try:
+                primary = build_minimax_provider(
+                    LLMConfig(
+                        provider="minimax",
+                        model=model or MINIMAX_DEFAULT_MODEL,
+                        api_key=self.get_parameter("api_key").value or None,
+                        timeout_s=90.0,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"⚠️ MiniMax недоступен ({type(exc).__name__}: {exc}) — "
+                    f"переход в deepseek-only режим"
+                )
+                return build_deepseek_provider(
+                    api_key=self.get_parameter("api_key").value or None,
+                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
+                    model=model or DEEPSEEK_DEFAULT_MODEL,
+                )
             # 🔴 FIX (live 06.08): fallback на DeepSeek при 429/ошибке
             # MiniMax (Token Plan limit) — иначе DJ/диалог молчит, пока
             # лимит не сбросится. LLMConfig.fallback декларативно есть,
