@@ -605,7 +605,7 @@ class AudioNode(Node):
                             f'выше окна, первые чанки могли потеряться)'
                         )
                     else:
-                        self.get_logger().info(f'{pre-roll_msg})')
+                        self.get_logger().info(f'{pre_roll_msg})')
                 self.is_speeching = True
             elif self.is_speeching:
                 # Речь закончилась - публикуем накопленный буфер
