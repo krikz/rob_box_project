@@ -1486,11 +1486,25 @@ class DialogueNode(Node):
         user_input: str,
         speaker_context: Optional[str],
     ) -> str:
-        """Issue #1077 — префикс [Говорит <имя>] / [Говорит: незнакомец].
+        """Issue #1077 — префикс спикера для LLM.
 
-        Данные берём из последнего результата speaker_id_node (/voice/speaker/result,
-        resemblyzer d-vector). Если LLM-контекст уже содержит имя (speaker_context
-        из Yandex tag), не дублируем префикс.
+        🔴 FIX (issue #1101): НЕ используем формат «[Говорит <имя>]» —
+        DSM-классификатор ``on_user_input`` ищет wake-word («роббокс»,
+        «робот», …) в ЛЮБОМ месте текста и матчит его внутри префикса
+        «[Говорит робот Антон]» → возвращает ``WAKE_WORD`` вместо
+        ``STT_RESULT`` → guard ``event == STT_RESULT`` пропускает LLM →
+        «акцепт есть, робот не отвечает».
+
+        Новый формат «[Speaker:<id> name=Антон conf=0.92]» не содержит
+        wake-слов. Данные о спикере уже доступны в dynamic_system →
+        LLM получает имя из system-context, а не из user-prefix.
+
+        Args:
+            user_input: Raw STT-транскрипт.
+            speaker_context: Контекст от Yandex tag (если уже загружен).
+
+        Returns:
+            user_input с техническим префиксом спикера (без wake-words).
         """
         # Даём speaker_id_node время закончить inference (STT быстрее resemblyzer).
         await asyncio.sleep(0.30)
@@ -1499,14 +1513,17 @@ class DialogueNode(Node):
         if sp.get("is_known"):
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
+            sid = str(sp.get("speaker_id") or "")[:8]
             if name and speaker_context is None:
-                user_input = f"[Говорит {name}]: {user_input}"
+                # НЕ вставляем «робот»/«роббокс» в префикс — иначе DSM
+                # on_user_input вернёт WAKE_WORD и LLM не вызовется.
+                user_input = f"[Speaker:{sid}] {user_input}"
                 self.get_logger().info(
                     f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
                 )
         else:
             if speaker_context is None:
-                user_input = f"[Говорит: незнакомец]: {user_input}"
+                user_input = f"[Speaker:unknown] {user_input}"
         return user_input
 
     def _build_dynamic_system_context(self) -> str:
