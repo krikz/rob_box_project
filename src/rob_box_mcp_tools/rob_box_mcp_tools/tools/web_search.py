@@ -21,19 +21,6 @@ from typing import List
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 
-try:
-    from ddgs import DDGS
-
-    _DDGS_AVAILABLE = True
-except ImportError:
-    try:
-        from duckduckgo_search import DDGS  # legacy package name
-
-        _DDGS_AVAILABLE = True
-    except ImportError:
-        _DDGS_AVAILABLE = False
-
-
 class SearchWebTool(MCPTool):
     """DuckDuckGo general-purpose web search tool."""
 
@@ -42,9 +29,8 @@ class SearchWebTool(MCPTool):
 
     def __init__(self, node) -> None:
         super().__init__(node)
-        self.log_info(
-            f"🔍 SearchWebTool: duckduckgo-search available={_DDGS_AVAILABLE}"
-        )
+        self._ddgs_available: bool | None = None  # lazy init in execute()
+        self.log_info("🔍 SearchWebTool registered (ddgs import deferred)")
 
     # ── Tool metadata ────────────────────────────────────────────────────
 
@@ -99,13 +85,36 @@ class SearchWebTool(MCPTool):
         query: str,
         max_results: int = 5,
     ) -> MCPToolResult:
-        if not _DDGS_AVAILABLE:
+        # Issue #1101 — lazy ddgs import. Module-level import
+        # sometimes fails at mcp_server startup (race with pip
+        # install, stale .pyc, or sys.path ordering). Retry once
+        # per execute() invocation so the tool self-heals without
+        # a process restart.
+        if self._ddgs_available is None:
+            try:
+                from ddgs import DDGS
+
+                self._ddgs_available = True
+            except ImportError:
+                try:
+                    from duckduckgo_search import DDGS  # noqa: F811
+
+                    self._ddgs_available = True
+                except ImportError:
+                    self._ddgs_available = False
+                    self.log_error(
+                        "[search_web] ddgs/duckduckgo_search import"
+                        " failed — web search will return an error."
+                    )
+        DDGS_cls = DDGS if self._ddgs_available else None
+
+        if not self._ddgs_available or DDGS_cls is None:
             return MCPToolResult(
                 success=False,
                 data={"error": "duckduckgo_search not installed"},
                 message=(
                     "Поиск в интернете недоступен — duckduckgo-search не "
-                    "установлен на роботе. Попроси оператора установить "
+                    "установлен на роботе. Попроси оператора выполнить "
                     "`pip install duckduckgo-search` в Docker-образе."
                 ),
             )
@@ -121,7 +130,7 @@ class SearchWebTool(MCPTool):
         max_results = max(1, min(int(max_results or 5), self._MAX_RESULTS))
 
         try:
-            with DDGS() as ddgs:
+            with DDGS_cls() as ddgs:
                 raw = list(
                     ddgs.text(query, max_results=max_results, region="wt-wt")
                 )
