@@ -106,14 +106,14 @@ jobs:
           SSHPASS: open
         run: |
           # Ключ живёт в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).
-          # Достаём и кладём на 249 в /tmp/yandex_key.txt — атомарный скрипт читает оттуда.
-          # Use unique tmp path (Permission denied на старом root-owned /tmp/yandex_key.txt).
+          # Достаём ключ локально на runner'е — атомарный скрипт получит его
+          # через env (export YANDEX_API_KEY в ssh-команде ниже). НЕ копируем
+          # на 249: scp в /tmp падал Permission denied из-за root-owned
+          # файлов от прошлых ранов, и файл на 249 вообще не нужен.
           YKEY_LOCAL=/tmp/yandex_key_$$.txt
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
             "docker exec voice-assistant printenv YANDEX_API_KEY" > "$YKEY_LOCAL"
           wc -c "$YKEY_LOCAL"
-          sshpass -e scp -o StrictHostKeyChecking=no "$YKEY_LOCAL" ros2@10.1.1.249:$YKEY_LOCAL
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "wc -c $YKEY_LOCAL"
           echo "YKEY_LOCAL=$YKEY_LOCAL" >> $GITHUB_ENV
 
       - name: Push atomic harness + scenario to build machine
