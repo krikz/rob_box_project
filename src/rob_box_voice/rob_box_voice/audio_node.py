@@ -55,23 +55,20 @@ class AudioNode(Node):
         # Параметры
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('channels', 1)
-        # Issue 1076: какие каналы усреднять для моно (0-based). ReSpeaker
-        # в 6-канальном RAW-режиме: Ch1-4 = сырые микрофоны, Ch5-6 =
-        # playback-референс (AEC-референс, то, что играет робот).
-        # ⚠️ A/B-проверка 09.08 (робот 10.1.1.21): mix_channels=[0,1,2,3]
-        # (только микрофоны) → Yandex STT стабильно `empty`; все 6 каналов
-        # [0,1,2,3,4,5] → `yandex:ok` ПРИНЯТО. Причина: в e2e/реальной
-        # работе фраза пользователя попадает в playback-референс Ch5-6
-        # (через динамик робота) — исключение референса выбрасывает
-        # САМЫЙ ЧИСТЫЙ сигнал фразы. Эхо-защита уже есть на уровне VAD
-        # (tts_grace_s, music_vad_threshold) и wake-word gate — НЕ на
-        # уровне микшера. Поэтому дефолт = все 6 каналов.
-        # Пустой список = все каналы (legacy). Для ReSpeaker 6ch укажите
-        # [0, 1, 2, 3, 4, 5] (все каналы, подтверждено A/B).
-        # НЕПУСТОЙ дефолт обязателен: rclpy Humble объявляет пустой список [] как
-        # BYTE_ARRAY, а yaml даёт [0,1,2,3,4,5] INTEGER_ARRAY → InvalidParameterTypeException
-        # (audio_node падал в цикле, робот не слышал речь — 09.08, live-фикс).
-        self.declare_parameter('mix_channels', [0, 1, 2, 3, 4, 5])
+        # Issue 1117 round-2: какие каналы усреднять для моно (0-based).
+        # Дефолт = [0] — только Ch1 прошивки (=Ch0 в PyAudio-данных),
+        # DSP-processed ASR (AEC + beamforming + NS + AGC на XVF-3000).
+        # Ch2-5 в 6-channel firmware = сырые микрофоны, Ch6 = merged
+        # playback reference. См. /tmp/issue_1117_assets/datasheet.md и
+        # Respeaker.cfg (https://github.com/furushchev/respeaker_ros).
+        # Прежний дефолт [0,1,2,3,4,5] (round-1, A/B-победитель на
+        # yandex:empty) был выбран потому, что в исходной теории Ch5-6
+        # считались «playback reference с чистой фразой». Round-2 показал,
+        # что это была ошибка канала — правильный ASR-выход = Ch0 (DSP).
+        # См. PR https://github.com/krikz/rob_box_project/pull/1123.
+        # ⚠️ Для Huawei/UAC-устройств без 6-канальной прошивки параметр
+        # игнорируется (audio_channel ловит invalid index — нет сигнала).
+        self.declare_parameter('mix_channels', [0])
         # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (64ms @16kHz) слишком
         # мал для Python-callback — GIL/публикация/USB VAD приводили к
         # paInputOverflow (PyAudio status 2) и потере сэмплов. 4096 = 256ms.
@@ -92,6 +89,17 @@ class AudioNode(Node):
         self.declare_parameter('music_vad_threshold', 6.0)
         self.declare_parameter('music_vad_min_db', -35.0)
 
+        # Issue #1117 round-2: настройка DSP XVF-3000 при старте ноды
+        # (через USB control transfer). Если устройство не найдено
+        # (моки, чужой робот, нет USB-стека) — настройка тихо
+        # пропускается, остальная работа ноды не страдает.
+        self.declare_parameter('dsp_apply_on_start', True)
+        # HPFONOFF: high-pass filter. Дефолт firmware = 3 (180Hz) режет
+        # тихое «Р» в «Робот» (-26 dBFS), STT получает «обот» / «меня
+        # зовут саша» без wake word → dialogue отбрасывает (no_wake_word).
+        # 1 = 70 Hz сохраняет «Р». См. PR #1123.
+        self.declare_parameter('hpf_on', 1)
+
         self.sample_rate = self.get_parameter('sample_rate').value
         self.channels = self.get_parameter('channels').value
         self.mix_channels = list(self.get_parameter('mix_channels').value or [])
@@ -104,6 +112,9 @@ class AudioNode(Node):
         self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
         self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
         self.music_vad_min_db = float(self.get_parameter('music_vad_min_db').value)
+        # Issue #1117 round-2: DSP tuning при старте.
+        self.dsp_apply_on_start = bool(self.get_parameter('dsp_apply_on_start').value)
+        self.hpf_on = int(self.get_parameter('hpf_on').value)
 
         # QoS для аудио потока
         audio_qos = QoSProfile(
@@ -219,6 +230,9 @@ class AudioNode(Node):
             if device_info:
                 self.get_logger().info(f"  Устройство: {device_info['product']}")
 
+            # Issue #1117 round-2: DSP tuning (HPFONOFF) при старте.
+            self._apply_dsp()
+
             # НЕ настраиваем параметры - только ЧИТАЕМ VAD!
             # Любая USB запись может заблокировать PyAudio!
             # self.respeaker.configure_audio_processing(agc=True, noise_suppression=True)
@@ -226,6 +240,46 @@ class AudioNode(Node):
             self.get_logger().info(f'  VAD threshold: {self.vad_threshold} dB (по умолчанию)')
         else:
             self.get_logger().warn('⚠ ReSpeaker USB не найден для VAD/DoA')
+
+    def _apply_dsp(self) -> None:
+        """Применить настройки DSP XVF-3000 (issue #1117 round-2).
+
+        ⚠️ Раньше в initialize_hardware был запрет на любую USB-запись
+        (могло заблокировать PyAudio). Теперь осторожно: configure_dsp()
+        оборачивает write_parameter в try/except внутри, и мы ещё
+        страхуемся тут. PyAudio не блокируется, запись происходит
+        ДО открытия аудио-потока (см. порядок вызовов в open_audio_stream).
+        На пути к set_vad_threshold (music-state) уже есть устоявшаяся
+        запись — значит путь безопасен.
+
+        Если устройство не подключено / write вернул False / исключение —
+        только лог-warning, нода продолжает работать с firmware default.
+        """
+        if not self.dsp_apply_on_start:
+            return
+        if not self.respeaker or not self.respeaker.is_connected():
+            # Нет смысла слать write_parameter — заранее отказываемся,
+            # избегая таймаута USB-стека.
+            self.get_logger().debug(
+                '  HPFONOFF: пропуск — ReSpeaker USB не подключен.'
+            )
+            return
+        try:
+            ok = self.respeaker.configure_dsp(hpf_on=self.hpf_on)
+            if ok:
+                self.get_logger().info(
+                    f'  HPFONOFF={self.hpf_on} (issue #1117 round-2): '
+                    f'применён. Дефолт firmware = 3 (180Hz), режет «Р».'
+                )
+            else:
+                self.get_logger().warn(
+                    '  HPFONOFF: write_parameter вернул False '
+                    '(устройство занято?). Используется дефолт firmware.'
+                )
+        except Exception as e:  # noqa: BLE001 — фича не критична
+            self.get_logger().warn(
+                f'  HPFONOFF: ошибка записи ({e!r}). Используется дефолт firmware.'
+            )
 
         # Инициализация PyAudio (теперь ReSpeaker должен быть виден как аудио устройство)
         # Глушим ALSA ошибки как в jsk-ros-pkg
@@ -259,8 +313,8 @@ class AudioNode(Node):
             if self.mix_channels:
                 self.get_logger().info(
                     f'✓ mix_channels={self.mix_channels} — каналы для моно-микса '
-                    f'(issue 1076; A/B 09.08: все 6 каналов включая playback-референс '
-                    f'Ch5-6 → yandex:ok)'
+                    f'(issue #1117 round-2: [0]=Ch1 DSP-processed ASR; ранее '
+                    f'использовался [0,1,2,3,4,5] = все 6 каналов, ошибка канала).'
                 )
             self.publish_state('ready')
 
@@ -293,15 +347,16 @@ class AudioNode(Node):
                 audio_data = np.frombuffer(in_data, dtype=np.int16)
                 # Разделяем на каналы: [ch1, ch2, ..., ch6, ch1, ch2, ...]
                 audio_data = audio_data.reshape(-1, self.channels)
-                # Issue 1076: усредняем ВЫБРАННЫЕ каналы.
-                # ReSpeaker в 6-канальном RAW-режиме: Ch1-4 = микрофоны,
-                # Ch5-6 = playback-референс (AEC-референс — то, что играет
-                # робот). ⚠️ A/B 09.08: НЕЛЬЗЯ исключать референс — в e2e/
-                # реальной работе фраза пользователя идёт через динамик робота
-                # в Ch5-6 (самый чистый сигнал); mix [0,1,2,3] → yandex:empty,
-                # все 6 каналов → yandex:ok. Эхо-защита — на уровне VAD
-                # (tts_grace_s, music_vad_threshold) и wake-word gate.
-                # mix_channels=[0,1,2,3,4,5] включает все каналы (дефолт).
+                # Issue 1117 round-2: усредняем ВЫБРАННЫЕ каналы.
+                # ReSpeaker в 6-канальном режиме (см. /tmp/issue_1117_assets/
+                # datasheet.md): Ch1 = DSP-processed ASR (AEC+beamforming+
+                # NS+AGC), Ch2-5 = сырые микрофоны, Ch6 = merged playback
+                # reference. Брать всё [0..5] НЕЛЬЗЯ: смешение 4 raw +
+                # 1 processed + 1 playback даёт неустойчивое STT.
+                # Канонический выбор = только Ch1 (= индекс 0) — DSP уже
+                # сделал шумоподавление и эхо. Резервный вариант
+                # [0,1,2,3] (только сырые микрофоны) — для A/B-проверки;
+                # НЕ дефолт. mix_channels=[0] = дефолт round-2.
                 if self.mix_channels:
                     # Берём только запрошенные каналы (валидные индексы)
                     channels = [c for c in self.mix_channels if 0 <= c < self.channels]
