@@ -663,6 +663,32 @@ class RegisterSpeakerTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    # Issue #1101 — noise-name guard. LLM sometimes passes the trigger
+    # word instead of the actual name ("робот меня зовут" → name="зовут"
+    # instead of name="Денис"). Without this filter every such call
+    # produced a junk row in /data/speakers.db (``name='Зовут'``). The
+    # set covers the highest-frequency false positives observed on the
+    # robot on 2026-08-10/11 (see PR-1101 cleanup migration notes).
+    _NOISE_NAMES: frozenset[str] = frozenset(
+        {
+            "зовут",
+            "имя",
+            "меня",
+            "зовут-это",
+            "зовут меня",
+            "это",
+            "называю",
+            "зовут-меня",
+            "моё",
+            "мое",
+            "моё имя",
+            "мое имя",
+            "имя мне",
+            "имя моё",
+            "имя мое",
+        }
+    )
+
     def execute(self, name: str | None = None) -> MCPToolResult:
         import json
         from std_msgs.msg import String
@@ -680,6 +706,25 @@ class RegisterSpeakerTool(MCPTool):
                 success=False,
                 data={"error": "name_too_short"},
                 message=f"Имя '{name}' слишком короткое — минимум 2 символа",
+            )
+        # Issue #1101 — reject trigger-word leakage from the user phrase.
+        # Without this guard the LLM passes the first token after
+        # «зовут» rather than the actual name (e.g. "робот меня зовут
+        # Денис говорю" → name="Зовут"), polluting /data/speakers.db.
+        if name_clean.lower() in self._NOISE_NAMES:
+            self.log_info(
+                f"[register_speaker] rejected noise name {name_clean!r} "
+                "— LLM must extract actual name from user_input"
+            )
+            return MCPToolResult(
+                success=False,
+                data={"error": "noise_name", "received": name_clean},
+                message=(
+                    f"Имя '{name_clean}' выглядит как служебное слово из "
+                    "фразы («зовут», «имя», «меня»). Извлеки реальное имя "
+                    "из контекста (например, для «робот меня зовут Денис "
+                    'говорю» — передай name="Денис") и вызови тул ещё раз.'
+                ),
             )
         # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
         msg = String()

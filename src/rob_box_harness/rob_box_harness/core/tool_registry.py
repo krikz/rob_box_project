@@ -412,6 +412,53 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "required": ["name"],
             },
         ),
+        # Issue #1101 — voice biometrics (resemblyzer d-vectors). The
+        # MCP-side ``RegisterSpeakerTool`` was registered in
+        # ``rob_box_mcp_tools.tools.dialogue`` (issue #1077) but NEVER
+        # wired into this harness-side catalog, so LLM never received
+        # the schema and could never call it. Without this spec the
+        # user_input «робот меня зовут Денис» ends with LLM answering
+        # textually ("Запомнил тебя!") but never saving the d-vector.
+        #
+        # Wire-up: ``RegisterSpeakerTool.execute()`` publishes to
+        # ``/voice/speaker/register``; ``speaker_id_node`` keeps a
+        # 30-second ring-buffer of recent embeddings and binds the
+        # name to the closest one in time.
+        ToolSpec(
+            name="register_speaker",
+            description=(
+                "Зарегистрировать голос текущего собеседника в voice "
+                "biometric DB (resemblyzer d-vector). "
+                "Вызывай когда: (1) пользователь представился "
+                "фразой типа «меня зовут X» / «моё имя X» — извлеки "
+                "имя из user_input и передай name=ИМЯ (Cyrillic, ≥2 "
+                "буквы, с заглавной); (2) хочешь узнать имя "
+                "незнакомца — передай name=null и спроси «Как вас "
+                "зовут?» через speak_text. "
+                "ВАЖНО: НЕ передавай служебные слова «зовут», «имя», "
+                "«меня», «зовут-это», «зовут меня» — это шумовые "
+                "токены из фразы, а не реальные имена. Извлеки имя "
+                "из контекста вручную (например, для фразы «робот "
+                "меня зовут Денис говорю» — передай name=\"Денис\")."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Имя собеседника на кириллице (Cyrillic) "
+                            "с заглавной буквы, минимум 2 символа. "
+                            "Передай null/None, если хочешь спросить "
+                            "имя незнакомца. НЕ передавай слова "
+                            "«зовут», «имя», «меня», «зовут-это» — "
+                            "это шум из фразы, такой вызов будет "
+                            "отклонён MCP-сервером."
+                        ),
+                    },
+                },
+            },
+        ),
     )
 
 
