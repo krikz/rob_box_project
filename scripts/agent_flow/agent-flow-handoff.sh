@@ -14,7 +14,10 @@
 # agent-flow-handoff.sh — Phase 2: done card -> approved, blocked child.
 # Idempotent, no LLM. Configuration is read from agent-flow/.env.
 set -euo pipefail
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+# NOTE: hardcode /home/builder/.hermes — cron from per-profile gateway sets
+# HERMES_HOME to the profile dir; ENV_FILE would then point at a non-existent
+# path and GH_REPO would never load.
+HERMES_HOME=/home/builder/.hermes
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 export HOME="${HOME:-/home/builder}"
 BOARD="${KANBAN_BOARD:-robbox}"
@@ -53,6 +56,10 @@ while IFS=$'\t' read -r id title_b64 body_b64; do
   body="$(printf '%s' "$body_b64" | base64 -d)"
   next="$(printf '%s\n' "$body" | grep -ioE '(^|[[:space:]])next:[[:space:]]*[a-zA-Z0-9_-]+' | head -n1 | sed -E 's/.*next:[[:space:]]*//I' || true)"
   [[ -z "$next" ]] && continue
+  # Skip cards that are themselves handoff children (prevents recursion:
+  # a child inherits `next:` and would spawn "Handoff: Handoff: ..." forever).
+  if printf '%s' "$title" | grep -q '^Handoff:'; then continue; fi
+  if printf '%s' "$body" | grep -q '^handoff-parent:'; then continue; fi
   # Marker prevents duplicate children across ticks.
   if printf '%s' "$cards" | grep -Fq "handoff-parent: $id"; then continue; fi
   child_title="Handoff: $title"
@@ -66,7 +73,7 @@ $body"
     log "DRY-RUN: would create blocked child for $id -> $next and subscribe telegram:495039871"
     continue
   fi
-  out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "agent/${id}-${next}" --initial-status blocked --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }
+  out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "z-{agent}/${id}-${next}" --initial-status blocked --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }
   child="$(printf '%s' "$out" | grep -oE 't_[a-f0-9]+' | head -n1 || true)"
   [[ -n "$child" ]] || { log "cannot parse child id: $out"; exit 1; }
   "$HERMES_BIN" kanban --board "$BOARD" notify-subscribe --platform telegram --chat-id 495039871 --notifier-profile pm "$child" >/dev/null

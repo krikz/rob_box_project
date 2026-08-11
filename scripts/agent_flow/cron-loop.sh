@@ -11,6 +11,7 @@
 # На хост: bash <repo>/scripts/agent_flow/install.sh (или вручную cp + ln -sf).
 # Если ты правишь этот файл НА ХОСТЕ руками — синхронизируй обратно в репо.
 # ============================================================================
+#\!/usr/bin/env bash
 # Простой цикл для cron-задач Hermes — пока нет gateway.
 # Каждые 60с вызывает hermes cron tick, который запускает due jobs.
 # Запускать вручную: nohup cron-loop.sh > /home/builder/.hermes/logs/cron-loop.log 2>&1 &

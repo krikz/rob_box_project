@@ -20,11 +20,14 @@
 #   2. gh auth check                       -> exit 1 if not authed
 #   3. List open issues with label $ISSUE_LABEL on $GH_REPO
 #   4. For each issue:
-#        a. Skip if comment marker `kanban: t_<id>` already present (idempotency)
-#        b. Resolve role from `agent:<role>` label, else $AGENT_FLOW_DEFAULT_ROLE
-#        c. Compute branch name (agent/<issue>-<slug> or ~<slug> for service/infra)
-#        d. `hermes kanban create` with --workspace worktree --branch $branch
-#        e. Comment the new t_<id> into the issue (3x retry, exp-backoff)
+#        a. Skip if it already has $DONE_LABEL (e2e-done — work complete)
+#        b. Skip if comment marker `kanban: t_<id>` already present (idempotency)
+#        c. Skip if a card with `issue: #N` in body already exists (idempotency v2)
+#        d. Skip if the would-be branch already has a MERGED PR (work in develop)
+#        e. Resolve role from `agent:<role>` label, else $AGENT_FLOW_DEFAULT_ROLE
+#        f. Compute branch name (agent/<issue>-<slug> or ~<slug> for service/infra)
+#        g. `hermes kanban create` with --workspace worktree --branch $branch
+#        h. Comment the new t_<id> into the issue (3x retry, exp-backoff)
 #   5. flock lock prevents parallel ticks.
 #
 # Gates G2..G7 follow the table in ~/.hermes/profiles/agent-flow/skills/.../SKILL.md.
@@ -43,6 +46,7 @@ HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 # install, not the per-profile $HOME that cron sets via build_subprocess_env.
 export HOME=/home/builder
 ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
+DONE_LABEL="${DONE_LABEL:-e2e-done}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
@@ -89,6 +93,7 @@ fi
 : "${AGENT_FLOW_MAX_RETRIES:=2}"
 : "${DRY_RUN:=false}"
 : "${ISSUE_LABEL:=hermes}"
+: "${DONE_LABEL:=e2e-done}"
 : "${ISSUE_LIMIT:=50}"
 
 # --- helpers -----------------------------------------------------------------
@@ -290,9 +295,21 @@ errored=0
 while IFS=$'\t' read -r number title labels body; do
     [ -z "$number" ] && continue
 
+    # Ретро-фикс (11.08 t_ce3ca0d9): НЕ создаём карточку для issue, где работа
+    # уже завершена — метка $DONE_LABEL (e2e-done) ставится merge-gate после
+    # мержа PR + успешного e2e. Раньше триаж плодил дубликаты для таких issue
+    # (пример #1104 → t_8ebc85d9), т.к. issue остаётся OPEN после мержа.
+    if printf '%s' "$labels" | tr ',' '\n' | tr '[:upper:]' '[:lower:]' | grep -Fxq "$DONE_LABEL"; then
+        log "issue #${number} has ${DONE_LABEL} label (work done) — skip"
+        skipped=$((skipped+1)); continue
+    fi
+
     # Idempotency: check if a `kanban: t_` marker already exists in comments.
-    if gh issue view "$number" --repo "$GH_REPO" --comments --json comments \
-        --jq '.comments[].body' 2>/dev/null \
+    # Ретро-фикс (11.08 t_ce3ca0d9): раньше использовался `gh issue view
+    # --comments` (GraphQL), который может не вернуть старые комментарии при
+    # пагинации. Теперь — REST API с --paginate, гарантированно все комментарии.
+    if gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
+        --jq '.[].body' 2>/dev/null \
         | grep -Eq '^kanban: t_[a-f0-9]+'; then
         log "issue #${number} already has kanban marker — skip"
         skipped=$((skipped+1)); continue
@@ -308,6 +325,17 @@ while IFS=$'\t' read -r number title labels body; do
     role="$(role_for "$labels")"
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
+
+    # Ретро-фикс (11.08 t_ce3ca0d9): если на ветке, которую мы бы создали для
+    # этого issue, уже есть MERGED PR — работа ушла в develop, карточка не нужна.
+    # Это второй рубеж после DONE_LABEL (страховка, если e2e-done не успели
+    # проставить, а PR уже смержен).
+    if merged_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state merged \
+        --json number --jq '.[0].number' 2>/dev/null || true)" \
+        && [ -n "$merged_pr" ]; then
+        log "issue #${number}: branch ${branch} already has MERGED PR #${merged_pr} — skip"
+        skipped=$((skipped+1)); continue
+    fi
 
     # Ретро-фикс (09.08 #1): освободить stale worktree'ы на этой ветке от
     # done/archived карточек ДО create — иначе диспетчер при спавне упадёт

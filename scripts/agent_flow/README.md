@@ -67,6 +67,19 @@ bash <repo>/scripts/agent_flow/install.sh             # реальная рас�
 voice, scenario_file, patterns, volume и т.д.). Подробности —
 `docs/design/E2E_TESTING_DESIGN_v2.md` §A.10.
 
+**Пауза ротации при известном блокере (ретро 11.08 t_c26b73e7):**
+перед созданием нового `test-round-N` процесс проверяет известные
+блокеры — открытые issues, в title/body которых есть сигнатура из
+`KNOWN_BLOCKER_SIGNATURES` (по умолчанию `no_wake_word` → #1117), и
+робот-логи voice-assistant (best-effort, если задан `E2E_ROBOT_PASS`).
+Если блокер найден — новый round НЕ создаётся, в каждый needs-e2e issue
+публикуется коммент `e2e приостановлен: блокер #N` (идемпотентно), тик
+завершается. Дополнительно: если у issue уже `BLOCKER_CONSECUTIVE_FAILS`
+(по умолчанию 2) подряд однотипных FAIL с одной сигнатурой (маркер
+`e2e-signature: <sig>` в докладах) — ставится `e2e:rejected` с указанием
+блокера вместо нового round. Управляется env: `KNOWN_BLOCKER_SIGNATURES`,
+`BLOCKER_ROBOT_LOG_SINCE` (default `6h`), `BLOCKER_CONSECUTIVE_FAILS`.
+
 ### `agent-flow-handoff.sh` — invoked manually / from kanban
 
 Хелпер для хэндоффа между worker-профилями (например, devops →
