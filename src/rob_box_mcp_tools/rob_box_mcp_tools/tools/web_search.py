@@ -90,28 +90,35 @@ class SearchWebTool(MCPTool):
         # install, stale .pyc, or sys.path ordering). Retry once
         # per execute() invocation so the tool self-heals without
         # a process restart.
+        DDGS_cls = None
         if self._ddgs_available is None:
             try:
                 from ddgs import DDGS
 
+                DDGS_cls = DDGS
                 self._ddgs_available = True
-            except ImportError:
+            except ImportError as exc1:
                 try:
                     from duckduckgo_search import DDGS  # noqa: F811
 
+                    DDGS_cls = DDGS
                     self._ddgs_available = True
-                except ImportError:
+                except ImportError as exc2:
                     self._ddgs_available = False
                     self.log_error(
-                        "[search_web] ddgs/duckduckgo_search import"
-                        " failed — web search will return an error."
+                        "[search_web] ddgs import FAILED: "
+                        f"ddgs={exc1}; duckduckgo_search={exc2}"
                     )
-        DDGS_cls = DDGS if self._ddgs_available else None
+        elif self._ddgs_available:
+            # Already imported — reuse cached class.
+            from ddgs import DDGS
+
+            DDGS_cls = DDGS
 
         if not self._ddgs_available or DDGS_cls is None:
             return MCPToolResult(
                 success=False,
-                data={"error": "duckduckgo_search not installed"},
+                error="duckduckgo_search not installed",
                 message=(
                     "Поиск в интернете недоступен — duckduckgo-search не "
                     "установлен на роботе. Попроси оператора выполнить "
@@ -123,7 +130,7 @@ class SearchWebTool(MCPTool):
         if not query:
             return MCPToolResult(
                 success=False,
-                data={"error": "empty_query", "results": []},
+                error="empty_query",
                 message="Пустой поисковый запрос — уточни, что искать.",
             )
 
@@ -138,11 +145,8 @@ class SearchWebTool(MCPTool):
             self.log_error(f"[search_web] DDGS error: {type(exc).__name__}: {exc}")
             return MCPToolResult(
                 success=False,
-                data={
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "query": query,
-                    "results": [],
-                },
+                error=f"{type(exc).__name__}: {exc}",
+                data={"query": query, "results": []},
                 message=(
                     f"DuckDuckGo недоступен — проверь, есть ли интернет "
                     f"на роботе. Ошибка: {type(exc).__name__}"
