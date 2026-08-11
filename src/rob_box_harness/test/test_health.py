@@ -487,6 +487,34 @@ async def test_transient_error_marks_short_unavailable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transient_429_emits_fallback_metric(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """🔴 FIX (issue #1082 follow-up): переключение на fallback-провайдера
+    из-за per-request 429 (rate-limit) пишет метрику [llm_fallback_metric]
+    — по аналогии с [stt_attempt_metric] из #1083."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="rob_box_harness.health")
+    primary = _FakeProvider("minimax", fail=RateLimitError("429: rate-limited"))
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    metric_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "[llm_fallback_metric]" in r.getMessage()
+    ]
+    assert len(metric_lines) == 1
+    assert "provider=minimax" in metric_lines[0]
+    assert "reason=rate_limit" in metric_lines[0]
+    assert "action=fallback" in metric_lines[0]
+
+
+@pytest.mark.asyncio
 async def test_all_providers_unavailable_raises() -> None:
     primary = _FakeProvider("minimax")
     fallback = _FakeProvider("deepseek")
