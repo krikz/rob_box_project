@@ -43,7 +43,7 @@ jobs:
         with:
           submodules: recursive
       - name: Cache colcon build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ github.workspace }}/test_ws/build
@@ -207,7 +207,7 @@ jobs:
           submodules: recursive
 
       - name: Cache colcon build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ github.workspace }}/test_ws/build

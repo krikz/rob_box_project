@@ -1,4 +1,5 @@
-"""Core utilities for the perception package.
+"""
+Core utilities for the perception package.
 
 After W10 the perception package is LLM-free, so this layer only
 exposes pure-Python event detection and short-term memory helpers.

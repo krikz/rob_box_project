@@ -527,6 +527,16 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 exc,
                 TRANSIENT_TTL_S,
             )
+            # 🔴 FIX (issue #1082 follow-up): метрика переключения на
+            # fallback-провайдера из-за per-request 429 rate-limit (НЕ
+            # quota) — по аналогии с [stt_attempt_metric] из #1083.
+            # Single-string f-string: RcutilsLogger не принимает
+            # %s-аргументы.
+            self._log.info(
+                f"[llm_fallback_metric] provider={name} "
+                f"reason={'rate_limit' if isinstance(exc, RateLimitError) else 'timeout'} "
+                f"action=fallback ttl_s={TRANSIENT_TTL_S:.0f}"
+            )
         else:
             self._log.warning(
                 "[health] provider=%s UNCLASSIFIED failure [%s: %s] — пробуем следующий",
