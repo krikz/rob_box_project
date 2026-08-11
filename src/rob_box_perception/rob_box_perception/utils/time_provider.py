@@ -33,16 +33,22 @@ class TimeAwarenessProvider:
     Предоставляет текущее время с контекстом времени суток
     (утро, день, вечер, ночь) и human-readable форматирование.
 
-    Attributes:
-        timezone: Часовой пояс (pytz timezone)
+    Attributes
+    ----------
+    timezone : Optional[pytz.tzinfo]
+        Часовой пояс (pytz timezone)
+
     """
 
     def __init__(self, timezone: str = 'Europe/Moscow'):
         """
         Инициализация провайдера.
 
-        Args:
-            timezone: Название часового пояса (например, 'Europe/Moscow')
+        Parameters
+        ----------
+        timezone : str
+            Название часового пояса (например, 'Europe/Moscow')
+
         """
         self.timezone_name = timezone
 
@@ -58,7 +64,9 @@ class TimeAwarenessProvider:
         """
         Получить контекст текущего времени.
 
-        Returns:
+        Returns
+        -------
+        Dict
             Словарь с контекстом времени:
             - timestamp: Unix timestamp
             - datetime: ISO 8601 формат
@@ -72,6 +80,7 @@ class TimeAwarenessProvider:
             - period: Период суток (morning/day/evening/night)
             - period_ru: Период суток (утро/день/вечер/ночь)
             - timezone: Название часового пояса
+
         """
         if self.timezone:
             now = datetime.now(self.timezone)
@@ -113,12 +122,16 @@ class TimeAwarenessProvider:
         """
         Получить день недели на русском.
 
-        Args:
-            weekday: Номер дня недели (0-6)
+        Parameters
+        ----------
+        weekday : int
+            Номер дня недели (0-6)
 
         Returns
         -------
-        Название дня недели на русском
+        str
+            Название дня недели на русском
+
         """
         days = {
             0: 'Понедельник',

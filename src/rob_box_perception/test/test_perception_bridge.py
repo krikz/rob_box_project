@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""test_perception_bridge.py — Integration tests for PerceptionBridge.
+"""
+test_perception_bridge.py — Integration tests for PerceptionBridge.
 
 Phase 6 v2 / W12. Exercises the UART → /sensors/data + /perception/health
 bridge end-to-end with fakes for ROS2 publishers/subscribers, serial/UART,
@@ -171,7 +172,8 @@ from std_msgs.msg import String  # noqa: E402
 
 
 class _FakeUART:
-    """Minimal ``serial.Serial``-like fake backed by an in-memory queue.
+    """
+    Minimal ``serial.Serial``-like fake backed by an in-memory queue.
 
     Mirrors what :class:`serial.Serial` exposes to the bridge: a single
     ``readline()`` call that returns one JSON frame at a time, or ``b""``
@@ -227,7 +229,8 @@ class _FailureUART:
 
 
 class TestPerceptionBridge(unittest.TestCase):
-    """End-to-end integration tests for ``PerceptionBridge``.
+    """
+    End-to-end integration tests for ``PerceptionBridge``.
 
     Each test constructs the bridge with the rclpy shim in place, then
     drives either the timer callbacks or the underlying methods

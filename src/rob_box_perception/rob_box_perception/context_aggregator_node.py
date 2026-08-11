@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Perception Context Aggregator node.
+"""
+Perception Context Aggregator node.
 
 Легковесный агрегатор данных восприятия.
 Собирает данные со всех источников → публикует unified события.
@@ -24,6 +25,7 @@
 
 Публикует:
 - /perception/context_update (PerceptionEvent) - агрегированный контекст
+
 """
 
 import json

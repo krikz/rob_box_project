@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""perception_bridge.py - UART sensor bridge for Rob Box perception.
+"""
+perception_bridge.py - UART sensor bridge for Rob Box perception.
 
 Phase 6 v2 / W11. Reads sensor MCU frames over UART and republishes them
 as JSON on /sensors/data, with periodic health snapshots on
