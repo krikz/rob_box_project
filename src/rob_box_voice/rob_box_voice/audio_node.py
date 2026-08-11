@@ -143,11 +143,18 @@ class AudioNode(Node):
         self.declare_parameter('speech_continuation', 1.5)  # Время после окончания речи (секунды)
         # Буфер перед началом речи (pre-roll). Должен покрывать ЛАТЕНЦИЮ VAD:
         # аппаратный GAMMAVAD на ReSpeaker + опрос на 10Hz (100ms) + джиттер
-        # потока. На слабом/грязном сигнале (e2e через динамик) VAD срабатывает
-        # с задержкой 300-500ms — при 0.5s начало фразы («робот») выпадало из
-        # окна и STT слышал «оберт» → «роберт». 1.0s = 2x запас к требованиям
-        # (первые 300-500ms) и не раздувает длительность фразы (speech_max_duration).
-        self.declare_parameter('speech_prefetch', 1.0)      # Буфер перед началом речи
+        # потока. На слабом/грязном сигнале (e2e через динамик + стена) VAD
+        # срабатывает с задержкой 300-800ms — при 0.5s начало фразы («робот»)
+        # выпадало из окна и STT слышал «оберт» → «роберт» (фикс #15, PR #1090).
+        # Issue #1117: на e2e round-46/47/48 STT всё ещё возвращает текст БЕЗ
+        # «робот» — даже с 1.0s окно обрезает начало при особенно тихом сигнале
+        # (тихое «р» в «робот» через динамик робота), когда VAD-латентность
+        # достигает 800-1100ms (см. A/B VOICE_COMMANDS_RESEARCH.md: на -42 dB
+        # Yandex empty, на -26 dB OK — но VAD на ReSpeaker порогом 3.5dB режет
+        # первые 100-200ms тихой речи). 1.5s = 2.5x запас к 600ms и покрывает
+        # даже сценарий «пользователь говорит "робот" ровно в момент окончания
+        # TTS» (1.5s после tts_state=ready ещё не наполнилось тишиной).
+        self.declare_parameter('speech_prefetch', 1.5)      # Буфер перед началом речи (issue #1117: 1.0 → 1.5s)
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
         self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
 
@@ -523,10 +530,27 @@ class AudioNode(Node):
                 # Речь продолжается (или недавно закончилась)
                 if not self.is_speeching:
                     pre_roll_s = len(self.speech_prefetch_buffer) / (self.sample_rate * 2)
-                    self.get_logger().info(
-                        f'🗣️  Начало речи (pre-roll {pre_roll_s*1000:.0f}ms '
-                        f'из {self.speech_prefetch*1000:.0f}ms)'
+                    # Issue #1117: телеметрия заполненности pre-roll. Если он
+                    # заполнен менее 80% от целевого — VAD сработал СРАЗУ после
+                    # начала речи (либо буфер был очищен TTS/state-циклом недавно),
+                    # и первые 200-300ms «робот» могли не попасть в захват.
+                    # WARNING → можно увидеть в docker logs и понять, нужен ли
+                    # ещё больший speech_prefetch.
+                    fill_ratio = (
+                        pre_roll_s / self.speech_prefetch if self.speech_prefetch > 0 else 1.0
                     )
+                    pre_roll_msg = (
+                        f'🗣️  Начало речи (pre-roll {pre_roll_s*1000:.0f}ms '
+                        f'из {self.speech_prefetch*1000:.0f}ms'
+                    )
+                    if fill_ratio < 0.8:
+                        self.get_logger().warning(
+                            f'{pre_roll_msg}, '
+                            f'⚠️ fill={fill_ratio*100:.0f}% — VAD-латентность '
+                            f'выше окна, первые чанки могли потеряться)'
+                        )
+                    else:
+                        self.get_logger().info(f'{pre-roll_msg})')
                 self.is_speeching = True
             elif self.is_speeching:
                 # Речь закончилась - публикуем накопленный буфер

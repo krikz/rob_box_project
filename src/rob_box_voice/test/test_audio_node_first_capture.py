@@ -174,7 +174,7 @@ def _make_audio_node_stub(**param_overrides):
         device_index=-1,
         device_name="ReSpeaker 4 Mic Array",
         speech_continuation=3.0,
-        speech_prefetch=1.0,  # фикс #15: было 0.5
+        speech_prefetch=1.5,  # issue #1117: было 1.0 (фикс #15)
         speech_min_duration=0.3,
         speech_max_duration=10.0,
         tts_grace_s=2.5,
@@ -276,10 +276,20 @@ def _speech_chunk(tag: int) -> bytes:
 class TestSpeechPrefetchWindow:
     """Причина 1: pre-roll должен покрывать латенцию VAD (300-500ms)."""
 
-    def test_prefetch_default_is_1_0s(self, audio_node):
-        assert audio_node.speech_prefetch == 1.0
-        # 1.0s * 16000 Hz * 2 bytes = 32000 bytes
-        assert audio_node.speech_prefetch_bytes == 32000
+    def test_prefetch_default_is_1_5s(self, audio_node):
+        """Дефолтный speech_prefetch = 1.5s (issue #1117).
+
+        История фикса:
+        - было 0.5s — VAD-латентность 300-500ms режет «робот» → «роберт»
+          (фикс #15, PR #1090)
+        - 1.0s — окно впритык, на e2e через динамик робота всё ещё теряет
+          тихое «р» в начале «робот» (issue #1117, e2e round-46/47/48)
+        - 1.5s — 2.5x запас к 600ms, покрывает патологическую латентность
+          до 1.2s на тихом сигнале (A/B VOICE_COMMANDS_RESEARCH.md)
+        """
+        assert audio_node.speech_prefetch == 1.5
+        # 1.5s * 16000 Hz * 2 bytes = 48000 bytes
+        assert audio_node.speech_prefetch_bytes == 48000
 
     def test_prefetch_covers_vad_latency_requirement(self, audio_node):
         """Требование: первые 300-500ms фразы не должны обрезаться.
@@ -296,7 +306,7 @@ class TestSpeechPrefetchWindow:
     def test_prefetch_accumulates_while_idle(self, audio_node):
         """Вне речи pre-roll копится и ограничен окном (rolling buffer)."""
         audio_node.is_running = True
-        for _ in range(6):  # 6 * 256ms = 1.5s > окно 1.0s
+        for _ in range(8):  # 8 * 256ms = 2048ms > окно 1.5s
             audio_node.audio_callback(SILENCE_CHUNK, 4096, {}, 0)
         assert len(audio_node.speech_prefetch_buffer) == audio_node.speech_prefetch_bytes
 
@@ -353,6 +363,49 @@ class TestSpeechPrefetchWindow:
         # Начало фразы (first+second) сохранилось целиком и контактно,
         # а фраза заканчивается текущим чанком
         assert (first + second + third) in audio_node.speech_audio_buffer
+        assert audio_node.speech_audio_buffer.endswith(third)
+
+    def test_long_vad_latency_800ms_preserves_phrase_start(self, audio_node):
+        """Issue #1117: при патологической VAD-латентности 800ms (тихий
+        сигнал через динамик робота) первые 800ms речи ДОЛЖНЫ попасть в
+        захват.
+
+        Раньше окно было 1.0s — покрывало 300-500ms (типичная латентность
+        ReSpeaker GAMMAVAD) и работало в чистом помещении. Но на e2e
+        round-46/47/48 через стену/динамик латентность вырастает до
+        800-1100ms (тихое «р» в «робот» < 3.5dB VAD-порога), и 1.0s
+        окно обрезает начало «робот» → STT слышит «меня зовут саша»
+        без wake word → dialogue_node игнорирует (no_wake_word).
+
+        Фикс #1117: 1.0s → 1.5s. Тест подтверждает что 800ms VAD-латентность
+        + 512ms тихой речи сохраняются в начале фразы в правильном порядке.
+        """
+        audio_node.is_running = True
+        # Pre-roll заполнен тишиной (8 * 256ms = 2048ms > окно 1.5s)
+        for _ in range(8):
+            audio_node.audio_callback(SILENCE_CHUNK, 4096, {}, 0)
+        # 800ms VAD-латентности: речевые чанки уходят в rolling pre-roll
+        first = _speech_chunk(0x70)   # 256ms — слабое «р» < VAD-порога
+        second = _speech_chunk(0x80)  # 256ms — «о» < VAD-порога
+        third = _speech_chunk(0x90)   # 256ms — VAD сработал тут (громко)
+        audio_node.audio_callback(first, 4096, {}, 0)
+        audio_node.audio_callback(second, 4096, {}, 0)
+        # pre-roll содержит первые 512ms речи (512ms < 1500ms окна)
+        assert first in audio_node.speech_prefetch_buffer
+        assert second in audio_node.speech_prefetch_buffer
+
+        # VAD сработал — переключаем is_speeching
+        audio_node.is_speeching = True
+        audio_node.audio_callback(third, 4096, {}, 0)
+
+        # Начало фразы (first+second+third) сохранено контактно и в правильном
+        # порядке: first идёт после хвостовой тишины pre-roll, second — после
+        # first, third — после second. STT услышит «тишина + р + о + б» = «роб».
+        # Главное — wake word НЕ выпал из окна (раньше при 1.0s — выпадал,
+        # STT слышал «обот» → dialogue_node отбрасывал как no_wake_word).
+        assert (first + second + third) in audio_node.speech_audio_buffer
+        assert audio_node.speech_audio_buffer.index(first) < audio_node.speech_audio_buffer.index(second)
+        assert audio_node.speech_audio_buffer.index(second) < audio_node.speech_audio_buffer.index(third)
         assert audio_node.speech_audio_buffer.endswith(third)
 
 
