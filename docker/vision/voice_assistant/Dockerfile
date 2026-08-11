@@ -141,6 +141,14 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 resemblyzer
 # были видны для speaker_id_node.
 RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "coverage>=7.0" "pyyaml>=6.0"
 # --------------------------------------------------------------------------
+# 🔴 FIX (issue #1101): duckduckgo-search для web_search.py MCP-инструмента.
+# search_web() в rob_box_mcp_tools/tools/web_search.py пробует импорт ddgs →
+# duckduckgo_search. Без пакета tool падает: "ddgs import FAILED: No module
+# named 'ddgs'; duckduckgo_search=No module named 'duckduckgo_search'".
+# Установлен в app-layer (не в voice_base) — чистый Python, без тяжёлых
+# зависимостей, не инвалидирует кеш pytorch/vosk/yandex.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "duckduckgo-search>=8.0.0"
+# --------------------------------------------------------------------------
 
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
