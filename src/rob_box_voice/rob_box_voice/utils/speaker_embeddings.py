@@ -229,5 +229,29 @@ class SpeakerDatabase:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def rename_by_name(self, old_name: str, new_name: str) -> Optional[str]:
+        """Find speaker by ``old_name`` and rename to ``new_name``.
+
+        Returns the speaker_id if renamed, None if not found.
+        Uses case-insensitive LIKE match; picks the most recent match.
+        """
+        row = self._conn.execute(
+            "SELECT speaker_id FROM speakers "
+            "WHERE LOWER(name) = LOWER(?) "
+            "ORDER BY created_at DESC LIMIT 1",
+            (old_name,),
+        ).fetchone()
+        if row is None:
+            logger.info(f"rename_by_name: '{old_name}' not found in DB")
+            return None
+        speaker_id = row[0]
+        self._conn.execute(
+            "UPDATE speakers SET name=? WHERE speaker_id=?",
+            (new_name, speaker_id),
+        )
+        self._conn.commit()
+        logger.info(f"Renamed speaker '{old_name}' → '{new_name}' (id={speaker_id[:8]})")
+        return speaker_id
+
     def close(self) -> None:
         self._conn.close()
