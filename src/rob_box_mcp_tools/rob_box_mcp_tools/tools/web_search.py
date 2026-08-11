@@ -29,7 +29,8 @@ class SearchWebTool(MCPTool):
 
     def __init__(self, node) -> None:
         super().__init__(node)
-        self._ddgs_available: bool | None = None  # lazy init in execute()
+        self._ddgs_available: bool = False  # True after first successful import
+        self._ddgs_cls: type | None = None  # cached DDGS class reference
         self.log_info("🔍 SearchWebTool registered (ddgs import deferred)")
 
     # ── Tool metadata ────────────────────────────────────────────────────
@@ -85,37 +86,34 @@ class SearchWebTool(MCPTool):
         query: str,
         max_results: int = 5,
     ) -> MCPToolResult:
-        # Issue #1101 — lazy ddgs import. Module-level import
-        # sometimes fails at mcp_server startup (race with pip
-        # install, stale .pyc, or sys.path ordering). Retry once
-        # per execute() invocation so the tool self-heals without
-        # a process restart.
+        # Issue #1101 — lazy ddgs import with self-healing.
+        # Module-level import sometimes fails at mcp_server startup (race
+        # with pip install, stale .pyc, or sys.path ordering). Retry on
+        # EVERY execute() call until successful — Python caches successful
+        # imports internally, so the retry cost is negligible (dict lookup).
+        # Once imported, reuse the cached class reference.
         DDGS_cls = None
-        if self._ddgs_available is None:
-            try:
-                from ddgs import DDGS
-
-                DDGS_cls = DDGS
-                self._ddgs_available = True
-            except ImportError as exc1:
+        if self._ddgs_available is True:
+            # Fast path: already resolved, reuse cached class.
+            DDGS_cls = self._ddgs_cls
+        else:
+            # Try both import paths; cache the class on first success.
+            for pkg in ("ddgs", "duckduckgo_search"):
                 try:
-                    from duckduckgo_search import DDGS  # noqa: F811
-
-                    DDGS_cls = DDGS
+                    mod = __import__(pkg, fromlist=["DDGS"])
+                    DDGS_cls = mod.DDGS
+                    self._ddgs_cls = DDGS_cls
                     self._ddgs_available = True
-                except ImportError as exc2:
-                    self._ddgs_available = False
-                    self.log_error(
-                        "[search_web] ddgs import FAILED: "
-                        f"ddgs={exc1}; duckduckgo_search={exc2}"
-                    )
-        elif self._ddgs_available:
-            # Already imported — reuse cached class.
-            from ddgs import DDGS
+                    break
+                except ImportError:
+                    continue
+            if DDGS_cls is None:
+                self.log_error(
+                    "[search_web] ddgs import FAILED: "
+                    "both 'ddgs' and 'duckduckgo_search' unavailable"
+                )
 
-            DDGS_cls = DDGS
-
-        if not self._ddgs_available or DDGS_cls is None:
+        if DDGS_cls is None:
             return MCPToolResult(
                 success=False,
                 error="duckduckgo_search not installed",
