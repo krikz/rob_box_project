@@ -1726,12 +1726,18 @@ class DialogueNode(Node):
             # session lock state, hardware status. Прокидывается вторым
             # system-message в messages[].
             dynamic_system = self._build_dynamic_system_context()
+            # 🔴 FIX (issue #1101): _on_stt уже сделал DSM-переход
+            # IDLE→LISTENING→DIALOGUE через WAKE_WORD+STT_RESULT. Передаём
+            # preclassified_event=STT_RESULT чтобы DialogCore НЕ
+            # переклассифицировал user-text (где может быть 'робот' внутри)
+            # и не сломал guard.
             result: DialogResult = await self._core.process_input(
                 user_input,
                 is_dj_auto=was_dj_auto,
                 speaker_tag=speaker_tag,
                 speaker_context=speaker_context,
                 dynamic_system=dynamic_system,
+                preclassified_event=DialogueEvent.STT_RESULT,
             )
             self._handle_result(result, user_input=user_input)
             babble_retry_pending = bool(self._babble_retry_used)
