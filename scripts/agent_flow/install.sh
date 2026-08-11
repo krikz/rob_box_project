@@ -81,10 +81,11 @@ run() {
 # оставляя .bak-версию, если dst был обычным файлом.
 _remove_existing() {
     local dst="$1"
+    local bak
     if [ -L "$dst" ]; then
         run rm -f "$dst"
     elif [ -e "$dst" ]; then
-        local bak="${dst}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+        bak="${dst}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
         run mv "$dst" "$bak"
         echo "  BAK  $(basename "$dst") (was real file — saved as $bak)"
     fi
