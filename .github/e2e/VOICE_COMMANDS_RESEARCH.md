@@ -43,7 +43,8 @@
 
 ```
 volume: 150
-# + в e2e_remote.sh уже есть усиление: ffmpeg -af "highpass=f=200,volume=3.0,alimiter=limit=0.98"
+# + в e2e_voice_test.sh (атомарный харнесс, актуален с 11.08) уже есть усиление:
+#   ffmpeg -af "highpass=f=200,volume=1.2,alimiter=limit=0.85" + silence gate + retry
 # (громкость сигнала на микрофоне: −26 dB — распознаётся чисто)
 ```
 
@@ -71,5 +72,5 @@ volume: 150
 ## Примечание
 
 - voice-assistant на роботе перезапущен и healthy (после тестов с остановкой).
-- Проверка «робот ответил» в e2e: retry-скрипт (e2e_remote.sh) смотрит `TTS finished`
+- Проверка «робот ответил» в e2e: атомарный харнесс (e2e_voice_test.sh) ждёт полный цикл `ПРИНЯТО → LLM INPUT → TTS finished → Воспроизведение завершено` в логах робота (с проверкой порядка по ROS-timestamp) — см. docs/design/E2E_TESTING_DESIGN_v2.md §A.10
   в docker logs робота ПОСЛЕ команды (--since @BEFORE) — приветствие не считается.
