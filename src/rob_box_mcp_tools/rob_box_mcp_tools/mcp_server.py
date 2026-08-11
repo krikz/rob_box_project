@@ -69,6 +69,7 @@ from .tools import (
     SetDjModeTool,
     SearchSamplesTool,
     FaqSearchTool,
+    SearchWebTool,
 )
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
