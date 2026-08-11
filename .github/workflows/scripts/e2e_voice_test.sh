@@ -35,7 +35,12 @@ E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"
 E2E_RECORD_EXTRA="${E2E_RECORD_EXTRA:-15}"          # хвост записи после реакции
 ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
-ROBOT_SSH="LC_ALL=C sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# NOTE (retro t_0a5d65af, round-50): НЕЛЬЗЯ ставить "LC_ALL=C " префиксом в
+# ROBOT_SSH — при раскрытии ${ROBOT_SSH} bash выполняет "LC_ALL=C" как КОМАНДУ
+# (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
+# видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
+# работает только как литерал перед командой, не через переменную.
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 
