@@ -22,6 +22,7 @@ from .sound import *
 from .dialogue import *
 from .memory import *
 from .music import *
+from .web_search import *
 
 __all__ = [
     # Navigation tools
@@ -76,4 +77,6 @@ __all__ = [
     "DeleteTrackTool",
     # FAQ / Event tools
     "FaqSearchTool",
+    # Web search tools (issue #1101)
+    "SearchWebTool",
 ]

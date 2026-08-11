@@ -65,6 +65,12 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     # here exposes the tool to the LLM through ``provider.update_tools()``
     # in ``dialogue_node._build_tool_provider``.
     "register_speaker",
+    # Issue #1101 — DuckDuckGo web search. The voice-level
+    # ``WebSearchSkill`` existed before the harness migration but was never
+    # wired into the harness-side catalog; LLM responded «поиск в интернете
+    # пока недоступен». The MCP side ``SearchWebTool`` dispatches the real
+    # call.
+    "search_web",
 )
 
 SKILL_TOOL_NAMES: tuple[str, ...] = (
