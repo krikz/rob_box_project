@@ -118,6 +118,15 @@ RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
 # ~10 GB pytorch etc. cache for every consumer.
 RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "aiohttp>=3.9.1,<4.0"
 # --------------------------------------------------------------------------
+# --- search_web / search_artist_style deps ----------------------------------
+# `ddgs` — переименованный duckduckgo-search (issue #1104). Старый пакет
+# `duckduckgo_search` больше не возвращает нормальные результаты (0/мусор),
+# а `web_search.py` (search_web MCP-инструмент) и `music_skill.py`
+# (search_artist_style) пробуют импорт `ddgs` ПЕРВЫМ. Ставим новый пакет
+# здесь (app-layer), как и aiohttp: менять voice_base не хотим — это
+# инвалидировало бы ~10 GB pytorch-кеша для всех потребителей.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "ddgs>=9.0.0"
+# --------------------------------------------------------------------------
 
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts

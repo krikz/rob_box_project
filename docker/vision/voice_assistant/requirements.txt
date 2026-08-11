@@ -81,6 +81,9 @@ openai-agents>=0.18.3,<1.0.0
 renardo-lib
 # ddgs — DuckDuckGo search (free, no API key) used by search_artist_style tool
 # in rob_box_voice/skills/music_skill.py for DJ-mode "research first" workflow
-# (issue #1000). Used by Compositor agent before handle_music to learn about
+# (issue #1000) and by search_web MCP-tool (web_search.py, issue #1101/#1104).
+# NOTE: старый пакет duckduckgo_search переименован в ddgs и возвращает
+# 0/мусор — используем ТОЛЬКО ddgs (>=9.0.0, проверено на роботе 11.08).
+# Used by Compositor agent before handle_music to learn about
 # artist style, BPM, key, instruments.
-ddgs>=8.0.0
+ddgs>=9.0.0
