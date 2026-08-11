@@ -323,6 +323,21 @@ class DialogueNode(Node):
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
         self._sound_trigger_pub = self.create_publisher(
             String, "/voice/sound/trigger", 10)
+        # Issue #1101 — diagnostics for "why LLM wasn't called".
+        # Оператор видит «робот молчит», а в логе — ни одного error/warn.
+        # Реальная причина обычно одна из: no_wake_word, silenced,
+        # silence_command, empty_after_strip, stt_rejected, music_stop.
+        # Счётчик + периодическая сводка раз в 5 минут — сразу видно, что
+        # фразы теряются на gate'е ещё до LLM.
+        self._llm_skipped_counter: dict[str, int] = {
+            "no_wake_word": 0,
+            "silenced": 0,
+            "silence_command": 0,
+            "empty_after_strip": 0,
+            "stt_rejected": 0,
+            "music_stop": 0,
+        }
+        self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(
             String, "/voice/tts/control", 10)
         # Music safety-net hook (issue #935): when the dialog ends and the
@@ -1190,23 +1205,44 @@ class DialogueNode(Node):
         # accepted, но guard дешёвый и страхует от регрессий).
         if text_lower.startswith(("rejected", "«rejected", "empty", "«пусто", "тишина")):
             self.get_logger().info(f"🔇 [issue 989] Игнор rejected/empty маркера: {text[:60]}")
+            self._llm_skipped_counter["stt_rejected"] += 1
             return
         state = self._dsm.current_state
         was_idle = state == DialogueStateKind.IDLE  # FIX #992: для music_cleanup new_dialogue
         if state == DialogueStateKind.SILENCED:
+            self._llm_skipped_counter["silenced"] += 1
             if is_unsilence_command(text_lower):
                 self._dsm.on_event(DialogueEvent.UNSILENCE)
                 self._publish_state()
+            else:
+                self.get_logger().info(
+                    f"🔇 [diagnostics] ignored: state=SILENCED text={text[:60]!r}"
+                )
             return
         # Universal wake-word gate — only direct address to robot can
         # start or interrupt a dialogue. This prevents false barge-in
         # from background noise, TV, or the robot's own TTS echo.
         # (Regression fix: was incorrectly gated on state==IDLE only.)
+        #
+        # Issue #1101 (diagnostics) — wake-word-miss раньше логировался
+        # на debug(), поэтому в обычном логе его не видно → оператор
+        # думает «LLM молчит», а на самом деле фраза не дошла до LLM.
+        # Поднимаем до info() с подсчётом причин, плюс раз в окно
+        # печатаем сводку ``llm_skipped_total``.
         if not has_wake_word(text_lower, self._wake_words):
-            self.get_logger().debug(f"🔇 Ignored (no wake word): {text[:60]}")
+            self._llm_skipped_counter["no_wake_word"] += 1
+            self.get_logger().info(
+                f"🔇 [diagnostics] ignored: no_wake_word text={text[:60]!r} "
+                f"state={state.name}"
+            )
+            self._maybe_log_skip_summary()
             return
         clean = strip_wake_word(text, self._wake_words)
         if not clean:
+            self._llm_skipped_counter["empty_after_strip"] += 1
+            self.get_logger().info(
+                f"🔇 [diagnostics] ignored: empty_after_strip_wake text={text[:60]!r}"
+            )
             return
         if is_silence_command(text_lower):
             # 🔴 FIX (live 06.08): «хватит диджеить/музыку/трек» — это НЕ
@@ -1216,8 +1252,10 @@ class DialogueNode(Node):
             if not any(
                 kw in text_lower for kw in self._MUSIC_STOP_OVERRIDES
             ):
+                self._llm_skipped_counter["silence_command"] += 1
                 self._handle_silence()
                 return
+            # иначе это music-stop, фоллс на LLM ниже
         self._cancel_run("new STT input")
         sfx = String()
         sfx.data = "thinking"
@@ -3112,6 +3150,31 @@ class DialogueNode(Node):
         self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)
         self._publish_state()
         self._speak_direct("Хорошо, молчу.")
+
+    def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:
+        """Issue #1101 — периодическая сводка по пропускам LLM.
+
+        Раз в ``window_s`` секунд (по умолчанию 5 минут) печатает в лог
+        одну строку ``📊 [diagnostics] llm_skipped ...``, чтобы оператор
+        видел причины «робот молчит». Сводка включается только если есть
+        хотя бы один пропуск — пустые окна не спамят.
+        """
+        now = time.monotonic()
+        if now - self._last_skip_summary_ts < window_s:
+            return
+        total = sum(self._llm_skipped_counter.values())
+        if total == 0:
+            return
+        breakdown = ", ".join(
+            f"{k}={v}"
+            for k, v in self._llm_skipped_counter.items()
+            if v > 0
+        )
+        self.get_logger().info(
+            f"📊 [diagnostics] llm_skipped_total={total} (since startup, "
+            f"last {window_s:.0f}s): {breakdown}"
+        )
+        self._last_skip_summary_ts = now
     def _cancel_run(self, reason: str) -> None:
         self._run_cancelled = True
         with self._task_lock:

@@ -122,9 +122,20 @@ class SpeakerIdNode(Node):
         """Pre-load the resemblyzer GE2E model so first real inference is fast."""
         import time as _time
         t0 = _time.monotonic()
-        # 1 second of silence at 16 kHz (int16 PCM)
-        silence = bytes(16000 * 2)
-        self._db.embed_audio(silence, sample_rate=16000)
+        # Issue #1101 — was feeding 1 second of silence (``bytes(16000 * 2)``
+        # = int16 zeros). ``resemblyzer.audio.preprocess_wav`` divides RMS
+        # into int16_max inside ``log10`` → ``RuntimeWarning: divide by
+        # zero encountered in log10`` + ``invalid value encountered in
+        # multiply`` + empty output array (the embedding call silently
+        # returned). Use a noise-shaped warmup so RMS > 0 and the
+        # model loads cleanly.
+        import numpy as np
+        rng = np.random.default_rng(42)
+        warmup = (
+            rng.normal(0, 0.05, 16000).clip(-1, 1).astype(np.float32)
+        )
+        pcm16 = (warmup * 32767).astype(np.int16).tobytes()
+        self._db.embed_audio(pcm16, sample_rate=16000)
         elapsed_ms = int((_time.monotonic() - t0) * 1000)
         self.get_logger().info(f"🔥 Resemblyzer warmup done ({elapsed_ms} ms)")
 
