@@ -628,6 +628,13 @@ class RegisterSpeakerTool(MCPTool):
         self._speaker_register_pub = node.create_publisher(
             String, "/voice/speaker/register", 10
         )
+        # Issue #1101 — rename коррекции («я не X, я Y») публикуются на
+        # ОТДЕЛЬНЫЙ топик /voice/speaker/rename: speaker_id_node слушает
+        # rename на нём (_on_rename_request), а /voice/speaker/register
+        # принимает только {"name": ...} и игнорирует {old_name,new_name}.
+        self._speaker_rename_pub = node.create_publisher(
+            String, "/voice/speaker/rename", 10
+        )
 
     @property
     def name(self) -> str:
@@ -714,7 +721,11 @@ class RegisterSpeakerTool(MCPTool):
                     {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
                     ensure_ascii=False,
                 )
-                self._speaker_register_pub.publish(rename_msg)
+                # Issue #1101 — rename идёт на /voice/speaker/rename
+                # (speaker_id_node._on_rename_request), НЕ на register:
+                # register-хендлер читает только {"name": ...} и
+                # игнорировал бы {old_name, new_name} как пустое имя.
+                self._speaker_rename_pub.publish(rename_msg)
                 self.log_info(
                     f"[register_speaker] rename {old_clean!r} → "
                     f"{(name or '').strip()!r}"
