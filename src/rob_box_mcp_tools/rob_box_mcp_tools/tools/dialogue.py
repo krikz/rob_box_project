@@ -653,7 +653,19 @@ class RegisterSpeakerTool(MCPTool):
                 description=(
                     "Имя спикера для регистрации (Cyrillic). "
                     "Передай null/None если хочешь спросить имя незнакомца — "
-                    "робот спросит «Как вас зовут?» и ждёт ответа."
+                    "робот спросит «Как вас зовут?» и ждёт ответа. "
+                    "Если пользователь ИСПРАВЛЯЕТ имя («я не X, я Y») — "
+                    "передай name=Y и old_name=X."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="old_name",
+                type="string",
+                description=(
+                    "Предыдущее имя (если пользователь исправляет: "
+                    "«я не Эйджик, я Денчик» → old_name='Эйджик', name='Денчик'). "
+                    "Опусти, если пользователь представляется впервые."
                 ),
                 required=False,
             ),
@@ -689,11 +701,32 @@ class RegisterSpeakerTool(MCPTool):
         }
     )
 
-    def execute(self, name: str | None = None) -> MCPToolResult:
+    def execute(self, name: str | None = None, old_name: str | None = None) -> MCPToolResult:
         import json
         from std_msgs.msg import String
+
+        # Step 1 — if old_name provided, rename the existing entry first.
+        if old_name and old_name.strip():
+            old_clean = old_name.strip()
+            if old_clean.lower() not in {"null", "none"} and len(old_clean) >= 2:
+                rename_msg = String()
+                rename_msg.data = json.dumps(
+                    {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
+                    ensure_ascii=False,
+                )
+                self._speaker_register_pub.publish(rename_msg)
+                self.log_info(
+                    f"[register_speaker] rename {old_clean!r} → "
+                    f"{(name or '').strip()!r}"
+                )
+
         if name is None or name.strip() == "":
-            # LLM попросил узнать имя — робот сам спросит через speak_text
+            if old_name:
+                return MCPToolResult(
+                    success=True,
+                    data={"renamed": True, "old_name": old_name},
+                    message=f"Старое имя '{old_name}' исправлено. Новое имя не указано — спроси.",
+                )
             self.log_info("[register_speaker] name=None → ask user")
             return MCPToolResult(
                 success=True,

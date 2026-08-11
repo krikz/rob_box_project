@@ -239,6 +239,8 @@ class SpeakerIdNode(Node):
         """Rename an existing speaker entry.
 
         Expected JSON: {"speaker_id": "<uuid>", "new_name": "<name>"}
+        or: {"old_name": "<name>", "new_name": "<name>"}
+        (old_name → name-based lookup, for LLM-driven corrections).
         """
         try:
             data = json.loads(msg.data)
@@ -247,16 +249,35 @@ class SpeakerIdNode(Node):
             return
 
         speaker_id = data.get("speaker_id", "").strip()
+        old_name = data.get("old_name", "").strip()
         new_name = data.get("new_name", "").strip()
-        if not speaker_id or not new_name:
-            self.get_logger().warning("⚠️ rename_request: missing speaker_id or new_name")
+        if not speaker_id and not old_name:
+            self.get_logger().warning("⚠️ rename_request: missing speaker_id or old_name")
+            return
+        if not new_name:
+            self.get_logger().warning("⚠️ rename_request: missing new_name")
             return
 
-        ok = self._db.rename(speaker_id, new_name)
-        if ok:
-            self.get_logger().info(f"✏️ Renamed {speaker_id[:8]}… → '{new_name}'")
+        ok = False
+        if speaker_id:
+            ok = self._db.rename(speaker_id, new_name)
         else:
-            self.get_logger().warning(f"⚠️ rename failed: speaker {speaker_id[:8]}… not found in DB")
+            # Issue #1101 — name-based rename for LLM corrections.
+            # When user says "I'm not X, I'm Y", LLM calls
+            # register_speaker(name=Y, old_name=X) → published as
+            # /voice/speaker/rename {"old_name": X, "new_name": Y}.
+            sid = self._db.rename_by_name(old_name, new_name)
+            ok = sid is not None
+            speaker_id = sid or ""
+
+        if ok:
+            self.get_logger().info(f"✏️ Renamed → '{new_name}' (id={speaker_id[:8]})")
+        else:
+            self.get_logger().warning(
+                f"⚠️ rename failed: "
+                f"{'old_name=' + old_name if old_name else 'speaker_id=' + speaker_id[:8]} "
+                f"not found in DB"
+            )
 
         ack = String()
         ack.data = json.dumps(
