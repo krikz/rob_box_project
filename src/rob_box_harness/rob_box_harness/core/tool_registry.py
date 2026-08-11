@@ -459,6 +459,54 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 },
             },
         ),
+        # Issue #1101 — DuckDuckGo web search (MCP tool). The voice-level
+        # ``WebSearchSkill`` existed before the harness migration but was
+        # never wired into the harness-side ``ToolRegistry``, so LLM saw
+        # no ``search_web`` tool and replied «поиск в интернете пока
+        # недоступен» even though the DuckDuckGo wrapper was installed.
+        # The MCP side ``SearchWebTool`` is registered in
+        # ``rob_box_mcp_tools.tools.web_search`` and wired through
+        # ``mcp_server.py`` (same pattern as ``RegisterSpeakerTool``).
+        ToolSpec(
+            name="search_web",
+            description=(
+                "Поиск в интернете через DuckDuckGo. Возвращает до N "
+                "сниппетов (title, text, url). Используй ОБЯЗАТЕЛЬНО "
+                "для любых вопросов, требующих свежих данных, которых "
+                "нет в твоей тренировочной выборке:\n"
+                "- **Погода**: «погода в Батайске сегодня», «будет ли "
+                "дождь завтра в Москве»\n"
+                "- **Новости**: «последние новости ИИ», «что случилось "
+                "в мире сегодня»\n"
+                "- **Курсы/цены**: «курс доллара сейчас», «сколько "
+                "стоит iPhone 16»\n"
+                "- **Спорт**: «счёт матча Спартак-Зенит»\n"
+                "- **Локальная информация**: «работает ли метро в "
+                "Москве», «где поесть в Сочи»\n"
+                "- **Факты/даты**: «когда день города в Ростове», "
+                "«сколько лет Путину»\n"
+                "НЕ используй для: музыкального ресёрча (genre/BPM — "
+                "используй search_samples), личных фактов о собеседнике "
+                "(memory_search/memory_context)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Поисковый запрос на русском или английском. "
+                            "Будь конкретным: укажи город, дату, тему."
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Сколько результатов (1-10, default 5).",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
     )
 
 
