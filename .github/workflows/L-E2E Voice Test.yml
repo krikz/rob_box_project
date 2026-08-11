@@ -11,38 +11,67 @@ on:
         options:
           - test
           - staging
-      voice_file:
-        description: Voice command file (repo file from .github/e2e/voice_commands/ or /tmp on build machine)
-        required: false
-        default: .github/e2e/voice_commands/spoy_peasenku_pro_enotika.ogg
-        type: string
       voice_text:
-        description: Voice command text (auto-generated if voice_file missing)
+        description: Voice command text (synth on the fly via Yandex TTS)
         required: false
         default: 'Робот, спой песенку про енотика'
+        type: string
+      voice:
+        description: Yandex TTS voice (anton, ermil, jane, omazh, zahar, dasha)
+        required: false
+        default: 'anton'
+        type: string
+      voice_file:
+        description: 'DEPRECATED (atomic harness synthesizes on the fly). Kept for backward compat.'
+        required: false
+        default: ''
+        type: string
+      scenario_file:
+        description: 'Path to scenario JSON in repo (.github/e2e/scenarios/*.json). Overrides voice_text.'
+        required: false
+        default: ''
+        type: string
+      patterns:
+        description: 'Extra log patterns to assert after the cycle (comma-separated grep -E). e.g. "speaker_analysis,Registering"'
+        required: false
+        default: ''
+        type: string
+      acceptance_check:
+        description: 'DEPRECATED alias for patterns (legacy e2e-process contract). Same comma-separated grep -E.'
+        required: false
+        default: ''
+        type: string
       volume:
         description: Speaker volume percent
         required: false
         default: '150'
       record_seconds:
-        description: Recording duration seconds
+        description: DEPRECATED — atomic harness waits for full cycle itself
         required: false
         default: '90'
       llm:
-        description: LLM model id (e.g. minimax-m2, deepseek-r1)
+        description: LLM model id (e.g. minimax-m2, deepseek-r1) — for provenance
         required: false
         default: 'minimax-m2'
         type: string
       tts:
-        description: TTS voice id (e.g. minimax-male-qn-qingse, edge-ru-female)
+        description: TTS voice id (e.g. minimax-male-qn-qingse, edge-ru-female) — for provenance
         required: false
         default: 'minimax-male-qn-qingse'
         type: string
       stt:
-        description: STT provider (e.g. yandex, silero-vosk)
+        description: STT provider (e.g. yandex, silero-vosk) — for provenance
         required: false
         default: 'yandex'
         type: string
+      retries:
+        description: Max play attempts per step (atomic harness retries on no-accept)
+        required: false
+        default: '3'
+      react_window:
+        description: Seconds to wait for full STT->LLM->TTS cycle after play
+        required: false
+        default: '40'
 
 jobs:
   e2e-voice:
@@ -50,7 +79,7 @@ jobs:
     # билд (5+ docker-runner контейнеров) ломал e2e и e2e ломал билды.
     # Лейбл ТОЛЬКО e2e (без self-hosted) — чтобы раннер не участвовал в билдах.
     runs-on: e2e
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -68,50 +97,79 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "docker ps --filter name=voice-assistant --format '{{.Status}}'"
 
-      - name: Wait for silence
-        run: |
-          echo "Wait 15s for silence..."
-          sleep 15
-
-      - name: Ensure voice command file
+      - name: Ensure YANDEX_API_KEY on build machine
         env:
           SSHPASS: open
         run: |
-          chmod +x .github/workflows/scripts/ensure_voice_file.sh
-          .github/workflows/scripts/ensure_voice_file.sh "${{ inputs.voice_text }}" "${{ inputs.voice_file }}"
+          # Ключ живёт в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).
+          # Достаём и кладём на 249 в /tmp/yandex_key.txt — атомарный скрипт читает оттуда.
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            "docker exec voice-assistant printenv YANDEX_API_KEY" > /tmp/yandex_key.txt
+          wc -c /tmp/yandex_key.txt
+          sshpass -e scp -o StrictHostKeyChecking=no /tmp/yandex_key.txt ros2@10.1.1.249:/tmp/yandex_key.txt
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "wc -c /tmp/yandex_key.txt"
 
-      - name: E2E voice test
+      - name: Push atomic harness + scenario to build machine
         env:
           SSHPASS: open
-          VOICE_LLM: ${{ inputs.llm }}
-          VOICE_TTS: ${{ inputs.tts }}
-          VOICE_STT: ${{ inputs.stt }}
         run: |
-          chmod +x .github/workflows/scripts/e2e_remote.sh
+          chmod +x .github/workflows/scripts/e2e_voice_test.sh
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
+          # scenario (если задан) — кладём в /tmp на 249
+          if [ -n "${{ inputs.scenario_file }}" ]; then
+            sshpass -e scp -o StrictHostKeyChecking=no "${{ inputs.scenario_file }}" ros2@10.1.1.249:/tmp/e2e_scenario.json
+            sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_scenario.json && echo SCENARIO_PUSHED"
+          else
+            echo "NO_SCENARIO"
+          fi
+
+      - name: E2E voice test (atomic harness)
+        env:
+          SSHPASS: open
+        run: |
           RID="${{ github.run_id }}"
-          DUR="${{ inputs.record_seconds }}"
-          VOL="${{ inputs.volume }}"
-          REC="/tmp/dialog_e2e_${RID}.wav"
+          YKEY="$(cat /tmp/yandex_key.txt)"
 
-          # Copy script to build machine
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_remote.sh ros2@10.1.1.249:/tmp/e2e_remote.sh
+          # Формируем команду: --scenario если задан, иначе --text + --voice
+          if [ -n "${{ inputs.scenario_file }}" ]; then
+            CMD="/tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json"
+          else
+            CMD="/tmp/e2e_voice_test.sh --text '${{ inputs.voice_text }}' --voice '${{ inputs.voice }}'"
+          fi
+          # patterns: если acceptance_check (legacy) задан, а patterns нет — используем его
+          PATTERNS_VAL="${{ inputs.patterns }}"
+          if [ -z "$PATTERNS_VAL" ]; then
+            PATTERNS_VAL="${{ inputs.acceptance_check }}"
+          fi
+          [ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"
+          CMD="$CMD --retries ${{ inputs.retries }} --react-window ${{ inputs.react_window }}"
 
-          # Run via nohup — forward model env so recorder writes model.json
+          echo "RUN_CMD: $CMD"
+          # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps)
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "VOICE_LLM='${VOICE_LLM}' VOICE_TTS='${VOICE_TTS}' VOICE_STT='${VOICE_STT}' \
-             nohup /tmp/e2e_remote.sh ${REC} ${DUR} ${VOL} > /tmp/e2e_out.log 2>&1 &"
+            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; \
+             ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
-          # retry-скрипт: до 3 попыток × (play + REACTION_WINDOW 35с + пауза 10с) ≈ 150-180с
-          WAIT=$((DUR + 170))
-          echo "Waiting ${WAIT}s..."
-          sleep ${WAIT}
+          echo "=== E2E stdout ==="
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log"
 
-          echo "=== Remote output ==="
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_out.log"
+      - name: Verdict from atomic harness
+        env:
+          SSHPASS: open
+        run: |
+          OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"
+          echo "$OUT" | tee /tmp/e2e_verdict.log
+          if echo "$OUT" | grep -q "E2E_VERDICT PASS"; then
+            echo "✅ E2E PASS"
+          elif echo "$OUT" | grep -q "E2E_VERDICT FAIL"; then
+            echo "❌ E2E FAIL"
+            exit 1
+          else
+            echo "❌ E2E verdict missing (harness crash?)"
+            exit 1
+          fi
 
       - name: Write model.json (multi-model provenance)
-        env:
-          SSHPASS: open
         run: |
           RID="${{ github.run_id }}"
           cat > "model.json" <<EOF
@@ -119,23 +177,16 @@ jobs:
             "llm":  "${{ inputs.llm }}",
             "tts":  "${{ inputs.tts }}",
             "stt":  "${{ inputs.stt }}",
+            "voice": "${{ inputs.voice }}",
+            "voice_text": "${{ inputs.voice_text }}",
+            "scenario_file": "${{ inputs.scenario_file }}",
+            "patterns": "${{ inputs.patterns }}",
+            "harness": "e2e_voice_test.sh (atomic v2)",
             "ts":   "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "run_id": "${RID}"
           }
           EOF
-          echo "model.json written:"
           cat model.json
-
-      - name: Fetch recording
-        env:
-          SSHPASS: open
-        run: |
-          FILE="/tmp/dialog_e2e_${{ github.run_id }}.wav"
-          echo "Checking remote file..."
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la $FILE && echo REMOTE_OK || echo REMOTE_MISSING"
-          echo "Attempting scp..."
-          sshpass -e scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 "ros2@10.1.1.249:$FILE" "$FILE" && echo "SCP_OK" || echo "SCP_FAILED"
-          ls -la "$FILE" 2>/dev/null || echo "No local copy"
 
       - name: Collect robot logs
         env:
@@ -144,88 +195,9 @@ jobs:
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
-            "docker logs voice-assistant --since 10m 2>&1" > "$LOG" || \
+            "docker logs voice-assistant --since 15m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
-          # Дозаписываем вывод retry-скрипта (маркер E2E_REACTION_OK/NO_REACTION)
-          echo "--- E2E REMOTE OUTPUT ---" >> "$LOG"
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "cat /tmp/e2e_out.log 2>/dev/null" >> "$LOG" || true
           echo "Log lines: $(wc -l < "$LOG")"
-      - name: Validate e2e result (real robot response)
-        run: |
-          RID="${{ github.run_id }}"
-          LOG="/tmp/voice_e2e_${RID}.log"
-          FAIL=""
-          WARN=""
-          echo "--- e2e validation markers ---"
-          # 1) STT: команда должна быть РАСПОЗНАНА (не empty/rejected).
-          #    При retry-цикле (3 попытки) в логе могут быть пустые попытки
-          #    («ОТКЛОНЕНО (пустое)») при успешной — фейлим ТОЛЬКО если
-          #    фраза ни разу не была принята (иначе ложный FAIL: 09.08 live).
-          if grep -q "✅ ПРИНЯТО" "$LOG"; then
-            echo "✅ STT: фраза распознана (ПРИНЯТО)"
-          elif grep -qE "ОТКЛОНЕНО \(пустое\)|Пустой STT" "$LOG"; then
-            echo "❌ STT EMPTY: ни одна фраза не распознана (все попытки пустые)"
-            FAIL="stt-empty"
-          elif grep -q "Получена фраза" "$LOG"; then
-            echo "✅ STT: фраза получена (VAD сработал, текст не распознан)"
-          else
-            echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
-            FAIL="stt-no-phrase"
-          fi
-          # 2) ОТВЕТ: робот должен РЕАГИРОВАТЬ на команду.
-          #    Приоритет — маркер retry-скрипта (E2E_REACTION_OK в e2e_out.log):
-          #    скрипт сам проверял docker logs робота ПОСЛЕ команды и повторял
-          #    команду, пока не увидел TTS finished. Это самая честная проверка.
-          if grep -q "E2E_REACTION_OK" "$LOG"; then
-            echo "✅ SPEECH: робот ответил (retry-скрипт видел TTS finished после команды)"
-          elif grep -q "E2E_NO_REACTION" "$LOG"; then
-            echo "❌ NO REACTION: retry-скрипт 3 раза проиграл команду — робот не ответил"
-            FAIL="${FAIL:+$FAIL,}no-reaction"
-          else
-            # Fallback (старая логика): TTS должен быть ПОСЛЕ STT-фразы.
-            stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-            tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-            if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
-              echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
-            elif grep -q "TTS finished" "$LOG"; then
-              echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
-              FAIL="${FAIL:+$FAIL,}no-speech-after-command"
-            else
-              echo "❌ NO SPEECH: робот не произнёс ответ"
-              FAIL="${FAIL:+$FAIL,}no-speech"
-            fi
-          fi
-          # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
-          if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
-            echo "⚠️  TTS FALLBACK: MiniMax квота/ошибка → Silero. Основному голосу нужно внимание."
-            WARN="tts-fallback"
-          else
-            echo "✅ TTS: основной голос без fallback"
-          fi
-          if [ -n "$FAIL" ]; then
-            echo ""
-            echo "❌❌ E2E НЕ ПРОШЁЛ: $FAIL — нужен повторный прогон (e2e:rejected)"
-            exit 1
-          fi
-          if [ -n "$WARN" ]; then
-            echo ""
-            echo "⚠️  E2E ПРОШЁЛ с предупреждением: $WARN (STT ок + ответ после команды, но TTS fallback)"
-            exit 0
-          fi
-          echo ""
-          echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
-
-      - name: E2E timing metrics (response speed)
-        run: |
-          RID="${{ github.run_id }}"
-          VTXT="${{ inputs.voice_text }}"
-          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" | tee /tmp/e2e_timing.txt
-          # Дублируем в step summary (видно в сводке run, не только в логе)
-          {
-            echo "### ⏱ Response timing (команда → ответ)"
-            cat /tmp/e2e_timing.txt
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload recording
         uses: actions/upload-artifact@v7
@@ -233,6 +205,7 @@ jobs:
           name: e2e-voice-recording-${{ github.run_id }}
           path: /tmp/dialog_e2e_${{ github.run_id }}.wav
           retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload logs
         uses: actions/upload-artifact@v7
@@ -252,6 +225,10 @@ jobs:
         run: |
           echo "## E2E Voice Test Complete" >> $GITHUB_STEP_SUMMARY
           echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Voice text: \`${{ inputs.voice_text }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Voice: \`${{ inputs.voice }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Scenario: \`${{ inputs.scenario_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Patterns: \`${{ inputs.patterns }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Volume: ${{ inputs.volume }}%" >> $GITHUB_STEP_SUMMARY
           echo "- LLM: \`${{ inputs.llm }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- TTS: \`${{ inputs.tts }}\`" >> $GITHUB_STEP_SUMMARY
