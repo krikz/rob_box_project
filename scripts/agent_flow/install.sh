@@ -24,7 +24,17 @@ set -e
 DRY_RUN=false
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=true
 
-REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
+# Если передан явный REPO_DIR (например на build host, где нет
+# /home/builder/hermes-share), используем его:
+#   bash install.sh /tmp/install_af_1107
+#   bash install.sh --dry-run /tmp/install_af_1107
+#   REPO_DIR=/tmp/install_af_1107 bash install.sh
+# По умолчанию — путь dev-машины.
+if [ "${1:-}" = "--dry-run" ]; then
+    REPO_DIR="${REPO_DIR:-${2:-/home/builder/hermes-share/rob_box_project}}"
+else
+    REPO_DIR="${REPO_DIR:-${1:-/home/builder/hermes-share/rob_box_project}}"
+fi
 SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 
 # Канонические пути (все должны стать симлинками на одну и ту же цель)
