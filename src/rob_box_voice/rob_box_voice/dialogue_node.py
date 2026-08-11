@@ -92,6 +92,12 @@ try:
 except Exception:
     FAQSkill = None  # type: ignore[assignment,misc]
 try:
+    from rob_box_voice.skills.web_search_skill import (
+        WebSearchSkill as WebSearchSkill,  # noqa: F811
+    )
+except Exception:
+    WebSearchSkill = None  # type: ignore[assignment,misc]
+try:
     from rob_box_voice.skills.navigation_skill import (
         NavigationSkill as NavigationSkill,
     )  # noqa: F811
@@ -432,6 +438,7 @@ class DialogueNode(Node):
                                    and not self._run_task.done()),
                 is_dialogue_active=lambda: self._dsm.current_state in (
                     DialogueStateKind.DIALOGUE, DialogueStateKind.SILENCED),
+                on_stop=self._on_dj_stop_farewell,
             ),
             logger=self.get_logger(),
         )
@@ -1090,6 +1097,7 @@ class DialogueNode(Node):
             ("MemorySkill", "handle_memory"),
             ("StatusSkill", "handle_status"),
             ("FAQSkill", "handle_faq"),
+            ("WebSearchSkill", "search_web"),
         ]
         for cls_name, tool_name in skill_aliases:
             cls = globals().get(cls_name)
@@ -1393,6 +1401,35 @@ class DialogueNode(Node):
         )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
+    def _on_dj_stop_farewell(self, persona: str) -> None:
+        """Speak a short goodbye when DJ mode turns off.
+
+        Invoked by DJModeController._reset_state() through the DJHook.
+        We do not want the user to hear abrupt silence when the party
+        ends, so we publish a one-shot speak_text via the same
+        response publisher used by every other turn.
+        """
+        # Fall back to a friendly default if persona was empty.
+        persona_part = (persona or '').strip() or 'Роббокс'
+        farewell = (
+            'Вечеринка подошла к концу. '
+            + persona_part
+            + ' выключается, но вернется по первому запросу!'
+        )
+        try:
+            self.get_logger().info(f"DJ farewell: {farewell}")
+        except Exception:
+            pass
+        try:
+            self._publish_response(farewell, animation='happy')
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.get_logger().warning(
+                    f"DJ farewell publish failed: {type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                pass
+
     def _dispatch_dj_turn(self, user_input: str, from_tick: bool = False) -> None:
         """Issue #992 Bug A — DJ auto-transition dispatcher.
 
@@ -2742,8 +2779,45 @@ class DialogueNode(Node):
                     self.get_logger().warning(
                         f"⚠️ empty-reminder append failed: {exc}"
                     )
-                # Тихий return: не падаем в «задумался», а просто
-                # завершаем цикл (следующий turn LLM увидит reminder).
+                # Persist a synthetic assistant turn so the next LLM call
+                # still sees a continuous conversation; otherwise
+                # «продолжай» looks like a fresh exchange
+                # and the robot appears to forget the running topic.
+                try:
+                    from rob_box_harness.memory import Turn
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        self._memory.append_turn(
+                            "default",
+                            Turn(
+                                role="assistant",
+                                content=(
+                                    "[silent_accept] Вопрос принят, "
+                                    "но ответа не последовало "
+                                    "(LLM вернула done без speak_text). "
+                                    "user=\"" + (user_input or "")[:200] + "\""
+                                ),
+                            ),
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ silent-marker append failed: {exc}"
+                        )
+                    except Exception:
+                        pass
+                # Tell the user that we heard them so they are not left
+                # with an «accept + silence» experience.
+                try:
+                    self._publish_response("Принял.", animation="neutral")
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ empty-fallback publish failed: {exc}"
+                        )
+                    except Exception:
+                        pass
                 return
             else:
                 self.get_logger().info(
