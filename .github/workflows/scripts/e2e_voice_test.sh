@@ -35,7 +35,12 @@ E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"
 E2E_RECORD_EXTRA="${E2E_RECORD_EXTRA:-15}"          # хвост записи после реакции
 ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
-ROBOT_SSH="LC_ALL=C sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# NOTE (retro t_0a5d65af, round-50): НЕЛЬЗЯ ставить "LC_ALL=C " префиксом в
+# ROBOT_SSH — при раскрытии ${ROBOT_SSH} bash выполняет "LC_ALL=C" как КОМАНДУ
+# (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
+# видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
+# работает только как литерал перед командой, не через переменную.
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 
@@ -113,10 +118,21 @@ check_cycle() {  # $1=before_rfc3339
     if ! printf '%s' "$logs" | grep -q "ПРИНЯТО"; then
         return 1   # нет акцепта → retry команды
     fi
-    # 2) LLM ошибки = красный, не чиним
-    if printf '%s' "$logs" | grep -qE "Empty assistant response|LLM.*(error|failed)|429 Too Many|quota"; then
-        printf '%s' "$logs" | grep -E "Empty assistant response|LLM.*(error|failed)|429|quota" | tail -3 > "$OUT_DIR/llm_error.txt"
+    # 2) LLM ошибки. "Empty assistant response|LLM.*(error|failed)" — красный,
+    #    не чиним. 429/quota — НЕ красный: minimax квота (2056) исчерпана
+    #    постоянно, но fallback-цепочка на deepseek (PR #1099) в develop
+    #    работает — цикл завершается на следующем провайдере. Если TTS уже
+    #    есть — fallback сработал, не ошибка; если TTS нет — retry (return 1).
+    if printf '%s' "$logs" | grep -qE "Empty assistant response|LLM.*(error|failed)"; then
+        printf '%s' "$logs" | grep -E "Empty assistant response|LLM.*(error|failed)" | tail -3 > "$OUT_DIR/llm_error.txt"
         return 2
+    fi
+    if printf '%s' "$logs" | grep -qE "429 Too Many|quota"; then
+        if ! printf '%s' "$logs" | grep -q "TTS finished"; then
+            printf '%s' "$logs" | grep -E "429|quota" | tail -3 > "$OUT_DIR/llm_quota.txt"
+            log "⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)"
+            return 1
+        fi
     fi
     # 3) ПОРЯДОК: LLM INPUT команды должен быть ПОСЛЕ ПРИНЯТО,
     #    а TTS finished — ПОСЛЕ LLM INPUT (иначе это приветствие/старый цикл)
