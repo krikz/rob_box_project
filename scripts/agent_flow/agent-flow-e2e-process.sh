@@ -92,6 +92,14 @@ DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-20}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
 LOG_PREFIX="${LOG_PREFIX:-[agent-flow-e2e-process]}"
+# ретро 11.08 (t_c26b73e7): пауза ротации при известном блокере.
+# Сигнатуры блокеров (space-separated) — ищем в открытых issues (title/body) и в
+# робот-логах voice-assistant. Пока блокер открыт, новый round НЕ создаётся.
+KNOWN_BLOCKER_SIGNATURES="${KNOWN_BLOCKER_SIGNATURES:-no_wake_word}"
+# Окно робот-логов для grep сигнатуры (best-effort, только если SSH доступен).
+BLOCKER_ROBOT_LOG_SINCE="${BLOCKER_ROBOT_LOG_SINCE:-6h}"
+# Сколько подряд однотипных FAIL (одна сигнатура) = блокер → e2e:rejected.
+BLOCKER_CONSECUTIVE_FAILS="${BLOCKER_CONSECUTIVE_FAILS:-2}"
 
 # --- source profile .env if present -------------------------------------------
 PROFILE_ENV="${HERMES_HOME}/profiles/agent-flow/.env"
@@ -136,6 +144,9 @@ fi
 : "${E2E_RUN_TIMEOUT:=1800}"
 : "${E2E_POLL_INTERVAL:=15}"
 : "${ISSUE_LIMIT:=20}"
+: "${KNOWN_BLOCKER_SIGNATURES:=no_wake_word}"
+: "${BLOCKER_ROBOT_LOG_SINCE:=6h}"
+: "${BLOCKER_CONSECUTIVE_FAILS:=2}"
 # робот для pre-flight (ретро #R2: no-reaction rounds 29/31 — жечь e2e-раунд на мёртвом роботе бессмысленно)
 : "${E2E_ROBOT_HOST:=10.1.1.21}"
 : "${E2E_ROBOT_USER:=ros2}"
@@ -144,6 +155,120 @@ fi
 # --- helpers -----------------------------------------------------------------
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
+
+# --- known-blocker helpers (ретро 11.08 t_c26b73e7) -------------------------
+# Сигнатуры известных блокеров — space-separated список для перебора.
+_blocker_sigs=()
+IFS=' ' read -r -a _blocker_sigs <<< "$KNOWN_BLOCKER_SIGNATURES" || true
+
+# blocker_issue_for_sig <sig> — открытый issue, в title/body которого есть
+# сигнатура (например `no_wake_word` → #1117). Печатает номер issue (или пусто).
+blocker_issue_for_sig() {  # $1=sig
+    local sig="$1"
+    gh issue list --repo "$GH_REPO" --state open \
+        --search "${sig} in:title,body" \
+        --limit 5 --json number --jq '[.[].number] | max // ""' 2>/dev/null || true
+}
+
+# detect_known_blocker — известный блокер открыт? Источники:
+#   1) открытый issue с сигнатурой (сильный сигнал);
+#   2) робот-логи voice-assistant за BLOCKER_ROBOT_LOG_SINCE (best-effort,
+#      только если задан E2E_ROBOT_PASS; SSH-сбой не фатален).
+# Печатает "#<issue>" или "robot-log:<sig>"; пусто — блокера нет.
+detect_known_blocker() {
+    local sig hit
+    for sig in "${_blocker_sigs[@]}"; do
+        [ -z "$sig" ] && continue
+        hit="$(blocker_issue_for_sig "$sig")"
+        if [ -n "$hit" ] && [ "$hit" != "null" ]; then
+            printf '#%s' "$hit"
+            return 0
+        fi
+        if [ -n "${E2E_ROBOT_PASS:-}" ]; then
+            if sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+                "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.21}" \
+                "docker logs voice-assistant --since ${BLOCKER_ROBOT_LOG_SINCE} 2>&1 | grep -m1 '${sig}'" 2>/dev/null \
+                | grep -q .; then
+                printf 'robot-log:%s' "$sig"
+                return 0
+            fi
+        fi
+    done
+    return 0
+}
+
+# detect_fail_signature <artifact_dir> <run_id> — есть ли в артефактах/логах
+# рана сигнатура известного блокера. Печатает сигнатуру (или пусто).
+detect_fail_signature() {  # $1=artifact_dir $2=run_id
+    local dir="$1" run_id="$2" tmpdir="" sig
+    tmpdir="$(mktemp -d 2>/dev/null || echo "${WORKTREE_DIR}/.e2e-sig-$$")"
+    mkdir -p "$tmpdir" 2>/dev/null || true
+    for sig in "${_blocker_sigs[@]}"; do
+        [ -z "$sig" ] && continue
+        if [ -d "$dir" ] && grep -rhiF -- "$sig" "$dir" 2>/dev/null | grep -q .; then
+            rm -rf "$tmpdir" 2>/dev/null || true
+            printf '%s' "$sig"
+            return 0
+        fi
+    done
+    if [ -n "$run_id" ]; then
+        if curl -sL --max-time 45 -H "Authorization: token $(gh auth token 2>/dev/null || true)" \
+            "https://api.github.com/repos/${GH_REPO}/actions/runs/${run_id}/logs" -o "${tmpdir}/run_logs.zip" 2>/dev/null \
+            && unzip -o -q "${tmpdir}/run_logs.zip" -d "${tmpdir}/logs" 2>/dev/null; then
+            for sig in "${_blocker_sigs[@]}"; do
+                [ -z "$sig" ] && continue
+                if grep -rhiF -- "$sig" "${tmpdir}/logs" 2>/dev/null | grep -q .; then
+                    rm -rf "$tmpdir" 2>/dev/null || true
+                    printf '%s' "$sig"
+                    return 0
+                fi
+            done
+        fi
+    fi
+    rm -rf "$tmpdir" 2>/dev/null || true
+    return 0
+}
+
+# recent_fail_signature <issue_number> — есть ли у issue >=BLOCKER_CONSECUTIVE_FAILS
+# подряд однотипных FAIL (одна сигнатура). Источник: маркеры `e2e-signature: <sig>`
+# в e2e-докладах (добавляются этим же скриптом при публикации). Идём от свежих
+# докладов к старым; SUCCESS или доклад без маркера обрывает цепочку.
+# Печатает сигнатуру (или пусто).
+recent_fail_signature() {  # $1=issue_number
+    local n="$1" verdict="" sig="" prev="" count=0
+    while IFS=$'\t' read -r verdict sig; do
+        [ -z "$verdict" ] && continue
+        if [ "$verdict" != "FAILURE" ] || [ -z "$sig" ]; then
+            return 0
+        fi
+        if [ -z "$prev" ]; then
+            prev="$sig"; count=1
+        elif [ "$sig" = "$prev" ]; then
+            count=$((count+1))
+            if [ "$count" -ge "${BLOCKER_CONSECUTIVE_FAILS:-2}" ]; then
+                printf '%s' "$prev"
+                return 0
+            fi
+        else
+            prev="$sig"; count=1
+        fi
+    done < <(gh issue view "$n" --repo "$GH_REPO" --comments --json comments \
+        --jq '.comments' 2>/dev/null | python3 -c '
+import json, re, sys
+n = sys.argv[1]
+docs = []
+for c in json.load(sys.stdin):
+    b = c.get("body") or ""
+    if "📊 e2e-доклад #%s" % n not in b:
+        continue
+    v = re.search(r"Verdict[^\n]*\n[^\n]*?([A-Z]{2,})\b", b)
+    s = re.search(r"e2e-signature: ([a-zA-Z0-9_]+)", b)
+    docs.append((v.group(1) if v else "", s.group(1) if s else ""))
+for verdict, sig in reversed(docs):
+    print("%s\t%s" % (verdict, sig))
+' "$n" 2>/dev/null)
+    return 0
+}
 
 # G6: flock sentinel.
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
@@ -276,6 +401,65 @@ if ! gh label list --repo "$GH_REPO" --limit 200 2>/dev/null | grep -q "^${INFRA
     gh label create "$INFRA_FAIL_LABEL" --repo "$GH_REPO" --color "fbca04" \
         --description "e2e FAIL по инфраструктуре (квота 429 / робот недоступен / build) — issue остаётся в ротации" \
         >/dev/null 2>&1 || log "WARNING: failed to create label ${INFRA_FAIL_LABEL}"
+fi
+
+# --- pre-round: known-blocker gate (ретро 11.08 t_c26b73e7) -----------------
+# Пока открыт issue-блокер с известной сигнатурой (например #1117 no_wake_word),
+# новый round НЕ создаём: каждый тик иначе жжёт build+deploy+e2e на заведомо
+# падающий сценарий (round-46/47/48 для #1077). Вместо round — коммент в каждый
+# needs-e2e issue 'e2e приостановлен: блокер #N' (идемпотентно) и завершение тика.
+_issue_numbers="$(printf '%s' "$issues_json" | python3 -c '
+import json, sys
+for i in sorted(json.load(sys.stdin), key=lambda x: x["number"]):
+    print(i["number"])')"
+
+_known_blocker="$(detect_known_blocker)"
+if [ -n "$_known_blocker" ]; then
+    log "🛑 known blocker ${_known_blocker} — e2e rotation PAUSED (no new round)"
+    while IFS= read -r _bn; do
+        [ -z "$_bn" ] && continue
+        _paused="$(gh issue view "$_bn" --repo "$GH_REPO" --comments --json comments \
+            --jq '[.comments[].body | select(contains("e2e приостановлен"))] | length' 2>/dev/null || echo 0)"
+        if [ "${_paused:-0}" -eq 0 ] 2>/dev/null; then
+            gh issue comment "$_bn" --repo "$GH_REPO" --body \
+                "agent-flow: ⏸️ e2e приостановлен: блокер ${_known_blocker} — новый round не создаётся, пока блокер открыт (ретро 11.08). Когда блокер закроют, ротация возобновится автоматически." >/dev/null 2>&1 \
+                && log "issue #${_bn}: pause-comment posted (blocker ${_known_blocker})" \
+                || log "issue #${_bn}: WARNING pause-comment failed"
+        else
+            log "issue #${_bn}: pause-comment already present — skip"
+        fi
+    done < <(printf '%s\n' "$_issue_numbers")
+    exit 0
+fi
+
+# --- pre-round: consecutive same-signature FAIL gate (ретро 11.08) ----------
+# Если у issue уже >=BLOCKER_CONSECUTIVE_FAILS подряд однотипных FAIL с одной
+# сигнатурой (маркер e2e-signature: в докладах), новый round для него не тратим:
+# ставим e2e:rejected с указанием блокера — воркер не расследует (см. gate-карточку).
+_any_rejected=0
+while IFS= read -r _bn; do
+    [ -z "$_bn" ] && continue
+    _sig="$(recent_fail_signature "$_bn")"
+    if [ -n "$_sig" ]; then
+        _blk="$(blocker_issue_for_sig "$_sig")"
+        _blk_ref="${_blk:-сигнатура ${_sig}}"
+        log "issue #${_bn}: >=${BLOCKER_CONSECUTIVE_FAILS} подряд FAIL с сигнатурой '${_sig}' — e2e:rejected (блокер ${_blk_ref}), round не тратим"
+        gh issue edit "$_bn" --repo "$GH_REPO" --add-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
+        gh issue edit "$_bn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        gh issue comment "$_bn" --repo "$GH_REPO" --body \
+            "agent-flow: ❌ e2e приостановлен: блокер ${_blk_ref} (${BLOCKER_CONSECUTIVE_FAILS}+ подряд однотипных FAIL: \`${_sig}\`). Новый round не тратим. Когда блокер починят — воркер пушит коммит/коммент, merge-gate вернёт issue в ротацию." >/dev/null 2>&1 || true
+        _any_rejected=1
+    fi
+done < <(printf '%s\n' "$_issue_numbers")
+
+# Если все needs-e2e issues приостановлены/отклонены — round не создаём.
+if [ "$_any_rejected" -eq 1 ]; then
+    _remaining="$(gh issue list --repo "$GH_REPO" --label "$NEEDS_E2E_LABEL" --state open \
+        --limit 1 --json number --jq 'length' 2>/dev/null || echo 0)"
+    if [ "${_remaining:-0}" -eq 0 ] 2>/dev/null; then
+        log "no remaining needs-e2e issues (all paused/rejected) — no round"
+        exit 0
+    fi
 fi
 
 # --- prepare worktree --------------------------------------------------------
@@ -974,6 +1158,18 @@ $(cat "$acc_file")"
         if [ "$fail_kind" = "feature" ]; then
             fail_kind="$(detect_fail_kind "$artifact_dir" "$run_id")"
         fi
+        # --- known-signature detection (ретро 11.08 t_c26b73e7) ---
+        # Если FAIL — фича (не infra/merged) и в артефактах/console-логах есть
+        # сигнатура известного блокера (no_wake_word), помечаем доклад маркером
+        # e2e-signature: <sig>. Маркер нужен для детекта «N подряд однотипных FAIL»
+        # на следующем тике (recent_fail_signature).
+        fail_signature=""
+        if [ "$fail_kind" = "feature" ]; then
+            fail_signature="$(detect_fail_signature "$artifact_dir" "$run_id")"
+            if [ -n "$fail_signature" ]; then
+                log "issue #${number}: FAIL сигнатура известного блокера: ${fail_signature}"
+            fi
+        fi
     fi
 
     if [ "$verdict" = "success" ]; then
@@ -1004,6 +1200,17 @@ $(cat "$acc_file")"
         fail_note="> ⚠️ FAIL по ИНФРАСТРУКТУРЕ (квота MiniMax 429 / робот недоступен / build fail) — метка \`e2e:rejected\` НЕ ставилась, issue остаётся в ротации (\`${NEEDS_E2E_LABEL}\` сохранён), следующий тик повторит прогон. Поставлена \`${INFRA_FAIL_LABEL}\`."
     fi
 
+    # Маркер известного блокера (ретро 11.08 t_c26b73e7): строка
+    # `e2e-signature: <sig>` в докладе — машиночитаемый след для
+    # recent_fail_signature на следующем тике (детект N подряд однотипных FAIL).
+    sig_note=""
+    sig_marker=""
+    if [ -n "${fail_signature:-}" ]; then
+        _blk_issue="$(blocker_issue_for_sig "$fail_signature")"
+        sig_marker="e2e-signature: ${fail_signature}"
+        sig_note="> ⚠️ Сигнатура известного блокера: \`${fail_signature}\`${_blk_issue:+ (issue #${_blk_issue})}. Маркер \`${sig_marker}\` — следующий тик при ≥${BLOCKER_CONSECUTIVE_FAILS} подряд однотипных FAIL приостановит ротацию."
+    fi
+
     # Динамический шаг (ретро 10.08 t_9caf5d52): merged/infra ≠ «чини код».
     if [ "$verdict" = "success" ]; then
         manual_step="If PASS: \\`gh pr merge --squash ${branch} -> develop\\` (manual merge per Q5)."
@@ -1022,6 +1229,10 @@ $(cat "$acc_file")"
 ${verdict_emoji} ${verdict^^}
 
 ${fail_note}
+
+${sig_note}
+
+${sig_marker}
 
 ### Run
 [run #${run_id}](https://github.com/${GH_REPO}/actions/runs/${run_id}) on \`${ROUND_BRANCH}\`
@@ -1174,9 +1385,16 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
             _gate_title="🟢 e2e-ran #${number}: проверь worker-evidence для PR \`${branch}\`"
             _gate_priority=70
         else
+            _blk_line=""
+            if [ -n "${fail_signature:-}" ]; then
+                _blk_issue="$(blocker_issue_for_sig "$fail_signature")"
+                _blk_line="**⚠️ БЛОКЕР: ${_blk_issue:+#${_blk_issue} }(${fail_signature})** — e2e падает по известному блокеру, НЕ по твоему коду (ретро 11.08). Не расследуй глубоко; жди фикса блокера. Карточка остаётся до прогона с доказательствами.
+
+"
+            fi
             _gate_body="## 🔴 e2e КРАСНЫЙ — посмотри, определи свою вину (ретро t_d0151eb3)
 
-**ОБЯЗАН** (по процессу Шифу 10.08): сходи в run [#${run_id}](https://github.com/${GH_REPO}/actions/runs/${run_id}) → **download artifacts → voice_e2e_${run_id}.log** и определи причину FAIL.
+${_blk_line}**ОБЯЗАН** (по процессу Шифу 10.08): сходи в run [#${run_id}](https://github.com/${GH_REPO}/actions/runs/${run_id}) → **download artifacts → voice_e2e_${run_id}.log** и определи причину FAIL.
 
 **ЕСЛИ ПО ТВОЕЙ ВИНЕ** (баг в твоём коде, exception в логах, неправильная команда в ## e2e блоке) → чини **в той же ветке** \`${branch}\` (никаких новых веток/PRов — Шифу прямо), push, жди следующего прогона. Карточка остаётся.
 
