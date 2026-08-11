@@ -173,6 +173,26 @@ def test_empty_name_returns_ask_required(tool: RegisterSpeakerTool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1a. Issue #1101 (live 11.08) — литералы "null"/"None" из OpenAI tool-call.
+# LLM иногда сериализует JSON null как строку "null"; без guard это
+# превращается в запись ``name='Null'`` в /data/speakers.db.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("literal", ["null", "None", "NULL", "Null", " none "])
+def test_null_literal_treated_as_ask_user(
+    tool: RegisterSpeakerTool,
+    mock_node: MagicMock,
+    literal: str,
+) -> None:
+    result = tool.execute(name=literal)
+    assert result.success is True
+    assert result.data == {"ask_required": True, "name": None}
+    # На литералах публикации быть не должно.
+    mock_node.create_publisher.return_value.publish.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # 2. Слишком короткое имя → name_too_short
 # ---------------------------------------------------------------------------
 

@@ -701,6 +701,24 @@ class RegisterSpeakerTool(MCPTool):
                 message="Спроси имя у пользователя через speak_text и вызови register_speaker(name=X) ещё раз",
             )
         name_clean = name.strip().capitalize()
+        # Issue #1101 (live 11.08) — LLM sometimes serialises a real
+        # ``null`` JSON value through OpenAI tool-call as the literal
+        # string ``"null"`` (or ``"None"``). Without this branch the
+        # speaker_id_node persists an embedding under ``name='Null'``
+        # — a fresh junk row in /data/speakers.db. Treat ``"null"``
+        # the same as ``None``: ask the user.
+        if name_clean.lower() in {"null", "none"}:
+            self.log_info(
+                "[register_speaker] name='null' literal — treat as ask_user"
+            )
+            return MCPToolResult(
+                success=True,
+                data={"ask_required": True, "name": None},
+                message=(
+                    "Передан литерал 'null'/'None' — спроси имя у пользователя "
+                    "через speak_text и вызови register_speaker(name=X) ещё раз"
+                ),
+            )
         if len(name_clean) < 2:
             return MCPToolResult(
                 success=False,
