@@ -153,6 +153,8 @@ EXPECTED=(
     agent-flow-merge-gate.sh
     agent-flow-e2e-process.sh
     agent-flow-handoff.sh
+    round_ensure.sh
+    agent-flow-cleanup-249.sh
     cron-loop.sh
     watchdog.sh
 )
