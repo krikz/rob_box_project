@@ -2858,10 +2858,28 @@ class DialogueNode(Node):
                         pass
                 return
             else:
+                # Issue #1101 (live 11.08) — when LLM called tools
+                # (e.g. stop_music) but returned no spoken text,
+                # the user hears silence with no explanation. Log
+                # exactly what happened so operators can diagnose.
+                tc_list = list(tools_called)
+                user_hint = (user_input or "")[:80]
                 self.get_logger().info(
                     "🔇 TRACK-запрос выполнен тулами, spoken пуст — "
-                    f"тихо завершаю (tools={list(tools_called)!r})"
+                    f"тихо завершаю (tools={tc_list!r} "
+                    f"user={user_hint!r})"
                 )
+                # When the only action was stop_music (no speak_text,
+                # no music_code), the user gets pure silence after a
+                # request — surface a louder diagnostic.
+                if tc_list == ["stop_music"]:
+                    self.get_logger().warning(
+                        "🎵 [diagnostics] LLM called ONLY stop_music "
+                        "with no spoken text — user heard silence "
+                        f"(user_input={user_hint!r}). "
+                        "LLM must follow up with speak_text or "
+                        "execute_music_code when stop_music is used."
+                    )
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
         # that /voice/tts/batch_complete fires only after the last chunk.
