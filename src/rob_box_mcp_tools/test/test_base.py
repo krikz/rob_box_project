@@ -3,7 +3,7 @@ test_base.py - Unit тесты для базовых классов MCP Tools
 
 Тестирует:
 - MCPToolParameter
-- MCPToolResult  
+- MCPToolResult
 - MCPTool (abstract base class)
 """
 
@@ -21,11 +21,11 @@ from rob_box_mcp_tools.base import MCPTool, MCPToolParameter, MCPToolResult
 
 
 class TestMCPToolParameter:
-    """Тесты для MCPToolParameter"""
+    """Тесты для MCPToolParameter."""
 
     @pytest.mark.unit
     def test_parameter_creation_minimal(self):
-        """Тест создания параметра с минимальными полями"""
+        """Тест создания параметра с минимальными полями."""
         param = MCPToolParameter(name="test_param", type="string", description="Test parameter", required=True)
 
         assert param.name == "test_param"
@@ -35,7 +35,7 @@ class TestMCPToolParameter:
 
     @pytest.mark.unit
     def test_parameter_with_enum(self):
-        """Тест параметра с enum"""
+        """Тест параметра с enum."""
         param = MCPToolParameter(name="choice", type="string", description="Choose option", required=True, enum=["a", "b", "c"])
 
         schema = param.to_json_schema()
@@ -43,7 +43,7 @@ class TestMCPToolParameter:
 
     @pytest.mark.unit
     def test_parameter_with_default(self):
-        """Тест параметра со значением по умолчанию"""
+        """Тест параметра со значением по умолчанию."""
         param = MCPToolParameter(name="count", type="integer", description="Count", required=False, default=10)
 
         schema = param.to_json_schema()
@@ -51,7 +51,7 @@ class TestMCPToolParameter:
 
     @pytest.mark.unit
     def test_parameter_to_json_schema_complete(self):
-        """Тест полной конвертации параметра в JSON Schema"""
+        """Тест полной конвертации параметра в JSON Schema."""
         param = MCPToolParameter(
             name="test_param",
             type="string",
@@ -60,7 +60,7 @@ class TestMCPToolParameter:
             enum=["a", "b", "c"],
             default="a"
         )
-        
+
         schema = param.to_json_schema()
         assert schema["type"] == "string"
         assert schema["description"] == "Test parameter"
@@ -70,10 +70,10 @@ class TestMCPToolParameter:
 
 @pytest.mark.unit
 class TestMCPToolResult:
-    """Тесты для класса MCPToolResult"""
+    """Тесты для класса MCPToolResult."""
 
     def test_create_success_result(self):
-        """Тест создания успешного результата"""
+        """Тест создания успешного результата."""
         result = MCPToolResult(success=True, message="Operation completed", data={"key": "value"})
 
         assert result.success is True

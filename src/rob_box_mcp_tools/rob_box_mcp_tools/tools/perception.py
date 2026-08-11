@@ -14,7 +14,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class GetPerceptionContextTool(MCPTool):
-    """Инструмент для получения контекста восприятия"""
+    """Инструмент для получения контекста восприятия."""
 
     def __init__(self, node):
         super().__init__(node)
@@ -32,14 +32,14 @@ class GetPerceptionContextTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Get perception context - MEDIUM операция (кэшированные данные, но может потребовать запросов)"""
+        """Get perception context - MEDIUM операция (кэшированные данные, но может потребовать запросов)."""
         return ToolExecutionType.MEDIUM
 
     def execute(self) -> MCPToolResult:
-        """Получить контекст восприятия"""
+        """Получить контекст восприятия."""
         self.log_info("Запрос контекста восприятия")
 
         if self.last_context is None:
@@ -50,12 +50,12 @@ class GetPerceptionContextTool(MCPTool):
         return MCPToolResult(success=True, data=self.last_context, message="Контекст восприятия получен")
 
     def update_context(self, context: dict):
-        """Обновить кэш контекста (вызывается из MCP сервера при получении данных)"""
+        """Обновить кэш контекста (вызывается из MCP сервера при получении данных)."""
         self.last_context = context
 
 
 class GetBatteryLevelTool(MCPTool):
-    """Инструмент для получения уровня заряда батареи"""
+    """Инструмент для получения уровня заряда батареи."""
 
     def __init__(self, node):
         super().__init__(node)
@@ -72,14 +72,14 @@ class GetBatteryLevelTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Get battery level - FAST операция (кэшированные данные)"""
+        """Get battery level - FAST операция (кэшированные данные)."""
         return ToolExecutionType.FAST
 
     def execute(self) -> MCPToolResult:
-        """Получить уровень батареи"""
+        """Получить уровень батареи."""
         self.log_info("Запрос уровня батареи")
 
         if self.battery_level is None:
@@ -98,5 +98,5 @@ class GetBatteryLevelTool(MCPTool):
         )
 
     def update_battery(self, level: float):
-        """Обновить уровень батареи (вызывается из MCP сервера)"""
+        """Обновить уровень батареи (вызывается из MCP сервера)."""
         self.battery_level = level

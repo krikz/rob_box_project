@@ -1,1 +1,1 @@
-"""Unit tests for core module"""
+"""Unit tests for core module."""

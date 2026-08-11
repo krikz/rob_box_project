@@ -16,7 +16,7 @@
 
 Использование:
     python3 test_tts_voices.py
-    
+
     Или с конкретным движком:
     python3 test_tts_voices.py --engine piper
     python3 test_tts_voices.py --engine silero
@@ -50,29 +50,29 @@ class Colors:
 
 
 def print_header(text: str):
-    """Печать заголовка"""
+    """Печать заголовка."""
     print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*60}{Colors.ENDC}")
     print(f"{Colors.HEADER}{Colors.BOLD}{text:^60}{Colors.ENDC}")
     print(f"{Colors.HEADER}{Colors.BOLD}{'='*60}{Colors.ENDC}\n")
 
 
 def print_success(text: str):
-    """Успех"""
+    """Успех."""
     print(f"{Colors.OKGREEN}✓{Colors.ENDC} {text}")
 
 
 def print_info(text: str):
-    """Информация"""
+    """Информация."""
     print(f"{Colors.OKCYAN}ℹ{Colors.ENDC} {text}")
 
 
 def print_warning(text: str):
-    """Предупреждение"""
+    """Предупреждение."""
     print(f"{Colors.WARNING}⚠{Colors.ENDC} {text}")
 
 
 def print_error(text: str):
-    """Ошибка"""
+    """Ошибка."""
     print(f"{Colors.FAIL}✗{Colors.ENDC} {text}")
 
 
@@ -101,83 +101,83 @@ PIPER_VOICES = {
 
 
 def download_piper_voice(voice_id: str, models_dir: Path) -> Optional[Path]:
-    """Скачать модель Piper"""
+    """Скачать модель Piper."""
     voice_info = PIPER_VOICES[voice_id]
     model_path = models_dir / f"ru_RU-{voice_id}-medium.onnx"
     config_path = models_dir / f"ru_RU-{voice_id}-medium.onnx.json"
-    
+
     if model_path.exists() and config_path.exists():
         print_info(f"Модель {voice_info['name']} уже скачана")
         return model_path
-    
+
     print_info(f"Скачиваю {voice_info['name']} (~{voice_info['size_mb']} MB)...")
-    
+
     try:
         # Скачать модель
         subprocess.run(
             ["wget", "-q", "-O", str(model_path), voice_info["url"]],
             check=True
         )
-        
+
         # Скачать конфиг
         subprocess.run(
             ["wget", "-q", "-O", str(config_path), voice_info["config_url"]],
             check=True
         )
-        
+
         print_success(f"Модель {voice_info['name']} скачана")
         return model_path
-        
+
     except subprocess.CalledProcessError as e:
         print_error(f"Ошибка при скачивании: {e}")
         return None
 
 
 def test_piper_voice(voice_id: str, models_dir: Path, text: str, speed: float = 1.0):
-    """Тестировать голос Piper"""
+    """Тестировать голос Piper."""
     try:
         from piper import PiperVoice
     except ImportError:
         print_error("Piper не установлен. Установите: pip install piper-tts")
         return
-    
+
     voice_info = PIPER_VOICES[voice_id]
     print(f"\n{Colors.BOLD}Голос:{Colors.ENDC} {voice_info['name']}")
     print(f"{Colors.BOLD}Описание:{Colors.ENDC} {voice_info['description']}")
-    
+
     # Скачать модель если нужно
     model_path = download_piper_voice(voice_id, models_dir)
     if not model_path:
         return
-    
+
     print_info(f"Синтезирую речь (скорость: {speed})...")
-    
+
     try:
         # Загрузить модель
         voice = PiperVoice.load(str(model_path))
-        
+
         # Синтезировать
         audio = voice.synthesize(text, length_scale=1.0/speed)
-        
+
         # Сохранить во временный файл
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
-            
+
             with wave.open(tmp_path, 'wb') as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)  # 16-bit
                 wav_file.setframerate(22050)
                 wav_file.writeframes(audio.tobytes())
-        
+
         print_success("Синтез завершён")
-        
+
         # Воспроизвести
         print_info("Воспроизвожу...")
         subprocess.run(["aplay", "-q", tmp_path])
-        
+
         # Удалить временный файл
         os.unlink(tmp_path)
-        
+
     except Exception as e:
         print_error(f"Ошибка: {e}")
 
@@ -211,25 +211,25 @@ SILERO_VOICES = {
 
 
 def download_silero_model(models_dir: Path) -> bool:
-    """Скачать модель Silero v4 (используем прямую загрузку файла)"""
+    """Скачать модель Silero v4 (используем прямую загрузку файла)."""
     try:
         import torch
         import urllib.request
-        
+
         model_path = models_dir / "v4_ru.pt"
-        
+
         if model_path.exists():
             print_info("Модель Silero v4 уже скачана")
             return True
-        
+
         print_info("Скачиваю модель Silero v4 (~100 MB, может занять время)...")
         print_info("v4 - последняя версия с улучшенным качеством и скоростью")
-        
+
         # Скачать модель напрямую с GitHub
         url = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
-        
+
         print_info(f"Загрузка с {url}...")
-        
+
         # Функция для отображения прогресса
         def show_progress(block_num, block_size, total_size):
             downloaded = block_num * block_size
@@ -237,13 +237,13 @@ def download_silero_model(models_dir: Path) -> bool:
             mb_downloaded = downloaded / 1024 / 1024
             mb_total = total_size / 1024 / 1024
             print(f"\r  Загружено: {mb_downloaded:.1f}/{mb_total:.1f} MB ({percent}%)", end='', flush=True)
-        
+
         urllib.request.urlretrieve(url, model_path, show_progress)
         print()  # Новая строка после прогресс-бара
-        
+
         print_success("Модель Silero v4 скачана")
         return True
-        
+
     except Exception as e:
         print_error(f"Ошибка при скачивании Silero: {e}")
         return False
@@ -253,38 +253,38 @@ def download_silero_model(models_dir: Path) -> bool:
 
 
 def test_silero_voice(voice_id: str, models_dir: Path, text: str, speed: float = 1.0):
-    """Тестировать голос Silero"""
+    """Тестировать голос Silero."""
     try:
         import torch
         import time
     except ImportError:
         print_error("PyTorch не установлен. Установите: pip install torch torchaudio")
         return
-    
+
     voice_info = SILERO_VOICES[voice_id]
     print(f"\n{Colors.BOLD}Голос:{Colors.ENDC} {voice_info['name']}")
     print(f"{Colors.BOLD}Описание:{Colors.ENDC} {voice_info['description']}")
-    
+
     # Скачать модель если нужно
     if not download_silero_model(models_dir):
         return
-    
+
     print_info(f"Синтезирую речь (скорость: {speed})...")
-    
+
     try:
         # Настройка для оптимальной производительности
         device = torch.device('cpu')
         torch.set_num_threads(4)  # Используем 4 потока для Pi 5
-        
+
         # Загрузить модель (v4 использует torch.package)
         model_path = models_dir / "v4_ru.pt"
         print_info("Загружаю модель (torch.package)...")
         model = torch.package.PackageImporter(str(model_path)).load_pickle("tts_models", "model")
         model.to(device)
-        
+
         print_info("Модель загружена, начинаю синтез...")
         start_time = time.time()
-        
+
         # Синтезировать
         audio = model.apply_tts(
             text=text,
@@ -293,31 +293,31 @@ def test_silero_voice(voice_id: str, models_dir: Path, text: str, speed: float =
             put_accent=True,
             put_yo=True
         )
-        
+
         synthesis_time = time.time() - start_time
         audio_duration = len(audio) / 48000
         rtf = synthesis_time / audio_duration
-        
+
         print_success(f"Синтез завершён за {synthesis_time:.2f}s")
         print_info(f"Длительность аудио: {audio_duration:.2f}s")
         print_info(f"RTF (Real Time Factor): {rtf:.2f}")
         if rtf < 1:
             print_success(f"⚡ Быстрее realtime в {1/rtf:.1f}x раз!")
-        
+
         # Сохранить во временный файл
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
-            
+
             import torchaudio
             torchaudio.save(tmp_path, audio.unsqueeze(0), 48000)
-        
+
         # Воспроизвести
         print_info("Воспроизвожу...")
         subprocess.run(["aplay", "-q", tmp_path])
-        
+
         # Удалить временный файл
         os.unlink(tmp_path)
-        
+
     except Exception as e:
         print_error(f"Ошибка: {e}")
         import traceback
@@ -349,11 +349,11 @@ RHVOICE_VOICES = {
 
 
 def test_rhvoice_voice(voice_id: str, text: str, speed: float = 1.0):
-    """Тестировать голос RHVoice"""
+    """Тестировать голос RHVoice."""
     voice_info = RHVOICE_VOICES[voice_id]
     print(f"\n{Colors.BOLD}Голос:{Colors.ENDC} {voice_info['name']}")
     print(f"{Colors.BOLD}Описание:{Colors.ENDC} {voice_info['description']}")
-    
+
     # Проверить установлен ли RHVoice
     try:
         subprocess.run(["which", "RHVoice-test"], check=True, capture_output=True)
@@ -361,7 +361,7 @@ def test_rhvoice_voice(voice_id: str, text: str, speed: float = 1.0):
         print_warning("RHVoice не установлен")
         print_info("Установите: sudo apt-get install rhvoice rhvoice-russian")
         return
-    
+
     print_info(f"Синтезирую речь (скорость: {speed})...")
 
     tmp_txt_path = None
@@ -386,9 +386,9 @@ def test_rhvoice_voice(voice_id: str, text: str, speed: float = 1.0):
             "-o", tmp_wav_path,
             tmp_txt_path
         ], check=True, capture_output=True)
-        
+
         print_success("Синтез завершён")
-        
+
         # Воспроизвести
         print_info("Воспроизвожу...")
         subprocess.run(["aplay", "-q", tmp_wav_path])
@@ -406,8 +406,8 @@ def test_rhvoice_voice(voice_id: str, text: str, speed: float = 1.0):
 # ============================================================================
 
 def interactive_menu(engine: str, models_dir: Path):
-    """Интерактивное меню для тестирования голосов"""
-    
+    """Интерактивное меню для тестирования голосов."""
+
     # Тестовые фразы
     test_phrases = [
         "Привет! Я голосовой ассистент робота Роббокс.",
@@ -417,37 +417,37 @@ def interactive_menu(engine: str, models_dir: Path):
         "Поворачиваю налево на девяносто градусов.",
         "Система навигации готова. Ожидаю команды."
     ]
-    
+
     current_phrase_idx = 0
     current_speed = 1.0
-    
+
     while True:
         print_header(f"Тестирование TTS - {engine.upper()}")
-        
+
         # Текущие настройки
         print(f"{Colors.BOLD}Текущая фраза:{Colors.ENDC}")
         print(f"  {test_phrases[current_phrase_idx]}")
         print(f"\n{Colors.BOLD}Скорость:{Colors.ENDC} {current_speed}x")
-        
+
         print(f"\n{Colors.BOLD}Доступные голоса:{Colors.ENDC}")
-        
+
         if engine == "piper":
             voices = PIPER_VOICES
         elif engine == "silero":
             voices = SILERO_VOICES
         elif engine == "rhvoice":
             voices = RHVOICE_VOICES
-        
+
         for i, (voice_id, info) in enumerate(voices.items(), 1):
             print(f"  {i}. {info['name']} - {info['description']}")
-        
+
         print(f"\n{Colors.BOLD}Опции:{Colors.ENDC}")
         print(f"  p - Сменить фразу")
         print(f"  s - Изменить скорость")
         print(f"  q - Выход")
-        
+
         choice = input(f"\n{Colors.OKCYAN}Выберите голос (1-{len(voices)}) или опцию:{Colors.ENDC} ").strip()
-        
+
         if choice == 'q':
             break
         elif choice == 'p':
@@ -466,13 +466,13 @@ def interactive_menu(engine: str, models_dir: Path):
             except ValueError:
                 print_warning("Неверный формат")
             continue
-        
+
         # Проверить номер голоса
         try:
             voice_num = int(choice)
             if 1 <= voice_num <= len(voices):
                 voice_id = list(voices.keys())[voice_num - 1]
-                
+
                 # Тестировать голос
                 if engine == "piper":
                     test_piper_voice(voice_id, models_dir, test_phrases[current_phrase_idx], current_speed)
@@ -480,7 +480,7 @@ def interactive_menu(engine: str, models_dir: Path):
                     test_silero_voice(voice_id, models_dir, test_phrases[current_phrase_idx], current_speed)
                 elif engine == "rhvoice":
                     test_rhvoice_voice(voice_id, test_phrases[current_phrase_idx], current_speed)
-                
+
                 input(f"\n{Colors.OKCYAN}Нажмите Enter для продолжения...{Colors.ENDC}")
             else:
                 print_warning("Неверный номер")
@@ -505,25 +505,25 @@ def main():
         default=Path.home() / ".cache" / "rob_box_voice" / "tts_models",
         help="Директория для сохранения моделей"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Создать директорию для моделей
     args.models_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print_header("Rob Box Voice - TTS Voice Testing")
-    
+
     print(f"{Colors.BOLD}Директория моделей:{Colors.ENDC} {args.models_dir}")
     print(f"{Colors.BOLD}Размер кэша:{Colors.ENDC} {sum(f.stat().st_size for f in args.models_dir.rglob('*') if f.is_file()) / 1024 / 1024:.1f} MB")
-    
+
     if args.engine == "all":
         print(f"\n{Colors.BOLD}Выберите TTS движок:{Colors.ENDC}")
         print("  1. Piper (рекомендуется) - быстрый, качественный, 63MB")
         print("  2. Silero v4 ⚡ - БЫСТРЕЕ REALTIME на Pi 5! RTF 0.3-0.5, 4 голоса, 100MB")
         print("  3. RHVoice - легковесный, но звучит как робот")
-        
+
         choice = input(f"\n{Colors.OKCYAN}Ваш выбор (1-3):{Colors.ENDC} ").strip()
-        
+
         if choice == "1":
             engine = "piper"
         elif choice == "2":
@@ -535,13 +535,13 @@ def main():
             return
     else:
         engine = args.engine
-    
+
     # Запустить интерактивное меню
     try:
         interactive_menu(engine, args.models_dir)
     except KeyboardInterrupt:
         print(f"\n\n{Colors.WARNING}Прервано пользователем{Colors.ENDC}")
-    
+
     print_header("Testing Complete")
     print_success(f"Модели сохранены в: {args.models_dir}")
     print_info("Вы можете запустить скрипт снова для тестирования других голосов")

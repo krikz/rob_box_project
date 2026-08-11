@@ -17,22 +17,22 @@ import json
 class ToolExecutionType(Enum):
     """
     Тип выполнения инструмента для оптимизации async execution
-    
+
     INSTANT: Мгновенные операции < 100ms (fire-and-forget)
         - Установка анимаций, эмоций
         - Не требует ожидания результата
         - Выполняется параллельно с другими операциями
-    
+
     FAST: Быстрые операции < 2s (await completion)
         - Воспроизведение коротких звуков
         - Установка системных параметров
         - Требует ожидания завершения перед продолжением
-    
+
     MEDIUM: Средние операции 2-10s (await with progress)
         - Запросы данных о состоянии
         - Получение контекста восприятия
         - Показ прогресса пользователю опционален
-    
+
     LONG: Длительные операции > 10s (background task)
         - Навигация к точкам
         - Картографирование
@@ -46,7 +46,7 @@ class ToolExecutionType(Enum):
 
 @dataclass
 class MCPToolParameter:
-    """Параметр инструмента (JSON Schema style)"""
+    """Параметр инструмента (JSON Schema style)."""
 
     name: str
     type: str  # "string", "number", "integer", "boolean", "object", "array"
@@ -58,7 +58,7 @@ class MCPToolParameter:
     default: Optional[Any] = None
 
     def to_json_schema(self) -> Dict[str, Any]:
-        """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата"""
+        """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата."""
         schema: Dict[str, Any] = {
             "type": self.type,
             "description": self.description,
@@ -84,7 +84,7 @@ class MCPToolParameter:
 
 @dataclass
 class MCPToolResult:
-    """Результат выполнения инструмента"""
+    """Результат выполнения инструмента."""
 
     success: bool
     data: Optional[Dict[str, Any]] = None
@@ -92,7 +92,7 @@ class MCPToolResult:
     message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Конвертировать в словарь для передачи в LLM"""
+        """Конвертировать в словарь для передачи в LLM."""
         result = {"success": self.success}
         if self.data is not None:
             result["data"] = self.data
@@ -103,7 +103,7 @@ class MCPToolResult:
         return result
 
     def to_json(self) -> str:
-        """Конвертировать в JSON строку"""
+        """Конвертировать в JSON строку."""
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
@@ -131,26 +131,26 @@ class MCPTool(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Уникальное имя инструмента (snake_case)"""
+        """Уникальное имя инструмента (snake_case)."""
         pass
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """Описание инструмента для LLM (на русском)"""
+        """Описание инструмента для LLM (на русском)."""
         pass
 
     @property
     @abstractmethod
     def parameters(self) -> List[MCPToolParameter]:
-        """Список параметров инструмента"""
+        """Список параметров инструмента."""
         pass
 
     @property
     def execution_type(self) -> ToolExecutionType:
         """
         Тип выполнения инструмента (по умолчанию MEDIUM)
-        
+
         Переопределите для оптимизации async execution:
         - INSTANT: анимации, эмоции (fire-and-forget)
         - FAST: звуки, системные параметры (< 2s)
@@ -163,7 +163,7 @@ class MCPTool(ABC):
     def read_only(self) -> bool:
         """
         Инструмент не меняет состояние системы (readOnlyHint)
-        
+
         - True: только чтение данных (напр., get_battery_level)
         - False: модифицирует состояние [DEFAULT]
         """
@@ -173,7 +173,7 @@ class MCPTool(ABC):
     def destructive(self) -> bool:
         """
         Инструмент выполняет разрушительные операции (destructiveHint)
-        
+
         - True: может изменить/удалить данные [DEFAULT]
         - False: не деструктивен (напр., чтение, проигрывание звуков)
         """
@@ -183,7 +183,7 @@ class MCPTool(ABC):
     def idempotent(self) -> bool:
         """
         Повторный вызов с теми же аргументами не даёт побочного эффекта (idempotentHint)
-        
+
         - True: каждый вызов даёт одинаковый результат
         - False: повторные вызовы могут добавлять эффекты [DEFAULT]
         """
@@ -193,10 +193,10 @@ class MCPTool(ABC):
     def blocking(self) -> bool:
         """
         Требуется ли ждать результата перед продолжением диалога
-        
+
         - True: LLM получает результат перед генерацией ответа (DEFAULT)
         - False: fire-and-forget, результат не нужен для продолжения
-        
+
         Для INSTANT обычно False, для остальных обычно True.
         """
         return self.execution_type != ToolExecutionType.INSTANT
@@ -205,10 +205,10 @@ class MCPTool(ABC):
     def interruptible(self) -> bool:
         """
         Можно ли прервать выполнение новым запросом от пользователя
-        
+
         - True: операция прерывается при новом запросе (навигация, mapping)
         - False: операция должна завершиться (звуки, системные команды)
-        
+
         Актуально только для LONG execution_type.
         """
         return self.execution_type == ToolExecutionType.LONG
@@ -229,7 +229,7 @@ class MCPTool(ABC):
     def to_openai_tool_format(self) -> Dict[str, Any]:
         """
         Конвертировать инструмент в OpenAI Tool Calls формат
-        
+
         Совместимо с DeepSeek, Qwen, OpenAI и другими провайдерами.
 
         Returns:
@@ -274,10 +274,10 @@ class MCPTool(ABC):
                 "idempotentHint": self.idempotent,
             },
         }
-    
+
     # Backward compatibility alias
     def to_deepseek_function(self) -> Dict[str, Any]:
-        """Устаревший метод. Используйте to_openai_tool_format()"""
+        """Устаревший метод. Используйте to_openai_tool_format()."""
         return self.to_openai_tool_format()
 
     def validate_parameters(self, **kwargs) -> tuple[bool, Optional[str]]:
@@ -305,21 +305,21 @@ class MCPTool(ABC):
         return True, None
 
     def log_info(self, message: str):
-        """Логирование info сообщения"""
+        """Логирование info сообщения."""
         if self.node:
             self.node.get_logger().info(f"[{self.name}] {message}")
         else:
             print(f"[{self.name}] INFO: {message}")
 
     def log_warning(self, message: str):
-        """Логирование warning сообщения"""
+        """Логирование warning сообщения."""
         if self.node:
             self.node.get_logger().warning(f"[{self.name}] {message}")
         else:
             print(f"[{self.name}] WARNING: {message}")
 
     def log_error(self, message: str):
-        """Логирование error сообщения"""
+        """Логирование error сообщения."""
         if self.node:
             self.node.get_logger().error(f"[{self.name}] {message}")
         else:

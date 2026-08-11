@@ -31,7 +31,7 @@ env:
 jobs:
   # Сборка базового образа ROS 2 + Zenoh (общая база для всех)
   build-ros2-zenoh:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -62,7 +62,7 @@ jobs:
 
   # Сборка базового образа RTAB-Map (для SLAM)
   build-rtabmap:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -93,7 +93,7 @@ jobs:
 
   # Сборка базового образа DepthAI (для OAK-D камеры)
   build-depthai:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -124,7 +124,7 @@ jobs:
 
   # Сборка базового образа PCL (для лидаров)
   build-pcl:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     needs: build-ros2-zenoh  # Зависит от ros2-zenoh базы
     steps:
       - name: Checkout repository
@@ -158,7 +158,7 @@ jobs:
   # Итоговая сводка
   summary:
     needs: [build-ros2-zenoh, build-rtabmap, build-depthai, build-pcl]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary

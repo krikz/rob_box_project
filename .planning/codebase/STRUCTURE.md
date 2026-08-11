@@ -42,7 +42,6 @@ rob_box_project/
 │   │   ├── twist_mux/            # Velocity mux Dockerfile
 │   │   ├── perception/           # Perception container Dockerfile
 │   │   ├── robot_state_publisher/
-│   │   ├── micro_ros_agent/
 │   │   ├── vesc_nexus/
 │   │   ├── teleop/
 │   │   └── zenoh-router/

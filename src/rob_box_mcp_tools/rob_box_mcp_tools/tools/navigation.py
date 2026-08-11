@@ -146,7 +146,7 @@ class NavigateToWaypointTool(MCPTool):
         return ToolExecutionType.LONG
 
     def execute(self, waypoint: str) -> MCPToolResult:
-        """Выполнить навигацию к точке из БД"""
+        """Выполнить навигацию к точке из БД."""
         self.log_info(f"Навигация к точке: {waypoint}")
 
         coords = self.waypoint_store.get_waypoint(waypoint)
@@ -227,7 +227,7 @@ class NavigateToCoordinatesTool(MCPTool):
 
 
 class MoveDirectionTool(MCPTool):
-    """Инструмент для движения в направлении"""
+    """Инструмент для движения в направлении."""
 
     DIRECTIONS = {
         "вперёд": {"x": 1.0, "y": 0.0, "theta": 0.0},
@@ -272,7 +272,7 @@ class MoveDirectionTool(MCPTool):
         return ToolExecutionType.LONG
 
     def execute(self, direction: str, distance: float = 1.0) -> MCPToolResult:
-        """Выполнить движение в направлении"""
+        """Выполнить движение в направлении."""
         self.log_info(f"Движение: {direction}, дистанция: {distance}м")
 
         if direction not in self.DIRECTIONS:
@@ -298,7 +298,7 @@ class MoveDirectionTool(MCPTool):
 
 
 class StopNavigationTool(MCPTool):
-    """Инструмент для остановки навигации"""
+    """Инструмент для остановки навигации."""
 
     def __init__(self, node):
         super().__init__(node)

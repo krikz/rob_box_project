@@ -9,171 +9,20 @@ on:
       - 'feat/**'
       - 'copilot/**'
 
-permissions:
-  contents: read
+permissions: read-all
 
 jobs:
-  # Шаг 1: Определяем что менялось
-  detect-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      vision_changed: ${{ steps.changes.outputs.vision }}
-      main_changed: ${{ steps.changes.outputs.main }}
-      docs_changed: ${{ steps.changes.outputs.docs }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Detect changes
-        id: changes
-        run: |
-          # Проверяем изменения относительно develop
-          git fetch origin develop
-
-          if git diff --name-only origin/develop HEAD | grep -q "^docker/vision/"; then
-            echo "vision=true" >> $GITHUB_OUTPUT
-          else
-            echo "vision=false" >> $GITHUB_OUTPUT
-          fi
-
-          if git diff --name-only origin/develop HEAD | grep -q "^docker/main/"; then
-            echo "main=true" >> $GITHUB_OUTPUT
-          else
-            echo "main=false" >> $GITHUB_OUTPUT
-          fi
-
-          if git diff --name-only origin/develop HEAD | grep -q "^docs/"; then
-            echo "docs=true" >> $GITHUB_OUTPUT
-          else
-            echo "docs=false" >> $GITHUB_OUTPUT
-          fi
-
-  # Шаг 2: Сборка Vision Pi сервисов (если были изменения)
-  build-vision:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.vision_changed == 'true'
-    uses: ./.github/workflows/G-Build Vision Pi Services.yml
-    secrets: inherit
-    permissions:
-      contents: read
-      packages: write
-
-  # Шаг 3: Сборка Main Pi сервисов (если были изменения)
-  build-main:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.main_changed == 'true'
-    uses: ./.github/workflows/G-Build Main Pi Services.yml
-    secrets: inherit
-    permissions:
-      contents: read
-      packages: write
-
-  # Шаг 4: Создание PR в develop после успешной сборки
   create-pr-to-develop:
     runs-on: ubuntu-latest
-    needs: [detect-changes, build-vision, build-main]
-    # Запускаем если хотя бы одна сборка прошла успешно (или не запускалась)
-    if: |
-      always() &&
-      (needs.build-vision.result == 'success' || needs.build-vision.result == 'skipped') &&
-      (needs.build-main.result == 'success' || needs.build-main.result == 'skipped')
     permissions:
-      contents: read
       pull-requests: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get branch name
-        id: branch
+      - uses: actions/checkout@v7
+      - name: Create PR to develop
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          echo "name=$BRANCH_NAME" >> $GITHUB_OUTPUT
-          echo "Current branch: $BRANCH_NAME"
-
-      - name: Check if PR already exists
-        id: check-pr
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          if [ -z "$(gh pr list --head "$BRANCH" --base develop --json number -q '.[0].number')" ]; then
+            gh pr create --base develop --head "$BRANCH" --title "Auto-merge: $BRANCH to develop" --body "Auto-merge from $BRANCH" --label auto || true
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
-          PR_EXISTS=$(gh pr list --head "$FEATURE_BRANCH" --base develop --json number --jq length)
-          echo "pr_exists=$PR_EXISTS" >> $GITHUB_OUTPUT
-          echo "Existing PRs: $PR_EXISTS"
-
-      - name: Create Pull Request to develop
-        if: steps.check-pr.outputs.pr_exists == '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          FEATURE_BRANCH="${{ steps.branch.outputs.name }}"
-
-          # Создаём описание PR с информацией о сборке
-          PR_BODY="## ✅ Сборка успешно завершена
-
-          Эта ветка прошла автоматическую сборку и проверку.
-
-          ### Изменённые компоненты:
-          "
-
-          if [ "${{ needs.detect-changes.outputs.vision_changed }}" == "true" ]; then
-            PR_BODY="${PR_BODY}
-          - ✓ Vision Pi services"
-          fi
-
-          if [ "${{ needs.detect-changes.outputs.main_changed }}" == "true" ]; then
-            PR_BODY="${PR_BODY}
-          - ✓ Main Pi services"
-          fi
-
-          if [ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]; then
-            PR_BODY="${PR_BODY}
-          - ✓ Documentation"
-          fi
-
-          PR_BODY="${PR_BODY}
-
-          ### Действия:
-          - Проверьте изменения
-          - Убедитесь что всё работает корректно
-          - Сделайте merge когда готово
-
-          ---
-          _Автоматически создано GitHub Actions после успешной сборки_"
-
-          # Создаём PR
-          gh pr create \
-            --base develop \
-            --head "$FEATURE_BRANCH" \
-            --title "feat: merge $FEATURE_BRANCH to develop" \
-            --body "$PR_BODY" \
-            --label "autobuild" \
-            || echo "Failed to create PR, it may already exist"
-
-      - name: Success notification
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Pull Request created for review!"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "Branch: ${{ steps.branch.outputs.name }} → develop"
-          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo ""
-          echo "Changes ready for review:"
-          if [ "${{ needs.detect-changes.outputs.vision_changed }}" == "true" ]; then
-            echo "  ✓ Vision Pi services"
-          fi
-          if [ "${{ needs.detect-changes.outputs.main_changed }}" == "true" ]; then
-            echo "  ✓ Main Pi services"
-          fi
-          if [ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]; then
-            echo "  ✓ Documentation"
-          fi
-          echo ""
-          echo "Please review and merge the PR when ready."

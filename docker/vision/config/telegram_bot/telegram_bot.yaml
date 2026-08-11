@@ -15,8 +15,8 @@ telegram_node:
     camera_cache_ttl: 5.0      # seconds — discard frames older than this
 
     # LLM settings
-    llm_provider: "mimo"   # deepseek | mimo
-    llm_model: "mimo-v2.5-pro"  # Overrides PROVIDERS default
+    llm_provider: "deepseek"   # deepseek | mimo
+    llm_model: "deepseek-v4-flash"  # deepseek-chat is deprecated
     llm_max_history: 20        # messages per user session
     llm_temperature: 0.7
 

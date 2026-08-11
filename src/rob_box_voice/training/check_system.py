@@ -9,7 +9,7 @@ import subprocess
 import platform
 
 def run_command(cmd):
-    """Выполнить команду и вернуть результат"""
+    """Выполнить команду и вернуть результат."""
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
         return result.stdout.strip()
@@ -17,7 +17,7 @@ def run_command(cmd):
         return f"Error: {e}"
 
 def check_python():
-    """Проверка Python"""
+    """Проверка Python."""
     print("=" * 60)
     print("PYTHON")
     print("=" * 60)
@@ -26,7 +26,7 @@ def check_python():
     print()
 
 def check_os():
-    """Проверка ОС"""
+    """Проверка ОС."""
     print("=" * 60)
     print("OPERATING SYSTEM")
     print("=" * 60)
@@ -37,11 +37,11 @@ def check_os():
     print()
 
 def check_cpu():
-    """Проверка CPU"""
+    """Проверка CPU."""
     print("=" * 60)
     print("CPU")
     print("=" * 60)
-    
+
     if platform.system() == "Linux":
         cpu_info = run_command("lscpu | grep -E '(Model name|Core|Thread|MHz)'")
         print(cpu_info)
@@ -50,11 +50,11 @@ def check_cpu():
     print()
 
 def check_memory():
-    """Проверка памяти"""
+    """Проверка памяти."""
     print("=" * 60)
     print("MEMORY")
     print("=" * 60)
-    
+
     if platform.system() == "Linux":
         mem_info = run_command("free -h | grep -E '(Mem|Swap)'")
         print(mem_info)
@@ -63,18 +63,18 @@ def check_memory():
     print()
 
 def check_gpu():
-    """Проверка GPU"""
+    """Проверка GPU."""
     print("=" * 60)
     print("GPU / CUDA")
     print("=" * 60)
-    
+
     # Проверка nvidia-smi
     nvidia_smi = run_command("nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader")
     if "Error" not in nvidia_smi and nvidia_smi:
         print("✅ NVIDIA GPU detected!")
         print(nvidia_smi)
         print()
-        
+
         # Дополнительная информация
         gpu_util = run_command("nvidia-smi --query-gpu=utilization.gpu,utilization.memory,temperature.gpu --format=csv,noheader")
         print(f"Current status: {gpu_util}")
@@ -84,27 +84,27 @@ def check_gpu():
     print()
 
 def check_pytorch():
-    """Проверка PyTorch и CUDA"""
+    """Проверка PyTorch и CUDA."""
     print("=" * 60)
     print("PYTORCH")
     print("=" * 60)
-    
+
     try:
         import torch
         print(f"✅ PyTorch version: {torch.__version__}")
         print(f"CUDA available: {torch.cuda.is_available()}")
-        
+
         if torch.cuda.is_available():
             print(f"CUDA version: {torch.version.cuda}")
             print(f"cuDNN version: {torch.backends.cudnn.version()}")
             print(f"Number of GPUs: {torch.cuda.device_count()}")
-            
+
             for i in range(torch.cuda.device_count()):
                 print(f"\nGPU {i}: {torch.cuda.get_device_name(i)}")
                 props = torch.cuda.get_device_properties(i)
                 print(f"  Compute capability: {props.major}.{props.minor}")
                 print(f"  Total memory: {props.total_memory / 1024**3:.1f} GB")
-                
+
                 # Проверка доступной памяти
                 torch.cuda.set_device(i)
                 mem_allocated = torch.cuda.memory_allocated(i) / 1024**3
@@ -124,11 +124,11 @@ def check_pytorch():
     print()
 
 def check_tts_packages():
-    """Проверка TTS библиотек"""
+    """Проверка TTS библиотек."""
     print("=" * 60)
     print("TTS LIBRARIES")
     print("=" * 60)
-    
+
     packages = {
         'piper_train': 'Piper Training',
         'TTS': 'Coqui TTS',
@@ -137,7 +137,7 @@ def check_tts_packages():
         'phonemizer': 'Phonemizer',
         'torchaudio': 'TorchAudio',
     }
-    
+
     for pkg, name in packages.items():
         try:
             __import__(pkg)
@@ -147,11 +147,11 @@ def check_tts_packages():
     print()
 
 def estimate_training_capability(gpu_memory_gb):
-    """Оценка возможностей обучения"""
+    """Оценка возможностей обучения."""
     print("=" * 60)
     print("TRAINING CAPABILITY ESTIMATE")
     print("=" * 60)
-    
+
     if gpu_memory_gb >= 24:
         print("🚀 Excellent! Can train large models")
         print("   - Full TTS training: ✅")
@@ -182,7 +182,7 @@ def estimate_training_capability(gpu_memory_gb):
     print()
 
 def print_recommendations():
-    """Рекомендации по установке"""
+    """Рекомендации по установке."""
     print("=" * 60)
     print("RECOMMENDED SETUP")
     print("=" * 60)
@@ -215,7 +215,7 @@ def main():
     print("ROBBOX TTS TRAINING - SYSTEM CHECK")
     print("=" * 60)
     print()
-    
+
     check_python()
     check_os()
     check_cpu()
@@ -223,7 +223,7 @@ def main():
     check_gpu()
     check_pytorch()
     check_tts_packages()
-    
+
     # Оценка возможностей
     try:
         import torch
@@ -232,9 +232,9 @@ def main():
             estimate_training_capability(gpu_memory)
     except:
         pass
-    
+
     print_recommendations()
-    
+
     print("=" * 60)
     print("Check completed!")
     print("=" * 60)

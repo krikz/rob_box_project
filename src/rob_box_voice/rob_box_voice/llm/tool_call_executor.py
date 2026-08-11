@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ToolCallResult:
-    """Result of a tool call execution"""
+    """Result of a tool call execution."""
     tool_call_id: str
     tool_name: str
     success: bool
@@ -24,14 +24,14 @@ class ToolCallResult:
 class ToolCallExecutor:
     """
     Handles execution of tool calls from LLM responses.
-    
+
     Supports:
     - Parsing tool calls from LLM responses
     - Executing tool calls through adapter
     - Managing agent loop iterations
     - Building message history with tool results
     """
-    
+
     def __init__(
         self,
         tool_executor: Callable[[str, Dict[str, Any], float], Dict[str, Any]],
@@ -40,7 +40,7 @@ class ToolCallExecutor:
     ):
         """
         Initialize tool call executor.
-        
+
         Args:
             tool_executor: Function to execute tool calls
                           Signature: (tool_name, tool_args, timeout) -> result_dict
@@ -51,24 +51,24 @@ class ToolCallExecutor:
         self.max_iterations = max_iterations
         self.logger = logger or logging.getLogger(__name__)
         self.interrupt_flag = False
-    
+
     def set_interrupt(self, value: bool = True):
-        """Set interrupt flag to stop agent loop"""
+        """Set interrupt flag to stop agent loop."""
         self.interrupt_flag = value
-    
+
     def parse_tool_calls(self, message: Any) -> List[Dict[str, Any]]:
         """
         Parse tool calls from LLM message.
-        
+
         Args:
             message: LLM response message object
-            
+
         Returns:
             List of tool call dictionaries
         """
         if not hasattr(message, 'tool_calls') or not message.tool_calls:
             return []
-        
+
         tool_calls = []
         for tc in message.tool_calls:
             tool_calls.append({
@@ -79,9 +79,9 @@ class ToolCallExecutor:
                     "arguments": tc.function.arguments
                 }
             })
-        
+
         return tool_calls
-    
+
     def execute_tool_call(
         self,
         tool_call_id: str,
@@ -91,18 +91,18 @@ class ToolCallExecutor:
     ) -> ToolCallResult:
         """
         Execute a single tool call.
-        
+
         Args:
             tool_call_id: Tool call ID from LLM
             tool_name: Name of the tool to execute
             tool_args_str: JSON string with tool arguments
             timeout: Execution timeout in seconds
-            
+
         Returns:
             ToolCallResult with execution results
         """
         self.logger.info(f"🛠️  Executing: {tool_name}({tool_args_str[:100]}...)")
-        
+
         # Parse arguments
         try:
             tool_args = json.loads(tool_args_str)
@@ -118,7 +118,7 @@ class ToolCallExecutor:
                 }, ensure_ascii=False),
                 error=str(e)
             )
-        
+
         # Execute tool call
         try:
             result = self.tool_executor(tool_name, tool_args, timeout)
@@ -134,13 +134,13 @@ class ToolCallExecutor:
                 }, ensure_ascii=False),
                 error=str(e)
             )
-        
+
         # Log result
         if result.get('success'):
             self.logger.info(f"✅ {tool_name} completed: {result.get('message', 'OK')[:50]}")
         else:
             self.logger.warning(f"⚠️  {tool_name} returned error: {result.get('error', 'Unknown')}")
-        
+
         return ToolCallResult(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
@@ -148,14 +148,14 @@ class ToolCallExecutor:
             content=json.dumps(result, ensure_ascii=False),
             error=result.get('error') if not result.get('success') else None
         )
-    
+
     def build_tool_result_message(self, result: ToolCallResult) -> Dict[str, Any]:
         """
         Build message dict for tool result to add to conversation history.
-        
+
         Args:
             result: ToolCallResult from execution
-            
+
         Returns:
             Message dictionary for conversation history
         """
@@ -165,7 +165,7 @@ class ToolCallExecutor:
             "name": result.tool_name,
             "content": result.content
         }
-    
+
     def build_assistant_message_with_tool_calls(
         self,
         content: str,
@@ -173,11 +173,11 @@ class ToolCallExecutor:
     ) -> Dict[str, Any]:
         """
         Build assistant message with tool calls.
-        
+
         Args:
             content: Assistant message content
             tool_calls: List of tool call dicts
-            
+
         Returns:
             Message dictionary for conversation history
         """
@@ -186,7 +186,7 @@ class ToolCallExecutor:
             "content": content,
             "tool_calls": tool_calls
         }
-    
+
     def process_tool_calls_iteration(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -194,22 +194,22 @@ class ToolCallExecutor:
     ) -> List[ToolCallResult]:
         """
         Process all tool calls in a single iteration.
-        
+
         Args:
             tool_calls: List of tool call dictionaries
             timeout: Execution timeout per tool
-            
+
         Returns:
             List of ToolCallResult objects
         """
         results = []
-        
+
         for tool_call in tool_calls:
             tool_id = tool_call.get('id')
             function = tool_call.get('function', {})
             tool_name = function.get('name')
             tool_args_str = function.get('arguments', '{}')
-            
+
             result = self.execute_tool_call(
                 tool_call_id=tool_id,
                 tool_name=tool_name,
@@ -217,17 +217,17 @@ class ToolCallExecutor:
                 timeout=timeout
             )
             results.append(result)
-        
+
         return results
-    
+
     def should_continue_agent_loop(self, iteration: int, has_tool_calls: bool) -> bool:
         """
         Determine if agent loop should continue.
-        
+
         Args:
             iteration: Current iteration number
             has_tool_calls: Whether current response has tool calls
-            
+
         Returns:
             True if should continue, False otherwise
         """
@@ -235,13 +235,13 @@ class ToolCallExecutor:
             self.logger.warning("🛑 Agent loop interrupted by new user request")
             self.interrupt_flag = False
             return False
-        
+
         if iteration >= self.max_iterations:
             self.logger.warning(f"⚠️  Reached max iterations ({self.max_iterations}), stopping agent loop")
             return False
-        
+
         if not has_tool_calls:
             # No tool calls means final answer
             return False
-        
+
         return True

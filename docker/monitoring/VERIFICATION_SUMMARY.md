@@ -77,10 +77,9 @@ Located in: `docker/monitoring/`
 1. Row: "Восприятие и сенсоры"
 2. Logs: OAK-D Camera (10 rows)
 3. Logs: Ceiling Camera (8 rows)
-4. Logs: micro-ROS Agent (10 rows)
-5. Logs: Perception System (12 rows)
+4. Logs: Perception System (12 rows)
 
-**Containers:** oak-d, ceiling-camera, micro-ros-agent, perception  
+**Containers:** oak-d, ceiling-camera, perception  
 **Nodes:** ~10 ROS 2 nodes  
 **Data Source:** Loki
 

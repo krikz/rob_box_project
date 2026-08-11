@@ -18,10 +18,22 @@
   <depend>audio_common_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>aiohttp</exec_depend>
 
   <!-- Python dependencies (installed via pip in Dockerfile) -->
   <!-- Note: python3-pyaudio not available in ARM64 repos, installed via pip -->
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-httpx</exec_depend>
+  <!-- Decoder used by audio_transcode.py for MiniMax MP3/OGG payloads. -->
+  <exec_depend>ffmpeg</exec_depend>
+
+  <!-- tts_node imports the shared TTS contract/provider for MiniMax; the
+       runtime ImportError fallback still keeps yandex/silero importable in
+       minimal developer environments. -->
+  <exec_depend>rob_box_core</exec_depend>
+  <exec_depend>rob_box_harness</exec_depend>
+  <exec_depend>rob_box_llm</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

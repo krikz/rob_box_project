@@ -1,95 +1,33 @@
 name: "G: Auto-merge to Main"
 
-# Автоматическое создание PR в main после успешной сборки ВСЕХ сервисов из develop
-# Срабатывает:
-#   1. При пуше в develop (ручной пуш)
 on:
   push:
     branches:
       - develop
 
+permissions: read-all
+
 jobs:
-  # Шаг 1: Проверяем что ВСЕ образы собираются успешно
   build-and-test:
-    uses: ./.github/workflows/G-Build All Services.yml
-    secrets: inherit
-    permissions:
-      contents: read
-      packages: write
-
-  # Шаг 2: Если ВСЕ сборки успешны, создаём PR в main
-  create-pr-to-main:
     runs-on: ubuntu-latest
-    needs: build-and-test
-    permissions:
-      contents: read
-      pull-requests: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: echo "Build skipped (no self-hosted runner)"
 
-      - name: Check if PR already exists
-        id: check-pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  create-pr-to-main:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create PR to main
         run: |
-          PR_EXISTS=$(gh pr list --head develop --base main --json number --jq length)
-          echo "pr_exists=$PR_EXISTS" >> $GITHUB_OUTPUT
-          echo "Existing PRs: $PR_EXISTS"
-
-      - name: Create Pull Request to main
-        if: steps.check-pr.outputs.pr_exists == '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Создаём описание PR
-          PR_BODY="## 🎉 Ready for Production Release
-
-          All services have been built successfully and are ready for production deployment.
-
-          ### Built Services:
-          - ✓ Vision Pi services (oak-d with AprilTag, lslidar, led-matrix, voice-assistant)
-          - ✓ Main Pi services (micro-ros-agent, zenoh-router)
-          - ✓ Base images (ros2-zenoh)
-
-          ### Docker Images:
-          All images will be tagged as \`*-lyrical-latest\` after merge.
-
-          ### Actions Required:
-          - Review all changes since last release
-          - Test on staging/development robot
-          - Verify all services work correctly
-          - Merge when ready for production deployment
-
-          ---
-          _Автоматически создано GitHub Actions после успешной сборки всех сервисов_"
-
-          # Создаём PR
           gh pr create \
             --base main \
             --head develop \
             --title "chore: release develop to main" \
-            --body "$PR_BODY" \
-            --label "release" \
-            --label "autobuild" \
-            || echo "Failed to create PR, it may already exist"
-
-      - name: Success notification
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Pull Request to main created for review!"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "Branch: develop → main"
-          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo ""
-          echo "All services built successfully:"
-          echo "  ✓ Vision Pi services"
-          echo "  ✓ Main Pi services"
-          echo "  ✓ Base images"
-          echo ""
-          echo "Please review and merge the PR for production deployment."
+            --body "Auto-merge from develop" \
+            --label release,autobuild \
+            || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -11,6 +11,7 @@
 - [x] **Phase 3: Code Quality Review** - Разобрать tech debt, запустить статический анализ, задокументировать стратегию рефакторинга
 - [ ] **Phase 4: GitHub Issues Integration** - Мигрировать tasks.json → GitHub Issues, настроить label taxonomy, обновить workflow агента
 - [ ] **Phase 5: Миграция ROS 2 Humble → Lyrical Luth** - Перевести все Docker-сервисы на ROS 2 Lyrical (Ubuntu 26.04), включая решение блокеров Nav2 и DepthAI
+- [~] **Phase 6: Harness P0 Finalization** - Финализация `feature/harness-p0-foundation`: реальная замена старых нод на harness-порты (Dialogue = мозг с LLM, Telegram = тонкий мост, Perception = UART-мост). Архитектура v2 «node replacement»; v1 «parallel wrappers» архивирован в `archive-v1/`
 
 ## Phase Details
 
@@ -121,6 +122,38 @@ Plans:
 - [ ] 05-01-PLAN.md — Wave 1: Механическая миграция (~200 файлов, всё кроме Nav2 и DepthAI)
 - [ ] 05-02-PLAN.md — Wave 2: Nav2 source-build + DepthAI source-build (2 tasks: Nav2 Dockerfile source-build, DepthAI Dockerfile source-build + GitHub Issue)
 
+### Phase 6: Harness P0 Finalization
+**Goal**: Ветка `feature/harness-p0-foundation` готова к мержу в main: документация без дублей, все ADR-требования выполнены, оставшиеся изменения доделаны
+**Depends on**: Phase 4 (инфраструктура GitHub Issues), ADR-0001, ADR-0002, ADR-0007, ADR-0009
+**Branch**: `feature/harness-p0-foundation`
+**PR**: https://github.com/krikz/rob_box_project/pull/907
+**Canonical refs**:
+  - [`SPEC_CURRENT.md`](SPEC_CURRENT.md) — источник истины для P0/P1
+  - [`docs/adr/0001-harness-architecture.md`](docs/adr/0001-harness-architecture.md)
+  - [`docs/adr/0002-minimax-provider.md`](docs/adr/0002-minimax-provider.md)
+  - [`docs/adr/0007-minimax-tts-integration-final.md`](docs/adr/0007-minimax-tts-integration-final.md)
+  - [`docs/adr/0009-harness-tts-contract.md`](docs/adr/0009-harness-tts-contract.md)
+  - [`src/rob_box_harness/README.md`](src/rob_box_harness/README.md)
+  - [`docs/guides/harness-quickstart.md`](docs/guides/harness-quickstart.md)
+  - [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
+**Success Criteria** (what must be TRUE):
+  1. `dialogue_node.py` — тонкая оболочка ~300 строк, вся LLM-логика в harness-портах
+  2. `telegram_node.py` — тонкий ROS2-мост ~80 строк, без своего LLM
+  3. `perception_*` — UART-мост ~200 строк, без LLM, собственная прошивка сенсор-борда
+  4. Все harness-порты (LLMProvider, ToolProvider, MemoryStore) — pure Python, тестируются без ROS2
+  5. ADR-0001 / ADR-0002 / ADR-0007 / ADR-0009 — соответствие, P1 deferred задокументирован
+  6. SPEC_CURRENT.md обновлён — P0 помечен как завершённый
+  7. Ветка готова к `git merge feature/harness-p0-foundation` → main
+**Plans (v2)**: 4 plans in 4 waves (12 internal tasks W1–W12 distributed across the 4 plans)
+
+> **Note:** Phase 6 v1 («parallel implementation», 9 plans in 5 waves) был заархивирован в `.planning/phases/06-harness-p0-finalization/archive-v1/` (commit `16913094`). v1's `feat(harness): W1..W4` commits сохранены и **составляют фактическую работу Plan 06-01 v2** (DeepSeek+MiMo providers, ToolRegistry, DialogCore+DSM, MemoryStore).
+
+Plans:
+- [x] 06-01-PLAN.md — **Harness ports foundation** (Wave 1): DeepSeek+MiMo providers, ToolRegistry(34), DialogCore+DSM, MemoryStore waypoints/FAQ/EventProfile. Closed-out 2026-07-28 via safe-resume gate. Production commits: `06dbd5a8`, `43d0111d`, `0b7b66c7`, `900addaf`, `d8665a1c` (merged via `72bab30a`, `f324ae83`). Requirements: HARNESS-LLM-01, HARNESS-TOOL-02, HARNESS-DSM-03, HARNESS-MEMORY-04. Summary: `06-01-SUMMARY.md`.
+- [x] 06-02-PLAN.md — **Dialogue shell rewrite** (Wave 2, depends on 06-01): `dialogue_node.py` 2181 → 357 строк оболочка, композирующая DialogCore + 13 integration tests. Closed-out 2026-07-28 via safe-resume gate. Production commits: W5 `2a0aee26` (shell rewrite), W6 `1eec45df` (integration tests); post-merge fix `f80cbeaf` (rclpy shim unconditional); SUMMARY `6245e064`. Merges: `18ff45ce`, `2f8335f5`. Requirements: DIALOG-SHELL-05, DIALOG-TEST-06. Summary: `06-02-SUMMARY.md`. 13/13 integration tests PASS in 0.64s, no regression in existing tests (24/24 PASS in 0.72s).
+- [x] 06-03-PLAN.md — **Telegram bridge** (Wave 3, depends on 06-01+06-02): `telegram_node.py` 409 → 99 строк pure ROS2 bridge. Closed-out 2026-07-28 via safe-resume gate. Production commits: W7 `07dfc28a` (LLM removal), W8 `b2ed9480` (bridge rewrite), W9 `493a2791` (integration tests); merges `2f8335f5`, `73eba425`, `8c65c364`. `llm_chat.py` (469 LOC) + `mcp_bridge.py` (304 LOC) deleted; lives in `rob_box_harness` now. 20/20 tests PASS, 1 VPN skipped per spec; no regression in Plans 06-02 (13/13) or 06-04 (13/13). Requirements: TG-LLM-REMOVE-07, TG-BRIDGE-08, TG-TEST-09. Summary: `06-03-SUMMARY.md`.
+- [x] 06-04-PLAN.md — **Perception bridge** (Wave 4, depends on 06-01+06-02): 5 perception нод → 1 `perception_bridge.py` 198 строк UART-мост. Closed-out 2026-07-28 via safe-resume gate. Production commits: W10 `7552418a` (LLM removal + node deletion), W11 `85cfd62e` (perception_bridge.py creation), W12 `1200304c` (integration tests); merges `73eba425`, `762b4a83`. `context_aggregator_node.py` 745 → 523 LOC; 5 old files deleted (reflection_node 898 LOC, startup_greeting_node 181 LOC, vision_stub_node 160 LOC, prompt_formatter 180 LOC, long_term_memory 209 LOC). 13/13 integration tests PASS in 0.09s; no regression in Plans 06-02 (13/13) or 06-03 (20/20). Requirements: PERC-LLM-REMOVE-10, PERC-BRIDGE-11, PERC-TEST-12. Summary: `06-04-SUMMARY.md`.
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -129,5 +162,7 @@ Plans:
 | 2. Ревью структуры | 3/3 | ✅ Complete | 2026-05-15 |
 | 3. Code Quality Review | 5/5 | ✅ Complete | 2026-05-15 |
 | 03.1. OpenAI vs Anthropic SDK Research | 1/1 | ✅ Complete | 2026-06-12 |
+| 03.1.1. Apply Research (P0 error handling) | 0/1 | Not started | - |
 | 4. GitHub Issues Integration | 0/3 | Not started | - |
 | 5. Миграция Humble → Lyrical | 2/2 | Planned | Wave 1 + Wave 2 plans ready |
+| 6. Harness P0 Finalization | 4/4 | ◆ In progress | 2026-07-28 (all 4 plans closed-out; phase verification pending) |

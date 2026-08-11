@@ -1,0 +1,47 @@
+# audio_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Сгенерировано из voice_assistant.yaml при разделении на per-node файлы.
+# Меняйте именно этот файл (или src/rob_box_voice/config/<node>.yaml для
+# других нод), НЕ voice_assistant.yaml — он остаётся как легаси/источник
+# правды для совместимости с тестами test_dialogue_shell.
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+
+audio_node:
+  ros__parameters:
+    sample_rate: 16000
+    # Issue 1076: ReSpeaker в 6-канальном RAW-режиме (прошивка по умолчанию).
+    # Ch1-4 = сырые микрофоны, Ch5-6 = playback-референс (AEC-референс).
+    # channels=1 (legacy) брал только один сырой микрофон БЕЗ AEC — при
+    # собственной речи/музыке робот слышал эхо → Yandex `empty`, vosk-мусор.
+    # ⚠️ A/B 09.08 (робот): mix_channels=[0,1,2,3] (только микрофоны) →
+    # yandex:empty СТАБИЛЬНО; все 6 каналов [0,1,2,3,4,5] → yandex:ok.
+    # Фраза пользователя в e2e/реальной работе идёт через динамик робота
+    # в playback-референс Ch5-6 — исключать его НЕЛЬЗЯ. Эхо-защита на уровне
+    # VAD (tts_grace_s, music_vad_threshold), не микшера.
+    channels: 6
+    mix_channels: [0, 1, 2, 3, 4, 5]
+    # chunk_size = frames_per_buffer (issue #1050). 1024 (64ms @16kHz) — слишком
+    # мал для Python-callback: GIL/публикация AudioData/USB VAD не успевали,
+    # PortAudio падал в paInputOverflow (PyAudio status 2), сэмплы терялись и
+    # STT получал обрывки фраз («ы ещё» вместо «давай ещё»). 4096 = 256ms —
+    # запас на джиттер без потери кадров.
+    chunk_size: 4096
+    vad_threshold: 3.5
+    publish_rate: 10
+    device_index: -1
+    device_name: ReSpeaker 4 Mic Array
+    speech_continuation: 3.0
+    # Pre-roll перед началом речи: 1.0s покрывает латенцию аппаратного VAD
+    # (GAMMAVAD + опрос 10Hz + джиттер, на слабом сигнале 300-500ms) — иначе
+    # первый захват теряет начало фразы («робот» → «роберт»).
+    speech_prefetch: 1.0
+    speech_min_duration: 0.3
+    # 12.0 (было 10.0): pre-roll 1.0s входит в duration=len(buf)/sr,
+    # запас на длинные фразы (10s речи + 1s pre-roll ≤ 11s).
+    speech_max_duration: 12.0
+    tts_grace_s: 2.5
+    music_vad_threshold: 6.0
+    music_vad_min_db: -35.0

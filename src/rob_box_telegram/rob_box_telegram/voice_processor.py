@@ -2,7 +2,11 @@
 """
 voice_processor.py — Convert Telegram voice messages (OGG/Opus) to text.
 
-Supports Yandex SpeechKit REST API (primary) and OpenAI Whisper API (fallback).
+Supports Yandex SpeechKit REST API (primary) and a Whisper-compatible
+HTTP endpoint (fallback). The Whisper endpoint URL is configurable via
+the ``WHISPER_URL`` environment variable — the default points to a
+generic reconcilable host so deployments can plug in their own
+self-hosted or third-party STT service without any LLM coupling.
 """
 
 import io
@@ -17,8 +21,10 @@ logger = logging.getLogger(__name__)
 # Yandex STT REST endpoint (short audio, synchronous)
 YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
 
-# OpenAI Whisper endpoint
-WHISPER_URL = "https://api.openai.com/v1/audio/transcriptions"
+# Whisper-compatible STT endpoint. Override via the WHISPER_URL env var to
+# point at any deployment that exposes the multipart upload contract.
+_DEFAULT_WHISPER_URL = "https://whisper.local/v1/audio/transcriptions"
+WHISPER_URL = os.getenv("WHISPER_URL", _DEFAULT_WHISPER_URL)
 
 
 async def transcribe_voice(ogg_bytes: bytes, method: str = "yandex", language: str = "ru-RU") -> Optional[str]:
@@ -90,13 +96,15 @@ async def _transcribe_yandex(ogg_bytes: bytes, language: str) -> Optional[str]:
 
 
 async def _transcribe_whisper(ogg_bytes: bytes, language: str) -> Optional[str]:
-    """Transcribe using OpenAI Whisper API.
+    """Transcribe using a Whisper-compatible HTTP endpoint.
 
-    Requires OPENAI_API_KEY env var.
+    Requires the ``WHISPER_API_KEY`` env var (placeholder naming — set
+    whatever the upstream service expects). The endpoint URL is read
+    from ``WHISPER_URL`` at import time.
     """
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = os.getenv("WHISPER_API_KEY", "")
     if not api_key:
-        logger.error("OPENAI_API_KEY not set, cannot use Whisper")
+        logger.error("WHISPER_API_KEY not set, cannot use Whisper STT")
         return None
 
     # Whisper expects a file upload

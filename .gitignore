@@ -6,6 +6,12 @@ __pycache__/
 .Python
 .venv/
 build/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
 # Allow docker/build directory (build machine infrastructure)
 !docker/build/
 # Allow scripts/build directory (build scripts)
@@ -62,6 +68,17 @@ docker-compose.override.yml
 /frames_*.pdf
 /clog
 
+# Local Debian packages and ROS .deb drops (test-bench env setup)
+/*.deb
+/*.rpm
+
+# TTS audio bench: artifacts and runtime logs are regenerable; fixtures and
+# scripts commit normally.
+tts_audio_bench/artifacts/
+tts_audio_bench/logs/
+tts_audio_bench/__pycache__/
+tts_audio_bench/**/__pycache__/
+
 # AI Agent Skills
 # .agents/github-copilot/ — Rob Box кастомные скилы, КОММИТИМ
 # .continue/ .qwen/ — авто-установка сторонних тулов, игнорируем
@@ -74,3 +91,7 @@ Thumbs.db
 
 .worktrees/
 docker/vision/config/voice_assistant/event_mode.yaml
+.colcon-bench/
+
+# e2e live test artefacts (regenerated each run)
+tests/e2e/_artifacts/

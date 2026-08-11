@@ -67,7 +67,7 @@ class DeepSeekToolCallAdapter:
         self.node.get_logger().info("✅ DeepSeek Tool Call Adapter инициализирован")
 
     def on_result(self, msg: String):
-        """Обработка результата выполнения инструмента"""
+        """Обработка результата выполнения инструмента."""
         try:
             result = json.loads(msg.data)
             request_id = result.get("request_id", "")

@@ -31,7 +31,7 @@ env:
 jobs:
   # Определение тега
   prepare:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     outputs:
       docker_tag: ${{ steps.set-config.outputs.docker_tag }}
     steps:
@@ -43,7 +43,7 @@ jobs:
             DOCKER_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
+          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]]; then
             DOCKER_TAG="test"
           else
             DOCKER_TAG="local"
@@ -54,8 +54,14 @@ jobs:
   # Параллельная сборка всех сервисов Main Pi (до 8 одновременно)
   build-robot-state-publisher:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -93,8 +99,14 @@ jobs:
 
   build-rtabmap:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -125,8 +137,14 @@ jobs:
 
   build-twist-mux:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -157,8 +175,14 @@ jobs:
 
   build-teleop:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -187,42 +211,16 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
-  build-micro-ros-agent:
-    needs: prepare
-    runs-on: self-hosted
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Build micro-ros-agent
-        run: |
-          SERVICE="micro_ros_agent"
-          GHCR_TAG="${IMAGE_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
-
   build-ros2-control:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -257,8 +255,14 @@ jobs:
 
   build-nav2:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -289,8 +293,14 @@ jobs:
 
   build-lslidar:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -321,8 +331,14 @@ jobs:
 
   build-perception:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -359,14 +375,19 @@ jobs:
       - build-rtabmap
       - build-twist-mux
       - build-teleop
-      - build-micro-ros-agent
       - build-ros2-control
       - build-nav2
       - build-lslidar
       - build-perception
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -390,7 +411,6 @@ jobs:
           tag_and_push "${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:micro-ros-agent-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:nav2-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:lslidar-${ROS_DISTRO}-${DOCKER_TAG}"
@@ -416,8 +436,14 @@ jobs:
             if ! git diff --cached --quiet; then
               BRANCH="${GITHUB_REF#refs/heads/}"
               git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
-              git pull --rebase origin "$BRANCH"
-              git push origin "$BRANCH"
+              # Retry push (гонка: Main и Vision параллельно пушат в одну round-ветку)
+              for i in 1 2 3 4 5; do
+                git pull --rebase origin "$BRANCH" >/dev/null 2>&1 || true
+                if git push origin "$BRANCH" >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 5
+              done
               echo "✅ Committed .image-versions: all main tags → ${NEW_TAG}"
             fi
           else
@@ -432,12 +458,11 @@ jobs:
       - build-rtabmap
       - build-twist-mux
       - build-teleop
-      - build-micro-ros-agent
       - build-ros2-control
       - build-nav2
       - build-lslidar
       - build-perception
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary
@@ -453,7 +478,6 @@ jobs:
           echo "  ✅ rtabmap"
           echo "  ✅ twist-mux"
           echo "  ✅ teleop"
-          echo "  ✅ micro-ros-agent"
           echo "  ✅ ros2-control"
           echo "  ✅ nav2"
           echo "  ✅ lslidar"

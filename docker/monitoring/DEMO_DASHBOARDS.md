@@ -59,7 +59,7 @@
   - vision_stub — обработка визуальных данных
   - startup_greeting — приветствие при загрузке
 
-**Контейнеры:** oak-d, ceiling-camera, micro-ros-agent, perception
+**Контейнеры:** oak-d, ceiling-camera, perception
 
 ---
 
@@ -188,7 +188,6 @@ http://10.1.1.10:3000/d/rob_box_demo_4?kiosk
 ```logql
 {container="oak-d"}
 {container="ceiling-camera"}
-{container="micro-ros-agent"}
 {container="perception"}
 ```
 

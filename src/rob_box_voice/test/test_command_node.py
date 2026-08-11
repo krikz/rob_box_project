@@ -22,7 +22,7 @@ from rob_box_voice.command_node import CommandNode, IntentType
 
 
 class TestCommandNode(unittest.TestCase):
-    """Тесты для Command Node"""
+    """Тесты для Command Node."""
 
     @classmethod
     def setUpClass(cls):
@@ -35,41 +35,41 @@ class TestCommandNode(unittest.TestCase):
             rclpy.shutdown()
 
     def setUp(self):
-        """Подготовка перед каждым тестом"""
+        """Подготовка перед каждым тестом."""
         self.node = CommandNode()
-        
+
     def tearDown(self):
-        """Очистка после каждого теста"""
+        """Очистка после каждого теста."""
         self.node.destroy_node()
 
     def test_node_creation(self):
-        """Тест: Command нода создаётся корректно"""
+        """Тест: Command нода создаётся корректно."""
         self.assertEqual(self.node.get_name(), 'command_node')
 
     def test_stt_subscriber_exists(self):
-        """Тест: Подписка на STT результаты существует"""
+        """Тест: Подписка на STT результаты существует."""
         self.assertTrue(hasattr(self.node, 'stt_sub'))
 
     def test_intent_publisher_exists(self):
-        """Тест: Publisher интентов существует"""
+        """Тест: Publisher интентов существует."""
         self.assertTrue(hasattr(self.node, 'intent_pub'))
 
     def test_feedback_publisher_exists(self):
-        """Тест: Publisher feedback существует"""
+        """Тест: Publisher feedback существует."""
         self.assertTrue(hasattr(self.node, 'feedback_pub'))
 
     def test_classify_intent_method_exists(self):
-        """Тест: Метод classify_intent существует"""
+        """Тест: Метод classify_intent существует."""
         self.assertTrue(hasattr(self.node, 'classify_intent'))
 
     def test_patterns_defined(self):
-        """Тест: Паттерны команд определены"""
+        """Тест: Паттерны команд определены."""
         self.assertTrue(hasattr(self.node, 'patterns'))
         self.assertGreater(len(self.node.patterns), 0)
 
 
 class TestClassifyIntent(unittest.TestCase):
-    """Тесты classify_intent() - распознавание намерений"""
+    """Тесты classify_intent() - распознавание намерений."""
 
     @classmethod
     def setUpClass(cls):
@@ -78,75 +78,75 @@ class TestClassifyIntent(unittest.TestCase):
 
     def setUp(self):
         self.node = CommandNode()
-        
+
     def tearDown(self):
         self.node.destroy_node()
 
     def test_classify_forward_simple(self):
-        """Тест: распознавание 'вперёд'"""
+        """Тест: распознавание 'вперёд'."""
         cmd = self.node.classify_intent("вперёд")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('direction'), 'вперёд')
 
     def test_classify_forward_with_verb(self):
-        """Тест: 'поезжай вперёд'"""
+        """Тест: 'поезжай вперёд'."""
         cmd = self.node.classify_intent("поезжай вперёд")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('direction'), 'вперёд')
 
     def test_classify_backward(self):
-        """Тест: 'назад'"""
+        """Тест: 'назад'."""
         cmd = self.node.classify_intent("назад")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('direction'), 'назад')
 
     def test_classify_turn_left_simple(self):
-        """Тест: 'налево' (без глагола)"""
+        """Тест: 'налево' (без глагола)."""
         cmd = self.node.classify_intent("налево")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('direction'), 'налево')
 
     def test_classify_turn_right_with_verb(self):
-        """Тест: 'поверни направо'"""
+        """Тест: 'поверни направо'."""
         cmd = self.node.classify_intent("поверни направо")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('direction'), 'направо')
 
     def test_classify_stop_simple(self):
-        """Тест: 'стоп'"""
+        """Тест: 'стоп'."""
         cmd = self.node.classify_intent("стоп")
         self.assertEqual(cmd.intent, IntentType.STOP)
 
     def test_classify_stop_halt(self):
-        """Тест: 'остановись'"""
+        """Тест: 'остановись'."""
         cmd = self.node.classify_intent("остановись")
         self.assertEqual(cmd.intent, IntentType.STOP)
 
     def test_classify_waypoint_number(self):
-        """Тест: 'иди к точке 2'"""
+        """Тест: 'иди к точке 2'."""
         cmd = self.node.classify_intent("иди к точке 2")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('waypoint'), 'точка 2')
 
     def test_classify_waypoint_name(self):
-        """Тест: 'поезжай к кухня'"""
+        """Тест: 'поезжай к кухня'."""
         cmd = self.node.classify_intent("поезжай к кухня")
         self.assertEqual(cmd.intent, IntentType.NAVIGATE)
         self.assertEqual(cmd.entities.get('waypoint'), 'кухня')
 
     def test_classify_unknown(self):
-        """Тест: неизвестная команда"""
+        """Тест: неизвестная команда."""
         cmd = self.node.classify_intent("расскажи анекдот")
         self.assertEqual(cmd.intent, IntentType.UNKNOWN)
 
     def test_classify_status(self):
-        """Тест: 'где ты'"""
+        """Тест: 'где ты'."""
         cmd = self.node.classify_intent("где ты")
         self.assertEqual(cmd.intent, IntentType.STATUS)
 
 
 class TestCommandExecution(unittest.TestCase):
-    """Тесты execute_command() - выполнение команд"""
+    """Тесты execute_command() - выполнение команд."""
 
     @classmethod
     def setUpClass(cls):
@@ -155,26 +155,26 @@ class TestCommandExecution(unittest.TestCase):
 
     def setUp(self):
         self.node = CommandNode()
-        
+
     def tearDown(self):
         self.node.destroy_node()
 
     def test_execute_stop_command(self):
-        """Тест: выполнение команды stop"""
+        """Тест: выполнение команды stop."""
         with patch.object(self.node, 'handle_stop') as mock_stop:
             cmd = self.node.classify_intent("стоп")
             self.node.execute_command(cmd)
             mock_stop.assert_called_once()
 
     def test_execute_navigate_command(self):
-        """Тест: выполнение команды navigate"""
+        """Тест: выполнение команды navigate."""
         with patch.object(self.node, 'handle_navigate') as mock_nav:
             cmd = self.node.classify_intent("вперёд")
             self.node.execute_command(cmd)
             mock_nav.assert_called_once()
 
     def test_execute_status_command(self):
-        """Тест: выполнение команды status"""
+        """Тест: выполнение команды status."""
         with patch.object(self.node, 'handle_status') as mock_status:
             cmd = self.node.classify_intent("где ты")
             self.node.execute_command(cmd)
@@ -182,7 +182,7 @@ class TestCommandExecution(unittest.TestCase):
 
 
 class TestHandleDirection(unittest.TestCase):
-    """Тесты handle_direction() - обработка направлений"""
+    """Тесты handle_direction() - обработка направлений."""
 
     @classmethod
     def setUpClass(cls):
@@ -191,12 +191,12 @@ class TestHandleDirection(unittest.TestCase):
 
     def setUp(self):
         self.node = CommandNode()
-        
+
     def tearDown(self):
         self.node.destroy_node()
 
     def test_handle_direction_forward(self):
-        """Тест: направление 'вперёд'"""
+        """Тест: направление 'вперёд'."""
         with patch.object(self.node, 'send_relative_nav2_goal') as mock_nav:
             self.node.handle_direction('вперёд')
             mock_nav.assert_called_once()
@@ -206,7 +206,7 @@ class TestHandleDirection(unittest.TestCase):
             self.assertEqual(args[2], 0.0)  # theta=0
 
     def test_handle_direction_backward(self):
-        """Тест: направление 'назад'"""
+        """Тест: направление 'назад'."""
         with patch.object(self.node, 'send_relative_nav2_goal') as mock_nav:
             self.node.handle_direction('назад')
             mock_nav.assert_called_once()
@@ -214,7 +214,7 @@ class TestHandleDirection(unittest.TestCase):
             self.assertEqual(args[0], -1.0)  # x=-1.0м назад
 
     def test_handle_direction_turn_left(self):
-        """Тест: поворот 'налево'"""
+        """Тест: поворот 'налево'."""
         with patch.object(self.node, 'send_relative_nav2_goal') as mock_nav:
             self.node.handle_direction('налево')
             mock_nav.assert_called_once()
@@ -222,7 +222,7 @@ class TestHandleDirection(unittest.TestCase):
             self.assertAlmostEqual(args[2], math.pi/2, places=5)  # theta=90°
 
     def test_handle_direction_turn_right(self):
-        """Тест: поворот 'направо'"""
+        """Тест: поворот 'направо'."""
         with patch.object(self.node, 'send_relative_nav2_goal') as mock_nav:
             self.node.handle_direction('направо')
             mock_nav.assert_called_once()
@@ -230,14 +230,14 @@ class TestHandleDirection(unittest.TestCase):
             self.assertAlmostEqual(args[2], -math.pi/2, places=5)  # theta=-90°
 
     def test_handle_direction_unknown(self):
-        """Тест: неизвестное направление"""
+        """Тест: неизвестное направление."""
         with patch.object(self.node, 'publish_feedback') as mock_feedback:
             self.node.handle_direction('куда-то')
             mock_feedback.assert_called_once()
 
 
 class TestPublishMethods(unittest.TestCase):
-    """Тесты publish_intent() и publish_feedback()"""
+    """Тесты publish_intent() и publish_feedback()."""
 
     @classmethod
     def setUpClass(cls):
@@ -246,12 +246,12 @@ class TestPublishMethods(unittest.TestCase):
 
     def setUp(self):
         self.node = CommandNode()
-        
+
     def tearDown(self):
         self.node.destroy_node()
 
     def test_publish_intent(self):
-        """Тест: публикация intent"""
+        """Тест: публикация intent."""
         with patch.object(self.node.intent_pub, 'publish') as mock_pub:
             cmd = self.node.classify_intent("стоп")
             self.node.publish_intent(cmd)
@@ -260,7 +260,7 @@ class TestPublishMethods(unittest.TestCase):
             self.assertIn('stop', msg.data)
 
     def test_publish_feedback(self):
-        """Тест: публикация feedback"""
+        """Тест: публикация feedback."""
         with patch.object(self.node.feedback_pub, 'publish') as mock_pub:
             self.node.publish_feedback("Тестовый feedback")
             mock_pub.assert_called_once()
@@ -269,7 +269,7 @@ class TestPublishMethods(unittest.TestCase):
 
 
 class TestSttCallback(unittest.TestCase):
-    """Тесты stt_callback() - обработка STT результатов"""
+    """Тесты stt_callback() - обработка STT результатов."""
 
     @classmethod
     def setUpClass(cls):
@@ -278,12 +278,12 @@ class TestSttCallback(unittest.TestCase):
 
     def setUp(self):
         self.node = CommandNode()
-        
+
     def tearDown(self):
         self.node.destroy_node()
 
     def test_stt_callback_strips_wake_word(self):
-        """Тест: удаление wake word из команды"""
+        """Тест: удаление wake word из команды."""
         with patch.object(self.node, 'classify_intent', wraps=self.node.classify_intent) as mock_classify:
             msg = String()
             msg.data = "робот вперёд"
@@ -292,7 +292,7 @@ class TestSttCallback(unittest.TestCase):
             mock_classify.assert_called_once_with("вперёд")
 
     def test_stt_callback_empty_string(self):
-        """Тест: пустая строка игнорируется"""
+        """Тест: пустая строка игнорируется."""
         with patch.object(self.node, 'classify_intent') as mock_classify:
             msg = String()
             msg.data = ""
@@ -300,7 +300,7 @@ class TestSttCallback(unittest.TestCase):
             mock_classify.assert_not_called()
 
     def test_stt_callback_unknown_intent(self):
-        """Тест: UNKNOWN intent публикуется но не выполняется"""
+        """Тест: UNKNOWN intent публикуется но не выполняется."""
         with patch.object(self.node, 'execute_command') as mock_execute:
             with patch.object(self.node, 'publish_intent') as mock_pub_intent:
                 msg = String()
@@ -312,7 +312,7 @@ class TestSttCallback(unittest.TestCase):
                 mock_execute.assert_not_called()
 
     def test_stt_callback_normal_confidence(self):
-        """Тест: нормальная уверенность → выполнение команды"""
+        """Тест: нормальная уверенность → выполнение команды."""
         with patch.object(self.node, 'execute_command') as mock_execute:
             msg = String()
             msg.data = "стоп"

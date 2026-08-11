@@ -19,23 +19,23 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 
 class PlaySoundTool(MCPTool):
-    """Инструмент для воспроизведения звуковых эффектов"""
+    """Инструмент для воспроизведения звуковых эффектов."""
 
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
-        
+
         # Publisher для триггеров звуков
         self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
-        
+
         # Загружаем доступные звуки и их длительности из catalog.json
         self._available_sounds, self._duration_map = self._load_sounds_from_catalog()
         self.log_info(f"Загружено {len(self._available_sounds)} звуков из catalog")
-    
+
     def _load_sounds_from_catalog(self):
         """Загрузить список triggers и map длительностей из sound_catalog.json.
-        
+
         Returns:
             (triggers: List[str], duration_map: dict[str, float])
         """
@@ -47,13 +47,13 @@ class PlaySoundTool(MCPTool):
             Path("../sound_pack/sound_catalog.json"),
             Path("../../sound_pack/sound_catalog.json"),
         ]
-        
+
         for path in possible_paths:
             if path.exists():
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         catalog = json.load(f)
-                    
+
                     # Извлечь все triggers и duration из catalog['sounds']
                     triggers = []
                     duration_map = {}
@@ -66,13 +66,13 @@ class PlaySoundTool(MCPTool):
                             triggers.append(trigger)
                             if 'duration' in info:
                                 duration_map[trigger] = float(info['duration'])
-                    
+
                     self.log_info(f"Загружено {len(triggers)} звуков из {path}")
                     return sorted(triggers), duration_map
-                    
+
                 except Exception as e:
                     self.log_error(f"Ошибка загрузки catalog.json из {path}: {e}")
-        
+
         # Fallback - минимальный список базовых звуков
         self.log_warning("sound_catalog.json не найден, используем fallback список")
         return [
@@ -147,21 +147,21 @@ class PlaySoundTool(MCPTool):
 
 
 class GetSoundInfoTool(MCPTool):
-    """Инструмент для получения информации о доступных звуковых эффектах"""
-    
+    """Инструмент для получения информации о доступных звуковых эффектах."""
+
     def __init__(self, node):
         super().__init__(node)
         self._sound_catalog = None
         self._catalog_path = None
-    
+
     def _load_catalog(self):
-        """Загрузить каталог звуков из sound_catalog.json"""
+        """Загрузить каталог звуков из sound_catalog.json."""
         if self._sound_catalog is not None:
             return self._sound_catalog
-        
+
         import json
         from pathlib import Path
-        
+
         # Попробуем найти sound_catalog.json
         possible_paths = [
             Path("/home/ros2/rob_box_project/sound_pack/sound_catalog.json"),
@@ -169,7 +169,7 @@ class GetSoundInfoTool(MCPTool):
             Path("../sound_pack/sound_catalog.json"),
             Path("../../sound_pack/sound_catalog.json"),
         ]
-        
+
         for path in possible_paths:
             if path.exists():
                 self._catalog_path = path
@@ -177,7 +177,7 @@ class GetSoundInfoTool(MCPTool):
                     self._sound_catalog = json.load(f)
                 self.log_info(f"Загружен каталог звуков из {path}")
                 return self._sound_catalog
-        
+
         # Если не нашли файл, создадим минимальный каталог из AVAILABLE_SOUNDS
         self.log_warning("sound_catalog.json не найден, используем минимальный каталог")
         self._sound_catalog = {
@@ -192,11 +192,11 @@ class GetSoundInfoTool(MCPTool):
             }
         }
         return self._sound_catalog
-    
+
     @property
     def name(self) -> str:
         return "get_sound_info"
-    
+
     @property
     def description(self) -> str:
         return (
@@ -205,7 +205,7 @@ class GetSoundInfoTool(MCPTool):
             "их описание, длительность, категорию и рекомендуемое использование. "
             "Можно запросить информацию о конкретном звуке или получить список всех звуков определенной категории."
         )
-    
+
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
@@ -223,25 +223,25 @@ class GetSoundInfoTool(MCPTool):
                 enum=["base", "ui", "robot"],
             ),
         ]
-    
+
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Получение информации - быстрая операция"""
+        """Получение информации - быстрая операция."""
         return ToolExecutionType.FAST
-    
+
     def execute(self, sound_name: str = None, category: str = None) -> MCPToolResult:
-        """Получить информацию о звуках"""
+        """Получить информацию о звуках."""
         catalog = self._load_catalog()
-        
+
         if not catalog or "sounds" not in catalog:
             return MCPToolResult(
                 success=False,
                 error="Не удалось загрузить каталог звуков",
                 message="Каталог звуков недоступен"
             )
-        
+
         sounds = catalog["sounds"]
-        
+
         # Если запрошен конкретный звук
         if sound_name:
             # Найти звук по trigger или по имени файла
@@ -251,7 +251,7 @@ class GetSoundInfoTool(MCPTool):
                     sound_info = info.copy()
                     sound_info["filename"] = filename
                     break
-            
+
             if sound_info:
                 # Форматируем информацию для LLM
                 result_msg = f"Звук '{sound_name}':\n"
@@ -263,7 +263,7 @@ class GetSoundInfoTool(MCPTool):
                     result_msg += f"  • Использование: {sound_info['usage']}\n"
                 if 'author' in sound_info:
                     result_msg += f"  • Автор: {sound_info['author']}\n"
-                
+
                 return MCPToolResult(
                     success=True,
                     data=sound_info,
@@ -275,7 +275,7 @@ class GetSoundInfoTool(MCPTool):
                     error=f"Звук '{sound_name}' не найден в каталоге",
                     message=f"Звук '{sound_name}' не найден. Используй get_sound_info() без параметров для списка всех звуков."
                 )
-        
+
         # Фильтр по категории
         if category:
             filtered_sounds = {
@@ -287,46 +287,46 @@ class GetSoundInfoTool(MCPTool):
                 for filename, info in sounds.items()
                 if info.get("category") == category
             }
-            
+
             if not filtered_sounds:
                 return MCPToolResult(
                     success=True,
                     data={"sounds": [], "category": category},
                     message=f"Звуки категории '{category}' не найдены"
                 )
-            
+
             # Форматируем список
             result_msg = f"Звуки категории '{category}' ({len(filtered_sounds)}):\n"
             for trigger, info in list(filtered_sounds.items())[:20]:  # Ограничим вывод
                 desc = info['description'][:60] + "..." if len(info['description']) > 60 else info['description']
                 result_msg += f"  • {trigger}: {desc}\n"
-            
+
             if len(filtered_sounds) > 20:
                 result_msg += f"  ... и ещё {len(filtered_sounds) - 20} звуков\n"
-            
+
             return MCPToolResult(
                 success=True,
                 data={"sounds": list(filtered_sounds.keys()), "category": category, "details": filtered_sounds},
                 message=result_msg
             )
-        
+
         # Общий список всех звуков
         all_triggers = []
         categories_count = {"base": 0, "ui": 0, "robot": 0, "other": 0}
-        
+
         for filename, info in sounds.items():
             trigger = info.get("trigger", filename.replace(".mp3", ""))
             all_triggers.append(trigger)
             cat = info.get("category", "other")
             categories_count[cat] = categories_count.get(cat, 0) + 1
-        
+
         result_msg = f"Всего доступно {len(all_triggers)} звуков:\n"
         result_msg += f"  • BASE (эмоции): {categories_count.get('base', 0)} звуков\n"
         result_msg += f"  • UI (интерфейс): {categories_count.get('ui', 0)} звуков\n"
         result_msg += f"  • ROBOT (эффекты): {categories_count.get('robot', 0)} звуков\n"
         result_msg += "\nИспользуй get_sound_info(category='base') для списка звуков категории\n"
         result_msg += "Или get_sound_info(sound_name='robot_happy') для подробностей о конкретном звуке"
-        
+
         return MCPToolResult(
             success=True,
             data={
@@ -336,4 +336,3 @@ class GetSoundInfoTool(MCPTool):
             },
             message=result_msg
         )
-

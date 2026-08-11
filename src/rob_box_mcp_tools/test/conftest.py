@@ -21,7 +21,7 @@ import pytest
 
 
 class MockLogger:
-    """Мок для ROS 2 Logger"""
+    """Мок для ROS 2 Logger."""
 
     def __init__(self):
         self.info_messages = []
@@ -46,7 +46,7 @@ class MockLogger:
 
 
 class MockPublisher:
-    """Мок для ROS 2 Publisher"""
+    """Мок для ROS 2 Publisher."""
 
     def __init__(self, msg_type, topic: str, qos: int = 10):
         self.msg_type = msg_type
@@ -65,7 +65,7 @@ class MockPublisher:
 
 
 class MockSubscription:
-    """Мок для ROS 2 Subscription"""
+    """Мок для ROS 2 Subscription."""
 
     def __init__(self, msg_type, topic: str, callback, qos: int = 10):
         self.msg_type = msg_type
@@ -75,7 +75,7 @@ class MockSubscription:
 
 
 class MockServiceClient:
-    """Мок для ROS 2 Service Client"""
+    """Мок для ROS 2 Service Client."""
 
     def __init__(self, srv_type, srv_name: str):
         self.srv_type = srv_type
@@ -94,7 +94,7 @@ class MockServiceClient:
 
 
 class MockNode:
-    """Мок для ROS 2 Node с полным API"""
+    """Мок для ROS 2 Node с полным API."""
 
     def __init__(self, node_name: str = "test_node"):
         self.node_name = node_name
@@ -158,19 +158,19 @@ class MockNode:
 
 @pytest.fixture
 def mock_node():
-    """Фикстура для мок ROS 2 ноды"""
+    """Фикстура для мок ROS 2 ноды."""
     return MockNode("test_mcp_node")
 
 
 @pytest.fixture
 def mock_logger():
-    """Фикстура для мок логгера"""
+    """Фикстура для мок логгера."""
     return MockLogger()
 
 
 @pytest.fixture
 def sample_tool_parameters():
-    """Фикстура с примерами параметров инструментов"""
+    """Фикстура с примерами параметров инструментов."""
     return {
         "string_param": {"name": "test_param", "type": "string", "description": "Test string parameter", "required": True},
         "integer_param": {"name": "count", "type": "integer", "description": "Test integer parameter", "required": False, "default": 5},
@@ -187,7 +187,7 @@ def sample_tool_parameters():
 
 @pytest.fixture
 def sample_openai_tools():
-    """Фикстура с примерами инструментов в OpenAI формате"""
+    """Фикстура с примерами инструментов в OpenAI формате."""
     return [
         {
             "type": "function",
@@ -221,7 +221,7 @@ def sample_openai_tools():
 
 @pytest.fixture
 def sample_tool_calls():
-    """Фикстура с примерами tool_calls от LLM"""
+    """Фикстура с примерами tool_calls от LLM."""
     return [
         {"id": "call_123", "type": "function", "function": {"name": "test_tool", "arguments": json.dumps({"param1": "value1"})}},
         {
@@ -234,19 +234,19 @@ def sample_tool_calls():
 
 @pytest.fixture
 def llm_api_key():
-    """Фикстура для получения API ключа из переменных окружения"""
+    """Фикстура для получения API ключа из переменных окружения."""
     return os.getenv("DEEPSEEK_API_KEY") or os.getenv("MIMO_API_KEY") or os.getenv("LLM_API_KEY")
 
 
 @pytest.fixture
 def llm_api_available(llm_api_key):
-    """Фикстура для проверки доступности LLM API"""
+    """Фикстура для проверки доступности LLM API."""
     return llm_api_key is not None
 
 
 @pytest.fixture
 def skip_if_no_llm_api(llm_api_available):
-    """Фикстура для пропуска тестов если нет LLM API"""
+    """Фикстура для пропуска тестов если нет LLM API."""
     if not llm_api_available:
         pytest.skip("LLM API key not available")
 
@@ -257,31 +257,31 @@ def skip_if_no_llm_api(llm_api_available):
 
 
 def assert_tool_result_success(result, expected_message: str = None):
-    """Утилита для проверки успешного результата инструмента"""
+    """Утилита для проверки успешного результата инструмента."""
     assert result.success is True, f"Tool execution failed: {result.error}"
     if expected_message:
         assert expected_message in result.message
 
 
 def assert_tool_result_failure(result, expected_error: str = None):
-    """Утилита для проверки неуспешного результата инструмента"""
+    """Утилита для проверки неуспешного результата инструмента."""
     assert result.success is False, "Tool execution should have failed"
     if expected_error:
         assert expected_error in result.error
 
 
 def create_mock_string_msg(data: str):
-    """Создать мок std_msgs/String сообщение"""
+    """Создать мок std_msgs/String сообщение."""
     msg = Mock()
     msg.data = data
     return msg
 
 
 def create_mock_service_request(srv_type):
-    """Создать мок service request"""
+    """Создать мок service request."""
     return Mock(spec=srv_type.Request)
 
 
 def create_mock_service_response(srv_type):
-    """Создать мок service response"""
+    """Создать мок service response."""
     return Mock(spec=srv_type.Response)

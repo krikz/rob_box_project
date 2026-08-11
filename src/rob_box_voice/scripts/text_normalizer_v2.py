@@ -16,15 +16,15 @@ from text_normalizer import TextNormalizer as BaseNormalizer
 
 
 class ResponseParser:
-    """Парсер JSON ответа от DeepSeek"""
-    
+    """Парсер JSON ответа от DeepSeek."""
+
     def __init__(self):
         self.base_normalizer = BaseNormalizer()
-    
+
     def parse_response(self, response: str) -> Dict:
         """
         Парсит JSON ответ от DeepSeek
-        
+
         Returns:
             {
                 'text': str,           # Нормализованный текст для TTS
@@ -44,55 +44,55 @@ class ResponseParser:
                 'commands': [],
                 'emotion': 'neutral'
             }
-        
+
         # Извлекаем поля
         text = data.get('text', '')
         ssml = data.get('ssml', None)
         commands = data.get('commands', [])
         emotion = data.get('emotion', 'neutral')
-        
+
         # Нормализуем обычный текст
         normalized_text = self.base_normalizer.normalize(text)
-        
+
         # Нормализуем текст внутри SSML (если есть)
         normalized_ssml = None
         if ssml:
             normalized_ssml = self._normalize_ssml(ssml)
-        
+
         return {
             'text': normalized_text,
             'ssml': normalized_ssml,
             'commands': commands,
             'emotion': emotion
         }
-    
+
     def _normalize_ssml(self, ssml: str) -> str:
         """
         Нормализует текст внутри SSML тегов
-        
+
         Сохраняет SSML теги (<speak>, <prosody>, <break>)
         Нормализует только текстовое содержимое
         """
         # Найти все текстовые узлы (вне тегов)
         # Простой подход: заменяем контент между >текст<
-        
+
         def normalize_text_node(match):
             text = match.group(1)
             # Если это не тег (не начинается с <)
             if not text.startswith('<'):
                 return '>' + self.base_normalizer.normalize(text) + '<'
             return match.group(0)
-        
+
         # Паттерн: захватывает текст между > и <
         pattern = r'>([^<]+)<'
         normalized = re.sub(pattern, normalize_text_node, ssml)
-        
+
         return normalized
 
 
 class SSMLProcessor:
-    """Обработчик SSML для Silero TTS"""
-    
+    """Обработчик SSML для Silero TTS."""
+
     @staticmethod
     def extract_text_from_ssml(ssml: str) -> str:
         """
@@ -102,23 +102,23 @@ class SSMLProcessor:
         # Убираем все теги
         text = re.sub(r'<[^>]+>', '', ssml)
         return text.strip()
-    
+
     @staticmethod
     def parse_ssml_for_timing(ssml: str) -> List[Tuple[str, Optional[int]]]:
         """
         Парсит SSML и возвращает список фраз с паузами
-        
+
         Returns:
             [(text1, pause_ms), (text2, pause_ms), ...]
         """
         chunks = []
-        
+
         # Удаляем обёртку <speak>
         ssml = re.sub(r'<speak>|</speak>', '', ssml)
-        
+
         # Разбиваем по тегам <break>
         parts = re.split(r'<break\s+time="(\d+)ms"\s*/>', ssml)
-        
+
         for i, part in enumerate(parts):
             if i % 2 == 0:
                 # Это текст
@@ -130,18 +130,18 @@ class SSMLProcessor:
                 if chunks:
                     text, _ = chunks[-1]
                     chunks[-1] = (text, int(part))
-        
+
         return chunks
-    
+
     @staticmethod
     def has_ssml_tags(text: str) -> bool:
-        """Проверяет есть ли в тексте SSML теги"""
+        """Проверяет есть ли в тексте SSML теги."""
         return bool(re.search(r'<(speak|prosody|break)', text))
 
 
 class CommandExecutor:
-    """Исполнитель команд робота"""
-    
+    """Исполнитель команд робота."""
+
     VALID_COMMANDS = {
         'move_forward': float,
         'move_backward': float,
@@ -153,15 +153,15 @@ class CommandExecutor:
         'get_battery': None,
         'get_sensors': None,
     }
-    
+
     @staticmethod
     def parse_command(cmd_string: str) -> Tuple[str, Optional[str]]:
         """
         Парсит строку команды
-        
+
         Args:
             cmd_string: "command:param" или "command"
-            
+
         Returns:
             (command, param)
         """
@@ -169,31 +169,31 @@ class CommandExecutor:
             command, param = cmd_string.split(':', 1)
             return command.strip(), param.strip()
         return cmd_string.strip(), None
-    
+
     @staticmethod
     def validate_command(command: str, param: Optional[str] = None) -> bool:
         """Валидирует команду и параметр"""
         if command not in CommandExecutor.VALID_COMMANDS:
             return False
-        
+
         expected_type = CommandExecutor.VALID_COMMANDS[command]
-        
+
         if expected_type is None:
             # Команда без параметров
             return param is None
-        
+
         if expected_type is float:
             try:
                 float(param)
                 return True
             except (ValueError, TypeError):
                 return False
-        
+
         if expected_type is str:
             return param is not None
-        
+
         return False
-    
+
     @staticmethod
     def execute(command: str, param: Optional[str] = None):
         """
@@ -205,7 +205,7 @@ class CommandExecutor:
             print(f" [{param}]")
         else:
             print()
-        
+
         # TODO: ROS2 publisher для команд
         # self.command_pub.publish(Command(name=command, param=param))
 
@@ -214,27 +214,27 @@ class CommandExecutor:
 class RobboxVoiceHandler:
     """
     Главный обработчик голосовых ответов ROBBOX
-    
+
     Полный цикл:
     1. Получает JSON от DeepSeek
     2. Извлекает команды и выполняет
     3. Нормализует текст
     4. Возвращает готовые фразы для TTS
     """
-    
+
     def __init__(self):
         self.parser = ResponseParser()
         self.ssml_processor = SSMLProcessor()
         self.executor = CommandExecutor()
-    
+
     def process_response(self, response: str, execute_commands: bool = True) -> Dict:
         """
         Обрабатывает ответ DeepSeek
-        
+
         Args:
             response: JSON или текст от DeepSeek
             execute_commands: Выполнять ли команды (False для тестов)
-            
+
         Returns:
             {
                 'phrases': List[str],      # Фразы для озвучивания
@@ -245,7 +245,7 @@ class RobboxVoiceHandler:
         """
         # Парсим ответ
         parsed = self.parser.parse_response(response)
-        
+
         # Выполняем команды
         if execute_commands and parsed['commands']:
             print(f"\n{'='*60}")
@@ -257,7 +257,7 @@ class RobboxVoiceHandler:
                     self.executor.execute(command, param)
                 else:
                     print(f"⚠️  Неизвестная команда: {cmd_string}")
-        
+
         # Готовим данные для TTS
         result = {
             'phrases': [],
@@ -265,7 +265,7 @@ class RobboxVoiceHandler:
             'commands': parsed['commands'],
             'emotion': parsed['emotion']
         }
-        
+
         # Если есть SSML - используем его
         if parsed['ssml'] and self.ssml_processor.has_ssml_tags(parsed['ssml']):
             result['ssml_chunks'] = self.ssml_processor.parse_ssml_for_timing(parsed['ssml'])
@@ -276,27 +276,27 @@ class RobboxVoiceHandler:
             # Разбиваем на предложения
             sentences = re.split(r'[.!?]+', parsed['text'])
             result['phrases'] = [s.strip() for s in sentences if s.strip()]
-        
+
         return result
 
 
 # ==================== ТЕСТЫ ====================
 
 def test_json_parsing():
-    """Тест парсинга JSON"""
+    """Тест парсинга JSON."""
     parser = ResponseParser()
-    
+
     print("="*60)
     print("ТЕСТ 1: Простой JSON")
     print("="*60)
-    
+
     json_response = '''
     {
         "text": "Привет! Я ROBBOX робот. Батарея 78%.",
         "emotion": "happy"
     }
     '''
-    
+
     result = parser.parse_response(json_response)
     print(f"Text: {result['text']}")
     print(f"Emotion: {result['emotion']}")
@@ -304,14 +304,14 @@ def test_json_parsing():
 
 
 def test_ssml_parsing():
-    """Тест парсинга SSML"""
+    """Тест парсинга SSML."""
     parser = ResponseParser()
     processor = SSMLProcessor()
-    
+
     print("="*60)
     print("ТЕСТ 2: SSML с интонациями")
     print("="*60)
-    
+
     json_response = '''
     {
         "text": "Дай подумаю. Кажется я знаю решение.",
@@ -319,11 +319,11 @@ def test_ssml_parsing():
         "emotion": "thinking"
     }
     '''
-    
+
     result = parser.parse_response(json_response)
     print(f"Text: {result['text']}")
     print(f"SSML: {result['ssml']}")
-    
+
     # Разбираем SSML
     chunks = processor.parse_ssml_for_timing(result['ssml'])
     print("\nSSML chunks:")
@@ -333,13 +333,13 @@ def test_ssml_parsing():
 
 
 def test_commands():
-    """Тест парсинга и выполнения команд"""
+    """Тест парсинга и выполнения команд."""
     handler = RobboxVoiceHandler()
-    
+
     print("="*60)
     print("ТЕСТ 3: Команды робота")
     print("="*60)
-    
+
     json_response = '''
     {
         "text": "Хорошо, еду вперёд на скорости 0.3 метра в секунду.",
@@ -347,7 +347,7 @@ def test_commands():
         "emotion": "neutral"
     }
     '''
-    
+
     result = handler.process_response(json_response)
     print(f"\nText для озвучивания: {result['phrases']}")
     print(f"Emotion: {result['emotion']}")
@@ -355,13 +355,13 @@ def test_commands():
 
 
 def test_full_response():
-    """Тест полного сложного ответа"""
+    """Тест полного сложного ответа."""
     handler = RobboxVoiceHandler()
-    
+
     print("="*60)
     print("ТЕСТ 4: Сложный ответ с SSML + командами")
     print("="*60)
-    
+
     json_response = '''
     {
         "text": "Ура! Задача выполнена успешно! Возвращаюсь на базу.",
@@ -370,12 +370,12 @@ def test_full_response():
         "emotion": "happy"
     }
     '''
-    
+
     result = handler.process_response(json_response)
     print(f"\nФразы для озвучивания:")
     for i, phrase in enumerate(result['phrases'], 1):
         print(f"  {i}. {phrase}")
-    
+
     if result['ssml_chunks']:
         print(f"\nSSML chunks с паузами:")
         for text, pause in result['ssml_chunks']:
@@ -384,15 +384,15 @@ def test_full_response():
 
 
 def test_plain_text():
-    """Тест обычного текста (не JSON)"""
+    """Тест обычного текста (не JSON)."""
     handler = RobboxVoiceHandler()
-    
+
     print("="*60)
     print("ТЕСТ 5: Обычный текст (backward compatibility)")
     print("="*60)
-    
+
     text_response = "Привет! Я ROBBOX. WiFi активен на 192.168.1.1."
-    
+
     result = handler.process_response(text_response)
     print(f"Text: {result['phrases']}")
     print()
@@ -400,13 +400,13 @@ def test_plain_text():
 
 if __name__ == '__main__':
     print("\n🧪 ТЕСТИРОВАНИЕ TEXT NORMALIZER V2\n")
-    
+
     test_json_parsing()
     test_ssml_parsing()
     test_commands()
     test_full_response()
     test_plain_text()
-    
+
     print("="*60)
     print("✅ ВСЕ ТЕСТЫ ЗАВЕРШЕНЫ")
     print("="*60)

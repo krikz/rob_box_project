@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 krikz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Audio-Reactive Animation Node
 
@@ -39,7 +53,11 @@ class AudioReactiveAnimationNode(Node):
         self.declare_parameter('animations_dir', 'src/rob_box_animations/animations')
         self.declare_parameter('audio_device_index', -1)  # -1 = default
         self.declare_parameter('sample_rate', 44100)
-        self.declare_parameter('chunk_size', 1024)
+        # Issue 1050: 1024 → 4096. frames_per_buffer=1024 (23ms @44.1kHz) слишком
+        # мал для Python-callback (numpy RMS + публикации) — PortAudio поднимал
+        # paInputOverflow (PyAudio status=2), сэмплы терялись, анимация «дёргалась».
+        # 4096 = ~93ms, тот же фикс, что в rob_box_voice audio_node.py.
+        self.declare_parameter('chunk_size', 4096)
 
         self.animations_dir = Path(self.get_parameter('animations_dir').value)
         self.audio_device_index = self.get_parameter('audio_device_index').value
@@ -74,6 +92,13 @@ class AudioReactiveAnimationNode(Node):
         self.audio_smoothing = 0.2
         self.smoothed_volume = 0.0
 
+        # Issue 1050: счётчики paInputOverflow для rate-limited диагностики.
+        # Status=2 (paInputOverflow) — входной буфер переполнен, сэмплы
+        # потеряны. Пишем в лог не чаще раза в окно, чтобы не спамить.
+        self._overflow_count = 0
+        self._overflow_last_logged = 0.0
+        self._overflow_log_window_s = 60.0
+
         # Audio stream
         self.audio_stream = None
         self.audio_thread = None
@@ -90,7 +115,7 @@ class AudioReactiveAnimationNode(Node):
         self.get_logger().info('Audio-Reactive Animation Node started')
 
     def audio_enable_callback(self, msg: String):
-        """Enable/disable audio-reactive animation"""
+        """Enable/disable audio-reactive animation."""
         animation_name = msg.data
 
         if animation_name == 'stop':
@@ -134,7 +159,7 @@ class AudioReactiveAnimationNode(Node):
             self.get_logger().error(f'Failed to load animation: {e}')
 
     def start_audio_monitoring(self):
-        """Start monitoring audio output"""
+        """Start monitoring audio output."""
         if not PYAUDIO_AVAILABLE or self.pyaudio is None:
             self.get_logger().error('Cannot start audio monitoring - PyAudio not available')
             return
@@ -170,7 +195,7 @@ class AudioReactiveAnimationNode(Node):
             )
 
     def stop_audio_monitoring(self):
-        """Stop monitoring audio output"""
+        """Stop monitoring audio output."""
         self.running = False
 
         if self.audio_stream is not None:
@@ -181,7 +206,12 @@ class AudioReactiveAnimationNode(Node):
             self.get_logger().info('Audio monitoring stopped')
 
     def audio_callback(self, in_data, frame_count, time_info, status):
-        """Callback for audio stream processing"""
+        """Handle for audio stream processing."""
+        if status:
+            # Issue 1050: status=2 (paInputOverflow) — входной буфер переполнен,
+            # сэмплы потеряны. Rate-limited диагностика (как в audio_node.py).
+            self._log_overflow(frame_count, in_data)
+
         if not self.audio_reactive_enabled:
             return (in_data, pyaudio.paContinue)
 
@@ -213,8 +243,31 @@ class AudioReactiveAnimationNode(Node):
 
         return (in_data, pyaudio.paContinue)
 
+    def _log_overflow(self, frame_count: int, in_data) -> None:
+        """Rate-limited лог paInputOverflow (issue #1050).
+
+        Status 2 (paInputOverflow) означает, что входной буфер переполнен
+        и сэмплы потеряны — обычно Python-callback не успел за периодом
+        (GIL, тяжёлый numpy RMS, публикации). Считаем каждый случай, но
+        пишем в лог не чаще раза в ``_overflow_log_window_s`` секунд.
+        """
+        self._overflow_count += 1
+        now = time.monotonic()
+        if now - self._overflow_last_logged < self._overflow_log_window_s:
+            return
+        self._overflow_last_logged = now
+        expected = frame_count * 2 * 2  # channels=2, 16-bit = 2 bytes
+        got = len(in_data) if in_data else 0
+        lost = max(0, expected - got)
+        self.get_logger().warning(
+            f"[issue 1050] PyAudio paInputOverflow (status=2): "
+            f"{self._overflow_count} случаев за окно "
+            f"{self._overflow_log_window_s:.0f}с, "
+            f"chunk {got}/{expected} байт (потеряно ~{lost} байт)"
+        )
+
     def destroy_node(self):
-        """Cleanup on node shutdown"""
+        """Cleanup on node shutdown."""
         self.stop_audio_monitoring()
 
         if self.pyaudio is not None:

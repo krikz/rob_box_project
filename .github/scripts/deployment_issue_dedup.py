@@ -36,6 +36,10 @@ CRITICAL_EXCLUDE_COMMON = [
     r"undeclare unknown subscriber",
     r"undeclare unknown queryable",
     r"zeroconf: failed to create client: daemon not running",
+    # Clock-skew noise: zenoh router replaces the offending timestamp and
+    # forwards the message — data is not lost, so this is not an outage.
+    # Root cause is NTP desync between Pis (see scripts/maintenance/sync_time.sh).
+    r"error treating timestamp for received data",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [

@@ -112,6 +112,15 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
     SILERO_MODEL_FILE="v5_ru.pt" && \
     SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
+    # Vosk model is bundled in the image (Architect decision G-VOSK, option A —
+    # offline-capable robot). Path MUST match model_path in
+    # src/rob_box_voice/config/voice_assistant.yaml and the default in
+    # stt_node.py: /models/vosk-model-small-ru-0.22
+    # Earlier mishap: this Dockerfile unzipped into /models/vosk-model-small-ru-0.22
+    # and then mv'd it to /models/vosk-model-ru, while every consumer (stt_node,
+    # voice_assistant.yaml, scripts, README) still pointed at the original
+    # canonical path. Result: 'Folder does not contain model files' at runtime.
+    # Fix: drop the rename — keep the unpacked directory at its canonical path.
     if [ -f "/root/.cache/models/${VOSK_MODEL_FILE}" ]; then \
         echo "✅ Using cached Vosk model"; \
         cp "/root/.cache/models/${VOSK_MODEL_FILE}" /tmp/vosk-model.zip; \
@@ -120,8 +129,8 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
         wget -q -O /tmp/vosk-model.zip "${VOSK_MODEL_URL}" && \
         cp /tmp/vosk-model.zip "/root/.cache/models/${VOSK_MODEL_FILE}"; \
     fi && \
-    unzip -q /tmp/vosk-model.zip -d /models/ && \
-    mv /models/vosk-model-small-ru-0.22 /models/vosk-model-ru && \
+    unzip -q -o /tmp/vosk-model.zip -d /models/ && \
+    test -f /models/vosk-model-small-ru-0.22/README && \
     rm /tmp/vosk-model.zip && \
     if [ -f "/root/.cache/models/${SILERO_MODEL_FILE}" ]; then \
         echo "✅ Using cached Silero model"; \
@@ -133,7 +142,7 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     fi && \
     echo "⬇️ Pre-downloading Silero repository for torch.hub..." && \
     python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru', source='github')" || true && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB) + Silero v5 (68 MB)"
+    echo "✅ STT/TTS models ready: Vosk (45 MB at /models/vosk-model-small-ru-0.22) + Silero v5 (68 MB)"
 
 # ============================================================================
 # Клонирование и сборка audio_common_msgs

@@ -68,7 +68,7 @@ class DialogueNodeWithMCP(Node):
         api_key = self.get_parameter("api_key").value or os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
         base_url = self.get_parameter("base_url").value
         self.model = self.get_parameter("model").value
-        
+
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.temperature = self.get_parameter("temperature").value
         self.max_tokens = self.get_parameter("max_tokens").value
@@ -85,7 +85,7 @@ class DialogueNodeWithMCP(Node):
         self.get_logger().info("   🛠️ MCP Tools integration: ENABLED")
 
     def _load_system_prompt(self) -> str:
-        """Загрузить system prompt"""
+        """Загрузить system prompt."""
         # Упрощённый промпт для примера
         return """Ты ROBBOX - мобильный робот-ассистент.
 
@@ -117,7 +117,7 @@ class DialogueNodeWithMCP(Node):
             self.get_logger().error(f"❌ Ошибка парсинга списка инструментов: {e}")
 
     def stt_callback(self, msg: String):
-        """Обработка распознанной речи"""
+        """Обработка распознанной речи."""
         user_message = msg.data.strip()
         if not user_message:
             return

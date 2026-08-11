@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test for TimeAwarenessProvider - ensures timezone support works correctly.
-"""
+"""Test for TimeAwarenessProvider - timezone support works correctly."""
 
 import pytest
 
@@ -15,7 +13,9 @@ def test_time_provider_imports():
 def test_pytz_available():
     """Test that pytz is available for timezone support."""
     from rob_box_perception.utils.time_provider import PYTZ_AVAILABLE
-    assert PYTZ_AVAILABLE is True, "pytz must be installed for timezone support"
+    assert PYTZ_AVAILABLE is True, (
+        'pytz must be installed for timezone support'
+    )
 
 
 def test_moscow_timezone():
@@ -31,10 +31,11 @@ def test_moscow_timezone():
     # Verify all required fields are present
     required_fields = [
         'timestamp', 'datetime', 'human_readable', 'time_only', 'date_only',
-        'hour', 'minute', 'weekday', 'weekday_ru', 'period', 'period_ru', 'timezone'
+        'hour', 'minute', 'weekday', 'weekday_ru', 'period', 'period_ru',
+        'timezone',
     ]
     for field in required_fields:
-        assert field in time_context, f"Missing field: {field}"
+        assert field in time_context, f'Missing field: {field}'
 
     # Verify hour is in valid range
     assert 0 <= time_context['hour'] <= 23
@@ -46,12 +47,16 @@ def test_moscow_timezone():
     assert time_context['period_ru'] in ['утро', 'день', 'вечер', 'ночь']
 
     # Verify weekday_ru is valid
-    valid_weekdays = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    valid_weekdays = [
+        'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница',
+        'Суббота', 'Воскресенье',
+    ]
     assert time_context['weekday_ru'] in valid_weekdays
 
 
 def test_moscow_timezone_offset():
-    """Test that Moscow timezone has correct UTC offset (+3 hours).
+    """
+    Test that Moscow timezone has correct UTC offset (+3 hours).
 
     Note: Russia abolished DST in 2014, Moscow permanently uses UTC+3 (MSK).
     """
@@ -63,7 +68,7 @@ def test_moscow_timezone_offset():
     # Parse the datetime with timezone info
     dt_str = time_context['datetime']
     assert '+03:00' in dt_str, \
-        f"Moscow time should have UTC+3 offset (MSK), got: {dt_str}"
+        f'Moscow time should have UTC+3 offset (MSK), got: {dt_str}'
 
 
 def test_time_consistency():
@@ -77,12 +82,14 @@ def test_time_consistency():
     time_only_hour = int(time_context['time_only'].split(':')[0])
 
     # Should match the hour field
-    assert time_only_hour == time_context['hour'], \
-        f"time_only hour ({time_only_hour}) doesn't match hour field ({time_context['hour']})"
+    assert time_only_hour == time_context['hour'], (
+        f"time_only hour ({time_only_hour}) doesn't match "
+        f"hour field ({time_context['hour']})"
+    )
 
 
 def test_timezone_parameter_flexibility():
-    """Test that TimeAwarenessProvider accepts different timezone parameters."""
+    """Check that the provider accepts different timezone parameters."""
     from rob_box_perception.utils.time_provider import TimeAwarenessProvider
 
     # Test multiple timezones
@@ -106,8 +113,10 @@ def test_timezone_parameter_flexibility():
 
         # Verify offset is in expected range
         dt_str = time_context['datetime']
-        assert any(offset in dt_str for offset in expected_offsets), \
-            f"Timezone {timezone} should have offset in {expected_offsets}, got: {dt_str}"
+        assert any(offset in dt_str for offset in expected_offsets), (
+            f'Timezone {timezone} should have offset in '
+            f'{expected_offsets}, got: {dt_str}'
+        )
 
 
 if __name__ == '__main__':

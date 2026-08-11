@@ -30,7 +30,8 @@ echo "📥 Получаем обновления из GitHub..."
 cd "$PROJECT_ROOT"
 CURRENT_BRANCH=$(git branch --show-current)
 echo "   Текущая ветка: $CURRENT_BRANCH"
-git pull origin $CURRENT_BRANCH
+git fetch origin
+git reset --hard origin/$CURRENT_BRANCH
 echo "✅ Код обновлен"
 echo ""
 

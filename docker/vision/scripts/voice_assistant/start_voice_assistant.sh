@@ -88,7 +88,8 @@ if command -v sclang > /dev/null 2>&1; then
     sleep 5
     if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
         echo "Проверка music stack readiness..."
-        if python3 /ws/src/rob_box_voice/scripts/validate_music_stack.py \
+        MUSIC_STACK_RC=0
+        python3 /ws/src/rob_box_voice/scripts/validate_music_stack.py \
             /tmp/sclang.log \
             --critical-synth strings \
             --critical-synth wobblebass \
@@ -100,10 +101,12 @@ if command -v sclang > /dev/null 2>&1; then
             --critical-synth marchstrings \
             --critical-synth strangerpulsepad \
             --critical-synth strangerarp \
-            --critical-synth strangerbrass; then
+            --critical-synth strangerbrass || MUSIC_STACK_RC=$?
+        if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
             echo "✓ Music stack validation passed"
         else
-            echo "⚠ Music stack validation reported degraded runtime; voice assistant continues in reduced music mode"
+            echo "⚠ Music stack validation found non-critical errors (degraded but usable)"
+            echo "  └─ Подробности: /tmp/sclang.log"
         fi
     fi
     echo "sclang готов"

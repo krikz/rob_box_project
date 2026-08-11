@@ -31,7 +31,7 @@ env:
 jobs:
   # Определение тега
   prepare:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     outputs:
       docker_tag: ${{ steps.set-config.outputs.docker_tag }}
     steps:
@@ -43,7 +43,7 @@ jobs:
             DOCKER_TAG="latest"
           elif [ "$BRANCH_NAME" = "develop" ]; then
             DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]]; then
+          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]]; then
             DOCKER_TAG="test"
           else
             DOCKER_TAG="local"
@@ -54,8 +54,14 @@ jobs:
   # Параллельная сборка всех сервисов Vision Pi (до 8 одновременно)
   build-oak-d:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -86,8 +92,14 @@ jobs:
 
   build-led-matrix:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -122,8 +134,14 @@ jobs:
 
   build-ceiling-camera:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -154,8 +172,14 @@ jobs:
 
   build-voice-assistant:
     needs: [prepare, build-voice-base]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -190,8 +214,14 @@ jobs:
 
   build-voice-resources:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -221,8 +251,14 @@ jobs:
 
   build-voice-base:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -252,8 +288,14 @@ jobs:
 
   build-telegram-bot:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -288,8 +330,14 @@ jobs:
 
   build-supercollider:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -320,9 +368,15 @@ jobs:
   # Обновление .image-versions — SHA-тег после успешной сборки
   update-image-versions:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -371,8 +425,14 @@ jobs:
             if ! git diff --cached --quiet; then
               BRANCH="${GITHUB_REF#refs/heads/}"
               git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
-              git pull --rebase origin "$BRANCH"
-              git push origin "$BRANCH"
+              # Retry push (гонка: Main и Vision параллельно пушат в одну round-ветку)
+              for i in 1 2 3 4 5; do
+                git pull --rebase origin "$BRANCH" >/dev/null 2>&1 || true
+                if git push origin "$BRANCH" >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 5
+              done
               echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG}"
             fi
           else
@@ -382,7 +442,7 @@ jobs:
   # Итоговая сводка
   summary:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary

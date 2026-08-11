@@ -35,7 +35,7 @@ from enum import Enum
 
 
 class IntentType(Enum):
-    """Command intent types"""
+    """Command intent types."""
     NAVIGATE = "navigate"       # Navigation to waypoint
     STOP = "stop"              # Stop movement
     FOLLOW = "follow"          # Follow mode
@@ -49,7 +49,7 @@ class IntentType(Enum):
 class Command:
     """
     Parsed command with intent and entities.
-    
+
     Attributes:
         intent: Classified intent type
         text: Original command text
@@ -65,15 +65,15 @@ class Command:
 class CommandParser:
     """
     Parses voice commands and extracts intent + entities.
-    
+
     This class uses pattern matching to classify command intents
     and extract relevant entities (waypoints, directions, etc.)
-    
+
     Attributes:
         patterns: Dictionary mapping IntentType to pattern list
         wake_words: List of wake words to remove
         confidence_base: Base confidence for pattern match
-    
+
     Methods:
         parse: Parse command text and return Command object
         classify_intent: Classify intent and extract entities
@@ -81,7 +81,7 @@ class CommandParser:
         add_pattern: Add custom pattern for intent
         get_patterns: Get patterns for specific intent
     """
-    
+
     def __init__(
         self,
         wake_words: Optional[List[str]] = None,
@@ -89,7 +89,7 @@ class CommandParser:
     ):
         """
         Initialize CommandParser.
-        
+
         Args:
             wake_words: List of wake words to remove (default: ['робот', 'робокс'])
             confidence_base: Base confidence score for matches (default: 0.8)
@@ -97,11 +97,11 @@ class CommandParser:
         self.wake_words = wake_words or ['робот', 'робокс', 'робобокс']
         self.confidence_base = confidence_base
         self.patterns = self._build_default_patterns()
-    
+
     def _build_default_patterns(self) -> Dict[IntentType, List[Tuple[str, Optional[str]]]]:
         """
         Build default command patterns.
-        
+
         Returns:
             Dictionary mapping IntentType to list of (pattern, entity_type) tuples
         """
@@ -141,36 +141,36 @@ class CommandParser:
                 (r'(найди|покажи|обнаружь)\s+(объект|человека|предмет)', None),
             ],
         }
-    
+
     def parse(self, text: str) -> Command:
         """
         Parse command text.
-        
+
         Main entry point for command parsing. Removes wake words,
         classifies intent, and extracts entities.
-        
+
         Args:
             text: Command text to parse
-        
+
         Returns:
             Parsed Command object
         """
         # Normalize text
         text = text.strip().lower()
-        
+
         # Remove wake word
         text = self.remove_wake_word(text)
-        
+
         # Classify intent and extract entities
         return self.classify_intent(text)
-    
+
     def remove_wake_word(self, text: str) -> str:
         """
         Remove wake word from beginning of text.
-        
+
         Args:
             text: Text possibly starting with wake word
-        
+
         Returns:
             Text with wake word removed
         """
@@ -180,19 +180,19 @@ class CommandParser:
                 # Remove common punctuation after wake word
                 text = text.lstrip(',.:;!')
                 break
-        
+
         return text.strip()
-    
+
     def classify_intent(self, text: str) -> Command:
         """
         Classify command intent and extract entities.
-        
+
         Uses pattern matching to find best matching intent
         and extracts relevant entities from the command.
-        
+
         Args:
             text: Normalized command text
-        
+
         Returns:
             Command object with intent and entities
         """
@@ -200,7 +200,7 @@ class CommandParser:
         best_confidence = 0.0
         best_intent = IntentType.UNKNOWN
         best_entities = {}
-        
+
         # Check all patterns
         for intent, patterns in self.patterns.items():
             for pattern, entity_type in patterns:
@@ -211,41 +211,41 @@ class CommandParser:
                     text_length = len(text) if len(text) > 0 else 1
                     confidence = self.confidence_base + (match_length / text_length) * 0.2
                     confidence = min(confidence, 1.0)  # Cap at 1.0
-                    
+
                     if confidence > best_confidence:
                         best_confidence = confidence
                         best_intent = intent
                         best_match = match
                         best_entities = self._extract_entities(match, entity_type)
-        
+
         return Command(
             intent=best_intent,
             text=text,
             entities=best_entities,
             confidence=best_confidence
         )
-    
+
     def _extract_entities(self, match: re.Match, entity_type: Optional[str]) -> Dict[str, any]:
         """
         Extract entities from regex match.
-        
+
         Args:
             match: Regex match object
             entity_type: Type of entity to extract
-        
+
         Returns:
             Dictionary of extracted entities
         """
         entities = {}
-        
+
         if entity_type == 'waypoint_number':
             # Extract waypoint number (group 2)
             entities = {'waypoint': f"точка {match.group(2)}"}
-        
+
         elif entity_type == 'waypoint_name':
             # Extract waypoint name (group 2)
             entities = {'waypoint': match.group(2)}
-        
+
         elif entity_type in ('direction', 'turn'):
             # Direction can be in group 1 (alone) or group 2 (with verb)
             if match.lastindex and match.lastindex >= 2:
@@ -253,13 +253,13 @@ class CommandParser:
             else:
                 direction = match.group(1)
             entities = {'direction': direction}
-        
+
         return entities
-    
+
     def add_pattern(self, intent: IntentType, pattern: str, entity_type: Optional[str] = None):
         """
         Add custom pattern for intent.
-        
+
         Args:
             intent: Intent type to add pattern for
             pattern: Regex pattern string
@@ -267,16 +267,16 @@ class CommandParser:
         """
         if intent not in self.patterns:
             self.patterns[intent] = []
-        
+
         self.patterns[intent].append((pattern, entity_type))
-    
+
     def get_patterns(self, intent: IntentType) -> List[Tuple[str, Optional[str]]]:
         """
         Get patterns for specific intent.
-        
+
         Args:
             intent: Intent type
-        
+
         Returns:
             List of (pattern, entity_type) tuples
         """
@@ -287,9 +287,9 @@ class CommandParser:
 if __name__ == '__main__':
     # Create parser
     parser = CommandParser()
-    
+
     print("🧪 Command parsing tests:")
-    
+
     test_cases = [
         "робот иди к кухне",
         "поезжай к точке 2",
@@ -298,7 +298,7 @@ if __name__ == '__main__':
         "где ты",
         "неизвестная команда",
     ]
-    
+
     for text in test_cases:
         command = parser.parse(text)
         print(f"\nТекст: {text}")

@@ -1,0 +1,165 @@
+# confirmation_policy.yaml — acceptance / confirmation layer catalog (issue #968 §8)
+#
+# Source of truth: `docs/design/SCHEDULER_DESIGN.md` §8.2 ("Классификация тулов")
+# and the corresponding mcp_server.py:312-375 registry. This file is the
+# data-only mirror of that table; no tool names are hard-coded in Python.
+#
+# Schema:
+#   tools.<name>.class:        require | notify | pass_through
+#   tools.<name>.reason:       short human-readable explanation (RU/EN)
+#   tools.<name>.plan_template: optional Russian phrase spoken when the
+#                              segment enters AWAITING_CONFIRMATION; the
+#                              orchestrator may re-render it with the
+#                              actual tool arguments before publishing.
+#
+# defaults:
+#   default_class: how unknown tools are classified. "pass_through" is the
+#                  safest default — a tool we haven't catalogued must not
+#                  silently block on the user.
+#   forbidden_overrides: tool names that downstream YAML layers
+#                        (pi-main.yaml, override.confirmation) MUST NOT
+#                        reclassify to "require". The §8.2 gold rule.
+#
+# Emergency tools are also enforced in code (EMERGENCY_TOOLS in
+# confirmation_policy.py) — see the unit test
+# `test_stop_navigation_never_requires_confirm` for the invariant.
+
+default_class: pass_through
+forbidden_overrides:
+  - stop_navigation
+
+tools:
+
+  # ── 🔴 REQUIRE: физические / деструктивные (см. §8.2) ───────────────
+  navigate_to_waypoint:
+    class: require
+    reason: "робот физически движется"
+    plan_template: "План: еду к точке «{tool_name}». Подтверждаешь?"
+  navigate_to_coordinates:
+    class: require
+    reason: "робот физически движется"
+    plan_template: "План: еду в координаты. Подтверждаешь?"
+  move_direction:
+    class: require
+    reason: "движение без явной цели — опасно"
+    plan_template: "Двигаюсь в указанном направлении. Ок?"
+  start_mapping:
+    class: require
+    reason: "долгое физическое действие"
+    plan_template: "Начинаю картирование, буду ездить ~5 минут. Начинаю?"
+  continue_mapping:
+    class: require
+    reason: "продолжение физического картирования"
+    plan_template: "Продолжаю картирование. Ок?"
+  delete_waypoint:
+    class: require
+    reason: "удаление пользовательских данных"
+    plan_template: "Удаляю waypoint. Подтверждаешь?"
+  clear_waypoints:
+    class: require
+    reason: "удаление всех waypoints"
+    plan_template: "Удаляю все waypoints. Подтверждаешь?"
+  save_waypoint:
+    class: require
+    reason: "перезапись существующего waypoint (политика §8.2)"
+    plan_template: "Сохраняю waypoint. Подтверждаешь?"
+
+  # ── 🟡 NOTIFY: обратимо, но стоит озвучить ──────────────────────────
+  set_speed:
+    class: notify
+    reason: "изменение поведения — обратимо"
+  set_volume:
+    class: notify
+    reason: "изменение громкости — обратимо"
+  set_pitch:
+    class: notify
+    reason: "изменение питча голоса — обратимо"
+  finish_mapping:
+    class: notify
+    reason: "долгая обработка — уведомление без блокировки"
+  optimize_map:
+    class: notify
+    reason: "долгая обработка — уведомление без блокировки"
+  set_dj_mode:
+    class: notify
+    reason: "смена режима — обратимо"
+
+  # ── 🟢 PASS_THROUGH: read-only / безопасные / аварийные ────────────
+  stop_navigation:
+    class: pass_through
+    reason: "🟢 аварийный стоп — никогда не блокировать (§8.2 gold rule)"
+  speak_text:
+    class: pass_through
+    reason: "🟢 безопасный — без физических эффектов на окружение"
+  play_sound:
+    class: pass_through
+    reason: "🟢 безопасный"
+  play_animation:
+    class: pass_through
+    reason: "🟢 безопасный"
+  listen_for_response:
+    class: pass_through
+    reason: "🟢 безопасный"
+  estimate_tts_duration:
+    class: pass_through
+    reason: "🟢 read-only вычисление"
+  faq_search:
+    class: pass_through
+    reason: "🟢 read-only"
+  memory_save:
+    class: pass_through
+    reason: "🟢 запись в локальную память (обратимо)"
+  memory_search:
+    class: pass_through
+    reason: "🟢 read-only"
+  memory_context:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_current_time:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_robot_status:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_battery_level:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_current_pose:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_sound_info:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_perception_context:
+    class: pass_through
+    reason: "🟢 read-only"
+  get_music_state:
+    class: pass_through
+    reason: "🟢 read-only"
+  list_waypoints:
+    class: pass_through
+    reason: "🟢 read-only"
+  list_tracks:
+    class: pass_through
+    reason: "🟢 read-only"
+  execute_music_code:
+    class: pass_through
+    reason: "🟢 безопасный — отменяется stop_music"
+  stop_music:
+    class: pass_through
+    reason: "🟢 безопасный"
+  set_vibe_preset:
+    class: pass_through
+    reason: "🟢 обратимо"
+  search_samples:
+    class: pass_through
+    reason: "🟢 read-only"
+  save_track:
+    class: pass_through
+    reason: "🟢 обратимо"
+  load_track:
+    class: pass_through
+    reason: "🟢 обратимо"
+  delete_track:
+    class: pass_through
+    reason: "🟢 обратимо (можно пересоздать)"
