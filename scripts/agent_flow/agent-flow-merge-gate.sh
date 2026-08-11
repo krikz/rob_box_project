@@ -367,15 +367,88 @@ print(f"pr_labels_csv={shlex.quote(pr_labels_csv)}")
         errored=$((errored+1)); continue
     fi
 
-    # MERGED (Q22 done manually by user): cleanup — delete branch,
-    # free worktrees on it, archive the done card. Prevent the
-    # "branch held by stale worktree → spawn_failed forever" cycle.
+    # MERGED (Q22 done manually by user): post-merge reconciliation per
+    # ADR-0014 (docs/adr/0014-agent-flow-issue-closure.md).
+    #
+    # Invariant: issue may close <=> PR MERGED into develop AND issue has
+    # e2e-done produced by e2e-process (not by merge-gate itself). Race:
+    # e2e-process may set e2e-done after we observed initial labels — so
+    # we re-read labels RIGHT BEFORE close. Order: (1) re-read labels +
+    # state, (2) close issue if e2e-done, (3) only on success run
+    # destructive cleanup (delete branch, free worktrees, archive card,
+    # cleanup comment, drop stale labels). Close failure → warning,
+    # destructive cleanup is deferred, retry next 5m tick.
     if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ]; then
-        log "issue #${number}: PR #${pr_number} MERGED into ${pr_base} — cleanup"
+        log "issue #${number}: PR #${pr_number} MERGED into ${pr_base} — post-merge reconcile (ADR-0014)"
         if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would cleanup branch ${branch} (delete remote, free worktrees, archive card ${task_id})"
+            log "DRY-RUN would reconcile issue #${number} (re-read labels, maybe close, then cleanup ${branch})"
             continue
         fi
+        # 0.1) Re-read current labels & state — race with e2e-process
+        # (e2e-process may have set e2e-done between our initial issue-list
+        # pull and now; also the issue may already be CLOSED from a previous
+        # tick in this same merge cycle, making close a no-op).
+        _current_labels_csv="$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        _current_labels_norm="$(printf '%s' "$_current_labels_csv" | tr '[:upper:]' '[:lower:]')"
+        _has_e2e_done="0"
+        if has_label "$_current_labels_norm" "$DONE_LABEL"; then
+            _has_e2e_done="1"
+        fi
+        _issue_state="$(gh issue view "$number" --repo "$GH_REPO" --json state \
+            --jq '.state' 2>/dev/null || echo '')"
+        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done}"
+
+        # 0.2) Close only when invariant holds. Four branches:
+        #   (a) already CLOSED → idempotent skip, proceed to cleanup
+        #   (b) e2e-done present, OPEN → close with reason=completed
+        #   (c) MERGED but no e2e-done → leave OPEN, defer destructive
+        #       cleanup until next tick when e2e-process may set e2e-done
+        #       (race merge → label, ADR §5).
+        #   (d) state unreadable → defer cleanup: we cannot prove the
+        #       issue is closed, so we must not delete the last mapping
+        #       (ADR §4 req 4).
+        _closed_this_tick=0
+        case "$_issue_state" in
+            CLOSED)
+                # CLOSED already (e.g. closed manually or previous tick) — skip
+                # close, go straight to cleanup.
+                log "issue #${number}: already CLOSED — close skipped"
+                ;;
+            "")
+                # gh issue view failed / state unreadable — conservative
+                # deferral: destructive cleanup must not run on unverifiable
+                # state, otherwise we lose the issue→PR mapping (ADR §4 req 4).
+                log "issue #${number}: WARNING issue state unreadable — destructive cleanup deferred to next tick"
+                labeled=$((labeled+1)); continue
+                ;;
+            OPEN)
+                if [ "$_has_e2e_done" = "1" ]; then
+                    if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                        _closed_this_tick=1
+                        log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
+                    else
+                        # Close API failure — destructive cleanup MUST be
+                        # deferred, otherwise we lose the mapping. Warning
+                        # only, no `|| true` masking (ADR §4 req 4).
+                        log "issue #${number}: WARNING gh issue close failed — destructive cleanup deferred to next tick"
+                        labeled=$((labeled+1)); continue
+                    fi
+                else
+                    # MERGED without e2e-done — wait for e2e-process PASS.
+                    # Do NOT touch remote branch / archive card yet: a later
+                    # tick may close this issue, and we don't want to
+                    # archive the card while a worker is still holding it.
+                    log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — destructive cleanup deferred"
+                    labeled=$((labeled+1)); continue
+                fi
+                ;;
+            *)
+                log "issue #${number}: unexpected issue state=${_issue_state} — skip cleanup"
+                skipped=$((skipped+1)); continue
+                ;;
+        esac
+
         # 1) Find the issue's kanban card (may be done already).
         card_id=""
         if [ -z "${task_id:-}" ]; then
@@ -398,7 +471,10 @@ except Exception:
         if [ -n "$card_id" ]; then
             free_stale_worktrees_for "$card_id" || true
         fi
-        # 3) Delete the remote branch (merged — safe).
+        # 3) Delete the remote branch (merged — safe). We have already
+        # closed the issue above, so the issue→PR mapping is preserved
+        # in GitHub issue history regardless of whether the branch ref
+        # still exists (ADR §4 req 4).
         if git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
             gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$branch" >/dev/null 2>&1 \
                 && log "issue #${number}: remote branch ${branch} deleted" \
@@ -420,21 +496,28 @@ except Exception: print("")' 2>/dev/null || true)"
         # 5) Dedup cleanup-коммента (ретро 10.08 t_9caf5d52): раньше коммент
         #    «✅ PR #N смержен» постился КАЖДЫЙ тик (5 мин) → 6 одинаковых на
         #    #1089 (08:35–08:49). Постим только если за последние часы такого
-        #    коммента ещё нет.
+        #    коммента ещё нет. ADR-0014: текст говорит правду — упомянуть
+        #    закрытие issue явно.
         _dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         _dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_dedup_since}&per_page=100" \
             --jq '[.[] | select(.body | startswith("✅ PR #'"${pr_number}"' смержен"))] | length' 2>/dev/null || echo 0)"
         if [ "${_dup_count:-0}" -eq 0 ]; then
+            _close_note=""
+            if [ "$_closed_this_tick" = "1" ]; then
+                _close_note="Issue закрыта (reason=completed, PASS-proven). "
+            fi
             gh issue comment "$number" --repo "$GH_REPO" --body \
-                "✅ PR #${pr_number} смержен в ${pr_base}. Cleanup: ветка удалена, worktree освобождены, карточка заархивирована." >/dev/null 2>&1 || true
+                "✅ PR #${pr_number} смержен в ${pr_base}. ${_close_note}Cleanup: ветка удалена, worktree освобождены, карточка заархивирована." >/dev/null 2>&1 || true
         else
             log "issue #${number}: merged-cleanup comment already exists (×${_dup_count}) — dedup skip"
         fi
         # 6) Снять stale-метки со смерженного фикса (ретро 10.08 t_9caf5d52):
-        #    e2e:rejected/needs-e2e на merged-PR не актуальны; e2e-done — финал.
+        #    e2e:rejected/needs-e2e на merged-PR не актуальны. e2e-done НЕ
+        #    добавляем сами: PASS-label принадлежит только e2e-process
+        #    (ADR-0014 §4 req 2). Если e2e-done уже стоит — он остаётся;
+        #    если не стоит — мы НЕ должны его создавать.
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
-        gh issue edit "$number" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
         labeled=$((labeled+1)); continue
     fi
 
