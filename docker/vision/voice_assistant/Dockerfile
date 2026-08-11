@@ -142,6 +142,28 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "coverage>=7.0" "pyyam
 # здесь (app-layer), как и aiohttp: менять voice_base не хотим — это
 # инвалидировало бы ~10 GB pytorch-кеша для всех потребителей.
 RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "ddgs>=9.0.0"
+# 🔴 FIX (issue #1077): resemblyzer для speaker_id_node (голосовая биометрия).
+# Установлен в app-layer (не в voice_base) чтобы не инвалидировать кеш
+# pytorch/vosk/yandex. На ARM64 компилирует llvmlite (~3 min), на x86 —
+# pre-built wheel. Без resemblyzer speaker_id_node молча падает при импорте.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 300 resemblyzer
+# --------------------------------------------------------------------------
+# Issue #1101 — runtime pin для resemblyzer. Без coverage>=7.0 resemblyzer
+# → librosa → numba → coverage.types.Tracer → AttributeError
+# (`module 'coverage' has no attribute 'types'`). Без pyyaml>=6.0 — старый
+# C-парсер, resemblyzer не может загрузить модели. Пин нужно здесь, в
+# app-layer, иначе voice_base cache останется старым и пересборка не
+# подцепит. Установлено ДО ребилда rob_box_voice чтобы зависимости уже
+# были видны для speaker_id_node.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "coverage>=7.0" "pyyaml>=6.0"
+# --------------------------------------------------------------------------
+# 🔴 FIX (issue #1101): duckduckgo-search для web_search.py MCP-инструмента.
+# search_web() в rob_box_mcp_tools/tools/web_search.py пробует импорт ddgs →
+# duckduckgo_search. Без пакета tool падает: "ddgs import FAILED: No module
+# named 'ddgs'; duckduckgo_search=No module named 'duckduckgo_search'".
+# Установлен в app-layer (не в voice_base) — чистый Python, без тяжёлых
+# зависимостей, не инвалидирует кеш pytorch/vosk/yandex.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "duckduckgo-search>=8.0.0"
 # --------------------------------------------------------------------------
 
 # Шаг 9: Копируем scripts
