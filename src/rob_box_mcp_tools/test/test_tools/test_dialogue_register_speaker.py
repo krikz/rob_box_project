@@ -123,8 +123,14 @@ def _load_dialogue_isolated():
             self.data = ""
 
     std_msgs_msg.String = _String
-    sys.modules.setdefault("std_msgs", std_msgs)
-    sys.modules.setdefault("std_msgs.msg", std_msgs_msg)
+    # Force-override (НЕ setdefault): test_dialogue_speak_text_batch.py
+    # подменяет sys.modules['std_msgs'] на Mock() на уровне модуля. Если
+    # он импортируется РАНЬШЕ нас, setdefault не перезапишет Mock —
+    # String() внутри execute() вернёт общий MagicMock, rename/register
+    # payload'ы затрут друг друга в одном объекте и тесты упадут
+    # (observed: rename_pub получил {name: ...} вместо {old_name,new_name}).
+    sys.modules["std_msgs"] = std_msgs
+    sys.modules["std_msgs.msg"] = std_msgs_msg
 
     spec = importlib.util.spec_from_file_location(
         "rob_box_mcp_tools.tools.dialogue", _DIALOGUE_PATH
@@ -138,15 +144,47 @@ _dialogue = _load_dialogue_isolated()
 RegisterSpeakerTool = _dialogue.RegisterSpeakerTool
 
 
+@pytest.fixture(autouse=True)
+def _ensure_std_msgs_stub():
+    """Восстановить stub std_msgs перед каждым тестом.
+
+    test_dialogue_speak_text_batch.py перезаписывает на уровне модуля
+    ``sys.modules['std_msgs'] = Mock()``. При коллекции он импортируется
+    ПОСЛЕ нас и затирает наш stub; без восстановления ``String()`` внутри
+    ``execute()`` вернёт общий MagicMock, rename/register payload'ы
+    затрут друг друга и тесты переименования упадут.
+    """
+    std_msgs = types.ModuleType("std_msgs")
+    std_msgs_msg = types.ModuleType("std_msgs.msg")
+
+    class _String:
+        def __init__(self):
+            self.data = ""
+
+    std_msgs_msg.String = _String
+    sys.modules["std_msgs"] = std_msgs
+    sys.modules["std_msgs.msg"] = std_msgs_msg
+    yield
+
+
 @pytest.fixture
 def mock_node() -> MagicMock:
     """Минимальный мок ROS2-ноды для RegisterSpeakerTool.
 
     Нужен только ``create_publisher``; результат подписки/сообщения не нужны.
+    Возвращает РАЗНЫЕ publisher'ы для /voice/speaker/register и
+    /voice/speaker/rename — тесты переименования проверяют, что rename-пакет
+    уходит именно на rename-топик (issue #1101).
     """
     node = MagicMock()
-    pub = MagicMock()
-    node.create_publisher.return_value = pub
+    register_pub = MagicMock()
+    rename_pub = MagicMock()
+    node.create_publisher.side_effect = lambda msg_type, topic, depth: (
+        rename_pub if topic == "/voice/speaker/rename" else register_pub
+    )
+    # По умолчанию тесты, не знающие про rename, смотрят на register-паблишер.
+    node.register_pub = register_pub
+    node.rename_pub = rename_pub
     return node
 
 
@@ -189,7 +227,7 @@ def test_null_literal_treated_as_ask_user(
     assert result.success is True
     assert result.data == {"ask_required": True, "name": None}
     # На литералах публикации быть не должно.
-    mock_node.create_publisher.return_value.publish.assert_not_called()
+    mock_node.register_pub.publish.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +276,7 @@ def test_noise_names_are_rejected(
     assert result.data["error"] == "noise_name"
     assert result.data["received"].lower() == noise.lower()
     # КРИТИЧНО: на шумовых именах публикации быть не должно.
-    mock_node.create_publisher.return_value.publish.assert_not_called()
+    mock_node.register_pub.publish.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +293,7 @@ def test_valid_cyrillic_name_is_published(
     assert result.data["registered_name"] == "Денис"
 
     # Проверяем, что в /voice/speaker/register ушёл корректный JSON.
-    pub = mock_node.create_publisher.return_value
+    pub = mock_node.register_pub
     assert pub.publish.called
     call_args = pub.publish.call_args
     sent_msg = call_args[0][0]
@@ -272,7 +310,7 @@ def test_lowercase_name_is_capitalized(
     assert result.success is True
     assert result.data["registered_name"] == "Денис"
 
-    sent_msg = mock_node.create_publisher.return_value.publish.call_args[0][0]
+    sent_msg = mock_node.register_pub.publish.call_args[0][0]
     assert json.loads(sent_msg.data) == {"name": "Денис"}
 
 
@@ -284,5 +322,70 @@ def test_name_with_whitespace_is_trimmed(
     assert result.success is True
     assert result.data["registered_name"] == "Антон"
 
-    sent_msg = mock_node.create_publisher.return_value.publish.call_args[0][0]
+    sent_msg = mock_node.register_pub.publish.call_args[0][0]
     assert json.loads(sent_msg.data) == {"name": "Антон"}
+
+
+# ---------------------------------------------------------------------------
+# 5. Rename path (issue #1101) — «я не X, я Y» → old_name/new_name
+# ---------------------------------------------------------------------------
+
+
+def test_rename_publishes_to_rename_topic_not_register(
+    tool: RegisterSpeakerTool,
+    mock_node: MagicMock,
+) -> None:
+    """Rename-пакет ({old_name, new_name}) должен уходить на
+    /voice/speaker/rename, где speaker_id_node._on_rename_request его
+    обработает. Раньше публиковалось в /voice/speaker/register —
+    register-хендлер читает только {"name": ...} и молча игнорировал
+    rename (bug #1101 live 11.08)."""
+    result = tool.execute(name="Денис", old_name="Эйджик")
+    assert result.success is True
+
+    # rename ушёл на rename-топик (первый вызов rename_pub).
+    assert mock_node.rename_pub.publish.called
+    rename_msg = mock_node.rename_pub.publish.call_args[0][0]
+    assert json.loads(rename_msg.data) == {
+        "old_name": "Эйджик",
+        "new_name": "Денис",
+    }
+
+    # новый name зарегистрирован на register-топик (НЕ на rename).
+    assert mock_node.register_pub.publish.called
+    register_msg = mock_node.register_pub.publish.call_args[0][0]
+    assert json.loads(register_msg.data) == {"name": "Денис"}
+
+
+def test_rename_without_new_name_only_renames(
+    tool: RegisterSpeakerTool,
+    mock_node: MagicMock,
+) -> None:
+    """old_name задан, name пустой — переименование всё равно уходит
+    (new_name = old_name — no-op rename), ответ сообщает «спроси»."""
+    result = tool.execute(name=None, old_name="Эйджик")
+    assert result.success is True
+    assert result.data["renamed"] is True
+
+    assert mock_node.rename_pub.publish.called
+    rename_msg = mock_node.rename_pub.publish.call_args[0][0]
+    assert json.loads(rename_msg.data) == {
+        "old_name": "Эйджик",
+        "new_name": "Эйджик",
+    }
+    # Без нового имени регистрация НЕ публикуется.
+    mock_node.register_pub.publish.assert_not_called()
+
+
+def test_rename_ignores_noise_old_name(
+    tool: RegisterSpeakerTool,
+    mock_node: MagicMock,
+) -> None:
+    """old_name='null'/'None' — не шлём rename (guard на литералы)."""
+    result = tool.execute(name="Денис", old_name="null")
+    assert result.success is True
+    assert result.data["registered_name"] == "Денис"
+    # rename не публиковался (old_name='null' отброшен).
+    mock_node.rename_pub.publish.assert_not_called()
+    # register как обычно.
+    assert mock_node.register_pub.publish.called

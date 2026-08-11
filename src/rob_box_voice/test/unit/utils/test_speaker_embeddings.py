@@ -108,6 +108,21 @@ class TestRenameListDelete:
     def test_rename_missing_returns_false(self, db):
         assert db.rename("no-such-id", "X") is False
 
+    def test_rename_by_name(self, db):
+        """Issue #1101 — name-based rename (LLM corrections «я не X, я Y»)."""
+        sid = db.register("Эйджик", _random_embedding(1))
+        renamed_sid = db.rename_by_name("Эйджик", "Денис")
+        assert renamed_sid == sid
+        assert db.list_speakers()[0]["name"] == "Денис"
+
+    def test_rename_by_name_case_insensitive(self, db):
+        db.register("Эйджик", _random_embedding(1))
+        assert db.rename_by_name("эйджик", "Денис") is not None
+        assert db.list_speakers()[0]["name"] == "Денис"
+
+    def test_rename_by_name_missing_returns_none(self, db):
+        assert db.rename_by_name("Нет-такого", "Денис") is None
+
     def test_list_speakers_counts_embeddings(self, db):
         sid = db.register("Саша", _random_embedding(1))
         db.register("Саша", _random_embedding(2), speaker_id=sid)

@@ -233,18 +233,25 @@ class SpeakerDatabase:
         """Find speaker by ``old_name`` and rename to ``new_name``.
 
         Returns the speaker_id if renamed, None if not found.
-        Uses case-insensitive LIKE match; picks the most recent match.
+        Case-insensitive match (Cyrillic-aware — SQLite ``LOWER()``
+        handles only ASCII, so comparison happens in Python);
+        picks the most recent match.
         """
-        row = self._conn.execute(
-            "SELECT speaker_id FROM speakers "
-            "WHERE LOWER(name) = LOWER(?) "
-            "ORDER BY created_at DESC LIMIT 1",
-            (old_name,),
-        ).fetchone()
-        if row is None:
+        old_lower = (old_name or "").strip().lower()
+        if not old_lower:
+            logger.info("rename_by_name: empty old_name ignored")
+            return None
+        rows = self._conn.execute(
+            "SELECT speaker_id, name FROM speakers ORDER BY created_at DESC"
+        ).fetchall()
+        speaker_id = None
+        for sid, name in rows:
+            if (name or "").strip().lower() == old_lower:
+                speaker_id = sid
+                break
+        if speaker_id is None:
             logger.info(f"rename_by_name: '{old_name}' not found in DB")
             return None
-        speaker_id = row[0]
         self._conn.execute(
             "UPDATE speakers SET name=? WHERE speaker_id=?",
             (new_name, speaker_id),
