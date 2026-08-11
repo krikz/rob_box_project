@@ -22,6 +22,8 @@ dialogue_node:
     - рыбок
     - рома
     - бот
+    - робо
+    - роб
     silence_commands:
     - помолч
     - замолч
