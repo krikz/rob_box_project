@@ -118,10 +118,21 @@ check_cycle() {  # $1=before_rfc3339
     if ! printf '%s' "$logs" | grep -q "ПРИНЯТО"; then
         return 1   # нет акцепта → retry команды
     fi
-    # 2) LLM ошибки = красный, не чиним
-    if printf '%s' "$logs" | grep -qE "Empty assistant response|LLM.*(error|failed)|429 Too Many|quota"; then
-        printf '%s' "$logs" | grep -E "Empty assistant response|LLM.*(error|failed)|429|quota" | tail -3 > "$OUT_DIR/llm_error.txt"
+    # 2) LLM ошибки. "Empty assistant response|LLM.*(error|failed)" — красный,
+    #    не чиним. 429/quota — НЕ красный: minimax квота (2056) исчерпана
+    #    постоянно, но fallback-цепочка на deepseek (PR #1099) в develop
+    #    работает — цикл завершается на следующем провайдере. Если TTS уже
+    #    есть — fallback сработал, не ошибка; если TTS нет — retry (return 1).
+    if printf '%s' "$logs" | grep -qE "Empty assistant response|LLM.*(error|failed)"; then
+        printf '%s' "$logs" | grep -E "Empty assistant response|LLM.*(error|failed)" | tail -3 > "$OUT_DIR/llm_error.txt"
         return 2
+    fi
+    if printf '%s' "$logs" | grep -qE "429 Too Many|quota"; then
+        if ! printf '%s' "$logs" | grep -q "TTS finished"; then
+            printf '%s' "$logs" | grep -E "429|quota" | tail -3 > "$OUT_DIR/llm_quota.txt"
+            log "⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)"
+            return 1
+        fi
     fi
     # 3) ПОРЯДОК: LLM INPUT команды должен быть ПОСЛЕ ПРИНЯТО,
     #    а TTS finished — ПОСЛЕ LLM INPUT (иначе это приветствие/старый цикл)
