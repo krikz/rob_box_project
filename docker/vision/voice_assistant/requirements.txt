@@ -19,7 +19,7 @@ omegaconf==2.3.1
 # Pin explicitly so apt-resolved python3-aiohttp vs pip-aiohttp drift can't
 # reintroduce the regression.
 # =============================================================================
-aiohttp>=3.9.1,<4.0
+aiohttp>=3.14.3,<4.0
 
 # =============================================================================
 # Audio processing
@@ -71,8 +71,8 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
 # Used in: rob_box_voice/dialogue_node.py
 # =============================================================================
-openai>=2.48.0,<3.0.0
-openai-agents>=0.18.3,<1.0.0
+openai>=2.53.0,<3.0.0
+openai-agents>=0.19.4,<1.0.0
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
 # Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)
@@ -83,4 +83,4 @@ renardo-lib
 # in rob_box_voice/skills/music_skill.py for DJ-mode "research first" workflow
 # (issue #1000). Used by Compositor agent before handle_music to learn about
 # artist style, BPM, key, instruments.
-ddgs>=8.0.0
+ddgs>=9.14.4
