@@ -178,7 +178,7 @@ run_step() {  # $1=text $2=voice $3=step_label
         return 1
     fi
     # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
-    ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=200,volume=1.2,alimiter=limit=0.85" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
+    ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
 
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
@@ -209,6 +209,9 @@ run_step() {  # $1=text $2=voice $3=step_label
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
         BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
+        # Katana: громкость динамика 150% (по VOICE_COMMANDS_RESEARCH.md —
+        # 100% даёт -42dB на микрофоне, wake word теряется)
+        pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
         paplay "$OUT_DIR/cmd_${label}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
 
