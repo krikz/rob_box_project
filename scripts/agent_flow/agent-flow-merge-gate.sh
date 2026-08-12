@@ -146,7 +146,12 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     if [ "${rate:-999}" = "0" ]; then
         log "GitHub rate-limit exhausted — skip tick"; exit 0
     fi
-    log "no issues with label '${ISSUE_LABEL}' on ${GH_REPO}"; exit 0
+    # Ретро-путь (12.08 t_68607832): hermes-issues может не быть вовсе, но
+    # смерженные PR, ссылающиеся на немаркированные issues, всё равно нужно
+    # обработать (сканы ниже). Раньше здесь был exit 0 → ретро-issues навсегда
+    # выпадали из merge-gate, когда очередь hermes пуста.
+    log "no issues with label '${ISSUE_LABEL}' — continuing to scan-all-prs + retro-path"
+    issues_json='[]'
 fi
 
 # --- shared helpers (kept compatible with triage.sh) -------------------------
@@ -1021,8 +1026,156 @@ git push --force-with-lease origin ${head}
     fi
 done
 
+# ============================================================================
+# Ретро-путь (12.08 t_68607832): merged PR → issue без меток
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: issues #1138/#1139 были починены ретро-карточками (вне label-цикла
+# needs-e2e→e2e-done) и НИКОГДА не получали e2e-done → merge-gate молчал →
+# issue висела OPEN при смерженном фиксе. Основной цикл выше обрабатывает
+# только issues с меткой `hermes`; ретро-issues меток не имеют вовсе.
+#
+# РЕШЕНИЕ: сканируем недавно смерженные PR (base=develop), извлекаем номера
+# issues из title/body, и для OPEN issues БЕЗ process-меток применяем ретро-путь:
+#   - PASS-доказательство есть (e2e run SUCCESS на ветке PR, ИЛИ CI-only PR
+#     с зелёным CI) → close issue с комментарием-доказательством;
+#   - иначе → ставим needs-e2e (e2e-process возьмёт issue в ротацию).
+#
+# Guard от пере-закрытия: issues с hermes/needs-e2e/e2e-done/e2e:rejected/
+# no-e2e-required пропускаем — их обрабатывают основные циклы. Дубликаты
+# комментариев дедуплицируются как в post-merge cleanup (6h окно).
+# ============================================================================
+RETRO_MERGED_DAYS="${RETRO_MERGED_DAYS:-14}"
+retro_closed=0
+retro_labeled=0
+
+log "retro-path: scanning merged PRs referencing unlabeled issues"
+
+# Недавно смерженные PR (base=develop). Ограничиваем окно, чтобы не сканировать
+# всю историю репозитория каждый тик.
+_retro_since="$(date -u -d "${RETRO_MERGED_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+_retro_prs_json="$(gh pr list --repo "$GH_REPO" --state merged --base "$DEVELOP_BRANCH" \
+    --limit 100 \
+    --json number,title,body,headRefName,mergedAt 2>/dev/null || echo '[]')"
+# Guard: пустой вывод gh (или сбой API) → валидный пустой список, иначе
+# python3 json.load('') уронит pipeline под set -o pipefail.
+if [ -z "$_retro_prs_json" ]; then
+    _retro_prs_json='[]'
+fi
+
+# Извлекаем (issue, pr, head): номера issues, на которые ссылается PR в
+# title/body (#N, closes #N, fixes #N). Скипаем PR, смерженные раньше окна,
+# и self-reference (номер PR в своём же body, например "PR: #1142").
+# ВАЖНО: process substitution (а не pipe), чтобы retro_closed/retro_labeled
+# накапливались в текущем shell и попали в summary.
+while IFS=$'\t' read -r r_issue r_pr r_head; do
+    [ -z "$r_issue" ] && continue
+    log "retro-path: issue #${r_issue} referenced by merged PR #${r_pr} (${r_head})"
+
+    # Перечитываем labels/state — race с e2e-process (как в основном цикле).
+    _r_labels_csv="$(gh issue view "$r_issue" --repo "$GH_REPO" --json labels \
+        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+    _r_labels_norm="$(printf '%s' "$_r_labels_csv" | tr '[:upper:]' '[:lower:]')"
+    if has_label "$_r_labels_norm" "$ISSUE_LABEL" \
+        || has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
+        || has_label "$_r_labels_norm" "$DONE_LABEL" \
+        || has_label "$_r_labels_norm" "$REJECTED_LABEL" \
+        || has_label "$_r_labels_norm" "$NO_E2E_LABEL"; then
+        log "retro-path: issue #${r_issue} уже в process-цикле (${_r_labels_norm}) — skip"
+        continue
+    fi
+    _r_state="$(gh issue view "$r_issue" --repo "$GH_REPO" --json state \
+        --jq '.state' 2>/dev/null || echo '')"
+    if [ "$_r_state" != "OPEN" ]; then
+        log "retro-path: issue #${r_issue} state=${_r_state} — skip"
+        continue
+    fi
+
+    # --- PASS-доказательство ---
+    _r_evidence=""
+    # (a) e2e run SUCCESS на ветке PR (самое сильное доказательство)
+    _r_e2e_ok="$(gh run list --repo "$GH_REPO" --branch "$r_head" \
+        --workflow "L: E2E Voice Test" --limit 20 \
+        --json conclusion --jq '[.[] | select(.conclusion == "success")] | length' 2>/dev/null || echo 0)"
+    if [ "${_r_e2e_ok:-0}" -gt 0 ] 2>/dev/null; then
+        _r_evidence="e2e run SUCCESS на ветке ${r_head}"
+    else
+        # (b) CI-only PR (все файлы в CI-контуре) + зелёный CI → e2e не нужен
+        _r_files="$(gh pr view "$r_pr" --repo "$GH_REPO" --json files \
+            --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+        _r_ci_only="$(printf '%s' "$_r_files" | python3 -c '
+import json, sys
+try:
+    files = json.load(sys.stdin)
+    ok = bool(files) and all(
+        f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+        for f in files
+    )
+    print("1" if ok else "0")
+except Exception:
+    print("0")
+' 2>/dev/null || echo 0)"
+        if [ "$_r_ci_only" = "1" ]; then
+            _r_rollup="$(gh pr view "$r_pr" --repo "$GH_REPO" --json statusCheckRollup \
+                --jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT")] | length' 2>/dev/null || echo 1)"
+            if [ "${_r_rollup:-1}" -eq 0 ] 2>/dev/null; then
+                _r_evidence="CI-only PR #${r_pr} (только .github/scripts/docs), CI зелёный — e2e не требуется"
+            fi
+        fi
+    fi
+
+    if [ -n "$_r_evidence" ]; then
+        log "retro-path: issue #${r_issue} PASS-доказательство: ${_r_evidence} — closing"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would close issue #${r_issue} (retro-path)"
+            retro_closed=$((retro_closed+1)); continue
+        fi
+        # Дедупликация комментария (6h) — не спамим каждый тик.
+        _r_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        _r_dup_count="$(gh api "repos/${GH_REPO}/issues/${r_issue}/comments?since=${_r_dedup_since}&per_page=100" \
+            --jq '[.[] | select(.body | startswith("✅ ретро-путь"))] | length' 2>/dev/null || echo 0)"
+        if [ "${_r_dup_count:-0}" -eq 0 ]; then
+            gh issue comment "$r_issue" --repo "$GH_REPO" --body \
+                "✅ ретро-путь (ADR-0014 gap, t_68607832): PR #${r_pr} смержен в ${DEVELOP_BRANCH}. PASS-доказательство: ${_r_evidence}. Issue закрыта." >/dev/null 2>&1 || true
+        fi
+        if gh issue close "$r_issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+            retro_closed=$((retro_closed+1))
+            log "retro-path: issue #${r_issue} CLOSED (reason=completed, ретро-путь)"
+        else
+            log "retro-path: WARNING close failed for #${r_issue} — retry next tick"
+        fi
+    else
+        log "retro-path: issue #${r_issue} без PASS-доказательства — ставим ${NEEDS_E2E_LABEL}"
+        if [ "$DRY_RUN" != "true" ]; then
+            gh issue edit "$r_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            gh issue comment "$r_issue" --repo "$GH_REPO" --body \
+                "agent-flow: 🔄 ретро-путь: PR #${r_pr} смержен, но PASS-доказательства не найдено. Поставлен ${NEEDS_E2E_LABEL} — e2e-process возьмёт issue в ротацию." >/dev/null 2>&1 || true
+        fi
+        retro_labeled=$((retro_labeled+1))
+    fi
+done < <(printf '%s' "$_retro_prs_json" | python3 -c '
+import json, sys, re
+data = json.load(sys.stdin)
+since = sys.argv[1]
+seen = set()
+for pr in data:
+    if (pr.get("mergedAt") or "") < since:
+        continue
+    pr_num = str(pr.get("number", ""))
+    text = (pr.get("title") or "") + "\n" + (pr.get("body") or "")
+    head = pr.get("headRefName") or ""
+    for m in re.finditer(r"#(\d+)", text):
+        issue = m.group(1)
+        if issue == pr_num:
+            continue
+        key = (issue, pr_num)
+        if key in seen:
+            continue
+        seen.add(key)
+        print(issue + "\t" + pr_num + "\t" + head)
+' "$_retro_since" 2>/dev/null)
+
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
