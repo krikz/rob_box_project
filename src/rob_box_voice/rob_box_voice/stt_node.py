@@ -409,7 +409,11 @@ class STTNode(Node):
         # (text, attempts) — text может быть None при итоговом отклонении.
         if _STT_FALLBACK_AVAILABLE:
             text, attempts = self._recognize_with_fallback(audio_bytes)
-            log_attempts(self.get_logger(), attempts, final_text=text)
+            # Issue #979 — final_text передаём только если фраза реально
+            # ПРИНЯТА: иначе rejected(short) («не» от Vosk) залогируется как
+            # «accepted» — ложь, вводит в заблуждение при отладке.
+            _accepted = bool(text) and not is_short_phrase(text, min_chars=self.min_text_chars)
+            log_attempts(self.get_logger(), attempts, final_text=text if _accepted else None)
             # Issue #1160 — Prometheus metrics: учитываем каждую попытку
             # (включая retry и fallback на Vosk). ``result``:
             # success = финальный непустой текст; empty = итоговый отказ.

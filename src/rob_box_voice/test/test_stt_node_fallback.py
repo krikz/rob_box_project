@@ -483,20 +483,26 @@ class TestRecognizeWithFallback:
         assert attempts[2].reason == "ok"
 
     def test_vosk_short_garbage_rejected(self, stt_node):
-        """Короткий Vosk-мусор (1 char) → None."""
+        """Короткий Vosk-мусор (1 char) → text=«а» (rejected(short), не None).
+
+        Возврат непустого текста критичен: speech_audio_callback по нему
+        отличает rejected(short) (был речевой ввод → переспросить) от
+        rejected(empty) (эхо → молчать), issue #979 acceptance.
+        """
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)
         stt_node._recognize_vosk = MagicMock(return_value="а")  # 1 char мусор
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
-        assert text is None
+        assert text == "а"
         # Последняя попытка — Vosk с low_confidence
         assert attempts[-1].reason == "low_confidence"
         assert attempts[-1].provider == "vosk"
 
     def test_respects_custom_min_text_chars(self, stt_node):
-        """min_text_chars=5 → фраза из 4 chars отклоняется."""
+        """min_text_chars=5 → фраза из 4 chars отклоняется, но текст
+        возвращается (rejected(short)) — caller переспросит."""
         stt_node.min_text_chars = 5
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
@@ -504,7 +510,7 @@ class TestRecognizeWithFallback:
         stt_node._recognize_vosk = MagicMock(return_value="стоп")  # 4 chars
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
-        assert text is None  # отклонено как low_confidence
+        assert text == "стоп"  # не None: rejected(short), не rejected(empty)
         assert attempts[-1].reason == "low_confidence"
 
 
@@ -585,6 +591,35 @@ class TestSpeakUnclear:
 
         assert stt_node.result_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 1
+
+    def test_speech_audio_callback_vosk_garbage_speaks_unclear_real_path(self, stt_node):
+        """Issue #979 acceptance: реальный путь Yandex empty → Vosk «не»
+        (мусор) должен привести к «не расслышал», а НЕ к молчанию.
+
+        До фикса select_recognition возвращал None при low_confidence, и
+        speech_audio_callback классифицировал это как rejected(empty) →
+        робот молчал (именно баг из issue #979). После фикса возвращается
+        последний непустой текст («не») → rejected(short) → «не расслышал».
+        """
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+        stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
+        stt_node._recognize_vosk = MagicMock(return_value="не")  # 2 chars мусор
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node._last_unclear_at = 0.0
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        # Результат НЕ опубликован (слишком короткое), но робот просит
+        # повторить: «Не расслышал, скажи ещё раз» — вместо молчания.
+        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.tts_request_pub.publish.call_count == 1
+        payload = stt_node.tts_request_pub.publish.call_args[0][0].data
+        assert "Не расслышал" in payload
 
 
 class TestTTSGracePeriod:
