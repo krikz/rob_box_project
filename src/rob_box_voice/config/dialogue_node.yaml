@@ -61,8 +61,10 @@ dialogue_node:
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).
+    # Пустой startup_greeting_text → случайная прикольная фраза из
+    # startup_greeting.GREETINGS (9 вариантов, «Мяу! Я на связи!» и т.д.).
     startup_greeting_sec: 12.0
-    startup_greeting_text: "Я на связи, все системы в норме!"
+    startup_greeting_text: ''
     # api_key — пусто → fallback на ENV (DEEPSEEK_API_KEY / MINIMAX_API_KEY / YANDEX_API_KEY).
     # Секреты не хранятся в YAML.
     api_key: ''

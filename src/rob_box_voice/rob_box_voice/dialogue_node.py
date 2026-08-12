@@ -70,6 +70,11 @@ from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
     strip_history_marker, strip_markdown, strip_thinking_blocks,
 )
+from rob_box_voice.startup_greeting import (
+    THINKING_SOUND,
+    pick_finish_sound,
+    pick_greeting,
+)
 from rob_box_voice.speaker_profiles import (
     SpeakerTracker,
     extract_speaker_name,
@@ -464,17 +469,17 @@ class DialogueNode(Node):
         # таймер: через startup_greeting_sec секунд после старта говорим
         # фразу. tts_node к этому моменту уже прогрет (он стартует раньше
         # и грузится ~3-5с), поэтому гонки нет. 0 = выключено.
+        # Фраза — случайная из GREETINGS (startup_greeting.py), если
+        # startup_greeting_text пустой (или не задан); иначе — явный текст.
         self._startup_greeting_sec = float(
             self.get_parameter("startup_greeting_sec").value or 0.0
         )
         self._startup_greeting_text = str(
-            self.get_parameter("startup_greeting_text").value
-            or "Я на связи, все системы в норме!"
+            self.get_parameter("startup_greeting_text").value or ""
         )
         if self._startup_greeting_sec > 0:
             self.get_logger().info(
-                f"🗣 Startup greeting через {self._startup_greeting_sec:.0f}s: "
-                f"{self._startup_greeting_text!r}"
+                f"🗣 Startup greeting через {self._startup_greeting_sec:.0f}s"
             )
             self.create_timer(
                 self._startup_greeting_sec, self._on_startup_greeting
@@ -545,11 +550,9 @@ class DialogueNode(Node):
         # через N секунд после старта говорит фразу напрямую через
         # _publish_response (тот же путь, что и обычная речь робота).
         # 0 = отключено, >0 = задержка в секундах.
+        # Пустой startup_greeting_text → случайная фраза из GREETINGS.
         self.declare_parameter("startup_greeting_sec", 12.0)
-        self.declare_parameter(
-            "startup_greeting_text",
-            "Я на связи, все системы в норме!",
-        )
+        self.declare_parameter("startup_greeting_text", "")
         self._startup_greeting_fired = False
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
@@ -3036,18 +3039,62 @@ class DialogueNode(Node):
         фраза терялась. Теперь dialogue_node сам ждёт N секунд и шлёт
         текст тем же путём, что обычная речь (build_ssml_payload →
         /voice/dialogue/response → tts_node).
+
+        Последовательность: [thinking] → пауза → [cute/very_cute] →
+        случайная фраза из GREETINGS (или явный startup_greeting_text).
+        Если юзер уже говорит (состояние != IDLE) — приветствие
+        пропускаем, чтобы не перебивать диалог (acceptance #1003).
         """
         if self._startup_greeting_fired:
             return
         self._startup_greeting_fired = True
+
+        # Не перебиваем активный диалог / DJ-режим: приветствие —
+        # только когда система в IDLE (юзер ещё не начал говорить).
+        if self._dsm.current_state != DialogueStateKind.IDLE:
+            self.get_logger().info(
+                "Startup greeting: диалог активен — пропускаю приветствие"
+            )
+            return
+
         # Thinking-звук, как при обычном диалоге.
         sfx = String()
-        sfx.data = "thinking"
+        sfx.data = THINKING_SOUND
         self._sound_trigger_pub.publish(sfx)
-        self.get_logger().info(
-            f"🗣 Startup greeting: {self._startup_greeting_text!r}"
+
+        # Через 2с — радостный звук, ещё через 1.5с — фраза (как в
+        # оригинальной startup_greeting_node до рефакторинга).
+        self._greeting_timer = self.create_timer(
+            2.0, self._on_startup_greeting_finish
         )
-        self._publish_response(self._startup_greeting_text)
+
+    def _on_startup_greeting_finish(self) -> None:
+        """Вторая фаза приветствия: радостный звук cute/very_cute."""
+        self._cancel_greeting_timer()
+        sfx = String()
+        sfx.data = pick_finish_sound()
+        self._sound_trigger_pub.publish(sfx)
+        self._greeting_timer = self.create_timer(
+            1.5, self._on_startup_greeting_speak
+        )
+
+    def _on_startup_greeting_speak(self) -> None:
+        """Третья фаза: публикуем случайную фразу приветствия."""
+        self._cancel_greeting_timer()
+        phrase = pick_greeting(self._startup_greeting_text)
+        self.get_logger().info(f"🗣 Startup greeting: {phrase!r}")
+        self._publish_response(phrase)
+
+    def _cancel_greeting_timer(self) -> None:
+        """Отменить одноразовый таймер приветствия, если он создан."""
+        timer = getattr(self, "_greeting_timer", None)
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:  # noqa: BLE001 — таймер может быть уже сработавшим
+                pass
+            self._greeting_timer = None
+
     def _publish_response(self, text: str, animation: str = "neutral") -> None:
         """Single-chunk publish — kept for backwards compatibility.
 
