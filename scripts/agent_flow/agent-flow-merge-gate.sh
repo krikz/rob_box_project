@@ -556,6 +556,26 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
         fi
     fi
 
+    # --- e2e-done + OPEN PR → needs-review (ретро 13.08 t_92ec94f3, Q22) ---
+    # Разрыв после e2e-done: post_round_sweep в e2e-process (и прерванная
+    # wait-фаза основного цикла) ставили e2e-done на issue, но НЕ ставили
+    # needs-review на PR. Дальше issue «молчит»: e2e-process скипает её
+    # (e2e-done), мы тоже скипали (e2e-done, см. idempotency ниже) →
+    # товарищ Шифу не видит PR в очереди ревью (наблюдение 12.08:
+    # #929/#933 e2e-done без needs-review; kanban: все карточки done).
+    # Reconcile (5m loop): e2e-done + OPEN PR (base=develop) → ставим
+    # needs-review на PR + снимаем needs-e2e с PR (если осталась от старого
+    # цикла). Идемпотентно: повторный тик add-label — no-op. НЕ трогаем
+    # MERGED PR — их закрывает post-merge reconcile (ADR-0014) ниже.
+    if has_label "$labels_norm" "$DONE_LABEL" && [ "$pr_state" = "OPEN" ]; then
+        log "issue #${number}: ${DONE_LABEL} + OPEN PR #${pr_number} → reconcile ${NEEDS_REVIEW_LABEL}"
+        if [ "$DRY_RUN" != "true" ]; then
+            gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+            gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        fi
+        labeled=$((labeled+1)); continue
+    fi
+
     # MERGED (Q22 done manually by user): post-merge reconciliation per
     # ADR-0014 (docs/adr/0014-agent-flow-issue-closure.md).
     #

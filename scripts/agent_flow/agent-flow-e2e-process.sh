@@ -699,6 +699,27 @@ except Exception:
         gh issue comment "$_sn" --repo "$GH_REPO" --body \
             "agent-flow: ✅ e2e-done (post-round sweep): run #${_sweep_run_id} SUCCESS на ${_sweep_round} — процесс был прерван на wait-фазе, метка применена следующим тиком." >/dev/null 2>&1 || true
         log "post-round sweep: issue #${_sn} → ${DONE_LABEL} (run #${_sweep_run_id})"
+
+        # PR-side success-обработка (ретро 13.08 t_92ec94f3, Q22):
+        # Основной цикл на SUCCESS делает ПОЛНЫЙ набор: e2e-done + needs-review
+        # на PR, remove needs-e2e с PR, доклад в PR. Sweep раньше лечил ТОЛЬКО
+        # issue-side (e2e-done + remove needs-e2e) → вылеченная issue «молчала»:
+        # e2e-process скипает её (e2e-done), merge-gate тоже (e2e-done),
+        # needs-review не стоит → товарищ Шифу не видит PR в очереди ревью
+        # (наблюдение 12.08: #929/#933 e2e-done без needs-review).
+        # Повторяем здесь минимальный PR-side набор (без gate-карточки воркеру —
+        # needs-review открывает ревью; merge-gate reconcile (ретро 13.08)
+        # добивает любые пропущенные случаи каждые 5 мин).
+        _sw_title="$(gh issue view "$_sn" --repo "$GH_REPO" --json title --jq '.title' 2>/dev/null || echo '')"
+        _sw_branch="$(compute_agent_branch "$_sn" "$_sw_title")"
+        _sw_pr="$(gh pr list --repo "$GH_REPO" --state all --head "$_sw_branch" \
+            --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo '')"
+        if [ -n "$_sw_pr" ]; then
+            gh pr edit "$_sw_pr" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
+            gh pr edit "$_sw_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+            gh pr edit "$_sw_pr" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            log "post-round sweep: issue #${_sn} → PR #${_sw_pr} ${DONE_LABEL}+${NEEDS_REVIEW_LABEL} (PR-side success processing)"
+        fi
     done
     return 0
 }
