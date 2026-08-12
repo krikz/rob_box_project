@@ -279,6 +279,26 @@ jobs:
             sleep 5
           done
 
+      - name: "[Vision Pi] Fetch .image-versions from ci/image-versions"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 Fetching .image-versions from ci/image-versions branch..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Issue #1139: SHA-теги больше не коммитятся в develop/main/vision —
+          # .image-versions живут в отдельной ветке ci/image-versions.
+          # Подтягиваем актуальные файлы на Pi перед pull/up (если ветка уже создана билдом).
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin ci/image-versions && \
+               git checkout origin/ci/image-versions -- docker/vision/.image-versions.* 2>/dev/null || true" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
@@ -363,6 +383,26 @@ jobs:
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
                git reset --hard origin/${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: "[Main Pi] Fetch .image-versions from ci/image-versions"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 Fetching .image-versions from ci/image-versions branch..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Issue #1139: SHA-теги больше не коммитятся в develop/main/vision —
+          # .image-versions живут в отдельной ветке ci/image-versions.
+          # Подтягиваем актуальные файлы на Pi перед pull/up (если ветка уже создана билдом).
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin ci/image-versions && \
+               git checkout origin/ci/image-versions -- docker/main/.image-versions.* 2>/dev/null || true" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
