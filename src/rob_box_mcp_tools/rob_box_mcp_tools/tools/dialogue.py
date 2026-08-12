@@ -104,9 +104,21 @@ class SpeakTextTool(MCPTool):
         with self.pending_speeches_lock:
             entry = self.pending_speeches.pop(speech_id, None)
             if entry is None:
-                self.log_warning(
-                    f"⚠️ Speech {speech_id[:8]}... не найден в pending_speeches "
-                    "(возможно уже удалён)"
+                # 🔴 FIX (issue #776, live 12.08): /voice/tts/finished — общий
+                # топик для ВСЕХ отправителей TTS. tts_node публикует finished
+                # для любого speech_id, включая системные реплики dialogue_node
+                # (триггеры thinking/confused, DJ-прощание и т.п.), которые НЕ
+                # регистрируются в pending_speeches mcp_server. Плюс для
+                # последнего чанка батча tts_node намеренно republish'ит
+                # finished с batch_complete=true (issue #980, контракт
+                # "subscribers are designed to be idempotent"). Оба случая —
+                # штатное поведение общего топика: это не warning, а debug.
+                # Реальная рассинхронизация (entry есть, batch None) ниже
+                # по-прежнему остаётся warning.
+                self.log_debug(
+                    f"ℹ️ Speech {speech_id[:8]}... не найден в pending_speeches "
+                    "(чужой TTS от dialogue_node или повторный finished с "
+                    "batch_complete — игнорируем)"
                 )
                 return
             batch_id = entry["batch_id"]
