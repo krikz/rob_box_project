@@ -29,6 +29,7 @@ set -euo pipefail
 HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
 KANBAN_BOARDS_DIR="$HERMES_HOME/kanban/boards"
 HEARTBEAT_STALE_SECONDS=600   # 10 min
+TELEGRAM_STUCK_MINUTES=15     # reconnect-loop detection window (retro 12.08 t_5af222ea)
 RESTART_COOLDOWN_FILE="$HERMES_HOME/state/watchdog.last_restart"
 
 mkdir -p "$(dirname "$RESTART_COOLDOWN_FILE")"
@@ -37,16 +38,19 @@ log() { printf '[watchdog] %s\n' "$*" >&2; }
 
 # Delegate all detection to a Python helper so we can use the bundled
 # Python 3 (with sqlite3) without depending on the sqlite3 CLI.
-python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" \
+python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" \
     <<'PYEOF'
 import os, sys, glob, subprocess, time
+from datetime import datetime
 
 hermes_home = sys.argv[1]
 boards_dir = sys.argv[2]
 stale_sec = int(sys.argv[3])
+telegram_stuck_min = int(sys.argv[4]) if len(sys.argv) > 4 else 15
 
 issues = []
 recovery = []
+workers_by_unit = set()   # systemd units hosting live kanban worker pids
 
 for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
     if not os.path.isfile(db):
@@ -68,6 +72,19 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
             "FROM tasks WHERE status='running'"
         )
         for task_id, pid, heartbeat in cur.fetchall():
+            # which unit hosts this live worker (used by telegram self-heal
+            # to avoid restarting a gateway that hosts in-flight workers)
+            if pid and pid > 0:
+                try:
+                    with open(f"/proc/{int(pid)}/cgroup", encoding="utf-8") as cf:
+                        cg = cf.read()
+                    for tok in cg.split():
+                        if "app.slice/" in tok:
+                            unit = tok.split("app.slice/", 1)[1].split("/", 1)[0]
+                            if unit:
+                                workers_by_unit.add(unit)
+                except Exception:
+                    pass
             age = now - int(heartbeat)
             if age >= stale_sec:
                 alive = False
@@ -137,6 +154,137 @@ if not dispatcher_alive:
                 start_new_session=True,
             )
             restarted = True
+
+# 3.5 telegram: duplicate token holders + reconnect loops (retro 12.08 t_5af222ea)
+# Root cause of the 22h reconnect loop: several profiles shared ONE
+# TELEGRAM_BOT_TOKEN (.env copied by the update), only one gateway can hold
+# it, the rest retried every 300s forever and the watchdog was silent.
+telegram_issues = []
+
+def _profile_name(home_path: str) -> str:
+    base = os.path.basename(home_path.rstrip("/"))
+    return "default" if base == ".hermes" else base
+
+# 3.5a root cause: profiles with an ACTIVE TELEGRAM_BOT_TOKEN in .env
+token_profiles = []
+for home_path in [hermes_home] + sorted(glob.glob(f"{hermes_home}/profiles/*")):
+    env_path = os.path.join(home_path, ".env")
+    if not os.path.isfile(env_path):
+        continue
+    try:
+        for ln in open(env_path, encoding="utf-8", errors="replace"):
+            if ln.startswith("TELEGRAM_BOT_TOKEN="):
+                val = ln.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    token_profiles.append(_profile_name(home_path))
+                break
+    except Exception:
+        pass
+if len(token_profiles) > 1:
+    telegram_issues.append(
+        f"[telegram] duplicate TELEGRAM_BOT_TOKEN holders: {', '.join(token_profiles)} — "
+        "only ONE profile should hold the bot token; comment it out in the others' .env"
+    )
+
+# 3.5b reconnect loop per running gateway (log-based — gateway_state.json is
+# unreliable: it keeps a stale per-platform entry from the previous process)
+def _parse_log_ts(line: str) -> float:
+    try:
+        return datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+    except Exception:
+        return 0.0
+
+def _proc_start_epoch(pid: str) -> float:
+    """Epoch of a process start (from /proc/<pid>/stat field 22)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            data = f.read()
+        rpar = data.rfind(")")
+        fields = data[rpar + 2:].split()
+        start_ticks = int(fields[19])  # field 22 (1-based) after comm
+        with open("/proc/uptime", encoding="utf-8") as f:
+            uptime = float(f.read().split()[0])
+        clk = os.sysconf("SC_CLK_TCK")
+        return time.time() - uptime + start_ticks / clk
+    except Exception:
+        return 0.0
+
+def _gateway_home(profile: str) -> str:
+    return hermes_home if profile == "default" else f"{hermes_home}/profiles/{profile}"
+
+def _gateway_unit(profile: str) -> str:
+    return "hermes-gateway.service" if profile == "default" else f"hermes-gateway-{profile}.service"
+
+def _systemctl_restart(unit: str) -> bool:
+    env = dict(os.environ)
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "restart", unit],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        return True
+    except Exception:
+        return False
+
+now = int(time.time())
+stuck_cutoff = now - telegram_stuck_min * 60
+stuck_gateways = []   # (profile, unit, pid)
+for line in out.stdout.splitlines()[1:]:
+    if "hermes_cli.main" not in line or "gateway run" not in line:
+        continue
+    parts = line.split(None, 1)
+    if len(parts) != 2:
+        continue
+    gw_pid = parts[0]
+    gw_args = parts[1]
+    profile = "default"
+    if "--profile" in gw_args:
+        try:
+            profile = gw_args.split("--profile", 1)[1].split()[0].strip()
+        except Exception:
+            pass
+    log_path = os.path.join(_gateway_home(profile), "logs", "gateway.log")
+    if not os.path.isfile(log_path):
+        continue
+    try:
+        last_hit = None
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if "already in use" in ln or "Reconnecting telegram" in ln:
+                    last_hit = ln
+        if last_hit:
+            hit_ts = _parse_log_ts(last_hit)
+            proc_start = _proc_start_epoch(gw_pid)
+            # stuck only if the CURRENT process is the one retrying: the
+            # last hit must be newer than both the cutoff and the process start
+            if hit_ts >= stuck_cutoff and hit_ts >= proc_start - 5:
+                stuck_gateways.append((profile, _gateway_unit(profile), gw_pid))
+    except Exception:
+        continue
+
+for profile, unit, gw_pid in stuck_gateways:
+    if unit in workers_by_unit:
+        telegram_issues.append(
+            f"[telegram] gateway {unit} (pid={gw_pid}) stuck in token-lock reconnect loop but "
+            f"hosts in-flight kanban workers — restart deferred; will self-heal when workers finish"
+        )
+        continue
+    if _systemctl_restart(unit):
+        telegram_issues.append(
+            f"[telegram] gateway {unit} (pid={gw_pid}) stuck in token-lock reconnect loop — "
+            f"restarted (unit now reloads .env without the token)"
+        )
+        recovery.append(f"telegram|{unit}|restarted")
+    else:
+        telegram_issues.append(
+            f"[telegram] gateway {unit} (pid={gw_pid}) stuck in token-lock reconnect loop — "
+            f"restart FAILED, manual: systemctl --user restart {unit}"
+        )
+
+issues.extend(telegram_issues)
 
 # 4. report
 if not issues:
