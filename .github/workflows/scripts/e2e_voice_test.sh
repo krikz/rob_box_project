@@ -354,22 +354,27 @@ fi
 
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
+    echo "E2E_REACTION_OK"    # маркер для пост-валидатора (в stdout → e2e_atomic_out.log)
     ensure_outdir
     echo "PASS" > "$OUT_DIR/verdict.txt"
-    # Issue #1135: маркер для пост-валидатора в L-E2E Voice Test.yml.
-    # Валидатор читает ``docker logs voice-assistant --since 15m`` и ищет
-    # ``E2E_REACTION_OK``. Docker с log driver ``json-file`` не подхватывает
-    # syslog (logger) — пишем маркер напрямую в stdout контейнера через
-    # ``docker exec bash -c 'echo ... >&1'``.
+    # Issue #1135/#1138: маркер для пост-валидатора в L-E2E Voice Test.yml.
+    # ВАЖНО (ретро 12.08 t_4e592534): ``docker exec bash -c 'echo ...'`` БЕЗ
+    # перенаправления НЕ попадает в ``docker logs`` (json-file драйвер пишет
+    # только stdout PID 1 контейнера; вывод docker exec идёт в exec-сессию,
+    # не в лог). Эмпирически: 0 вхождений. Рабочий способ — писать в
+    # ``/proc/1/fd/1`` (stdout PID 1): ``docker logs`` его видит (проверено).
+    # Сам маркер дублируется в stdout харнесса (E2E_REACTION_OK выше) — это
+    # основной канал для валидатора (e2e_atomic_out.log).
     ${ROBOT_SSH} \
-        "docker exec voice-assistant bash -c 'echo E2E_REACTION_OK'" \
+        "docker exec voice-assistant bash -c 'echo E2E_REACTION_OK > /proc/1/fd/1'" \
         >/dev/null 2>&1 || true
 else
     echo "E2E_VERDICT FAIL"
+    echo "E2E_NO_REACTION"    # маркер для пост-валидатора (в stdout → e2e_atomic_out.log)
     ensure_outdir
     echo "FAIL" > "$OUT_DIR/verdict.txt"
     ${ROBOT_SSH} \
-        "docker exec voice-assistant bash -c 'echo E2E_NO_REACTION'" \
+        "docker exec voice-assistant bash -c 'echo E2E_NO_REACTION > /proc/1/fd/1'" \
         >/dev/null 2>&1 || true
 fi
 echo "E2E_ARTIFACTS $OUT_DIR"
