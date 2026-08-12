@@ -47,7 +47,7 @@ RUN_NOW_LOCK="${RUN_NOW_LOCK:-/tmp/agent-flow-run-now.lock}"
 E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-$HERMES_HOME/profiles/architect/scripts/agent-flow-e2e-process.sh}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 
-if git ls-remote "https://github.com/${GH_REPO}.git" "refs/heads/develop:${RUN_NOW_FILE}" 2>/dev/null | grep -q .; then
+if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
     # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
     if [ ! -f "$RUN_NOW_LOCK" ] || ! kill -0 "$(cat "$RUN_NOW_LOCK" 2>/dev/null)" 2>/dev/null; then
         log "🚀 RUN_NOW detected — triggering e2e-process (${E2E_PROCESS_SCRIPT})"
