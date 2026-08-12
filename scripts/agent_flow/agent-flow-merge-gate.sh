@@ -1147,8 +1147,12 @@ except Exception:
     print("0")
 ' 2>/dev/null || echo 0)"
         if [ "$_r_ci_only" = "1" ]; then
+            # ВНИМАНИЕ (ретро 12.08 t_061d466e): фильтр обязан разыменовывать
+            # .statusCheckRollup[] — иначе jq применяется к объекту
+            # {"statusCheckRollup":[...]} и падает «expected an object but got:
+            # array» → rollup=1 → CI-only PASS не находится (петля #1041).
             _r_rollup="$(gh pr view "$r_pr" --repo "$GH_REPO" --json statusCheckRollup \
-                --jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT")] | length' 2>/dev/null || echo 1)"
+                --jq '[.statusCheckRollup[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT")] | length' 2>/dev/null || echo 1)"
             if [ "${_r_rollup:-1}" -eq 0 ] 2>/dev/null; then
                 _r_evidence="CI-only PR #${r_pr} (только .github/scripts/docs), CI зелёный — e2e не требуется"
             fi
