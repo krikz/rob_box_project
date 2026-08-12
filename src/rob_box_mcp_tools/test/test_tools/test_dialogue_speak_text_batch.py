@@ -210,13 +210,59 @@ class TestSpeakTextBatchTracking:
     def test_finished_for_unknown_speech_does_not_publish_batch_complete(
         self, mock_node
     ):
-        """finished с неизвестным speech_id — no-op (не крашимся)."""
+        """finished с неизвестным speech_id — no-op (не крашимся).
+
+        Issue #776: /voice/tts/finished — общий топик. tts_node публикует
+        finished и для системных реплик dialogue_node, которые mcp_server
+        не регистрировал. Такой finished не должен:
+          * публиковать batch_complete;
+          * логировать WARNING (это штатное поведение, не ошибка).
+        """
         tool = SpeakTextTool(mock_node)
         bc_pub = mock_node.get_publisher("/voice/tts/batch_complete")
+        logger = mock_node.get_logger()
         # Нет ни одного зарегистрированного speech — finished не должен
         # ничего публиковать и не должен падать.
         tool._on_tts_finished(_make_finished_msg("ghost-speech-id"))
         assert bc_pub.published_messages == []
+        assert logger.warning_messages == [], (
+            "Чужой finished на общем топике не должен порождать warning "
+            "(issue #776)"
+        )
+
+    def test_duplicate_finished_for_completed_speech_is_not_warning(
+        self, mock_node
+    ):
+        """Повторный finished для уже завершённого speech_id — не warning.
+
+        Issue #776: tts_node для последнего чанка батча намеренно публикует
+        finished ДВАЖДЫ (обычный + republish с batch_complete=true, issue
+        #980 — контракт "subscribers are designed to be idempotent").
+        Второй finished для speech_id, который уже удалён из
+        pending_speeches, не должен логироваться как warning.
+        """
+        tool = SpeakTextTool(mock_node)
+        logger = mock_node.get_logger()
+        result = tool.execute(text="Привет", animation="idle")
+        assert result.data is not None
+        speech_id = result.data["speech_ids"][0]
+
+        # Первый finished — нормальная обработка, batch_complete публикуется
+        tool._on_tts_finished(_make_finished_msg(speech_id, success=True))
+        assert logger.warning_messages == []
+
+        # Повторный finished (republish с batch_complete) — тот же speech_id.
+        # Раньше это давало warning «не найден в pending_speeches».
+        dup = Mock()
+        dup.data = json.dumps({
+            "speech_id": speech_id,
+            "success": True,
+            "batch_complete": True,
+        })
+        tool._on_tts_finished(dup)
+        assert logger.warning_messages == [], (
+            "Повторный finished не должен порождать warning (issue #776)"
+        )
 
     def test_finished_with_malformed_payload_does_not_crash(
         self, mock_node
