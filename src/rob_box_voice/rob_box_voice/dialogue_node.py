@@ -780,10 +780,11 @@ class DialogueNode(Node):
 
         # ── Single provider — no fallback needed ────────────────────────
         if len(built) == 1:
+            # NOTE: rclpy RcutilsLogger accepts max 2 positional args
+            # (fmt, args). Use f-string to avoid "takes 2 positional
+            # arguments but N were given" + silent Empty assistant.
             self.get_logger().info(
-                "[health] build_llm: provider_chain=%s active=%s (single)",
-                chain_display,
-                chain_display[0],
+                f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (single)",
             )
             return built[0]
 
@@ -826,11 +827,11 @@ class DialogueNode(Node):
                     )
                 balance_checkers["deepseek"] = _deepseek_balance_probe
 
+        # NOTE: rclpy RcutilsLogger accepts max 2 positional args
+        # (fmt, args). Use f-string to avoid "takes 2 positional
+        # arguments but N were given" + silent Empty assistant.
         self.get_logger().info(
-            "[health] build_llm: provider_chain=%s active=%s (health-aware, TTL %.0fs)",
-            chain_display,
-            chain_display[0],
-            health_ttl,
+            f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (health-aware, TTL {health_ttl:.0f}s)",
         )
         return HealthAwareFallbackLLM(
             built,
