@@ -289,6 +289,29 @@ docker-compose up -d
 - [ ] Коммит-сообщение описывает изменения
 - [ ] Нет конфликтов с целевой веткой
 
+### 🔁 ROS-параметры нод: без дублей `declare_parameter` (issue #976)
+
+**Правило (ретро 04.08, issue #976):** перед коммитом изменений в любой
+ROS-ноде (`*_node.py`) убедись, что каждый параметр объявлен **ровно один
+раз**. Дубликат `declare_parameter` для одного и того же имени валит ноду на
+старте:
+
+```
+rclpy.exceptions.ParameterAlreadyDeclaredException:
+    ('Parameter(s) already declared', ['chunk_max_chars_yandex'])
+```
+
+Проверка перед `git push`:
+
+```bash
+grep -n 'declare_parameter' src/rob_box_voice/rob_box_voice/tts_node.py \
+  | sort | uniq -c | sort -rn
+```
+
+Каждое имя параметра должно встречаться с счётчиком `1`. Если видишь `2` —
+удали дубль (в `__init__` ноды может остаться старый блок после merge
+параллельных веток, см. `test_no_duplicate_declare_parameter.py`).
+
 ## 📝 Стиль коммит-сообщений
 
 Используем [Conventional Commits](https://www.conventionalcommits.org/):
