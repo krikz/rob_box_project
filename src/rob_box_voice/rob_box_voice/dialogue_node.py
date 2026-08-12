@@ -355,6 +355,21 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
             )
+        # Issue #1016 — empty-response music fallback. When the LLM returns
+        # an empty reply to a music request, dialogue_node asks mcp_server
+        # to play the top-rated human track from the library instead of
+        # leaving the user in silence.
+        try:
+            self._music_fallback_pub = self.create_publisher(
+                String, "/mcp/music_fallback", 10)
+            self.get_logger().info(
+                "🎵 [dialogue_node] Publisher на /mcp/music_fallback готов (issue #1016)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._music_fallback_pub = None
+            self.get_logger().warning(
+                f"⚠️ [dialogue_node] Не удалось создать /mcp/music_fallback publisher: {exc}"
+            )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
         # Issue #1077 — speaker_tag от Yandex speaker_analysis (отдельный
@@ -2826,6 +2841,21 @@ class DialogueNode(Node):
             # СЛЕДУЮЩИЙ turn LLM увидела, что прислала пустоту и так
             # делать не надо. Юзер не получает ложного «задумался».
             if not tools_called:
+                # Issue #1016 — empty-response music fallback: LLM вернула
+                # пустоту на музыкальный запрос («поставь что-нибудь»,
+                # «сыграй классику», «включи музыку») и НЕ вызвала ни одного
+                # тула. Просим mcp_server сыграть топ-трек из библиотеки
+                # (rating DESC), чтобы юзер услышал музыку, а не тишину.
+                try:
+                    if self._user_wants_music(user_input or ""):
+                        self._publish_music_fallback(reason="empty_response")
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ music_fallback trigger failed: {exc}"
+                        )
+                    except Exception:
+                        pass
                 # 🔴 FIX (live 12.08): весь empty-response fallback
                 # обёрнут в try/except — если любой внутренний вызов
                 # (включая логгер!) упадёт, пользователь ВСЁ РАВНО
@@ -3110,6 +3140,33 @@ class DialogueNode(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
+            )
+
+    def _publish_music_fallback(self, reason: str = "empty_response") -> None:
+        """Issue #1016 — ask mcp_server to play the top-rated library track.
+
+        Used in the empty-response fallback: when the LLM returns no text
+        AND no tool calls for a music request («поставь что-нибудь»,
+        «сыграй классику»), the user should hear *something* — the best
+        human track from the library — instead of silence.
+
+        Best-effort: if the publisher was never created (mcp_server not
+        running in this container), this is a silent no-op. mcp_server
+        decides what to do — currently it plays the top-rated track from
+        ``music_tracks`` (rating DESC).
+        """
+        if getattr(self, "_music_fallback_pub", None) is None:
+            self.get_logger().debug("music_fallback publisher not available")
+            return
+        try:
+            payload = json.dumps({"reason": reason})
+            msg = String()
+            msg.data = payload
+            self._music_fallback_pub.publish(msg)
+            self.get_logger().info(f"music_fallback sent: reason={reason}")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
             )
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):

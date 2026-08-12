@@ -47,6 +47,33 @@ _BLOCKED_TOKENS = re.compile(
     r")\b"
 )
 
+# ---------------------------------------------------------------------------
+# Issue #1016 — music-quality guardrail (dramaturgy validator)
+# ---------------------------------------------------------------------------
+# The safety filter above blocks *dangerous system tokens*. This separate
+# guardrail validates *musical quality* before the code reaches Renardo so
+# the LLM cannot regenerate a static 4-8 note loop:
+#
+#   1. Absolute frequencies (freq=440 / hz=220 / midinote=69) are rejected
+#      — Renardo wants scale *degrees* (p1 >> pluck([0,4,7])), not Hz.
+#   2. Every non-play player must carry an explicit ``dur=`` — otherwise
+#      the pattern defaults to a staccato click-train.
+#   3. (soft) A multi-part track without any developing pattern
+#      (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``) is a static
+#      loop — warn so the LLM can fix it before the user hears it.
+#
+# Errors block execution; warnings are appended to the result message.
+
+_ABSOLUTE_FREQ_RE = re.compile(
+    r"\b(?:freq|frequency|hz|midinote|note)\s*=\s*(\d+(?:\.\d+)?)"
+)
+# Player creation lines: `p1 >> pluck([0,2,4], dur=0.5)` / `d1 >> play("x-o-")`
+_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\(([^)]*)\)", re.MULTILINE)
+# Developing patterns that break a static loop (issue #1016).
+_DEV_PATTERN_RE = re.compile(
+    r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
+)
+
 
 # ---------------------------------------------------------------------------
 # MusicManager
@@ -598,6 +625,68 @@ class MusicManager:
             return False, f"Запрещённый токен в коде: '{match.group()}'"
         return True, ""
 
+    # ------------------------------------------------------------------
+    # Issue #1016 — music-quality guardrail (dramaturgy validator)
+    # ------------------------------------------------------------------
+
+    def _validate_music_code(self, code: str) -> Tuple[List[str], List[str]]:
+        """Проверить музыкальное качество кода перед отправкой в Renardo.
+
+        Отличается от :meth:`_filter_code` (безопасность): этот валидатор
+        ловит *музыкальные* ошибки LLM, из-за которых трек звучит как
+        статичный луп (issue #1016):
+
+        1. Абсолютные частоты (``freq=440`` / ``hz=220`` / ``midinote=69``)
+           — Renardo ожидает ступени (``p1 >> pluck([0,4,7])``), а не Hz.
+           → HARD error, выполнение блокируется.
+        2. ``dur=`` у каждого не-play плеера — без него паттерн играет
+           staccato-щелчками (дефолтный dur=1 с sus=0).
+           → WARNING (play() имеет собственный dur из паттерна).
+        3. (soft) Многоголосный трек без развивающих паттернов
+           (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``)
+           — статичный повтор 4-8 нот.
+           → WARNING, чтобы LLM исправила до того, как юзер услышит.
+
+        Returns:
+            (errors, warnings) — списки строк. errors блокируют выполнение,
+            warnings добавляются в result message (LLM их увидит).
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        # 1. Абсолютные частоты — жёсткий запрет (только ступени).
+        freq_match = _ABSOLUTE_FREQ_RE.search(code)
+        if freq_match:
+            errors.append(
+                "Абсолютные частоты запрещены (Renardo ожидает ступени): "
+                f"'{freq_match.group(0)}'. Используй степени, например "
+                "p1 >> pluck([0,4,7]) или p1 >> pluck([0,4,7], oct=3)."
+            )
+
+        # 2. dur= у каждого не-play плеера — soft warning.
+        players = list(_PLAYER_LINE_RE.finditer(code))
+        for m in players:
+            player_name, synth, args = m.group(1), m.group(2), m.group(3)
+            if synth == "play":
+                continue  # play() имеет dur из строки паттерна
+            if "dur" not in args:
+                warnings.append(
+                    f"У '{player_name} >> {synth}(...)' нет dur= — паттерн "
+                    "будет звучать как staccato-щелчки. Добавь dur (например "
+                    "dur=0.5 или dur=[0.5,0.25])."
+                )
+
+        # 3. Многоголосный трек без развития — soft warning.
+        if len(players) >= 2 and not _DEV_PATTERN_RE.search(code):
+            warnings.append(
+                "В коде нет развивающих паттернов (.every/Pvar/linvar/"
+                "Clock.future) — трек будет звучать как статичный луп из "
+                "4-8 нот. Добавь хотя бы один: .every(4, 'stutter'), "
+                "lpf=linvar([500,4000], 16) или Pvar-гармонию."
+            )
+
+        return errors, warnings
+
     def _cap_amp(self, code: str) -> str:
         """Ограничить громкость/октаву в коде до безопасных пределов.
 
@@ -722,6 +811,19 @@ class MusicManager:
         is_safe, filter_error = self._filter_code(code)
         if not is_safe:
             return {"success": False, "error": filter_error}
+
+        # Issue #1016 — music-quality guardrail: блокируем абсолютные
+        # частоты (только ступени), предупреждаем про dur= и статичные
+        # лупы. errors → код НЕ уходит в Renardo; warnings → LLM увидит
+        # их в result message и исправит следующим вызовом.
+        quality_errors, quality_warnings = self._validate_music_code(code)
+        if quality_errors:
+            return {
+                "success": False,
+                "error": "⛔ Код отклонён музыкальным валидатором: "
+                + " ".join(quality_errors),
+                "code": code,
+            }
 
         # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
         # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
@@ -862,6 +964,15 @@ class MusicManager:
         self._last_music_activity_at = now
         if self._music_session_active_since is None:
             self._music_session_active_since = now
+
+        # Issue #1016 — quality warnings surfaced to the LLM so it can fix
+        # them on the next call (e.g. add dur=, add a developing pattern).
+        if quality_warnings:
+            return {
+                "success": True,
+                "message": "Код выполнен успешно. ⚠️ " + " ".join(quality_warnings),
+                "code": code,
+            }
 
         return {"success": True, "message": "Код выполнен успешно", "code": code}
 
