@@ -214,45 +214,60 @@ jobs:
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
+          # Источник истины (ретро 12.08 t_4e592534 / ADR-0015): ВЫВОД ХАРНЕССА.
+          # Шаг "Verdict from atomic harness" уже сохранил stdout харнесса
+          # (e2e_atomic_out.log с 249) в /tmp/e2e_verdict.log. Харнесс сам
+          # проверяет полный цикл (STT ПРИНЯТО → LLM → TTS finished после
+          # команды) и пишет маркеры E2E_REACTION_OK / E2E_NO_REACTION.
+          # Docker-логи робота для этой проверки НЕ нужны: маркер, который
+          # харнесс писал через `docker exec echo`, в docker logs НЕ попадает
+          # (json-file пишет только stdout PID 1; docker exec — отдельная
+          # сессия). Раньше валидатор искал E2E_REACTION_OK в docker logs,
+          # не находил и падал в fallback "ONLY GREETING" → ложный FAIL.
+          VERDICT_LOG="/tmp/e2e_verdict.log"
           FAIL=""
           WARN=""
           echo "--- e2e validation markers ---"
-          # 1) STT: команда должна быть РАСПОЗНАНА (не empty/rejected).
-          #    При retry-цикле (3 попытки) в логе могут быть пустые попытки
-          #    («ОТКЛОНЕНО (пустое)») при успешной — фейлим ТОЛЬКО если
-          #    фраза ни разу не была принята (иначе ложный FAIL: 09.08 live).
-          if grep -q "✅ ПРИНЯТО" "$LOG"; then
-            echo "✅ STT: фраза распознана (ПРИНЯТО)"
-          elif grep -qE "ОТКЛОНЕНО \(пустое\)|Пустой STT" "$LOG"; then
-            echo "❌ STT EMPTY: ни одна фраза не распознана (все попытки пустые)"
-            FAIL="stt-empty"
-          elif grep -q "Получена фраза" "$LOG"; then
-            echo "✅ STT: фраза получена (VAD сработал, текст не распознан)"
-          else
-            echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
-            FAIL="stt-no-phrase"
-          fi
-          # 2) ОТВЕТ: робот должен РЕАГИРОВАТЬ на команду.
-          #    Приоритет — маркер retry-скрипта (E2E_REACTION_OK в e2e_out.log):
-          #    скрипт сам проверял docker logs робота ПОСЛЕ команды и повторял
-          #    команду, пока не увидел TTS finished. Это самая честная проверка.
-          if grep -q "E2E_REACTION_OK" "$LOG"; then
-            echo "✅ SPEECH: робот ответил (retry-скрипт видел TTS finished после команды)"
-          elif grep -q "E2E_NO_REACTION" "$LOG"; then
-            echo "❌ NO REACTION: retry-скрипт 3 раза проиграл команду — робот не ответил"
+          if [ ! -s "$VERDICT_LOG" ]; then
+            echo "❌ Harness output missing ($VERDICT_LOG) — cannot validate"
+            FAIL="harness-output-missing"
+          elif grep -q "E2E_REACTION_OK" "$VERDICT_LOG"; then
+            echo "✅ SPEECH: робот ответил (харнесс: E2E_REACTION_OK)"
+          elif grep -q "E2E_NO_REACTION" "$VERDICT_LOG"; then
+            echo "❌ NO REACTION: харнесс 3 раза проиграл команду — робот не ответил"
             FAIL="${FAIL:+$FAIL,}no-reaction"
-          else
-            # Fallback (старая логика): TTS должен быть ПОСЛЕ STT-фразы.
-            stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-            tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-            if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
-              echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
-            elif grep -q "TTS finished" "$LOG"; then
-              echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
-              FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+          elif grep -q "E2E_VERDICT PASS" "$VERDICT_LOG"; then
+            # Stale-ветка со старым харнессом (без E2E_REACTION_OK), но PASS:
+            # доверяем вердикту харнесса — он сам проверял цикл (ADR-0015).
+            if grep -q "✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)" "$VERDICT_LOG"; then
+              echo "✅ SPEECH: робот ответил (харнесс PASS + ПОЛНЫЙ ЦИКЛ; старый харнесс без маркера)"
             else
-              echo "❌ NO SPEECH: робот не произнёс ответ"
-              FAIL="${FAIL:+$FAIL,}no-speech"
+              echo "✅ SPEECH: робот ответил (харнесс E2E_VERDICT PASS — доверяем, ADR-0015)"
+            fi
+          elif grep -q "E2E_VERDICT FAIL" "$VERDICT_LOG"; then
+            echo "❌ Harness FAIL: харнесс сам зафейлил цикл"
+            FAIL="harness-fail"
+          else
+            # Совсем старый харнесс: нет ни маркеров, ни вердикта — fallback
+            # на docker-логи (позиция TTS относительно STT).
+            echo "⚠️ Harness output without verdict markers — fallback to docker logs"
+            if grep -q "E2E_REACTION_OK" "$LOG"; then
+              echo "✅ SPEECH: робот ответил (docker log marker)"
+            elif grep -q "E2E_NO_REACTION" "$LOG"; then
+              echo "❌ NO REACTION (docker log marker)"
+              FAIL="${FAIL:+$FAIL,}no-reaction"
+            else
+              stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+              tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+              if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
+                echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
+              elif grep -q "TTS finished" "$LOG"; then
+                echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
+                FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+              else
+                echo "❌ NO SPEECH: робот не произнёс ответ"
+                FAIL="${FAIL:+$FAIL,}no-speech"
+              fi
             fi
           fi
           # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
