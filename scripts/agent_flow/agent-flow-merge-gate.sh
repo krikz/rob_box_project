@@ -1236,22 +1236,57 @@ git push --force-with-lease origin ${head}
         # урок t_bff6eccf). Свежая карточка не имеет URL-комментариев → guard не
         # блокирует. Создание идемпотентно: при существующей recovery-карточке
         # hermes kanban create вернёт её id, дубликат не создастся.
+        # Ретро-фикс (13.08, t_42741511, кейс B #1172/#1173): idempotency-key
+        # возвращает id карточки в ЛЮБОМ не-archived статусе — если recovery-
+        # карточка УЖЕ done, create вернёт её id и свежая НЕ создастся, PR висит
+        # CONFLICTING навсегда. Поэтому: ищем recovery-карточку по PR/branch в
+        # ЛЮБОМ статусе (как e2e-process t_bff6eccf) и requeue'им done/archived;
+        # НО если на ветке уже есть АКТИВНАЯ карточка (running/ready/todo) —
+        # не трогаем (гонка force-push, урок 13.08 t_ede84713/t_fb3796e2).
         _card_status="$(kanban_card_status "$task_id")"
         case "$_card_status" in
             running)
                 log "scan-all-prs: card ${task_id} running — reminder only (PR #${pr_num})"
                 ;;
             *)
-                _rec_key="merge-conflict-recovery-pr-${pr_num}"
-                _rec_title="🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI"
-                hermes kanban --board "$KANBAN_BOARD" create \
-                    --assignee "$_assignee" \
-                    --max-runtime 1800 \
-                    --idempotency-key "$_rec_key" \
-                    --body "$_reminder" \
-                    "$_rec_title" >/dev/null 2>&1 \
-                    && log "scan-all-prs: recovery card ensured for PR #${pr_num} (key=${_rec_key}, assignee=${_assignee}, status=${_card_status:-?})" \
-                    || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num}, key=${_rec_key})"
+                # Все карточки, упоминающие эту ветку/PR (любой статус).
+                _branch_matches="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if '${head}' in title or 'rebase PR #${pr_num}' in title:
+        print(t['id'], t.get('status',''))
+" 2>/dev/null)"
+                # Приоритет: активная карточка > blocked > done/archived.
+                _active_match="$(printf '%s\n' "$_branch_matches" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2; exit}')"
+                _blocked_id="$(printf '%s\n' "$_branch_matches" | awk '$2 == "blocked" {print $1; exit}')"
+                _done_match="$(printf '%s\n' "$_branch_matches" | awk '$2 == "done" || $2 == "archived" {print $1" "$2; exit}')"
+                if [ -n "$_active_match" ]; then
+                    log "scan-all-prs: recovery card already active (${_active_match}) for PR #${pr_num} — skip (гонка force-push, урок 13.08)"
+                elif [ -n "$_blocked_id" ]; then
+                    hermes kanban --board "$KANBAN_BOARD" unblock "$_blocked_id" --reason "🔀 свежий конфликт/CI — retry (ретро 13.08 t_42741511)" >/dev/null 2>&1 || true
+                    log "scan-all-prs: recovery card ${_blocked_id} unblocked (was blocked) for PR #${pr_num}"
+                elif [ -n "$_done_match" ]; then
+                    _done_id="${_done_match%% *}"
+                    hermes kanban --board "$KANBAN_BOARD" requeue "$_done_id" --reason "🔀 свежий конфликт/CI: PR #${pr_num} снова не мержится с develop (ретро 13.08 t_42741511)" >/dev/null 2>&1 \
+                        && log "scan-all-prs: recovery card ${_done_id} requeued (was done/archived) for PR #${pr_num}" \
+                        || log "scan-all-prs: WARNING requeue ${_done_id} failed for PR #${pr_num}"
+                else
+                    _rec_key="merge-conflict-recovery-pr-${pr_num}"
+                    _rec_title="🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI"
+                    hermes kanban --board "$KANBAN_BOARD" create \
+                        --assignee "$_assignee" \
+                        --max-runtime 1800 \
+                        --idempotency-key "$_rec_key" \
+                        --body "$_reminder" \
+                        "$_rec_title" >/dev/null 2>&1 \
+                        && log "scan-all-prs: recovery card ensured for PR #${pr_num} (key=${_rec_key}, assignee=${_assignee}, status=${_card_status:-?})" \
+                        || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num}, key=${_rec_key})"
+                fi
                 ;;
         esac
     else
