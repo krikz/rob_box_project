@@ -17,6 +17,38 @@ scrape_configs:
         labels:
           host: 'vision-pi'
 
+  # Issue #1160 — voice-assistant metrics (Vision Pi, network_mode: host)
+  # Каждая ROS2-нода биндит свой порт (см. rob_box_voice.observability):
+  # 9100 dialogue_node (LLM latency / fallback), 9110 tts_node,
+  # 9111 stt_node, 9112 speaker_id_node, 9113 audio_node.
+  - job_name: 'voice-assistant'
+    static_configs:
+      - targets:
+          - '10.1.1.11:9100'  # dialogue_node
+          - '10.1.1.11:9110'  # tts_node
+          - '10.1.1.11:9111'  # stt_node
+          - '10.1.1.11:9112'  # speaker_id_node
+          - '10.1.1.11:9113'  # audio_node
+        labels:
+          host: 'vision-pi'
+          service: 'voice-assistant'
+
+  # Issue #1160 — telegram-bot metrics (Vision Pi)
+  - job_name: 'telegram-bot'
+    static_configs:
+      - targets: ['10.1.1.11:9101']
+        labels:
+          host: 'vision-pi'
+          service: 'telegram-bot'
+
+  # Issue #1160 — supercollider music metrics (Vision Pi, когда появится)
+  - job_name: 'supercollider'
+    static_configs:
+      - targets: ['10.1.1.11:9102']
+        labels:
+          host: 'vision-pi'
+          service: 'supercollider'
+
   # Scrape Prometheus itself
   - job_name: 'prometheus'
     static_configs:

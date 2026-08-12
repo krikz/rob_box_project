@@ -11,6 +11,7 @@
 
 stt_node:
   ros__parameters:
+    metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
     vad_timeout: 1.5

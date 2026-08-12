@@ -9,6 +9,7 @@
 
 speaker_id_node:
   ros__parameters:
+    metrics_port: 9112  # issue #1160 — Prometheus metrics endpoint
     enabled: true
     db_path: "/data/speakers.db"
     identify_threshold: 0.75

@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     jackd2 \
     alsa-utils \
     procps \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /sc_data

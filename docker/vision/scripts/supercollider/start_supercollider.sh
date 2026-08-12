@@ -28,6 +28,16 @@ rm -f /dev/shm/jack_sem.0_default_* 2>/dev/null || true
 rm -f /dev/shm/jack-shm-registry 2>/dev/null || true
 rm -rf /dev/shm/jack_db-* 2>/dev/null || true
 
+# ── Prometheus metrics endpoint (issue #1160) ────────────────────────────────
+# Лёгкий stdlib HTTP-сервер на 9102 (см. metrics_server.py и
+# docker/monitoring/config/prometheus.yml target 10.1.1.11:9102).
+# Не блокирует запуск JACK/scsynth: если python3 отсутствует — просто
+# логируем предупреждение и продолжаем.
+echo "[SuperCollider] Starting metrics server on :9102/metrics..."
+python3 /scripts/metrics_server.py 2>&1 | sed 's/^/[metrics] /' &
+METRICS_PID=$!
+echo "[SuperCollider] Metrics server pid=$METRICS_PID"
+
 echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000, nperiods=3)..."
 
 jackd --no-realtime \

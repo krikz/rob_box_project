@@ -132,6 +132,12 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not voice:
         return
 
+    # Issue #1160 — Prometheus metrics: входящее голосовое сообщение.
+    from ..observability import is_metrics_enabled, record_telegram_message
+
+    if is_metrics_enabled():
+        record_telegram_message("in", message_type="voice")
+
     # React with 👀 to indicate we received the message
     await _react_eyes(update)
 

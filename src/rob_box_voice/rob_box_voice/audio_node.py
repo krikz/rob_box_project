@@ -20,6 +20,12 @@ from typing import Optional
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
 
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    start_metrics_server,
+)
+
 
 @contextmanager
 def ignore_stderr(enable=True):
@@ -224,6 +230,21 @@ class AudioNode(Node):
 
         # Таймер для VAD/DoA (после sleep(5) безопасно!)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.check_vad_and_doa)
+
+        # Issue #1160 — Prometheus metrics server (этап 1).
+        # Порт 9113 — стандартный для audio_node (barge-in, session).
+        self.declare_parameter('metrics_port', 9113)
+        metrics_port: int = int(self.get_parameter('metrics_port').value or 0)
+        if metrics_port > 0 and is_metrics_enabled():
+            if start_metrics_server(metrics_port):
+                self.get_logger().info(
+                    f"📊 Audio metrics server listening on :{metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 Audio metrics port {metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
 
         # Инициализация
         self.get_logger().info('AudioNode инициализирован')

@@ -117,6 +117,9 @@ RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
 # Kept off voice_base on purpose: changing voice_base would invalidate the
 # ~10 GB pytorch etc. cache for every consumer.
 RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "aiohttp>=3.9.1,<4.0"
+# Issue #1160 — Prometheus metrics endpoint. Лёгкий Python-пакет; ставим в
+# app-layer (не в voice_base), чтобы не инвалидировать кеш pytorch/vosk/yandex.
+RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "prometheus_client>=0.20.0"
 # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 # 🔴 FIX (issue #1077): resemblyzer для speaker_id_node (голосовая биометрия).

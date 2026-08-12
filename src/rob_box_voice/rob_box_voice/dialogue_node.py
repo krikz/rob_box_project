@@ -76,6 +76,18 @@ from rob_box_voice.speaker_profiles import (
     format_speaker_context,
 )
 
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+# ``prometheus_client`` — optional dep; если её нет, всё превращается в
+# no-op и старт сервера тихо возвращает ``False``.
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    record_barge_in,
+    record_fallback,
+    record_session_duration,
+    record_voice_llm_request,
+    start_metrics_server,
+)
+
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
@@ -304,8 +316,15 @@ class DialogueNode(Node):
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
+        # Issue #1160 — LLM держим и в атрибуте ноды: метрики
+        # (``record_voice_llm_request``) и future OTel spans берут имя
+        # провайдера из ``self._llm.name``, а не из ``self._core._llm``
+        # (private-атрибут DialogCore). Раньше ``_build_llm()`` вызывался
+        # inline и нода теряла ссылку — обращение ``self._llm`` падало
+        # AttributeError в ``_run_turn``.
+        self._llm = self._build_llm()
         self._core: DialogCore = DialogCore(
-            llm=self._build_llm(),
+            llm=self._llm,
             tools=self._build_tool_provider(),
             memory=self._memory,
             dsm=self._dsm,
@@ -440,6 +459,12 @@ class DialogueNode(Node):
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
 
+        # Issue #1160 — Prometheus metrics: длительность диалоговой
+        # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
+        # при DIALOGUE_END / timeout пишем histogram.
+        self._session_started_at: Optional[float] = None
+        self._session_end_reason: str = "success"
+
         # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
         # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
         # sets ``is_dj_auto=True`` so the dispatcher skips
@@ -479,6 +504,26 @@ class DialogueNode(Node):
             self.create_timer(
                 self._startup_greeting_sec, self._on_startup_greeting
             )
+        # Issue #1160 — Prometheus metrics server (этап 1).
+        # Порт 9100 — стандартный для voice-assistant (см.
+        # ``observability/__init__.py``); в проде используется
+        # ``10.1.1.11:9100/metrics`` для Grafana scrape.
+        # ``start_metrics_server`` идемпотентен: если уже бежит — no-op.
+        # Если ``prometheus_client`` не установлен — молча False в лог.
+        self._metrics_port: int = int(
+            self.get_parameter("metrics_port").value or 0
+        )
+        if self._metrics_port > 0 and is_metrics_enabled():
+            started = start_metrics_server(self._metrics_port)
+            if started:
+                self.get_logger().info(
+                    f"📊 Metrics server listening on :{self._metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 Metrics port {self._metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
         self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
@@ -551,6 +596,10 @@ class DialogueNode(Node):
             "Я на связи, все системы в норме!",
         )
         self._startup_greeting_fired = False
+        # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
+        # latency / fallback). 0 = отключить старт сервера (полезно для
+        # юнит-тестов и CI, где рконфликтует с другими тестами).
+        self.declare_parameter("metrics_port", 9100)
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
@@ -1535,6 +1584,14 @@ class DialogueNode(Node):
             # в момент продолжения (v08:55:11 music_cleanup new_dialogue).
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
+
+        # Issue #1160 — Prometheus metrics: новый диалог из IDLE (первый
+        # wake-word) открывает сессию; DIALOGUE_END / timeout закроет её
+        # histogram'ом voice_session_duration_seconds.
+        if was_idle and not is_dj_auto and self._session_started_at is None:
+            self._session_started_at = time.monotonic()
+            self._session_end_reason = "success"
+
         asyncio.run_coroutine_threadsafe(
             self._run_turn(
                 user_input,
@@ -1834,14 +1891,62 @@ class DialogueNode(Node):
                 f"🚀 [turn] calling process_input: user_input={user_input[:100]!r} "
                 f"speaker_tag={speaker_tag!r} was_dj_auto={was_dj_auto}"
             )
-            result: DialogResult = await self._core.process_input(
-                user_input,
-                is_dj_auto=was_dj_auto,
-                speaker_tag=speaker_tag,
-                speaker_context=speaker_context,
-                dynamic_system=dynamic_system,
-                preclassified_event=DialogueEvent.STT_RESULT,
+            # Issue #1160 — Prometheus metrics: замер LLM-запроса.
+            # ``time.monotonic`` (а не time.time) — чтобы NTP-resync
+            # не сломал latency histogram. Провайдер берём из
+            # текущего self._llm: для одиночного провайдера это
+            # ``provider.name`` (HarnessDeepSeekProvider.name =
+            # "deepseek", MiniMaxProvider.name = "minimax"); для
+            # ``HealthAwareFallbackLLM`` это ``type(provider).__name__``
+            # (= "HealthAwareFallbackLLM"), что норм — counter
+            # ``result=fallback`` покажет сколько реально ушло на
+            # fallback, а histogram latency останется на уровне цепочки.
+            _llm_metric_start = time.monotonic()
+            _llm_provider_name = getattr(
+                self._llm, "name", type(self._llm).__name__
             )
+            _llm_metric_recorded = False
+            try:
+                result: DialogResult = await self._core.process_input(
+                    user_input,
+                    is_dj_auto=was_dj_auto,
+                    speaker_tag=speaker_tag,
+                    speaker_context=speaker_context,
+                    dynamic_system=dynamic_system,
+                    preclassified_event=DialogueEvent.STT_RESULT,
+                )
+            finally:
+                if not _llm_metric_recorded and is_metrics_enabled():
+                    _llm_metric_recorded = True
+                    _duration = time.monotonic() - _llm_metric_start
+                    # result может быть не определён, если process_input
+                    # упал до return — тогда success=False.
+                    _result_obj = locals().get("result")
+                    _success = _result_obj is not None and not _result_obj.error
+                    # Fallback-флажок: HealthAwareFallbackLLM.complete/stream
+                    # логирует fallback в свой [health] → можно отследить
+                    # через ``_provider_name == "HealthAwareFallbackLLM"``.
+                    # Точнее определяется через ``_last_used_provider``,
+                    # который мы не видим без патча upstream. Для этапа 1
+                    # довольствуемся ``result=fallback`` через отдельный
+                    # record_fallback() в health.py (TODO #1160, шаг 2B).
+                    try:
+                        record_voice_llm_request(
+                            _llm_provider_name,
+                            success=_success,
+                            fallback=(
+                                _llm_provider_name == "HealthAwareFallbackLLM"
+                            ),
+                            duration_s=_duration,
+                        )
+                    except Exception as _metric_exc:  # noqa: BLE001
+                        # Метрики НЕ должны ломать диалог: если запись
+                        # упала (например, label-конфликт в тесте) —
+                        # только логируем и продолжаем.
+                        self.get_logger().warning(
+                            f"⚠️ [metrics] record_voice_llm_request failed: "
+                            f"{_metric_exc!r}"
+                        )
             self.get_logger().info(
                 f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
                 f"tools={list(result.tools_called or ())!r} error={result.error!r}"
@@ -1850,6 +1955,10 @@ class DialogueNode(Node):
             babble_retry_pending = bool(self._babble_retry_used)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
+            # Issue #1160 — Prometheus metrics: barge-in (пользователь
+            # перебил робота wake-word'ом во время TTS/LLM-ответа).
+            if is_metrics_enabled():
+                record_barge_in()
             result = None
         except Exception as exc:  # noqa: BLE001
             # 🔴 FIX (live 12.08): говорим ДО логгирования — если логгер
@@ -1948,6 +2057,9 @@ class DialogueNode(Node):
                 and not babble_retry_pending
             ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
+                # Issue #1160 — Prometheus metrics: сессия закрылась
+                # штатно (DIALOGUE_END) — пишем duration histogram.
+                self._maybe_record_session_end(result="success")
             # DialogCore completes the DIALOGUE → IDLE transition itself.
             # Publish the resulting state even when no transition is needed
             # here; otherwise the ROS state topic remains stuck at the
@@ -3318,9 +3430,27 @@ class DialogueNode(Node):
         self._tts_control_pub.publish(stop_msg)
         self._effects.release_all_tts()
         self._effects.clear_sound_event()
+
+    def _maybe_record_session_end(self, result: str = "success") -> None:
+        """Issue #1160 — Prometheus metrics: закрыть открытую сессию.
+
+        Пишет histogram ``voice_session_duration_seconds{result=...}``
+        один раз на сессию (и сбрасывает таймер). Вызывается из
+        DIALOGUE_END (result=success) и из timeout'а (result=fail).
+        """
+        if self._session_started_at is None:
+            return
+        duration_s = time.monotonic() - self._session_started_at
+        if is_metrics_enabled():
+            record_session_duration(duration_s, result=result)
+        self._session_started_at = None
+        self._session_end_reason = result
     def _on_inactivity_check(self) -> None:
         if self._core.check_timeout():
             self.get_logger().info("⏰ Dialogue timeout → IDLE")
+            # Issue #1160 — Prometheus metrics: таймаут диалога = сессия
+            # закрылась с result=fail (не штатный DIALOGUE_END).
+            self._maybe_record_session_end(result="fail")
             self._publish_state()
     def shutdown_asyncio_loop(self, wait: bool = True) -> None:
         future = getattr(self, "_asyncio_loop_future", None)

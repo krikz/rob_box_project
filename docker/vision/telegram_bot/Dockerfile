@@ -25,6 +25,7 @@ RUN pip3 install --no-cache-dir \
     aiohttp>=3.9 \
     Pillow>=10.0 \
     numpy>=1.24 \
+    prometheus_client>=0.20.0 \
     && pip3 cache purge
 
 # Копируем ROS 2 пакет

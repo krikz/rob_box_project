@@ -42,6 +42,16 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
 
+
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+# ``prometheus_client`` — optional dep; если её нет, всё превращается в
+# no-op и старт сервера тихо возвращает ``False``.
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    record_stt_recognize,
+    start_metrics_server,
+)
+
 try:
     from rob_box_voice.core.speak_helpers import build_ssml_payload
 
@@ -103,6 +113,10 @@ class STTNode(Node):
         self.declare_parameter("yandex_max_retries", DEFAULT_YANDEX_MAX_RETRIES)
         self.declare_parameter("retry_backoff_s", 1.0)
         self.declare_parameter("min_text_chars", DEFAULT_MIN_TEXT_CHARS)
+
+        # Issue #1160 — Prometheus metrics endpoint. 9111 — STT-нода в voice
+        # (recognize counter). 0 = отключить старт сервера.
+        self.declare_parameter("metrics_port", 9111)
 
         # Фраза при неясном результате (issue #979 acceptance: робот должен
         # попросить повторить, а не молчать). Пустая строка отключает ответ.
@@ -208,6 +222,23 @@ class STTNode(Node):
         # speaker_analysis). None для Vosk fallback. Сбрасывается на старте
         # каждой фразы в speech_audio_callback.
         self._last_speaker_tag: Optional[str] = None
+
+        # Issue #1160 — Prometheus metrics server (этап 1).
+        # Порт 9111 — стандартный для stt_node (см. observability/__init__.py).
+        self._metrics_port: int = int(
+            self.get_parameter("metrics_port").value or 0
+        )
+        if self._metrics_port > 0 and is_metrics_enabled():
+            started = start_metrics_server(self._metrics_port)
+            if started:
+                self.get_logger().info(
+                    f"📊 STT metrics server listening on :{self._metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 STT metrics port {self._metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
 
         # Инициализация
         self.get_logger().info(
@@ -379,6 +410,28 @@ class STTNode(Node):
         if _STT_FALLBACK_AVAILABLE:
             text, attempts = self._recognize_with_fallback(audio_bytes)
             log_attempts(self.get_logger(), attempts, final_text=text)
+            # Issue #1160 — Prometheus metrics: учитываем каждую попытку
+            # (включая retry и fallback на Vosk). ``result``:
+            # success = финальный непустой текст; empty = итоговый отказ.
+            # Для каждой попытки отдельно используем свой reason
+            # (timeout/empty/error/low_confidence → "empty" в нашем
+            # counter, потому что метрика бинарная: «распознал / не
+            # распознал»). Суммарный итог (text непустой → success) — для
+            # последней попытки.
+            if is_metrics_enabled():
+                for attempt in attempts:
+                    if attempt.reason == "ok":
+                        record_stt_recognize(
+                            attempt.provider, success=True,
+                            duration_s=attempt.latency_ms / 1000.0,
+                        )
+                    else:
+                        # timeout / empty / error / low_confidence →
+                        # попытка провалилась (на этой попытке текста нет).
+                        record_stt_recognize(
+                            attempt.provider, success=False,
+                            duration_s=attempt.latency_ms / 1000.0,
+                        )
         else:
             # Защитный путь — модуль stt_fallback не импортировался (не должно
             # случиться в нашем пакете, но пусть будет legacy-fallback).
