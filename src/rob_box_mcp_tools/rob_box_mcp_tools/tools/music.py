@@ -307,8 +307,14 @@ class MusicManager:
             # SynthDefs — это plain Python dict, НЕ объект с .reload()!
             # sdef.add() = write(.scd файл на диск) + load() (отправляет путь
             # через OSC /foxdot → sclang → компилирует → /d_recv → scsynth)
-            for sdef in _rt.SynthDefs.values():
+            # 🔴 FIX (live 12.08): 188 sdef.add() залпом роняют UDP-буфер sclang
+            # (drops >500 в /proc/net/udp) — часть SynthDef-ов (pads, bass, karp,
+            # bell...) не доезжает до scsynth → "SynthDef not found" → ТИШИНА.
+            # Пейсинг 0.1с между отправками + верификация с досылкой пропавших.
+            for idx, sdef in enumerate(_rt.SynthDefs.values()):
                 sdef.add()
+                if idx % 5 == 4:
+                    _time.sleep(0.1)
 
             # Загружаем эффекты (reverb/volume) — иначе scsynth отвечает
             # "SynthDef reverb not found" / "SynthDef volume not found" на каждый
@@ -325,6 +331,11 @@ class MusicManager:
             # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
             time.sleep(5)
 
+            # 🔴 FIX (live 12.08): верификация — пробуем /s_new на критичные
+            # синты и досылаем пропавшие через sdef.add() (до 3 раундов).
+            # Без этого музыка тихо молчит при "SynthDef not found".
+            self._verify_and_retry_synthdefs(_rt, _send_osc_raw)
+
             self._renardo_context = vars(_rt).copy()
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
             self._renardo_available = True
@@ -333,6 +344,98 @@ class MusicManager:
             self._renardo_available = False
             self._renardo_context = {}
             self._renardo_last_error = str(exc)
+
+    def _verify_and_retry_synthdefs(
+        self,
+        _rt: Any,
+        _send_osc_raw: Any,
+        max_rounds: int = 3,
+    ) -> None:
+        """Verify critical SynthDefs exist in scsynth; re-send missing ones.
+
+        live 12.08: после бурста sdef.add() часть SynthDef-ов пропадает
+        (UDP drops на 57120). Пробуем /s_new для каждого критичного синта,
+        пропавшие досылаем через sdef.add() → /foxdot → sclang → /d_recv.
+
+        Args:
+            _rt: renardo_lib.runtime module.
+            _send_osc_raw: callable для отправки OSC на scsynth.
+            max_rounds: сколько раундов досылки пробовать.
+        """
+        import struct as _struct
+        import time as _time
+
+        _CRITICAL_SYNTHS = (
+            "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
+            "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
+            "ambi", "faim", "marimba", "sitar", "viola", "noise",
+            "scatter", "orient", "creep", "shaker",
+            "strings", "wobblebass", "brass", "organ", "tb303",
+            "play1", "play2",
+        )
+
+        def _probe_missing(names):
+            """Return subset of names whose SynthDef is absent in scsynth."""
+            missing: list[str] = []
+            probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe_sock.settimeout(0.4)
+            for i, name in enumerate(names):
+                node_id = 9000 + i
+                msg = bytearray(b"/s_new\x00")
+                types = b",siii\x00\x00"
+                name_b = name.encode() + b"\x00"
+                while len(name_b) % 4:
+                    name_b += b"\x00"
+                msg.extend(types)
+                msg.extend(name_b)
+                msg.extend(_struct.pack(">iii", node_id, 0, 1))
+                try:
+                    probe_sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+                    data, _ = probe_sock.recvfrom(512)
+                    if b"not found" in data:
+                        missing.append(name)
+                except socket.timeout:
+                    pass  # синт создан — def на месте
+            probe_sock.close()
+            return missing
+
+        missing = list(_CRITICAL_SYNTHS)
+        for round_no in range(max_rounds):
+            missing = _probe_missing(missing)
+            if not missing:
+                return
+            self._log_warning(
+                f"[music] round {round_no + 1}: missing SynthDefs: {missing} — re-sending"
+            )
+            for name in missing:
+                try:
+                    sdef = _rt.SynthDefs.get(name)
+                except Exception:  # noqa: BLE001
+                    continue
+                if sdef is None:
+                    continue
+                try:
+                    sdef.add()
+                except Exception:  # noqa: BLE001
+                    continue
+                _time.sleep(0.3)
+            _time.sleep(5)  # время на компиляцию
+        self._log_warning(
+            f"[music] SynthDefs still missing after {max_rounds} rounds: {missing}"
+        )
+
+    def _log_warning(self, message: str) -> None:
+        """Log via the manager's logger when available (fallback to print)."""
+        logger = getattr(self, "_logger", None)
+        if logger is not None:
+            try:
+                logger.warning(message)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        import sys as _sys
+        _sys.stderr.write(f"{message}\n")
+        _sys.stderr.flush()
 
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.

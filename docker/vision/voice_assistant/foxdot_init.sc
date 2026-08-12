@@ -11,7 +11,17 @@
 
 var renardoSynthDir = "__RENARDO_SCLANG_DIR__";
 var renardoSynthDirPlaceholder = "__RENARDO_SCLANG_DIR_PLACEHOLDER__";
-var startupSynths = ["strings", "wobblebass", "brass", "organ", "tb303", "pianovel"];
+// live 12.08: расширенный прелоад — renardo-init залпом шлёт 188 /foxdot,
+// UDP-буфер sclang рвётся (drops >500), часть SynthDef-ов (pads, bass, karp...)
+// не доезжает до scsynth → "SynthDef not found" → тишина. Прелоад на старте
+// идёт последовательно внутри sclang — потерь нет.
+var startupSynths = [
+    "strings", "wobblebass", "brass", "organ", "tb303", "pianovel",
+    "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
+    "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
+    "ambi", "faim", "marimba", "sitar", "viola", "noise",
+    "scatter", "orient", "creep", "shaker"
+];
 var customSynthDir = "/ws/custom_synthdefs";
 var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass"];
 
