@@ -245,3 +245,36 @@ def test_extract_relevant_log_line_ignores_zenoh_clock_skew_timestamp() -> None:
     line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
 
     assert line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_empty_rejection_vision() -> None:
+    """Issue #989: stt_node WARN на пустое — защита от эхо-петли, не деплой-сбой.
+
+    Реальный лог из run 22857794907 (deploy-signature ...:0ef89820b166).
+    Для vision scope должен игнорироваться, для main — это всё равно не main-контейнер.
+    """
+    log_text = (
+        "[stt_node-6] [WARN] [1773066077.600410682] [stt_node]: ❌ ОТКЛОНЕНО (пустое)"
+    )
+
+    vision_line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    main_line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert vision_line is None
+    assert main_line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_short_rejection_vision() -> None:
+    """Issue #989: stt_node WARN на короткое (<min_text_chars) тоже ложный.
+
+    Vosk/Yandex может вернуть «не»/«ага» — это реальная речь, но не команда.
+    Деплой-скрипт не должен открывать issue только из-за этого.
+    """
+    log_text = (
+        "[stt_node-6] [WARN] [1773066077.600410682] [stt_node]: "
+        "❌ ОТКЛОНЕНО (короткое, <3 chars): \"ага\""
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
