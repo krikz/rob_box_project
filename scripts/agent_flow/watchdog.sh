@@ -49,14 +49,18 @@ REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 
 if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
     # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
-    if [ ! -f "$RUN_NOW_LOCK" ] || ! kill -0 "$(cat "$RUN_NOW_LOCK" 2>/dev/null)" 2>/dev/null; then
+    # Проверяем по flock e2e-process (а не по lock-файлу watchdog) — flock
+    # надёжнее: если e2e-process уже держит lock, второй инстанс не нужен.
+    if [ -f "$LOCK_FILE" ] && exec 9>"$LOCK_FILE" && ! flock -n 9 2>/dev/null; then
+        log "⏳ RUN_NOW detected but e2e-process already holds flock ($LOCK_FILE) — skip"
+        exec 9>&-
+    else
+        exec 9>&-
         log "🚀 RUN_NOW detected — triggering e2e-process (${E2E_PROCESS_SCRIPT})"
         nohup bash "$E2E_PROCESS_SCRIPT" \
             >> "$HERMES_HOME/logs/agent-flow-e2e-process-run-now.log" 2>&1 &
         echo $! > "$RUN_NOW_LOCK"
         log "🚀 e2e-process triggered (pid=$!)"
-    else
-        log "⏳ RUN_NOW detected but e2e-process already running (pid=$(cat "$RUN_NOW_LOCK" 2>/dev/null)) — skip"
     fi
 fi
 
