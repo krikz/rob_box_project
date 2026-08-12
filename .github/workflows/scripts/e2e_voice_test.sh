@@ -326,14 +326,20 @@ fi
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
     echo "PASS" > "$OUT_DIR/verdict.txt"
-    # Issue #1134: маркер для пост-валидатора в L-E2E Voice Test.yml —
-    # retry-скрипт подтвердил реакцию робота (TTS finished после команды).
-    # Без этого маркера fallback-логика валидатора сравнивает первые
-    # TTS/STT строки и фейлит как «ONLY GREETING» (приветствие ДО команды).
-    echo "E2E_REACTION_OK"
+    # Issue #1135: маркер для пост-валидатора в L-E2E Voice Test.yml.
+    # Валидатор читает ``docker logs voice-assistant --since 15m`` и ищет
+    # ``E2E_REACTION_OK``. Docker с log driver ``json-file`` не подхватывает
+    # syslog (logger) — пишем маркер напрямую в stdout контейнера через
+    # ``docker exec bash -c 'echo ... >&1'``.
+    ${ROBOT_SSH} \
+        "docker exec voice-assistant bash -c 'echo E2E_REACTION_OK'" \
+        >/dev/null 2>&1 || true
 else
     echo "E2E_VERDICT FAIL"
     echo "FAIL" > "$OUT_DIR/verdict.txt"
+    ${ROBOT_SSH} \
+        "docker exec voice-assistant bash -c 'echo E2E_NO_REACTION'" \
+        >/dev/null 2>&1 || true
 fi
 echo "E2E_ARTIFACTS $OUT_DIR"
 exit $([ "$PASS" = "1" ] && echo 0 || echo 1)
