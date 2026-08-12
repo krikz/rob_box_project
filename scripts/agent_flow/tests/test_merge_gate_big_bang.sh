@@ -263,6 +263,62 @@ test_F_small_lint_pr_sets_needs_review() {
 }
 
 # ===========================================================================
+# G. CONFLICTING PR → recovery-карточка (ретро 12.08 t_8af6bf29).
+# Respawn-guard дедлок: раньше merge-gate requeue'ил существующую карточку
+# (done/archived → ready), но hermes-agent dispatcher блокирует респавн на 24ч
+# (active_pr: URL PR в комментах воркера). Теперь scan-all-prs при CONFLICTING
+# создаёт СВЕЖУЮ recovery-карточку с idempotency-key merge-conflict-recovery-
+# pr-<N> — requeue/unblock НЕ делаются (фикс в develop, PR #1182).
+# ===========================================================================
+test_G_conflicting_pr_creates_recovery_card() {
+    new_test
+    local issue=3020 pr=3021
+    local branch="z-{agent}/${issue}-fix-3020-conflict-demo"
+    # Пустой основной цикл — сканируем через scan-all-prs (все open PR).
+    set_state ISSUE_LIST_JSON '[]'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"agent:devops"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    # Коммент в issue с маркером карточки воркера (для поиска task_id).
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # scan-all-prs: PR OPEN + mergeable=CONFLICTING (develop убежал вперёд).
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":${pr},\"state\":\"OPEN\",\"baseRefName\":\"develop\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"title\":\"fix #${issue} conflict demo\",\"labels\":[]}]"
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Воркер-карточка уже done — если бы merge-gate requeue'ил, это был бы дедлок.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead${issue}\",\"status\":\"done\"}]"
+    # Recovery-карточка создаётся с известным id (hex, как реальный t_<hex>).
+    set_state KANBAN_CREATE_ID "t_a1b2c3d4"
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")\n"
+
+    # 1) Recovery-карточка создана в scan-all-prs (idempotency-key по PR-номеру).
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox create .*--idempotency-key merge-conflict-recovery-pr-${pr}" || true)"
+    assert_eq "1" "$create_calls" "CONFLICTING PR → recovery card created with idempotency-key"
+
+    # 2) НЕ requeue существующей карточки (главный фикс respawn-guard дедлока).
+    local requeue_calls
+    requeue_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox requeue" || true)"
+    assert_eq "0" "$requeue_calls" "CONFLICTING PR → existing card NOT requeued"
+
+    # 3) НЕ unblock существующей карточки (тоже триггер респавна).
+    local unblock_calls
+    unblock_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox unblock" || true)"
+    assert_eq "0" "$unblock_calls" "CONFLICTING PR → existing card NOT unblocked"
+
+    # 4) Воркер-карточка остаётся done (не тронута).
+    local archive_calls
+    archive_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox archive" || true)"
+    assert_eq "0" "$archive_calls" "done-карточка воркера не архивируется (не merged-PR путь)"
+}
+
+# ===========================================================================
 # Run all tests.
 # ===========================================================================
 run_test "A. small PR → needs-e2e" test_A_small_pr_sets_needs_e2e
@@ -271,5 +327,6 @@ run_test "C. too many lines → block" test_C_too_many_lines_blocks
 run_test "D. override label → allow" test_D_override_label_allows
 run_test "E. big-bang comment dedup" test_E_big_bang_comment_dedup
 run_test "F. small lint PR → needs-review" test_F_small_lint_pr_sets_needs_review
+run_test "G. CONFLICTING → recovery card (no requeue)" test_G_conflicting_pr_creates_recovery_card
 
 summary

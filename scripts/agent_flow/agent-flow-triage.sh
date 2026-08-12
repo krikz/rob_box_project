@@ -282,10 +282,28 @@ free_stale_worktrees_for_branch() {  # $1=branch
                         owner="$(basename "$wt_path")"
                         case "$owner" in
                             t_[a-f0-9]*)
-                                status="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$owner" --json 2>/dev/null \
-                                    | python3 -c 'import sys,json
+                                # Ретро 12.08 t_8af6bf29: `hermes kanban show` падает
+                                # после v0.20.0 (sqlite3.ProgrammingError). Читаем статус
+                                # из kanban.db, fallback на JSON-режим show (не падает).
+                                _db="${KANBAN_DB_PATH:-${HERMES_HOME}/kanban/boards/${KANBAN_BOARD}/kanban.db}"
+                                status="$(python3 - "$_db" "$owner" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+db, tid = sys.argv[1], sys.argv[2]
+try:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+    conn.close()
+    print(row[0] if row else "")
+except Exception:
+    pass
+PY
+)"
+                                if [ -z "$status" ] && [ ! -f "$_db" ]; then
+                                    status="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$owner" --json 2>/dev/null \
+                                        | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("task",{}).get("status",""))
 except Exception: print("")' 2>/dev/null || true)"
+                                fi
                                 if [ "$status" = "done" ] || [ "$status" = "archived" ]; then
                                     git -C "$clone" worktree remove --force "$wt_path" 2>/dev/null \
                                         && log "  freed stale worktree $wt_path (branch $branch, card $owner, status=$status)"
