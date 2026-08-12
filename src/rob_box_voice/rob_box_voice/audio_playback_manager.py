@@ -10,7 +10,14 @@ import threading
 import time
 from typing import Optional
 import numpy as np
-import sounddevice as sd
+
+# ``sounddevice`` опционален для CI (issue #1133: Unit Tests ROS2 Humble
+# ставит только requests/pyyaml/pytz, без системных ALSA-зависимостей).
+# Если модуль недоступен — sd=None, play_audio делает ранний return.
+try:
+    import sounddevice as sd  # type: ignore[import-untyped]
+except (ImportError, OSError):
+    sd = None  # type: ignore[assignment]
 
 
 class AudioPlaybackManager:
@@ -72,6 +79,11 @@ class AudioPlaybackManager:
         Returns:
             True если воспроизведение успешно, False если timeout или ошибка
         """
+        # Issue #1133: sounddevice опционален для CI. Без sd play_audio
+        # невозможен — ранний return с диагностикой.
+        if sd is None:
+            print(f"❌ [{node_name}] sounddevice недоступен — невозможно воспроизвести")
+            return False
         # Попытка захватить блокировку с таймаутом
         acquired = self._playback_lock.acquire(timeout=timeout)
 
