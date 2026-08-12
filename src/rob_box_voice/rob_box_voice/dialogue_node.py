@@ -1923,14 +1923,23 @@ class DialogueNode(Node):
                     # который мы не видим без патча upstream. Для этапа 1
                     # довольствуемся ``result=fallback`` через отдельный
                     # record_fallback() в health.py (TODO #1160, шаг 2B).
-                    record_voice_llm_request(
-                        _llm_provider_name,
-                        success=_success,
-                        fallback=(
-                            _llm_provider_name == "HealthAwareFallbackLLM"
-                        ),
-                        duration_s=_duration,
-                    )
+                    try:
+                        record_voice_llm_request(
+                            _llm_provider_name,
+                            success=_success,
+                            fallback=(
+                                _llm_provider_name == "HealthAwareFallbackLLM"
+                            ),
+                            duration_s=_duration,
+                        )
+                    except Exception as _metric_exc:  # noqa: BLE001
+                        # Метрики НЕ должны ломать диалог: если запись
+                        # упала (например, label-конфликт в тесте) —
+                        # только логируем и продолжаем.
+                        self.get_logger().warning(
+                            f"⚠️ [metrics] record_voice_llm_request failed: "
+                            f"{_metric_exc!r}"
+                        )
             self.get_logger().info(
                 f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
                 f"tools={list(result.tools_called or ())!r} error={result.error!r}"
