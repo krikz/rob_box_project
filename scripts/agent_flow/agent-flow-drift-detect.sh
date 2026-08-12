@@ -24,9 +24,12 @@
 #   0 — нет дрифта ИЛИ автофикс успешен
 #   1 — дрифт остался после автофикса (нужна ручная разборка)
 #
-# Используется cron'ом `Agent Flow Scripts Drift` (no_agent=True, every 6h)
+# Используется cron'ом `Agent Flow Scripts Drift` (no_agent=True, every 30m)
 # в профиле devops. Cron scheduler выводит stdout, если непустой — это
 # и есть сигнал тревоги. Тихий tick (пустой stdout) означает ОК.
+# (Ретро 12.08 t_b62e4c5c: 6h было слишком редко — drift merge-gate/triage
+# копился 8.5+ часов до того, как drift-detect мог его заметить. 30m
+# позволяет auto-fix догонять merge в пределах одного tick.)
 #
 # Идемпотентен. Запускать можно вручную:
 #   bash /home/builder/.hermes/scripts/agent-flow-drift-detect.sh
