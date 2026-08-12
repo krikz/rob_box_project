@@ -36,6 +36,30 @@ mkdir -p "$(dirname "$RESTART_COOLDOWN_FILE")"
 
 log() { printf '[watchdog] %s\n' "$*" >&2; }
 
+# --- RUN_NOW trigger (ретро 12.08): сигнальный файл в develop → немедленный  ---
+# e2e-process тикает каждый час; RUN_NOW в origin/develop означает «прогон
+# прямо сейчас». Watchdog (every 2m) проверяет наличие файла и дергает
+# e2e-process немедленно (без ожидания hourly тика). Сам e2e-process потом
+# удалит файл после прогона (cleanup в конце тика).
+GH_REPO="${GH_REPO:-krikz/rob_box_project}"
+RUN_NOW_FILE="${RUN_NOW_FILE:-RUN_NOW}"
+RUN_NOW_LOCK="${RUN_NOW_LOCK:-/tmp/agent-flow-run-now.lock}"
+E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-$HERMES_HOME/profiles/architect/scripts/agent-flow-e2e-process.sh}"
+REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
+
+if git ls-remote "https://github.com/${GH_REPO}.git" "refs/heads/develop:${RUN_NOW_FILE}" 2>/dev/null | grep -q .; then
+    # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
+    if [ ! -f "$RUN_NOW_LOCK" ] || ! kill -0 "$(cat "$RUN_NOW_LOCK" 2>/dev/null)" 2>/dev/null; then
+        log "🚀 RUN_NOW detected — triggering e2e-process (${E2E_PROCESS_SCRIPT})"
+        nohup bash "$E2E_PROCESS_SCRIPT" \
+            >> "$HERMES_HOME/logs/agent-flow-e2e-process-run-now.log" 2>&1 &
+        echo $! > "$RUN_NOW_LOCK"
+        log "🚀 e2e-process triggered (pid=$!)"
+    else
+        log "⏳ RUN_NOW detected but e2e-process already running (pid=$(cat "$RUN_NOW_LOCK" 2>/dev/null)) — skip"
+    fi
+fi
+
 # Delegate all detection to a Python helper so we can use the bundled
 # Python 3 (with sqlite3) without depending on the sqlite3 CLI.
 python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" \
