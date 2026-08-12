@@ -39,18 +39,31 @@
 # расхождения local blob != origin blob виден в деталях дрифта и в маркере
 # LOCAL_DESYNC.
 #
+# Ретро 12.08 t_0d2479ba: активная фича-ветка (current branch != develop) —
+# это НОРМАЛЬНОЕ состояние работающего воркера (он сидит в z-* ветке и ещё не
+# смержил PR), а не drift. Раньше в этом состоянии скрипт уходил в
+# LOCAL_DESYNC → try_ff_update → exit 1 каждые 30 мин, что вызывало ложные
+# алерты cron'а и requeue kanban-карточек (инцидент t_20775d14 12.08 17:01).
+# Теперь при активной фича-ветке печатается маркер BRANCH_ACTIVE и exit 0.
+#
 # Поведение:
+#   - BRANCH_ACTIVE (current branch != develop)
+#                                       → маркер в stdout, exit 0 (no_op;
+#                                         воркер работает, сверка пропущена)
 #   - OK (host == origin/develop, local == origin/develop)
 #                                       → exit 0, stdout пустой (no_op)
 #   - LOCAL_DESYNC (local != origin)    → маркер в stdout; автофикс ff-only
-#                                         если можно; exit 0/1
+#                                         если можно; exit 0/2
 #   - DRIFT (host != origin/develop)    → auto-fix: install.sh
 #                                         → после fix OK → exit 0, stdout "fixed"
 #                                         → fix не помог → exit 1, stdout alert
 #
 # Exit codes:
-#   0 — нет дрифта ИЛИ автофикс успешен (в т.ч. вылечен LOCAL_DESYNC)
-#   1 — дрифт/десинк остались после автофикса (нужна ручная разборка)
+#   0 — нет дрифта ИЛИ автофикс успешен (в т.ч. вылечен LOCAL_DESYNC,
+#       а также BRANCH_ACTIVE — активная фича-ветка)
+#   1 — host DRIFT остался после автофикса (нужна ручная разборка)
+#   2 — LOCAL_DESYNC не вылечен (локальный develop != origin/develop,
+#       автофикс ff-only невозможен/не помог — нужен ручной pull)
 #
 # Переменные окружения (оператор/тесты):
 #   REPO_DIR        — путь к репо (по умолчанию dev-машина; как в install.sh)
@@ -115,6 +128,22 @@ log() {
 if [ ! -d "$SCRIPT_DIR" ]; then
     log "ERROR: source dir not found: $SCRIPT_DIR (clone the repo there?)"
     exit 1
+fi
+
+# --- Активная фича-ветка (current branch != develop) — нормальное состояние
+# воркера, который сидит в z-* ветке и ещё не смержил PR. Это НЕ drift:
+# сверку пропускаем, exit 0 с маркером BRANCH_ACTIVE.
+# Ретро 12.08 t_0d2479ba: раньше в этом состоянии скрипт уходил в
+# LOCAL_DESYNC → try_ff_update (skip, branch != develop) → exit 1, из-за чего
+# cron падал каждые 30 мин и requeue'ил kanban-карточки (инцидент t_20775d14).
+CURRENT_BRANCH="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || true)"
+if [ -z "$CURRENT_BRANCH" ]; then
+    # detached HEAD / не-git — не мешаем старой логике (fallback ниже)
+    CURRENT_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "$LOCAL_BRANCH" ]; then
+    echo "BRANCH_ACTIVE: $CURRENT_BRANCH"
+    exit 0
 fi
 
 # --- git fetch origin (эталон — origin/develop) ---
@@ -190,6 +219,7 @@ compute_drift() {
 
 # try_ff_update — подтянуть локальный develop к origin/develop, если безопасно:
 # ветка develop, чистое дерево, merge только fast-forward.
+# Возврат: 0 = healed, 1 = skip (ветка/дерево не позволяют), 2 = ff-merge failed.
 try_ff_update() {
     [ "$DESYNC" = "1" ] || return 0
     local branch dirty new_local
@@ -210,10 +240,10 @@ try_ff_update() {
             return 0
         fi
         log "LOCAL_DESYNC: $LOCAL_BRANCH ahead/diverged (local=$new_local origin=$ORIGIN_REF) — pending commits, manual check"
-        return 1
+        return 2
     fi
     log "LOCAL_DESYNC: ff-only merge failed (diverged?) — manual pull needed"
-    return 1
+    return 2
 }
 
 compute_drift
@@ -233,7 +263,10 @@ if [ "$DRIFT" = "0" ] && [ "$DESYNC" = "1" ]; then
         # host-копии устарели относительно свежего дерева → идём в автофикс
         log "After LOCAL_DESYNC heal: host copies drifted vs fresh tree — running auto-fix"
     else
-        exit 1
+        # LOCAL_DESYNC не вылечен. Код возврата try_ff_update:
+        #   1 = skip (ветка != develop / дерево грязное) → exit 1 (как было)
+        #   2 = ff-only merge failed (diverged) → exit 2 (LOCAL_DESYNC severity)
+        exit $?
     fi
 fi
 
