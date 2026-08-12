@@ -336,6 +336,22 @@ if ! flock -n 9; then
     fi
 fi
 
+# --- G0b: RUN_NOW — сразу удаляем сигнальный файл после получения lock ------
+# (ретро 12.08 #2): если оставить до конца тика, watchdog (every 2m) видит
+# RUN_NOW пока идёт долгий прогон (build+deploy+e2e ~40 мин) и каждые 2 мин
+# пытается запустить новый e2e-process → каждый новый инстанс создаёт НОВЫЙ
+# round (round_ensure max+1) → 8 раундов вместо 1-2. Удаляем файл сразу:
+# сигнал "прогон запущен" принят, следующий тик watchdog не будет дублировать.
+if [ "$_run_now_triggered" = "1" ] && [ "$DRY_RUN" != "true" ] && [ -n "${REPO_DIR:-}" ]; then
+    if git -C "$REPO_DIR" rm --cached --ignore-unmatch "${RUN_NOW_FILE}" >/dev/null 2>&1 \
+        && git -C "$REPO_DIR" commit -m "chore(e2e): RUN_NOW consumed (signal accepted at tick start)" >/dev/null 2>&1 \
+        && git -C "$REPO_DIR" push origin "${MAINTENANCE_BRANCH}" >/dev/null 2>&1; then
+        log "✅ RUN_NOW consumed at tick start (deleted from origin/${MAINTENANCE_BRANCH})"
+    else
+        log "⚠️ RUN_NOW early-cleanup failed (file may still exist) — watchdog продолжит триггерить"
+    fi
+fi
+
 # --- G1: MAINTENANCE gate (remote + local) -----------------------------------
 if [ -n "${GH_REPO:-}" ]; then
     remote_ref="${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}"
@@ -1149,11 +1165,22 @@ git push --force-with-lease origin ${branch}
         # мержится с origin/develop (тогда конфликт с round вызван ДРУГИМИ issues
         # уже влитыми в round — rebase на develop не поможет, карточка = шум).
         # Проверяем через git merge-tree: конфликт с origin/develop есть?
+        # Ретро-фикс (архитектор 13.08, кейсы #918/PR #1172 + #929):
+        #  - явный свежий fetch develop+ветки ПЕРЕД проверкой (stale refs давали
+        #    ложное «чисто» → PR вечно CONFLICTING без карточки, кейс #918);
+        #  - конфликт = маркеры '<<<<<<<' в выводе (git 2.34 old-format), а НЕ
+        #    'changed in both' — тот бывает и при чистом непересекающемся
+        #    изменении (кейс #929: 2× 'changed in both', 0 маркеров, PR CLEAN);
+        #  - ошибка merge-tree → консервативно конфликт (fail-safe).
         _dev_conflict=0
+        git -C "$WORKTREE_DIR" fetch origin develop "$branch" --quiet 2>/dev/null || true
         _dev_base="$(git -C "$WORKTREE_DIR" merge-base "origin/${branch}" origin/develop 2>/dev/null || echo '')"
         if [ -n "$_dev_base" ]; then
-            if git -C "$WORKTREE_DIR" merge-tree "$_dev_base" "origin/${branch}" origin/develop 2>/dev/null \
-                | grep -qE 'changed in both|added in both|CONFLICT'; then
+            _mt_raw=""
+            if ! _mt_raw="$(git -C "$WORKTREE_DIR" merge-tree "$_dev_base" "origin/${branch}" origin/develop 2>&1)"; then
+                log "issue #${number}: WARNING merge-tree error — консервативно считаем конфликтом с develop"
+                _dev_conflict=1
+            elif printf '%s' "$_mt_raw" | grep -q '<<<<<<<'; then
                 _dev_conflict=1
             fi
         else
