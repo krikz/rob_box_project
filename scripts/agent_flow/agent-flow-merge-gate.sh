@@ -51,6 +51,15 @@ NEEDS_REVIEW_LABEL="${NEEDS_REVIEW_LABEL:-needs-review}"
 DONE_LABEL="${DONE_LABEL:-e2e-done}"
 REJECTED_LABEL="${REJECTED_LABEL:-e2e:rejected}"
 NO_E2E_LABEL="${NO_E2E_LABEL:-no-e2e-required}"
+BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
+# ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
+# commits OR > 3000 lines is forbidden without an explicit `big-bang-override`
+# label on the issue. Шифу (товарищ) is the only one allowed to set it. We
+# enforce the rule BOTH at merge-gate (before adding needs-e2e) AND at triage
+# (before creating the card) so the worker can't even start a 100-commit job
+# without the override. See also agent-flow-triage.sh `big_bang_check()`.
+BIG_BANG_MAX_COMMITS="${BIG_BANG_MAX_COMMITS:-50}"
+BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
 DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
@@ -87,6 +96,9 @@ fi
 : "${DONE_LABEL:=e2e-done}"
 : "${REJECTED_LABEL:=e2e:rejected}"
 : "${NO_E2E_LABEL:=no-e2e-required}"
+: "${BIG_BANG_OVERRIDE_LABEL:=big-bang-override}"
+: "${BIG_BANG_MAX_COMMITS:=50}"
+: "${BIG_BANG_MAX_LINES:=3000}"
 : "${DEVELOP_BRANCH:=develop}"
 
 # --- helpers -----------------------------------------------------------------
@@ -292,11 +304,12 @@ except Exception: print("")' 2>/dev/null || true)"
 
     # Look up PR by head branch (authoritative — no extra state).
     # title + labels нужны для detect_pr_kind (lint vs functional).
+    # additions + commits нужны для big-bang-override gate (ADR-0013).
     pr_json="$(gh pr list \
         --repo "$GH_REPO" \
         --state all \
         --head "$branch" \
-        --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels 2>/dev/null || true)"
+        --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,commits 2>/dev/null || true)"
 
     # Процесс-фикс (09.08): воркеры ретро-карточек создают ветки `wt/<task_id>`
     # (нет issue → конвенция z-{agent}/<id>-<slug> неприменима). Такие PR
@@ -309,7 +322,7 @@ except Exception: print("")' 2>/dev/null || true)"
                 --repo "$GH_REPO" \
                 --state all \
                 --head "$wt_branch" \
-                --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels 2>/dev/null || true)"
+                --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,commits 2>/dev/null || true)"
             if [ -n "$pr_json" ] && [ "$pr_json" != "[]" ]; then
                 branch="$wt_branch"
                 log "issue #${number}: PR найден по fallback-ветке ${wt_branch}"
@@ -351,6 +364,12 @@ pr_title = str(pr.get("title", ""))
 pr_labels_csv = ",".join(sorted(
     {str(lab.get("name", "")) for lab in (pr.get("labels") or [])}
 ))
+# Размер PR — для big-bang-override gate (ADR-0013). commits в API —
+# это СПИСОК (не int), поэтому берём len(). additions — int напрямую.
+# Если поле отсутствует (старый API), считаем 0 → gate не сработает
+# (no PR, no override needed).
+pr_commits_count = len(pr.get("commits") or [])
+pr_additions = int(pr.get("additions") or 0)
 print(f"pr_number={shlex.quote(pr_number)}")
 print(f"pr_base={shlex.quote(pr_base)}")
 print(f"pr_state={shlex.quote(pr_state)}")
@@ -360,6 +379,8 @@ print(f"pr_rollup_count={pr_rollup_count}")
 print(f"pr_rollup_pass={pr_rollup_pass}")
 print(f"pr_title={shlex.quote(pr_title)}")
 print(f"pr_labels_csv={shlex.quote(pr_labels_csv)}")
+print(f"pr_commits_count={pr_commits_count}")
+print(f"pr_additions={pr_additions}")
 ')"
 
     if [ -z "${pr_number:-}" ]; then
@@ -653,6 +674,72 @@ git push --force-with-lease origin ${pr_head_ref}
     # functional: всё остальное → e2e обязателен, ставим `needs-e2e`.
     pr_kind="$(detect_pr_kind "$pr_labels_csv" "$pr_title")"
     log "issue #${number} PR #${pr_number} kind=${pr_kind} (CI green & clean)"
+
+    # --- big-bang-override gate (ADR-0013, ретро t_9726053d) ---------------
+    # PR > ${BIG_BANG_MAX_COMMITS} коммитов ИЛИ > ${BIG_BANG_MAX_LINES} строк
+    # ЗАПРЕЩЁН без явной метки ${BIG_BANG_OVERRIDE_LABEL} на issue. Метку
+    # ставит ТОЛЬКО товарищ Шифу (см. CONTRIBUTING.md §69-71). Поведение:
+    #   - НЕ ставить needs-e2e / needs-review (иначе e2e-process поглотит PR)
+    #   - оставить PR-комментарий (с дедупликацией как в post-merge close):
+    #     "PR #N: size превышает ADR-0013, требуется split ИЛИ @Шифу ставит override"
+    #   - comment постится ровно один раз за 24h (как cleanup-коммент в §5
+    #     post-merge), иначе 6 одинаковых сообщений за час (ретро 10.08 t_9caf5d52).
+    # Override → стандартный путь (needs-e2e / needs-review).
+    _bb_reasons=""
+    if [ "${pr_commits_count:-0}" -gt "${BIG_BANG_MAX_COMMITS}" ] 2>/dev/null; then
+        _bb_reasons="${_bb_reasons}${pr_commits_count} коммитов > ${BIG_BANG_MAX_COMMITS}; "
+    fi
+    if [ "${pr_additions:-0}" -gt "${BIG_BANG_MAX_LINES}" ] 2>/dev/null; then
+        _bb_reasons="${_bb_reasons}${pr_additions} строк > ${BIG_BANG_MAX_LINES}; "
+    fi
+    if [ -n "$_bb_reasons" ]; then
+        if has_label "$labels_norm" "$BIG_BANG_OVERRIDE_LABEL"; then
+            log "issue #${number}: big-bang (${_bb_reasons% ;}) но override ${BIG_BANG_OVERRIDE_LABEL} есть — пропускаем gate"
+        else
+            log "issue #${number}: PR #${pr_number} BIG-BANG (${_bb_reasons% ;}) — ${BIG_BANG_OVERRIDE_LABEL} отсутствует, block needs-e2e"
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: skip needs-e2e + post big-bang comment to PR #${pr_number} (dedup 24h)"
+                labeled=$((labeled+1)); continue
+            fi
+            # Дедупликация как в post-merge cleanup: за последние 24h
+            # постим только один раз. Сейчас PR огромный (4850/100),
+            # round-49..54 → 6 одинаковых комментов = спам. Шифу прямо:
+            # «один раз label-коммент, round больше не запускается».
+            _bb_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _bb_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_number}/comments?since=${_bb_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🚨 **PR #'"${pr_number}"' BIG-BANG"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_bb_dup_count:-0}" -gt 0 ] 2>/dev/null; then
+                log "issue #${number}: big-bang comment на PR #${pr_number} уже проставлен (×${_bb_dup_count} за 24h) — dedup skip"
+                skipped=$((skipped+1)); continue
+            fi
+            # Коммент И на issue (чтобы воркер увидел в task), И на PR
+            # (чтобы ревьюер/Шифу увидел). Один раз каждый.
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "🚨 **PR #${pr_number} BIG-BANG** — нарушение ADR-0013: ${_bb_reasons% ;}.
+
+Требуется:
+1. **split** на инкрементальные PR (по 1 эпику на issue), каждый проходит e2e отдельно, ИЛИ
+2. **товарищ Шифу** ставит метку \`${BIG_BANG_OVERRIDE_LABEL}\` на этот issue (явный override).
+
+Merge-gate **НЕ поставит ${NEEDS_E2E_LABEL}** без override. Round-процесс не будет автоматически гонять e2e на этом PR.
+
+Ссылки: ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md), CONTRIBUTING.md §69-71." >/dev/null 2>&1 || true
+            gh pr comment "$pr_number" --repo "$GH_REPO" --body \
+                "🚨 **PR #${pr_number} BIG-BANG** — нарушение ADR-0013: ${_bb_reasons% ;}.
+
+Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не будет поставлен.
+
+Что делать:
+- **split** на инкрементальные PR (по 1 эпику), ИЛИ
+- **товарищ Шифу** ставит \`${BIG_BANG_OVERRIDE_LABEL}\` на issue #${number}." >/dev/null 2>&1 || true
+            # Помечаем issue меткой agent-flow:big-bang-blocked (best-effort) — чтобы
+            # triage/воркер/дашборд видели, что issue ждёт решения. Не критично
+            # если метка уже есть или label API упадёт.
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow:big-bang-blocked" >/dev/null 2>&1 || true
+            labeled=$((labeled+1)); continue
+        fi
+    fi
+
     if [ "$pr_kind" = "lint" ]; then
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would run: gh pr edit ${pr_number} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
