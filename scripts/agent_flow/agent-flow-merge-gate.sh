@@ -624,11 +624,38 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                         labeled=$((labeled+1)); continue
                     fi
                 else
-                    # MERGED without e2e-done — wait for e2e-process PASS.
-                    # Do NOT touch remote branch / archive card yet: a later
-                    # tick may close this issue, and we don't want to
-                    # archive the card while a worker is still holding it.
-                    log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — destructive cleanup deferred"
+                    # MERGED without e2e-done. Two sub-cases:
+                    #   (a) Branch still exists on remote → e2e-process can
+                    #       still run e2e on the merged branch tip
+                    #       (ADR-0014) → defer, wait for e2e-done.
+                    #   (b) Branch GONE (user merged by Q22 without e2e,
+                    #       branch deleted — GitHub "delete branch on merge"
+                    #       or manual cleanup) → e2e is physically impossible
+                    #       (e2e-process fetch origin/$branch fails) → issue
+                    #       is an eternal orphan in needs-e2e rotation
+                    #       (ретро 13.08 t_423453b1, #1160). Remove
+                    #       needs-e2e + e2e:rejected, comment to user
+                    #       (Q22: close manually or file follow-up), do NOT
+                    #       set needs-review (PR already gone), do NOT close
+                    #       (user decides), do NOT run destructive cleanup
+                    #       (branch already gone).
+                    if git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
+                        log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — branch ${branch} exists, destructive cleanup deferred"
+                        labeled=$((labeled+1)); continue
+                    fi
+                    log "issue #${number}: MERGED без ${DONE_LABEL}, ветка ${branch} удалена — e2e невозможен (Q22 user-merge), снимаю ${NEEDS_E2E_LABEL}"
+                    # Dedup комментария (24h окно, как stale-branch guard):
+                    # issue остаётся в hermes-цикле (метка hermes не снята),
+                    # поэтому каждый тик сюда снова зайдёт — не спамим.
+                    _orphan_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    _orphan_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_orphan_since}&per_page=100" \
+                        --jq '[.[] | select(.body | startswith("🛠 merge-gate: PR #'"${pr_number}"' смержен без e2e"))] | length' 2>/dev/null || echo 0)"
+                    gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                    gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
+                    if [ "${_orphan_dup:-0}" -eq 0 ]; then
+                        gh issue comment "$number" --repo "$GH_REPO" --body \
+                            "🛠 merge-gate (ретро 13.08 t_423453b1): PR #${pr_number} смержен без e2e-прогона (Q22), ветка \`${branch}\` удалена → e2e невозможен. Снят \`${NEEDS_E2E_LABEL}\`. Решение: закрыть issue вручную (принято по Q22) или завести follow-up на e2e." >/dev/null 2>&1 || true
+                    fi
                     labeled=$((labeled+1)); continue
                 fi
                 ;;

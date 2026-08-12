@@ -526,6 +526,67 @@ test_K_conflict_comment_rate_limited() {
 }
 
 # ===========================================================================
+# L. Ретро 13.08 t_423453b1 (#1160): user-merge БЕЗ e2e, ветка удалена →
+#    merge-gate снимает needs-e2e + комментит юзеру (Q22), НЕ ставит
+#    needs-review, НЕ закрывает issue, НЕ делает destructive cleanup.
+#    Раньше: issue навсегда висла в needs-e2e (e2e-process физически не
+#    мог прогнать — ветки нет; merge-gate ждал e2e-done бесконечно).
+# ===========================================================================
+test_L_merged_branch_deleted_unlabels_orphan() {
+    new_test
+    local issue=1160 branch
+    branch="$(slugify_branch "$issue" 'orphan merge demo')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"orphan merge demo\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1165,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-12T20:21:18Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] orphan merge demo\",\"labels\":[]}]"
+    set_state PR_1165_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    # ВАЖНО: BRANCH_PRESENT_<branch> НЕ ставим → git ls-remote пусто →
+    # merge-gate понимает: ветка удалена, e2e невозможен.
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) needs-e2e снят с issue.
+    local unlabel_calls
+    unlabel_calls="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --remove-label needs-e2e" || true)"
+    assert_eq "1" "$unlabel_calls" "orphan: needs-e2e removed from issue"
+
+    # 2) Комментарий юзеру (Q22) опубликован.
+    local q22_comment
+    q22_comment="$(printf '%s\n' "$journal" | grep -c 'смержен без e2e-прогона (Q22)' || true)"
+    assert_eq "1" "$q22_comment" "orphan: Q22 comment posted to user"
+
+    # 3) needs-review НЕ ставится (PR уже нет — ревьюить нечего).
+    local add_review
+    add_review="$(printf '%s\n' "$journal" | grep -c 'gh issue edit '"${issue}"' --add-label needs-review' || true)"
+    assert_eq "0" "$add_review" "orphan: needs-review NOT set"
+
+    # 4) Issue НЕ закрывается (решение за юзером).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close' || true)"
+    assert_eq "0" "$close_calls" "orphan: issue NOT closed"
+
+    # 5) Destructive cleanup НЕ запускается (ветки уже нет; карточку не
+    #    архивируем — issue открыта и ждёт ручного решения).
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c 'gh api -X DELETE' || true)"
+    assert_eq "0" "$del_calls" "orphan: no destructive branch delete"
+
+    # 6) Issue остаётся OPEN.
+    local state_now
+    state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
+    assert_contains '"OPEN"' "$state_now" "orphan: issue stays OPEN (user decision)"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. MERGED + e2e-done → close once, no e2e-done added" test_A_merged_pass_proven_closes_once
@@ -539,5 +600,6 @@ run_test "H. regression: follow-up over e2e-done still works" test_H_followup_pr
 run_test "I. regression: card archived after close (card_state parse)" test_I_card_archived_after_close
 run_test "J. CONFLICTING → recovery card (not requeue) — respawn-guard fix" test_J_conflict_creates_recovery_card_not_requeue
 run_test "K. conflict comment rate-limit / no recovery for running card" test_K_conflict_comment_rate_limited
+run_test "L. merged PR + branch deleted → unlabel orphan (Q22, t_423453b1)" test_L_merged_branch_deleted_unlabels_orphan
 
 summary
