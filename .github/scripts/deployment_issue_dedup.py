@@ -76,9 +76,10 @@ WARNING_EXCLUDE_COMMON = [
     r"unable to connect to a zenoh router",
     r"could not fetch info from synthdefmanagement server\. using defaults",
     # STT empty-rejection noise: robot heard silence and rejected — not a
-    # deployment failure (retro 12.08 t_d3e44336).
+    # deployment failure (retro 12.08 t_d3e44336, issue #989, #684).
     r"отклонено \(пустое\)",
     r"yandex:empty\(.*\)->.*:empty\(.*\) -> rejected",
+    r"отклонено \(короткое",
     r"интернет недоступен",
     # PyAudio overflow: input overrun is handled by the audio pipeline,
     # no data loss reported (retro 12.08 t_d3e44336).
