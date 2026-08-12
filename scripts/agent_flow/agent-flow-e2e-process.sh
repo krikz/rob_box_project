@@ -414,6 +414,30 @@ issues_json="$(gh issue list \
     --limit "$ISSUE_LIMIT" \
     --json number,title,labels,body 2>/dev/null || true)"
 
+# Issue #1141: даже для OPEN issues — skip если уже есть метка e2e-done
+# (workflow_dispatch мог триггериться от старого e2e-блока в issue).
+# Без этой защиты скрипт лупит команды (например «спой песню про шисюна»)
+# для закрытых фактически задач.
+if [ -n "$issues_json" ] && [ "$issues_json" != "[]" ]; then
+    _filtered="$(printf '%s' "$issues_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+keep = []
+for issue in data:
+    labels = [l["name"] for l in issue.get("labels", [])]
+    if "e2e-done" in labels or "e2e:rejected" in labels:
+        sys.stderr.write(f"issue #{issue[\"number\"]}: has e2e-done/e2e:rejected — skip\n")
+        continue
+    keep.append(issue)
+print(json.dumps(keep, ensure_ascii=False))')"
+    _filtered_count="$(printf '%s' "$_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+    _original_count="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+    if [ "$_filtered_count" -lt "$_original_count" ]; then
+        log "filtered: ${_original_count} → ${_filtered_count} issues (skipped $((_original_count - _filtered_count)) already-labeled)"
+    fi
+    issues_json="$_filtered"
+fi
+
 # G3: rate-limit check on empty output.
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     rate="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo 999)"
