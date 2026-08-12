@@ -98,6 +98,10 @@ LOG_PREFIX="${LOG_PREFIX:-[agent-flow-e2e-process]}"
 KNOWN_BLOCKER_SIGNATURES="${KNOWN_BLOCKER_SIGNATURES:-no_wake_word}"
 # Окно робот-логов для grep сигнатуры (best-effort, только если SSH доступен).
 BLOCKER_ROBOT_LOG_SINCE="${BLOCKER_ROBOT_LOG_SINCE:-6h}"
+# Окно «свежести» блокера в логах (ретро 12.08 t_4e592534): если сигнатура
+# найдена только за пределами этого окна — это stale-запись (например, остатки
+# старого #1117 в логах), а не активный блокер.
+BLOCKER_ROBOT_LOG_FRESH="${BLOCKER_ROBOT_LOG_FRESH:-30m}"
 # Сколько подряд однотипных FAIL (одна сигнатура) = блокер → e2e:rejected.
 BLOCKER_CONSECUTIVE_FAILS="${BLOCKER_CONSECUTIVE_FAILS:-2}"
 
@@ -172,11 +176,15 @@ blocker_issue_for_sig() {  # $1=sig
 
 # detect_known_blocker — известный блокер открыт? Источники:
 #   1) открытый issue с сигнатурой (сильный сигнал);
-#   2) робот-логи voice-assistant за BLOCKER_ROBOT_LOG_SINCE (best-effort,
-#      только если задан E2E_ROBOT_PASS; SSH-сбой не фатален).
+#   2) робот-логи voice-assistant (best-effort, только если задан E2E_ROBOT_PASS;
+#      SSH-сбой не фатален). Ретро 12.08 t_4e592534: stale-записи (например,
+#      остатки #1117 в логах) не считаются блокером — нужна свежесть
+#      (BLOCKER_ROBOT_LOG_FRESH, по умолчанию 30m) И отсутствие живых
+#      "ПРИНЯТО" за то же окно (wake-word срабатывает → система жива →
+#      IDLE-диагностика no_wake_word это не блокер, а нормальная работа).
 # Печатает "#<issue>" или "robot-log:<sig>"; пусто — блокера нет.
 detect_known_blocker() {
-    local sig hit
+    local sig hit _sig_logs _priyato_logs
     for sig in "${_blocker_sigs[@]}"; do
         [ -z "$sig" ] && continue
         hit="$(blocker_issue_for_sig "$sig")"
@@ -185,13 +193,29 @@ detect_known_blocker() {
             return 0
         fi
         if [ -n "${E2E_ROBOT_PASS:-}" ]; then
-            if sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+            # grep -F фиксированная строка (без regex-экранирования); '${sig}'
+            # нужно сначала интерполировать локально — bash в одинарных кавычках
+            # не подставляет, поэтому собираем команду через printf.
+            _sig_logs="$(sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
                 "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.21}" \
-                "docker logs voice-assistant --since ${BLOCKER_ROBOT_LOG_SINCE} 2>&1 | grep -m1 '${sig}'" 2>/dev/null \
-                | grep -q .; then
-                printf 'robot-log:%s' "$sig"
-                return 0
+                "docker logs voice-assistant --since ${BLOCKER_ROBOT_LOG_FRESH} 2>&1 | grep -m1 -F $(printf '%q' "$sig")" 2>/dev/null || true)"
+            if [ -z "$_sig_logs" ]; then
+                # Сигнатуры нет в свежем окне — это stale (например, остатки
+                # #1117 в логах). Не блокер.
+                continue
             fi
+            # Свежая сигнатура есть. Проверяем, жива ли система: ищем «ПРИНЯТО»
+            # (wake-word сработал → голосовой пайплайн работает → сигнатура
+            # это обычная IDLE-диагностика шума/фраз без wake-word, не блокер).
+            _priyato_logs="$(sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+                "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.21}" \
+                "docker logs voice-assistant --since ${BLOCKER_ROBOT_LOG_FRESH} 2>&1 | grep -m1 -F 'ПРИНЯТО'" 2>/dev/null || true)"
+            if [ -n "$_priyato_logs" ]; then
+                # Система жива, wake-word работает — IDLE-срабатывания не блокер.
+                continue
+            fi
+            printf 'robot-log:%s' "$sig"
+            return 0
         fi
     done
     return 0
@@ -426,7 +450,7 @@ keep = []
 for issue in data:
     labels = [l["name"] for l in issue.get("labels", [])]
     if "e2e-done" in labels or "e2e:rejected" in labels:
-        sys.stderr.write(f"issue #{issue[\"number\"]}: has e2e-done/e2e:rejected — skip\n")
+        sys.stderr.write("issue #" + str(issue["number"]) + ": has e2e-done/e2e:rejected — skip\n")
         continue
     keep.append(issue)
 print(json.dumps(keep, ensure_ascii=False))')"
