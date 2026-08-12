@@ -254,6 +254,44 @@ if filt.startswith("."):
         else: v = None
     emit(v); sys.exit(0)
 
+# Pattern: [.[] | select(.field == "VAL")] | length  (equality count — retro-path)
+m = re.match(r"^\[\.\[\]\s*\|\s*select\(\.([\w]+)\s*==\s*\"([^\"]+)\"\)\]\s*\|\s*length$", filt)
+if m:
+    field, val = m.group(1), m.group(2)
+    count = 0
+    for el in data:
+        v = el.get(field) if isinstance(el, dict) else None
+        if isinstance(v, str) and v == val: count += 1
+    print(count); sys.exit(0)
+
+# Pattern: [.[] | select(.a == "X" or .b == "Y" or .c == "Z")] | length
+# (multi-condition OR count — retro-path CI-only rollup check)
+m = re.match(r"^\[\.\[\]\s*\|\s*select\((.+?)\)\]\s*\|\s*length$", filt)
+if m:
+    conds = re.findall(r"\.([\w]+)\s*==\s*\"([^\"]+)\"", m.group(1))
+    count = 0
+    for el in data:
+        if not isinstance(el, dict): continue
+        for field, val in conds:
+            if el.get(field) == val:
+                count += 1
+                break
+    print(count); sys.exit(0)
+
+# Pattern: [.files[].path]  (array of subfield values — retro-path PR files)
+m = re.match(r"^\[\.([\w]+)\[\]\.([\w]+)\]$", filt)
+if m:
+    outer, inner = m.group(1), m.group(2)
+    coll = data.get(outer) if isinstance(data, dict) else None
+    vals = []
+    for sub in (coll or []):
+        cur = sub
+        for part in inner.split("."):
+            if isinstance(cur, dict): cur = cur.get(part)
+            else: cur = None
+        if cur is not None: vals.append(cur)
+    emit(vals); sys.exit(0)
+
 # Default: pass through
 emit(data)
 ' "$data" "$filter"
@@ -388,8 +426,12 @@ case "$subcmd" in
         action="${1:-}"; shift || true
         case "$action" in
             list)
-                # Detect: --head <branch> vs no --head
-                if printf '%s' "$*" | grep -q -- '--head'; then
+                # Detect: --state merged (retro-path scan) vs --head vs --search
+                if printf '%s' "$*" | grep -q -- '--state merged'; then
+                    journal "gh pr list --state merged (retro-path)"
+                    _data="$(get_state PR_LIST_MERGED_JSON)"
+                    apply_jq "$_data" "$_jq_filter"
+                elif printf '%s' "$*" | grep -q -- '--head'; then
                     head_branch="$(printf '%s' "$*" | sed -nE 's/.*--head[[:space:]]+([^ ]+).*/\1/p')"
                     journal "gh pr list --head $head_branch"
                     _data="$(get_state PR_HEAD_${head_branch}_JSON)"
@@ -404,11 +446,48 @@ case "$subcmd" in
                     apply_jq "$_data" "$_jq_filter"
                 fi
                 ;;
+            view)
+                pr_num="$1"; shift || true
+                if printf '%s' "$*" | grep -q -- '--json files'; then
+                    journal "gh pr view $pr_num --json files"
+                    _data="$(get_state PR_${pr_num}_FILES_JSON)"
+                    apply_jq "$_data" "$_jq_filter"
+                elif printf '%s' "$*" | grep -q -- '--json statusCheckRollup'; then
+                    journal "gh pr view $pr_num --json statusCheckRollup"
+                    _data="$(get_state PR_${pr_num}_ROLLUP_JSON)"
+                    apply_jq "$_data" "$_jq_filter"
+                else
+                    journal "gh pr view $pr_num (other)"
+                    _data="$(get_state PR_${pr_num}_VIEW_JSON)"
+                    apply_jq "$_data" "$_jq_filter"
+                fi
+                ;;
             edit)
                 journal "gh pr edit $*"
                 ;;
             *)
                 journal "gh pr $action $*"
+                ;;
+        esac
+        ;;
+    run)
+        action="${1:-}"; shift || true
+        case "$action" in
+            list)
+                # gh run list --repo X --branch <branch> --workflow ... --json conclusion
+                if printf '%s' "$*" | grep -q -- '--branch'; then
+                    br="$(printf '%s' "$*" | sed -nE 's/.*--branch[[:space:]]+([^ ]+).*/\1/p')"
+                    journal "gh run list --branch $br"
+                    _data="$(get_state RUN_LIST_${br}_JSON)"
+                    apply_jq "$_data" "$_jq_filter"
+                else
+                    journal "gh run list (other)"
+                    _data="$(get_state RUN_LIST_JSON)"
+                    apply_jq "$_data" "$_jq_filter"
+                fi
+                ;;
+            *)
+                journal "gh run $action $*"
                 ;;
         esac
         ;;
