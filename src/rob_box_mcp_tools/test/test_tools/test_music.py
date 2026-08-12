@@ -309,6 +309,93 @@ class TestMusicManagerSCCheck:
             mgr._check_supercollider()
         mock_sock_class.assert_called_once_with(socket_module.AF_INET, socket_module.SOCK_DGRAM)
 
+    # ----- _send_osc_raw (issue #778) --------------------------------------
+
+    def test_send_osc_raw_address_only(self):
+        """/status style: address only, no args. Packet must be 4-byte aligned."""
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mgr._send_osc_raw("/status")
+        sent_data, (host, port) = mock_sock.sendto.call_args[0]
+        # /status = 7 chars + 1 NUL = 8 bytes (already aligned) + ","
+        # + 3 NUL padding = 12 bytes total
+        assert sent_data == b"/status\x00,\x00\x00\x00"
+        assert len(sent_data) % 4 == 0
+        assert port == 57110
+
+    def test_send_osc_raw_int_args(self):
+        """/g_freeAll 1: type tag ',i' + 4-byte big-endian int."""
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mgr._send_osc_raw("/g_freeAll", 1)
+        sent_data, _ = mock_sock.sendto.call_args[0]
+        # /g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01
+        #   ^addr 12B    ^typ 8B    ^arg 4B = 24 bytes total
+        assert sent_data == b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
+        assert len(sent_data) % 4 == 0  # 4-byte aligned
+
+    def test_send_osc_raw_three_int_args(self):
+        """/g_new 1 0 0: 3 int args, big-endian, 4-byte aligned.
+
+        Must byte-match the legacy hand-built packet (execute_music_code
+        used to construct it as: /g_new\x00\x00 + ,iii\x00\x00\x00\x00 +
+        >i 1 + >i 0 + >i 0), so scsynth behaviour is unchanged.
+        """
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mgr._send_osc_raw("/g_new", 1, 0, 0)
+        sent_data, _ = mock_sock.sendto.call_args[0]
+        expected = (
+            b"/g_new\x00\x00"  # 6 chars + 2 NUL = 8 bytes (aligned)
+            b",iii\x00\x00\x00\x00"  # 5 chars + 3 NUL = 8 bytes
+            b"\x00\x00\x00\x01"  # >i 1
+            b"\x00\x00\x00\x00"  # >i 0
+            b"\x00\x00\x00\x00"  # >i 0
+        )
+        assert sent_data == expected
+        assert len(sent_data) % 4 == 0  # 32 bytes
+
+    def test_send_osc_raw_float_arg(self):
+        """Float args are big-endian 4-byte float."""
+        import struct
+
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mgr._send_osc_raw("/n_set", 1, 0.5)
+        sent_data, _ = mock_sock.sendto.call_args[0]
+        # Last 4 bytes = 0.5 in big-endian float
+        assert sent_data.endswith(struct.pack(">f", 0.5))
+        # Type tag should contain ',if'
+        assert b",if" in sent_data
+
+    def test_send_osc_raw_propagates_socket_errors(self):
+        """_send_osc_raw is a raw transport — it propagates OSError.
+
+        Callers that need best-effort semantics (execute_music_code,
+        stop_all) wrap it in try/except themselves, exactly like the
+        legacy inline bytearray code did. This test pins the contract:
+        no hidden swallow inside the method.
+        """
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock_class.return_value.__enter__ = Mock(
+                side_effect=OSError("network unreachable")
+            )
+            with pytest.raises(OSError):
+                mgr._send_osc_raw("/g_new", 1, 0, 0)
+
 
 # ---------------------------------------------------------------------------
 # MusicManager — execute_code
@@ -445,6 +532,90 @@ class TestMusicManagerExecuteCode:
         with patch("builtins.exec"):
             mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
         assert mgr._music_deadline_at == deadline_before
+
+    # ----- Clock.clear() OSC race-fix (issue #778) -----------------------
+
+    def test_execute_with_clock_clear_sends_g_freeAll_then_g_new(self):
+        """When code contains Clock.clear(), /g_freeAll MUST be sent
+        BEFORE /g_new, so Group 1 is freed before being recreated.
+
+        Issue #778: scsynth logged ``FAILURE IN SERVER /g_new negative
+        node IDs are reserved`` because the new /g_new arrived before
+        the previous Group 1 was actually freed by /g_freeAll.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append(address)
+
+        with patch("builtins.exec"), patch.object(mgr, "_send_osc_raw", side_effect=_capture_send):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        # Both messages must be sent
+        assert "/g_freeAll" in osc_calls
+        assert "/g_new" in osc_calls
+        # Order is critical: free first, recreate second
+        assert osc_calls.index("/g_freeAll") < osc_calls.index("/g_new")
+
+    def test_execute_with_clock_clear_sleeps_between_free_and_new(self):
+        """A 50ms pause MUST sit between /g_freeAll and /g_new so that
+        scsynth (UDP fire-and-forget) has time to actually free Group 1
+        before we ask it to recreate the group with the same ID.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        call_log = []
+
+        # Mock _send_osc_raw to record the order
+        def _fake_send(address, *args):
+            call_log.append(("osc", address))
+
+        # Mock time.sleep to record sleep calls AND ensure they happen
+        # between the two OSC sends (in the actual code path).
+        def _fake_sleep(seconds):
+            call_log.append(("sleep", seconds))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_fake_send
+        ), patch("rob_box_mcp_tools.tools.music.time.sleep", side_effect=_fake_sleep):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        # Find indices of the two OSC calls and the sleep between them
+        try:
+            idx_free = next(i for i, c in enumerate(call_log) if c == ("osc", "/g_freeAll"))
+            idx_new = next(i for i, c in enumerate(call_log) if c == ("osc", "/g_new"))
+        except StopIteration:
+            pytest.fail("Expected /g_freeAll and /g_new OSC sends, got: " + str(call_log))
+
+        # At least one sleep must occur between free and new, with positive duration
+        sleeps_between = [
+            s for s in call_log[idx_free + 1:idx_new] if s[0] == "sleep"
+        ]
+        assert sleeps_between, (
+            "Race condition: no sleep between /g_freeAll and /g_new. "
+            "Issue #778 will recur. Calls: " + str(call_log)
+        )
+        # And the sleep must be at least 0.05s (50ms is what we picked)
+        assert any(s[1] >= 0.05 for s in sleeps_between), (
+            "Sleep too short to let scsynth free Group 1: " + str(sleeps_between)
+        )
+
+    def test_execute_without_clock_clear_does_not_send_g_freeAll(self):
+        """The OSC dance is gated on ``Clock.clear()`` in the code — no
+        Clock.clear() → no /g_freeAll + /g_new sequence (would kill live
+        music for a pattern-update that doesn't ask for it).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append(address)
+
+        with patch("builtins.exec"), patch.object(mgr, "_send_osc_raw", side_effect=_capture_send):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+
+        assert "/g_freeAll" not in osc_calls
+        assert "/g_new" not in osc_calls
 
 
 # ---------------------------------------------------------------------------
