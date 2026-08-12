@@ -250,6 +250,32 @@ else
 fi
 
 echo
+echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
+TOKEN_HOLDERS=()
+for envf in /home/builder/.hermes/.env /home/builder/.hermes/profiles/*/.env; do
+    [ -f "$envf" ] || continue
+    while IFS= read -r ln; do
+        case "$ln" in
+            TELEGRAM_BOT_TOKEN=*)
+                val="${ln#TELEGRAM_BOT_TOKEN=}"
+                val="${val%\"}"; val="${val#\"}"
+                if [ -n "$val" ]; then
+                    TOKEN_HOLDERS+=("$(basename "$(dirname "$envf")")")
+                fi
+                break
+                ;;
+        esac
+    done < "$envf"
+done
+if [ "${#TOKEN_HOLDERS[@]}" -gt 1 ]; then
+    echo "  !! WARNING: ${#TOKEN_HOLDERS[@]} profiles hold an active TELEGRAM_BOT_TOKEN: ${TOKEN_HOLDERS[*]}"
+    echo "     Telegram allows ONE getUpdates consumer per token; the rest will loop"
+    echo "     'token already in use' forever. Keep the token only in the owner profile."
+else
+    echo "  OK  telegram token holders: ${TOKEN_HOLDERS[*]:-none}"
+fi
+
+echo
 echo "==> Done. Verify:"
 if ! $DRY_RUN; then
     for f in "${EXPECTED[@]}"; do
