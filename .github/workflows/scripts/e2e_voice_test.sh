@@ -190,6 +190,9 @@ check_patterns() {
             rc=1
         fi
     done
+    # Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
+    # ``rc=0`` означала success — возвращаем как есть, callers через
+    # ``if check_patterns; then`` получат SUCCESS при rc=0 и FAIL при rc=1.
     return $rc
 }
 

@@ -17,6 +17,7 @@ Verify:
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -24,12 +25,29 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+# Issue #1133: на CI sounddevice нет. До импорта AudioPlaybackManager
+# убеждаемся что ``import sounddevice as sd`` в модуле не превратил sd в
+# None (иначе play_audio ранний return). На роботе sounddevice уже стоит
+# — этот блок no-op.
+if "sounddevice" not in sys.modules:
+    sd_stub = MagicMock()
+    sys.modules["sounddevice"] = sd_stub
+
 from rob_box_voice.audio_playback_manager import AudioPlaybackManager
 
 
 @pytest.fixture
 def fresh_manager():
-    """Чистый экземпляр для теста (singleton обходим)."""
+    """Чистый экземпляр для теста (singleton обходим).
+
+    Issue #1133: на CI sd=None в audio_playback_manager → подменяем
+    MagicMock ДО создания экземпляра, иначе play_audio вернёт False.
+    """
+    import rob_box_voice.audio_playback_manager as apm_mod
+
+    if apm_mod.sd is None:
+        apm_mod.sd = MagicMock()
+
     mgr = AudioPlaybackManager.__new__(AudioPlaybackManager)
     mgr._playback_lock = threading.Lock()
     mgr._current_stream = None
