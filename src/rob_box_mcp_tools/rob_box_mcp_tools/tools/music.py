@@ -20,6 +20,7 @@ import os
 import re
 import socket
 import sqlite3
+import struct
 import threading
 import time
 from datetime import datetime, timezone
@@ -261,28 +262,6 @@ class MusicManager:
         NOTE: SynthDefs — это plain dict, НЕ объект с методом .reload()!
         Правильный способ: for sdef in SynthDefs.values(): sdef.add()
         """
-        import struct as _struct
-        import time as _time
-
-        def _send_osc_raw(address: str, *args) -> None:
-            """Отправить raw OSC сообщение на scsynth (UDP 57110)."""
-            msg = bytearray()
-            addr_bytes = address.encode() + b"\x00"
-            while len(addr_bytes) % 4:
-                addr_bytes += b"\x00"
-            types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
-            while len(types) % 4:
-                types += b"\x00"
-            msg.extend(addr_bytes)
-            msg.extend(types)
-            for a in args:
-                if isinstance(a, int):
-                    msg.extend(_struct.pack(">i", a))
-                elif isinstance(a, float):
-                    msg.extend(_struct.pack(">f", a))
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                _s.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
-
         try:
             # renardo_lib.runtime при импорте пытается листить директории сэмплов.
             # Если 0_foxdot_default не установлен — падает FileNotFoundError.
@@ -322,7 +301,7 @@ class MusicManager:
 
             # Создаём Group 1 в scsynth — renardo отправляет все ноты в эту группу.
             # Без неё scsynth возвращает "Group 1 not found" на каждый /s_new.
-            _send_osc_raw("/g_new", 1, 0, 0)
+            self._send_osc_raw("/g_new", 1, 0, 0)
 
             # Загружаем все SynthDef-ы через sclang.
             # SynthDefs — это plain Python dict, НЕ объект с .reload()!
@@ -344,7 +323,7 @@ class MusicManager:
 
             # Ждём компиляции всех 188 SynthDef-ов через sclang.
             # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
-            _time.sleep(5)
+            time.sleep(5)
 
             self._renardo_context = vars(_rt).copy()
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
@@ -459,6 +438,44 @@ class MusicManager:
                 return len(data) > 0
         except OSError:
             return False
+
+    def _send_osc_raw(self, address: str, *args: Any) -> None:
+        """Отправить raw OSC сообщение на scsynth (UDP 57110).
+
+        OSC-packet собирается вручную: 4-byte aligned address + type-tag +
+        big-endian args. Поддерживает int (``i``) и float (``f``) аргументы.
+
+        Выделено как self-метод вместо замыкания, чтобы можно было
+        переиспользовать из ``execute_music_code`` / ``stop_all`` без
+        дублирования byte-packing логики. Раньше ``execute_music_code``
+        собирал ``/g_new`` руками bytearray-ом, что (а) дублировало код
+        и (б) легко ломалось при изменении формата.
+
+        Issue #778 (deployment critical_log ``FAILURE IN SERVER /g_new
+        negative node IDs are reserved``): между ``/g_freeAll`` и
+        ``/g_new`` нужна пауза ≥50ms — UDP fire-and-forget, scsynth не
+        успевает освободить ID Group 1, и Renardo Player-ы присылают
+        ``/s_new`` с target_id=1, которого ещё нет. Пауза лечит race
+        condition без изменения семантики (свободные ноды умирают
+        сами, мы просто даём scsynth обработать free до пересоздания
+        Group).
+        """
+        msg = bytearray()
+        addr_bytes = address.encode() + b"\x00"
+        while len(addr_bytes) % 4:
+            addr_bytes += b"\x00"
+        types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
+        while len(types) % 4:
+            types += b"\x00"
+        msg.extend(addr_bytes)
+        msg.extend(types)
+        for a in args:
+            if isinstance(a, int):
+                msg.extend(struct.pack(">i", a))
+            elif isinstance(a, float):
+                msg.extend(struct.pack(">f", a))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
 
     # ------------------------------------------------------------------
     # Code safety filter
@@ -706,22 +723,27 @@ class MusicManager:
 
         if has_clock_clear:
             # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
-            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+                self._send_osc_raw("/g_freeAll", 1)
             except Exception:
                 pass  # если SC недоступен — не критично, старые ноды умрут сами
-            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
-            import struct as _struct
-            msg_gnew = bytearray()
-            for part in [b"/g_new\x00\x00", b",iii\x00\x00\x00\x00"]:
-                msg_gnew.extend(part)
-            for v in [1, 0, 0]:
-                msg_gnew.extend(_struct.pack(">i", v))
+            # Пауза между /g_freeAll и /g_new обязательна (issue #778):
+            # UDP — fire-and-forget, scsynth обрабатывает /g_freeAll
+            # асинхронно и не освобождает ID Group 1 мгновенно. Без паузы
+            # наш /g_new (или любой /s_new от Renardo Player-а, который
+            # попытается вставить ноту в Group 1) приходит в scsynth, когда
+            # ID ещё занят → "FAILURE IN SERVER /g_new negative node IDs are
+            # reserved" в логах supercollider (старый баг, был
+            # замаскирован тем, что renardo при инициализации сначала
+            # пересоздаёт Group, и в среднем прокатывало). 50ms достаточно
+            # для scsynth обработать free и освободить ID.
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.sendto(bytes(msg_gnew), (self.SC_HOST, self.SC_PORT))
+                time.sleep(0.05)
+            except Exception:
+                pass
+            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
+            try:
+                self._send_osc_raw("/g_new", 1, 0, 0)
             except Exception:
                 pass
 
@@ -861,10 +883,8 @@ class MusicManager:
                 pass
 
             # Шаг 4: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
-            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+                self._send_osc_raw("/g_freeAll", 1)
             except Exception:
                 pass  # если SC недоступен — не страшно, Clock уже очищен
 
