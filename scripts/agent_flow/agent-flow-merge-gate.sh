@@ -699,6 +699,9 @@ git push --force-with-lease origin ${pr_head_ref}
         # по метке issue.
         if [ "$pr_merge_state" = "UNSTABLE" ] && [ "$pr_state" = "OPEN" ]; then
             log "issue #${number}: PR #${pr_number} mergeStateStatus=UNSTABLE — appending rebase reminder"
+            # Подтягиваем headRefName — UNSTABLE-блок не имеет его из основного цикла (регрессия t_1146)
+            pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
+            [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
             _assignee="default"
             for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
                 case "$lbl" in
