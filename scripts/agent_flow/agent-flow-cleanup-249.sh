@@ -20,15 +20,34 @@
 # Usage:
 #   agent-flow-cleanup-249.sh [--min-age 30] [--dry-run]
 # Env: BUILD_HOST=10.1.1.249, BUILD_USER=ros2, SSHPASS (или -p open),
-#      LOCK_FILE=/tmp/agent-flow-e2e-process.lock (локальный flock e2e-process)
+#      LOCK_FILE=/tmp/agent-flow-e2e-process.lock (локальный flock e2e-process),
+#      GH_REPO (owner/repo; для round-branch cleanup), ROUND_STALE_HOURS (default 48)
 # ============================================================================
 set -euo pipefail
+
+# gh auth на этом хосте: HOME=/home/builder (иначе gh ищет конфиг в
+# $HOME/.config/gh профильной оболочки и падает «not logged in»).
+export HOME=/home/builder
+
+# source profile .env (GH_REPO и пр.) — как round_ensure.sh
+PROFILE_ENV="/home/builder/.hermes/profiles/agent-flow/.env"
+if [ -f "$PROFILE_ENV" ]; then
+    while IFS='=' read -r key val; do
+        case "$key" in ''|'#'*) continue ;; esac
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        if [ -z "${!key:-}" ]; then
+            export "$key=$val"
+        fi
+    done < "$PROFILE_ENV"
+fi
 
 BUILD_HOST="${BUILD_HOST:-10.1.1.249}"
 BUILD_USER="${BUILD_USER:-ros2}"
 SSHPASS_VAL="${SSHPASS:-open}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
 MIN_AGE_MIN="${MIN_AGE_MIN:-30}"
+ROUND_STALE_HOURS="${ROUND_STALE_HOURS:-48}"
 DRY_RUN=0
 LOG_PREFIX="[cleanup-249]"
 
@@ -80,5 +99,46 @@ fi
 sshpass -p "$SSHPASS_VAL" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
     "${BUILD_USER}@${BUILD_HOST}" \
     "list=\$($find_cmd); if [ -n \"\$list\" ]; then printf '%s\n' \"\$list\" | xargs -r rm -f -- && echo \"CLEANUP_OK removed: \$(printf '%s\n' \"\$list\" | wc -l) files\"; else echo 'CLEANUP_OK nothing to remove'; fi" 2>&1 | sed 's/^/  /'
+
+# --- 4. stale round-branch cleanup на remote (ретро 12.08 t_d3aeaa9b) ------
+# ПРАВИЛО: round-ветка без e2e-активности > ROUND_STALE_HOURS (48ч) → delete.
+# e2e-активность = последний коммит в round-ветке: e2e-process мержит
+# agent-ветку в round и пушит ПЕРЕД запуском L-E2E, поэтому свежий коммит =
+# свежий прогон. Старые round-ветки (напр. round-59, создан из develop ДО
+# фиксов валидатора #1143 и ротации #1141) несут устаревшую базу: при reuse
+# round_ensure берёт max-N со старой базой → e2e гоняется на регрессе.
+# Guard: flock e2e-process уже проверен в секции 1 (активный round не тронем).
+if [ -n "${GH_REPO:-}" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    log "round-cleanup: ищу stale round-ветки (>${ROUND_STALE_HOURS}ч без e2e-активности) на ${GH_REPO}"
+    now_epoch="$(date +%s)"
+    while read -r round_branch round_sha; do
+        [ -z "$round_branch" ] && continue
+        last_date="$(gh api "repos/${GH_REPO}/commits/${round_sha}" --jq '.commit.committer.date' 2>/dev/null || echo '')"
+        if [ -z "$last_date" ]; then
+            log "  WARN: не удалось получить дату для ${round_branch} (${round_sha}) — пропуск"
+            continue
+        fi
+        last_epoch="$(date -d "$last_date" +%s 2>/dev/null || echo 0)"
+        age_h=$(( (now_epoch - last_epoch) / 3600 ))
+        if [ "$age_h" -gt "$ROUND_STALE_HOURS" ]; then
+            if [ "$DRY_RUN" = "1" ]; then
+                log "  DRY-RUN: удалил бы ${round_branch} (последний коммит ${age_h}ч назад)"
+            else
+                # URL-encode { } в имени ветки (GitHub API требует %7B/%7D)
+                enc="${round_branch//\{/%7B}"; enc="${enc//\}/%7D}"
+                if gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${enc}" >/dev/null 2>&1; then
+                    log "  DELETED stale round ${round_branch} (последний коммит ${age_h}ч назад)"
+                else
+                    log "  WARN: не удалось удалить ${round_branch}"
+                fi
+            fi
+        else
+            log "  keep ${round_branch} (последний коммит ${age_h}ч назад)"
+        fi
+    done < <(gh api "repos/${GH_REPO}/branches?per_page=100" \
+        --jq '.[] | select(.name | startswith("z-{e2e}/test-round-")) | "\(.name)\t\(.commit.sha)"' 2>/dev/null || true)
+else
+    log "round-cleanup: GH_REPO/gh недоступны — пропуск (только /tmp cleanup)"
+fi
 
 log "cleanup done (${BUILD_HOST}, min-age ${MIN_AGE_MIN} мин)"

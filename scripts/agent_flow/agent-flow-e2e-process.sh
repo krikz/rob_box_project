@@ -412,7 +412,29 @@ round_ensure() {
             fi
         fi
     else
-        log "reusing ${ROUND_BRANCH} (max N=${max_n})"
+        # Ретро 12.08 t_d3aeaa9b: НЕ переиспользуем stale round (база устарела).
+        # round-59 был создан из develop ДО фиксов валидатора #1143 и ротации
+        # #1141 — reuse вернул бы e2e на регрессе. Проверка: round-ветка должна
+        # содержать актуальный origin/${FOUNDATION_BRANCH}; если нет — удаляем
+        # и создаём заново. Иначе e2e-прогон на устаревшей базе (ретро 12.08).
+        log "checking ${ROUND_BRANCH} base freshness (must contain origin/${FOUNDATION_BRANCH})"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: check ancestry origin/${FOUNDATION_BRANCH}..${ROUND_BRANCH}"
+        else
+            if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
+                log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
+            fi
+            if git -C "$REPO_DIR" merge-base --is-ancestor "origin/${FOUNDATION_BRANCH}" "origin/${ROUND_BRANCH}" 2>/dev/null; then
+                log "reusing ${ROUND_BRANCH} (база актуальна: содержит origin/${FOUNDATION_BRANCH})"
+            else
+                log "🛑 ${ROUND_BRANCH} база УСТАРЕЛА (не содержит origin/${FOUNDATION_BRANCH}) — удаляю и создам заново (ретро 12.08 t_d3aeaa9b)"
+                git -C "$REPO_DIR" push origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /' || true
+                if ! git -C "$REPO_DIR" push origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
+                    log "failed to recreate ${ROUND_BRANCH}"; return 1
+                fi
+                log "recreated ${ROUND_BRANCH} from fresh origin/${FOUNDATION_BRANCH}"
+            fi
+        fi
     fi
 
     # Сохраняем счётчик (только после успешного создания/reuse).

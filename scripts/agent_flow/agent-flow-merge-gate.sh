@@ -105,6 +105,54 @@ fi
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
+# --- stale-branch re-commit guard для ВСЕХ open PR (ретро 12.08 t_d3aeaa9b) --
+# Сценарий: ветка УЖЕ влита в develop (есть MERGED PR с тем же head), но
+# воркер продолжал коммитить в неё ПОСЛЕ merge (база устарела; re-коммиты =
+# дубли merged-содержимого) и открыл НОВЫЙ PR с той же ветки. Diff такого PR
+# vs develop — РЕГРЕССИЯ (удаляет влитые voice-фиксы: dialogue_node.py,
+# health.py, .image-versions). Детект: у head-ветки уже есть MERGED PR,
+# отличный от текущего. Блокируем: коммент в issue/PR + НЕ ставим needs-e2e.
+# Вызывается ДО раннего exit при отсутствии hermes-issues (ретро-ветки
+# devops/architect issues не имеют — иначе guard бы не сработал вообще).
+stale_branch_scan_all() {
+    _stale_all_prs="$(gh pr list --repo "$GH_REPO" --state open \
+        --json number,headRefName,title 2>/dev/null || echo '[]')"
+    printf '%s' "$_stale_all_prs" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for pr in data:
+    print("{}\t{}\t{}".format(pr["number"], pr.get("headRefName",""), pr.get("title","")))
+' 2>/dev/null | while IFS=$'\t' read -r _spr_num _spr_head _spr_title; do
+        [ -z "$_spr_num" ] && continue
+        _spr_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$_spr_head" \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+        if [ -n "$_spr_prev_merged" ] && [ "$_spr_prev_merged" != "$_spr_num" ]; then
+            log "stale-branch-scan: 🛑 ветка ${_spr_head} уже влита через PR #${_spr_prev_merged}, PR #${_spr_num} снова OPEN — block"
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: comment stale-branch block on PR #${_spr_num}"
+                continue
+            fi
+            _spr_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _spr_dup="$(gh api "repos/${GH_REPO}/issues/${_spr_num}/comments?since=${_spr_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🛑 **stale-branch re-commit"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_spr_dup:-0}" -eq 0 ]; then
+                gh pr comment "$_spr_num" --repo "$GH_REPO" --body \
+                    "🛑 **stale-branch re-commit detected** (merge-gate, ретро 12.08 t_d3aeaa9b)
+
+Ветка \`${_spr_head}\` уже была влита в develop через PR #${_spr_prev_merged}. Новые коммиты в неё ПОСЛЕ merge — re-коммиты поверх устаревшей базы: diff origin/develop...HEAD **удаляет** уже влитые фиксы.
+
+**Что делать:**
+1. НЕ пушить в уже влитую ветку.
+2. Создай **новую** ветку от свежего origin/develop и открой новый PR.
+3. Закрой/удали этот PR (ветка влита, PR-дифф регрессионный).
+
+Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+    return 0
+}
+
 # G6: flock sentinel — skip tick if another instance holds the lock.
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
@@ -150,6 +198,11 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     # смерженные PR, ссылающиеся на немаркированные issues, всё равно нужно
     # обработать (сканы ниже). Раньше здесь был exit 0 → ретро-issues навсегда
     # выпадали из merge-gate, когда очередь hermes пуста.
+    # stale-branch guard (ретро 12.08 t_d3aeaa9b) вызывается НИЖЕ (scan-all-prs
+    # блок) — этот путь всегда доходит до него (continue, не exit 0), поэтому
+    # здесь дублировать вызов нельзя: PR с уже влитой ветки получил бы коммент
+    # дважды за тик (ретро-ветки devops/architect issues не имеют — их
+    # stale-re-commit PR ловит scan-all вызов).
     log "no issues with label '${ISSUE_LABEL}' — continuing to scan-all-prs + retro-path"
     issues_json='[]'
 fi
@@ -391,6 +444,44 @@ print(f"pr_additions={pr_additions}")
     if [ -z "${pr_number:-}" ]; then
         log "issue #${number}: could not parse PR record for ${branch} — skip"
         errored=$((errored+1)); continue
+    fi
+
+    # --- stale-branch re-commit guard (ретро 12.08 t_d3aeaa9b) ------------
+    # Сценарий: ветка УЖЕ влита в develop (есть MERGED PR с тем же head), но
+    # воркер продолжал коммитить в неё (база устарела; re-коммиты = дубли
+    # merged-содержимого) и открыл НОВЫЙ PR с той же ветки. Diff такого PR
+    # vs develop = РЕГРЕССИЯ (удаляет влитые voice-фиксы: dialogue_node.py,
+    # health.py, .image-versions). Детект: для head-ветки уже есть MERGED PR,
+    # отличный от текущего. Блокируем: коммент в issue + НЕ ставим needs-e2e,
+    # чтобы регрессионный дифф не ушёл в e2e-ротацию и merge.
+    if [ "$pr_state" = "OPEN" ]; then
+        _prev_merged_pr="$(gh pr list --repo "$GH_REPO" --state merged --head "$branch" \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+        if [ -n "$_prev_merged_pr" ] && [ "$_prev_merged_pr" != "$pr_number" ]; then
+            log "issue #${number}: 🛑 stale-branch re-commit — ветка ${branch} уже влита через PR #${_prev_merged_pr}, PR #${pr_number} снова OPEN — block"
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: comment stale-branch block on issue #${number}"
+                skipped=$((skipped+1)); continue
+            fi
+            _stale_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _stale_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_stale_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🛑 **stale-branch re-commit"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_stale_dup:-0}" -eq 0 ]; then
+                gh issue comment "$number" --repo "$GH_REPO" --body \
+                    "🛑 **stale-branch re-commit detected** (merge-gate, ретро 12.08 t_d3aeaa9b)
+
+Ветка \`${branch}\` уже была влита в develop через PR #${_prev_merged_pr}. Новые коммиты в неё ПОСЛЕ merge — re-коммиты поверх устаревшей базы: diff origin/develop...HEAD **удаляет** уже влитые фиксы (voice: dialogue_node.py, health.py; .image-versions).
+
+**Что делать:**
+1. НЕ пушить в уже влитую ветку.
+2. Создай **новую** ветку от свежего origin/develop: \`git fetch origin develop && git checkout -b <новая-ветка> origin/develop\`.
+3. Перенеси нужные изменения (rebase/cherry-pick), открой новый PR.
+4. Закрой/удали этот PR (ветка влита, PR-дифф регрессионный).
+
+Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
+            fi
+            skipped=$((skipped+1)); continue
+        fi
     fi
 
     # MERGED (Q22 done manually by user): post-merge reconciliation per
@@ -881,6 +972,14 @@ for issue in data:
 # → t_<id>) или по issue_number в body → дописываем reminder в существующую
 # карточку (та же карточка должна знать, Шифу прямо).
 log "scan-all-prs: scanning ALL open PRs for UNSTABLE/CONFLICTING (not just needs-e2e)"
+
+# --- stale-branch re-commit scan для ВСЕХ open PR (ретро 12.08 t_d3aeaa9b) --
+# Основной цикл выше ловит PR, привязанные к issues с меткой hermes. Но
+# ретро-ветки devops/architect (z-devops/t_<id>-..., z-architect/t_<id>-...)
+# issues НЕ имеют — их stale-re-commit PR пролетит мимо основного цикла.
+# Функция stale_branch_scan_all() вызывается здесь (основной путь с issues)
+# и в блоке no-issues (до раннего exit).
+stale_branch_scan_all
 
 # Маппинг head-branch → task_id через wt/... ветки (t_51b5ad24-respeaker-downmix-tests → t_51b5ad24)
 _prs_json="$(gh pr list --repo "$GH_REPO" --state open \
