@@ -299,10 +299,41 @@ for verdict, sig in reversed(docs):
     return 0
 }
 
-# G6: flock sentinel.
+# --- G0: RUN_NOW сигнальный файл (ретро 12.08: запуск прогона по требованию) --
+# Товарищ Шифу кладёт пустой файл RUN_NOW в develop (git commit + push) —
+# ближайший тик e2e-process увидит его и выполнит ПОЛНЫЙ прогон немедленно
+# (не дожидаясь следующего часа). После прогона файл удаляется обратно в
+# develop (git rm + commit + push), чтобы сигнал не срабатывал повторно.
+# Формат содержимого не важен — только существование файла.
+RUN_NOW_FILE="${RUN_NOW_FILE:-RUN_NOW}"
+RUN_NOW_PREFIX="e2e:now"
+
+# Проверка remote (develop — источник истины для триггера).
+_run_now_triggered=0
+if [ -n "${GH_REPO:-}" ]; then
+    _run_now_ref="${MAINTENANCE_BRANCH}:${RUN_NOW_FILE}"
+    if git ls-remote "https://github.com/${GH_REPO}.git" "$_run_now_ref" 2>/dev/null | grep -q .; then
+        _run_now_triggered=1
+        log "🚀 RUN_NOW flag set on remote ${_run_now_ref} — принудительный прогон в этом тике"
+    fi
+fi
+
+# --- G6: flock sentinel.
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
-    log "another instance holds $LOCK_FILE — skip"; exit 0
+    if [ "$_run_now_triggered" = "1" ]; then
+        log "⚠️ RUN_NOW set, but another instance holds $LOCK_FILE — ждём до 60с"
+        _waited=0
+        while ! flock -n 9 2>/dev/null && [ "$_waited" -lt 60 ]; do
+            sleep 10; _waited=$((_waited + 10))
+        done
+        if ! flock -n 9 2>/dev/null; then
+            log "🛑 RUN_NOW set, but lock busy after 60s — skip (повторится следующим тиком)"
+            exit 0
+        fi
+    else
+        log "another instance holds $LOCK_FILE — skip"; exit 0
+    fi
 fi
 
 # --- G1: MAINTENANCE gate (remote + local) -----------------------------------
@@ -1791,6 +1822,23 @@ for issue in sorted(data, key=lambda i: i["number"]):
 
 # --- summary -----------------------------------------------------------------
 log "tick done: processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"
+
+# --- RUN_NOW cleanup: удаляем сигнальный файл после прогона (ретро 12.08) ----
+# Если тик стартовал по RUN_NOW (или файл появился во время прогона) —
+# убираем его, чтобы следующий тик не делал повторный прогон.
+if [ "$_run_now_triggered" = "1" ] || git -C "$REPO_DIR" show "origin/${MAINTENANCE_BRANCH}:${RUN_NOW_FILE}" >/dev/null 2>&1; then
+    if [ "$DRY_RUN" != "true" ]; then
+        if git -C "$REPO_DIR" rm --cached --ignore-unmatch "${RUN_NOW_FILE}" >/dev/null 2>&1 \
+            && git -C "$REPO_DIR" commit -m "chore(e2e): RUN_NOW consumed (auto-remove после прогона)" >/dev/null 2>&1 \
+            && git -C "$REPO_DIR" push origin "${MAINTENANCE_BRANCH}" >/dev/null 2>&1; then
+            log "✅ RUN_NOW consumed (deleted from origin/${MAINTENANCE_BRANCH})"
+        else
+            log "⚠️ RUN_NOW cleanup failed (file may still exist) — следующий тик повторит"
+        fi
+    else
+        log "DRY-RUN would remove RUN_NOW from origin/${MAINTENANCE_BRANCH}"
+    fi
+fi
 
 if [ "$errored" -gt 0 ]; then exit 1; fi
 exit 0
