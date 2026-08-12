@@ -153,17 +153,17 @@ check_cycle() {  # $1=before_rfc3339
 # $1=before, $2..=паттерны (grep -E). Печатает найденные, rc=0 если все найдены.
 check_patterns() {
     local before="$1"; shift
-    local logs pat ok=1
+    local logs pat rc=0
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
         else
             echo "  PATTERN_MISS: $pat"
-            ok=0
+            rc=1
         fi
     done
-    return $ok
+    return $rc
 }
 
 # --- один атомарный шаг -----------------------------------------------------
