@@ -1030,22 +1030,43 @@ git push --force-with-lease origin ${head}
 done
 
 # ============================================================================
-# Ретро-путь (12.08 t_68607832): merged PR → issue без меток
+# Ретро-путь (12.08 t_68607832 + t_061d466e): merged PR → issue без меток /
+# с e2e:rejected
 # ----------------------------------------------------------------------------
-# ПРОБЛЕМА: issues #1138/#1139 были починены ретро-карточками (вне label-цикла
-# needs-e2e→e2e-done) и НИКОГДА не получали e2e-done → merge-gate молчал →
-# issue висела OPEN при смерженном фиксе. Основной цикл выше обрабатывает
-# только issues с меткой `hermes`; ретро-issues меток не имеют вовсе.
+# ПРОБЛЕМА 1 (t_68607832): issues #1138/#1139 были починены ретро-карточками
+# (вне label-цикла needs-e2e→e2e-done) и НИКОГДА не получали e2e-done →
+# merge-gate молчал → issue висела OPEN при смерженном фиксе. Основной цикл
+# выше обрабатывает только issues с меткой `hermes`; ретро-issues меток не
+# имеют вовсе.
+#
+# ПРОБЛЕМА 2 (t_061d466e, 12.08): issue #1041 — ОТКРЫТА с меткой e2e:rejected,
+# хотя фикс ВЛИТ (PR #1161 merged, CI зелёный). Петля:
+#   - основной цикл находит PR по канонической ветке
+#     z-{agent}/1041-fix-l-build-vision-pi-docker-tag-local-g → это CLOSED
+#     PR #1155 (закрыт, НЕ смержен); реальный merged PR #1161 имеет ДРУГУЮ
+#     ветку (z-{agent}/1041-fix-l-build-dockertag-clean) → основной цикл его
+#     не видит;
+#   - e2e-process не может прогнать e2e для #1041: ветка конфликтует
+#     с develop (см. t_bff6eccf), фикс уже в develop;
+#   - ретро-путь НАХОДИЛ merged PR #1161 (title содержит #1041), но скипал
+#     issue из-за e2e:rejected → никто не закрывал.
 #
 # РЕШЕНИЕ: сканируем недавно смерженные PR (base=develop), извлекаем номера
-# issues из title/body, и для OPEN issues БЕЗ process-меток применяем ретро-путь:
+# issues из title/body, и для OPEN issues применяем ретро-путь:
 #   - PASS-доказательство есть (e2e run SUCCESS на ветке PR, ИЛИ CI-only PR
-#     с зелёным CI) → close issue с комментарием-доказательством;
-#   - иначе → ставим needs-e2e (e2e-process возьмёт issue в ротацию).
+#     с зелёным CI) → close issue с комментарием-доказательством; если на
+#     issue стоит e2e:rejected — снимаем его ПЕРЕД close (фикс влит, e2e
+#     больше не нужен / не может пройти);
+#   - иначе (и нет e2e:rejected) → ставим needs-e2e (e2e-process возьмёт
+#     issue в ротацию);
+#   - e2e:rejected + merged PR, но PASS-доказательства НЕТ → НЕ ставим
+#     needs-e2e (иначе e2e-process зациклится: rejected → needs-e2e → снова
+#     rejected). Оставляем rejected и логируем — нужен ручной разбор.
 #
-# Guard от пере-закрытия: issues с hermes/needs-e2e/e2e-done/e2e:rejected/
-# no-e2e-required пропускаем — их обрабатывают основные циклы. Дубликаты
-# комментариев дедуплицируются как в post-merge cleanup (6h окно).
+# Guard от пере-закрытия: issues с hermes (кроме e2e:rejected — см. #1041)/
+# needs-e2e/e2e-done/no-e2e-required пропускаем — их обрабатывают основные
+# циклы. Дубликаты комментариев дедуплицируются как в post-merge cleanup
+# (6h окно).
 # ============================================================================
 RETRO_MERGED_DAYS="${RETRO_MERGED_DAYS:-14}"
 retro_closed=0
@@ -1078,10 +1099,18 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
     _r_labels_csv="$(gh issue view "$r_issue" --repo "$GH_REPO" --json labels \
         --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
     _r_labels_norm="$(printf '%s' "$_r_labels_csv" | tr '[:upper:]' '[:lower:]')"
-    if has_label "$_r_labels_norm" "$ISSUE_LABEL" \
+    # Ретро 12.08 t_061d466e: e2e:rejected больше НЕ скипает ретро-путь —
+    # это ровно петля #1041 (фикс влит, e2e не может пройти). Вместо скипа
+    # ниже проверяем PASS-доказательство: есть → снять rejected + close,
+    # нет → оставить rejected (не ставить needs-e2e, чтобы не зациклить
+    # e2e-process).
+    _r_was_rejected=0
+    if has_label "$_r_labels_norm" "$REJECTED_LABEL"; then
+        _r_was_rejected=1
+        log "retro-path: issue #${r_issue} имеет ${REJECTED_LABEL} — ищем PASS-доказательство (ретро t_061d466e)"
+    elif has_label "$_r_labels_norm" "$ISSUE_LABEL" \
         || has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$DONE_LABEL" \
-        || has_label "$_r_labels_norm" "$REJECTED_LABEL" \
         || has_label "$_r_labels_norm" "$NO_E2E_LABEL"; then
         log "retro-path: issue #${r_issue} уже в process-цикле (${_r_labels_norm}) — skip"
         continue
@@ -1132,13 +1161,26 @@ except Exception:
             log "DRY-RUN would close issue #${r_issue} (retro-path)"
             retro_closed=$((retro_closed+1)); continue
         fi
+        # Ретро 12.08 t_061d466e: снять e2e:rejected ПЕРЕД close — фикс влит
+        # (merged PR), e2e больше не нужен. Если снять не удалось — не
+        # критично, close всё равно выполнится; следующий тик не найдёт
+        # issue (она CLOSED).
+        if [ "$_r_was_rejected" = "1" ]; then
+            gh issue edit "$r_issue" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 \
+                && log "retro-path: issue #${r_issue} ${REJECTED_LABEL} снят (PASS-доказательство)" \
+                || log "retro-path: WARNING не удалось снять ${REJECTED_LABEL} с #${r_issue}"
+        fi
         # Дедупликация комментария (6h) — не спамим каждый тик.
         _r_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         _r_dup_count="$(gh api "repos/${GH_REPO}/issues/${r_issue}/comments?since=${_r_dedup_since}&per_page=100" \
             --jq '[.[] | select(.body | startswith("✅ ретро-путь"))] | length' 2>/dev/null || echo 0)"
         if [ "${_r_dup_count:-0}" -eq 0 ]; then
+            _r_rejected_note=""
+            if [ "$_r_was_rejected" = "1" ]; then
+                _r_rejected_note=" Снят ${REJECTED_LABEL} (фикс влит, e2e не требуется)."
+            fi
             gh issue comment "$r_issue" --repo "$GH_REPO" --body \
-                "✅ ретро-путь (ADR-0014 gap, t_68607832): PR #${r_pr} смержен в ${DEVELOP_BRANCH}. PASS-доказательство: ${_r_evidence}. Issue закрыта." >/dev/null 2>&1 || true
+                "✅ ретро-путь (ADR-0014 gap, t_68607832/t_061d466e): PR #${r_pr} смержен в ${DEVELOP_BRANCH}. PASS-доказательство: ${_r_evidence}.${_r_rejected_note} Issue закрыта." >/dev/null 2>&1 || true
         fi
         if gh issue close "$r_issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
             retro_closed=$((retro_closed+1))
@@ -1147,6 +1189,15 @@ except Exception:
             log "retro-path: WARNING close failed for #${r_issue} — retry next tick"
         fi
     else
+        if [ "$_r_was_rejected" = "1" ]; then
+            # e2e:rejected + merged PR, но PASS-доказательства нет: НЕ ставим
+            # needs-e2e — иначе e2e-process снова возьмёт issue и снова
+            # поставит rejected (петля). Оставляем rejected — нужен ручной
+            # разбор (ретро 12.08 t_061d466e).
+            log "retro-path: issue #${r_issue} имеет ${REJECTED_LABEL}, PASS-доказательства нет — НЕ трогаем (нужен ручной разбор)"
+            skipped=$((skipped+1))
+            continue
+        fi
         log "retro-path: issue #${r_issue} без PASS-доказательства — ставим ${NEEDS_E2E_LABEL}"
         if [ "$DRY_RUN" != "true" ]; then
             gh issue edit "$r_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
