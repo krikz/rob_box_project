@@ -201,8 +201,31 @@ class DialogCore:
         *,
         history: Iterable[LLMMessage] | None = None,
         is_dj_auto: bool = False,
+        speaker_tag: str | None = None,
+        speaker_context: str | None = None,
+        dynamic_system: str | None = None,
+        preclassified_event: DialogueEvent | None = None,
     ) -> DialogResult:
         """Process a single user turn.
+
+        ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
+        ``<system_context>...</system_context>`` snapshot собирается
+        dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
+        Вставляется вторым system-message в messages[] после статичного
+        system_prompt и до user input. Если None — dynamic system не
+        добавляется (backward-compatible).
+
+        ``preclassified_event`` (live 10.08, issue #1101) — если caller
+        уже классифицировал вход (через ``dsm.on_user_input`` + DSM-переход)
+        и знает финальный event, он передаёт его сюда чтобы не повторять
+        классификацию. Иначе ``on_user_input(text)`` матчит wake-words
+        внутри user-text (напр. «робот» в середине фразы) → возвращает
+        ``WAKE_WORD`` → guard ``event == STT_RESULT`` ломается → LLM не
+        вызывается → «акцепт есть, робот не отвечает».
+
+        Без этого параметра (None) DialogCore сам вызывает
+        ``dsm.on_user_input(text)`` и ``dsm.on_event(event)`` — backward
+        compatible для тестов / DJ-auto / harness-вызовов.
 
         Returns a :class:`DialogResult` describing the assistant's
         reply, the new DSM state, and any error. Never raises — LLM
@@ -266,21 +289,33 @@ class DialogCore:
         #    "роббокс" / "диджей" (the persona), which would otherwise
         #    short-circuit into a WAKE_WORD event and skip the LLM
         #    call entirely (issue #992 root cause).
-        if is_dj_auto:
+        # 🔴 FIX (issue #1101): если caller уже классифицировал и
+        #    выполнил DSM-переход (dialogue_node делает это в _on_stt),
+        #    пропускаем двойную классификацию. Иначе wake-word внутри
+        #    текста ('робот' в середине фразы) вернёт WAKE_WORD и
+        #    guard 'event == STT_RESULT' пропустит LLM → тишина.
+        if preclassified_event is not None:
+            event = preclassified_event
+        elif is_dj_auto:
             event = DialogueEvent.STT_RESULT
         else:
             event = self._dsm.on_user_input(text)
 
-        # 2. transition
-        self._dsm.on_event(event)
-        # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
-        # shell already drove the cycle, force-transition into DIALOGUE
-        # so the LLM gate fires. ``STT_RESULT`` from LISTENING
-        # normally does this — but a previous turn may have left the
-        # DSM in IDLE (e.g. silence timeout between transitions).
-        if is_dj_auto and self._dsm.current_state == DialogueStateKind.IDLE:
-            self._dsm.on_event(DialogueEvent.WAKE_WORD)
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
+        # 2. transition (skip if caller already transitioned)
+        if preclassified_event is not None:
+            # Caller already drove the DSM (dialogue_node._on_stt).
+            # Trust its current_state — typically DIALOGUE.
+            pass
+        else:
+            self._dsm.on_event(event)
+            # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
+            # shell already drove the cycle, force-transition into DIALOGUE
+            # so the LLM gate fires. ``STT_RESULT`` from LISTENING
+            # normally does this — but a previous turn may have left the
+            # DSM in IDLE (e.g. silence timeout between transitions).
+            if is_dj_auto and self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._dsm.on_event(DialogueEvent.STT_RESULT)
         result.new_state = self._dsm.current_state
 
         # 3. if we're now in DIALOGUE state, run the LLM
@@ -294,6 +329,37 @@ class DialogCore:
                 # new turn — otherwise ``load_recent`` would echo
                 # the just-stored user message back into the prompt.
                 messages = await self._resolve_history(history)
+                # Issue #1077 — контекст о спикере (профиль + факты из
+                # scope=speaker:<tag>). Вставляем system-сообщением сразу
+                # после основного системного промпта, чтобы LLM знала,
+                # с кем разговаривает (имя, предпочтения, история).
+                if speaker_context:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                # Two-system-prompt pattern (live 10.08) — dynamic
+                # <system_context> snapshot: текущий спикер (resemblyzer),
+                # TTS-voice (gender alignment), session lock state.
+                # Вставляется ПОСЛЕ speaker_context и ДО user input, чтобы
+                # модель получала свежий runtime каждый turn.
+                if dynamic_system:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=dynamic_system),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=dynamic_system),
+                        )
                 messages.append(LLMMessage(role="user", content=text))
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
                 # пишутся в долгую память — иначе каждый переход (#1..#N)
@@ -303,9 +369,17 @@ class DialogCore:
                 # → пустые ответы → «Что-то я задумался». Системный
                 # DJ-триггер — не реплика юзера, он не должен загрязнять
                 # контекст диалога.
+                user_metadata = {}
+                if speaker_tag is not None:
+                    user_metadata["speaker_tag"] = speaker_tag
                 if not is_dj_auto:
                     await self._memory.append_turn(
-                        self._user_id, Turn(role="user", content=text)
+                        self._user_id,
+                        Turn(
+                            role="user",
+                            content=text,
+                            metadata=user_metadata,
+                        ),
                     )
                 spoken, tools_called, finish_reason, raw_response = (
                     await self._run_with_tools(messages)
@@ -316,7 +390,12 @@ class DialogCore:
                 result.raw_response = raw_response
                 if not is_dj_auto:
                     await self._memory.append_turn(
-                        self._user_id, Turn(role="assistant", content=spoken)
+                        self._user_id,
+                        Turn(
+                            role="assistant",
+                            content=spoken,
+                            metadata=dict(user_metadata),
+                        ),
                     )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 import traceback as _tb

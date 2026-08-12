@@ -52,6 +52,7 @@ from .tools import (
     SpeakTextTool,
     ListenForResponseTool,
     EstimateTtsDurationTool,
+    RegisterSpeakerTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -68,6 +69,7 @@ from .tools import (
     SetDjModeTool,
     SearchSamplesTool,
     FaqSearchTool,
+    SearchWebTool,
 )
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
@@ -428,6 +430,11 @@ class MCPServer(Node):
         self.registry.register(SpeakTextTool(self))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
+        # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
+        # LLM extracts name from user_input and calls register_speaker(name=X)
+        # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
+        self.registry.register(RegisterSpeakerTool(self))
+        self.registry.register(SearchWebTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))

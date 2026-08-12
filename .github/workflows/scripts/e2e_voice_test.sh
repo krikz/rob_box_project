@@ -180,21 +180,20 @@ check_cycle() {  # $1=before_rfc3339
 # $1=before, $2..=паттерны (grep -E). Печатает найденные, rc=0 если все найдены.
 check_patterns() {
     local before="$1"; shift
-    local logs pat ok=1
+    local logs pat rc=0
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
         else
             echo "  PATTERN_MISS: $pat"
-            ok=0
+            rc=1
         fi
     done
     # Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
-    # ``ok=1`` означала success — инвертируем при возврате, иначе callers
-    # через ``if check_patterns; then`` всегда ловят FAIL несмотря на
-    # PATTERN_OK (как в round-52 run 31579343052).
-    return $((1 - ok))
+    # ``rc=0`` означала success — возвращаем как есть, callers через
+    # ``if check_patterns; then`` получат SUCCESS при rc=0 и FAIL при rc=1.
+    return $rc
 }
 
 # --- один атомарный шаг -----------------------------------------------------

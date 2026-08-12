@@ -310,6 +310,9 @@ class _TestableDialogueNode(DialogueNode):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
+        raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
     ) -> None:
         """Schedule the turn on the test loop directly.
 
@@ -343,6 +346,8 @@ class _TestableDialogueNode(DialogueNode):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
             ),
         )
 
@@ -885,23 +890,44 @@ class TestShellImportSanity(unittest.TestCase):
 class TestLLMProviderWiring(unittest.TestCase):
     """Regression coverage for issue #925 provider routing."""
 
-    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
-        """The legacy ``llm_provider`` config must never fall through to OpenAI."""
-        from unittest.mock import patch
+    def setUp(self):
+        # ``object.__new__(DialogueNode)`` не вызывает ``__init__`` —
+        # у ноды нет ни ``_logger``, ни ``_parameters``. Стабы ниже
+        # обеспечивают совместимость с локальным запуском pytest
+        # (без реального rclpy): в CI оба метода приходят из
+        # ``rclpy.node.Node``, так что эта защита не мешает.
+        from unittest.mock import MagicMock as _M
 
-        node = object.__new__(DialogueNode)
+        self._logger_stub = _M()
+
+    def _stub_node(self, values):
+        """Construct a DialogueNode shim with all rclpy hooks stubbed."""
 
         class _Param:
             def __init__(self, value):
                 self.value = value
 
-        values = {
-            "llm_provider": "deepseek",
-            "api_key": "test-key",
-            "base_url": "",
-            "model": "",
-        }
+        node = object.__new__(DialogueNode)
         node.get_parameter = lambda name: _Param(values.get(name))
+        node.get_parameters_by_prefix = lambda prefix: values
+        node.get_logger = lambda: self._logger_stub
+        return node
+
+    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
+        """DeepSeek провайдер всегда использует свой well-known base_url (НЕ из YAML).
+
+        Issue #1089: YAML ``base_url: "https://api.minimax.io/v1"`` больше
+        не протекает в deepseek-провайдер — каждый провайдер жёстко
+        привязан к своему endpoint через модульные константы.
+        """
+        from unittest.mock import patch
+
+        from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
+
+        node = self._stub_node({
+            "llm_providers": "deepseek",
+            "api_key": "test-key",
+        })
 
         with patch(
             "rob_box_voice.dialogue_node.build_deepseek_provider"
@@ -912,29 +938,126 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         self.assertIs(provider, sentinel)
         factory.assert_called_once_with(
-            api_key="test-key",
-            base_url="https://api.deepseek.com",
-            model="deepseek-chat",
+            api_key=None,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            model=DEEPSEEK_DEFAULT_MODEL,
         )
 
     def test_unknown_llm_provider_fails_before_any_client_is_built(self):
         """A typo must fail loudly instead of sending credentials to OpenAI."""
-        node = object.__new__(DialogueNode)
-
-        class _Param:
-            def __init__(self, value):
-                self.value = value
-
-        values = {
-            "llm_provider": "openai",
+        node = self._stub_node({
+            "llm_providers": "openai",
             "api_key": "test-key",
-            "base_url": "",
-            "model": "",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
+        })
 
-        with self.assertRaisesRegex(ValueError, "llm_provider.*deepseek"):
+        with self.assertRaisesRegex(RuntimeError, "No LLM providers"):
             node._build_llm()
+
+    def test_minimax_init_failure_falls_back_to_deepseek_only(self):
+        """Issue #1089: если build_minimax_provider падает (нет ключа,
+        невалидный ключ, сетевой сбой при инициализации), _build_llm
+        должен graceful-пропустить MiniMax и вернуть deepseek как
+        единственного провайдера (без health-aware обёртки).
+
+        DeepSeek получает СВОЙ well-known base_url, а не MiniMax URL
+        из YAML (issue #1089 fix).
+        """
+        from unittest.mock import patch
+
+        from rob_box_harness.errors import ConfigError
+        from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
+
+        node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
+            "api_key": "missing-key",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        })
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory:
+            mm_factory.side_effect = ConfigError(
+                "missing api key",
+                section="llm.api_key",
+            )
+            sentinel = object()
+            ds_factory.return_value = sentinel
+
+            provider = node._build_llm()
+
+        # Один провайдер → без health-aware обёртки.
+        self.assertIs(provider, sentinel)
+        mm_factory.assert_called_once()
+        # DeepSeek использует СВОЙ base_url (НЕ minimax из YAML!).
+        ds_factory.assert_called_once_with(
+            api_key=None,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            model=DEEPSEEK_DEFAULT_MODEL,
+        )
+
+    def test_minimax_init_generic_exception_also_falls_back_to_deepseek(self):
+        """Та же гарантия для неожиданных ошибок (не только ConfigError):
+        build_minimax_provider может упасть с ImportError/TimeoutError/
+        любой RuntimeError — _build_llm пропускает сломавшийся провайдер
+        и продолжает цепочку.
+        """
+        from unittest.mock import patch
+
+        node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
+            "api_key": "any",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        })
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory:
+            mm_factory.side_effect = RuntimeError("upstream SDK exploded")
+            sentinel = object()
+            ds_factory.return_value = sentinel
+
+            provider = node._build_llm()
+
+        # Один провайдер → без обёртки.
+        self.assertIs(provider, sentinel)
+        ds_factory.assert_called_once()
+
+    def test_minimax_init_success_still_wraps_in_health_aware_fallback(self):
+        """Зелёный путь: оба провайдера собираются → HealthAwareFallbackLLM
+        с цепочкой [minimax, deepseek]. Каждый со своим base_url.
+        """
+        from unittest.mock import patch
+
+        node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
+            "api_key": "valid-key",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        })
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory, patch(
+            "rob_box_harness.health.HealthAwareFallbackLLM"
+        ) as fb_cls:
+            mm_factory.return_value = "primary-sentinel"
+            ds_factory.return_value = "fb-sentinel"
+            fb_cls.return_value = "wrapper-sentinel"
+
+            provider = node._build_llm()
+
+        self.assertEqual(provider, "wrapper-sentinel")
+        mm_factory.assert_called_once()
+        ds_factory.assert_called_once()
+        fb_cls.assert_called_once()
 
     def test_both_voice_configs_route_dialogue_to_minimax(self):
         """Source and Docker configs expose the same dialogue_node params.
@@ -962,9 +1085,7 @@ class TestLLMProviderWiring(unittest.TestCase):
             repo_root / "docker/vision/config/voice_assistant/voice_assistant.yaml",
         )
         expected = {
-            "llm_provider": "minimax",
-            "base_url": "https://api.minimax.io/v1",
-            "model": "MiniMax-M3",
+            "llm_providers": "minimax,deepseek",
         }
 
         for path in paths:

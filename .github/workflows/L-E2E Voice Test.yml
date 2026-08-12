@@ -72,6 +72,11 @@ on:
         description: Seconds to wait for full STT->LLM->TTS cycle after play
         required: false
         default: '40'
+      acceptance_feature:
+        description: 'Optional feature acceptance check (e.g. speaker_profile). When set, the run FAILS if the evidence is missing.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   e2e-voice:
@@ -205,6 +210,148 @@ jobs:
             "docker logs voice-assistant --since 15m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
+      - name: Validate e2e result (real robot response)
+        run: |
+          RID="${{ github.run_id }}"
+          LOG="/tmp/voice_e2e_${RID}.log"
+          FAIL=""
+          WARN=""
+          echo "--- e2e validation markers ---"
+          # 1) STT: команда должна быть РАСПОЗНАНА (не empty/rejected).
+          #    При retry-цикле (3 попытки) в логе могут быть пустые попытки
+          #    («ОТКЛОНЕНО (пустое)») при успешной — фейлим ТОЛЬКО если
+          #    фраза ни разу не была принята (иначе ложный FAIL: 09.08 live).
+          if grep -q "✅ ПРИНЯТО" "$LOG"; then
+            echo "✅ STT: фраза распознана (ПРИНЯТО)"
+          elif grep -qE "ОТКЛОНЕНО \(пустое\)|Пустой STT" "$LOG"; then
+            echo "❌ STT EMPTY: ни одна фраза не распознана (все попытки пустые)"
+            FAIL="stt-empty"
+          elif grep -q "Получена фраза" "$LOG"; then
+            echo "✅ STT: фраза получена (VAD сработал, текст не распознан)"
+          else
+            echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
+            FAIL="stt-no-phrase"
+          fi
+          # 2) ОТВЕТ: робот должен РЕАГИРОВАТЬ на команду.
+          #    Приоритет — маркер retry-скрипта (E2E_REACTION_OK в e2e_out.log):
+          #    скрипт сам проверял docker logs робота ПОСЛЕ команды и повторял
+          #    команду, пока не увидел TTS finished. Это самая честная проверка.
+          if grep -q "E2E_REACTION_OK" "$LOG"; then
+            echo "✅ SPEECH: робот ответил (retry-скрипт видел TTS finished после команды)"
+          elif grep -q "E2E_NO_REACTION" "$LOG"; then
+            echo "❌ NO REACTION: retry-скрипт 3 раза проиграл команду — робот не ответил"
+            FAIL="${FAIL:+$FAIL,}no-reaction"
+          else
+            # Fallback (старая логика): TTS должен быть ПОСЛЕ STT-фразы.
+            stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+            tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+            if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
+              echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
+            elif grep -q "TTS finished" "$LOG"; then
+              echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
+              FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+            else
+              echo "❌ NO SPEECH: робот не произнёс ответ"
+              FAIL="${FAIL:+$FAIL,}no-speech"
+            fi
+          fi
+          # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
+          if grep -qE "MiniMax auth error|переключаюсь на Silero|Silero v5 fallback" "$LOG"; then
+            echo "⚠️  TTS FALLBACK: MiniMax квота/ошибка → Silero. Основному голосу нужно внимание."
+            WARN="tts-fallback"
+          else
+            echo "✅ TTS: основной голос без fallback"
+          fi
+          if [ -n "$FAIL" ]; then
+            echo ""
+            echo "❌❌ E2E НЕ ПРОШЁЛ: $FAIL — нужен повторный прогон (e2e:rejected)"
+            exit 1
+          fi
+          if [ -n "$WARN" ]; then
+            echo ""
+            echo "⚠️  E2E ПРОШЁЛ с предупреждением: $WARN (STT ок + ответ после команды, но TTS fallback)"
+            exit 0
+          fi
+          echo ""
+          echo "✅ E2E ПРОШЁЛ: STT распознал + ответ после команды + основной голос"
+
+      - name: Verify feature acceptance (issue #1077 speaker profiles)
+        if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
+        env:
+          SSHPASS: open
+        run: |
+          RID="${{ github.run_id }}"
+          LOG="/tmp/voice_e2e_${RID}.log"
+          ACCEPT_FILE="/tmp/e2e_acceptance_${RID}.txt"
+          : > "$ACCEPT_FILE"
+          FAIL=""
+          echo "--- e2e acceptance: speaker_profile (#1077) ---"
+          # 1) stt_node: Yandex speaker_analysis пришёл и опубликован на /voice/stt/speaker
+          if grep -qE "\[issue 1077\] (SPEAKER_ANALYSIS|Speaker:)" "$LOG"; then
+            echo "✅ STT speaker_analysis: получен speaker_tag от Yandex"
+            echo "STT_SPEAKER_ANALYSIS=ok" >> "$ACCEPT_FILE"
+            grep -E "\[issue 1077\] (SPEAKER_ANALYSIS|Speaker:)" "$LOG" | head -3 >> "$ACCEPT_FILE"
+          else
+            echo "❌ STT speaker_analysis НЕ найден в логе — Yandex не прислал speaker_tag"
+            FAIL="${FAIL:+$FAIL,}no-speaker-analysis"
+          fi
+          # 1b) A/B: два РАЗНЫХ speaker_tag (голос A vs голос B — требование Шифу 10.08)
+          TAGS="$(grep -oE "\[issue 1077\] Speaker: tag='[0-9]+'" "$LOG" | grep -oE "tag='[0-9]+'" | sort -u | tr '\n' ' ')"
+          TAG_COUNT="$(echo -n "$TAGS" | grep -oE "tag='" | wc -l)"
+          if [ "${TAG_COUNT:-0}" -ge 2 ]; then
+            echo "✅ A/B: Yandex различил ${TAG_COUNT} speaker_tag (голос A vs голос B): ${TAGS}"
+            echo "AB_TWO_TAGS=ok ($TAGS)" >> "$ACCEPT_FILE"
+          elif [ "${TAG_COUNT:-0}" -eq 1 ]; then
+            echo "⚠️ A/B: только один speaker_tag ($TAGS) — голоса не различены Yandex, смотрим speaker_id_node (resemblyzer)"
+            echo "AB_TWO_TAGS=single-tag ($TAGS)" >> "$ACCEPT_FILE"
+          else
+            echo "❌ A/B: speaker_tag не найдены"
+            FAIL="${FAIL:+$FAIL,}no-tags"
+          fi
+          # 2) dialogue_node: профиль спикера создан/обновлён (touch_speaker)
+          if grep -qE "\[issue 1077\] (Спикер|Speaker .*диалог)" "$LOG"; then
+            echo "✅ dialogue_node: профиль спикера создан/обновлён (touch_speaker)"
+            echo "SPEAKER_PROFILE=ok" >> "$ACCEPT_FILE"
+            grep -E "\[issue 1077\] (Спикер|Speaker)" "$LOG" | head -3 >> "$ACCEPT_FILE"
+          else
+            echo "❌ dialogue_node: touch_speaker/профиль не найден в логе"
+            FAIL="${FAIL:+$FAIL,}no-profile"
+          fi
+          # 3) SQLite: факт scope=speaker:<tag> реально сохранён (самое честное доказательство)
+          DB_SPEAKER="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            "docker exec voice-assistant python3 -c \"import sqlite3; c=sqlite3.connect('/root/.rob_box/voice.db'); rows=c.execute(\\\"SELECT scope,key,value FROM facts WHERE scope LIKE 'speaker:%' ORDER BY created_at DESC LIMIT 5\\\").fetchall(); print(chr(10).join(str(r) for r in rows))\" 2>/dev/null || true")"
+          if [ -n "$DB_SPEAKER" ]; then
+            echo "✅ SQLite: факты scope=speaker:<tag> найдены в voice.db"
+            echo "SQLITE_SPEAKER_FACTS=ok" >> "$ACCEPT_FILE"
+            echo "$DB_SPEAKER" >> "$ACCEPT_FILE"
+          else
+            echo "❌ SQLite: факты scope=speaker:<tag> НЕ найдены в voice.db"
+            FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
+          fi
+          echo "--- acceptance evidence ---"
+          cat "$ACCEPT_FILE"
+          echo "---"
+          # Дублируем в step summary (видно в сводке run)
+          {
+            echo "### ✅/❌ Acceptance: speaker_profile (#1077)"
+            cat "$ACCEPT_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$FAIL" ]; then
+            echo "❌❌ ACCEPTANCE НЕ ПРОШЁЛ: $FAIL — фича #1077 не подтверждена"
+            exit 1
+          fi
+          echo "✅ ACCEPTANCE ПРОШЁЛ: speaker_tag → профиль scope=speaker:<tag> в SQLite"
+
+      - name: E2E timing metrics (response speed)
+        run: |
+          RID="${{ github.run_id }}"
+          VTXT="${{ inputs.voice_text }}"
+          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" | tee /tmp/e2e_timing.txt
+          # Дублируем в step summary (видно в сводке run, не только в логе)
+          {
+            echo "### ⏱ Response timing (команда → ответ)"
+            cat /tmp/e2e_timing.txt
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload recording
         uses: actions/upload-artifact@v7
@@ -227,6 +374,14 @@ jobs:
           name: e2e-voice-model-${{ github.run_id }}
           path: model.json
           retention-days: 30
+
+      - name: Upload acceptance evidence (issue #1077)
+        if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-acceptance-${{ github.run_id }}
+          path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
+          retention-days: 7
 
       - name: Summary
         run: |

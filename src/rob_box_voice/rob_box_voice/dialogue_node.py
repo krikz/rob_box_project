@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -33,6 +34,7 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
+from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -41,7 +43,15 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
-from rob_box_harness.memory import InMemoryStore, MemoryStore, SQLiteVoiceMemory
+from rob_box_harness.memory import (
+    Fact,
+    InMemoryStore,
+    MemoryStore,
+    SQLiteVoiceMemory,
+    get_speaker_profile,
+    speaker_scope,
+    touch_speaker,
+)
 from rob_box_harness.providers import (
     DEFAULT_BASE_URL as MINIMAX_DEFAULT_BASE_URL,
     DEFAULT_MODEL as MINIMAX_DEFAULT_MODEL,
@@ -60,6 +70,11 @@ from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
     strip_history_marker, strip_markdown, strip_thinking_blocks,
 )
+from rob_box_voice.speaker_profiles import (
+    SpeakerTracker,
+    extract_speaker_name,
+    format_speaker_context,
+)
 
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
@@ -76,6 +91,12 @@ try:
     from rob_box_voice.skills.faq_skill import FAQSkill as FAQSkill  # noqa: F811
 except Exception:
     FAQSkill = None  # type: ignore[assignment,misc]
+try:
+    from rob_box_voice.skills.web_search_skill import (
+        WebSearchSkill as WebSearchSkill,  # noqa: F811
+    )
+except Exception:
+    WebSearchSkill = None  # type: ignore[assignment,misc]
 try:
     from rob_box_voice.skills.navigation_skill import (
         NavigationSkill as NavigationSkill,
@@ -265,6 +286,21 @@ class DialogueNode(Node):
         )
 
         self._memory: MemoryStore = self._build_memory()
+        # Issue #1077 — speaker profiles: подтверждённый speaker_tag →
+        # профиль (scope=speaker:<tag>). SpeakerTracker подтверждает tag
+        # после 2+ фраз подряд (защита от нестабильных tags Yandex).
+        self._speaker_by_text: Dict[str, dict] = {}
+        self._speaker_tracker = SpeakerTracker()
+        # Issue #1077 — голосовая биометрия (resemblyzer d-vectors, TASK-048):
+        # speaker_id_node публикует /voice/speaker/result (JSON: is_known,
+        # speaker_id, name, confidence). LLM-контекст получает префикс
+        # [Говорит <имя>] / [Говорит: незнакомец] — робот различает
+        # собеседников по голосу, а не только по Yandex tag (который
+        # присваивается per-session и не стабилен между сессиями).
+        self._speaker_id_enabled: bool = bool(
+            self.get_parameter("speaker_id_enabled").value)
+        self._current_speaker: dict = {"is_known": False}
+        self._speaker_lock = threading.Lock()
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
@@ -287,6 +323,21 @@ class DialogueNode(Node):
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
         self._sound_trigger_pub = self.create_publisher(
             String, "/voice/sound/trigger", 10)
+        # Issue #1101 — diagnostics for "why LLM wasn't called".
+        # Оператор видит «робот молчит», а в логе — ни одного error/warn.
+        # Реальная причина обычно одна из: no_wake_word, silenced,
+        # silence_command, empty_after_strip, stt_rejected, music_stop.
+        # Счётчик + периодическая сводка раз в 5 минут — сразу видно, что
+        # фразы теряются на gate'е ещё до LLM.
+        self._llm_skipped_counter: dict[str, int] = {
+            "no_wake_word": 0,
+            "silenced": 0,
+            "silence_command": 0,
+            "empty_after_strip": 0,
+            "stt_rejected": 0,
+            "music_stop": 0,
+        }
+        self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(
             String, "/voice/tts/control", 10)
         # Music safety-net hook (issue #935): when the dialog ends and the
@@ -306,6 +357,22 @@ class DialogueNode(Node):
             )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
+        # Issue #1077 — speaker_tag от Yandex speaker_analysis (отдельный
+        # топик, чтобы не ломать plain-text контракт /voice/stt/result).
+        # JSON: {"speaker_tag", "text", "duration_s"}. stt_node публикует
+        # speaker ПЕРЕД result, поэтому _on_speaker обычно приходит раньше
+        # _on_stt; храним по тексту и забираем в _on_stt.
+        self.create_subscription(
+            String, "/voice/stt/speaker", self._on_speaker, qos_r,
+            callback_group=cbg)
+        # Issue #1077 — голосовая биометрия: результат speaker_id_node
+        # (resemblyzer d-vector, JSON: is_known/speaker_id/name/confidence).
+        if self._speaker_id_enabled:
+            self.create_subscription(
+                String, "/voice/speaker/result", self._on_speaker_result, qos_r,
+                callback_group=cbg)
+            self._speaker_register_pub = self.create_publisher(
+                String, "/voice/speaker/register", 10)
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg)
         self.create_subscription(
@@ -386,6 +453,7 @@ class DialogueNode(Node):
                                    and not self._run_task.done()),
                 is_dialogue_active=lambda: self._dsm.current_state in (
                     DialogueStateKind.DIALOGUE, DialogueStateKind.SILENCED),
+                on_stop=self._on_dj_stop_farewell,
             ),
             logger=self.get_logger(),
         )
@@ -417,7 +485,22 @@ class DialogueNode(Node):
         # 'Token Plan usage limit reached'). YAML мёртв (#1004) — дефолт
         # в коде единственный живой путь → переключаем на deepseek.
         # DEEPSEEK_API_KEY в env voice-assistant.
-        self.declare_parameter("llm_provider", "deepseek")
+        # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
+        # Формат: "minimax,deepseek" — порядок = приоритет.
+        # Первый в списке = primary, остальные = fallbacks.
+        # Каждый провайдер настраивается в своей YAML-секции (<name>.base_url и т.д.).
+        self.declare_parameter("llm_providers", "deepseek")
+        # Per-provider параметры — каждая YAML-секция провайдера
+        # (minimax:, deepseek:, mimo:, qwen:) отдаёт свои настройки
+        # через dotted-имена.  Пустая строка → используются
+        # well-known defaults из _LLM_PROVIDER_REGISTRY.
+        for pname in ("minimax", "deepseek", "mimo", "qwen"):
+            self.declare_parameter(f"{pname}.api_key", "")
+            self.declare_parameter(f"{pname}.base_url", "")
+            self.declare_parameter(f"{pname}.model", "")
+            self.declare_parameter(f"{pname}.temperature", 0.0)
+            self.declare_parameter(f"{pname}.max_tokens", 0)
+            self.declare_parameter(f"{pname}.timeout_s", 0.0)
         self.declare_parameter("api_key", "")
         self.declare_parameter("base_url", "")
         self.declare_parameter("model", "")
@@ -436,6 +519,12 @@ class DialogueNode(Node):
         self.declare_parameter("llm_streaming", False)
         self.declare_parameter("history_excluded_tools", ["handle_navigation"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
+        self.declare_parameter("speaker_id_enabled", True)
+        self.declare_parameter("speaker_db_path", "/data/speakers.db")
+        # issue #1077: сколько фраз подряд с одним speaker_tag нужно для
+        # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
+        # 1 = мгновенное подтверждение (если tag стабилен).
+        self.declare_parameter("speaker_min_phrases", 2)
         # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
         # рестарт робота: если MiniMax мёртв (2056 Token Plan), первый же
         # запрос после ребута идёт на deepseek, а не тратит время на
@@ -496,139 +585,258 @@ class DialogueNode(Node):
             except Exception:
                 pass
             return store
-    def _build_llm(self) -> Any:
-        # Keep the provider selector explicit.  ``AsyncOpenAI`` defaults to
-        # api.openai.com when ``base_url`` is omitted, so silently accepting an
-        # unknown provider can leak a DeepSeek key to the wrong endpoint.
-        provider_name = str(
-            self.get_parameter("llm_provider").value or "deepseek"
-        ).strip().lower()
+    # ── LLM provider registry (well-known defaults) ────────────────────
+    # Each entry maps a provider name to its factory and constants.
+    # Extend this dict to add new providers (mimo, qwen, etc.).
+    # ── LLM provider registry (metadata + well-known defaults) ──────────
+    # Each entry maps a provider name to its metadata.  Per-call overrides
+    # (base_url, model, api_key) are read from the YAML section
+    # ``<provider_name>.base_url`` etc., falling back to these defaults.
+    # Extend this dict to add new providers.
+    _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+        "minimax": {
+            "display_name": "MiniMax",
+            "has_balance_api": False,
+            "default_base_url": "https://api.minimax.io/v1",
+            "default_model": "MiniMax-M3",
+            "env_key_var": "MINIMAX_API_KEY",
+        },
+        "deepseek": {
+            "display_name": "DeepSeek",
+            "has_balance_api": True,
+            "default_base_url": "https://api.deepseek.com",
+            "default_model": "deepseek-chat",
+            "env_key_var": "DEEPSEEK_API_KEY",
+        },
+        "mimo": {
+            "display_name": "MiMo",
+            "has_balance_api": False,
+            "default_base_url": "https://api.xiaomimimo.com/v1",
+            "default_model": "mimo-v2.5",
+            "env_key_var": "MIMO_API_KEY",
+        },
+        "qwen": {
+            "display_name": "Qwen",
+            "has_balance_api": False,
+            "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "default_model": "qwen-turbo",
+            "env_key_var": "DASHSCOPE_API_KEY",
+        },
+    }
 
-        # Resolve the endpoint here instead of relying on SDK defaults.  This
-        # makes the production route visible and testable at the ROS shell
-        # boundary, where YAML parameters enter the application.
-        base_url = str(self.get_parameter("base_url").value or "").strip()
-        model = str(self.get_parameter("model").value or "").strip()
-        temperature = float(self.get_parameter("temperature").value or 0.7)
-        max_tokens = int(self.get_parameter("max_tokens").value or 500)
+    def _resolve_provider_chain(self) -> list[str]:
+        """Resolve the ordered list of LLM provider names from config.
 
-        # 🔴 FIX (live 06.08): выводим ВЕСЬ конфиг при старте — раньше
-        # конфиг выводился, потом потерялся. Это главный источник правды:
-        # какой провайдер/модель реально активны (MiniMax vs DeepSeek),
-        # какой max_tokens (256 резал ответы обрывками), температура,
-        # таймауты, wake-слова и т.д. — всё видно в одном месте.
-        secrets = ("api_key", "password", "token", "secret")
-        cfg_lines = []
-        # get_parameters_by_prefix("") возвращает ВСЕ объявленные параметры
-        # как dict {имя: значение} — единственный способ без явного списка имён
-        # (rclpy get_parameters требует names=[...], а declare_parameter
-        # регистрирует в _parameters).
-        all_params = self.get_parameters_by_prefix("")
-        for pname in sorted(all_params):
-            pval = all_params[pname]
-            if pval is None:
-                continue
-            if any(s in pname.lower() for s in secrets) and pval:
-                pval = "***"
-            cfg_lines.append(f"{pname}={pval}")
+        Reads ``llm_providers`` (comma-separated).
+        Первый в списке = primary, остальные = fallbacks.
+        Default: ``["deepseek"]``.
+        """
+        providers_str = str(
+            self.get_parameter("llm_providers").value or "deepseek"
+        ).strip()
+        chain = [
+            p.strip().lower()
+            for p in providers_str.split(",")
+            if p.strip()
+        ]
         self.get_logger().info(
-            "⚙️ STARTUP CONFIG:\n" + "\n".join(cfg_lines)
+            f"🔗 LLM provider chain: {chain} (primary={chain[0] if chain else '?'})"
+        )
+        return chain
+
+    def _build_single_provider(self, name: str) -> Any | None:
+        """Build one LLM provider from its YAML section + registry defaults.
+
+        Resolution order (per field):
+        1. YAML param ``<name>.base_url`` (etc.) — если задан
+        2. Registry default (``_LLM_PROVIDER_REGISTRY[name]``)
+        3. Module-level constant (``MINIMAX_DEFAULT_BASE_URL`` etc.)
+
+        API key resolution:
+        1. YAML ``<name>.api_key`` (явный)
+        2. Env var из registry ``env_key_var`` (напр. ``MINIMAX_API_KEY``)
+        3. ``None`` — провайдер сам разберётся (или кинет ConfigError)
+        """
+        import os as _os
+
+        name = name.strip().lower()
+        entry = self._LLM_PROVIDER_REGISTRY.get(name)
+        if entry is None:
+            self.get_logger().warning(
+                f"⚠️ Unknown LLM provider: {name!r} — skipped. "
+                f"Known: {sorted(self._LLM_PROVIDER_REGISTRY.keys())!r}"
+            )
+            return None
+
+        display = entry["display_name"]
+
+        # Resolve per-field: YAML → registry default → module constant
+        def _p(key: str, default: str = "") -> str:
+            """Read ``<name>.<key>`` from ROS param, fallback chain."""
+            try:
+                val = str(self.get_parameter(f"{name}.{key}").value or "").strip()
+            except Exception:
+                val = ""
+            return val or default
+
+        base_url = (
+            _p("base_url", entry.get("default_base_url", ""))
+            or MINIMAX_DEFAULT_BASE_URL  # fallback для minimax
+        )
+        model = (
+            _p("model", entry.get("default_model", ""))
+            or MINIMAX_DEFAULT_MODEL
         )
 
-        # LLM-параметры отдельно — они критичны для диагностики обрывков.
+        # API key: YAML explicit → env var → None
+        api_key = _p("api_key") or None
+        if not api_key:
+            env_var = entry.get("env_key_var", "")
+            if env_var:
+                api_key = _os.environ.get(env_var) or None
+
+        # Timeout / temperature / max_tokens — only if YAML set non-zero
+        try:
+            timeout_s = float(self.get_parameter(f"{name}.timeout_s").value or 0)
+        except Exception:
+            timeout_s = 0.0
+        try:
+            temperature = float(self.get_parameter(f"{name}.temperature").value or 0)
+        except Exception:
+            temperature = 0.0
+        try:
+            max_tokens = int(self.get_parameter(f"{name}.max_tokens").value or 0)
+        except Exception:
+            max_tokens = 0
+
+        # ── Build ──────────────────────────────────────────────────
+        try:
+            if name == "minimax":
+                provider = build_minimax_provider(
+                    LLMConfig(
+                        provider="minimax",
+                        model=model or MINIMAX_DEFAULT_MODEL,
+                        api_key=api_key,
+                        timeout_s=timeout_s or 90.0,
+                    )
+                )
+            else:
+                # OpenAI-совместимые: deepseek, mimo, qwen
+                provider = build_deepseek_provider(
+                    api_key=api_key,
+                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
+                    model=model or DEEPSEEK_DEFAULT_MODEL,
+                )
+
+            self.get_logger().info(
+                f"✅ LLM provider built: {display} ({name}) "
+                f"base_url={base_url or '(default)'} model={model or '(default)'}"
+            )
+            return provider
+        except Exception as exc:  # noqa: BLE001
+            # 🔴 FIX (live 10.08): self.get_logger() может крашнуться
+            # внутри except-блока из-за _rclpy_logger_safe monkey-patch
+            # (ValueError: Logger severity cannot be changed between calls).
+            # Защитный fallback: пробуем rclpy-логер, при ошибке → print.
+            warn_msg = (
+                f"⚠️ LLM provider {name!r} ({display}) "
+                f"не построен: {type(exc).__name__}: {exc}"
+            )
+            try:
+                self.get_logger().warning(warn_msg)
+            except Exception:
+                try:
+                    logging.warning(warn_msg)
+                except Exception:
+                    print(warn_msg, flush=True)
+            return None
+
+    def _build_llm(self) -> Any:
+        # ── Resolve provider chain ──────────────────────────────────────
+        chain_names: list[str] = self._resolve_provider_chain()
+
+        # ── Build each provider (skip failures) ─────────────────────────
+        built: list[Any] = []
+        chain_display: list[str] = []
+        for name in chain_names:
+            provider = self._build_single_provider(name)
+            if provider is not None:
+                built.append(provider)
+                chain_display.append(name)
+
+        if not built:
+            raise RuntimeError(
+                f"No LLM providers could be built from chain {chain_names!r}. "
+                "Check API keys and environment variables."
+            )
+
+        # ── Start-up config log ─────────────────────────────────────────
+        temperature = float(self.get_parameter("temperature").value or 0.7)
+        max_tokens = int(self.get_parameter("max_tokens").value or 500)
         self.get_logger().info(
-            f"⚙️ LLM CONFIG: provider={provider_name} model={model or '(default)'} "
-            f"base_url={base_url or '(provider default)'} "
+            f"⚙️ LLM CONFIG: chain={chain_display} "
             f"temperature={temperature} max_tokens={max_tokens}"
         )
 
-        if provider_name == "minimax":
-            # 🔴 FIX (live 14:39): build_minimax_provider принимает
-            # LLMConfig, а не kwargs (api_key=...) как deepseek. Коммит
-            # 7d3e95c9 скопировал deepseek-стиль → TypeError при старте →
-            # dialogue_node падал → робот молчал. Собираем LLMConfig.
-            from rob_box_harness.config import LLMConfig
-
-            primary = build_minimax_provider(
-                LLMConfig(
-                    provider="minimax",
-                    model=model or MINIMAX_DEFAULT_MODEL,
-                    api_key=self.get_parameter("api_key").value or None,
-                    timeout_s=90.0,
-                )
+        # ── Single provider — no fallback needed ────────────────────────
+        if len(built) == 1:
+            self.get_logger().info(
+                "[health] build_llm: provider_chain=%s active=%s (single)",
+                chain_display,
+                chain_display[0],
             )
-            # 🔴 FIX (live 06.08): fallback на DeepSeek при 429/ошибке
-            # MiniMax (Token Plan limit) — иначе DJ/диалог молчит, пока
-            # лимит не сбросится. LLMConfig.fallback декларативно есть,
-            # но _build_llm его не использовал → робот немел на 429.
-            # 🔴 FIX (issue #1082): цепочка стала health-aware — состояние
-            # провайдера проверяется ДО первого запроса: MiniMax с
-            # исчерпанной квотой (2056/429) помечается unavailable (TTL ~5
-            # мин) и первый же запрос уходит на deepseek без retry-цикла и
-            # без 15-19с потерь. Кэш персистентный — переживает рестарт.
-            try:
-                fb = build_deepseek_provider(
-                    api_key=None,  # берёт DEEPSEEK_API_KEY из env
-                )
-                # Lazy-import: health-модуль подтягиваем только в ветке
-                # minimax (deepseek-only путь не трогаем).
-                from rob_box_harness.health import (
-                    DEFAULT_HEALTH_TTL_S,
-                    HealthAwareFallbackLLM,
-                    HealthCache,
-                    check_deepseek_balance,
-                )
+            return built[0]
 
-                cache_path = str(
-                    self.get_parameter("health_cache_path").value or ""
-                ).strip()
-                try:
-                    health_ttl = float(
-                        self.get_parameter("health_ttl_s").value
-                        or DEFAULT_HEALTH_TTL_S
-                    )
-                except (TypeError, ValueError):
-                    health_ttl = DEFAULT_HEALTH_TTL_S
-                cache = HealthCache(
-                    ttl_s=health_ttl,
-                    persist_path=cache_path or None,
-                )
-                # DeepSeek имеет публичный /user/balance — проверяем ДО
-                # первого запроса (TTL-кэш, ~5 мин). У MiniMax публичного
-                # balance-API нет → реактивный детект по коду 2056/429
-                # внутри HealthAwareFallbackLLM.
+        # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
+        from rob_box_harness.health import (
+            DEFAULT_HEALTH_TTL_S,
+            HealthAwareFallbackLLM,
+            HealthCache,
+            check_deepseek_balance,
+        )
 
-                def _deepseek_balance_probe() -> Any:
+        # Health cache (persistent — survives robot restart)
+        cache_path = str(
+            self.get_parameter("health_cache_path").value or ""
+        ).strip()
+        try:
+            health_ttl = float(
+                self.get_parameter("health_ttl_s").value
+                or DEFAULT_HEALTH_TTL_S
+            )
+        except (TypeError, ValueError):
+            health_ttl = DEFAULT_HEALTH_TTL_S
+        cache = HealthCache(
+            ttl_s=health_ttl,
+            persist_path=cache_path or None,
+        )
+
+        # Balance probes: only for providers that expose a balance API
+        balance_checkers: dict[str, Any] = {}
+        for i, name in enumerate(chain_display):
+            entry = self._LLM_PROVIDER_REGISTRY.get(name, {})
+            if entry.get("has_balance_api") and name == "deepseek":
+                def _deepseek_balance_probe(
+                    _name: str = name,
+                ) -> Any:
                     return check_deepseek_balance(
                         DEEPSEEK_DEFAULT_BASE_URL,
                         os.environ.get("DEEPSEEK_API_KEY", ""),
                         timeout_s=5.0,
                     )
+                balance_checkers["deepseek"] = _deepseek_balance_probe
 
-                self.get_logger().info(
-                    f"🔄 LLM fallback: deepseek (health-aware, TTL {health_ttl:.0f}s)"
-                )
-                return HealthAwareFallbackLLM(
-                    [primary, fb],
-                    cache=cache,
-                    balance_checkers={"deepseek": _deepseek_balance_probe},
-                    logger=self.get_logger(),
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"⚠️ DeepSeek fallback не построен ({exc}) — только MiniMax"
-                )
-                return primary
-        if provider_name == "deepseek":
-            return build_deepseek_provider(
-                api_key=self.get_parameter("api_key").value or None,
-                base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
-                model=model or DEEPSEEK_DEFAULT_MODEL,
-            )
-
-        raise ValueError(
-            f"Unsupported llm_provider={provider_name!r}; "
-            "supported: 'minimax', 'deepseek'"
+        self.get_logger().info(
+            "[health] build_llm: provider_chain=%s active=%s (health-aware, TTL %.0fs)",
+            chain_display,
+            chain_display[0],
+            health_ttl,
+        )
+        return HealthAwareFallbackLLM(
+            built,
+            cache=cache,
+            balance_checkers=balance_checkers,
+            logger=self.get_logger(),
         )
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
@@ -904,6 +1112,7 @@ class DialogueNode(Node):
             ("MemorySkill", "handle_memory"),
             ("StatusSkill", "handle_status"),
             ("FAQSkill", "handle_faq"),
+            ("WebSearchSkill", "search_web"),
         ]
         for cls_name, tool_name in skill_aliases:
             cls = globals().get(cls_name)
@@ -920,11 +1129,75 @@ class DialogueNode(Node):
             tools.append(tool)
         return tools
 
+    def _on_speaker(self, msg: String) -> None:
+        """Issue #1077 — speaker_tag от Yandex speaker_analysis.
+
+        JSON: ``{"speaker_tag": "0", "text": "...", "duration_s": 1.2}``.
+        stt_node публикует speaker ПЕРЕД result, поэтому обычно этот
+        callback приходит раньше ``_on_stt`` с тем же текстом. Храним по
+        тексту; ``_on_stt`` забирает и создаёт/обновляет профиль спикера.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        tag = payload.get("speaker_tag")
+        text = (payload.get("text") or "").strip()
+        if not tag or not text:
+            return
+        # Ограничиваем словарь — старые (невостребованные) записи выкидываем.
+        if len(self._speaker_by_text) >= 50:
+            self._speaker_by_text.clear()
+        self._speaker_by_text[text] = payload
+        self.get_logger().debug(
+            f"👤 [issue 1077] Speaker event: tag={tag!r} "
+            f"duration={payload.get('duration_s')}s text={text[:40]!r}"
+        )
+
+    def _on_speaker_result(self, msg: String) -> None:
+        """Issue #1077 — результат голосовой биометрии (speaker_id_node).
+
+        JSON: ``{"is_known": true, "speaker_id": "...", "name": "...",
+        "confidence": 0.93}`` или ``{"is_known": false}``. Храним
+        последний результат; _run_turn использует его для префикса
+        [Говорит <имя>] / [Говорит: незнакомец] и session lock.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        # Registration ack — не speaker match.
+        if data.get("event") == "registered":
+            self.get_logger().info(
+                f"✅ [issue 1077] Speaker registered: "
+                f"{data.get('name')!r} id={str(data.get('speaker_id', ''))[:8]}"
+            )
+            return
+        with self._speaker_lock:
+            self._current_speaker = data
+
     def _on_stt(self, msg: String) -> None:
         text = (msg.data or "").strip()
         if not text:
             return
+        # Issue #1077 — забираем speaker_tag для ЭТОГО текста (если stt_node
+        # успел прислать speaker-событие). pop: один текст — один tag.
+        speaker_event = self._speaker_by_text.pop(text, None)
+        speaker_tag: Optional[str] = None
+        speaker_duration_s: float = 0.0
+        if speaker_event:
+            speaker_tag = str(speaker_event.get("speaker_tag") or "")
+            try:
+                speaker_duration_s = float(speaker_event.get("duration_s") or 0.0)
+            except (TypeError, ValueError):
+                speaker_duration_s = 0.0
+            if not speaker_tag:
+                speaker_tag = None
         text_lower = text.lower()
+        # Issue #1101 — auto-register спикера через regex УДАЛЁН.
+        # Теперь LLM сам извлекает имя из user_input и вызывает MCP tool
+        # register_speaker(name=X) — см. master_prompt_compact.txt RULE #SYSCTX.
+        # Это решает Bug A (regex ловил «зовут» как имя из «а как меня зовут»).
         # Issue 989 Fix A: dialogue_node НЕ должен реагировать на
         # rejected(empty) — это эхо собственной музыки/голоса, а не речь
         # пользователя. Защита на случай, если stt_node начнёт публиковать
@@ -932,23 +1205,44 @@ class DialogueNode(Node):
         # accepted, но guard дешёвый и страхует от регрессий).
         if text_lower.startswith(("rejected", "«rejected", "empty", "«пусто", "тишина")):
             self.get_logger().info(f"🔇 [issue 989] Игнор rejected/empty маркера: {text[:60]}")
+            self._llm_skipped_counter["stt_rejected"] += 1
             return
         state = self._dsm.current_state
         was_idle = state == DialogueStateKind.IDLE  # FIX #992: для music_cleanup new_dialogue
         if state == DialogueStateKind.SILENCED:
+            self._llm_skipped_counter["silenced"] += 1
             if is_unsilence_command(text_lower):
                 self._dsm.on_event(DialogueEvent.UNSILENCE)
                 self._publish_state()
+            else:
+                self.get_logger().info(
+                    f"🔇 [diagnostics] ignored: state=SILENCED text={text[:60]!r}"
+                )
             return
         # Universal wake-word gate — only direct address to robot can
         # start or interrupt a dialogue. This prevents false barge-in
         # from background noise, TV, or the robot's own TTS echo.
         # (Regression fix: was incorrectly gated on state==IDLE only.)
+        #
+        # Issue #1101 (diagnostics) — wake-word-miss раньше логировался
+        # на debug(), поэтому в обычном логе его не видно → оператор
+        # думает «LLM молчит», а на самом деле фраза не дошла до LLM.
+        # Поднимаем до info() с подсчётом причин, плюс раз в окно
+        # печатаем сводку ``llm_skipped_total``.
         if not has_wake_word(text_lower, self._wake_words):
-            self.get_logger().debug(f"🔇 Ignored (no wake word): {text[:60]}")
+            self._llm_skipped_counter["no_wake_word"] += 1
+            self.get_logger().info(
+                f"🔇 [diagnostics] ignored: no_wake_word text={text[:60]!r} "
+                f"state={state.name}"
+            )
+            self._maybe_log_skip_summary()
             return
         clean = strip_wake_word(text, self._wake_words)
         if not clean:
+            self._llm_skipped_counter["empty_after_strip"] += 1
+            self.get_logger().info(
+                f"🔇 [diagnostics] ignored: empty_after_strip_wake text={text[:60]!r}"
+            )
             return
         if is_silence_command(text_lower):
             # 🔴 FIX (live 06.08): «хватит диджеить/музыку/трек» — это НЕ
@@ -958,8 +1252,10 @@ class DialogueNode(Node):
             if not any(
                 kw in text_lower for kw in self._MUSIC_STOP_OVERRIDES
             ):
+                self._llm_skipped_counter["silence_command"] += 1
                 self._handle_silence()
                 return
+            # иначе это music-stop, фоллс на LLM ниже
         self._cancel_run("new STT input")
         sfx = String()
         sfx.data = "thinking"
@@ -984,7 +1280,13 @@ class DialogueNode(Node):
         # команду юзера, а не текст с DJ-preamble. Preamble содержит
         # «диджей: ...» — guard видел его и думал «юзер просит музыку»,
         # нудил Bug C и LLM начинала DJ-сессию вместо анекдота.
-        self._dispatch_turn(clean, was_idle=was_idle, raw_user_command=raw_user_command)
+        self._dispatch_turn(
+            clean,
+            was_idle=was_idle,
+            raw_user_command=raw_user_command,
+            speaker_tag=speaker_tag,
+            speaker_duration_s=speaker_duration_s,
+        )
     def _on_tts_finished(self, msg: String) -> None:
         """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
 
@@ -1137,6 +1439,35 @@ class DialogueNode(Node):
         )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
+    def _on_dj_stop_farewell(self, persona: str) -> None:
+        """Speak a short goodbye when DJ mode turns off.
+
+        Invoked by DJModeController._reset_state() through the DJHook.
+        We do not want the user to hear abrupt silence when the party
+        ends, so we publish a one-shot speak_text via the same
+        response publisher used by every other turn.
+        """
+        # Fall back to a friendly default if persona was empty.
+        persona_part = (persona or '').strip() or 'Роббокс'
+        farewell = (
+            'Вечеринка подошла к концу. '
+            + persona_part
+            + ' выключается, но вернется по первому запросу!'
+        )
+        try:
+            self.get_logger().info(f"DJ farewell: {farewell}")
+        except Exception:
+            pass
+        try:
+            self._publish_response(farewell, animation='happy')
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.get_logger().warning(
+                    f"DJ farewell publish failed: {type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                pass
+
     def _dispatch_dj_turn(self, user_input: str, from_tick: bool = False) -> None:
         """Issue #992 Bug A — DJ auto-transition dispatcher.
 
@@ -1178,6 +1509,8 @@ class DialogueNode(Node):
         was_idle: bool = False,
         is_babble_retry: bool = False,
         raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
     ) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
@@ -1207,9 +1540,188 @@ class DialogueNode(Node):
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
                 raw_user_command=raw_user_command,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
             ),
             self._loop,
         )
+
+    _NAME_STOPWORDS = {
+        # Two-system-prompt pattern: имя спикера извлекает LLM через
+        # MCP tool register_speaker, не через regex. Старый _maybe_auto_register_speaker
+        # удалён — он ловил «зовут» как имя из фразы «а как меня зовут» (Bug A в #1101).
+        # Legacy constants оставлены для обратной совместимости с импортами в тестах.
+        "как", "что", "это", "так", "всё", "все", "тебя", "меня", "себя",
+        "робот", "роббокс", "робакс", "здесь", "там", "тут", "хочу", "буду",
+        "сказал", "говорю", "прошу", "попросил",
+    }
+
+    async def _apply_speaker_identity(
+        self,
+        user_input: str,
+        speaker_context: Optional[str],
+    ) -> str:
+        """Issue #1077 — префикс спикера для LLM.
+
+        🔴 FIX (issue #1101): НЕ используем формат «[Говорит <имя>]» —
+        DSM-классификатор ``on_user_input`` ищет wake-word («роббокс»,
+        «робот», …) в ЛЮБОМ месте текста и матчит его внутри префикса
+        «[Говорит робот Антон]» → возвращает ``WAKE_WORD`` вместо
+        ``STT_RESULT`` → guard ``event == STT_RESULT`` пропускает LLM →
+        «акцепт есть, робот не отвечает».
+
+        Новый формат «[Speaker:<id> name=Антон conf=0.92]» не содержит
+        wake-слов. Данные о спикере уже доступны в dynamic_system →
+        LLM получает имя из system-context, а не из user-prefix.
+
+        Args:
+            user_input: Raw STT-транскрипт.
+            speaker_context: Контекст от Yandex tag (если уже загружен).
+
+        Returns:
+            user_input с техническим префиксом спикера (без wake-words).
+        """
+        # Даём speaker_id_node время закончить inference (STT быстрее resemblyzer).
+        await asyncio.sleep(0.30)
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        if sp.get("is_known"):
+            name = str(sp.get("name") or "")
+            conf = float(sp.get("confidence") or 0.0)
+            sid = str(sp.get("speaker_id") or "")[:8]
+            if name and speaker_context is None:
+                # НЕ вставляем «робот»/«роббокс» в префикс — иначе DSM
+                # on_user_input вернёт WAKE_WORD и LLM не вызовется.
+                user_input = f"[Speaker:{sid}] {user_input}"
+                self.get_logger().info(
+                    f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
+                )
+        else:
+            if speaker_context is None:
+                user_input = f"[Speaker:unknown] {user_input}"
+        return user_input
+
+    def _build_dynamic_system_context(self) -> str:
+        """Two-system-prompt pattern: собрать <system_context> snapshot.
+
+        Возвращает XML-строку для второго system-message в messages[].
+        Содержит runtime info: текущий спикер (resemblyzer), TTS provider
+        + voice (для gender alignment в ответах LLM), session lock state,
+        hardware (battery, motion).
+
+        Каждый turn собирается заново — fresh snapshot. LLM читает данные
+        ТОЛЬКО из этого тега, никогда не выводит пользователю (защита от
+        prompt injection — пользователь не может подделать tts_voice или
+        speaker_name фразами в user_input).
+        """
+        # user_profile
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        sp_name = sp.get("name") or ""
+        sp_conf = float(sp.get("confidence") or 0.0)
+        sp_id = sp.get("speaker_id") or ""
+
+        # tts provider (читаем из yaml параметра)
+        try:
+            tts_provider = str(self.get_parameter("provider").value or "yandex")
+        except Exception:
+            tts_provider = "yandex"
+        # голос по умолчанию — Yandex anton (определяем по TTS config)
+        tts_voice = "Yandex_Maxim"  # default — male
+
+        # hardware (если есть доступ к батарее через /robot_status tool,
+        # модель сама вызовет — но snapshot даёт baseline)
+        battery = "unknown"
+
+        # строим XML
+        lines = ["<system_context>"]
+        lines.append("  <user_profile>")
+        if sp_name:
+            lines.append(f"    <name>{sp_name}</name>")
+        else:
+            lines.append("    <name>unknown</name>")
+        if sp_conf:
+            lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
+        if sp_id:
+            lines.append(f"    <speaker_id>{sp_id[:8]}</speaker_id>")
+        lines.append("  </user_profile>")
+        lines.append("  <hardware>")
+        lines.append(f"    <battery>{battery}</battery>")
+        lines.append(f"    <tts_voice>{tts_voice}</tts_voice>")
+        lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
+        lines.append("  </hardware>")
+        lines.append("</system_context>")
+        return "\n".join(lines)
+
+    async def _handle_speaker_turn(
+        self,
+        tag: str,
+        *,
+        user_input: str,
+        duration_s: float = 0.0,
+    ) -> Optional[str]:
+        """Issue #1077 — профиль спикера: подтверждение, touch, контекст.
+
+        Вызывается из ``_run_turn`` перед LLM-вызовом, когда STT прокинул
+        speaker_tag (Yandex speaker_analysis).
+
+        Логика:
+        1. ``SpeakerTracker.note_phrase`` — подтверждение tag после 2+ фраз
+           подряд (>= 0.8с). Короткие (<0.8с) не создают профиль.
+        2. Подтверждённый tag → ``touch_speaker``: создаёт/обновляет профиль
+           (scope=speaker:<tag>, first_seen/last_seen/dialog_count).
+        3. Имя из «меня зовут X» сохраняется в профиль.
+        4. Факты спикера (list_facts) форматируются в LLM-контекст.
+
+        Returns:
+            Строка-контекст о спикере для system-сообщения, или ``None``
+            (tag не подтверждён / профиля ещё нет / ошибка памяти).
+        """
+        try:
+            just_confirmed = self._speaker_tracker.note_phrase(tag, duration_s)
+            if not self._speaker_tracker.is_confirmed(tag):
+                self.get_logger().debug(
+                    f"👤 [issue 1077] tag={tag!r} ещё не подтверждён "
+                    f"(streak < {self._speaker_tracker.min_phrases}) — "
+                    "профиль не создаём"
+                )
+                return None
+
+            profile = await touch_speaker(self._memory, tag)
+            # Имя из «меня зовут X» — сохраняем в профиль (acceptance #1077).
+            name = extract_speaker_name(user_input)
+            if name and profile.get("name") != name:
+                profile["name"] = name
+                await self._memory.save_fact(
+                    speaker_scope(tag),
+                    Fact(
+                        key="profile",
+                        value=profile,
+                        tags=("speaker", "profile"),
+                    ),
+                )
+                self.get_logger().info(
+                    f"👤 [issue 1077] Спикер {tag!r} представился: {name!r}"
+                )
+
+            # Факты спикера → контекст LLM (list_facts: все факты scope).
+            facts = await self._memory.list_facts(speaker_scope(tag), limit=20)
+            context = format_speaker_context(
+                profile,
+                facts,
+                is_new=just_confirmed,
+            )
+            if context:
+                self.get_logger().info(
+                    f"👤 [issue 1077] Спикер {tag!r}: диалог "
+                    f"#{profile.get('dialog_count', 0)} — контекст загружен"
+                )
+            return context
+        except Exception as exc:  # noqa: BLE001 — память не должна валить диалог
+            self.get_logger().warning(
+                f"⚠️ [issue 1077] Speaker profile error for tag={tag!r}: {exc}"
+            )
+            return None
 
     async def _run_turn(
         self,
@@ -1218,6 +1730,8 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
         raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
@@ -1254,12 +1768,51 @@ class DialogueNode(Node):
         # LLM is never called — the user hears nothing.
         babble_retry_pending = False
         try:
+            # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
+            # собираем контекст о нём (имя, факты, число диалогов). Только
+            # для подтверждённых tags (2+ фразы подряд, >= 0.8с) — защита
+            # от нестабильных tags Yandex. Vosk fallback (tag=None) —
+            # профиль не трогаем (edge case #4).
+            speaker_context: Optional[str] = None
+            if speaker_tag and not is_dj_auto:
+                speaker_context = await self._handle_speaker_turn(
+                    speaker_tag,
+                    user_input=user_input,
+                    duration_s=speaker_duration_s,
+                )
             # Issue #992 — DJ auto-turns must bypass the wake-word
             # classifier so the LLM is actually called. The DJ prompt
             # intentionally mentions "роббокс" / "диджей" which would
             # otherwise short-circuit into a no-op transition.
+            # Issue #1077 — голосовая биометрия: префикс [Говорит <имя>] /
+            # [Говорит: незнакомец] из speaker_id_node (resemblyzer d-vector).
+            # Yandex speaker_tag присваивается per-session и не стабилен между
+            # сессиями, поэтому для ответа «как меня зовут?» полагаемся на
+            # биометрию. Session lock: первый известный спикер сессии
+            # фиксируется; чужие известные/незнакомцы в той же сессии
+            # игнорируются (TASK-048).
+            if self._speaker_id_enabled and not was_dj_auto:
+                user_input = await self._apply_speaker_identity(
+                    user_input, speaker_context
+                )
+            # Two-system-prompt pattern (live 10.08): собрать dynamic
+            # <system_context> snapshot — текущий спикер (resemblyzer),
+            # TTS provider/voice (для gender alignment в ответах),
+            # session lock state, hardware status. Прокидывается вторым
+            # system-message в messages[].
+            dynamic_system = self._build_dynamic_system_context()
+            # 🔴 FIX (issue #1101): _on_stt уже сделал DSM-переход
+            # IDLE→LISTENING→DIALOGUE через WAKE_WORD+STT_RESULT. Передаём
+            # preclassified_event=STT_RESULT чтобы DialogCore НЕ
+            # переклассифицировал user-text (где может быть 'робот' внутри)
+            # и не сломал guard.
             result: DialogResult = await self._core.process_input(
-                user_input, is_dj_auto=was_dj_auto,
+                user_input,
+                is_dj_auto=was_dj_auto,
+                speaker_tag=speaker_tag,
+                speaker_context=speaker_context,
+                dynamic_system=dynamic_system,
+                preclassified_event=DialogueEvent.STT_RESULT,
             )
             self._handle_result(result, user_input=user_input)
             babble_retry_pending = bool(self._babble_retry_used)
@@ -2303,14 +2856,69 @@ class DialogueNode(Node):
                     self.get_logger().warning(
                         f"⚠️ empty-reminder append failed: {exc}"
                     )
-                # Тихий return: не падаем в «задумался», а просто
-                # завершаем цикл (следующий turn LLM увидит reminder).
+                # Persist a synthetic assistant turn so the next LLM call
+                # still sees a continuous conversation; otherwise
+                # «продолжай» looks like a fresh exchange
+                # and the robot appears to forget the running topic.
+                try:
+                    from rob_box_harness.memory import Turn
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        self._memory.append_turn(
+                            "default",
+                            Turn(
+                                role="assistant",
+                                content=(
+                                    "[silent_accept] Вопрос принят, "
+                                    "но ответа не последовало "
+                                    "(LLM вернула done без speak_text). "
+                                    "user=\"" + (user_input or "")[:200] + "\""
+                                ),
+                            ),
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ silent-marker append failed: {exc}"
+                        )
+                    except Exception:
+                        pass
+                # Tell the user that we heard them so they are not left
+                # with an «accept + silence» experience.
+                try:
+                    self._publish_response("Принял.", animation="neutral")
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ empty-fallback publish failed: {exc}"
+                        )
+                    except Exception:
+                        pass
                 return
             else:
+                # Issue #1101 (live 11.08) — when LLM called tools
+                # (e.g. stop_music) but returned no spoken text,
+                # the user hears silence with no explanation. Log
+                # exactly what happened so operators can diagnose.
+                tc_list = list(tools_called)
+                user_hint = (user_input or "")[:80]
                 self.get_logger().info(
                     "🔇 TRACK-запрос выполнен тулами, spoken пуст — "
-                    f"тихо завершаю (tools={list(tools_called)!r})"
+                    f"тихо завершаю (tools={tc_list!r} "
+                    f"user={user_hint!r})"
                 )
+                # When the only action was stop_music (no speak_text,
+                # no music_code), the user gets pure silence after a
+                # request — surface a louder diagnostic.
+                if tc_list == ["stop_music"]:
+                    self.get_logger().warning(
+                        "🎵 [diagnostics] LLM called ONLY stop_music "
+                        "with no spoken text — user heard silence "
+                        f"(user_input={user_hint!r}). "
+                        "LLM must follow up with speak_text or "
+                        "execute_music_code when stop_music is used."
+                    )
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
         # that /voice/tts/batch_complete fires only after the last chunk.
@@ -2599,6 +3207,31 @@ class DialogueNode(Node):
         self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)
         self._publish_state()
         self._speak_direct("Хорошо, молчу.")
+
+    def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:
+        """Issue #1101 — периодическая сводка по пропускам LLM.
+
+        Раз в ``window_s`` секунд (по умолчанию 5 минут) печатает в лог
+        одну строку ``📊 [diagnostics] llm_skipped ...``, чтобы оператор
+        видел причины «робот молчит». Сводка включается только если есть
+        хотя бы один пропуск — пустые окна не спамят.
+        """
+        now = time.monotonic()
+        if now - self._last_skip_summary_ts < window_s:
+            return
+        total = sum(self._llm_skipped_counter.values())
+        if total == 0:
+            return
+        breakdown = ", ".join(
+            f"{k}={v}"
+            for k, v in self._llm_skipped_counter.items()
+            if v > 0
+        )
+        self.get_logger().info(
+            f"📊 [diagnostics] llm_skipped_total={total} (since startup, "
+            f"last {window_s:.0f}s): {breakdown}"
+        )
+        self._last_skip_summary_ts = now
     def _cancel_run(self, reason: str) -> None:
         self._run_cancelled = True
         with self._task_lock:
