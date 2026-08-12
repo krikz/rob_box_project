@@ -1937,6 +1937,10 @@ class DialogueNode(Node):
         "зачитай",
         "зачита",
         "зачитывай",
+        "сыграй",
+        "играй",
+        "включи музык",
+        "запусти музык",
     )
 
     # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
@@ -1981,7 +1985,27 @@ class DialogueNode(Node):
         if not user_input:
             return False
         low = user_input.lower()
-        return any(kw in low for kw in self._MUSIC_GUARD_KEYWORDS)
+        matched = [kw for kw in self._MUSIC_GUARD_KEYWORDS if kw in low]
+        if matched:
+            self.get_logger().debug(
+                f"🎵 [music_guard] user_input={user_input!r} matched "
+                f"keywords={matched!r} → wants_music=True"
+            )
+            return True
+        # 💡 Diagnostic: log when input LOOKS music-related but no
+        # keyword matched — helps spot missing keywords in production.
+        # Check against the broader BABBLE_PERFORMANCE_KEYWORDS set
+        # (which includes "сыграй", "играй", "музык", etc.) to catch
+        # false-negatives without spamming on ordinary chit-chat.
+        broad_match = [kw for kw in BABBLE_PERFORMANCE_KEYWORDS if kw in low]
+        if broad_match:
+            self.get_logger().info(
+                f"🎵 [music_guard] user_input={user_input!r} matched "
+                f"broad_performance={broad_match!r} but NOT in "
+                f"MUSIC_GUARD_KEYWORDS → wants_music=False "
+                f"(возможно, нужно добавить keyword в _MUSIC_GUARD_KEYWORDS)"
+            )
+        return False
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
 
@@ -2238,6 +2262,15 @@ class DialogueNode(Node):
             )
             self._speak_direct(
                 "Я тут растерялся — бит не запустился, попробуй ещё раз."
+            )
+        else:
+            # 💡 Diagnostic: guard deliberately skipped — log why.
+            # Helps answer "why didn't Bug C fire?" without reading code.
+            tools_now = set(tools_called or ())
+            self.get_logger().info(
+                f"🎵 [music_guard] skip: was_dj_auto={was_dj_auto} "
+                f"user_input={user_input!r} tools={sorted(tools_now)!r} "
+                f"→ no action (user does NOT want music OR guard not applicable)"
             )
 
     def _build_music_retry_prompt(self, user_input: str) -> str:
@@ -2718,6 +2751,12 @@ class DialogueNode(Node):
             tools_called=tools_called,
         ):
             return
+        # 💡 Diagnostic: log the actual state before deciding what to do.
+        # Helps answer "why did the robot stay silent?" without guesswork.
+        self.get_logger().info(
+            f"🔍 [handle_result] spoken={spoken!r} (len={len(spoken)}) "
+            f"tools={list(tools_called)!r} user_input={user_input!r}"
+        )
         if not spoken:
             # 🔴 FIX (live 10:49): пустой spoken НЕ всегда ошибка — LLM
             # могла выполнить TRACK-запрос («сыграй баха») через
