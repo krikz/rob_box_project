@@ -853,7 +853,7 @@ AgentSession + SideEffectBus    TaskScheduler + SchedulerEventBus
 | Канал | Метод | Точность |
 |-------|-------|----------|
 | `voice` | символы → секунды (есть тул `estimate_tts_duration`, см. v38 в логе) | ±15% |
-| `music` | `duration_sec` из `execute_music_code` (уже есть в payload) | ±10% |
+| `music` | `segments` из `execute_music_code` (бары × 4 бита @ BPM; issue #990) | ±10% |
 | `anim` | из preset-манифеста | ±5% |
 
 **Реализация:** планировщик использует тот же механизм, что и существующий тул `estimate_tts_duration`. LLM НЕ обязана вызывать его руками — планировщик сам считает при создании сегмента (см. G5 из аудита #15).
