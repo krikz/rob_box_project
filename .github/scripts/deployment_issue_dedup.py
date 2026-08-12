@@ -49,7 +49,7 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
         r"robot is out of bounds",
         r"serial port /dev/ttyusb0 still not available after",
-        r"timed out waiting for transform from base_link to odom",
+        r"timed out waiting for transform from (base_link|base_footprint) to odom",
         r"cannot transform tag pose",
         r"sensor origin.*out of map bounds",
         r"can controller state: error-active",
