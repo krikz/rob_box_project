@@ -232,6 +232,16 @@ if m:
 
 # Pattern: .field(.subfield)*
 if filt.startswith("."):
+    # Special: .[0].field // "default" — used by stale-branch guard
+    # (gh pr list --state merged --head X --jq .[0].number // empty).
+    m0 = re.match(r"^\.\[0\]\.([\w]+)\s*//\s*\"([^\"]*)\"$", filt)
+    if m0:
+        field, default = m0.group(1), m0.group(2)
+        if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get(field) is not None:
+            emit(data[0].get(field))
+        else:
+            print(default)
+        sys.exit(0)
     # Special: .a[].b  — iterate a, print b for each (each on new line)
     m2 = re.match(r"^\.([\w]+)\[\]\.(.+)$", filt)
     if m2:
@@ -426,15 +436,34 @@ case "$subcmd" in
         action="${1:-}"; shift || true
         case "$action" in
             list)
-                # Detect: --state merged (retro-path scan) vs --head vs --search
-                if printf '%s' "$*" | grep -q -- '--state merged'; then
+                # Detect: --head <branch> (PR lookup / stale-branch guard) vs
+                # --state merged (retro-path scan) vs --search vs scan-all.
+                # ВАЖНО: --head проверяется ПЕРВЫМ — guard вызывает
+                # `--state merged --head <branch>`, и такой запрос должен уйти
+                # в PR_MERGED_HEAD_* (см. ниже), а НЕ в ретро-ветку
+                # PR_LIST_MERGED_JSON (иначе merged PR не находится и
+                # stale-branch guard молчит). Ретро-путь зовёт `--state merged`
+                # без `--head` → попадёт во вторую ветку.
+                if printf '%s' "$*" | grep -q -- '--head'; then
+                    head_branch="$(printf '%s' "$*" | sed -nE 's/.*--head[[:space:]]+([^ ]+).*/\1/p')"
+                    # Ретро 12.08 t_d3aeaa9b: stale-branch guard запрашивает
+                    # `--state merged --head <branch>`. Отдельный ключ
+                    # PR_MERGED_HEAD_<branch>_JSON (fallback: PR_HEAD_*), чтобы
+                    # тесты могли симулировать «ветка уже влита».
+                    if printf '%s' "$*" | grep -q -- '--state merged'; then
+                        journal "gh pr list --state merged --head $head_branch"
+                        _data="$(get_state PR_MERGED_HEAD_${head_branch}_JSON)"
+                        if [ -z "$_data" ]; then
+                            _data="$(get_state PR_HEAD_${head_branch}_JSON)"
+                        fi
+                    else
+                        journal "gh pr list --head $head_branch"
+                        _data="$(get_state PR_HEAD_${head_branch}_JSON)"
+                    fi
+                    apply_jq "$_data" "$_jq_filter"
+                elif printf '%s' "$*" | grep -q -- '--state merged'; then
                     journal "gh pr list --state merged (retro-path)"
                     _data="$(get_state PR_LIST_MERGED_JSON)"
-                    apply_jq "$_data" "$_jq_filter"
-                elif printf '%s' "$*" | grep -q -- '--head'; then
-                    head_branch="$(printf '%s' "$*" | sed -nE 's/.*--head[[:space:]]+([^ ]+).*/\1/p')"
-                    journal "gh pr list --head $head_branch"
-                    _data="$(get_state PR_HEAD_${head_branch}_JSON)"
                     apply_jq "$_data" "$_jq_filter"
                 elif printf '%s' "$*" | grep -q -- '--search'; then
                     journal "gh pr list --search (followup)"
