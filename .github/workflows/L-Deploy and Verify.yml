@@ -849,8 +849,10 @@ jobs:
             echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
 
             # Проверяем наличие критически важных топиков
-            # Примечание: OAK-D теперь публикует в /camera/* вместо /oak/*
-            EXPECTED_TOPICS="/camera/rgb/image_raw/compressed"
+            # Примечание: OAK-D публикует в /camera/camera/color/* (ретро 12.08:
+            # старое имя /camera/rgb/image_raw/compressed устарело — монитор
+            # плодил ложные Warning-issues #953/#1046, камера работала).
+            EXPECTED_TOPICS="/camera/camera/color/image_raw/compressed"
             MISSING_TOPICS=""
 
             for topic in $EXPECTED_TOPICS; do
