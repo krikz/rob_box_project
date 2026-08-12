@@ -57,6 +57,23 @@ scipy
 # =============================================================================
 vosk
 
+
+# =============================================================================
+# Speaker identification (issue #1077 — голосовая биометрия)
+# Used in: rob_box_voice/speaker_id_node.py + utils/speaker_embeddings.py
+# resemblyzer builds 256-dim GE2E speaker embeddings; scikit-learn:
+# cosine_similarity for nearest-neighbour matching.
+# =============================================================================
+resemblyzer
+scikit-learn
+# Issue #1101 — runtime pin: resemblyzer 0.1.4 → librosa → numba импортирует
+# `coverage.types` (Tracer API). Debian Bullseye ships coverage 6.2 без
+# `types` submodule → AttributeError: module 'coverage' has no attribute
+# 'types' → embed_audio returns None. Pin coverage>=7.0 (где types.Tracer
+# сохранён). Также pin pyyaml>=6.0 (resemblyzer models.yaml требует C-парсер).
+coverage>=7.0
+pyyaml>=6.0
+
 # =============================================================================
 # gRPC for Yandex Cloud API v3 (STT + TTS)
 # Used in: rob_box_voice/tts_node.py (TTS with anton voice)

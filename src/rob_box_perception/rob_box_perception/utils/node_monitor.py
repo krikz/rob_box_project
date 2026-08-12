@@ -20,19 +20,28 @@ class NodeAvailabilityMonitor:
     Периодически проверяет список активных нод и сравнивает
     с ожидаемым списком критичных нод системы.
 
-    Attributes:
-        node: ROS2 нода для логирования
-        expected_nodes: Список ожидаемых критичных нод
-        node_status: Словарь со статусами нод
+    Attributes
+    ----------
+    node : Node
+        ROS2 нода для логирования
+    expected_nodes : List[str]
+        Список ожидаемых критичных нод
+    node_status : Dict[str, Dict]
+        Словарь со статусами нод
+
     """
 
     def __init__(self, node: Node, expected_nodes: List[str] = None):
         """
         Инициализация монитора.
 
-        Args:
-            node: ROS2 нода для логирования
-            expected_nodes: Список ожидаемых нод (опционально)
+        Parameters
+        ----------
+        node : Node
+            ROS2 нода для логирования
+        expected_nodes : List[str], optional
+            Список ожидаемых нод (опционально)
+
         """
         self.node = node
         self.expected_nodes = [
@@ -120,8 +129,11 @@ class NodeAvailabilityMonitor:
         """
         Получить список активных нод.
 
-        Returns:
+        Returns
+        -------
+        List[str]
             Список названий активных нод
+
         """
         return [
             node for node, status in self.node_status.items()
@@ -132,8 +144,11 @@ class NodeAvailabilityMonitor:
         """
         Получить список упавших нод.
 
-        Returns:
+        Returns
+        -------
+        List[str]
             Список названий упавших нод
+
         """
         return [
             node for node, status in self.node_status.items()
@@ -144,8 +159,11 @@ class NodeAvailabilityMonitor:
         """
         Получить список отсутствующих нод.
 
-        Returns:
+        Returns
+        -------
+        List[str]
             Список названий отсутствующих нод
+
         """
         return [
             node for node, status in self.node_status.items()
@@ -156,8 +174,11 @@ class NodeAvailabilityMonitor:
         """
         Получить сводку статусов нод.
 
-        Returns:
+        Returns
+        -------
+        Dict
             Словарь со статистикой
+
         """
         active = self.get_active_nodes()
         failed = self.get_failed_nodes()

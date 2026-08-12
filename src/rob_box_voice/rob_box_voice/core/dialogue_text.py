@@ -58,16 +58,16 @@ def has_wake_word(text_lower: str, wake_words: Sequence[str]) -> bool:
 
 
 def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
-    """Remove the *first* matching wake word from ``text``.
+    """Remove the *first* matching wake word from ``text`` (any position).
 
     Used by the harness wake-word gate (``DialogHarness._strip_wake_word``)
     AND by the legacy node's ``DialogueManager.remove_wake_word``.
 
-    The harness version (regex, anchored, case-insensitive) handles
-    punctuation; the legacy version is a substring strip. We support
-    both via ``mode="legacy"`` (substring) vs the default "harness"
-    (anchored regex) so existing behaviour is preserved when callers
-    migrate to this helper.
+    🔴 FIX (live 10.08): regex was anchored ``^`` — пропускал wake-word
+    в середине фразы (напр. «денчик ой фу робот меня зовут...»).
+    ``on_user_input()`` в DialogCore видел «робот» → WAKE_WORD вместо
+    STT_RESULT → guard ``event==STT_RESULT`` пропускал LLM → тишина.
+    Теперь удаляем из ЛЮБОГО места в тексте.
 
     Args:
         text: Raw user input (case-insensitive).
@@ -77,11 +77,10 @@ def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
     words = wake_words if wake_words is not None else DEFAULT_WAKE_WORDS
     if not words:
         return text.strip()
-    # Anchored, case-insensitive — matches the harness _strip_wake_word
-    # behaviour. We accept a leading optional whitespace and consume any
-    # trailing punctuation/whitespace so the cleaned text is usable.
+    # Case-insensitive, any-position match.  Consume trailing
+    # punctuation/whitespace so the cleaned text is usable.
     pattern = re.compile(
-        r"^\s*(" + "|".join(re.escape(w) for w in words) + r")[.,\s]*",
+        r"\b(" + "|".join(re.escape(w) for w in words) + r")[.,!?\s]*",
         re.IGNORECASE,
     )
     return pattern.sub("", text, count=1).strip()

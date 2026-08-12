@@ -182,6 +182,20 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 2. **CI зелёный** → **ничего не делает** (карточка остаётся в блоке — ждёт e2e).
 3. Дочерние CI-fix карточки НЕ создаются никогда.
 
+**Post-merge reconciliation (ADR-0014, `docs/adr/0014-agent-flow-issue-closure.md`):**
+
+Когда PR уже **MERGED** в `develop` (ручной merge юзером, Q22):
+
+1. Merge-gate повторно читает актуальные labels и state issue **прямо перед** close
+   (race: e2e-process может поставить `e2e-done` параллельно).
+2. Если issue OPEN и имеет `e2e-done` (PASS-proven от e2e-process) → `gh issue close <n> --reason completed`.
+3. Только **после успешного close** выполняется destructive cleanup: удаление
+   `z-{agent}/<id>-<slug>`, освобождение worktrees, архив карточки, cleanup-коммент.
+4. `e2e-done` merge-gate **сам не создаёт** — PASS-label принадлежит только
+   e2e-process. MERGED без `e2e-done` → issue остаётся OPEN, cleanup отложен
+   до следующего тика (5 мин).
+5. Ошибка close → warning, destructive cleanup отложен, следующий тик повторяет.
+
 ### 3.4 `e2e-process` (cron, every 1 hour)
 
 **Inputs:** карточки с label `needs-e2e` (ветка `z-{agent}/<id>-*` смержена в `z-{e2e}/test-round-N`).

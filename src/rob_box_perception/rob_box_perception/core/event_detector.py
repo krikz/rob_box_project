@@ -1,15 +1,18 @@
-"""Event Detection Module for Perception System.
+"""
+Event Detection Module for Perception System.
 
 This module implements state-based event detection with edge detection,
 cooldown management, and debouncing. Pure Python with no ROS dependencies.
 
-Architecture:
+Notes
+-----
 - State tracking: Monitors current state of events
 - Edge detection: Detects state transitions (false→true, true→false)
 - Cooldown: Prevents rapid re-triggering of same event
 - Debouncing: Filters out rapid state changes
 
-Usage:
+Example
+-------
     detector = EventDetector(cooldown_interval=60.0)
 
     # Check for state change
@@ -25,6 +28,7 @@ Usage:
     if detector.should_react_to_event('battery_low'):
         # React to event
         detector.mark_event_reacted('battery_low')
+
 """
 
 from dataclasses import dataclass
@@ -34,14 +38,22 @@ from typing import Any, Dict, Optional
 
 @dataclass
 class EventChange:
-    """Represents a detected event state change.
+    """
+    Represent a detected event state change.
 
-    Attributes:
-        event_name: Name of the event
-        old_value: Previous state value
-        new_value: Current state value
-        is_edge: Whether this is an edge (state transition)
-        timestamp: When the change was detected
+    Attributes
+    ----------
+    event_name : str
+        Name of the event
+    old_value : Any
+        Previous state value
+    new_value : Any
+        Current state value
+    is_edge : bool
+        Whether this is an edge (state transition)
+    timestamp : float
+        When the change was detected
+
     """
 
     event_name: str
@@ -52,25 +64,34 @@ class EventChange:
 
 
 class EventDetector:
-    """State-based event detector with edge detection and cooldown.
+    """
+    State-based event detector with edge detection and cooldown.
 
     Tracks event states and detects:
     - State changes (edges)
     - First occurrences
     - Cooldown-based event filtering
 
-    Attributes:
-        cooldown_interval: Minimum time between reactions to same event
-            (seconds)
-        event_states: Current state of each event
-        event_last_reaction: Timestamp of last reaction to each event
+    Attributes
+    ----------
+    cooldown_interval : float
+        Minimum time between reactions to same event (seconds)
+    event_states : Dict[str, Any]
+        Current state of each event
+    event_last_reaction : Dict[str, float]
+        Timestamp of last reaction to each event
+
     """
 
     def __init__(self, cooldown_interval: float = 60.0):
-        """Initialize event detector.
+        """
+        Initialize event detector.
 
-        Args:
-            cooldown_interval: Minimum time between reactions (seconds)
+        Parameters
+        ----------
+        cooldown_interval : float
+            Minimum time between reactions (seconds)
+
         """
         self.cooldown_interval = cooldown_interval
         self.event_states: Dict[str, Any] = {}
@@ -82,15 +103,23 @@ class EventDetector:
         current_value: Any,
         track_state: bool = True
     ) -> Optional[EventChange]:
-        """Check if event state has changed.
+        """
+        Check if event state has changed.
 
-        Args:
-            event_name: Name of the event to check
-            current_value: Current value of the event state
-            track_state: Whether to update tracked state (default: True)
+        Parameters
+        ----------
+        event_name : str
+            Name of the event to check
+        current_value : Any
+            Current value of the event state
+        track_state : bool
+            Whether to update tracked state (default: True)
 
-        Returns:
+        Returns
+        -------
+        Optional[EventChange]
             EventChange if state changed, None if unchanged
+
         """
         previous_value = self.event_states.get(event_name)
         current_time = time.time()
@@ -117,14 +146,21 @@ class EventDetector:
         event_name: str,
         check_cooldown: bool = True
     ) -> bool:
-        """Check if should react to event (cooldown check).
+        """
+        Check if should react to event (cooldown check).
 
-        Args:
-            event_name: Name of the event
-            check_cooldown: Whether to check cooldown (default: True)
+        Parameters
+        ----------
+        event_name : str
+            Name of the event
+        check_cooldown : bool
+            Whether to check cooldown (default: True)
 
-        Returns:
+        Returns
+        -------
+        bool
             True if should react, False if in cooldown
+
         """
         if not check_cooldown:
             return True
@@ -137,21 +173,31 @@ class EventDetector:
         return elapsed >= self.cooldown_interval
 
     def mark_event_reacted(self, event_name: str):
-        """Mark that we reacted to an event (for cooldown tracking).
+        """
+        Mark that we reacted to an event (for cooldown tracking).
 
-        Args:
-            event_name: Name of the event
+        Parameters
+        ----------
+        event_name : str
+            Name of the event
+
         """
         self.event_last_reaction[event_name] = time.time()
 
     def get_time_since_last_reaction(self, event_name: str) -> Optional[float]:
-        """Get time since last reaction to event.
+        """
+        Get time since last reaction to event.
 
-        Args:
-            event_name: Name of the event
+        Parameters
+        ----------
+        event_name : str
+            Name of the event
 
-        Returns:
+        Returns
+        -------
+        Optional[float]
             Seconds since last reaction, or None if never reacted
+
         """
         last_reaction = self.event_last_reaction.get(event_name)
         if last_reaction is None:
@@ -159,10 +205,14 @@ class EventDetector:
         return time.time() - last_reaction
 
     def reset_event(self, event_name: str):
-        """Reset tracking for an event.
+        """
+        Reset tracking for an event.
 
-        Args:
-            event_name: Name of the event to reset
+        Parameters
+        ----------
+        event_name : str
+            Name of the event to reset
+
         """
         self.event_states.pop(event_name, None)
         self.event_last_reaction.pop(event_name, None)
@@ -173,23 +223,35 @@ class EventDetector:
         self.event_last_reaction.clear()
 
     def get_current_state(self, event_name: str) -> Optional[Any]:
-        """Get current state of an event.
+        """
+        Get current state of an event.
 
-        Args:
-            event_name: Name of the event
+        Parameters
+        ----------
+        event_name : str
+            Name of the event
 
-        Returns:
+        Returns
+        -------
+        Optional[Any]
             Current state value, or None if not tracked
+
         """
         return self.event_states.get(event_name)
 
     def is_event_tracked(self, event_name: str) -> bool:
-        """Check if event is being tracked.
+        """
+        Check if event is being tracked.
 
-        Args:
-            event_name: Name of the event
+        Parameters
+        ----------
+        event_name : str
+            Name of the event
 
-        Returns:
+        Returns
+        -------
+        bool
             True if event is tracked
+
         """
         return event_name in self.event_states

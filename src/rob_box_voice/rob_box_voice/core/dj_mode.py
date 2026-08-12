@@ -51,12 +51,15 @@ class DJHook:
         is_active: Returns True when a turn is in-flight (skip transition).
         is_dialogue_active: Returns True when DSM is in DIALOGUE / SILENCED.
         persona_default: DJ persona fallback when none is set yet.
+        on_stop: Optional farewell hook — shell can speak a goodbye
+            phrase via ``speak_text`` when DJ-mode goes off (issue #1101).
     """
 
     dispatch: Callable[..., Any]  # Issue #992: signature is (prompt, from_tick=False)
     is_active: Callable[[], bool]
     is_dialogue_active: Callable[[], bool]
     persona_default: str = "ДиДжей РОббокс"
+    on_stop: Optional[Callable[[str], None]] = None  # (persona) -> None
 
 
 class DJModeController:
@@ -123,6 +126,10 @@ class DJModeController:
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
     def _reset_state(self) -> None:
+        # Capture persona before clearing state so the farewell hook can
+        # address the user with the correct DJ name (issue #1101).
+        farewell_persona = self.state.persona or self._persona_default
+        farewell_theme = self.state.theme or ""
         self.state.next_transition_at = 0.0
         self.state.transition_count = 0
         self.state.theme = ""
@@ -135,6 +142,13 @@ class DJModeController:
         # надёжный выключатель: tick() сразу возвращается.
         self.state.enabled = False
         self._logger.info("🎧 DJ Mode OFF")
+        if self._hook.on_stop is not None:
+            try:
+                self._hook.on_stop(farewell_persona)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    f"⚠️ DJ on_stop hook failed: {type(exc).__name__}: {exc}"
+                )
 
     # ── Tick ────────────────────────────────────────────────────────
 

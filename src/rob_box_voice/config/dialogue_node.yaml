@@ -20,6 +20,10 @@ dialogue_node:
     - робокс
     - роберт
     - рыбок
+    - рома
+    - бот
+    - робо
+    - роб
     silence_commands:
     - помолч
     - замолч
@@ -29,9 +33,7 @@ dialogue_node:
     - не меша
     silence_timeout: 3.5
     max_question_time: 20.0
-    llm_provider: minimax
-    base_url: https://api.minimax.io/v1
-    model: MiniMax-M3
+    llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
     system_prompt_file: master_prompt_compact.txt
     history_max_turns: 20
     dialogue_timeout: 300.0
@@ -52,6 +54,10 @@ dialogue_node:
     history_excluded_tools:
     - handle_navigation
     sqlite_db_path: ~/.rob_box/voice.db
+    # Issue #1077 — голосовая биометрия (speaker_id_node, resemblyzer):
+    # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
+    speaker_id_enabled: true
+    speaker_db_path: /data/speakers.db
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).

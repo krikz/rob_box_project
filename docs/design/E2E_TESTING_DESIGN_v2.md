@@ -1,5 +1,13 @@
 # E2E Testing Design v2 — реальный pipeline, multi-model coverage, валидация после fix-ов 06.08
 
+> **⚠️ UPDATE 11.08 (атомарный харнесс v3):** с 11.08 e2e-прогоны идут на
+> **`e2e_voice_test.sh` (атомарный v2)** — см. §A.10. Старый `e2e_remote.sh`
+> (шляпа) и `ensure_voice_file.sh` + закоммиченные .ogg **устарели**:
+> команда синтезируется на лету через Yandex TTS (голос/текст из карточки),
+> харнесс сам ждёт ПОЛНЫЙ цикл STT→LLM→TTS в логах робота (с проверкой
+> порядка по ROS-timestamp), ретраит команду при NO_ACCEPT, а не «проиграл
+> и записал». Контракт e2e-блока в issue — в §A.10.3.
+
 | Поле | Значение |
 |------|----------|
 | Документ | `docs/design/E2E_TESTING_DESIGN_v2.md` |
@@ -203,6 +211,94 @@ v2 добавляет в cron-конфиг: `e2e_alert` тег — чтобы п
 - **Не трогает** код робота (только документирует)
 - **Не ломает** обратной совместимости: workflow с одним параметром `voice_file` продолжает работать (новые параметры опциональны)
 - **Не меняет** watcher-протокол (READY-формат совместим)
+
+---
+
+### A.10 Атомарный харнесс `e2e_voice_test.sh` (v2, 11.08) — ТЕКУЩИЙ СТАНДАРТ
+
+С 11.08 `L-E2E Voice Test.yml` вызывает **`e2e_voice_test.sh`** (лежит в
+`.github/workflows/scripts/e2e_voice_test.sh`, копируется на build host 249
+и запускается там). Старый `e2e_remote.sh` больше **не используется**
+workflow'ом.
+
+#### A.10.1 Почему атомарный
+
+| Проблема старого `e2e_remote.sh` | Решение v2 |
+|---|---|
+| Проигрывал .ogg и записывал wav — «прошло» даже если робот молчал | Ждёт ПОЛНЫЙ цикл в логах робота: `ПРИНЯТО → LLM INPUT → TTS finished → Воспроизведение завершено` |
+| Приветствие (12s после старта) давало ложный PASS | Проверка ПОРЯДКА по ROS-timestamp: TTS должен быть ПОСЛЕ акцепта и ПОСЛЕ LLM INPUT |
+| Нужен был закоммиченный .ogg на каждый сценарий | Команда синтезируется НА ЛЕТУ через Yandex TTS gRPC v3 (голос из `--voice`, текст из `--text`/`--scenario`) |
+| STT не услышал → тест красный без объяснений | Retry-цикл: `E2E_MAX_ATTEMPTS` (по умолч. 3) повторов команды с паузой |
+| 429/empty от LLM — непонятно | `check_cycle` детектит `Empty assistant response / 429 / quota` → тест КРАСНЕЕТ сразу, пишет `llm_error.txt` |
+| Робот говорил (greeting) и перебивал команду | Silence gate: ждёт `E2E_SILENCE_WAIT` (15s) тишины в логах ПЕРЕД play |
+
+#### A.10.2 Запуск
+
+```bash
+# Одиночная команда (синтез на лету)
+ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh \
+  --text "Робот, какая погода в Сочи" --voice anton \
+  --retries 3 --react-window 40
+
+# Многошаговый сценарий (JSON: шаги с голосами, текстами, паттернами)
+ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh --scenario /tmp/scenario.json
+
+# С паттернами в логах после цикла (проверка фичи)
+ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh \
+  --text "Робот, меня зовут Саша" --voice anton \
+  --patterns "speaker_analysis,Registering"
+```
+
+**Env:** `YANDEX_API_KEY` (обязателен; на 249 берётся из `/tmp/yandex_key.txt`,
+workflow достаёт его из voice-assistant контейнера робота), `ROBOT_HOST`,
+`SSHPASS`. Опции: `E2E_MAX_ATTEMPTS`, `E2E_REACTION_WINDOW`, `E2E_RETRY_PAUSE`,
+`E2E_SILENCE_WAIT`.
+
+**Выход:** stdout `E2E_STEP <label> OK|FAIL <reason>` + `E2E_VERDICT PASS|FAIL`;
+артефакты в `/tmp/e2e_v2_<run_id>/` (verdict.txt, cycle_log.txt, llm_error.txt,
+scenario.json, cmd_*.wav). Exit code 0/1.
+
+#### A.10.3 Контракт e2e-блока в карточке (для воркеров)
+
+Воркер пишет в body issue блок `## e2e` — e2e-process парсит его и передаёт
+в workflow. Формат (все поля опциональны, кроме voice_text):
+
+```markdown
+## e2e
+voice_text: "Робот, какая погода в Сочи"      # текст команды — синтез на лету
+voice: anton                                   # Yandex TTS голос (anton/ermil/jane/...)
+scenario_file: .github/e2e/scenarios/speakers_ab.json  # многошаговый сценарий (JSON)
+patterns: "speaker_analysis,Registering"       # grep-паттерны в логах после цикла
+llm: minimax-m3
+tts: minimax-male-qn-qingse
+stt: yandex
+retries: 3                                     # попыток play на шаг
+react_window: 40                               # сек ждём полный цикл после play
+```
+
+- `voice_file` и `record_seconds` — **устарели**, игнорируются (харнесс
+  синтезирует сам и ждёт полный цикл сам).
+- Если `scenario_file` задан — он имеет приоритет над `voice_text` (но
+  scenario.json должен лежать в репо, путь относительный).
+- `patterns` — проверяются после успешного цикла через grep -E в логах
+  voice-assistant (окно 6 мин). Пример для #1077:
+  `patterns: "speaker_analysis,Registering"`.
+
+#### A.10.4 Scenario JSON (многошаговый)
+
+```json
+{
+  "name": "speakers_3step_AB",
+  "steps": [
+    {"label":"s1_sasha","voice":"anton","text":"Робот, меня зовут Саша","patterns":["ПРИНЯТО.*саша","Speaker: tag"]},
+    {"label":"s2_other","voice":"ermil","text":"Робот, кто я","patterns":["ПРИНЯТО.*кто я","Speaker: tag"]},
+    {"label":"s3_sasha_asks","voice":"anton","text":"Робот, как меня зовут","patterns":["ПРИНЯТО.*зовут","Саша"]}
+  ]
+}
+```
+
+Каждый шаг: свой голос + свой текст + свои паттерны. Шаг FAIL → общий
+FAIL (не чиним, не продолжаем).
 
 ---
 

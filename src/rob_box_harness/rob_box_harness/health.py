@@ -494,6 +494,8 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
 
     def _handle_failure(self, name: str, exc: BaseException) -> None:
         """Classify a provider failure and update the health cache."""
+        exc_type = type(exc).__name__
+        exc_msg = str(exc)[:200]
         if is_quota_exhausted(exc):
             self._cache.mark_unavailable(
                 name, reason=str(exc)[:300], ttl_s=self._cache.ttl_s
@@ -509,9 +511,10 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 name, reason=f"auth: {exc}"[:300], ttl_s=self._cache.ttl_s
             )
             self._log.warning(
-                "[health] provider=%s auth error (%s) → unavailable (TTL %.0fs)",
+                "[health] provider=%s AUTH failure [%s: %s] → unavailable (TTL %.0fs)",
                 name,
-                exc,
+                exc_type,
+                exc_msg,
                 self._cache.ttl_s,
             )
         elif isinstance(exc, (RateLimitError, LLMTimeoutError)):
@@ -524,8 +527,23 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 exc,
                 TRANSIENT_TTL_S,
             )
+            # 🔴 FIX (issue #1082 follow-up): метрика переключения на
+            # fallback-провайдера из-за per-request 429 rate-limit (НЕ
+            # quota) — по аналогии с [stt_attempt_metric] из #1083.
+            # Single-string f-string: RcutilsLogger не принимает
+            # %s-аргументы.
+            self._log.info(
+                f"[llm_fallback_metric] provider={name} "
+                f"reason={'rate_limit' if isinstance(exc, RateLimitError) else 'timeout'} "
+                f"action=fallback ttl_s={TRANSIENT_TTL_S:.0f}"
+            )
         else:
-            self._log.warning("🔄 LLM %s упал: %s — пробуем следующий", name, exc)
+            self._log.warning(
+                "[health] provider=%s UNCLASSIFIED failure [%s: %s] — пробуем следующий",
+                name,
+                exc_type,
+                exc_msg,
+            )
 
     # ---- LLMProvider contract -------------------------------------------
 
@@ -543,6 +561,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 "health-aware-fallback: все провайдеры unavailable "
                 "(TTL ещё не истёк); ждём повторной проверки"
             )
+        chain_names = [self._provider_name(p) for p in chain]
+        self._log.info(
+            "[health] complete: chain=%s active=%s",
+            chain_names,
+            chain_names[0] if chain_names else "<empty>",
+        )
         last_exc: BaseException | None = None
         for provider in chain:
             name = self._provider_name(provider)
@@ -550,9 +574,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue  # probe just marked it dead
             try:
-                return await provider.complete(
+                self._log.info("[health] → calling provider=%s", name)
+                result = await provider.complete(
                     messages, tools=tools, settings=settings
                 )
+                self._log.info("[health] ← answered by provider=%s", name)
+                return result
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
                 last_exc = exc
                 self._handle_failure(name, exc)
@@ -578,6 +605,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 "health-aware-fallback: все провайдеры unavailable "
                 "(TTL ещё не истёк); ждём повторной проверки"
             )
+        chain_names = [self._provider_name(p) for p in chain]
+        self._log.info(
+            "[health] stream: chain=%s active=%s",
+            chain_names,
+            chain_names[0] if chain_names else "<empty>",
+        )
         last_exc: BaseException | None = None
         for provider in chain:
             name = self._provider_name(provider)
@@ -585,10 +618,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue
             try:
+                self._log.info("[health] → streaming from provider=%s", name)
                 async for chunk in provider.stream(
                     messages, tools=tools, settings=settings
                 ):
                     yield chunk
+                self._log.info("[health] ← stream finished by provider=%s", name)
                 return
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
                 last_exc = exc
