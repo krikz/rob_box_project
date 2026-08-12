@@ -510,9 +510,11 @@ fi
 
 # G3: rate-limit check on empty output.
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
-    rate="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo 999)"
+    # gh issue list --json идёт через GraphQL — проверяем ОБА ресурса
+    # (ретро 12.08: core может быть жив, а graphql исчерпан → «no issues» ложный).
+    rate="$(gh api rate_limit --jq '[.resources.core.remaining, .resources.graphql.remaining] | min' 2>/dev/null || echo 999)"
     if [ "${rate:-999}" = "0" ]; then
-        log "GitHub rate-limit exhausted — skip tick"; exit 0
+        log "GitHub rate-limit exhausted (min core/graphql=0) — skip tick"; exit 0
     fi
     log "no issues with label '${NEEDS_E2E_LABEL}' on ${GH_REPO}"; exit 0
 fi
