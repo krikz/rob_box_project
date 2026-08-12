@@ -136,10 +136,21 @@ check_cycle() {  # $1=before_rfc3339
     fi
     # 3) ПОРЯДОК: LLM INPUT команды должен быть ПОСЛЕ ПРИНЯТО,
     #    а TTS finished — ПОСЛЕ LLM INPUT (иначе это приветствие/старый цикл)
+    #    Issue #1127: берём ПОСЛЕДНИЙ TTS finished после accept_ts
+    #    (раньше head -1 брал самый первый = от приветствия/старого цикла,
+    #    что давало stale_cycle и ложный NO_ACCEPT).
     local accept_ts llm_ts tts_ts
-    accept_ts="$(printf '%s' "$logs" | grep 'ПРИНЯТО' | head -1 | grep -oE '\[[0-9]+\.[0-9]+\]' | head -1 | tr -d '[]')"
-    llm_ts="$(printf '%s' "$logs" | grep 'LLM INPUT' | head -1 | grep -oE '\[[0-9]+\.[0-9]+\]' | head -1 | tr -d '[]')"
-    tts_ts="$(printf '%s' "$logs" | grep 'TTS finished' | head -1 | grep -oE '\[[0-9]+\.[0-9]+\]' | head -1 | tr -d '[]')"
+    accept_ts="$(printf '%s' "$logs" | grep 'ПРИНЯТО' | tail -1 | grep -oE '\[[0-9]+\.[0-9]+\]' | tail -1 | tr -d '[]')"
+    llm_ts="$(printf '%s' "$logs" | grep 'LLM INPUT' | tail -1 | grep -oE '\[[0-9]+\.[0-9]+\]' | tail -1 | tr -d '[]')"
+    # TTS finished должен быть СТРОГО ПОСЛЕ accept_ts — иначе это приветствие
+    if [ -n "$accept_ts" ]; then
+        tts_ts="$(printf '%s' "$logs" | grep 'TTS finished' | awk -v acc="$accept_ts" '
+            {
+                match($0, /\[[0-9]+\.[0-9]+\]/);
+                ts = substr($0, RSTART+1, RLENGTH-2);
+                if (ts+0 > acc+0) { print ts; exit }
+            }')"
+    fi
     # fallback: если ROS timestamp не спарсился — берём wall-clock из docker logs
     if [ -z "$tts_ts" ]; then
         tts_ts="$(printf '%s' "$logs" | grep 'TTS finished' | head -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)"
