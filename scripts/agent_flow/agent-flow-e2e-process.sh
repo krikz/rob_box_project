@@ -378,6 +378,34 @@ round_ensure() {
     git -C "$WORKTREE_DIR" fetch origin "$ROUND_BRANCH" --quiet 2>/dev/null || true
 }
 
+# --- ROUND_ONLY mode (ретро 11.08 t_26a6d362) ------------------------------
+# Ручные валидационные раунды devops (например «проверить харнесс-фикс на
+# живом роботе») — ТОЛЬКО через этот режим: он берёт ТОТ ЖЕ flock, что и
+# автоматическая ротация, значит параллельный round невозможен (если
+# e2e-process активен — flock занят, скрипт выше уже вышел со «skip»).
+# Печатает ROUND_BRANCH и завершается, НЕ трогая issues/работу.
+# Использование: ROUND_ONLY=1 scripts/agent_flow/agent-flow-e2e-process.sh
+if [ "${ROUND_ONLY:-0}" = "1" ]; then
+    : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
+    if [ -z "${REPO_DIR}" ] || [ ! -d "$REPO_DIR" ]; then
+        log "REPO_DIR ('${REPO_DIR:-}') is required and must exist"; exit 1
+    fi
+    WORKTREE_DIR="${WORKTREE_DIR:-/tmp/agent-flow-e2e-roundonly-$$}"
+    cleanup() {
+        if [ -d "$WORKTREE_DIR" ]; then
+            git -C "$REPO_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+            [ -d "$WORKTREE_DIR" ] && rm -rf "$WORKTREE_DIR" || true
+        fi
+        return 0
+    }
+    trap cleanup EXIT INT TERM
+    ensure_worktree || { log "worktree setup failed"; exit 1; }
+    round_ensure || { log "round setup failed"; exit 1; }
+    log "ROUND_ONLY: round branch = ${ROUND_BRANCH}"
+    printf '%s\n' "$ROUND_BRANCH"
+    exit 0
+fi
+
 # --- get current open issue numbers with needs-e2e ---------------------------
 issues_json="$(gh issue list \
     --repo "$GH_REPO" \
@@ -554,6 +582,15 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
             -e 'no route to host' \
             -e 'ssh:[[:space:]]+connect to host' \
             -e 'E2E_NO_REACTION' \
+            # ретро 11.08 t_26a6d362: артефакт-дир удалена внешним cleanup на 249
+            # во время прогона → paplay open(): No such file / verdict.txt: No such
+            # file / E2E_ARTIFACTS ... No such file. Это infra (гонка cleanup),
+            # НЕ баг кода — e2e:rejected ставить нельзя, нужен e2e:infra-fail.
+            -e 'open\(\):[[:space:]]+No such file' \
+            -e 'No such file or directory' \
+            -e 'PLAY_FAIL' \
+            -e 'E2E_ARTIFACTS.*No such file' \
+            -e 'verdict\.txt:[[:space:]]+No such file' \
             "$dir" 2>/dev/null | grep -q .; then
             found=1
         fi
