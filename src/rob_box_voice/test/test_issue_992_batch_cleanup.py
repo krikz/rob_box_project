@@ -220,12 +220,16 @@ class TestIssue992BatchCleanup:
         ])
         node = _TestableDialogueNode(llm=llm, tools=_speak_text_tools())
         try:
-            self._drive(node)
-
             # Step 1 — both speak_text calls fire and register their
-            # batches (mirrors back-to-back SpeakTextTool.execute()).
+            # batches BEFORE the turn's finally block runs (mirrors
+            # back-to-back SpeakTextTool.execute() publishing the
+            # batch_registered prelude DURING the LLM cycle). With the
+            # prelude-deferral catch-up (issue #992 live 09:09) the
+            # turn-end cleanup fires only when _active_batches is empty;
+            # pre-registering both batches keeps it deferred.
             _register_batch(node, "batch-1", chunks_total=1)
             _register_batch(node, "batch-2", chunks_total=1)
+            self._drive(node)
             assert len(node._active_batches) == 2, (
                 f"both batches must be registered as active: "
                 f"{list(node._active_batches)!r}"
@@ -356,6 +360,13 @@ class TestIssue992BatchCleanup:
         ])
         node = _TestableDialogueNode(llm=llm, tools=_stop_music_tools())
         try:
+            # An active TTS batch keeps the cleanup pending: in
+            # production the robot is still speaking (TTS batch in
+            # flight) when the user asks to stop the music, so the
+            # turn-end prelude-deferral catch-up (issue #992 live
+            # 09:09) must NOT fire cleanup while a batch is active.
+            _register_batch(node, "batch-playing", chunks_total=1)
+
             # Drive first turn — this sets _pending_music_cleanup=True
             # and the test logs would normally emit "stop_music deferred".
             node._dsm.on_event(DialogueEvent.WAKE_WORD)
@@ -384,6 +395,14 @@ class TestIssue992BatchCleanup:
                 finish_reason="tool_calls",
             ))
             llm.push(LLMResponse(content="ok", finish_reason="stop"))
+            # The second stop_music arrives as a barge-in continuation
+            # (robot still speaking, TTS batch active): the DSM must NOT
+            # be in IDLE, otherwise _dispatch_turn treats it as a fresh
+            # dialogue and clears the pending cleanup (new_dialogue
+            # reason) before _run_turn even sees the flag. Fire
+            # WAKE_WORD first (IDLE → LISTENING) so was_idle=False and
+            # the pending cleanup survives into the second turn.
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
             node._on_stt(_make_string("роббокс выключи музыку ещё раз"))
             node.drive_one_turn()
 
