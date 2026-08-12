@@ -220,6 +220,20 @@ if m:
         if cur is not None: vals.append(str(cur))
     print(sep.join(vals)); sys.exit(0)
 
+# Pattern: [.field[].subfield] | .[]  — iterate, print each value on its own
+# line (used by merge-gate assignee lookup: --jq with .labels[].name).
+m = re.match(r"^\[\.([\w]+)\[\]\.([\w]+)\]\s*\|\s*\.\[\]$", filt)
+if m:
+    outer, inner = m.group(1), m.group(2)
+    coll = data.get(outer) if isinstance(data, dict) else None
+    for sub in (coll or []):
+        cur = sub
+        for part in inner.split("."):
+            if isinstance(cur, dict): cur = cur.get(part)
+            else: cur = None
+        if cur is not None: emit(cur)
+    sys.exit(0)
+
 # Pattern: [.[] | select(.field | startswith("PREFIX"))] | length
 m = re.match(r"^\[\.\[\]\s*\|\s*select\(\.([\w]+)\s*\|\s*startswith\(\"([^\"]+)\"\)\)\]\s*\|\s*length$", filt)
 if m:
