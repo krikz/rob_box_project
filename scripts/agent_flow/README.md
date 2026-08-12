@@ -120,6 +120,32 @@ bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # показ
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh            # удалить (с guard'ами)
 ```
 
+### `agent-flow-deploy-sweep.sh` — авто-sweep stale deployment issues (ретро 12.08 t_d3e44336)
+
+**Правило:** deployment issue без апдейтов > `STALE_HOURS` (default 72ч) →
+авто-проверка актуальности на живых Pi (SSH) → resolved: close с
+комментарием; актуально: авто-метка `hermes` (triage создаст карточку);
+проверить нельзя: НЕ трогаем.
+
+**Почему:** деплой-монитор (L-Deploy and Verify.yml) создавал issues
+автоматически, но никто не верифицировал/закрывал — висели неделями
+(9 штук Jul31–Aug7, ретро-триаж 12.08). Triage фильтрует только по метке
+`hermes`, поэтому deployment issues не попадали в конвейер by design.
+
+Идемпотентен: пропускает issues с меткой `hermes`/`e2e-done`/`e2e:rejected`
+и свежие (< STALE_HOURS). Понимает `deploy-signature` из body issue
+(`deploy-problem:env:scope:container:kind:digest`) и проверяет:
+- `container_status` → `docker ps -a` (Up = resolved, restarting = actual)
+- `critical_log` → `deployment_issue_dedup.py extract-log` (те же exclude-правила)
+- `topic_check` → `ros2 topic list` в контейнере
+
+```bash
+bash <repo>/scripts/agent_flow/agent-flow-deploy-sweep.sh --dry-run          # показать, что сделает
+STALE_HOURS=72 bash <repo>/scripts/agent_flow/agent-flow-deploy-sweep.sh     # реальный sweep
+```
+
+Рекомендуемый cron: `every 6h`, no_agent=true.
+
 ### `cron-loop.sh` — низкоуровневый цикл
 
 Тонкая обёртка над cron-вызовами (используется как fallback когда

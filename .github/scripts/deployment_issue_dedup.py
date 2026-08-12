@@ -40,6 +40,10 @@ CRITICAL_EXCLUDE_COMMON = [
     # forwards the message — data is not lost, so this is not an outage.
     # Root cause is NTP desync between Pis (see scripts/maintenance/sync_time.sh).
     r"error treating timestamp for received data",
+    # ALSA/jackd noise: Invalid CTL on dmix_respeaker is a benign control
+    # probe failure, not an audio outage (retro 12.08 t_d3e44336).
+    r"alsa lib control\.c.*invalid ctl",
+    r"dmix_respeaker",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -71,6 +75,14 @@ WARNING_EXCLUDE_COMMON = [
     r"did not receive data since 5 seconds",
     r"unable to connect to a zenoh router",
     r"could not fetch info from synthdefmanagement server\. using defaults",
+    # STT empty-rejection noise: robot heard silence and rejected — not a
+    # deployment failure (retro 12.08 t_d3e44336).
+    r"отклонено \(пустое\)",
+    r"yandex:empty\(.*\)->.*:empty\(.*\) -> rejected",
+    r"интернет недоступен",
+    # PyAudio overflow: input overrun is handled by the audio pipeline,
+    # no data loss reported (retro 12.08 t_d3e44336).
+    r"pyaudio painputoverflow",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [
