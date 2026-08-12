@@ -160,14 +160,23 @@ def test_extract_relevant_log_line_ignores_optional_serial_critical_error() -> N
 
 
 def test_extract_relevant_log_line_ignores_nav2_startup_tf_timeout() -> None:
-    log_text = (
+    base_link_log = (
         '[INFO] [1773045972.826191868] [local_costmap.local_costmap]: Timed out waiting '
         'for transform from base_link to odom to become available, tf error: '
         'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
     )
+    # robot_base_frame was changed base_link -> base_footprint (afbb8793);
+    # the benign startup TF timeout now names base_footprint (issue #774).
+    base_footprint_log = (
+        '[INFO] [1776096003.466816576] [local_costmap.local_costmap]: Timed out waiting '
+        'for transform from base_footprint to odom to become available, tf error: '
+        'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
+    )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+    line = MODULE.extract_relevant_log_line(base_link_log, scope="main", severity="critical")
+    assert line is None
 
+    line = MODULE.extract_relevant_log_line(base_footprint_log, scope="main", severity="critical")
     assert line is None
 
 
