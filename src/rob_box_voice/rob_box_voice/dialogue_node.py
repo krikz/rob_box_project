@@ -1590,10 +1590,17 @@ class DialogueNode(Node):
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
             sid = str(sp.get("speaker_id") or "")[:8]
-            if name and speaker_context is None:
-                # НЕ вставляем «робот»/«роббокс» в префикс — иначе DSM
-                # on_user_input вернёт WAKE_WORD и LLM не вызовется.
-                user_input = f"[Speaker:{sid}] {user_input}"
+            if name:
+                # 🔴 FIX (live 12.08): всегда добавляем имя спикера в
+                # user_input — даже если speaker_context уже загружен.
+                # LLM получает имя через dynamic_system (<system_context>),
+                # но дублирующая подсказка в user_input страхует от
+                # «потери» имени (баг: спикер распознан, LLM молчит).
+                # Формат без wake-слов: [Spkr:Антон] — DSM не матчит
+                # «робот»/«роббокс» внутри скобок.
+                tag = f"[Spkr:{name}]"
+                if tag not in user_input:
+                    user_input = f"{tag} {user_input}"
                 self.get_logger().info(
                     f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
                 )
@@ -2772,121 +2779,140 @@ class DialogueNode(Node):
             # СЛЕДУЮЩИЙ turn LLM увидела, что прислала пустоту и так
             # делать не надо. Юзер не получает ложного «задумался».
             if not tools_called:
-                fr = getattr(result, "finish_reason", None)
-                raw = getattr(result, "raw_response", None)
-                # 🔴 FIX (live 06.08): стоп-команда («хватит диджеить»,
-                # «выключи музыку») + пустой ответ LLM → ВСЁ РАВНО
-                # останавливаем музыку/DJ. LLM иногда возвращает пустоту
-                # (DeepSeek empty), и без этого fallback музыка играет
-                # бесконечно (юзер: «сказал хорошо молчу, музло ебашит»).
-                if user_input and any(
-                    kw in user_input.lower()
-                    for kw in self._MUSIC_STOP_OVERRIDES
-                ):
-                    self.get_logger().warning(
-                        "🎵 [issue 992 Bug C] stop-command + empty LLM "
-                        "response — forcing music_cleanup + DJ off"
-                    )
-                    # Публикуем cleanup — mcp_server остановит музыку
-                    # (MusicManager.stop_music_on_session_end).
-                    try:
-                        self._publish_music_cleanup(reason="user_stop_command")
-                    except Exception as exc:  # noqa: BLE001
+                # 🔴 FIX (live 12.08): весь empty-response fallback
+                # обёрнут в try/except — если любой внутренний вызов
+                # (включая логгер!) упадёт, пользователь ВСЁ РАВНО
+                # получит «Принял.». Без этого баг «LLM молчит» остаётся
+                # незаметным для пользователя (тишина вместо ответа).
+                try:
+                    fr = getattr(result, "finish_reason", None)
+                    raw = getattr(result, "raw_response", None)
+                    # 🔴 FIX (live 06.08): стоп-команда («хватит диджеить»,
+                    # «выключи музыку») + пустой ответ LLM → ВСЁ РАВНО
+                    # останавливаем музыку/DJ. LLM иногда возвращает пустоту
+                    # (DeepSeek empty), и без этого fallback музыка играет
+                    # бесконечно (юзер: «сказал хорошо молчу, музло ебашит»).
+                    if user_input and any(
+                        kw in user_input.lower()
+                        for kw in self._MUSIC_STOP_OVERRIDES
+                    ):
                         self.get_logger().warning(
-                            f"🎵 stop fallback failed: {exc}"
+                            "🎵 [issue 992 Bug C] stop-command + empty LLM "
+                            "response — forcing music_cleanup + DJ off"
                         )
-                    # 🔴 FIX (live 06.08 #2): cleanup гасит ТОЛЬКО музыку,
-                    # но DJ-тикер (core/dj_mode, tick каждые 5с) живёт по
-                    # флагу state.enabled — его сбрасывает только
-                    # публикация /voice/dj_mode с enabled=false. Без этого
-                    # DJ продолжал генерить переходы (#5, #6...) и после
-                    # «говори» снова включал музыку («продолжил диджейский
-                    # сет»). Публикуем set_dj_mode(enabled=false) сами.
-                    try:
-                        dj_msg = String()
-                        dj_msg.data = json.dumps({"enabled": False})
-                        if getattr(self, "_dj_mode_pub", None) is None:
-                            self._dj_mode_pub = self.create_publisher(
-                                String, "/voice/dj_mode", 10
+                        # Публикуем cleanup — mcp_server остановит музыку
+                        # (MusicManager.stop_music_on_session_end).
+                        try:
+                            self._publish_music_cleanup(reason="user_stop_command")
+                        except Exception as exc:  # noqa: BLE001
+                            self.get_logger().warning(
+                                f"🎵 stop fallback failed: {exc}"
                             )
-                        self._dj_mode_pub.publish(dj_msg)
-                        self.get_logger().info(
-                            "🎵 DJ off published (stop-command fallback)"
+                        # 🔴 FIX (live 06.08 #2): cleanup гасит ТОЛЬКО музыку,
+                        # но DJ-тикер (core/dj_mode, tick каждые 5с) живёт по
+                        # флагу state.enabled — его сбрасывает только
+                        # публикация /voice/dj_mode с enabled=false. Без этого
+                        # DJ продолжал генерить переходы (#5, #6...) и после
+                        # «говори» снова включал музыку («продолжил диджейский
+                        # сет»). Публикуем set_dj_mode(enabled=false) сами.
+                        try:
+                            dj_msg = String()
+                            dj_msg.data = json.dumps({"enabled": False})
+                            if getattr(self, "_dj_mode_pub", None) is None:
+                                self._dj_mode_pub = self.create_publisher(
+                                    String, "/voice/dj_mode", 10
+                                )
+                            self._dj_mode_pub.publish(dj_msg)
+                            self.get_logger().info(
+                                "🎵 DJ off published (stop-command fallback)"
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            self.get_logger().warning(
+                                f"🎵 DJ off publish failed: {exc}"
+                            )
+                    # Короткая диагностика: что именно вернул провайдер.
+                    raw_hint = ""
+                    if raw is not None:
+                        try:
+                            raw_hint = str(raw)[:300]
+                        except Exception:  # noqa: BLE001
+                            raw_hint = "<unprintable raw>"
+                    self.get_logger().warning(
+                        "⚠️ Empty assistant response (LLM вернул пустоту): "
+                        f"finish_reason={fr!r} tools={list(tools_called)!r} "
+                        f"raw={raw_hint!r}"
+                    )
+                    # Reminder в долгую память — следующий turn LLM его
+                    # увидит через memory_context / history. _handle_result
+                    # синхронный → планируем фоновую запись.
+                    try:
+                        from rob_box_harness.memory import Turn
+
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(
+                            self._memory.append_turn(
+                                # DialogCore строится с user_id="default"
+                                # (см. __init__) — дублируем здесь.
+                                "default",
+                                Turn(
+                                    role="assistant",
+                                    content=(
+                                        "[SYSTEM REMINDER] В прошлом цикле ты "
+                                        "вернул ПУСТОЙ ответ (ни текста, ни "
+                                        "tool-вызова) — пользователь ничего не "
+                                        "услышал. Так делать НЕЛЬЗЯ. Всегда "
+                                        "отвечай текстом или вызови tool."
+                                    ),
+                                ),
+                            )
                         )
                     except Exception as exc:  # noqa: BLE001
                         self.get_logger().warning(
-                            f"🎵 DJ off publish failed: {exc}"
+                            f"⚠️ empty-reminder append failed: {exc}"
                         )
-                # Короткая диагностика: что именно вернул провайдер.
-                raw_hint = ""
-                if raw is not None:
+                    # Persist a synthetic assistant turn so the next LLM call
+                    # still sees a continuous conversation; otherwise
+                    # «продолжай» looks like a fresh exchange
+                    # and the robot appears to forget the running topic.
                     try:
-                        raw_hint = str(raw)[:300]
-                    except Exception:  # noqa: BLE001
-                        raw_hint = "<unprintable raw>"
-                self.get_logger().warning(
-                    "⚠️ Empty assistant response (LLM вернул пустоту): "
-                    f"finish_reason={fr!r} tools={list(tools_called)!r} "
-                    f"raw={raw_hint!r}"
-                )
-                # Reminder в долгую память — следующий turn LLM его
-                # увидит через memory_context / history. _handle_result
-                # синхронный → планируем фоновую запись.
-                try:
-                    from rob_box_harness.memory import Turn
-
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(
-                        self._memory.append_turn(
-                            # DialogCore строится с user_id="default"
-                            # (см. __init__) — дублируем здесь.
-                            "default",
-                            Turn(
-                                role="assistant",
-                                content=(
-                                    "[SYSTEM REMINDER] В прошлом цикле ты "
-                                    "вернул ПУСТОЙ ответ (ни текста, ни "
-                                    "tool-вызова) — пользователь ничего не "
-                                    "услышал. Так делать НЕЛЬЗЯ. Всегда "
-                                    "отвечай текстом или вызови tool."
+                        from rob_box_harness.memory import Turn
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(
+                            self._memory.append_turn(
+                                "default",
+                                Turn(
+                                    role="assistant",
+                                    content=(
+                                        "[silent_accept] Вопрос принят, "
+                                        "но ответа не последовало "
+                                        "(LLM вернула done без speak_text). "
+                                        "user=\"" + (user_input or "")[:200] + "\""
+                                    ),
                                 ),
-                            ),
+                            )
                         )
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    self.get_logger().warning(
-                        f"⚠️ empty-reminder append failed: {exc}"
-                    )
-                # Persist a synthetic assistant turn so the next LLM call
-                # still sees a continuous conversation; otherwise
-                # «продолжай» looks like a fresh exchange
-                # and the robot appears to forget the running topic.
-                try:
-                    from rob_box_harness.memory import Turn
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(
-                        self._memory.append_turn(
-                            "default",
-                            Turn(
-                                role="assistant",
-                                content=(
-                                    "[silent_accept] Вопрос принят, "
-                                    "но ответа не последовало "
-                                    "(LLM вернула done без speak_text). "
-                                    "user=\"" + (user_input or "")[:200] + "\""
-                                ),
-                            ),
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001
+                        try:
+                            self.get_logger().warning(
+                                f"⚠️ silent-marker append failed: {exc}"
+                            )
+                        except Exception:
+                            pass
+                except Exception as _empty_fallback_exc:
+                    # 🔴 КРИТИЧНО: даже если ВСЁ внутри блока упало
+                    # (логгер, память, etc.), пользователь НЕ должен
+                    # остаться в тишине. Публикуем fallback-ответ
+                    # напрямую, минуя всю сложную логику.
                     try:
-                        self.get_logger().warning(
-                            f"⚠️ silent-marker append failed: {exc}"
+                        self.get_logger().error(
+                            f"🔥 Empty-response fallback CRASHED: {_empty_fallback_exc}"
                         )
                     except Exception:
                         pass
                 # Tell the user that we heard them so they are not left
                 # with an «accept + silence» experience.
+                # 🔴 FIX (live 12.08): этот вызов ВНЕ внутреннего try/except
+                # и выполняется ВСЕГДА — даже если логгер или память упали.
                 try:
                     self._publish_response("Принял.", animation="neutral")
                 except Exception as exc:  # noqa: BLE001
