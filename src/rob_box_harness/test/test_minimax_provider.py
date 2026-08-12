@@ -288,8 +288,10 @@ def test_capabilities_advertise_text_streaming_tools_and_image_input() -> None:
     assert caps.text is True
     assert caps.streaming_text is True
     assert caps.tools is True
-    # Streaming tool calls are deliberately off — see upstream docstring.
-    assert caps.streaming_tools is False
+    # 🔴 FIX (live 06.08): streaming_tools=True — MiniMax OpenAI-совместимый
+    # API стримит tool-call дельты; база _OpenAICompatibleProvider.stream
+    # агрегирует их в ToolCall (см. upstream minimax.py _CAPABILITIES).
+    assert caps.streaming_tools is True
     assert caps.image_input is True
 
 
@@ -696,6 +698,188 @@ async def test_complete_re_exhausts_retries_on_persistent_rate_limit(
         await p.complete([LLMMessage(role="user", content="hi")])
     assert len(client.chat.completions.calls) == 3
     assert sleeps == [0.1, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_retry_quota_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 FIX (issue #1082): 429 с ``Token Plan usage limit reached (2056)``
+    — это НЕ транзиент (длинное окно, часы), ретраить бессмысленно.
+    Провайдер должен подняться сразу, чтобы health-aware fallback-цепочка
+    переключила на deepseek без 15-19с потерь."""
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=3, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    async def always_quota(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        raise _FakeStatusError(
+            status=429,
+            body={
+                "error": {
+                    "message": "429: rate_limit_error Token Plan usage limit reached (2056)"
+                }
+            },
+        )
+
+    client.chat.completions.create = always_quota  # type: ignore[assignment]
+
+    with pytest.raises(RateLimitError):
+        await p.complete([LLMMessage(role="user", content="hi")])
+    assert len(client.chat.completions.calls) == 1  # ровно один вызов, без retry
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_complete_falls_back_after_three_consecutive_429s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit (НЕ
+    quota) — N×429 подряд (N≥3) значит, что MiniMax залимитил нас.
+    Провайдер должен сдаться на 3-м подряд 429 и передать управление
+    fallback-цепочке (по аналогии с TTS minimax→yandex→silero из #1083),
+    а не молотить все max_attempts (робот молчал ~11с на 9 HTTP-вызовах).
+    """
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=5, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    async def always_429(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        raise _FakeStatusError(
+            status=429, body={"error": {"message": "rate-limited"}}
+        )
+
+    client.chat.completions.create = always_429  # type: ignore[assignment]
+
+    with pytest.raises(RateLimitError):
+        await p.complete([LLMMessage(role="user", content="hi")])
+    # Должны сдаться на 3-м подряд 429, а не исчерпать max_attempts=5.
+    assert len(client.chat.completions.calls) == 3
+    assert sleeps == [0.1, 0.2]  # два backoff'а до сдачи
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_fall_back_before_three_consecutive_429s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Одиночный 429 (rate-limit) — транзиент: ретраим с backoff'ом и
+    НЕ сдаёмся раньше времени (контракт retry-цикла сохраняется)."""
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=3, backoff_base=0.1, backoff_jitter=0.0)
+    )
+    attempts = {"n": 0}
+
+    async def drive_create(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise _FakeStatusError(
+                status=429, body={"error": {"message": "rate-limited"}}
+            )
+        return _ok_response("after two retries")
+
+    client.chat.completions.create = drive_create  # type: ignore[assignment]
+
+    response = await p.complete([LLMMessage(role="user", content="hi")])
+    assert response.content == "after two retries"
+    assert attempts["n"] == 3
+    assert sleeps == [0.1, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_complete_resets_429_counter_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Счётчик подряд идущих 429 сбрасывается на успешном ответе: после
+    успеха следующая серия 429 снова начинается с единицы."""
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=5, backoff_base=0.1, backoff_jitter=0.0)
+    )
+    call = {"n": 0}
+
+    async def two_429_then_success(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        call["n"] += 1
+        if call["n"] % 3 != 0:  # 429, 429, ok, 429, 429, ok, ...
+            raise _FakeStatusError(
+                status=429, body={"error": {"message": "rate-limited"}}
+            )
+        return _ok_response("ok")
+
+    client.chat.completions.create = two_429_then_success  # type: ignore[assignment]
+
+    # Первая серия: 2×429 → успех (счётчик обнуляется на success).
+    r1 = await p.complete([LLMMessage(role="user", content="hi")])
+    assert r1.content == "ok"
+    # Вторая серия: снова 2×429 → успех. Если бы счётчик НЕ сбрасывался,
+    # на 2-м 429 суммарный счётчик был бы 4 ≥ 3 и провайдер сдался бы.
+    r2 = await p.complete([LLMMessage(role="user", content="hi")])
+    assert r2.content == "ok"
+    assert call["n"] == 6
+
+
+@pytest.mark.asyncio
+async def test_stream_falls_back_after_three_consecutive_429s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stream-путь: 3×429 подряд → сдаёмся и передаём fallback-цепочке."""
+    sleeps = _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=5, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    async def always_429(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        raise _FakeStatusError(
+            status=429, body={"error": {"message": "rate-limited"}}
+        )
+
+    client.chat.completions.create = always_429  # type: ignore[assignment]
+
+    with pytest.raises(RateLimitError):
+        async for _ in p.stream([LLMMessage(role="user", content="hi")]):
+            pass
+    assert len(client.chat.completions.calls) == 3
+    assert sleeps == [0.1, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_complete_emits_429_metric_when_falling_back(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """При сдаче после 3×429 подряд пишется метрика [llm_429_metric] —
+    по образцу [stt_attempt_metric] из stt_fallback.py (#1083)."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="rob_box_harness.providers.minimax")
+    _patch_sleep(monkeypatch)
+    p, client = _make_minimax(
+        retry=RetryPolicy(max_attempts=5, backoff_base=0.1, backoff_jitter=0.0)
+    )
+
+    async def always_429(**kwargs: Any) -> Any:
+        client.chat.completions.calls.append(kwargs)
+        raise _FakeStatusError(
+            status=429, body={"error": {"message": "rate-limited"}}
+        )
+
+    client.chat.completions.create = always_429  # type: ignore[assignment]
+
+    with pytest.raises(RateLimitError):
+        await p.complete([LLMMessage(role="user", content="hi")])
+
+    metric_lines = [
+        r.getMessage() for r in caplog.records if "[llm_429_metric]" in r.getMessage()
+    ]
+    assert len(metric_lines) == 1
+    assert "provider=minimax" in metric_lines[0]
+    assert "consecutive=3" in metric_lines[0]
+    assert "action=fallback" in metric_lines[0]
 
 
 @pytest.mark.asyncio

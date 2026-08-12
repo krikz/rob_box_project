@@ -12,7 +12,24 @@
 audio_node:
   ros__parameters:
     sample_rate: 16000
-    channels: 1
+    # Issue 1117 round-2: ReSpeaker в 6-канальном RAW-режиме (прошивка по
+    # умолчанию). Карта каналов per datasheet ReSpeaker Mic Array v2.0:
+    #   Ch1 = DSP-processed ASR (beamformed + AEC + NS + AGC)
+    #   Ch2-5 = сырые микрофоны (mic1-4)
+    #   Ch6 = merged playback reference
+    # См. также /tmp/issue_1117_assets/datasheet.md и Respeaker.cfg
+    # (https://github.com/furushchev/respeaker_ros).
+    # ⚠️ Прежний комментарий («Ch5-6 = playback-референс») был ошибочным —
+    # в реальной прошивке 6_channels_firmware.bin Ch6 — это playback-merge,
+    # а Ch1 — единственный «чистый» канал после DSP XVF-3000.
+    # Поэтому миксуем ТОЛЬКО Ch1 (0-индекс = 0) → mix_channels=[0].
+    # A/B round-2 vs round-1 ([0,1,2,3,4,5]): на e2e #1077 1-канальный
+    # processed даёт более чёткое распознавание «робот» (нет смешения
+    # raw-миков с playback-эхом, DSP уже сделал AEC + AGC + NS).
+    # См. PR https://github.com/krikz/rob_box_project/pull/1123
+    # (issue #1117 round-2).
+    channels: 6
+    mix_channels: [0]
     # chunk_size = frames_per_buffer (issue #1050). 1024 (64ms @16kHz) — слишком
     # мал для Python-callback: GIL/публикация AudioData/USB VAD не успевали,
     # PortAudio падал в paInputOverflow (PyAudio status 2), сэмплы терялись и
@@ -24,9 +41,29 @@ audio_node:
     device_index: -1
     device_name: ReSpeaker 4 Mic Array
     speech_continuation: 3.0
-    speech_prefetch: 0.5
+    # Pre-roll перед началом речи: 1.5s (PR #1121, было 1.0s) покрывает
+    # латенцию аппаратного VAD (GAMMAVAD + опрос 10Hz + джиттер, на
+    # слабом сигнале 300-500ms + wake-word), иначе первый захват
+    # теряет начало фразы («робот» → «роберт»).
+    speech_prefetch: 1.5
     speech_min_duration: 0.3
-    speech_max_duration: 10.0
+    # 12.0 (было 10.0): pre-roll 1.5s входит в duration=len(buf)/sr,
+    # запас на длинные фразы (10s речи + 1.5s pre-roll ≤ 11.5s).
+    speech_max_duration: 12.0
     tts_grace_s: 2.5
     music_vad_threshold: 6.0
     music_vad_min_db: -35.0
+
+    # ====== DSP tuning (issue #1117 round-2) ======
+    # Параметры XVF-3000 пишутся через USB control transfer на старте ноды
+    # (если устройство найдено). Все поля опциональны: при отсутствии
+    # устройства/USB-стека нода работает как раньше (без DSP-настройки).
+    # Подробности см. в rob_box_voice.utils.respeaker_interface
+    # (ReSpeakerInterface.configure_dsp).
+    dsp_apply_on_start: true
+    # HPFONOFF: high-pass filter на микрофонных сигналах (group=18,
+    # offset=27). Дефолты firmware = 3 (180Hz cut-off), см.
+    # /tmp/issue_1117_assets/Respeaker.cfg. На 180Hz тихое «Р» в «Робот»
+    # (-26 dBFS в начале) режется → STT даёт «обот» / «меня зовут саша».
+    # 1 = 70 Hz cut-off — сохраняет «Р» (≈60 Hz основной тон + гармоники).
+    hpf_on: 1                  # 0=OFF, 1=70Hz, 2=125Hz, 3=180Hz (default firmware)

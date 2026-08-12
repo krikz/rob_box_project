@@ -43,7 +43,7 @@ jobs:
         with:
           submodules: recursive
       - name: Cache colcon build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ github.workspace }}/test_ws/build
@@ -97,7 +97,7 @@ jobs:
 
           # Ensure runtime deps for unit tests (defensive — Dockerfile already has these,
           # but a stale image may not. Pinned to known-good versions.)
-          python3 -m pip install --quiet --no-cache-dir requests pyyaml 2>/dev/null || true
+          python3 -m pip install --quiet --no-cache-dir requests pyyaml pytz 2>/dev/null || true
 
           # ── rob_box_voice ───────────────────────────────────────────────────
           # pytest hangs for ~4 min AFTER all tests complete
@@ -207,7 +207,7 @@ jobs:
           submodules: recursive
 
       - name: Cache colcon build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ github.workspace }}/test_ws/build
@@ -253,7 +253,7 @@ jobs:
 
           # Ensure runtime deps for unit tests (defensive — Dockerfile already has these,
           # but a stale image may not. Pinned to known-good versions.)
-          python3 -m pip install --quiet --no-cache-dir requests pyyaml 2>/dev/null || true
+          python3 -m pip install --quiet --no-cache-dir requests pyyaml pytz 2>/dev/null || true
 
           # Run tests — NO `|| true`, failures MUST surface
           # Filter to only tests marked @pytest.mark.integration.

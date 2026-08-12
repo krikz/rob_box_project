@@ -388,6 +388,153 @@ def test_process_input_wraps_llm_errors(core: DialogCore, llm: _FakeLLMProvider)
     assert isinstance(result.error, ProviderError)
 
 
+# ---------------------------------------------------------------------------
+# Issue #1077 / #1101 — speaker_context, dynamic_system, preclassified_event
+# ---------------------------------------------------------------------------
+
+
+def test_speaker_context_inserted_after_system_prompt(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """speaker_context (профиль спикера из scope=speaker:<tag>) вставляется
+    system-сообщением сразу после основного системного промпта."""
+    obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input(
+        "привет",
+        speaker_context="Контекст о собеседнике:\nСобеседника зовут Саша.",
+    ))
+    sent = llm.calls[0][0]
+    assert sent[0].role == "system"
+    assert sent[0].content == "БАЗОВЫЙ ПРОМПТ"
+    assert sent[1].role == "system"
+    assert "Саша" in sent[1].content
+    assert sent[2].role == "user"
+
+
+def test_speaker_context_without_system_prompt_is_first(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Если system_prompt не задан, speaker_context становится messages[0]."""
+    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input(
+        "привет",
+        speaker_context="Контекст о собеседнике:\nСобеседника зовут Пётр.",
+    ))
+    sent = llm.calls[0][0]
+    assert sent[0].role == "system"
+    assert "Пётр" in sent[0].content
+    assert sent[1].role == "user"
+
+
+def test_dynamic_system_inserted_with_speaker_context(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """dynamic_system (two-system-prompt pattern) вставляется вторым
+    system-сообщением, speaker_context — третьим (до user)."""
+    obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input(
+        "привет",
+        speaker_context="Контекст о собеседнике:\nСобеседника зовут Саша.",
+        dynamic_system="<system_context><user_profile><name>Саша</name></user_profile></system_context>",
+    ))
+    sent = llm.calls[0][0]
+    assert sent[0].content == "БАЗОВЫЙ ПРОМПТ"
+    # dynamic_system идёт сразу после базового промпта
+    assert sent[1].role == "system"
+    assert "<system_context>" in sent[1].content
+    # speaker_context после dynamic_system, до user
+    assert sent[2].role == "system"
+    assert "Контекст о собеседнике" in sent[2].content
+    assert sent[3].role == "user"
+    assert sent[3].content == "привет"
+
+
+def test_preclassified_event_skips_double_classification(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """preclassified_event=STT_RESULT — DialogCore НЕ переклассифицирует
+    текст (в котором может быть 'робот' внутри) и НЕ делает повторный
+    DSM-переход; LLM вызывается, результат DIALOGUE."""
+    from rob_box_harness.core.dialogue_state_machine import DialogueEvent
+
+    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    # _on_stt в dialogue_node делает IDLE→LISTENING (WAKE_WORD) →
+    # LISTENING→DIALOGUE (STT_RESULT) ДО вызова process_input, и передаёт
+    # preclassified_event=STT_RESULT чтобы DialogCore не повторял
+    # классификацию (текст «робот меня зовут...» содержит wake-word внутри).
+    asyncio.run(obj.handle_wake_word(""))
+    dsm.on_event(DialogueEvent.STT_RESULT)
+    assert dsm.current_state == DialogueStateKind.DIALOGUE
+    result = asyncio.run(obj.process_input(
+        "робот меня зовут Саша",
+        preclassified_event=DialogueEvent.STT_RESULT,
+    ))
+    assert len(llm.calls) == 1
+    assert result.spoken_text == "hello back"
+    # После хода DSM возвращается в IDLE (DIALOGUE_END) — это норма.
+    assert result.new_state == DialogueStateKind.IDLE
+
+
+def test_speaker_tag_persisted_in_turn_metadata(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Turn.metadata['speaker_tag'] проставляется для user и assistant ходов."""
+    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("привет", speaker_tag="0"))
+    user_turn = memory.turns[-2]
+    assistant_turn = memory.turns[-1]
+    assert user_turn.role == "user"
+    assert user_turn.metadata == {"speaker_tag": "0"}
+    assert assistant_turn.role == "assistant"
+    assert assistant_turn.metadata == {"speaker_tag": "0"}
+
+
+def test_speaker_tag_none_means_empty_metadata(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Без speaker_tag (Vosk fallback) metadata остаётся пустым — инвариант
+    «каждый ход имеет metadata.speaker_tag (или None)»."""
+    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("привет"))
+    user_turn = memory.turns[-2]
+    assert user_turn.metadata == {}
+
+
 def test_process_input_error_does_not_persist_assistant_turn(
     core: DialogCore, memory: _FakeMemoryStore, llm: _FakeLLMProvider
 ) -> None:

@@ -186,14 +186,42 @@ docker compose restart rtabmap
 
 ### 5. Несинхронизированное время
 
-**Симптом:** TF-ошибки: `extrapolation into the future`
+**Симптом:** TF-ошибки: `extrapolation into the future`; в логах zenoh-router:
+`Error treating timestamp for received Data ... exceeding delta 500ms is rejected`
+
+**Причина:** часы на Pi разошлись (NTP не синхронизирует). Дефолтный сервер
+`ntp.ubuntu.com` из локальной сети 10.1.1.x часто недоступен (UDP 123 таймаутит),
+поэтому systemd-timesyncd остаётся в состоянии `System clock synchronized: no`.
 
 **Решение:**
+
 ```bash
+# 1. Быстрый фикс (включить NTP + прописать рабочие серверы ru.pool.ntp.org)
 sudo timedatectl set-ntp true
+# Проверить, что NTP-серверы настроены на ru.pool.ntp.org:
+grep -E "^(NTP|FallbackNTP)" /etc/systemd/timesyncd.conf
+# Если там нет ru.pool.ntp.org — запустить идемпотентный скрипт из репозитория:
+sudo bash ~/rob_box_project/scripts/maintenance/sync_time.sh
+
+# 2. Либо вручную:
+sudo tee /etc/systemd/timesyncd.conf > /dev/null << 'EOF'
+[Time]
+NTP=ru.pool.ntp.org 0.ru.pool.ntp.org 1.ru.pool.ntp.org
+FallbackNTP=pool.ntp.org ntp.ubuntu.com
+RootDistanceMaxSec=5
+PollIntervalMinSec=32
+PollIntervalMaxSec=2048
+EOF
 sudo systemctl restart systemd-timesyncd
-timedatectl  # убедиться: System clock synchronized: yes
+
+# 3. Убедиться, что синхронизация прошла:
+timedatectl  # должно быть: System clock synchronized: yes
 ```
+
+> ⚠️ `ntp.ubuntu.com` может быть недоступен из локальной сети — это нормально,
+> если в `FallbackNTP`/`NTP` есть рабочие серверы (ru.pool.ntp.org проверен).
+> Деплой-воркфлоу автоматически запускает `sync_time.sh` на обоих Pi перед
+> стартом контейнеров.
 
 ---
 

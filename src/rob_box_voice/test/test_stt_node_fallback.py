@@ -155,6 +155,7 @@ def _ensure_rclpy_mock(monkeypatch):
                 RecognitionModelOptions=MagicMock(REAL_TIME=MagicMock()),
                 LanguageRestrictionOptions=MagicMock(WHITELIST=MagicMock()),
                 TextNormalizationOptions=MagicMock(TEXT_NORMALIZATION_DISABLED=MagicMock()),
+                SpeechAnalysisOptions=MagicMock(enable_speaker_analysis=MagicMock()),
                 StreamingOptions=MagicMock(),
                 StreamingRequest=MagicMock(),
                 AudioChunk=MagicMock(),
@@ -175,11 +176,21 @@ def _ensure_optional_deps(monkeypatch):
     """
     # Сначала выгружаем кешированные модули (могут содержать ссылки на
     # mock-объекты от других test-файлов, например test_dialogue_shell).
+    import rob_box_voice  # noqa: F401 — пакет уже импортирован; нужен для delattr
+
     for cached in [
         "rob_box_voice.stt_node",
         "rob_box_voice.dialogue_node",
     ]:
         sys.modules.pop(cached, None)
+        # sys.modules.pop() НЕ очищает атрибут пакета (rob_box_voice.stt_node):
+        # `from rob_box_voice import stt_node` вернёт СТАРЫЙ модуль со ссылками
+        # на mock прошлого теста (межтестовое загрязнение — видно в
+        # TestYandexSpeakerAnalysisConfig: во втором тесте StreamingOptions
+        # «не вызывался», т.к. вызовы шли в старый mock). Удаляем атрибут.
+        _leaf = cached.split(".")[-1]
+        if hasattr(rob_box_voice, _leaf):
+            delattr(rob_box_voice, _leaf)
     _ensure_rclpy_mock(monkeypatch)
     yield
 
@@ -298,6 +309,79 @@ def stt_node_no_vosk():
     node.yandex_stub = MagicMock()  # Yandex доступен
     node.recognizer = None  # Vosk НЕ доступен
     return node
+
+
+class TestYandexSpeakerAnalysisConfig:
+    """Issue #1077 — конфиг Yandex должен запрашивать speaker_analysis.
+
+    Проверено на роботе (10.1.1.21, probe 2026-08-09): Yandex v3 НЕ присылает
+    speaker_analysis, пока в StreamingOptions не передан
+    SpeechAnalysisOptions(enable_speaker_analysis=True) — по умолчанию опция
+    выключена, даже при успешном yandex:ok. speaker_labeling (SpeakerLabeling
+    Options) не подходит: требует FULL_DATA и падает с INVALID_ARGUMENT в
+    REAL_TIME. Фикс — speech_analysis в стриминговом конфиге.
+    """
+
+    @staticmethod
+    def _capture_streaming_options(stt_node_no_vosk, final):
+        """Запускает _recognize_yandex и ВОЗВРАЩАЕТ kwargs первого вызова
+        StreamingOptions(...) из gen() — т.е. конфиг, который реально уходит
+        в стрим (mock возвращает MagicMock, атрибуты которого не отражают
+        переданные аргументы, поэтому смотрим call_args.kwargs).
+        """
+        captured = {}
+
+        # SpeechAnalysisOptions — mock: без side_effect он возвращает
+        # MagicMock и теряет переданные kwargs. Подменяем на объект,
+        # отражающий реальные аргументы (enable_speaker_analysis=True...).
+        stt_pb2 = sys.modules["yandex.cloud.ai.stt.v3"].stt_pb2
+        stt_pb2.SpeechAnalysisOptions.side_effect = lambda **kw: MagicMock(**kw)
+
+        def _consume_gen(gen, metadata=None, timeout=None):
+            list(gen)
+            # StreamingOptions создаётся ОДИН раз (первый оператор gen()).
+            # call_args = последний вызов; берём call_args_list[0].
+            calls = stt_pb2.StreamingOptions.call_args_list
+            captured["opts_kwargs"] = calls[0].kwargs if calls else {}
+            return [final]
+
+        stt_node_no_vosk.yandex_stub.RecognizeStreaming.side_effect = _consume_gen
+        stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+        return captured.get("opts_kwargs", {})
+
+    def test_streaming_options_include_speech_analysis(self, stt_node_no_vosk):
+        final = MagicMock()
+        final.WhichOneof.return_value = "final"
+        alt = MagicMock()
+        alt.text = "робот меня зовут саша"
+        final.final.alternatives = [alt]
+
+        opts_kwargs = self._capture_streaming_options(stt_node_no_vosk, final)
+
+        assert opts_kwargs, "StreamingOptions должен создаваться в gen()"
+        sa = opts_kwargs.get("speech_analysis")
+        assert sa is not None, (
+            "StreamingOptions должен передавать speech_analysis — иначе Yandex "
+            "не присылает speaker_analysis (issue #1077)"
+        )
+        assert sa.enable_speaker_analysis is True
+        assert sa.enable_conversation_analysis is True
+
+    def test_no_speaker_labeling_in_real_time(self, stt_node_no_vosk):
+        """speaker_labeling требует FULL_DATA — в REAL_TIME его НЕ должно быть."""
+        final = MagicMock()
+        final.WhichOneof.return_value = "final"
+        alt = MagicMock()
+        alt.text = "привет"
+        final.final.alternatives = [alt]
+
+        opts_kwargs = self._capture_streaming_options(stt_node_no_vosk, final)
+
+        assert opts_kwargs
+        assert "speaker_labeling" not in opts_kwargs, (
+            "speaker_labeling несовместим с REAL_TIME (INVALID_ARGUMENT) — "
+            "используем speech_analysis"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -762,3 +846,68 @@ class TestSTTAttemptMetricInLogs:
         assert len(rejected) == 1
         assert "yandex:timeout" in rejected[0].getMessage()
         assert "vosk:low_confidence" in rejected[0].getMessage()
+
+
+class TestTelemetryPhraseToAccept:
+    """Issue 1076 (телеметрия): честный «замолчал → акцепт».
+
+    stt_node логирует phrase_to_accept_ms — время от получения фразы
+    (/audio/speech_audio) до ПРИНЯТО. Полный «замолчал → акцепт» =
+    silence_to_phrase_s (audio_node, включает speech_continuation)
+    + phrase_to_accept_ms (здесь).
+    """
+
+    def test_phrase_to_accept_logged_on_accept(self, stt_node, caplog):
+        """При успешном распознавании пишется telemetry-строка с latency."""
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = False
+        stt_node._tts_ended_at = 0.0
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = MagicMock()
+
+        # Публикация «не расслышал» не должна происходить при успехе
+        stt_node._maybe_speak_unclear = MagicMock()
+
+        caplog.set_level(logging.INFO, logger="test_stt_node_fallback")
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        telemetry = [
+            r.getMessage()
+            for r in caplog.records
+            if "phrase_to_accept_ms=" in r.getMessage()
+        ]
+        assert len(telemetry) == 1, f"ожидалась 1 telemetry-строка, получено: {telemetry}"
+        assert "phrase_to_accept_ms=" in telemetry[0]
+        assert "text='робок привет'" in telemetry[0]
+
+    def test_no_telemetry_on_rejected(self, stt_node, caplog):
+        """При отклонении (None) telemetry-строка НЕ пишется."""
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = False
+        stt_node._tts_ended_at = 0.0
+        stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node._maybe_speak_unclear = MagicMock()
+
+        caplog.set_level(logging.INFO, logger="test_stt_node_fallback")
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        telemetry = [
+            r.getMessage()
+            for r in caplog.records
+            if "phrase_to_accept_ms=" in r.getMessage()
+        ]
+        assert telemetry == []

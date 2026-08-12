@@ -186,6 +186,12 @@ class STTNode(Node):
         self.result_pub = self.create_publisher(String, "/voice/stt/result", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
         self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)  # Для прерывания TTS
+        # Issue #1077 — speaker_analysis (speaker_tag) от Yandex SpeechKit v3.
+        # Публикуем отдельным топиком (String, JSON: {"speaker_tag", "text"}),
+        # чтобы НЕ ломать контракт /voice/stt/result (plain text — его читают
+        # telegram/perception/transport). dialogue_node подписывается и создаёт
+        # профиль спикера (scope=speaker:<tag>).
+        self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
         # Прямой запрос TTS для фразы «не расслышал» (issue #979). tts_node
         # слушает /voice/tts/request тем же JSON-SSML контрактом, что и
         # /voice/dialogue/response — build_ssml_payload даёт ровно это.
@@ -198,6 +204,10 @@ class STTNode(Node):
         # Состояние
         self.is_robot_speaking = False  # Флаг: робот говорит (только для aec_mode=software)
         self._tts_ended_at: float = 0.0  # Время окончания TTS (для grace period)
+        # Issue #1077 — speaker_tag последней распознанной фразы (Yandex
+        # speaker_analysis). None для Vosk fallback. Сбрасывается на старте
+        # каждой фразы в speech_audio_callback.
+        self._last_speaker_tag: Optional[str] = None
 
         # Инициализация
         self.get_logger().info(
@@ -351,7 +361,17 @@ class STTNode(Node):
                 )
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
+        # Issue 1076 (телеметрия): фиксируем момент получения фразы, чтобы
+        # замерить честный «фраза → ПРИНЯТО». Полный «замолчал → акцепт» =
+        # silence_to_phrase_s (audio_node, включает speech_continuation)
+        # + phrase_to_accept_ms (здесь).
+        _phrase_received_at = time.monotonic()
         self.publish_state("recognizing")
+
+        # Issue #1077 — сбрасываем speaker_tag на старте каждой фразы.
+        # _recognize_yandex заполнит его из speaker_analysis; Vosk fallback
+        # (без speaker-анализа) оставит None — профиль не создаётся.
+        self._last_speaker_tag = None
 
         # Идём через единый select_recognition: primary=Yandex, fallback=Vosk,
         # 1 retry на primary, soft-timeout yandex_timeout_s. Возвращает
@@ -367,7 +387,17 @@ class STTNode(Node):
 
         # Публикация результата
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
+            # Issue 1076 (телеметрия): честный «фраза → ПРИНЯТО» (STT-часть).
+            _accept_ms = int((time.monotonic() - _phrase_received_at) * 1000)
+            self.get_logger().info(
+                f"📊 [telemetry] phrase_to_accept_ms={_accept_ms} "
+                f"(text={text!r})"
+            )
             self.get_logger().info(f"✅ ПРИНЯТО: {text}")
+            # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
+            # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
+            # шёл после result, гонка топиков могла бы потерять корреляцию.
+            self._publish_speaker(text, duration)
             self.publish_result(text)
             self.publish_state("ready")
         else:
@@ -500,6 +530,17 @@ class STTNode(Node):
                     ),
                     audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME,
                 ),
+                # Issue #1077 — ВАЖНО: включаем speech_analysis, иначе Yandex
+                # НЕ присылает speaker_analysis (по умолчанию выключен!).
+                # Проверено probe на 10.1.1.21: конфиг без этой опции даёт 0
+                # speaker_events при yandex:ok; с enable_speaker_analysis=True
+                # приходят события speaker_analysis (speaker_tag + границы).
+                # speaker_labeling (SpeakerLabelingOptions) НЕ используем: он
+                # требует FULL_DATA и несовместим с REAL_TIME (INVALID_ARGUMENT).
+                speech_analysis=stt_pb2.SpeechAnalysisOptions(
+                    enable_speaker_analysis=True,
+                    enable_conversation_analysis=True,
+                ),
                 # ВАЖНО! Настройка EOU (End of Utterance) - определение конца фразы
                 # Используем выбранный profile (fast/balanced/patient)
                 eou_classifier=stt_pb2.EouClassifierOptions(
@@ -535,11 +576,56 @@ class STTNode(Node):
 
         # Обрабатываем ответы
         final_text = None
+        last_partial = None
+        # Issue #1077 — собираем speaker_analysis события (speaker_tag +
+        # границы) наравне с final. Yandex может прислать несколько событий
+        # (один голос, разбитый на tag='0' и tag='1') — берём последний
+        # достоверный tag; если фраза не распозналась (final пуст), tag
+        # наружу НЕ уходит (fallback на Vosk без tag).
+        speaker_tag: Optional[str] = None
         for response in responses:
             event_type = response.WhichOneof("Event")
 
-            # partial - промежуточные результаты (игнорируем)
+            # partial - промежуточные результаты: запоминаем последний
+            # (Yandex может прислать только partial + пустой final — см. 09.08)
             if event_type == "partial":
+                if response.partial.alternatives:
+                    _pt = response.partial.alternatives[0].text
+                    if _pt and _pt.strip():
+                        last_partial = _pt
+                continue
+
+            # speaker_analysis - статистика говорящего (issue #1077).
+            # Поля: speaker_tag, utterance_start_ms, utterance_end_ms,
+            # words_count, utterance_index. Доступны только при
+            # recognition_model audio_processing_type=REAL_TIME и
+            # speaker-анализе, включённом Yandex по умолчанию.
+            elif event_type == "speaker_analysis":
+                sa = response.speaker_analysis
+                tag = getattr(sa, "speaker_tag", None)
+                if tag is not None and str(tag) != "":
+                    speaker_tag = str(tag)
+                    self.get_logger().debug(
+                        "👤 [issue 1077] SPEAKER_ANALYSIS: "
+                        f"tag={tag!r} "
+                        f"boundaries=({getattr(sa, 'utterance_start_ms', 0)}-"
+                        f"{getattr(sa, 'utterance_end_ms', 0)}ms) "
+                        f"words={getattr(sa, 'words_count', 0)} "
+                        f"utt={getattr(sa, 'utterance_index', 0)}"
+                    )
+                continue
+
+            # conversation_analysis - общая статистика диалога
+            # (speech_ms, silence_ms, interrupts_count). Логируем — метрика
+            # «кто перебил» пригодится для edge case #2 (два человека).
+            elif event_type == "conversation_analysis":
+                ca = response.conversation_analysis
+                self.get_logger().debug(
+                    "💬 [issue 1077] CONVERSATION: "
+                    f"speech={getattr(ca, 'speech_ms', 0)}ms "
+                    f"silence={getattr(ca, 'silence_ms', 0)}ms "
+                    f"interrupts={getattr(ca, 'interrupts_count', 0)}"
+                )
                 continue
 
             # final - финальный результат распознавания
@@ -554,10 +640,28 @@ class STTNode(Node):
                     final_text = response.final_refinement.normalized_text.alternatives[0].text
                     break  # Это последний результат
 
-        return final_text.strip() if final_text else None
+        # Issue #1077 — фиксируем tag для текущей фразы. Только если фраза
+        # реально распознана (final_text или last_partial есть): иначе Vosk
+        # fallback без tag.
+        result_text = None
+        if final_text and final_text.strip():
+            result_text = final_text.strip()
+        elif last_partial:
+            # 🔴 FIX (09.08): Yandex шлёт partial с текстом, но final может
+            # быть пустым → был ложный «yandex:empty». Берём последний partial.
+            result_text = last_partial.strip()
+        if result_text:
+            self._last_speaker_tag = speaker_tag
+            return result_text
+        # Не распознано — сбрасываем tag, fallback на Vosk без tag.
+        self._last_speaker_tag = None
+        return None
 
     def _recognize_vosk(self, audio_bytes: bytes) -> Optional[str]:
         """Распознавание через Vosk (fallback)."""
+        # Issue #1077 — Vosk не даёт speaker_analysis: tag=None, профиль
+        # спикера не создаётся (edge case #4).
+        self._last_speaker_tag = None
         # Кормим Vosk по кусочкам, как Yandex (4KB chunks)
         # Это важно! Vosk работает в streaming режиме и не может обработать всю фразу сразу
         chunk_size = 4096
@@ -575,6 +679,35 @@ class STTNode(Node):
         self.recognizer.SetWords(True)
 
         return text
+
+    def _publish_speaker(self, text: str, duration_s: float = 0.0) -> None:
+        """Публикация speaker_tag (issue #1077) на /voice/stt/speaker.
+
+        Отдельный топик: контракт /voice/stt/result (plain text) НЕ меняем.
+        JSON: ``{"speaker_tag": "0", "text": "...", "duration_s": 1.2}``.
+        Если tag=None (Vosk fallback / Yandex без speaker_analysis) — не
+        публикуем, dialogue_node не создаст профиль. ``duration_s`` — длина
+        фразы в секундах; dialogue_node использует её для правила «короткие
+        (<0.8с) не создают профиль».
+        """
+        tag = self._last_speaker_tag
+        if not tag:
+            return
+        payload = json.dumps(
+            {
+                "speaker_tag": tag,
+                "text": text,
+                "duration_s": round(float(duration_s), 3),
+            },
+            ensure_ascii=False,
+        )
+        msg = String()
+        msg.data = payload
+        self.speaker_pub.publish(msg)
+        self.get_logger().info(
+            f"👤 [issue 1077] Speaker: tag={tag!r} duration={duration_s:.2f}s "
+            f"text={text[:40]!r}"
+        )
 
     def publish_result(self, text: str):
         """Публикация финального результата распознавания."""

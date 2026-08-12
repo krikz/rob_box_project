@@ -76,7 +76,7 @@ permissions:
 jobs:
   # Определение конфигурации сборки
   prepare:
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     outputs:
       docker_tag: ${{ steps.set-config.outputs.docker_tag }}
       service_name: ${{ steps.set-config.outputs.service_name }}
@@ -341,7 +341,7 @@ jobs:
   # Сборка выбранного сервиса
   build-service:
     needs: prepare
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -472,7 +472,7 @@ jobs:
   # Итоговая сводка
   summary:
     needs: [prepare, build-service]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary
@@ -522,7 +522,7 @@ jobs:
   # Создание issue при ошибке сборки
   create-issue-on-failure:
     needs: [prepare, build-service]
-    runs-on: self-hosted
+    runs-on: [self-hosted, rob-box]
     if: always() && failure() && inputs.create_issue_on_failure
     permissions:
       issues: write

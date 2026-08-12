@@ -53,6 +53,7 @@ from openai import AsyncOpenAI
 
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.errors import ConfigError
+from rob_box_harness.health import is_quota_exhausted
 
 # Re-export the upstream provider + helpers so callers can ``from
 # rob_box_harness.providers.minimax import MiniMaxProvider`` exactly
@@ -176,6 +177,22 @@ class RetryPolicy:
         return base + jitter
 
 
+
+# ---------------------------------------------------------------------------
+# Consecutive-429 fallback policy
+# ---------------------------------------------------------------------------
+
+
+#: После скольких подряд per-request 429 (rate-limit, НЕ quota) провайдер
+#: сдаётся и передаёт управление fallback-цепочке на этот turn — по
+#: аналогии с TTS-цепочкой minimax→yandex→silero из #1083. Счётчик
+#: сбрасывается на успешном ответе. 429×N подряд — это rate-limit, а не
+#: транзиентная ошибка: ретраить дальше бессмысленно, робот молчал
+#: ~11с на 3 попытках × 3 SDK-ретрая (инцидент 10.08.2026).
+CONSECUTIVE_429_LIMIT: int = 3
+
+
+
 # ---------------------------------------------------------------------------
 # Harness-side MiniMaxProvider
 # ---------------------------------------------------------------------------
@@ -261,9 +278,47 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
             thinking=thinking,
         )
         self._retry: RetryPolicy = retry or RetryPolicy()
+        # 🔴 FIX (issue #1082 follow-up): счётчик подряд идущих 429
+        # (rate-limit, НЕ quota). После CONSECUTIVE_429_LIMIT подряд
+        # провайдер сдаётся и передаёт управление fallback-цепочке на
+        # этот turn (по аналогии с TTS-цепочкой minimax→yandex→silero
+        # из #1083). Сбрасывается на успешном ответе.
+        self._consecutive_429s: int = 0
         # Track a close flag so ``aclose`` is idempotent. The inner
         # provider closes its own client; we just memoize here.
         self._closed: bool = False
+
+    # ---- consecutive-429 tracking -----------------------------------------
+
+    def _note_429(self, exc: BaseException) -> bool:
+        """Increment the consecutive-429 counter and decide whether to give up.
+
+        Returns ``True`` when the provider has seen
+        ``CONSECUTIVE_429_LIMIT`` per-request 429s in a row (rate-limit,
+        NOT quota) — the caller should raise immediately so the
+        health-aware fallback chain switches provider for this turn
+        (analogous to the TTS chain minimax→yandex→silero from #1083).
+        """
+        self._consecutive_429s += 1
+        if self._consecutive_429s >= CONSECUTIVE_429_LIMIT:
+            _log.warning(
+                "minimax: %d×429 подряд (%s) — rate-limit, не транзиент; "
+                "передаём в fallback-цепочку на этот turn",
+                self._consecutive_429s,
+                exc,
+            )
+            # RcutilsLogger-friendly single-string metric line (same
+            # pattern as [stt_attempt_metric] in stt_fallback.py).
+            _log.info(
+                f"[llm_429_metric] provider=minimax "
+                f"consecutive={self._consecutive_429s} action=fallback"
+            )
+            return True
+        return False
+
+    def _reset_429_counter(self) -> None:
+        """Reset the consecutive-429 streak after a successful response."""
+        self._consecutive_429s = 0
 
     # ---- capability introspection ----------------------------------------
 
@@ -397,6 +452,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                     yield item
                 # Drain so we don't leak the background task.
                 await task
+                self._reset_429_counter()
                 return
             except (RateLimitError, TimeoutError) as exc:
                 last_exc = exc
@@ -420,6 +476,21 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                             "ignoring (best-effort cleanup)",
                             close_exc,
                         )
+                # 🔴 FIX (issue #1082): quota-ошибка MiniMax (2056/1008) — не
+                # транзиент, ретраить бессмысленно; сразу в fallback-цепочку.
+                if is_quota_exhausted(exc):
+                    _log.warning(
+                        "minimax: quota exhausted on stream (%s) — не ретраим, "
+                        "передаём в fallback-цепочку",
+                        exc,
+                    )
+                    raise
+                # 🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit
+                # (НЕ quota) — N×429 подряд (N≥3) → сдаёмся и передаём
+                # управление fallback-цепочке на этот turn (по аналогии с
+                # TTS minimax→yandex→silero из #1083).
+                if isinstance(exc, RateLimitError) and self._note_429(exc):
+                    raise
                 if attempts >= self._retry.max_attempts:
                     raise
                 delay = self._retry.delay_for(attempts)
@@ -486,8 +557,32 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         while attempts < self._retry.max_attempts:
             attempts += 1
             try:
-                return await fn(messages, tools=tools, settings=settings)
+                response = await fn(messages, tools=tools, settings=settings)
+                self._reset_429_counter()
+                return response
             except (RateLimitError, TimeoutError) as exc:
+                # 🔴 FIX (issue #1082): квота MiniMax (2056 Token Plan /
+                # 1008 insufficient balance) — это ДЛИННОЕ окно (часы), а не
+                # секундный burst. Ретраить её с backoff'ом бессмысленно:
+                # робот ждал 15-19с на трёх попытках, потом всё равно
+                # падал на deepseek. Quota-ошибка → сразу наружу, чтобы
+                # health-aware fallback переключил провайдера.
+                if is_quota_exhausted(exc):
+                    _log.warning(
+                        "minimax: quota exhausted (%s) — не ретраим, "
+                        "передаём в fallback-цепочку",
+                        exc,
+                    )
+                    raise
+                # 🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit
+                # (НЕ quota) — N×429 подряд (N≥3) значит, что MiniMax
+                # залимитил нас на этом окне; ретраить дальше бессмысленно
+                # (робот молчал ~11с на 3 попытках × 3 SDK-ретрая).
+                # Достигли лимита → сдаёмся и передаём управление
+                # fallback-цепочке на этот turn (по аналогии с TTS
+                # minimax→yandex→silero из #1083).
+                if isinstance(exc, RateLimitError) and self._note_429(exc):
+                    raise
                 last_exc = exc
                 if attempts >= self._retry.max_attempts:
                     raise

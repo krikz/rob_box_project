@@ -1,5 +1,9 @@
 #!/bin/bash
 # E2E voice test: ensure voice command file exists on build machine.
+# ⚠️ DEPRECATED (11.08): атомарный e2e_voice_test.sh (см. .github/workflows/scripts/README.md)
+#   синтезирует голосовую команду на лету сам — этот скрипт больше не нужен.
+#   Оставлен для legacy-вызовов со старым контрактом voice_file. Удалить через
+#   месяц если не понадобится.
 # Priority:
 #   1. If voice_file is a repo-relative path (.github/e2e/voice_commands/...) — push it from checkout
 #   2. If voice_file exists on build machine — use it

@@ -609,3 +609,192 @@ class EstimateTtsDurationTool(MCPTool):
                 f"({len(text)} символов при {cps} симв/с)"
             ),
         )
+
+
+class RegisterSpeakerTool(MCPTool):
+    """Issue #1077 + #1101 — регистрация голоса спикера через LLM tool.
+
+    LLM вызывает этот tool когда:
+    - Пользователь сказал «меня зовут X» (LLM извлёк имя из контекста)
+    - LLM хочет спросить имя незнакомца (name=null → publish ask_event)
+
+    Tool публикует в /voice/speaker/register JSON {"name": "..."}
+    speaker_id_node получает d-vector текущей фразы и сохраняет embedding.
+    """
+
+    def __init__(self, node):
+        super().__init__(node)
+        from std_msgs.msg import String
+        self._speaker_register_pub = node.create_publisher(
+            String, "/voice/speaker/register", 10
+        )
+        # Issue #1101 — rename коррекции («я не X, я Y») публикуются на
+        # ОТДЕЛЬНЫЙ топик /voice/speaker/rename: speaker_id_node слушает
+        # rename на нём (_on_rename_request), а /voice/speaker/register
+        # принимает только {"name": ...} и игнорирует {old_name,new_name}.
+        self._speaker_rename_pub = node.create_publisher(
+            String, "/voice/speaker/rename", 10
+        )
+
+    @property
+    def name(self) -> str:
+        return "register_speaker"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Зарегистрировать голос текущего спикера в voice biometric DB. "
+            "Вызывай когда: (1) пользователь представился («меня зовут X») — "
+            "передай name=X, (2) хочешь узнать имя незнакомца — передай name=null "
+            "и спроси «Как вас зовут?» через speak_text. "
+            "Имя сохранится в БД вместе с эмбеддингом голоса (resemblyzer d-vector), "
+            "после этого пользователя можно будет узнавать по голосу."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description=(
+                    "Имя спикера для регистрации (Cyrillic). "
+                    "Передай null/None если хочешь спросить имя незнакомца — "
+                    "робот спросит «Как вас зовут?» и ждёт ответа. "
+                    "Если пользователь ИСПРАВЛЯЕТ имя («я не X, я Y») — "
+                    "передай name=Y и old_name=X."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="old_name",
+                type="string",
+                description=(
+                    "Предыдущее имя (если пользователь исправляет: "
+                    "«я не Эйджик, я Денчик» → old_name='Эйджик', name='Денчик'). "
+                    "Опусти, если пользователь представляется впервые."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    # Issue #1101 — noise-name guard. LLM sometimes passes the trigger
+    # word instead of the actual name ("робот меня зовут" → name="зовут"
+    # instead of name="Денис"). Without this filter every such call
+    # produced a junk row in /data/speakers.db (``name='Зовут'``). The
+    # set covers the highest-frequency false positives observed on the
+    # robot on 2026-08-10/11 (see PR-1101 cleanup migration notes).
+    _NOISE_NAMES: frozenset[str] = frozenset(
+        {
+            "зовут",
+            "имя",
+            "меня",
+            "зовут-это",
+            "зовут меня",
+            "это",
+            "называю",
+            "зовут-меня",
+            "моё",
+            "мое",
+            "моё имя",
+            "мое имя",
+            "имя мне",
+            "имя моё",
+            "имя мое",
+        }
+    )
+
+    def execute(self, name: str | None = None, old_name: str | None = None) -> MCPToolResult:
+        import json
+        from std_msgs.msg import String
+
+        # Step 1 — if old_name provided, rename the existing entry first.
+        if old_name and old_name.strip():
+            old_clean = old_name.strip()
+            if old_clean.lower() not in {"null", "none"} and len(old_clean) >= 2:
+                rename_msg = String()
+                rename_msg.data = json.dumps(
+                    {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
+                    ensure_ascii=False,
+                )
+                # Issue #1101 — rename идёт на /voice/speaker/rename
+                # (speaker_id_node._on_rename_request), НЕ на register:
+                # register-хендлер читает только {"name": ...} и
+                # игнорировал бы {old_name, new_name} как пустое имя.
+                self._speaker_rename_pub.publish(rename_msg)
+                self.log_info(
+                    f"[register_speaker] rename {old_clean!r} → "
+                    f"{(name or '').strip()!r}"
+                )
+
+        if name is None or name.strip() == "":
+            if old_name:
+                return MCPToolResult(
+                    success=True,
+                    data={"renamed": True, "old_name": old_name},
+                    message=f"Старое имя '{old_name}' исправлено. Новое имя не указано — спроси.",
+                )
+            self.log_info("[register_speaker] name=None → ask user")
+            return MCPToolResult(
+                success=True,
+                data={"ask_required": True, "name": None},
+                message="Спроси имя у пользователя через speak_text и вызови register_speaker(name=X) ещё раз",
+            )
+        name_clean = name.strip().capitalize()
+        # Issue #1101 (live 11.08) — LLM sometimes serialises a real
+        # ``null`` JSON value through OpenAI tool-call as the literal
+        # string ``"null"`` (or ``"None"``). Without this branch the
+        # speaker_id_node persists an embedding under ``name='Null'``
+        # — a fresh junk row in /data/speakers.db. Treat ``"null"``
+        # the same as ``None``: ask the user.
+        if name_clean.lower() in {"null", "none"}:
+            self.log_info(
+                "[register_speaker] name='null' literal — treat as ask_user"
+            )
+            return MCPToolResult(
+                success=True,
+                data={"ask_required": True, "name": None},
+                message=(
+                    "Передан литерал 'null'/'None' — спроси имя у пользователя "
+                    "через speak_text и вызови register_speaker(name=X) ещё раз"
+                ),
+            )
+        if len(name_clean) < 2:
+            return MCPToolResult(
+                success=False,
+                data={"error": "name_too_short"},
+                message=f"Имя '{name}' слишком короткое — минимум 2 символа",
+            )
+        # Issue #1101 — reject trigger-word leakage from the user phrase.
+        # Without this guard the LLM passes the first token after
+        # «зовут» rather than the actual name (e.g. "робот меня зовут
+        # Денис говорю" → name="Зовут"), polluting /data/speakers.db.
+        if name_clean.lower() in self._NOISE_NAMES:
+            self.log_info(
+                f"[register_speaker] rejected noise name {name_clean!r} "
+                "— LLM must extract actual name from user_input"
+            )
+            return MCPToolResult(
+                success=False,
+                data={"error": "noise_name", "received": name_clean},
+                message=(
+                    f"Имя '{name_clean}' выглядит как служебное слово из "
+                    "фразы («зовут», «имя», «меня»). Извлеки реальное имя "
+                    "из контекста (например, для «робот меня зовут Денис "
+                    'говорю» — передай name="Денис") и вызови тул ещё раз.'
+                ),
+            )
+        # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
+        msg = String()
+        msg.data = json.dumps({"name": name_clean}, ensure_ascii=False)
+        self._speaker_register_pub.publish(msg)
+        self.log_info(f"[register_speaker] published name={name_clean!r}")
+        return MCPToolResult(
+            success=True,
+            data={"registered_name": name_clean, "speaker_id": "pending"},
+            message=f"Голос зарегистрирован как '{name_clean}'. Теперь этого пользователя можно узнавать по голосу.",
+        )

@@ -22,7 +22,13 @@
       # Устройство
       device_name: "ReSpeaker"  # Автопоиск по имени
       sample_rate: 16000
-      channels: 1  # 1-channel firmware с AEC
+      # Issue 1076: 6-канальный RAW-режим ReSpeaker (Ch1-4 = микрофоны,
+      # Ch5-6 = playback-референс AEC). ⚠️ A/B 09.08: mix_channels=[0,1,2,3]
+      # (только микрофоны) → yandex:empty; все 6 каналов → yandex:ok.
+      # Референс Ch5-6 несёт фразу пользователя (через динамик робота) —
+      # его НЕЛЬЗЯ исключать. Эхо-защита — VAD/tts_grace/music gate.
+      channels: 6
+      mix_channels: [0, 1, 2, 3, 4, 5]
       chunk_size: 512
       format: "PCM16"
 
@@ -169,40 +175,57 @@
 
     # ===== Dialogue Node (LLM) =====
     dialogue_node:
-      # 2026-08-05: switched to MiniMax primary, DeepSeek fallback
-      llm_provider: "minimax"  # minimax | deepseek
-      base_url: "https://api.minimax.io/v1"
-      model: "MiniMax-M3"
-      enable_fallback: true  # fallback на DeepSeek при ошибке MiniMax
-      enable_mcp_tools: true
-      # ⚠️ KNOWN ISSUE: this flag is honored at startup, but
-      # dialogue_node._build_tool_provider still falls through to
-      # FakeToolProvider (0 tools exposed) until W5a lands (see
-      # kanban t_10a9c178 — "Wire real ToolProvider в dialogue_node").
-      # At runtime DialogueNode logs a startup warning that explains the
-      # gap; do not flip this to false without reading that task — the
-      # flag is intentionally left on so the W5a merge automatically
-      # activates MCP tools without re-touching the config.
+      # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
+      # Формат: "minimax,deepseek" — порядок = приоритет (primary → fallbacks).
+      # Значения — ключи секций ниже (minimax:, deepseek:, qwen:, mimo:).
+      # Каждый провайдер использует СВОЙ base_url/model из своей секции.
+      # Пустая строка → fallback на llm_provider (обратная совместимость).
+      llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
 
-      # Qwen API
-      qwen:
-        api_key: ""  # Используется MIMO_API_KEY или DEEPSEEK_API_KEY из переменных окружения
-        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        model: "qwen-turbo"
+      enable_fallback: true
+      enable_mcp_tools: true
+
+      # ═══════════════════════════════════════════════════════════════
+      #  LLM Provider sections — one per provider
+      # ═══════════════════════════════════════════════════════════════
+
+      # MiniMax (primary — M3, vision-capable, tools, streaming)
+      minimax:
+        api_key: ""                  # MINIMAX_API_KEY env (или явно)
+        base_url: "https://api.minimax.io/v1"
+        model: "MiniMax-M3"
         temperature: 0.7
         max_tokens: 500
-        stream: true
+        timeout_s: 90.0
 
-      # DeepSeek API details. These nested values document tuning defaults;
-      # llm_provider/base_url/model above are the parameters consumed directly
-      # by DialogueNode.
+      # DeepSeek (fallback — дешёвый, быстрый, надёжный)
       deepseek:
-        api_key: ""  # Используется DEEPSEEK_API_KEY из переменных окружения
+        api_key: ""                  # DEEPSEEK_API_KEY env (или явно)
         base_url: "https://api.deepseek.com"
         model: "deepseek-chat"
         temperature: 0.7
-        max_tokens: 500  # Увеличено для творческих задач (рэп, стихи)
-        stream: true
+        max_tokens: 500
+        timeout_s: 90.0
+
+      # MiMo (Xiaomi — fallback #2, если оба выше недоступны)
+      # Раскомментируй и добавь "mimo" в llm_providers когда API ключ готов.
+      # mimo:
+      #   api_key: ""                # MIMO_API_KEY env
+      #   base_url: "https://api.xiaomimimo.com/v1"
+      #   model: "mimo-v2.5"
+      #   temperature: 0.7
+      #   max_tokens: 500
+      #   timeout_s: 90.0
+
+      # Qwen (Alibaba — запасной, совместимый с OpenAI API)
+      # Раскомментируй и добавь "qwen" в llm_providers когда нужно.
+      # qwen:
+      #   api_key: ""                # DASHSCOPE_API_KEY env
+      #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      #   model: "qwen-turbo"
+      #   temperature: 0.7
+      #   max_tokens: 500
+      #   timeout_s: 90.0
 
       # Промпт система
       system_prompt_file: "master_prompt_compact.txt"  # Агентный промпт с tool calls (только имя файла!)

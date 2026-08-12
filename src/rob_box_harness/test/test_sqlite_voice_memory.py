@@ -229,9 +229,7 @@ class TestFAQCRUD:
         store = _make_store()
         _run(store.init())
         _run(store.load_faq("expo", [{"question": "old", "answer": "old"}]))
-        inserted = _run(
-            store.load_faq("expo", [{"question": "new", "answer": "new"}])
-        )
+        inserted = _run(store.load_faq("expo", [{"question": "new", "answer": "new"}]))
         assert inserted == 1
         # Old row must be gone
         results = _run(store.search_faq("expo", "old"))
@@ -364,6 +362,160 @@ class TestEventProfileCRUD:
         cursor = _run_safe(store._conn.execute("SELECT COUNT(*) FROM event_profile"))
         assert cursor.fetchone()[0] == 1
         assert _run(store.get_event_profile()) == {"event_id": "e4"}
+
+
+class TestConcurrentWrites:
+    """Concurrent ``append_turn`` must not raise transaction conflicts.
+
+    Regression for the live bug (retro 09.08, #12): several coroutines
+    appending to the same :class:`SQLiteVoiceMemory` simultaneously used
+    to hit ``sqlite3.OperationalError: cannot start a transaction within
+    a transaction`` (and a raw ``SystemError`` from a racing commit)
+    because every statement went to the same connection via
+    ``asyncio.to_thread`` without a lock.
+    """
+
+    def test_parallel_appends_do_not_conflict(self) -> None:
+        store = _make_store()
+        _run(store.init())
+        n = 50
+
+        async def _concurrent() -> list[bool]:
+            turns = [Turn(role="user", content=f"msg-{i}") for i in range(n)]
+            return await asyncio.gather(
+                *(store.append_turn("scope_c", t) for t in turns)
+            )
+
+        results = _run(_concurrent())
+        # No exceptions raised; every unique turn was inserted.
+        assert all(results) is True
+        assert len(results) == n
+        turns = _run(store.load_recent("scope_c", limit=n + 5))
+        assert len(turns) == n
+        # All messages must be present exactly once.
+        contents = {t.content for t in turns}
+        assert contents == {f"msg-{i}" for i in range(n)}
+
+    def test_parallel_appends_preserve_dialogue_node_metadata(self) -> None:
+        """Requirement 4: concurrent appends must not drop dialogue_node.
+
+        The robot's dialogue memory is carried in ``turn.metadata``
+        (``dialogue_node`` key). A race that drops the row would lose
+        the whole dialogue node; the test asserts every node survives.
+        """
+        store = _make_store()
+        _run(store.init())
+        n = 30
+
+        async def _concurrent() -> list[bool]:
+            turns = [
+                Turn(
+                    role="assistant",
+                    content=f"reply-{i}",
+                    metadata={"dialogue_node": f"node-{i}", "seq": i},
+                )
+                for i in range(n)
+            ]
+            return await asyncio.gather(
+                *(store.append_turn("scope_d", t) for t in turns)
+            )
+
+        results = _run(_concurrent())
+        assert all(results) is True
+        turns = _run(store.load_recent("scope_d", limit=n + 5))
+        assert len(turns) == n
+        nodes = {t.metadata.get("dialogue_node") for t in turns}
+        assert nodes == {f"node-{i}" for i in range(n)}
+        # Spot-check one full metadata round-trip.
+        by_node = {t.metadata.get("dialogue_node"): t for t in turns}
+        assert by_node["node-7"].metadata == {"dialogue_node": "node-7", "seq": 7}
+
+    def test_parallel_mixed_reads_and_writes(self) -> None:
+        """Reads racing with writes must stay consistent and error-free."""
+        store = _make_store()
+        _run(store.init())
+        n = 40
+
+        async def _worker(i: int) -> None:
+            for j in range(5):
+                await store.append_turn(
+                    "scope_m", Turn(role="user", content=f"w{i}-{j}")
+                )
+                await store.load_recent("scope_m", limit=10)
+
+        async def _concurrent() -> None:
+            await asyncio.gather(*(_worker(i) for i in range(n)))
+
+        _run(_concurrent())
+        turns = _run(store.load_recent("scope_m", limit=n * 5 + 5))
+        # Every worker wrote 5 unique turns → all 200 rows present.
+        assert len(turns) == n * 5
+        contents = {t.content for t in turns}
+        assert len(contents) == n * 5
+
+
+class TestTransactionConflictRetry:
+    """Requirement 2: retry on ``cannot start a transaction within a transaction``."""
+
+    def test_retry_on_leftover_transaction(self) -> None:
+        """A leftover open transaction is rolled back and the op re-runs."""
+        import sqlite3
+
+        store = _make_store()
+        _run(store.init())
+        real_conn = store._conn
+
+        # Wrap the real connection with a proxy that fails the first INSERT
+        # exactly once — simulating a neighbour call that left a transaction
+        # open on the shared connection.
+        class FlakyProxy:
+            calls = 0
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+            def execute(self, sql, params=()):
+                if FlakyProxy.calls == 0 and sql.strip().upper().startswith("INSERT"):
+                    FlakyProxy.calls += 1
+                    raise sqlite3.OperationalError(
+                        "cannot start a transaction within a transaction"
+                    )
+                return real_conn.execute(sql, params)
+
+        store._conn = FlakyProxy()  # type: ignore[assignment]
+        try:
+            inserted = _run(
+                store.append_turn("s", Turn(role="user", content="retried"))
+            )
+        finally:
+            store._conn = real_conn  # type: ignore[assignment]
+        assert inserted is True
+        assert FlakyProxy.calls == 1  # conflict fired once; retry succeeded
+        turns = _run(store.load_recent("s"))
+        assert len(turns) == 1
+        assert turns[0].content == "retried"
+
+    def test_non_conflict_operational_error_propagates(self) -> None:
+        """Unrelated OperationalErrors must NOT be swallowed by retry."""
+        import sqlite3
+
+        store = _make_store()
+        _run(store.init())
+        real_conn = store._conn
+
+        class BrokenProxy:
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+            def execute(self, sql, params=()):
+                raise sqlite3.OperationalError("database is locked")
+
+        store._conn = BrokenProxy()  # type: ignore[assignment]
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                _run(store.append_turn("s", Turn(role="user", content="x")))
+        finally:
+            store._conn = real_conn  # type: ignore[assignment]
 
 
 def _run_safe(coro_or_call):
