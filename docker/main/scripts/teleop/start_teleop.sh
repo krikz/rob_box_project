@@ -100,8 +100,11 @@ fi
 
 echo "🚀 Starting joystick_control_node..."
 
-# Start joystick_control_node
-# Note: due to --symlink-install, the executable is named .py
+# Start joystick_control_node.
+# Entry point name (from src/rob_box_teleop/setup.py) is `joystick_control_node`
+# — `ros2 run` resolves it via the ament index, NOT the source filename.
+# Adding `.py` here (as a previous fix attempted for `--symlink-install`) breaks
+# lookup with "No executable found" and the container exits into a restart loop.
 if [ -n "$PARAMS_FILE" ]; then
     # Add serial port override if port was auto-detected
     EXTRA_ARGS=""
@@ -109,12 +112,12 @@ if [ -n "$PARAMS_FILE" ]; then
         EXTRA_ARGS="-p serial_port:=$SERIAL_PORT_OVERRIDE"
         echo "   Overriding serial_port to: $SERIAL_PORT_OVERRIDE"
     fi
-    ros2 run rob_box_teleop joystick_control_node.py --ros-args \
+    ros2 run rob_box_teleop joystick_control_node --ros-args \
         --params-file "$PARAMS_FILE" \
         $EXTRA_ARGS \
         --log-level info &
 else
-    ros2 run rob_box_teleop joystick_control_node.py --ros-args \
+    ros2 run rob_box_teleop joystick_control_node --ros-args \
         --log-level info &
 fi
 
