@@ -46,13 +46,14 @@ RUN_NOW_FILE="${RUN_NOW_FILE:-RUN_NOW}"
 RUN_NOW_LOCK="${RUN_NOW_LOCK:-/tmp/agent-flow-run-now.lock}"
 E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-/home/builder/.hermes/scripts/agent-flow-e2e-process.sh}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
+E2E_LOCK_FILE="${E2E_LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
 
 if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
     # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
     # Проверяем по flock e2e-process (а не по lock-файлу watchdog) — flock
     # надёжнее: если e2e-process уже держит lock, второй инстанс не нужен.
-    if [ -f "$LOCK_FILE" ] && exec 9>"$LOCK_FILE" && ! flock -n 9 2>/dev/null; then
-        log "⏳ RUN_NOW detected but e2e-process already holds flock ($LOCK_FILE) — skip"
+    if [ -f "$E2E_LOCK_FILE" ] && exec 9>"$E2E_LOCK_FILE" && ! flock -n 9 2>/dev/null; then
+        log "⏳ RUN_NOW detected but e2e-process already holds flock ($E2E_LOCK_FILE) — skip"
         exec 9>&-
     else
         exec 9>&-
@@ -62,6 +63,25 @@ if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >
         echo $! > "$RUN_NOW_LOCK"
         log "🚀 e2e-process triggered (pid=$!)"
     fi
+fi
+
+# --- e2e-process liveness (надзор 13.08): авто-рестарт при краше ------------
+# Падаван-вахта (LLM-крон) перезапускает e2e-process вручную по правилу
+# «не тикал >90 мин», но её тик может быть убит квотой LLM (429/2056) — как
+# 12.08 23:16 UTC, когда e2e-process упал (BrokenPipeError в python-пайпе
+# round-69) и очередь needs-e2e (19 PR) встала на ~1ч. Watchdog (no-agent,
+# без LLM) должен быть самодостаточен: если e2e-process мёртв (flock
+# свободен), а needs-e2e PR-ы есть — поднимаем заново. Второй инстанс
+# невозможен: e2e-process держит flock весь тик (G6).
+_e2e_needs_e2e="$(gh api "repos/${GH_REPO}/pulls?state=open&per_page=100" \
+    --jq '[.[] | select(.labels[]?.name == "needs-e2e")] | length' 2>/dev/null || echo 0)"
+if [ "${_e2e_needs_e2e:-0}" -gt 0 ] \
+    && flock -n "$E2E_LOCK_FILE" -c true 2>/dev/null; then
+    log "🚑 e2e-process не держит flock (краш/завис), needs-e2e PR-ов: ${_e2e_needs_e2e} — перезапуск"
+    nohup bash "$E2E_PROCESS_SCRIPT" \
+        >> "$HERMES_HOME/logs/agent-flow-e2e-process-run-now.log" 2>&1 &
+    echo $! > "$RUN_NOW_LOCK"
+    log "🚀 e2e-process restarted (pid=$!)"
 fi
 
 # Delegate all detection to a Python helper so we can use the bundled
