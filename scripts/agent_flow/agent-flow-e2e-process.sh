@@ -1014,6 +1014,18 @@ while IFS=$'\t' read -r number title labels body; do
         log "issue #${number}: no PR for ${branch} — merge-gate likely stale — skip"
         skipped=$((skipped+1)); continue
     fi
+    # Orphan guard (ретро 13.08 t_423453b1, #1160): PR MERGED, но ветка
+    # удалена после merge (user merge по Q22 без e2e, "delete branch on
+    # merge"). gh pr list всё ещё возвращает запись PR (headRefName
+    # сохраняется), поэтому pr_state=MERGED, но git fetch origin/$branch
+    # ниже упадёт → ложная conflict-карточка каждый тик. Merge-gate снимает
+    # needs-e2e в своём цикле (5m); здесь только тихо скипаем, чтобы не
+    # жечь round и не плодить конфликт-карточки.
+    if [ "$pr_state" = "MERGED" ] \
+        && ! git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
+        log "issue #${number}: PR MERGED, ветка ${branch} удалена — e2e невозможен (orphan, Q22 user-merge) — skip (merge-gate снимет needs-e2e)"
+        skipped=$((skipped+1)); continue
+    fi
     pr_number="$(gh pr list --repo "$GH_REPO" --state all --head "$branch" \
         --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
 

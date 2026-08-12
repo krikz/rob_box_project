@@ -152,6 +152,32 @@ Merge-gate повторно читает labels непосредственно �
 Предпочтение отдаётся безопасной задержке до 5 минут, а не риску преждевременного
 закрытия.
 
+### Orphan: user-merge без e2e (Q22), ветка удалена
+
+Ретро 13.08 t_423453b1 (#1160): пользователь смержил PR вручную (Q22) **без**
+e2e-прогона, а ветка `z-{agent}/<id>-<slug>` удалена после merge (GitHub
+"delete branch on merge" или ручная уборка). В этом случае:
+
+- `gh pr list --head <branch>` всё ещё возвращает MERGED-запись PR (headRefName
+  сохраняется в GitHub), поэтому merge-gate видит `MERGED`, но `e2e-done` не
+  появится никогда: e2e-process физически не может собрать round (ветки нет,
+  `git fetch origin/<branch>` пуст).
+- Итог без фикса: issue вечно висит в ротации `needs-e2e` (шум каждый тик
+  e2e-process + ложные conflict-карточки).
+
+Решение (в merge-gate): при `MERGED + OPEN + needs-e2e без e2e-done` проверить
+`git ls-remote` ветки:
+
+- ветка **существует** → прежнее поведение: defer, ждём `e2e-done`
+  (обратный путь merge → PASS, §5 выше);
+- ветка **удалена** → e2e невозможен: снять `needs-e2e` (и `e2e:rejected`),
+  прокомментировать юзеру «мерж без e2e (Q22): закрыть вручную или завести
+  follow-up на e2e», issue **НЕ закрывать** (решение за юзером), `needs-review`
+  **НЕ ставить** (PR уже нет), destructive cleanup **не запускать**.
+
+e2e-process дополнительно скипает такие issue (тихо, без round), пока merge-gate
+не снял метку.
+
 ## 6. Follow-up policy
 
 Закрытая issue является неизменяемым свидетельством завершённого scope. Новый
@@ -185,6 +211,10 @@ follow-up PR после закрытия должен иметь новую issu
 7. Merge-gate не создаёт `e2e-done`: MERGED без PASS provenance остаётся OPEN.
 8. Existing regression: follow-up detection и triage `e2e-done` dedup остаются
    зелёными.
+9. Orphan (ретро 13.08 t_423453b1): `MERGED + needs-e2e без e2e-done`, ветка
+   удалена (`git ls-remote` пуст) → `needs-e2e` снят, комментарий юзеру (Q22)
+   опубликован, close НЕ вызывается, `needs-review` НЕ ставится, destructive
+   cleanup НЕ запускается. Если ветка существует — прежнее defer (criterion 2).
 
 Тесты должны мокать `gh`/GitHub fixtures и не менять реальные issues.
 
