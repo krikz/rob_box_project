@@ -678,6 +678,15 @@ if printf '%s' "$*" | grep -q -- ' show '; then
     printf '%s' '{"task":{"status":"done"}}'
     exit 0
 fi
+# `kanban --board <b> create ...` → emit "Created t_<id> (ready, ...)" so
+# ensure_conflict_recovery_card can parse the new card id (ретро 12.08
+# t_8af6bf29). Fixture key: KANBAN_CREATE_ID, default t_recovery.
+if printf '%s' "$*" | grep -q -- ' create '; then
+    _create_id="$(grep -E '^KANBAN_CREATE_ID=' "$state" 2>/dev/null | head -n1 | sed 's/^KANBAN_CREATE_ID=//')"
+    [ -n "$_create_id" ] || _create_id="t_recovery"
+    printf 'Created %s  (ready, assignee=default)\n' "$_create_id"
+    exit 0
+fi
 # Simulate success; specific subcommands are recorded for assertions.
 HERMES_MOCK_EOF
     chmod +x "$bin_dir/hermes"
@@ -708,10 +717,16 @@ run_merge_gate() {
         ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
         HERMES_HOME=/tmp/_unused
         HERMES_BIN=hermes  # mocked
+        # Ретро 12.08 t_8af6bf29: merge-gate читает kanban-статус напрямую из
+        # sqlite (KANBAN_DB_PATH), а не через `hermes kanban show` (падает после
+        # v0.20.0). В тестах БД недоступна → хелпер фолбэчится на мок hermes
+        # show --json (см. bin/hermes ниже). Указываем несуществующий путь,
+        # чтобы тесты НЕ читали реальную /home/builder/.hermes/.../kanban.db.
+        KANBAN_DB_PATH="$TEST_TMP/nonexistent-kanban.db"
         # Isolate the flock sentinel: the production merge-gate cron holds
         # /tmp/agent-flow-merge-gate.lock and would make tests flaky.
         LOCK_FILE="$TEST_TMP/merge-gate.lock"
-        export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN LOCK_FILE
+        export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN KANBAN_DB_PATH LOCK_FILE
         # The script sources a profile .env if present — override HOME
         # and PROFILE_ENV paths so it can't load real config.
         export HOME=/tmp
