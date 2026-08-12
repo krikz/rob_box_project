@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Observability — Prometheus metrics for the Telegram bot (issue #1160).
 
-Лёгкий автономный аналог ``rob_box_voice.observability``: telegram-bot —
+Lёгкий автономный аналог ``rob_box_voice.observability``: telegram-bot —
 отдельный контейнер (см. ``docker/vision/telegram_bot/Dockerfile``), он
 не должен тянуть ``rob_box_voice``. Здесь только то, что нужно для
 ``telegram_message_total``.
@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from prometheus_client import Counter as _Counter
+    from prometheus_client import Counter as _Counter  # noqa: F401
 
 try:
     from prometheus_client import Counter, start_http_server
@@ -46,7 +46,7 @@ class _NoopMetric:
 
     __slots__ = ()
 
-    def labels(self, *args: Any, **kwargs: Any) -> "_NoopMetric":
+    def labels(self, *args: Any, **kwargs: Any) -> '_NoopMetric':
         return self
 
     def inc(self, amount: float = 1.0) -> None:
@@ -74,19 +74,19 @@ def start_metrics_server(port: int) -> bool:
             start_http_server(port)  # type: ignore[misc]
         except OSError as exc:
             _log.warning(
-                "prometheus_client.start_http_server(%d) failed: %s",
+                'prometheus_client.start_http_server(%d) failed: %s',
                 port, exc,
             )
             return False
         _http_server_started.add(port)
-        _log.info("Prometheus metrics server started on :%d/metrics", port)
+        _log.info('Prometheus metrics server started on :%d/metrics', port)
         return True
 
 
 def _get_counter(name: str, documentation: str, labelnames: tuple[str, ...]) -> Any:
     if not is_metrics_enabled():
         return _NoopMetric()
-    key = f"counter:{name}"
+    key = f'counter:{name}'
     with _registry_lock:
         existing = _metric_registry.get(key)
         if existing is not None:
@@ -96,7 +96,7 @@ def _get_counter(name: str, documentation: str, labelnames: tuple[str, ...]) -> 
         return metric
 
 
-def record_telegram_message(direction: str, *, message_type: str = "text") -> None:
+def record_telegram_message(direction: str, *, message_type: str = 'text') -> None:
     """Учёт telegram-сообщения.
 
     :param direction: ``"in"`` (входящее от юзера) или ``"out"``
@@ -105,15 +105,15 @@ def record_telegram_message(direction: str, *, message_type: str = "text") -> No
         ``"callback"``.
     """
     counter = _get_counter(
-        "telegram_message_total",
-        "Telegram bot messages, labelled by direction and type.",
-        ("direction", "type"),
+        'telegram_message_total',
+        'Telegram bot messages, labelled by direction and type.',
+        ('direction', 'type'),
     )
     counter.labels(direction=direction, type=message_type).inc()
 
 
 __all__ = [
-    "is_metrics_enabled",
-    "record_telegram_message",
-    "start_metrics_server",
+    'is_metrics_enabled',
+    'record_telegram_message',
+    'start_metrics_server',
 ]

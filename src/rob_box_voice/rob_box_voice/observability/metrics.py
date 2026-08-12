@@ -48,11 +48,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from prometheus_client import Counter as _Counter
-    from prometheus_client import Histogram as _Histogram
+    from prometheus_client import Counter as _Counter  # noqa: F401
+    from prometheus_client import Histogram as _Histogram  # noqa: F401
 
 # prometheus_client — optional. Если его нет, no-op behaviour.
 try:
