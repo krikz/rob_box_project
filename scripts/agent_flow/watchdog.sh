@@ -44,7 +44,7 @@ log() { printf '[watchdog] %s\n' "$*" >&2; }
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 RUN_NOW_FILE="${RUN_NOW_FILE:-RUN_NOW}"
 RUN_NOW_LOCK="${RUN_NOW_LOCK:-/tmp/agent-flow-run-now.lock}"
-E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-$HERMES_HOME/profiles/architect/scripts/agent-flow-e2e-process.sh}"
+E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-/home/builder/.hermes/scripts/agent-flow-e2e-process.sh}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 
 if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
