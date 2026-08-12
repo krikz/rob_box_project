@@ -60,6 +60,7 @@ SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 TARGET_DIRS=(
     "/home/builder/.hermes/profiles/agent-flow/scripts"
     "/home/builder/.hermes/profiles/architect/scripts"
+    "/home/builder/.hermes/profiles/devops/scripts"
     "/home/builder/.hermes/scripts"
 )
 
@@ -153,8 +154,11 @@ EXPECTED=(
     agent-flow-merge-gate.sh
     agent-flow-e2e-process.sh
     agent-flow-handoff.sh
+    round_ensure.sh
+    agent-flow-cleanup-249.sh
     cron-loop.sh
     watchdog.sh
+    agent-flow-drift-detect.sh
 )
 for f in "${EXPECTED[@]}"; do
     if [ ! -f "$SCRIPT_DIR/$f" ]; then
@@ -249,10 +253,11 @@ echo
 echo "==> Done. Verify:"
 if ! $DRY_RUN; then
     for f in "${EXPECTED[@]}"; do
-        f1="/home/builder/.hermes/profiles/agent-flow/scripts/$f"
-        f2="/home/builder/.hermes/profiles/architect/scripts/$f"
-        f3="/home/builder/.hermes/scripts/$f"
-        for fp in "$f1" "$f2" "$f3"; do
+        for fp in \
+            "/home/builder/.hermes/profiles/agent-flow/scripts/$f" \
+            "/home/builder/.hermes/profiles/architect/scripts/$f" \
+            "/home/builder/.hermes/profiles/devops/scripts/$f" \
+            "/home/builder/.hermes/scripts/$f"; do
             if [ -e "$fp" ]; then
                 inode="$(stat -c '%i' "$fp" 2>/dev/null)"
                 kind="$( [ -L "$fp" ] && echo symlink || echo "reg(inode=$inode)" )"

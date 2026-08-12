@@ -51,6 +51,15 @@ NEEDS_REVIEW_LABEL="${NEEDS_REVIEW_LABEL:-needs-review}"
 DONE_LABEL="${DONE_LABEL:-e2e-done}"
 REJECTED_LABEL="${REJECTED_LABEL:-e2e:rejected}"
 NO_E2E_LABEL="${NO_E2E_LABEL:-no-e2e-required}"
+BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
+# ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
+# commits OR > 3000 lines is forbidden without an explicit `big-bang-override`
+# label on the issue. Шифу (товарищ) is the only one allowed to set it. We
+# enforce the rule BOTH at merge-gate (before adding needs-e2e) AND at triage
+# (before creating the card) so the worker can't even start a 100-commit job
+# without the override. See also agent-flow-triage.sh `big_bang_check()`.
+BIG_BANG_MAX_COMMITS="${BIG_BANG_MAX_COMMITS:-50}"
+BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
 DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
@@ -87,6 +96,9 @@ fi
 : "${DONE_LABEL:=e2e-done}"
 : "${REJECTED_LABEL:=e2e:rejected}"
 : "${NO_E2E_LABEL:=no-e2e-required}"
+: "${BIG_BANG_OVERRIDE_LABEL:=big-bang-override}"
+: "${BIG_BANG_MAX_COMMITS:=50}"
+: "${BIG_BANG_MAX_LINES:=3000}"
 : "${DEVELOP_BRANCH:=develop}"
 
 # --- helpers -----------------------------------------------------------------
@@ -292,11 +304,12 @@ except Exception: print("")' 2>/dev/null || true)"
 
     # Look up PR by head branch (authoritative — no extra state).
     # title + labels нужны для detect_pr_kind (lint vs functional).
+    # additions + commits нужны для big-bang-override gate (ADR-0013).
     pr_json="$(gh pr list \
         --repo "$GH_REPO" \
         --state all \
         --head "$branch" \
-        --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels 2>/dev/null || true)"
+        --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,commits 2>/dev/null || true)"
 
     # Процесс-фикс (09.08): воркеры ретро-карточек создают ветки `wt/<task_id>`
     # (нет issue → конвенция z-{agent}/<id>-<slug> неприменима). Такие PR
@@ -309,7 +322,7 @@ except Exception: print("")' 2>/dev/null || true)"
                 --repo "$GH_REPO" \
                 --state all \
                 --head "$wt_branch" \
-                --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels 2>/dev/null || true)"
+                --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,commits 2>/dev/null || true)"
             if [ -n "$pr_json" ] && [ "$pr_json" != "[]" ]; then
                 branch="$wt_branch"
                 log "issue #${number}: PR найден по fallback-ветке ${wt_branch}"
@@ -351,6 +364,12 @@ pr_title = str(pr.get("title", ""))
 pr_labels_csv = ",".join(sorted(
     {str(lab.get("name", "")) for lab in (pr.get("labels") or [])}
 ))
+# Размер PR — для big-bang-override gate (ADR-0013). commits в API —
+# это СПИСОК (не int), поэтому берём len(). additions — int напрямую.
+# Если поле отсутствует (старый API), считаем 0 → gate не сработает
+# (no PR, no override needed).
+pr_commits_count = len(pr.get("commits") or [])
+pr_additions = int(pr.get("additions") or 0)
 print(f"pr_number={shlex.quote(pr_number)}")
 print(f"pr_base={shlex.quote(pr_base)}")
 print(f"pr_state={shlex.quote(pr_state)}")
@@ -360,6 +379,8 @@ print(f"pr_rollup_count={pr_rollup_count}")
 print(f"pr_rollup_pass={pr_rollup_pass}")
 print(f"pr_title={shlex.quote(pr_title)}")
 print(f"pr_labels_csv={shlex.quote(pr_labels_csv)}")
+print(f"pr_commits_count={pr_commits_count}")
+print(f"pr_additions={pr_additions}")
 ')"
 
     if [ -z "${pr_number:-}" ]; then
@@ -367,15 +388,88 @@ print(f"pr_labels_csv={shlex.quote(pr_labels_csv)}")
         errored=$((errored+1)); continue
     fi
 
-    # MERGED (Q22 done manually by user): cleanup — delete branch,
-    # free worktrees on it, archive the done card. Prevent the
-    # "branch held by stale worktree → spawn_failed forever" cycle.
+    # MERGED (Q22 done manually by user): post-merge reconciliation per
+    # ADR-0014 (docs/adr/0014-agent-flow-issue-closure.md).
+    #
+    # Invariant: issue may close <=> PR MERGED into develop AND issue has
+    # e2e-done produced by e2e-process (not by merge-gate itself). Race:
+    # e2e-process may set e2e-done after we observed initial labels — so
+    # we re-read labels RIGHT BEFORE close. Order: (1) re-read labels +
+    # state, (2) close issue if e2e-done, (3) only on success run
+    # destructive cleanup (delete branch, free worktrees, archive card,
+    # cleanup comment, drop stale labels). Close failure → warning,
+    # destructive cleanup is deferred, retry next 5m tick.
     if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ]; then
-        log "issue #${number}: PR #${pr_number} MERGED into ${pr_base} — cleanup"
+        log "issue #${number}: PR #${pr_number} MERGED into ${pr_base} — post-merge reconcile (ADR-0014)"
         if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would cleanup branch ${branch} (delete remote, free worktrees, archive card ${task_id})"
+            log "DRY-RUN would reconcile issue #${number} (re-read labels, maybe close, then cleanup ${branch})"
             continue
         fi
+        # 0.1) Re-read current labels & state — race with e2e-process
+        # (e2e-process may have set e2e-done between our initial issue-list
+        # pull and now; also the issue may already be CLOSED from a previous
+        # tick in this same merge cycle, making close a no-op).
+        _current_labels_csv="$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        _current_labels_norm="$(printf '%s' "$_current_labels_csv" | tr '[:upper:]' '[:lower:]')"
+        _has_e2e_done="0"
+        if has_label "$_current_labels_norm" "$DONE_LABEL"; then
+            _has_e2e_done="1"
+        fi
+        _issue_state="$(gh issue view "$number" --repo "$GH_REPO" --json state \
+            --jq '.state' 2>/dev/null || echo '')"
+        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done}"
+
+        # 0.2) Close only when invariant holds. Four branches:
+        #   (a) already CLOSED → idempotent skip, proceed to cleanup
+        #   (b) e2e-done present, OPEN → close with reason=completed
+        #   (c) MERGED but no e2e-done → leave OPEN, defer destructive
+        #       cleanup until next tick when e2e-process may set e2e-done
+        #       (race merge → label, ADR §5).
+        #   (d) state unreadable → defer cleanup: we cannot prove the
+        #       issue is closed, so we must not delete the last mapping
+        #       (ADR §4 req 4).
+        _closed_this_tick=0
+        case "$_issue_state" in
+            CLOSED)
+                # CLOSED already (e.g. closed manually or previous tick) — skip
+                # close, go straight to cleanup.
+                log "issue #${number}: already CLOSED — close skipped"
+                ;;
+            "")
+                # gh issue view failed / state unreadable — conservative
+                # deferral: destructive cleanup must not run on unverifiable
+                # state, otherwise we lose the issue→PR mapping (ADR §4 req 4).
+                log "issue #${number}: WARNING issue state unreadable — destructive cleanup deferred to next tick"
+                labeled=$((labeled+1)); continue
+                ;;
+            OPEN)
+                if [ "$_has_e2e_done" = "1" ]; then
+                    if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                        _closed_this_tick=1
+                        log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
+                    else
+                        # Close API failure — destructive cleanup MUST be
+                        # deferred, otherwise we lose the mapping. Warning
+                        # only, no `|| true` masking (ADR §4 req 4).
+                        log "issue #${number}: WARNING gh issue close failed — destructive cleanup deferred to next tick"
+                        labeled=$((labeled+1)); continue
+                    fi
+                else
+                    # MERGED without e2e-done — wait for e2e-process PASS.
+                    # Do NOT touch remote branch / archive card yet: a later
+                    # tick may close this issue, and we don't want to
+                    # archive the card while a worker is still holding it.
+                    log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — destructive cleanup deferred"
+                    labeled=$((labeled+1)); continue
+                fi
+                ;;
+            *)
+                log "issue #${number}: unexpected issue state=${_issue_state} — skip cleanup"
+                skipped=$((skipped+1)); continue
+                ;;
+        esac
+
         # 1) Find the issue's kanban card (may be done already).
         card_id=""
         if [ -z "${task_id:-}" ]; then
@@ -398,7 +492,10 @@ except Exception:
         if [ -n "$card_id" ]; then
             free_stale_worktrees_for "$card_id" || true
         fi
-        # 3) Delete the remote branch (merged — safe).
+        # 3) Delete the remote branch (merged — safe). We have already
+        # closed the issue above, so the issue→PR mapping is preserved
+        # in GitHub issue history regardless of whether the branch ref
+        # still exists (ADR §4 req 4).
         if git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
             gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$branch" >/dev/null 2>&1 \
                 && log "issue #${number}: remote branch ${branch} deleted" \
@@ -420,21 +517,28 @@ except Exception: print("")' 2>/dev/null || true)"
         # 5) Dedup cleanup-коммента (ретро 10.08 t_9caf5d52): раньше коммент
         #    «✅ PR #N смержен» постился КАЖДЫЙ тик (5 мин) → 6 одинаковых на
         #    #1089 (08:35–08:49). Постим только если за последние часы такого
-        #    коммента ещё нет.
+        #    коммента ещё нет. ADR-0014: текст говорит правду — упомянуть
+        #    закрытие issue явно.
         _dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         _dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_dedup_since}&per_page=100" \
             --jq '[.[] | select(.body | startswith("✅ PR #'"${pr_number}"' смержен"))] | length' 2>/dev/null || echo 0)"
         if [ "${_dup_count:-0}" -eq 0 ]; then
+            _close_note=""
+            if [ "$_closed_this_tick" = "1" ]; then
+                _close_note="Issue закрыта (reason=completed, PASS-proven). "
+            fi
             gh issue comment "$number" --repo "$GH_REPO" --body \
-                "✅ PR #${pr_number} смержен в ${pr_base}. Cleanup: ветка удалена, worktree освобождены, карточка заархивирована." >/dev/null 2>&1 || true
+                "✅ PR #${pr_number} смержен в ${pr_base}. ${_close_note}Cleanup: ветка удалена, worktree освобождены, карточка заархивирована." >/dev/null 2>&1 || true
         else
             log "issue #${number}: merged-cleanup comment already exists (×${_dup_count}) — dedup skip"
         fi
         # 6) Снять stale-метки со смерженного фикса (ретро 10.08 t_9caf5d52):
-        #    e2e:rejected/needs-e2e на merged-PR не актуальны; e2e-done — финал.
+        #    e2e:rejected/needs-e2e на merged-PR не актуальны. e2e-done НЕ
+        #    добавляем сами: PASS-label принадлежит только e2e-process
+        #    (ADR-0014 §4 req 2). Если e2e-done уже стоит — он остаётся;
+        #    если не стоит — мы НЕ должны его создавать.
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
-        gh issue edit "$number" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
         labeled=$((labeled+1)); continue
     fi
 
@@ -653,6 +757,72 @@ git push --force-with-lease origin ${pr_head_ref}
     # functional: всё остальное → e2e обязателен, ставим `needs-e2e`.
     pr_kind="$(detect_pr_kind "$pr_labels_csv" "$pr_title")"
     log "issue #${number} PR #${pr_number} kind=${pr_kind} (CI green & clean)"
+
+    # --- big-bang-override gate (ADR-0013, ретро t_9726053d) ---------------
+    # PR > ${BIG_BANG_MAX_COMMITS} коммитов ИЛИ > ${BIG_BANG_MAX_LINES} строк
+    # ЗАПРЕЩЁН без явной метки ${BIG_BANG_OVERRIDE_LABEL} на issue. Метку
+    # ставит ТОЛЬКО товарищ Шифу (см. CONTRIBUTING.md §69-71). Поведение:
+    #   - НЕ ставить needs-e2e / needs-review (иначе e2e-process поглотит PR)
+    #   - оставить PR-комментарий (с дедупликацией как в post-merge close):
+    #     "PR #N: size превышает ADR-0013, требуется split ИЛИ @Шифу ставит override"
+    #   - comment постится ровно один раз за 24h (как cleanup-коммент в §5
+    #     post-merge), иначе 6 одинаковых сообщений за час (ретро 10.08 t_9caf5d52).
+    # Override → стандартный путь (needs-e2e / needs-review).
+    _bb_reasons=""
+    if [ "${pr_commits_count:-0}" -gt "${BIG_BANG_MAX_COMMITS}" ] 2>/dev/null; then
+        _bb_reasons="${_bb_reasons}${pr_commits_count} коммитов > ${BIG_BANG_MAX_COMMITS}; "
+    fi
+    if [ "${pr_additions:-0}" -gt "${BIG_BANG_MAX_LINES}" ] 2>/dev/null; then
+        _bb_reasons="${_bb_reasons}${pr_additions} строк > ${BIG_BANG_MAX_LINES}; "
+    fi
+    if [ -n "$_bb_reasons" ]; then
+        if has_label "$labels_norm" "$BIG_BANG_OVERRIDE_LABEL"; then
+            log "issue #${number}: big-bang (${_bb_reasons% ;}) но override ${BIG_BANG_OVERRIDE_LABEL} есть — пропускаем gate"
+        else
+            log "issue #${number}: PR #${pr_number} BIG-BANG (${_bb_reasons% ;}) — ${BIG_BANG_OVERRIDE_LABEL} отсутствует, block needs-e2e"
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: skip needs-e2e + post big-bang comment to PR #${pr_number} (dedup 24h)"
+                labeled=$((labeled+1)); continue
+            fi
+            # Дедупликация как в post-merge cleanup: за последние 24h
+            # постим только один раз. Сейчас PR огромный (4850/100),
+            # round-49..54 → 6 одинаковых комментов = спам. Шифу прямо:
+            # «один раз label-коммент, round больше не запускается».
+            _bb_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _bb_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_number}/comments?since=${_bb_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🚨 **PR #'"${pr_number}"' BIG-BANG"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_bb_dup_count:-0}" -gt 0 ] 2>/dev/null; then
+                log "issue #${number}: big-bang comment на PR #${pr_number} уже проставлен (×${_bb_dup_count} за 24h) — dedup skip"
+                skipped=$((skipped+1)); continue
+            fi
+            # Коммент И на issue (чтобы воркер увидел в task), И на PR
+            # (чтобы ревьюер/Шифу увидел). Один раз каждый.
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "🚨 **PR #${pr_number} BIG-BANG** — нарушение ADR-0013: ${_bb_reasons% ;}.
+
+Требуется:
+1. **split** на инкрементальные PR (по 1 эпику на issue), каждый проходит e2e отдельно, ИЛИ
+2. **товарищ Шифу** ставит метку \`${BIG_BANG_OVERRIDE_LABEL}\` на этот issue (явный override).
+
+Merge-gate **НЕ поставит ${NEEDS_E2E_LABEL}** без override. Round-процесс не будет автоматически гонять e2e на этом PR.
+
+Ссылки: ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md), CONTRIBUTING.md §69-71." >/dev/null 2>&1 || true
+            gh pr comment "$pr_number" --repo "$GH_REPO" --body \
+                "🚨 **PR #${pr_number} BIG-BANG** — нарушение ADR-0013: ${_bb_reasons% ;}.
+
+Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не будет поставлен.
+
+Что делать:
+- **split** на инкрементальные PR (по 1 эпику), ИЛИ
+- **товарищ Шифу** ставит \`${BIG_BANG_OVERRIDE_LABEL}\` на issue #${number}." >/dev/null 2>&1 || true
+            # Помечаем issue меткой agent-flow:big-bang-blocked (best-effort) — чтобы
+            # triage/воркер/дашборд видели, что issue ждёт решения. Не критично
+            # если метка уже есть или label API упадёт.
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow:big-bang-blocked" >/dev/null 2>&1 || true
+            labeled=$((labeled+1)); continue
+        fi
+    fi
+
     if [ "$pr_kind" = "lint" ]; then
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would run: gh pr edit ${pr_number} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"

@@ -58,6 +58,16 @@ AGENT_FLOW_MAX_RUNTIME_LARGE="${AGENT_FLOW_MAX_RUNTIME_LARGE:-3600}"
 # Порог "объёмного" body issue (символов) — грубый прокси размера задачи.
 AGENT_FLOW_LARGE_BODY_CHARS="${AGENT_FLOW_LARGE_BODY_CHARS:-2000}"
 AGENT_FLOW_MAX_RETRIES="${AGENT_FLOW_MAX_RETRIES:-2}"
+# ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
+# коммитов ИЛИ > 3000 строк запрещён без метки `big-bang-override` на issue.
+# Triage проверяет это ДО `hermes kanban create` — если к issue уже привязан
+# огромный PR (например, воркер случайно запушил 100 коммитов до того как
+# merge-gate успел среагировать), мы НЕ создаём новую карточку на тот же issue
+# (worker всё равно упрётся в merge-gate → бессмысленная работа). Шифу
+# ставит метку вручную, чтобы явно разрешить.
+BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
+BIG_BANG_MAX_COMMITS="${BIG_BANG_MAX_COMMITS:-50}"
+BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
 DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-triage.lock}"
@@ -91,6 +101,9 @@ fi
 : "${AGENT_FLOW_MAX_RUNTIME_LARGE:=3600}"
 : "${AGENT_FLOW_LARGE_BODY_CHARS:=2000}"
 : "${AGENT_FLOW_MAX_RETRIES:=2}"
+: "${BIG_BANG_OVERRIDE_LABEL:=big-bang-override}"
+: "${BIG_BANG_MAX_COMMITS:=50}"
+: "${BIG_BANG_MAX_LINES:=3000}"
 : "${DRY_RUN:=false}"
 : "${ISSUE_LABEL:=hermes}"
 : "${DONE_LABEL:=e2e-done}"
@@ -345,6 +358,79 @@ while IFS=$'\t' read -r number title labels body; do
         log "DRY-RUN would free stale worktrees for branch ${branch}"
     else
         free_stale_worktrees_for_branch "$branch" || true
+    fi
+
+    # --- big-bang-override check (ADR-0013, ретро t_9726053d) ------------
+    # Если к issue уже привязан PR (воркер мог запушить в обход triage —
+    # например, нашёл issue в GitHub UI и сделал PR руками), и этот PR
+    # огромный (> ${BIG_BANG_MAX_COMMITS} коммитов ИЛИ > ${BIG_BANG_MAX_LINES}
+    # строк) — не создаём новую карточку. Причина:
+    #   - merge-gate всё равно заблокирует needs-e2e (нет override)
+    #   - воркер потратит max_runtime впустую, потом встанет в тупик
+    # Ищем PR по вычисленной ветке (`z-{agent}/N-slug` или service-ветка).
+    # Если override-метка уже на issue — пропускаем gate (явное разрешение).
+    # Если PR нет (нормальный путь) — пропускаем check (нечего проверять).
+    if ! printf '%s' "$labels" | tr ',' '\n' | tr '[:upper:]' '[:lower:]' | grep -Fxq "$BIG_BANG_OVERRIDE_LABEL"; then
+        _bb_pr_json="$(gh pr list --repo "$GH_REPO" --state all --head "$branch" \
+            --json number,additions,commits 2>/dev/null || echo '[]')"
+        _bb_pr_count="$(printf '%s' "$_bb_pr_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(len(d) if isinstance(d, list) else 0)
+except Exception:
+    print(0)
+' 2>/dev/null || echo 0)"
+        if [ "${_bb_pr_count:-0}" -gt 0 ] 2>/dev/null; then
+            _bb_pr_info="$(printf '%s' "$_bb_pr_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    if not isinstance(d, list) or not d:
+        print("0	0"); sys.exit(0)
+    p = d[0]
+    ncommits = len(p.get("commits") or [])
+    nadd = int(p.get("additions") or 0)
+    print(f"{ncommits}	{nadd}")
+except Exception:
+    print("0	0")
+' 2>/dev/null || echo "0	0")"
+            _bb_commits="$(printf '%s' "$_bb_pr_info" | cut -f1)"
+            _bb_lines="$(printf '%s' "$_bb_pr_info" | cut -f2)"
+            _bb_pr_num="$(printf '%s' "$_bb_pr_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("number", "") if d else "")
+except Exception:
+    print("")
+' 2>/dev/null || true)"
+            _bb_reasons=""
+            if [ "${_bb_commits:-0}" -gt "${BIG_BANG_MAX_COMMITS}" ] 2>/dev/null; then
+                _bb_reasons="${_bb_reasons}${_bb_commits} коммитов > ${BIG_BANG_MAX_COMMITS}; "
+            fi
+            if [ "${_bb_lines:-0}" -gt "${BIG_BANG_MAX_LINES}" ] 2>/dev/null; then
+                _bb_reasons="${_bb_reasons}${_bb_lines} строк > ${BIG_BANG_MAX_LINES}; "
+            fi
+            if [ -n "$_bb_reasons" ]; then
+                log "issue #${number}: PR #${_bb_pr_num} BIG-BANG (${_bb_reasons% ;}) — блокируем triage, требуется split или ${BIG_BANG_OVERRIDE_LABEL}"
+                if [ "$DRY_RUN" != "true" ]; then
+                    gh issue comment "$number" --repo "$GH_REPO" --body \
+                        "🚨 **PR #${_bb_pr_num} BIG-BANG** — нарушение ADR-0013: ${_bb_reasons% ;}.
+
+Triage **НЕ создал** kanban-карточку для этого issue, чтобы воркер не сжёг max_runtime впустую (merge-gate всё равно заблокирует needs-e2e без override).
+
+Что делать:
+1. **split** на инкрементальные PR (по 1 эпику), ИЛИ
+2. **товарищ Шифу** ставит \`${BIG_BANG_OVERRIDE_LABEL}\` на этот issue (явное override).
+
+После override повторный тик triage создаст карточку.
+
+Ссылки: ADR-0013, CONTRIBUTING.md §69-71." >/dev/null 2>&1 || true
+                fi
+                skipped=$((skipped+1)); continue
+            fi
+        fi
     fi
 
     body_block="${body:-}"

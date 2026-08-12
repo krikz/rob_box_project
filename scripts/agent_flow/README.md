@@ -86,6 +86,40 @@ voice, scenario_file, patterns, volume и т.д.). Подробности —
 architect, или backend → pr-reviewer). Используется редко, в основном
 вручную.
 
+### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
+
+**Процессное правило:** ручные валидационные раунды devops (проверить
+харнесс-фикс на живом роботе, прогнать конкретную команду) — **ТОЛЬКО
+через этот скрипт** или `ROUND_ONLY=1` режим `agent-flow-e2e-process.sh`.
+
+Скрипт берёт **тот же flock**, что и автоматическая ротация
+(`/tmp/agent-flow-e2e-process.lock`): если e2e-process активен — выход с
+ошибкой (`--wait N` ждёт до N секунд). Никогда не создавай round вручную
+мимо него — параллельный ручной round + автоматическая ротация на одном
+роботе жгут артефакты друг друга (11.08: round-49 FAIL из-за cleanup
+артефактов, ложный вердикт #1077).
+
+```bash
+bash <repo>/scripts/agent_flow/round_ensure.sh            # печатает z-{e2e}/test-round-N
+bash <repo>/scripts/agent_flow/round_ensure.sh --wait 300 # ждать до 5 мин
+```
+
+### `agent-flow-cleanup-249.sh` — безопасный cleanup /tmp на build-хосте (ретро 11.08 t_26a6d362)
+
+Удаляет мусор прошлых e2e-ранов на `10.1.1.249` (`yandex_key_*`,
+`build_*.log`, `dialog_e2e_*.wav`, `e2e_v2_*`, `voice_e2e_*.log`), но:
+
+1. **не трогает файлы моложе `CLEANUP_MIN_AGE_MIN`** (default 30 мин) —
+   активный e2e-прогон пишет свежие `/tmp/e2e_v2_*`;
+2. **skip целиком, если e2e-process активен** (локальный flock
+   `/tmp/agent-flow-e2e-process.lock` занят);
+3. никогда не удаляет `e2e_voice_test.sh` (актуальный харнесс).
+
+```bash
+bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # показать, что удалит
+bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh            # удалить (с guard'ами)
+```
+
 ### `cron-loop.sh` — низкоуровневый цикл
 
 Тонкая обёртка над cron-вызовами (используется как fallback когда

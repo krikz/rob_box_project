@@ -48,6 +48,18 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)"
 OUT_DIR="/tmp/e2e_v2_${RUN_ID}"
 mkdir -p "$OUT_DIR"
 
+# --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
+# Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
+# прогона → paplay open(): No such file → ложный FAIL (round-49, run 31544057593).
+# Каждая запись в OUT_DIR идёт через ensure_outdir — дир пересоздаётся, если
+# её удалили между шагами. Перед play файл пере-синтезируется, если пропал.
+ensure_outdir() {
+    if [ ! -d "$OUT_DIR" ]; then
+        log "WARN: $OUT_DIR удалён (внешний cleanup?) — пересоздаю"
+        mkdir -p "$OUT_DIR"
+    fi
+}
+
 # --- parse args -------------------------------------------------------------
 TEXT=""
 SCENARIO_FILE=""
@@ -180,21 +192,20 @@ check_cycle() {  # $1=before_rfc3339
 # $1=before, $2..=паттерны (grep -E). Печатает найденные, rc=0 если все найдены.
 check_patterns() {
     local before="$1"; shift
-    local logs pat ok=1
+    local logs pat rc=0
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
         else
             echo "  PATTERN_MISS: $pat"
-            ok=0
+            rc=1
         fi
     done
-# Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
-# ``ok=1`` означала success — инвертируем при возврате, иначе callers
-# через ``if check_patterns; then`` всегда ловят FAIL несмотря на
-# PATTERN_OK (как в round-52 run 31579343052).
-    return $((1 - ok))
+    # Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
+    # ``rc=0`` означала success — возвращаем как есть, callers через
+    # ``if check_patterns; then`` получат SUCCESS при rc=0 и FAIL при rc=1.
+    return $rc
 }
 
 # --- один атомарный шаг -----------------------------------------------------
@@ -203,12 +214,19 @@ run_step() {  # $1=text $2=voice $3=step_label
     log "=== STEP ${label}: voice=${voice} text=\"${text}\" ==="
 
     # 1. Синтез команды
+    ensure_outdir
+    if [ ! -f "$OUT_DIR/cmd_${label}.wav" ]; then
+        # Файл мог пропасть вместе с OUT_DIR (внешний cleanup на 249) —
+        # пере-синтезируем, а не падаем с paplay open(): No such file.
+        log "STEP ${label}: cmd_${label}.wav отсутствует — повторный синтез (cleanup-resilience)"
+    fi
     if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${label}.wav" > "$OUT_DIR/synth_${label}.log" 2>&1; then
         log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${label}.log"))"
         echo "E2E_STEP ${label} FAIL synth"
         return 1
     fi
     # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
+    ensure_outdir
     ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
 
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
@@ -243,6 +261,17 @@ run_step() {  # $1=text $2=voice $3=step_label
         # Katana: громкость динамика 150% (по VOICE_COMMANDS_RESEARCH.md —
         # 100% даёт -42dB на микрофоне, wake word теряется)
         pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+        # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
+        # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
+        # а не получаем ложный FAIL от paplay open(): No such file.
+        if [ ! -f "$OUT_DIR/cmd_${label}_eq.wav" ]; then
+            log "STEP ${label}: cmd_${label}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
+            ensure_outdir
+            synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${label}.wav" > "$OUT_DIR/synth_${label}.log" 2>&1 \
+                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${label}.log"))"; echo "E2E_STEP ${label} FAIL synth"; return 1; }
+            ensure_outdir
+            ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
+        fi
         paplay "$OUT_DIR/cmd_${label}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
 
@@ -325,15 +354,23 @@ fi
 
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
+    ensure_outdir
     echo "PASS" > "$OUT_DIR/verdict.txt"
-    # Issue #1134: маркер для пост-валидатора в L-E2E Voice Test.yml —
-    # retry-скрипт подтвердил реакцию робота (TTS finished после команды).
-    # Без этого маркера fallback-логика валидатора сравнивает первые
-    # TTS/STT строки и фейлит как «ONLY GREETING» (приветствие ДО команды).
-    echo "E2E_REACTION_OK"
+    # Issue #1135: маркер для пост-валидатора в L-E2E Voice Test.yml.
+    # Валидатор читает ``docker logs voice-assistant --since 15m`` и ищет
+    # ``E2E_REACTION_OK``. Docker с log driver ``json-file`` не подхватывает
+    # syslog (logger) — пишем маркер напрямую в stdout контейнера через
+    # ``docker exec bash -c 'echo ... >&1'``.
+    ${ROBOT_SSH} \
+        "docker exec voice-assistant bash -c 'echo E2E_REACTION_OK'" \
+        >/dev/null 2>&1 || true
 else
     echo "E2E_VERDICT FAIL"
+    ensure_outdir
     echo "FAIL" > "$OUT_DIR/verdict.txt"
+    ${ROBOT_SSH} \
+        "docker exec voice-assistant bash -c 'echo E2E_NO_REACTION'" \
+        >/dev/null 2>&1 || true
 fi
 echo "E2E_ARTIFACTS $OUT_DIR"
 exit $([ "$PASS" = "1" ] && echo 0 || echo 1)
