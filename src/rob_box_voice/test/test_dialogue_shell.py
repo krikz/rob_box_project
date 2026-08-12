@@ -1063,11 +1063,12 @@ class TestLLMProviderWiring(unittest.TestCase):
         """Source and Docker configs expose the same dialogue_node params.
 
         Issue #1004 fix (ADR-0004): после разделения на per-node YAML,
-        dialogue_node параметры лежат в ``dialogue_node.yaml`` (src) или
-        ``docker/vision/config/voice_assistant/voice_assistant.yaml``
-        (docker — ещё не мигрирован, оставлен для оператора). Тест проверяет,
-        что оба файла выставляют одинаковые значения для ключевых LLM-параметров,
-        которые DialogueNode читает через ``get_parameter(...)`` без префикса.
+        dialogue_node параметры лежат в ``dialogue_node.yaml`` (src) и
+        ``docker/vision/config/voice_assistant/dialogue_node.yaml``
+        (docker — операторский конфиг, монтируется в /config/voice_assistant
+        и читается launch через config_dir). Тест проверяет, что оба файла
+        выставляют одинаковые значения для ключевых LLM-параметров, которые
+        DialogueNode читает через ``get_parameter(...)`` без префикса.
 
         С 2026-08-05 llm_provider переключён на MiniMax primary (issue #1004):
         https://github.com/krikz/rob_box_project/issues/1004
@@ -1078,11 +1079,11 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         repo_root = Path(__file__).resolve().parents[3]
         # После фикса #1004 dialogue_node параметры лежат в
-        # src/rob_box_voice/config/dialogue_node.yaml (новый формат —
-        # верхний ключ = имя ноды, НЕ /**/ros__parameters/dialogue_node/).
+        # <node>.yaml (новый формат — верхний ключ = имя ноды,
+        # НЕ /**/ros__parameters/dialogue_node/).
         paths = (
             repo_root / "src/rob_box_voice/config/dialogue_node.yaml",
-            repo_root / "docker/vision/config/voice_assistant/voice_assistant.yaml",
+            repo_root / "docker/vision/config/voice_assistant/dialogue_node.yaml",
         )
         expected = {
             "llm_providers": "minimax,deepseek",
@@ -1091,17 +1092,15 @@ class TestLLMProviderWiring(unittest.TestCase):
         for path in paths:
             with self.subTest(path=str(path)):
                 if not path.exists():
-                    # docker-конфиг пока не мигрирован — issue #1004 не покрывает
-                    # docker-версию YAML; skip чтобы CI оставался зелёным.
-                    self.skipTest(f"{path} not yet migrated (issue #1004 — src only)")
+                    self.skipTest(f"{path} not found")
                     continue
                 config = yaml.safe_load(path.read_text(encoding="utf-8"))
-                # Новый формат (src): top-level = "<node_name>" → ros__parameters.
-                # Старый формат (docker): /** / ros__parameters / dialogue_node.
-                if "/**" in config:
-                    dialogue = config["/**"]["ros__parameters"]["dialogue_node"]
-                else:
-                    dialogue = config["dialogue_node"]["ros__parameters"]
+                # Единый формат: top-level = "<node_name>" → ros__parameters.
+                self.assertNotIn(
+                    "/**", config,
+                    f"{path.name} всё ещё в старом формате /** (issue #1004)",
+                )
+                dialogue = config["dialogue_node"]["ros__parameters"]
                 for key, value in expected.items():
                     self.assertEqual(
                         dialogue.get(key), value,

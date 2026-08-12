@@ -1,0 +1,11 @@
+# speaker_id_node.yaml — голосовая биометрия (issue #1077, resemblyzer d-vectors)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в speaker_id_node.py 1:1.
+
+speaker_id_node:
+  ros__parameters:
+    enabled: true
+    db_path: "/data/speakers.db"
+    identify_threshold: 0.75
+    sample_rate: 16000

@@ -1,13 +1,14 @@
 # tts_node.yaml — per-node ROS2 config (issue #1004 fix)
 #
-# Сгенерировано из voice_assistant.yaml при разделении на per-node файлы.
-# Меняйте именно этот файл (или src/rob_box_voice/config/<node>.yaml для
-# других нод), НЕ voice_assistant.yaml — он остаётся как легаси/источник
-# правды для совместимости с тестами test_dialogue_shell.
-#
 # Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
 # Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
 # get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в tts_node.py 1:1.
+# (Ключи cache_dir/cache_enabled/pregenerate/prosody_pitch и вложенный
+# yandex: {voice,speed,emotion} удалены — код их НЕ читает; YAML молча
+# игнорировался, issue #1004. Голос/скорость Yandex задаются плоскими
+# yandex_voice / yandex_speed.)
 
 tts_node:
   ros__parameters:
@@ -29,7 +30,6 @@ tts_node:
     # (MINIMAX_API_KEY / MINIMAX_GROUP_ID). Секреты не хранятся в YAML.
     minimax_api_key: ''
     minimax_group_id: ''
-    prosody_pitch: medium
     normalize_text: true
     chipmunk_mode: false
     pitch_shift: 1.0
@@ -41,10 +41,6 @@ tts_node:
     yandex_api_key: ''
     yandex_voice: anton
     yandex_speed: 1.0
-    yandex:
-      voice: anton
-      speed: 1.0
-      emotion: neutral
     chunk_max_chars_yandex: 250
     chunk_max_chars_silero: 800
     chunk_max_chars_minimax: 5000
@@ -64,6 +60,3 @@ tts_node:
     audio_output_sample_rate: 16000
     audio_qos_reliability: best_effort
     audio_qos_depth: 10
-    cache_dir: ~/.cache/rob_box_voice/tts
-    pregenerate: true
-    cache_enabled: true

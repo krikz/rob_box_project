@@ -1,279 +1,188 @@
 # Voice Assistant Configuration for ROBBOX
+#
+# ⚠️ СТРУКТУРА (issue #1004, ADR-0004):
+# Стандартный ROS 2 формат: верхний ключ = ИМЯ НОДЫ, под ним
+# ``ros__parameters:`` с ПЛОСКИМИ параметрами. get_parameter("foo") в ноде
+# находит foo БЕЗ префикса.
+#
+# ❌ НЕЛЬЗЯ: "/**: ros__parameters: <node>: <param>" — ROS 2 Humble
+# превращает вложенность в dotted-имена (dialogue_node.llm_provider),
+# которые код не читает → YAML молча игнорируется (именно этот баг
+# описывал issue #1004: «поменял строку — не применилось»).
+#
+# ЖИВЫЕ конфиги — per-node файлы в этой же директории:
+#   audio_node.yaml, stt_node.yaml, tts_node.yaml, dialogue_node.yaml,
+#   sound_node.yaml, led_node.yaml, command_node.yaml, speaker_id_node.yaml
+# Launch грузит каждый файл в свою ноду. Этот файл — человекочитаемая
+# сводка (single source of truth для документации/тестов); править для
+# продакшена нужно per-node файлы (или docker/vision/config/voice_assistant/
+# в docker-деплое — он монтируется в /config/voice_assistant и
+# подхватывается launch через config_dir:=).
+#
+# Все ключи ниже соответствуют declare_parameter() в коде 1:1.
 
-/**:
+audio_node:
   ros__parameters:
-    # ========== Audio Node ==========
-    audio_node:
-      sample_rate: 16000          # Hz (ReSpeaker max)
-      channels: 1                 # обработанный канал из 1_channel_firmware
-      # chunk_size = frames per buffer (issue #1050). 1024 → 4096:
-      # при 1024 Python-callback не успевал за периодом → paInputOverflow
-      # (PyAudio status 2), терялись сэмплы, STT получал обрывки фраз.
-      chunk_size: 4096            # frames per buffer
-      vad_threshold: 3.5          # dB (GAMMAVAD_SR parameter)
-      publish_rate: 10            # Hz для VAD/DOA topics
-      device_index: -1            # -1 = auto-detect ReSpeaker
-      device_name: "ReSpeaker 4 Mic Array"
+    sample_rate: 16000          # Hz (ReSpeaker max)
+    channels: 6                 # 6-канальный RAW-режим (Ch1 = DSP-processed ASR)
+    mix_channels: [0]           # Только Ch1 (beamformed+AEC+NS+AGC), issue #1117 round-2
+    # chunk_size = frames per buffer (issue #1050). 4096 = 256ms —
+    # при 1024 Python-callback не успевал за периодом → paInputOverflow.
+    chunk_size: 4096            # frames per buffer
+    vad_threshold: 3.5          # dB (GAMMAVAD_SR parameter)
+    publish_rate: 10            # Hz для VAD/DOA topics
+    device_index: -1            # -1 = auto-detect ReSpeaker
+    device_name: "ReSpeaker 4 Mic Array"
+    # VAD настройки для определения конца фразы
+    speech_continuation: 3.0    # Секунды после окончания речи до публикации
+    speech_prefetch: 1.5        # Pre-roll перед началом речи (секунды)
+    speech_min_duration: 0.3    # Минимальная длительность фразы (секунды)
+    speech_max_duration: 12.0   # Максимальная длительность фразы (секунды)
+    # Issue 989 (эхо-петля): grace-период после TTS, не считаем эхо речью.
+    tts_grace_s: 2.5
+    # music_vad_threshold/min_db — VAD-гейты при активной музыке (strict mode).
+    music_vad_threshold: 6.0
+    music_vad_min_db: -35.0
+    # DSP настройки XVF-3000 (issue #1117 round-2), опциональны.
+    dsp_apply_on_start: true
+    hpf_on: 1                   # 0=OFF, 1=70Hz, 2=125Hz, 3=180Hz (default firmware)
 
-      # VAD настройки для определения конца фразы
-      speech_continuation: 3.0    # Секунды после окончания речи до публикации (было 0.5, увеличено до 3.0)
-      # Pre-roll перед началом речи: 1.0s (было 0.5) — покрывает латенцию
-      # VAD (300-500ms на слабом сигнале), иначе «робот» → «роберт».
-      speech_prefetch: 1.0        # Буфер перед началом речи (секунды)
-      speech_min_duration: 0.3    # Минимальная длительность фразы (секунды)
-      # 12.0 (было 10.0): pre-roll 1.0s входит в duration=len(buf)/sr.
-      speech_max_duration: 12.0   # Максимальная длительность фразы (секунды)
+stt_node:
+  ros__parameters:
+    # Vosk settings (Phase 3)
+    model_path: "/models/vosk-model-small-ru-0.22"
+    sample_rate: 16000          # Hz (должен совпадать с audio_node)
+    # ===== Fallback/retry/short-phrase (issue #979) =====
+    yandex_timeout_s: 5.0       # soft-timeout на один gRPC-streaming вызов Yandex
+    yandex_max_retries: 1       # retry на primary перед падением на Vosk
+    retry_backoff_s: 1.0        # пауза перед retry
+    min_text_chars: 3           # порог для is_short_phrase() (отсечь эхо-мусор)
+    unclear_phrase: "Не расслышал, скажи ещё раз"
+    unclear_cooldown_s: 5.0     # анти-петля «не расслышал»
+    tts_grace_s: 2.5            # grace period после TTS (эхо собственного голоса)
 
-      # Issue 989 (эхо-петля «не расслышал»): анти-эхо гейты.
-      # tts_grace_s — после окончания TTS не считаем VAD речью (робот
-      # «дослушивает» эхо собственного голоса). 2.5s по спеке issue 989.
-      tts_grace_s: 2.5
-      # music_vad_threshold — порог VAD (GAMMAVAD_SR) при активной музыке
-      # (strict mode). 3.5 → 6-8 dB, чтобы бит не триггерил «речь».
-      music_vad_threshold: 6.0
-      # music_vad_min_db — программный гейт по RMS: при музыке сигнал ниже
-      # этого уровня считается музыкой/шумом, а не голосом поверх.
-      music_vad_min_db: -35.0
+tts_node:
+  ros__parameters:
+    provider: "minimax"         # "yandex", "silero" или "minimax" — одна строка
+    # Параметры для кода (плоские, без вложенности)
+    silero_speaker: "aidar"     # Голоса Silero v5: aidar (М), baya (М), kseniya (Ж), xenia (Ж), eugene (М)
+    silero_sample_rate: 48000   # Hz (v5)
+    normalize_text: true
+    chipmunk_mode: false        # Отключено (06.08) — голос шипел/бурундучил
+    pitch_shift: 1.0            # Нормальная скорость (1.0x)
+    volume_db: -3.0             # Громкость (-3dB = 70%)
+    # Silero v5: флаги расстановки ударений
+    silero_put_accent: true
+    silero_put_yo: true
+    silero_put_stress_homo: true
+    silero_put_yo_homo: true
+    # Yandex TTS settings
+    yandex_voice: "anton"       # Мужской голос (оригинальный ROBBOX!)
+    yandex_speed: 1.0           # Скорость речи (0.1-3.0)
+    # ===== Per-provider TTS chunking (issue #933) =====
+    chunk_max_chars_yandex: 250
+    chunk_max_chars_silero: 800
+    chunk_max_chars_minimax: 5000
+    chunk_max_retries: 3
+    chunk_min_chars: 50
+    # ===== MiniMax TTS (ADR-0003) — секреты из ENV MINIMAX_API_KEY / MINIMAX_GROUP_ID =====
+    minimax_voice: "male-qn-qingse"
+    minimax_model: "speech-02-hd"
+    minimax_language: "ru"
+    minimax_speed: 1.0
+    minimax_sample_rate: 32000
+    minimax_format: "pcm"
+    minimax_timeout: 30.0
+    minimax_max_retries: 2
+    minimax_retry_backoff_ms: 500
+    minimax_streaming: false
+    # ROS audio bridge
+    audio_topic: "/voice/audio/speech"
+    audio_output_sample_rate: 16000
+    audio_qos_reliability: "best_effort"
+    audio_qos_depth: 10
+    # Пул синтеза
+    synthesis_max_workers: 2
+    synthesis_max_queue: 16
 
-    # ========== STT Node ==========
-    stt_node:
-      # Vosk settings (Phase 3)
-      model_path: "/models/vosk-model-small-ru-0.22"
-      sample_rate: 16000          # Hz (должен совпадать с audio_node)
-      vad_timeout: 1.5            # Секунды тишины до отправки результата
-      min_speech_duration: 0.5    # Минимальная длина речи (секунды)
+dialogue_node:
+  ros__parameters:
+    # Wake Words - слова для активации голосового ассистента
+    wake_words:
+      - "робок"
+      - "робот"
+      - "роббокс"
+      - "робокос"
+      - "роббос"
+      - "робокс"
+      - "роберт"
+      - "рыбок"
+      - "рома"
+      - "бот"
+      - "робо"
+      - "роб"
+    # Таймауты
+    dialogue_timeout: 300.0     # Таймаут сессии: 5 минут без wake word → IDLE
+    # LLM — приоритетная цепочка провайдеров (issue #1089):
+    # первый = primary, остальные = fallbacks. Одна строка для смены.
+    llm_providers: "minimax,deepseek"   # minimax | deepseek | mimo | qwen
+    # Per-provider секции (опционально; пусто → well-known defaults,
+    # см. _LLM_PROVIDER_REGISTRY в dialogue_node.py). Секреты — в ENV.
+    system_prompt_file: "master_prompt_compact.txt"
+    # История
+    history_max_turns: 20       # Скользящее окно: 20 пар user/assistant
+    # FAQ mode for events
+    faq_mode_enabled: false
+    faq_event_config_file: ""   # Например: /config/voice_assistant/event_mode.yaml
+    # LLM настройки
+    temperature: 0.7
+    max_tokens: 500
+    agent_max_turns: 20
+    enable_mcp_tools: true
+    llm_timeout_sec: 90.0
+    verbose_llm: true
+    llm_streaming: false        # Потоковый вывод LLM
+    history_excluded_tools:
+      - "handle_navigation"
+    sqlite_db_path: "~/.rob_box/voice.db"
+    # Issue #1077 — голосовая биометрия
+    speaker_id_enabled: true
+    speaker_db_path: "/data/speakers.db"
+    # Startup greeting (issue #1003)
+    startup_greeting_sec: 12.0
+    startup_greeting_text: "Я на связи, все системы в норме!"
+    # W5a: tool-provider backend (ros_mcp | fake | none)
+    tool_provider: "ros_mcp"
 
-      # ===== Fallback/retry/short-phrase (issue #979) =====
-      # yandex_timeout_s — soft-timeout на один gRPC-streaming вызов Yandex.
-      # Был ~1.3s (gRPC deadline по умолчанию), из-за чего валидные фразы после
-      # TTS падали на мусорный Vosk fallback. Подняли до 5s — окно для фраз
-      # 3-4 слов при audio_processing_type=REAL_TIME.
-      yandex_timeout_s: 5.0
-      # yandex_max_retries — количество retry на primary перед падением
-      # на Vosk. 1 по спецификации issue #979: "один retry перед падением на Vosk".
-      yandex_max_retries: 1
-      # retry_backoff_s — пауза перед retry (issue #979: «попробовать ещё раз
-      # через 1с»). Линейная; экспоненциальный множитель — будущая работа.
-      retry_backoff_s: 1.0
-      # min_text_chars — порог для is_short_phrase(). Vosk 0.42 возвращает
-      # "а"/"а а" для эха — это мусор, не команда. 3 символа достаточно
-      # чтобы отсечь эхо-мусор и при этом принять "стоп"/"пока".
-      min_text_chars: 3
-      # unclear_phrase — что робот говорит вслух, когда ни Yandex (после
-      # retry), ни Vosk не дали внятного результата (issue #979 acceptance:
-      # «Не расслышал, скажи ещё раз», а не молчание). Пустая строка
-      # отключает голосовой ответ.
-      unclear_phrase: "Не расслышал, скажи ещё раз"
-      # unclear_cooldown_s — анти-петля: не повторять «не расслышал» чаще
-      # раза в N секунд. Иначе эхо собственного TTS снова триггерит VAD.
-      unclear_cooldown_s: 5.0
-      # tts_grace_s (issue 989 Fix B) — grace period после окончания TTS:
-      # игнорировать ВСЕ фразы от audio_node (эхо собственного голоса).
-      tts_grace_s: 2.5
+sound_node:
+  ros__parameters:
+    sound_pack_dir: "/ws/sound_pack"
+    volume_db: -12.0            # Громкость (dB adjustment)
+    trigger_animations: true
+    animation_topic: "/animations/trigger"
 
-      # Legacy settings (для будущей поддержки других STT)
-      provider: "vosk"            # "vosk", "whisper" или "yandex"
-      language: "ru-RU"
-      # Whisper settings (если provider="whisper")
-      whisper_model: "base"       # tiny/base/small/medium/large
-      whisper_device: "cpu"       # cpu/cuda
+led_node:
+  ros__parameters:
+    brightness: 16              # 0-31 (0x00-0x1F)
+    auto_mode: true             # Автосмена по /voice/state
+    # Цвета для режимов (RGB, 0-255)
+    colors:
+      idle: [0, 0, 0]           # Выключен
+      listening: [0, 255, 0]    # Зелёный
+      thinking: [0, 0, 255]     # Синий
+      speaking: [0, 255, 255]   # Голубой
+      error: [255, 0, 0]        # Красный
 
-    # ========== TTS Node ==========
-    tts_node:
-      provider: "minimax"          # "yandex", "silero" или "minimax"
+command_node:
+  ros__parameters:
+    confidence_threshold: 0.7   # Минимальная уверенность
+    enable_navigation: true     # Nav2 команды
+    enable_follow: false        # Следование (Phase 6)
+    enable_vision: false        # Зрение (Phase 6)
 
-      # Параметры для кода (плоские, без вложенности)
-      speaker: "aidar"            # Голоса Silero v5: aidar (М), baya (М), kseniya (Ж), xenia (Ж), eugene (М, NEW!)
-      sample_rate: 48000          # Hz (v5: повышено с 24000 до 48000 для лучшего качества)
-      prosody_pitch: "medium"     # x-low/low/medium/high/x-high
-      normalize_text: true
-      # Бурундук режим - ускоряем воспроизведение (НЕ TTS генерацию!)
-      chipmunk_mode: false        # Отключено (06.08) — голос шипел/бурундучил на MiniMax T2A
-      pitch_shift: 1.0            # Нормальная скорость (1.0x = без ускорения)
-      volume_db: -3.0             # Громкость (-3dB = 70%, компромисс между сигналом и шумом)
-
-      # Silero v5: новые флаги для расстановки ударений (НОВОЕ!)
-      silero_put_accent: true      # Ударения в обычных словах
-      silero_put_yo: true          # Автоматическая буква ё
-      silero_put_stress_homo: true # Ударения в омографах (замОк/зАмок, гОтов/готОв)
-      silero_put_yo_homo: true     # Ударения в омографах с буквой ё
-
-      # Yandex TTS settings (primary provider)
-      yandex:
-        voice: "anton"            # Мужской голос (оригинальный ROBBOX!)
-        speed: 1.0                # Скорость речи (0.1-3.0)
-        emotion: "neutral"        # neutral/good/evil
-
-      # ===== Per-provider TTS chunking (issue #933) =====
-      # Per-provider max chunk size (chars). Long LLM responses (>1000 chars)
-      # are split into chunks and synthesized separately. Per-provider defaults
-      # подобраны эмпирически (issue #933 observation table):
-      #   yandex = 250  (API v3 hard limit ≤250 chars или 24s аудио; #937)
-      #   silero = 800  (Silero v5 падает на ~1005 chars; halve → 400→200 OK)
-      #   minimax = 5000  (HTTP T2A v2 принимает длинные тексты)
-      # chunk_max_retries: сколько halved retries до TooLongError (default 3).
-      # chunk_min_chars: ниже этой длины retry-halve не дробит (default 50).
-      chunk_max_chars_yandex: 250
-      chunk_max_chars_silero: 800
-      chunk_max_chars_minimax: 5000
-      chunk_max_retries: 3
-      chunk_min_chars: 50
-
-      # ===== MiniMax TTS (opt-in, см. ADR-0003 / minimax-tts-architecture.md) =====
-      # Активируется при provider: "minimax" (выше).
-      # Секреты берутся из ENV MINIMAX_API_KEY / MINIMAX_GROUP_ID
-      # (приоритет: ROS-параметр → ENV). yaml содержит ТОЛЬКО non-secret поля.
-      #
-      # minimax_api_key: ""           # → fallback на os.getenv("MINIMAX_API_KEY")
-      # minimax_group_id: ""          # → fallback на os.getenv("MINIMAX_GROUP_ID")
-      minimax_voice: "male-qn-qingse"   # MiniMax voice id (default)
-      minimax_model: "speech-02-hd"     # speech-02-hd | speech-02-turbo
-      minimax_language: "ru"            # ru / en / zh
-      minimax_speed: 1.0                 # 0.5 - 2.0 (см. также SSML <prosody rate>)
-      minimax_sample_rate: 32000         # 8000/16000/22050/24000/32000/44100
-      minimax_format: "pcm"             # pcm | wav | mp3 | ogg (OGG запрашивается как MP3 API fallback)
-      minimax_timeout: 30.0              # httpx timeout (seconds)
-      minimax_max_retries: 2             # 0..3 (ADR-0003 §2.6)
-      minimax_retry_backoff_ms: 500      # начальный backoff (ms), exp x2
-      minimax_streaming: false           # true использует stream(); HTTP v1 даёт один chunk
-
-      # ROS audio bridge (AudioData = raw int16 LE PCM, no metadata)
-      # Publisher and sink must agree on sample rate/channels out of band.
-      audio_topic: "/voice/audio/speech"
-      audio_output_sample_rate: 16000
-      audio_qos_reliability: "best_effort" # best_effort | reliable
-      audio_qos_depth: 10
-
-      # Кэширование
-      cache_dir: "~/.cache/rob_box_voice/tts"
-      pregenerate: true           # Генерировать системные фразы при старте
-      cache_enabled: true
-
-    # ========== Dialogue Node ==========
-    dialogue_node:
-      # Wake Words - слова для активации голосового ассистента
-      wake_words:
-        - "робок"
-        - "робот"
-        - "роббокс"
-        - "робокос"
-        - "роббос"
-        - "робокс"
-        - "роберт"
-        - "рыбок"
-        - "рома"
-        - "бот"
-        - "робо"
-        - "роб"
-
-      # Silence Commands - команды для остановки TTS и перехода в режим молчания
-      silence_commands:
-        - "помолч"
-        - "замолч"
-        - "хватит"
-        - "закрой"
-        - "заткн"
-        - "не меша"
-
-      # Таймауты
-      silence_timeout: 3.5        # секунды тишины → конец вопроса
-      max_question_time: 20.0     # максимальное время накопления вопроса
-
-      # LLM
-      # 2026-08-05: switched to MiniMax primary, DeepSeek fallback
-      llm_provider: "minimax"      # minimax | deepseek
-      base_url: "https://api.minimax.io/v1"
-      model: "MiniMax-M3"
-      system_prompt_file: "master_prompt_compact.txt"  # Файл с system prompt
-
-      # История
-      history_max_turns: 20       # Скользящее окно: 20 пар user/assistant (40 сообщений)
-      dialogue_timeout: 300.0     # Таймаут сессии: 5 минут без wake word → IDLE
-
-      # FAQ mode for events
-      faq_mode_enabled: false
-      faq_event_config_file: ""   # Например: /config/voice_assistant/event_mode.yaml
-
-      # Streaming
-      streaming: false             # Потоковый вывод LLM (false = один JSON ответ)
-      sentence_split: true        # Разбивать на предложения для TTS
-
-      # W5a: tool-provider backend. Default ``ros_mcp`` wires
-      # LLMToolCallAdapter → ROSMCPToolProvider with the 34-manifest
-      # ToolRegistry so the LLM can actually drive the robot
-      # (``speak_text``, ``play_sound``, ``save_waypoint``, …).
-      # Override to ``fake`` for unit-test deployments that
-      # need a hand-injected FakeToolProvider; ``none`` disables
-      # tools entirely (chat-only). The launch-file
-      # ``tool_provider:=`` arg wins over this YAML key.
-      tool_provider: "ros_mcp"    # "ros_mcp" | "fake" | "none"
-
-    # ========== Sound Node ==========
-    sound_node:
-      # Пути
-      sound_pack_dir: "~/rob_box_project/sound_pack"
-
-      # Громкость (dB adjustment, 0 = без изменений)
-      volume_db: 0                # +6 = громче, -6 = тише
-
-      # Синхронизация с анимациями
-      trigger_animations: true
-      animation_topic: "/animations/trigger"
-
-    # ========== LED Node ==========
-    led_node:
-      brightness: 16              # 0-31 (0x00-0x1F)
-      auto_mode: true             # Автосмена по /voice/state
-
-      # Цвета для режимов (RGB, 0-255)
-      colors:
-        idle: [0, 0, 0]           # Выключен
-        listening: [0, 255, 0]    # Зелёный
-        thinking: [0, 0, 255]     # Синий
-        speaking: [0, 255, 255]   # Голубой
-        error: [255, 0, 0]        # Красный
-
-    # ========== Command Node ==========
-    command_node:
-      # Распознавание команд
-      confidence_threshold: 0.7   # Минимальная уверенность
-
-      # Включить модули
-      enable_navigation: true     # Nav2 команды
-      enable_follow: false        # Следование (Phase 6)
-      enable_vision: false        # Зрение (Phase 6)
-
-      # Nav2 интеграция
-      nav2_enabled: true
-      nav2_timeout: 300.0         # секунды
-
-      # Предопределённые waypoints (можно задать свои)
-      waypoints:
-        дом: {x: 0.0, y: 0.0, theta: 0.0}
-        кухня: {x: 2.0, y: 1.0, theta: 0.0}
-        гостиная: {x: 3.0, y: 2.0, theta: 1.57}
-        точка_1: {x: 1.0, y: 0.0, theta: 0.0}
-        точка_2: {x: 2.0, y: 0.0, theta: 0.0}
-        точка_3: {x: 3.0, y: 0.0, theta: 0.0}
-
-# ========== System Phrases (для кэша) ==========
-# TODO: Переместить system_phrases под конкретную ноду (tts_node) или удалить
-# system_phrases:
-#   - "Слушаю"
-#   - "Дай подумаю"
-#   - "Готово"
-#   - "Не понял"
-#   - "Повторите пожалуйста"
-#   - "Выполняю"
-#   - "Остановился"
-#   - "Еду вперёд"
-#   - "Поворачиваю"
-#   - "Поворачиваю налево"
-#   - "Поворачиваю направо"
-#   - "Приехал"
-#   - "Препятствие обнаружено"
-#   - "Батарея разряжена"
-#   - "Заряд батареи низкий"
-#   - "Не могу выполнить команду"
-#   - "Что-то пошло не так"
-#   - "Сервис недоступен"
+speaker_id_node:
+  ros__parameters:
+    enabled: true
+    db_path: "/data/speakers.db"
+    identify_threshold: 0.75
+    sample_rate: 16000

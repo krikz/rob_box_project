@@ -613,6 +613,12 @@ class DialogueNode(Node):
         # Пустой startup_greeting_text → случайная фраза из GREETINGS.
         self.declare_parameter("startup_greeting_sec", 12.0)
         self.declare_parameter("startup_greeting_text", "")
+        # FAQ/event-mode (test_faq_event_mode.py): _load_event_profile() читает
+        # эти параметры, но они НЕ объявлялись — YAML-значения молча
+        # игнорировались (класс бага issue #1004). Объявляем, чтобы
+        # faq_mode_enabled / faq_event_config_file реально работали.
+        self.declare_parameter("faq_mode_enabled", False)
+        self.declare_parameter("faq_event_config_file", "")
         self._startup_greeting_fired = False
         # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
         # latency / fallback). 0 = отключить старт сервера (полезно для
