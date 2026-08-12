@@ -54,6 +54,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v4
@@ -175,11 +177,19 @@ jobs:
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           if ! git diff --cached --quiet; then
-            BRANCH="${GITHUB_REF#refs/heads/}"
+            # Issue #1139: SHA-теги пишем в отдельную ветку ci/image-versions,
+            # а не коммитим в develop/main/vision — не засоряем историю
+            VERSIONS_BRANCH="ci/image-versions"
+            git checkout -B "$VERSIONS_BRANCH"
             git commit -m "ci: SHA tags → ${NEW_TAG} [skip ci]"
-            git pull --rebase origin "$BRANCH"
-            git push origin "$BRANCH"
-            echo "✅ Committed and pushed .image-versions"
+            for i in 1 2 3 4 5; do
+              git pull --rebase origin "$VERSIONS_BRANCH" >/dev/null 2>&1 || true
+              if git push origin "HEAD:${VERSIONS_BRANCH}" >/dev/null 2>&1; then
+                break
+              fi
+              sleep 5
+            done
+            echo "✅ Committed and pushed .image-versions (branch ${VERSIONS_BRANCH})"
           else
             echo "ℹ️  No changes to .image-versions"
           fi
