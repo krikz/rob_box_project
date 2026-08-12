@@ -51,6 +51,18 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         r"can controller state: error-active",
         r"subscriberplugin::subscribeimpl with five arguments has not been overridden",
         r"total errors:",
+        # Scope leak (issue #775): telegram_node lives in the vision
+        # container (`telegram-bot` service, ROS_DOMAIN_ID=0 + network_mode:
+        # host). Its ERROR lines leak into the perception container's docker
+        # logs because health_monitor subscribes to the shared /rosout bus and
+        # prints them in its periodic report. Upstream root cause is fixed by
+        # PR #1145 (watchdog detects duplicate TELEGRAM_BOT_TOKEN holders);
+        # this exclusion prevents false deployment-critical issues from being
+        # filed against the perception container in the meantime.
+        # telegram_node never runs in the main scope — any mention of it in
+        # a main container log is by definition cross-container leak.
+        r"telegram_node",
+        r"telegram bot crashed",
     ],
     "vision": [],
 }
