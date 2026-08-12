@@ -1929,6 +1929,13 @@ class DialogueNode(Node):
                     # упал до return — тогда success=False.
                     _result_obj = locals().get("result")
                     _success = _result_obj is not None and not _result_obj.error
+                    # Fallback-флажок: HealthAwareFallbackLLM.complete/stream
+                    # логирует fallback в свой [health] → можно отследить
+                    # через ``_provider_name == "HealthAwareFallbackLLM"``.
+                    # Точнее определяется через ``_last_used_provider``,
+                    # который мы не видим без патча upstream. Для этапа 1
+                    # довольствуемся ``result=fallback`` через отдельный
+                    # record_fallback() в health.py (TODO #1160, шаг 2B).
                     try:
                         record_voice_llm_request(
                             _llm_provider_name,
