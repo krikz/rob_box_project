@@ -75,6 +75,11 @@ TEST_ROUND_PREFIX="${TEST_ROUND_PREFIX:-}"
 WORK_BRANCH_PREFIX="${WORK_BRANCH_PREFIX:-}"
 if [ -z "$TEST_ROUND_PREFIX" ]; then TEST_ROUND_PREFIX='z-{e2e}/test-round-'; fi
 if [ -z "$WORK_BRANCH_PREFIX" ]; then WORK_BRANCH_PREFIX='z-{e2e}/wip-'; fi
+# Ретро 12.08 (t_bff6eccf): счётчик round храним ПЕРСИСТЕНТНО. Cleanup
+# (agent-flow-cleanup-249.sh / ручной) удаляет stale round-ветки → max по
+# remote сбрасывается на 1, нумерация повторяется, старые PR/артефакты
+# путаются. Файл состояния переживает cleanup.
+ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-round-counter}"
 E2E_WORKFLOW="${E2E_WORKFLOW:-L-E2E Voice Test.yml}"
 BUILD_WORKFLOW="${BUILD_WORKFLOW:-L-Build-All-Services.yml}"
 DEPLOY_WORKFLOW="${DEPLOY_WORKFLOW:-L-Deploy and Verify.yml}"
@@ -365,15 +370,27 @@ ensure_worktree() {
 # --- find or create e2e/test-round-N -----------------------------------------
 # Returns 0 + sets ROUND_BRANCH on success. N = max($N) на remote + 1
 # (1, 2, 3 ...) — простой инкремент, БЕЗ даты.
+# Ретро 12.08 (t_bff6eccf): max также учитывает персистентный счётчик
+# (ROUND_COUNTER_FILE) — cleanup round-веток не должен сбрасывать нумерацию.
 ROUND_BRANCH=""
 round_ensure() {
-    local list max_n n
+    local list max_n n counter_n
     list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
         | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" || true)"
     if [ -z "$list" ]; then
         max_n=0
     else
         max_n="$(printf '%s\n' "$list" | sort -n | tail -n1)"
+    fi
+    # Персистентный счётчик: берём max(remote-ветки, файл-счётчик).
+    counter_n=0
+    if [ -f "$ROUND_COUNTER_FILE" ]; then
+        counter_n="$(tr -dc '0-9' < "$ROUND_COUNTER_FILE" 2>/dev/null || echo 0)"
+        counter_n="${counter_n:-0}"
+    fi
+    if [ "$counter_n" -gt "$max_n" ]; then
+        log "round counter: file=${counter_n} > remote-max=${max_n} (cleanup сбросил ветки?) — берём max из файла"
+        max_n="$counter_n"
     fi
     n=$((max_n + 1))
     ROUND_BRANCH="${TEST_ROUND_PREFIX}${n}"
@@ -396,6 +413,13 @@ round_ensure() {
         fi
     else
         log "reusing ${ROUND_BRANCH} (max N=${max_n})"
+    fi
+
+    # Сохраняем счётчик (только после успешного создания/reuse).
+    if [ "$n" -gt "$counter_n" ]; then
+        printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
+            && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
+            || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
     fi
 
     # Make sure worktree has it.
@@ -991,18 +1015,58 @@ git rebase --continue
 git push --force-with-lease origin ${branch}
 \`\`\`"
         _conflict_title="🔀 merge conflict: \`${branch}\` vs develop (issue #${number})"
-        # Создаём (или обновляем существующую) карточку воркеру
+        # Ретро 12.08 (t_bff6eccf): конфликт-карточка должна создаваться/
+        # переоткрываться при КАЖДОМ свежем конфликте, но НЕ когда ветка реально
+        # мержится с origin/develop (тогда конфликт с round вызван ДРУГИМИ issues
+        # уже влитыми в round — rebase на develop не поможет, карточка = шум).
+        # Проверяем через git merge-tree: конфликт с origin/develop есть?
+        _dev_conflict=0
+        _dev_base="$(git -C "$WORKTREE_DIR" merge-base "origin/${branch}" origin/develop 2>/dev/null || echo '')"
+        if [ -n "$_dev_base" ]; then
+            if git -C "$WORKTREE_DIR" merge-tree "$_dev_base" "origin/${branch}" origin/develop 2>/dev/null \
+                | grep -qE 'changed in both|added in both|CONFLICT'; then
+                _dev_conflict=1
+            fi
+        else
+            # Нет общего предка (add/add) — считаем конфликтом.
+            _dev_conflict=1
+        fi
+        if [ "$_dev_conflict" -eq 0 ]; then
+            log "issue #${number}: конфликт с round, НО ветка мержится с origin/develop чисто (merge-tree) — конфликт вызван другими issues в round, карточку НЕ создаём, issue остаётся needs-e2e"
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow: 🔀 merge в round конфликтует, но \`${branch}\` мержится с origin/develop чисто (проверено merge-tree) — конфликт вызван ДРУГИМИ issues в round, rebase на develop не поможет. Карточка НЕ создавалась; issue остаётся needs-e2e, следующий тик попробует снова (round будет пересоздан из свежего develop)." >/dev/null 2>&1 || true
+            git -C "$WORKTREE_DIR" merge --abort 2>/dev/null || true
+            errored=$((errored+1)); continue
+        fi
+        # Создаём (или переоткрываем существующую) карточку воркеру.
+        # Ретро 12.08 (t_bff6eccf): ищем по branch в title в ЛЮБОМ статусе
+        # (включая done/archived) — повторный конфликт переоткрывает карточку,
+        # а НЕ плодит дубликаты (было: карточка done → создавалась новая).
         _existing_conflict="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
 import json,sys
 data = json.loads(sys.stdin.read())
 for t in data:
-    if t.get('status') in ('ready','running','blocked','todo') and t.get('title','').startswith('🔀 merge conflict:') and '${branch}' in t.get('title',''):
-        print(t['id'])
+    if t.get('title','').startswith('🔀 merge conflict:') and '${branch}' in t.get('title',''):
+        print(t['id'], t.get('status',''))
         break
 " 2>/dev/null | head -1)"
-        if [ -n "$_existing_conflict" ]; then
-            hermes kanban --board "$KANBAN_BOARD" comment "$_existing_conflict" "Конфликт остался при повторной попытке. Воркер всё ещё не разрешил. Шифу напомнил — **та же ветка, тот же PR, никаких новых**." >/dev/null 2>&1 || true
-            log "issue #${number}: conflict card ${_existing_conflict} already exists — appended reminder"
+        _conflict_id="${_existing_conflict%% *}"
+        _conflict_status="${_existing_conflict#* }"
+        if [ -n "$_conflict_id" ]; then
+            case "$_conflict_status" in
+                done|archived)
+                    hermes kanban --board "$KANBAN_BOARD" requeue "$_conflict_id" --reason "🔀 свежий конфликт: \`${branch}\` снова не мержится с origin/develop (ретро 12.08 t_bff6eccf)" >/dev/null 2>&1 \
+                        && log "issue #${number}: conflict card ${_conflict_id} requeued (was ${_conflict_status})" \
+                        || log "issue #${number}: WARNING requeue ${_conflict_id} failed (${_conflict_status})"
+                    ;;
+                blocked)
+                    hermes kanban --board "$KANBAN_BOARD" unblock "$_conflict_id" --reason "🔀 свежий конфликт — retry (ретро 12.08 t_bff6eccf)" >/dev/null 2>&1 || true
+                    log "issue #${number}: conflict card ${_conflict_id} unblocked (was blocked)"
+                    ;;
+                *)
+                    log "issue #${number}: conflict card ${_conflict_id} already active (${_conflict_status}) — skip"
+                    ;;
+            esac
         else
             hermes kanban --board "$KANBAN_BOARD" create \
                 --assignee "$_conflict_assignee" \
@@ -1103,31 +1167,53 @@ for t in data:
     }
 
     # 1) Build
-    log "issue #${number}: triggering ${BUILD_WORKFLOW} on ${ROUND_BRANCH} (push_to_registry=true)"
-    b_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    # ретро 10.08 #1: race condition gh workflow run после свежего push.
-    # API может вернуть non-zero exit, но workflow стартует. До 3 ретраев с backoff 5/10/15s.
-    if ! _trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
-        -f push_to_registry=true; then
-        log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries"; errored=$((errored+1)); continue
-    fi
-    if ! wait_workflow "$BUILD_WORKFLOW" "$ROUND_BRANCH" "$E2E_BUILD_TIMEOUT" "build" "$b_epoch"; then
-        gh issue comment "$number" --repo "$GH_REPO" --body \
-            "agent-flow: ❌ build failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
-        errored=$((errored+1)); continue
+    # Ретро 12.08 (t_bff6eccf): round-1 подвешен — процесс Terminated на
+    # ожидании билда, build SUCCESS, e2e не запущен. Следующий тик должен
+    # ПРОДОЛЖИТЬ, а не пересобирать: если для текущего HEAD round уже есть
+    # успешный build-ран — пропускаем build (идём сразу в deploy/e2e).
+    _round_head="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+    _existing_build="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
+        --limit 10 --json databaseId,conclusion,headSha \
+        --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_head}\")][0].databaseId" 2>/dev/null || echo '')"
+    if [ -n "$_existing_build" ] && [ "$_existing_build" != "null" ]; then
+        log "issue #${number}: build already SUCCESS for round HEAD ${_round_head:0:7} (run ${_existing_build}) — skip build trigger (resume)"
+    else
+        log "issue #${number}: triggering ${BUILD_WORKFLOW} on ${ROUND_BRANCH} (push_to_registry=true)"
+        b_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        # ретро 10.08 #1: race condition gh workflow run после свежего push.
+        # API может вернуть non-zero exit, но workflow стартует. До 3 ретраев с backoff 5/10/15s.
+        if ! _trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f push_to_registry=true; then
+            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        fi
+        if ! wait_workflow "$BUILD_WORKFLOW" "$ROUND_BRANCH" "$E2E_BUILD_TIMEOUT" "build" "$b_epoch"; then
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow: ❌ build failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
+            errored=$((errored+1)); continue
+        fi
     fi
 
     # 2) Deploy
-    log "issue #${number}: triggering ${DEPLOY_WORKFLOW} on ${ROUND_BRANCH} (env=${E2E_DEPLOY_ENV}, registry=${E2E_DEPLOY_REGISTRY})"
-    d_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    if ! _trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
-        -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY"; then
-        log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries"; errored=$((errored+1)); continue
-    fi
-    if ! wait_workflow "$DEPLOY_WORKFLOW" "$ROUND_BRANCH" "$E2E_DEPLOY_TIMEOUT" "deploy" "$d_epoch"; then
-        gh issue comment "$number" --repo "$GH_REPO" --body \
-            "agent-flow: ❌ deploy failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
-        errored=$((errored+1)); continue
+    # Ретро 12.08 (t_bff6eccf): аналогичный resume для deploy — если для этого
+    # HEAD round deploy уже успешен, не перезапускаем (процесс мог умереть
+    # между deploy и e2e).
+    _existing_deploy="$(gh run list --repo "$GH_REPO" --workflow "$DEPLOY_WORKFLOW" --branch "$ROUND_BRANCH" \
+        --limit 10 --json databaseId,conclusion,headSha \
+        --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_head}\")][0].databaseId" 2>/dev/null || echo '')"
+    if [ -n "$_existing_deploy" ] && [ "$_existing_deploy" != "null" ]; then
+        log "issue #${number}: deploy already SUCCESS for round HEAD ${_round_head:0:7} (run ${_existing_deploy}) — skip deploy trigger (resume)"
+    else
+        log "issue #${number}: triggering ${DEPLOY_WORKFLOW} on ${ROUND_BRANCH} (env=${E2E_DEPLOY_ENV}, registry=${E2E_DEPLOY_REGISTRY})"
+        d_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if ! _trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY"; then
+            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        fi
+        if ! wait_workflow "$DEPLOY_WORKFLOW" "$ROUND_BRANCH" "$E2E_DEPLOY_TIMEOUT" "deploy" "$d_epoch"; then
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow: ❌ deploy failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
+            errored=$((errored+1)); continue
+        fi
     fi
 
     # 2b) Pre-flight: робот жив и healthy перед e2e (ретро #R2 — no-reaction rounds 29/31).
