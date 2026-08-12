@@ -496,6 +496,28 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
         """Classify a provider failure and update the health cache."""
         exc_type = type(exc).__name__
         exc_msg = str(exc)[:200]
+        # 🔴 FIX (live 12.08): ВЕСЬ метод обёрнут в try/except —
+        # RcutilsLogger.warning() с %s-аргументами может упасть
+        # (takes 2 positional args but N were given), и это ломает
+        # fallback-цепочку → робот молчит. Лучше потерять лог,
+        # чем потерять речевой ответ.
+        try:
+            self._handle_failure_impl(name, exc, exc_type, exc_msg)
+        except Exception:
+            # Last-resort: попробовать модульный логгер (std logging,
+            # не RcutilsLogger) — он принимает %s-формат нативно.
+            try:
+                _log.warning(
+                    "[health] _handle_failure CRASHED for provider=%s [%s: %s]",
+                    name, exc_type, exc_msg[:100],
+                )
+            except Exception:
+                pass
+
+    def _handle_failure_impl(
+        self, name: str, exc: BaseException, exc_type: str, exc_msg: str
+    ) -> None:
+        """Actual failure classification (split for try/except safety)."""
         if is_quota_exhausted(exc):
             self._cache.mark_unavailable(
                 name, reason=str(exc)[:300], ttl_s=self._cache.ttl_s
@@ -628,6 +650,25 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
                 last_exc = exc
                 self._handle_failure(name, exc)
+                # 🔴 FIX (live 12.08): диагностический лог — видно КУДА
+                # идёт fallback после падения провайдера. Без этого лога
+                # «тишина и от робота и от лога» — непонятно, пробовал ли
+                # fallback вообще следующий провайдер.
+                try:
+                    idx = chain.index(provider)
+                    remaining = [self._provider_name(p) for p in chain[idx + 1:]]
+                except ValueError:
+                    remaining = []
+                if remaining:
+                    self._log.info(
+                        "[health] provider=%s FAILED → trying next: %s",
+                        name, remaining,
+                    )
+                else:
+                    self._log.warning(
+                        "[health] provider=%s FAILED → NO more providers in chain!",
+                        name,
+                    )
         if last_exc is not None:
             raise last_exc
         raise ProviderError("health-aware-fallback: chain exhausted without stream")

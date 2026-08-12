@@ -1591,6 +1591,18 @@ class DialogueNode(Node):
             conf = float(sp.get("confidence") or 0.0)
             sid = str(sp.get("speaker_id") or "")[:8]
             if name:
+                # 🔴 FIX (live 12.08): защита от мусорных имён в БД
+                # (resemblyzer может хранить "Null", "null", "None").
+                # Такие имена — не имена, игнорируем.
+                _invalid_names = {"null", "none", "undefined", "unknown", ""}
+                if name.lower().strip() in _invalid_names:
+                    self.get_logger().warning(
+                        f"👤 [issue 1077] Ignoring invalid speaker name: {name!r} "
+                        f"(treating as unknown)"
+                    )
+                    if speaker_context is None:
+                        user_input = f"[Speaker:unknown] {user_input}"
+                    return user_input
                 # 🔴 FIX (live 12.08): всегда добавляем имя спикера в
                 # user_input — даже если speaker_context уже загружен.
                 # LLM получает имя через dynamic_system (<system_context>),
@@ -1628,6 +1640,10 @@ class DialogueNode(Node):
         sp_name = sp.get("name") or ""
         sp_conf = float(sp.get("confidence") or 0.0)
         sp_id = sp.get("speaker_id") or ""
+        # 🔴 FIX (live 12.08): защита от мусорных имён ("Null", "null", etc.)
+        _invalid_names = {"null", "none", "undefined", "unknown", ""}
+        if sp_name.lower().strip() in _invalid_names:
+            sp_name = ""
 
         # tts provider (читаем из yaml параметра)
         try:
@@ -1814,6 +1830,10 @@ class DialogueNode(Node):
             # preclassified_event=STT_RESULT чтобы DialogCore НЕ
             # переклассифицировал user-text (где может быть 'робот' внутри)
             # и не сломал guard.
+            self.get_logger().info(
+                f"🚀 [turn] calling process_input: user_input={user_input[:100]!r} "
+                f"speaker_tag={speaker_tag!r} was_dj_auto={was_dj_auto}"
+            )
             result: DialogResult = await self._core.process_input(
                 user_input,
                 is_dj_auto=was_dj_auto,
@@ -1822,14 +1842,32 @@ class DialogueNode(Node):
                 dynamic_system=dynamic_system,
                 preclassified_event=DialogueEvent.STT_RESULT,
             )
+            self.get_logger().info(
+                f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
+                f"tools={list(result.tools_called or ())!r} error={result.error!r}"
+            )
             self._handle_result(result, user_input=user_input)
             babble_retry_pending = bool(self._babble_retry_used)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
             result = None
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f"❌ DialogCore error: {exc}")
-            self._speak_direct("Что-то я задумался, повтори пожалуйста")
+            # 🔴 FIX (live 12.08): говорим ДО логгирования — если логгер
+            # упадёт (RcutilsLogger bug), пользователь ВСЁ РАВНО услышит
+            # ответ. Раньше было наоборот: логгер падал → _speak_direct
+            # не выполнялся → робот молчал (баг «принял но не ответил»).
+            import traceback as _tb
+            _tb_str = _tb.format_exc()
+            try:
+                self._speak_direct("Что-то я задумался, повтори пожалуйста")
+            except Exception:
+                pass
+            try:
+                self.get_logger().error(
+                    f"❌ DialogCore error: {exc}\n{_tb_str[-500:]}"
+                )
+            except Exception:
+                pass
             result = None
         finally:
             # Issue #992 Bug B: ``_apply_music_guard`` may synchronously
@@ -2698,7 +2736,12 @@ class DialogueNode(Node):
         ordinary answers).
         """
         if result.error is not None:
-            self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
+            # 🔴 FIX (live 12.08): безопасный лог ошибки — если логгер
+            # упадёт, мы НЕ теряем fallback-ответ пользователю.
+            try:
+                self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
+            except Exception:
+                pass
         spoken = strip_history_marker(result.spoken_text or "")
         # 🔴 FIX (live 16:02 «английская мысль на Бахе»): MiniMax M3
         # возвращает ``<think>...</think>`` в content перед реальным
