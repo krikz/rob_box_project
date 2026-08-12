@@ -160,15 +160,16 @@ def test_extract_relevant_log_line_ignores_optional_serial_critical_error() -> N
 
 
 def test_extract_relevant_log_line_ignores_nav2_startup_tf_timeout() -> None:
-    log_text = (
-        '[INFO] [1773045972.826191868] [local_costmap.local_costmap]: Timed out waiting '
-        'for transform from base_link to odom to become available, tf error: '
-        'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
-    )
+    for frame in ("base_link", "base_footprint"):
+        log_text = (
+            f'[INFO] [1773045972.826191868] [local_costmap.local_costmap]: Timed out waiting '
+            f'for transform from {frame} to odom to become available, tf error: '
+            f'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
+        )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+        line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
 
-    assert line is None
+        assert line is None
 
 
 def test_extract_relevant_log_line_ignores_rtabmap_transport_noise() -> None:
