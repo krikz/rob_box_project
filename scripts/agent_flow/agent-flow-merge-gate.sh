@@ -153,6 +153,78 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
     return 0
 }
 
+# --- kanban card status helper (ретро 12.08 t_8af6bf29) ---------------------
+# 'hermes kanban show' ПАДАЕТ после hermes-agent v0.20.0 (sqlite3.ProgrammingError
+# 'Cannot operate on a closed database' в task_graph_context — краш после вывода
+# заголовка; exit 1 + traceback в stderr). list работает. Читаем статус карточки
+# напрямую из kanban DB (быстро, без CLI-зависимости), fallback — `list --json`.
+# KANBAN_DB: путь к sqlite-базе доски (совпадает с тем, что открывает hermes).
+kanban_card_status() {  # $1=task_id → печатает status (done|ready|...|archived) или пусто
+    local tid="$1" db st=""
+    [ -z "$tid" ] && return 0
+    db="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"
+    if [ -f "$db" ]; then
+        st="$(python3 - "$db" "$tid" <<'PYEOF' 2>/dev/null || true
+import sqlite3, sys, os
+db, tid = sys.argv[1], sys.argv[2]
+try:
+    if not os.path.exists(db):
+        sys.exit(0)
+    conn = sqlite3.connect(db)
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+    conn.close()
+    if row:
+        print(row[0])
+except Exception:
+    pass
+PYEOF
+)"
+    fi
+    if [ -z "$st" ]; then
+        # fallback: `list --json` (работает после v0.20.0)
+        st="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null \
+            | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+    for t in tasks:
+        if t.get("id") == sys.argv[1]:
+            print(t.get("status", "")); break
+except Exception:
+    pass
+' "$tid" 2>/dev/null || true)"
+    fi
+    printf '%s' "$st"
+}
+
+# --- rate-limit конфликт/UNSTABLE-комментариев (ретро 12.08 t_8af6bf29) -----
+# scan-all-prs комментил карточку 'ОБЯЗАН rebase' КАЖДЫЙ тик (~10 мин) при
+# PR CONFLICTING → шум. Теперь: коммент не чаще 1 раза в 2 часа. Таймстамп
+# последнего однотипного коммента берём из kanban DB (task_comments.body LIKE).
+kanban_last_reminder_ts() {  # $1=task_id $2=marker-substring → epoch или пусто
+    local tid="$1" marker="$2" db
+    [ -z "$tid" ] && return 0
+    db="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"
+    [ -f "$db" ] || return 0
+    python3 - "$db" "$tid" "$marker" <<'PYEOF' 2>/dev/null || true
+import sqlite3, sys, os
+db, tid, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    if not os.path.exists(db):
+        sys.exit(0)
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT MAX(created_at) FROM task_comments WHERE task_id=? AND body LIKE ?",
+        (tid, "%" + marker + "%")).fetchone()
+    conn.close()
+    if row and row[0]:
+        print(row[0])
+except Exception:
+    pass
+PYEOF
+}
+
 # G6: flock sentinel — skip tick if another instance holds the lock.
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
@@ -601,10 +673,9 @@ except Exception:
         fi
         # 4) Archive the card (done → archived) so the board stays clean.
         if [ -n "$card_id" ]; then
-            card_state="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$card_id" --json 2>/dev/null \
-                | python3 -c 'import sys,json
-try: print(json.load(sys.stdin).get("task",{}).get("status",""))
-except Exception: print("")' 2>/dev/null || true)"
+            # ретро 12.08 t_8af6bf29: `hermes kanban show` падает после v0.20.0
+            # (sqlite3.ProgrammingError) — статус читаем из kanban DB напрямую.
+            card_state="$(kanban_card_status "$card_id")"
             if [ "$card_state" = "done" ]; then
                 "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$card_id" >/dev/null 2>&1 \
                     && log "issue #${number}: card ${card_id} archived (merged)" || true
@@ -747,6 +818,14 @@ except Exception:
         # (по issue_number находим его task_id, comment с rebase-инструкцией).
         # НЕ создаём новую карточку — это лишняя сущность.
         if [ "$pr_mergeable" = "CONFLICTING" ] && [ "$pr_state" = "OPEN" ] && [ -n "${task_id:-}" ]; then
+            # Ретро 12.08 t_8af6bf29: rate-limit — коммент не чаще 1 раза в 2ч,
+            # иначе при вечном CONFLICTING каждый тик (~10 мин) шумит в карточке.
+            _last_cf="$(kanban_last_reminder_ts "$task_id" "merge conflict detected")"
+            _now_cf="$(date +%s)"
+            if [ -n "$_last_cf" ] && [ $(( _now_cf - _last_cf )) -lt 7200 ]; then
+                log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — rebase reminder rate-limited (last=${_last_cf})"
+                skipped=$((skipped+1)); continue
+            fi
             log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — appending rebase reminder to existing card ${task_id}"
             _rebase_reminder="## 🔀 merge conflict detected (merge-gate tick, $(date -u +%H:%M:%SZ))
 
@@ -789,6 +868,15 @@ git push --force-with-lease origin ${pr_head_ref}
         # же ветка, никаких новых. Если карточки нет → создаём с assignee
         # по метке issue.
         if [ "$pr_merge_state" = "UNSTABLE" ] && [ "$pr_state" = "OPEN" ]; then
+            # Ретро 12.08 t_8af6bf29: rate-limit — коммент не чаще 1 раза в 2ч.
+            if [ -n "${task_id:-}" ]; then
+                _last_un="$(kanban_last_reminder_ts "$task_id" "CI UNSTABLE detected")"
+                _now_un="$(date +%s)"
+                if [ -n "$_last_un" ] && [ $(( _now_un - _last_un )) -lt 7200 ]; then
+                    log "issue #${number}: PR #${pr_number} UNSTABLE — rebase reminder rate-limited (last=${_last_un})"
+                    skipped=$((skipped+1)); continue
+                fi
+            fi
             log "issue #${number}: PR #${pr_number} mergeStateStatus=UNSTABLE — appending rebase reminder"
             # Подтягиваем headRefName — UNSTABLE-блок не имеет его из основного цикла (регрессия t_1146)
             pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
@@ -1023,10 +1111,21 @@ for pr in data:
              f"| grep -Eo {q}kanban: t_[a-f0-9]+{q} | sort -u | tail -n10"],
             capture_output=True, text=True)
         cands = [c.strip().replace("kanban: ", "") for c in r.stdout.splitlines() if c.strip()]
+        # Ретро 12.08 t_8af6bf29: `hermes kanban show` падает после v0.20.0
+        # (sqlite3.ProgrammingError) — используем `list --json` (работает).
+        _list_raw = subprocess.run(
+            ["bash", "-c", "hermes kanban --board robbox list --json 2>/dev/null"],
+            capture_output=True, text=True).stdout
+        _card_status = {}
+        try:
+            _d = json.loads(_list_raw)
+            _tasks = _d if isinstance(_d, list) else _d.get("tasks", [])
+            for _t in _tasks:
+                _card_status[_t.get("id", "")] = _t.get("status", "")
+        except Exception:
+            pass
         for cand in reversed(cands):
-            st = subprocess.run(
-                ["bash", "-c", f"hermes kanban --board robbox show {cand} 2>/dev/null | grep -m1 'status:'"],
-                capture_output=True, text=True).stdout.strip()
+            st = _card_status.get(cand, "")
             if "archived" not in st:
                 task_id = cand
                 break
@@ -1101,26 +1200,51 @@ git push --force-with-lease origin ${head}
     fi
 
     if [ -n "$task_id" ]; then
-        # Дописываем reminder в существующую карточку (та же карточка, Шифу прямо)
-        hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_reminder" >/dev/null 2>&1 \
-            || log "scan-all-prs: WARNING appending reminder to ${task_id} failed"
-        log "scan-all-prs: reminder appended to existing card ${task_id} for PR #${pr_num}"
-        # Процесс-фикс (10.08): если карточка done/archived (воркер закрыл, но
-        # PR снова CONFLICTING/UNSTABLE из-за новых merge в develop) — requeue
-        # её в ready, чтобы воркер снова взял и сделал rebase.
-        _card_status="$(hermes kanban --board "$KANBAN_BOARD" show "$task_id" 2>/dev/null | grep -m1 'status:' | sed 's/.*status:[[:space:]]*//' || true)"
+        # Ретро 12.08 t_8af6bf29: rate-limit конфликт/UNSTABLE-комментариев
+        # (1 раз в 2ч), а не каждый тик (~10 мин шум при вечном CONFLICTING).
+        _marker="merge conflict detected"
+        [ "$mergeable" != "CONFLICTING" ] && _marker="CI UNSTABLE detected"
+        _last_ts="$(kanban_last_reminder_ts "$task_id" "$_marker")"
+        _now_ts="$(date +%s)"
+        _skip_comment=0
+        if [ -n "$_last_ts" ] && [ $(( _now_ts - _last_ts )) -lt 7200 ]; then
+            _skip_comment=1
+            log "scan-all-prs: reminder rate-limited for ${task_id} (last=${_last_ts}, PR #${pr_num})"
+        fi
+        if [ "$_skip_comment" -eq 0 ]; then
+            hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_reminder" >/dev/null 2>&1 \
+                || log "scan-all-prs: WARNING appending reminder to ${task_id} failed"
+            log "scan-all-prs: reminder appended to existing card ${task_id} for PR #${pr_num}"
+        fi
+        # Процесс-фикс (12.08, ретро t_8af6bf29): РЕСПАВН-ГАРД ДЕДЛОК.
+        # Раньше: requeue done/archived/blocked карточки → hermes-agent dispatcher
+        # check_respawn_guard блокирует респавн на 24ч по правилу active_pr (URL PR
+        # в комментариях воркера; _RESPAWN_GUARD_PR_WINDOW=86400) → воркер не
+        # стартует, rebase не делается, PR вечно CONFLICTING, merge-gate комментит
+        # каждый тик. ТЕПЕРЬ: НЕ requeue'им старую карточку, а создаём СВЕЖУЮ
+        # recovery-карточку (goal_mode=0, assignee=владелец PR, max_runtime 1800,
+        # тело=rebase-чеклист, idempotency-key по PR-номеру — не плодить дубли,
+        # урок t_bff6eccf). Свежая карточка не имеет URL-комментариев → guard не
+        # блокирует. Создание идемпотентно: при существующей recovery-карточке
+        # hermes kanban create вернёт её id, дубликат не создастся.
+        _card_status="$(kanban_card_status "$task_id")"
         case "$_card_status" in
-            done|archived|blocked)
-                hermes kanban --board "$KANBAN_BOARD" requeue "$task_id" --reason "scan-all-prs: PR #${pr_num} ${mergeable}/${merge_state} — rebase needed, card reopened" >/dev/null 2>&1 \
-                    && log "scan-all-prs: card ${task_id} requeued (was ${_card_status}) for PR #${pr_num}" \
-                    || log "scan-all-prs: WARNING requeue ${task_id} failed (status=${_card_status})"
+            running)
+                log "scan-all-prs: card ${task_id} running — reminder only (PR #${pr_num})"
+                ;;
+            *)
+                _rec_key="merge-conflict-recovery-pr-${pr_num}"
+                _rec_title="🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI"
+                hermes kanban --board "$KANBAN_BOARD" create \
+                    --assignee "$_assignee" \
+                    --max-runtime 1800 \
+                    --idempotency-key "$_rec_key" \
+                    --body "$_reminder" \
+                    "$_rec_title" >/dev/null 2>&1 \
+                    && log "scan-all-prs: recovery card ensured for PR #${pr_num} (key=${_rec_key}, assignee=${_assignee}, status=${_card_status:-?})" \
+                    || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num}, key=${_rec_key})"
                 ;;
         esac
-        # Если карточка blocked (воркер упал) — разблокируем
-        if [ "$_card_status" = "blocked" ]; then
-            hermes kanban --board "$KANBAN_BOARD" unblock "$task_id" --reason "scan-all-prs: PR #${pr_num} ${mergeable}/${merge_state} — rebase reminder appended, retry" >/dev/null 2>&1 \
-                && log "scan-all-prs: card ${task_id} unblocked for retry (PR #${pr_num})"
-        fi
     else
         # Нет существующей карточки — НЕ создаём руками, только логируем
         # (процесс сам создаст её в основном цикле если issue имеет needs-e2e)

@@ -61,6 +61,10 @@ fixture_merged_pass_proven() {  # $1=issue $2=pr $3=title
     set_state PR_LIST_ALL_OPEN_JSON '[]'
     set_state PR_FOLLOWUP_JSON '[]'
     set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    # Ретро 12.08 t_8af6bf29: merge-gate читает статус карточки через
+    # `list --json` (kanban_card_status), а не через сломавшийся `show`.
+    # Имитируем карточку t_dead<issue> в статусе done (как раньше show default).
+    set_state "KANBAN_LIST_JSON" "[{\"id\":\"t_dead${issue}\",\"status\":\"done\"}]"
     set_state "BRANCH_PRESENT_${branch}" 1
 }
 
@@ -454,6 +458,74 @@ test_I_card_archived_after_close() {
 }
 
 # ===========================================================================
+# J. Ретро 12.08 t_8af6bf29: CONFLICTING PR → recovery-карточка (не requeue)
+#    Респавн-гард дедлок: merge-gate requeue'ил done/archived карточку с
+#    URL-PR комментами → dispatcher check_respawn_guard блокировал респавн на
+#    24ч → воркер не стартует, rebase не делается, PR вечно CONFLICTING.
+#    Фикс: вместо requeue — СВЕЖАЯ recovery-карточка с idempotency-key по
+#    PR-номеру (свежая карточка не имеет URL-комментов → guard не блокирует).
+# ===========================================================================
+test_J_conflict_creates_recovery_card_not_requeue() {
+    new_test
+    local branch
+    branch="z-{agent}/t_dead4321-rebase-demo"
+    # Сканируемый PR: CONFLICTING, head-ветка → task_id t_dead4321.
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":4321,\"title\":\"fix #999 demo\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\"}]"
+    # Существующая карточка в статусе done (как будто воркер закрыл, но PR
+    # снова CONFLICTING) — именно этот кейс раньше вызывал requeue → дедлок.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead4321\",\"status\":\"done\"}]"
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Создана recovery-карточка с idempotency-key по PR-номеру.
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox create.*merge-conflict-recovery-pr-4321' || true)"
+    assert_eq "1" "$create_calls" "recovery card created with idempotency-key by PR number"
+
+    # 2) НЕ requeue старой карточки (именно это вызывало respawn-guard дедлок).
+    local requeue_calls
+    requeue_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox requeue t_dead4321' || true)"
+    assert_eq "0" "$requeue_calls" "old card NOT requeued (respawn-guard deadlock fix)"
+
+    # 3) recovery-карточка создаётся с assignee владельца PR (по метке issue).
+    assert_contains "hermes kanban --board robbox create --assignee" "$journal" "recovery card has assignee"
+}
+
+# ===========================================================================
+# K. Ретро 12.08 t_8af6bf29: rate-limit конфликт-комментариев (1 раз в 2ч)
+# ===========================================================================
+test_K_conflict_comment_rate_limited() {
+    new_test
+    local branch
+    branch="z-{agent}/t_dead4322-rebase-demo"
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":4322,\"title\":\"fix #999 demo\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\"}]"
+    # Карточка running → коммент добавляем, recovery НЕ создаём.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead4322\",\"status\":\"running\"}]"
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # Reminder-коммент добавлен один раз.
+    local comment_calls
+    comment_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox comment t_dead4322' || true)"
+    assert_eq "1" "$comment_calls" "conflict reminder appended to running card"
+
+    # Recovery-карточка НЕ создаётся для running-карточки.
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox create' || true)"
+    assert_eq "0" "$create_calls" "no recovery card for running card"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. MERGED + e2e-done → close once, no e2e-done added" test_A_merged_pass_proven_closes_once
@@ -465,5 +537,7 @@ run_test "F. already-CLOSED → no close, dedup skip comment" test_F_already_clo
 run_test "G. no PASS provenance → merge-gate does NOT add e2e-done" test_G_no_pass_no_e2e_done_added
 run_test "H. regression: follow-up over e2e-done still works" test_H_followup_pr_over_e2e_done_still_works
 run_test "I. regression: card archived after close (card_state parse)" test_I_card_archived_after_close
+run_test "J. CONFLICTING → recovery card (not requeue) — respawn-guard fix" test_J_conflict_creates_recovery_card_not_requeue
+run_test "K. conflict comment rate-limit / no recovery for running card" test_K_conflict_comment_rate_limited
 
 summary

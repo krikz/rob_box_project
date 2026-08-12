@@ -584,6 +584,76 @@ if [ "$_any_rejected" -eq 1 ]; then
     fi
 fi
 
+# --- post-round labeling sweep (ретро 12.08 t_8af6bf29) ---------------------
+# ПРОБЛЕМА: wait-фаза e2e-process (ожидание вердикта workflow) прерывается
+# (Terminated на ожидании билда — round-1; та же сигнатура на round-2), пост-
+# обработка (label e2e-done + remove needs-e2e) НЕ выполняется, а cleanup
+# удаляет round-ветку → следующий тик не может до-обработать. Итог: issue
+# остаётся needs-e2e при УЖЕ SUCCESS-рауне (наблюдение: #681 round-2 SUCCESS,
+# но e2e-done не поставлен).
+# РЕШЕНИЕ: пост-обработка идемпотентна и НЕЗАВИСИМА от wait-фазы — каждый тик
+# ДО создания нового round проверяем последний round-бранч / последний workflow
+# run; если завершён → применяем label e2e-done + remove needs-e2e. Round-ветку
+# НЕ удаляем, пока label'ы не применены (sweep вызывается до round_ensure).
+post_round_sweep() {
+    [ "$DRY_RUN" = "true" ] && return 0
+    local _sweep_n _sweep_round _sweep_run _sweep_run_id _sweep_concl _sweep_issues _sn _sl _sl_norm _cur_num
+    # последний существующий round-бранч (test-round-N, max N на remote),
+    # ИСКЛЮЧАЯ текущий ROUND_BRANCH (этот тик только что создал новый round —
+    # его ещё рано лейблить, он обрабатывается основным циклом).
+    _cur_num=""
+    [ -n "${ROUND_BRANCH:-}" ] && _cur_num="${ROUND_BRANCH##*-}"
+    _sweep_n="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
+        | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" \
+        | grep -v "^${_cur_num}$" | sort -n | tail -n1)"
+    [ -z "$_sweep_n" ] && return 0
+    _sweep_round="${TEST_ROUND_PREFIX}${_sweep_n}"
+    # Последний ЗАВЕРШЁННЫЙ E2E workflow run на этом round (conclusion != null).
+    _sweep_run="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" --branch "$_sweep_round" \
+        --limit 5 --json databaseId,status,conclusion 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    runs = json.load(sys.stdin)
+    for r in runs:
+        if r.get("status") == "completed" and r.get("conclusion"):
+            print(r["databaseId"]); print(r["conclusion"]); break
+except Exception:
+    pass' 2>/dev/null || true)"
+    _sweep_run_id="$(printf '%s\n' "$_sweep_run" | sed -n 1p)"
+    _sweep_concl="$(printf '%s\n' "$_sweep_run" | sed -n 2p)"
+    if [ -z "$_sweep_run_id" ]; then
+        log "post-round sweep: no completed e2e run on ${_sweep_round} — skip"
+        return 0
+    fi
+    log "post-round sweep: ${_sweep_round} last completed e2e run #${_sweep_run_id} conclusion=${_sweep_concl}"
+    if [ "$_sweep_concl" != "success" ]; then
+        # FAIL/infra — НЕ ставим e2e:rejected вслепую: следующий тик основного
+        # цикла перепрогонит issue (needs-e2e сохранён). Sweep лечит только
+        # потерянный SUCCESS-лейбл.
+        log "post-round sweep: run #${_sweep_run_id} не SUCCESS (${_sweep_concl}) — оставляем ротации, следующий тик перепрогонит"
+        return 0
+    fi
+    # Issues, смерженные в этот round: из merge-коммитов "agent-flow: merge
+    # <branch> for issue #N" (см. merge в основной цикле).
+    git -C "$REPO_DIR" fetch origin "$_sweep_round" --quiet 2>/dev/null || true
+    _sweep_issues="$(git -C "$REPO_DIR" log "origin/${FOUNDATION_BRANCH}..origin/${_sweep_round}" --merges --format='%s' 2>/dev/null \
+        | grep -oE 'issue #[0-9]+' | grep -oE '[0-9]+' | sort -u)"
+    for _sn in $_sweep_issues; do
+        _sl="$(gh issue view "$_sn" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        _sl_norm="$(printf '%s' "$_sl" | tr '[:upper:]' '[:lower:]')"
+        if has_label "$_sl_norm" "$DONE_LABEL" || has_label "$_sl_norm" "$REJECTED_LABEL" || ! has_label "$_sl_norm" "$NEEDS_E2E_LABEL"; then
+            log "post-round sweep: issue #${_sn} уже обработан (${_sl_norm}) — skip"
+            continue
+        fi
+        gh issue edit "$_sn" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
+        gh issue edit "$_sn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        gh issue comment "$_sn" --repo "$GH_REPO" --body \
+            "agent-flow: ✅ e2e-done (post-round sweep): run #${_sweep_run_id} SUCCESS на ${_sweep_round} — процесс был прерван на wait-фазе, метка применена следующим тиком." >/dev/null 2>&1 || true
+        log "post-round sweep: issue #${_sn} → ${DONE_LABEL} (run #${_sweep_run_id})"
+    done
+    return 0
+}
+
 # --- prepare worktree --------------------------------------------------------
 ensure_worktree || { log "worktree setup failed"; exit 1; }
 round_ensure || { log "round setup failed"; exit 1; }
@@ -785,6 +855,10 @@ compute_agent_branch() {  # $1=issue_number $2=title
 processed=0
 errored=0
 skipped=0
+# Post-round sweep (ретро 12.08 t_8af6bf29): применяем потерянные e2e-done
+# метки с прошлого round ДО обработки issues — идемпотентно, независимо от
+# wait-фазы прошлого тика. Все helpers (has_label, slugify) уже определены.
+post_round_sweep || true
 # Each per-issue pipeline step is bounded by E2E_CI_TIMEOUT + E2E_RUN_TIMEOUT.
 # We process all `needs-e2e` issues per tick; failures on one issue do not
 # stop the others. The chron rhythm (every 1h) caps the effective capacity.

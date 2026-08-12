@@ -640,6 +640,17 @@ state="${GH_STATE:-}"
 ts="$(date -Iseconds 2>/dev/null || date)"
 journal() { printf '%s\t%s\n' "$ts" "$*" >>"$journal_file"; }
 journal "hermes $*"
+# `kanban --board <b> list --json` → emit JSON array of tasks so the merge-gate
+# card_status fallback (kanban_card_status, ретро 12.08 t_8af6bf29) is exercised.
+# Fixture key: KANBAN_LIST_JSON (array of {id,status,...}); default [].
+if printf '%s' "$*" | grep -q -- ' list '; then
+    if [ -f "$state" ]; then
+        _v="$(grep -E "^KANBAN_LIST_JSON=" "$state" | head -n1 | sed "s@^KANBAN_LIST_JSON=@@")"
+        if [ -n "$_v" ]; then printf '%s' "$_v"; exit 0; fi
+    fi
+    printf '%s' '[]'
+    exit 0
+fi
 # `kanban --board <b> show <card> --json` → emit card state JSON so the
 # merge-gate card_state parse (embedded python) is exercised.
 # Fixture key: KANBAN_SHOW_<card_id>_JSON, default {"task":{"status":"done"}}.
