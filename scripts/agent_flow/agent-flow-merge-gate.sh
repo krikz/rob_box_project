@@ -1081,7 +1081,13 @@ for pr in data:
     head = pr["headRefName"]
     mergeable = pr.get("mergeable", "")
     merge_state = pr.get("mergeStateStatus", "")
-    if mergeable not in ("CONFLICTING",) and merge_state not in ("UNSTABLE",):
+    # Ретро 12.08 t_618208c0: DIRTY mergeStateStatus = «merge commit cannot be
+    # cleanly created» (конфликт с develop). GitHub считает mergeable асинхронно
+    # и может отдать UNKNOWN при реальном конфликте (кейс #1165: gh api →
+    # CONFLICTING/UNKNOWN) — поэтому ловим и mergeable=CONFLICTING, и
+    # mergeStateStatus=DIRTY. Раньше DIRTY-ветка «никому не принадлежала»
+    # (не clean ≠ rejected) → серая зона merge-gate.
+    if mergeable not in ("CONFLICTING",) and merge_state not in ("UNSTABLE", "DIRTY"):
         continue
     # Определяем issue_number: из PR title (#NNNN) или из branch (z-{agent}/NNNN-*).
     # Сначала пробуем title (#NNNN), иначе ищем NNNN- в branch, но НЕ t_xxxx (это task_id).
@@ -1155,8 +1161,11 @@ for pr in data:
         done
     fi
 
-    # Формируем reminder (тот же текст, что в основном цикле)
-    if [ "$mergeable" = "CONFLICTING" ]; then
+    # Формируем reminder (тот же текст, что в основном цикле).
+    # Ретро 12.08 t_618208c0: mergeable=CONFLICTING ИЛИ mergeStateStatus=DIRTY
+    # (GitHub отдаёт их асинхронно — см. фильтр выше) → это КОНФЛИКТ, а не
+    # UNSTABLE. Раньше DIRTY-ветка получала UNSTABLE-reminder (неверный текст).
+    if [ "$mergeable" = "CONFLICTING" ] || [ "$merge_state" = "DIRTY" ]; then
         _reminder="## 🔀 merge conflict detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
 
 PR #${pr_num} (\`${head}\`) → develop = **CONFLICTING**.
@@ -1203,7 +1212,7 @@ git push --force-with-lease origin ${head}
         # Ретро 12.08 t_8af6bf29: rate-limit конфликт/UNSTABLE-комментариев
         # (1 раз в 2ч), а не каждый тик (~10 мин шум при вечном CONFLICTING).
         _marker="merge conflict detected"
-        [ "$mergeable" != "CONFLICTING" ] && _marker="CI UNSTABLE detected"
+        [ "$mergeable" != "CONFLICTING" ] && [ "$merge_state" != "DIRTY" ] && _marker="CI UNSTABLE detected"
         _last_ts="$(kanban_last_reminder_ts "$task_id" "$_marker")"
         _now_ts="$(date +%s)"
         _skip_comment=0
@@ -1246,9 +1255,82 @@ git push --force-with-lease origin ${head}
                 ;;
         esac
     else
-        # Нет существующей карточки — НЕ создаём руками, только логируем
-        # (процесс сам создаст её в основном цикле если issue имеет needs-e2e)
-        log "scan-all-prs: no existing card for PR #${pr_num} (${head}); assignee=${_assignee}, issue=${issue_num:-?} — main cycle will pick up if needs-e2e"
+        # Нет существующей карточки — раньше только логировали «main cycle
+        # will pick up if needs-e2e» — НО для CONFLICTING/DIRTY PR основной
+        # цикл needs-e2e НИКОГДА не ставит (нужен merge_state=clean), и
+        # конфликт-карточка e2e-process тоже не создаётся (PR не в очереди) →
+        # СЕРАЯ ЗОНА (ретро 12.08 t_618208c0, кейс PR #1165/issue #1160).
+        # Теперь: коммент на PR + создание конфликт-карточки (идемпотентно,
+        # idempotency-key по PR, assignee по метке issue) — как в e2e-process
+        # round-merge (t_bff6eccf), но на этапе merge-gate.
+        if [ "$mergeable" = "CONFLICTING" ] || [ "$merge_state" = "DIRTY" ]; then
+            log "scan-all-prs: PR #${pr_num} ${mergeable}/${merge_state} без карточки — коммент на PR + конфликт-карточка (ретро t_618208c0)"
+            # Дедуп PR-комментария (24h) — не спамим каждый тик.
+            _prc_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _prc_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_num}/comments?since=${_prc_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🔀 **merge conflict** (merge-gate"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_prc_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+                gh pr comment "$pr_num" --repo "$GH_REPO" --body \
+                    "🔀 **merge conflict** (merge-gate, ретро 12.08 t_618208c0): PR #${pr_num} (\`${head}\`) → develop = **CONFLICTING** (mergeStateStatus=${merge_state:-?}).
+
+**ОБЯЗАН** (по процессу Шифу 10.08): в **той же ветке** \`${head}\` сделай rebase на origin/develop:
+
+\`\`\`bash
+git fetch origin develop
+git checkout ${head}
+git rebase origin/develop
+# resolve conflicts
+git add -A && git rebase --continue
+git push --force-with-lease origin ${head}
+\`\`\`
+
+Как PR станет MERGEABLE — merge-gate поставит needs-e2e автоматически. Метки снимать НЕ надо." >/dev/null 2>&1 \
+                    && log "scan-all-prs: PR comment posted to #${pr_num} (merge conflict)" \
+                    || log "scan-all-prs: WARNING PR comment failed for #${pr_num}"
+            else
+                log "scan-all-prs: PR comment dedup'd for #${pr_num} (×${_prc_dup_count} in 24h)"
+            fi
+            # Конфликт-карточка: ищем по branch в title в ЛЮБОМ статусе
+            # (идемпотентно, урок t_bff6eccf), requeue если done/archived,
+            # unblock если blocked, create если нет.
+            _existing_conflict="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+data = json.loads(sys.stdin.read())
+for t in data:
+    if t.get('title','').startswith('🔀 rebase PR #${pr_num}') or ('${head}' in t.get('title','') and 'rebase' in t.get('title','')):
+        print(t['id'], t.get('status',''))
+        break
+" 2>/dev/null | head -1)"
+            _conflict_id="${_existing_conflict%% *}"
+            _conflict_status="${_existing_conflict#* }"
+            if [ -n "$_conflict_id" ]; then
+                case "$_conflict_status" in
+                    done|archived)
+                        hermes kanban --board "$KANBAN_BOARD" requeue "$_conflict_id" --reason "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (ретро 12.08 t_618208c0)" >/dev/null 2>&1 \
+                            && log "scan-all-prs: conflict card ${_conflict_id} requeued (was ${_conflict_status}) for PR #${pr_num}" \
+                            || log "scan-all-prs: WARNING requeue ${_conflict_id} failed (${_conflict_status})"
+                        ;;
+                    blocked)
+                        hermes kanban --board "$KANBAN_BOARD" unblock "$_conflict_id" --reason "🔀 свежий конфликт — retry (ретро 12.08 t_618208c0)" >/dev/null 2>&1 || true
+                        log "scan-all-prs: conflict card ${_conflict_id} unblocked (was blocked)"
+                        ;;
+                    *)
+                        log "scan-all-prs: conflict card ${_conflict_id} already active (${_conflict_status}) — skip"
+                        ;;
+                esac
+            else
+                hermes kanban --board "$KANBAN_BOARD" create \
+                    --assignee "$_assignee" \
+                    --priority 90 \
+                    --max-runtime 1800 \
+                    --body "$_reminder" \
+                    "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт (issue ${issue_num:-?})" >/dev/null 2>&1 \
+                    || log "scan-all-prs: WARNING conflict card create failed (PR #${pr_num}, assignee=${_assignee})"
+                log "scan-all-prs: conflict card created for PR #${pr_num} (assignee=${_assignee})"
+            fi
+        else
+            log "scan-all-prs: no existing card for PR #${pr_num} (${head}); assignee=${_assignee}, issue=${issue_num:-?} — UNSTABLE, main cycle will pick up if needs-e2e"
+        fi
     fi
 done
 
