@@ -278,6 +278,23 @@ if m:
                 break
     print(count); sys.exit(0)
 
+# Pattern: [.field[] | select(.a == "X" or .b == "Y")] | length
+# (multi-condition OR count inside an OBJECT field — ретро 12.08 t_061d466e.
+#  gh pr view --json statusCheckRollup returns {"statusCheckRollup":[...]},
+#  so the real filter dereferences the field; iterate its array.)
+m = re.match(r"^\[\.([\w]+)\[\]\s*\|\s*select\((.+?)\)\]\s*\|\s*length$", filt)
+if m:
+    outer, conds = m.group(1), re.findall(r"\.([\w]+)\s*==\s*\"([^\"]+)\"", m.group(2))
+    coll = data.get(outer) if isinstance(data, dict) else None
+    count = 0
+    for el in (coll or []):
+        if not isinstance(el, dict): continue
+        for field, val in conds:
+            if el.get(field) == val:
+                count += 1
+                break
+    print(count); sys.exit(0)
+
 # Pattern: [.files[].path]  (array of subfield values — retro-path PR files)
 m = re.match(r"^\[\.([\w]+)\[\]\.([\w]+)\]$", filt)
 if m:

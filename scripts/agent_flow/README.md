@@ -146,6 +146,38 @@ STALE_HOURS=72 bash <repo>/scripts/agent_flow/agent-flow-deploy-sweep.sh     # �
 
 Рекомендуемый cron: `every 6h`, no_agent=true.
 
+### `agent-flow-unlabeled-sweep.sh` — авто-sweep stale unlabeled issues (ретро 12.08 t_061d466e)
+
+**Правило:** open issue БЕЗ process-меток (hermes/agent:*/needs-e2e/e2e-done/
+e2e:rejected/no-e2e-required/needs-discussion) без апдейтов > `SWEEP_DAYS`
+(default 2д) → эвристика по меткам/title/body определяет роль:
+- voice/tts/music/audio/stt/vad → `agent:backend`
+- ci/deploy/docker/build/workflow → `agent:devops`
+- architecture/design/adr/refactor → `agent:architect`
+
+Роль определена и возраст ≤ `MAX_AGE_DAYS` (default 21д) → авто-метки
+`agent:<role>` + `hermes` (triage создаст kanban-карточку) + коммент.
+Роль НЕ определена или issue слишком старая → только коммент-напоминание
+(без `hermes` — не запускаем воркеров на потенциально неактуальные задачи).
+
+**Build-failed issues** (метка build-failure / title «Build Failed») старше
+`BUILD_FAILED_CLOSE_DAYS` (default 30д) → проверка, что L-Build Vision/Main Pi
+на develop зелёные → resolved: close с комментарием; CI не зелёный → НЕ трогаем.
+
+**Почему:** триаж фильтрует только по метке `hermes`; старые issues без неё
+(#918 busy-loop 29.07, #929 OOM, #931/#933 TTS, #1016 музыка и др.) висели
+неделями неразмеченными (ретро 12.08 t_061d466e).
+
+Идемпотентен: пропускает process-issues, свежие (< SWEEP_DAYS), уже
+размеченные; комментарии дедуплицируются (24h).
+
+```bash
+bash <repo>/scripts/agent_flow/agent-flow-unlabeled-sweep.sh --dry-run   # показать, что сделает
+SWEEP_DAYS=2 bash <repo>/scripts/agent_flow/agent-flow-unlabeled-sweep.sh # реальный sweep
+```
+
+Рекомендуемый cron: `every 12h`, no_agent=true.
+
 ### `cron-loop.sh` — низкоуровневый цикл
 
 Тонкая обёртка над cron-вызовами (используется как fallback когда

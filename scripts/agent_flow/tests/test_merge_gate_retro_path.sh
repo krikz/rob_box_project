@@ -15,6 +15,11 @@
 #   F. merged PR старше окна (RETRO_MERGED_DAYS) → не рассматривается.
 #   G. self-reference: PR ссылается на свой собственный номер (#1142 в body)
 #      → не считается issue-reference.
+#   H. (12.08 t_061d466e) issue с e2e:rejected + merged CI-only PR с зелёным
+#      CI → e2e:rejected снимается, issue закрывается (петля #1041).
+#   I. (12.08 t_061d466e) issue с e2e:rejected + merged PR, но PASS-
+#      доказательства НЕТ → needs-e2e НЕ ставится (иначе e2e-process
+#      зациклится), rejected остаётся, close не вызывается.
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_merge_gate_retro_path.sh
@@ -263,6 +268,85 @@ test_G_retro_ignores_self_reference() {
 }
 
 # ===========================================================================
+# H. (12.08 t_061d466e) issue с e2e:rejected + merged CI-only PR с зелёным
+#    CI → e2e:rejected снимается, issue закрывается (петля #1041).
+# ===========================================================================
+test_H_retro_rejected_ci_only_green_closes() {
+    new_test
+    local issue=1041 pr=1161 head='z-{agent}/1041-fix-l-build-dockertag-clean'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci #${issue}): DOCKER_TAG=latest для refs/tags/v*\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T16:45:52Z\"}]"
+    # issue имеет hermes + e2e:rejected (как #1041) — ретро-путь должен
+    # обработать её через PASS-доказательство, а не скипнуть.
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"e2e:rejected"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # e2e run НЕТ (пусто) — fallback на CI-only.
+    set_state "RUN_LIST_${head}_JSON" '[]'
+    # PR меняет только .github/ + docs → CI-only.
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":".github/workflows/L-Build Vision Pi Services.yml"},{"path":"docs/process/HOTFIX.md"}]}'
+    # CI зелёный: нет FAILURE/CANCELLED/TIMED_OUT.
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"SUCCESS"},{"conclusion":"SKIPPED"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "rejected issue with merged CI-only PR is closed"
+
+    local remove_rejected
+    remove_rejected="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --remove-label e2e:rejected" || true)"
+    assert_eq "1" "$remove_rejected" "e2e:rejected removed before close"
+
+    local add_needs_e2e
+    add_needs_e2e="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --add-label needs-e2e" || true)"
+    assert_eq "0" "$add_needs_e2e" "no needs-e2e when PASS evidence closes"
+}
+
+# ===========================================================================
+# I. (12.08 t_061d466e) issue с e2e:rejected + merged PR, но PASS-
+#    доказательства НЕТ → needs-e2e НЕ ставится, rejected остаётся,
+#    close не вызывается (иначе e2e-process зациклится).
+# ===========================================================================
+test_I_retro_rejected_no_evidence_no_loop() {
+    new_test
+    local issue=3001 pr=3002 head='z-devops/t_3001-rejected-no-evidence'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} rejected unverified\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"e2e:rejected"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[]'  # e2e нет
+    # PR меняет код робота (не CI-only) → CI green не считается PASS для e2e.
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"src/robot/voice.py"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
+    assert_eq "0" "$close_calls" "no close without PASS evidence even when rejected"
+
+    local add_needs_e2e
+    add_needs_e2e="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --add-label needs-e2e" || true)"
+    assert_eq "0" "$add_needs_e2e" "no needs-e2e on rejected issue without PASS (no e2e-process loop)"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. retro-path: e2e PASS evidence → close unlabeled issue" test_A_retro_e2e_pass_closes
@@ -272,5 +356,7 @@ run_test "D. retro-path: issue with needs-e2e → skip" test_D_retro_skips_label
 run_test "E. retro-path: CLOSED issue → skip" test_E_retro_skips_closed_issue
 run_test "F. retro-path: old PR outside window → skip" test_F_retro_skips_old_pr
 run_test "G. retro-path: self-reference ignored" test_G_retro_ignores_self_reference
+run_test "H. retro-path: e2e:rejected + merged CI-only green → close + remove rejected" test_H_retro_rejected_ci_only_green_closes
+run_test "I. retro-path: e2e:rejected + merged no PASS → no needs-e2e loop" test_I_retro_rejected_no_evidence_no_loop
 
 summary
