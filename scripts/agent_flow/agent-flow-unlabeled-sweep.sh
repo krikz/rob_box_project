@@ -59,8 +59,19 @@ LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-unlabeled-sweep.lock}"
 PREFIX="[agent-flow-unlabeled-sweep]"
 
 # --- MAINTENANCE gate + env -------------------------------------------------
-ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-if [ -f "$ENV_FILE" ]; then
+# Ретро 12.08 t_061d466e: cron из devops-профиля может передать
+# HERMES_HOME=<profile_dir> (см. agent-flow-merge-gate.sh строки 39-42 — там это
+# уже было зафиксировано). Тогда ENV_FILE вышел бы за пределы реальной иерархии
+# и GH_REPO не загрузился → sweep падал бы каждый тик. Ищем .env по списку
+# кандидатов (сначала каноничный путь, потом унаследованный HERMES_HOME).
+ENV_FILE=""
+for _cand in \
+    "/home/builder/.hermes/profiles/agent-flow/.env" \
+    "$HERMES_HOME/profiles/agent-flow/.env" \
+    "$HOME/.hermes/profiles/agent-flow/.env"; do
+    if [ -f "$_cand" ]; then ENV_FILE="$_cand"; break; fi
+done
+if [ -n "$ENV_FILE" ]; then
   while IFS='=' read -r key val; do
     case "$key" in ''|\#*) continue ;; esac
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
