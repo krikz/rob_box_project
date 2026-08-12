@@ -13,6 +13,14 @@ from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
 from .handlers.messages import text_message_handler, voice_message_handler
+# Issue #1160 — Prometheus metrics (этап 1 observability). Telegram-bot —
+# отдельный контейнер, поэтому у него свой лёгкий observability-модуль
+# (не тянет rob_box_voice).
+from .observability import (
+    is_metrics_enabled,
+    record_telegram_message,
+    start_metrics_server,
+)
 _BE = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
 _RE = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
 _TL = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -24,6 +32,8 @@ class TelegramNode(Node):
         self.declare_parameter("camera_depth_topic", "/camera/camera/depth/image_rect_raw/compressedDepth")
         self.declare_parameter("camera_up_topic", "/ceiling_camera/image_raw/compressed")
         self.declare_parameter("camera_cache_ttl", 5.0)
+        # Issue #1160 — Prometheus metrics endpoint. 9101 — telegram-bot.
+        self.declare_parameter("metrics_port", 9101)
         p = self.get_parameter
         self.camera_topic, self.camera_depth_topic, self.camera_up_topic = p("camera_topic").value, p("camera_depth_topic").value, p("camera_up_topic").value
         self.camera_cache = CameraCache(ttl=p("camera_cache_ttl").value)
@@ -36,6 +46,19 @@ class TelegramNode(Node):
         self._response_pub = self.create_publisher(String, "/voice/dialogue/response", _RE)
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
+        # Issue #1160 — Prometheus metrics server (этап 1).
+        # Порт 9101 — стандартный для telegram-bot (см. observability).
+        metrics_port = int(p("metrics_port").value or 0)
+        if metrics_port > 0 and is_metrics_enabled():
+            if start_metrics_server(metrics_port):
+                self.get_logger().info(
+                    f"📊 Telegram metrics server listening on :{metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 Telegram metrics port {metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         if not token: self.get_logger().error("TELEGRAM_BOT_TOKEN not set"); return
         self._start_telegram_bot(token)
@@ -47,8 +70,14 @@ class TelegramNode(Node):
     def set_active_chat(self, chat_id: int) -> None: self._active_chat_id = chat_id
     def forward_to_stt(self, text: str) -> None:
         if not text: return
+        # Issue #1160 — Prometheus metrics: входящее сообщение (текст/команда).
+        if is_metrics_enabled():
+            record_telegram_message("in", message_type="text")
         m = String(); m.data = text; self._stt_pub.publish(m)
     def publish_tts(self, text: str) -> None:
+        # Issue #1160 — Prometheus metrics: исходящая озвучка.
+        if is_metrics_enabled():
+            record_telegram_message("out", message_type="voice")
         m = String(); m.data = json.dumps(
             {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"},
             ensure_ascii=False); self._response_pub.publish(m)

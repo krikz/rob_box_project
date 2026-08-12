@@ -81,7 +81,9 @@ from rob_box_voice.speaker_profiles import (
 # no-op и старт сервера тихо возвращает ``False``.
 from rob_box_voice.observability import (
     is_metrics_enabled,
+    record_barge_in,
     record_fallback,
+    record_session_duration,
     record_voice_llm_request,
     start_metrics_server,
 )
@@ -449,6 +451,12 @@ class DialogueNode(Node):
         # babbles again after the retry, we fall through to publish the
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
+
+        # Issue #1160 — Prometheus metrics: длительность диалоговой
+        # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
+        # при DIALOGUE_END / timeout пишем histogram.
+        self._session_started_at: Optional[float] = None
+        self._session_end_reason: str = "success"
 
         # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
         # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
@@ -1569,6 +1577,14 @@ class DialogueNode(Node):
             # в момент продолжения (v08:55:11 music_cleanup new_dialogue).
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
+
+        # Issue #1160 — Prometheus metrics: новый диалог из IDLE (первый
+        # wake-word) открывает сессию; DIALOGUE_END / timeout закроет её
+        # histogram'ом voice_session_duration_seconds.
+        if was_idle and not is_dj_auto and self._session_started_at is None:
+            self._session_started_at = time.monotonic()
+            self._session_end_reason = "success"
+
         asyncio.run_coroutine_threadsafe(
             self._run_turn(
                 user_input,
@@ -1923,6 +1939,10 @@ class DialogueNode(Node):
             babble_retry_pending = bool(self._babble_retry_used)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
+            # Issue #1160 — Prometheus metrics: barge-in (пользователь
+            # перебил робота wake-word'ом во время TTS/LLM-ответа).
+            if is_metrics_enabled():
+                record_barge_in()
             result = None
         except Exception as exc:  # noqa: BLE001
             # 🔴 FIX (live 12.08): говорим ДО логгирования — если логгер
@@ -2021,6 +2041,9 @@ class DialogueNode(Node):
                 and not babble_retry_pending
             ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
+                # Issue #1160 — Prometheus metrics: сессия закрылась
+                # штатно (DIALOGUE_END) — пишем duration histogram.
+                self._maybe_record_session_end(result="success")
             # DialogCore completes the DIALOGUE → IDLE transition itself.
             # Publish the resulting state even when no transition is needed
             # here; otherwise the ROS state topic remains stuck at the
@@ -3391,9 +3414,27 @@ class DialogueNode(Node):
         self._tts_control_pub.publish(stop_msg)
         self._effects.release_all_tts()
         self._effects.clear_sound_event()
+
+    def _maybe_record_session_end(self, result: str = "success") -> None:
+        """Issue #1160 — Prometheus metrics: закрыть открытую сессию.
+
+        Пишет histogram ``voice_session_duration_seconds{result=...}``
+        один раз на сессию (и сбрасывает таймер). Вызывается из
+        DIALOGUE_END (result=success) и из timeout'а (result=fail).
+        """
+        if self._session_started_at is None:
+            return
+        duration_s = time.monotonic() - self._session_started_at
+        if is_metrics_enabled():
+            record_session_duration(duration_s, result=result)
+        self._session_started_at = None
+        self._session_end_reason = result
     def _on_inactivity_check(self) -> None:
         if self._core.check_timeout():
             self.get_logger().info("⏰ Dialogue timeout → IDLE")
+            # Issue #1160 — Prometheus metrics: таймаут диалога = сессия
+            # закрылась с result=fail (не штатный DIALOGUE_END).
+            self._maybe_record_session_end(result="fail")
             self._publish_state()
     def shutdown_asyncio_loop(self, wait: bool = True) -> None:
         future = getattr(self, "_asyncio_loop_future", None)

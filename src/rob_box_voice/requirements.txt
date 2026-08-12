@@ -49,3 +49,8 @@ openpyxl>=3.1.5
 # sqlite-vec: векторный поиск для SQLite (опционально, graceful degradation)
 # Требует Ollama для генерации эмбеддингов: docker compose --profile ai up ollama
 sqlite-vec>=0.1.9
+
+# === Observability (issue #1160) ===
+# Prometheus client: /metrics endpoint для Grafana. Optional — если пакет
+# не установлен, rob_box_voice.observability превращается в no-op.
+prometheus_client>=0.20.0
