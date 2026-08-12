@@ -287,3 +287,31 @@ def test_extract_relevant_log_line_ignores_stt_short_rejection_vision() -> None:
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
 
     assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_imu_stale_noise() -> None:
+    """icp_odometry без свежего IMU — известный шум, не critical (issue #681).
+
+    OAK-D публикует IMU в /camera/camera/imu; пока топик недоступен/пуст,
+    icp_odometry ругается на каждый скан. SLAM продолжает работать.
+    """
+    log_text = (
+        "[health_monitor-1]   [ERROR] rtabmap.icp_odometry (3s ago): "
+        "We didn't receive IMU newer than previous image/scan (0.0000"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_dropping_scan_delay() -> None:
+    """icp_odometry дропает задержанные сканы — известный шум, не critical."""
+    log_text = (
+        "[health_monitor-1]   [WARN] rtabmap.icp_odometry (633s ago): "
+        "Dropping image/scan data with stamp 1786547382.538190 (delay"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None

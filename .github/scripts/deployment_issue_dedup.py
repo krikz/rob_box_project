@@ -67,6 +67,13 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # a main container log is by definition cross-container leak.
         r"telegram_node",
         r"telegram bot crashed",
+        # rtabmap icp_odometry без свежего IMU — известный шум, не аутэйдж:
+        # OAK-D публикует IMU в /camera/camera/imu; если топик недоступен/пуст,
+        # icp_odometry пишет ERROR "We didn't receive IMU newer than previous
+        # image/scan". SLAM продолжает работать (ICP по лидару + wheel odom guess),
+        # поэтому это не critical. См. issue #681.
+        r"didn't receive imu newer",
+        r"dropping image/scan data.*delay",
     ],
     "vision": [],
 }

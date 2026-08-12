@@ -127,6 +127,9 @@ services:
     # ТОПИК ПОТОК:
     #   Main Pi: rtabmap ← /scan (LiDAR)
     #   OAK-D intentionally excluded from Main Pi mapping until TF/timestamp path is stable again.
+    #   IMU приходит с Vision Pi OAK-D через zenoh: /camera/camera/imu (namespace='camera', node='camera').
+    #   НЕ менять на /camera/imu/data — этого топика не существует (Publisher count: 0),
+    #   icp_odometry тогда пишет "We didn't receive IMU newer than previous image/scan".
     command:
       - /ros_scripts/ros_with_namespace.sh
       - /scripts/start_rtabmap.sh
@@ -144,7 +147,7 @@ services:
       - frame_id:=base_footprint
       - odom_frame_id:=icp_odom
       - odom_topic:=/odom
-      - imu_topic:=/camera/imu/data
+      - imu_topic:=/camera/camera/imu
       - wait_imu_to_init:=false
       # AprilTag детекции: launch-аргумент rtabmap.launch.py называется tag_topic
       # (apriltag_topic не существует в текущем launch — молча игнорировался).

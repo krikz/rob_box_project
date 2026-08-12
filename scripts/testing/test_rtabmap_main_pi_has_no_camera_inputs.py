@@ -12,10 +12,15 @@ def test_main_rtabmap_compose_has_no_camera_runtime_topics():
     compose = yaml.safe_load(MAIN_COMPOSE.read_text(encoding="utf-8"))
     command = "\n".join(compose["services"]["rtabmap"]["command"])
 
-    assert "imu_topic:=/camera/imu/data" in command
+    assert "imu_topic:=/camera/camera/imu" in command
     assert "apriltag_topic:=/detections" in command
     assert "subscribe_rgbd:=false" in command
     assert "depth:=false" in command
+    # Регрессия #681: rtabmap НЕ должен подписываться на несуществующий /camera/imu/data
+    # (OAK-D публикует IMU в /camera/camera/imu из-за namespace='camera'). Подписка на
+    # мёртвый топик заставляла icp_odometry писать "We didn't receive IMU newer than
+    # previous image/scan" → health_monitor → ложный critical_log в деплой-пайплайне.
+    assert "imu_topic:=/camera/imu/data" not in command
 
 
 def test_rtabmap_yaml_is_aligned_with_lidar_only_runtime():

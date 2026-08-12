@@ -119,7 +119,7 @@ Output: Трансформация T (rotation + translation)
 # Подписывается:
 - /scan                     # Для loop closure detection
 - /rtabmap/odom            # От icp_odometry
-- /camera/imu/data         # IMU для graph optimization
+- /camera/camera/imu       # IMU для graph optimization (OAK-D, namespace='camera')
 
 # Публикует:
 - /map                     # nav_msgs/OccupancyGrid
