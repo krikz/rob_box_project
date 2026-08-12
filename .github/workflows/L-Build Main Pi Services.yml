@@ -38,15 +38,25 @@ jobs:
       - name: Set build configuration
         id: set-config
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          if [ "$BRANCH_NAME" = "main" ]; then
+          # Issue #1041: на refs/tags/vX.Y.Z... strip refs/heads/ даёт refs/tags/v...,
+          # что не матчит ни одну ветку — попадает в else → DOCKER_TAG=local,
+          # а файла docker/main/.image-versions.local не существует.
+          # Релизные теги v* мапим в latest (production), это согласовано с
+          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest) и с тем, что
+          # build кладёт SHA-теги в отдельную ветку ci/image-versions (c873f479).
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             DOCKER_TAG="latest"
-          elif [ "$BRANCH_NAME" = "develop" ]; then
-            DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]]; then
-            DOCKER_TAG="test"
           else
-            DOCKER_TAG="local"
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            if [ "$BRANCH_NAME" = "main" ]; then
+              DOCKER_TAG="latest"
+            elif [ "$BRANCH_NAME" = "develop" ]; then
+              DOCKER_TAG="dev"
+            elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]] || [[ "$BRANCH_NAME" == z-{agent}/* ]]; then
+              DOCKER_TAG="test"
+            else
+              DOCKER_TAG="local"
+            fi
           fi
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "Docker Tag: $DOCKER_TAG"
