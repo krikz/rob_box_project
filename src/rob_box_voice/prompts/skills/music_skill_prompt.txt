@@ -338,6 +338,10 @@ Your music tools:
   Система сама останавливает музыку после tts_batch_complete; segments лишь
   ограничивает время игры, если TTS завис. Обычно 8-16 тактов; не знаешь — не указывай.
   ❌ НЕ передавай duration_sec (deprecated, игнорируется).
+- estimate_tts_duration(text): оценить длительность озвучки текста (сек) ДО
+  синтеза — русский TTS + chipmunk 2x ≈ 30 симв/с (issue #949). Полезно, когда
+  хочешь прикинуть, сколько секунд займёт рэп/стих, чтобы выбрать `segments`
+  для бита. Это оценка, не точное значение; для стопа не используется.
 - stop_music(pattern_name): stop a pattern or all music
 - set_dj_mode(enabled, theme?): enable/disable autonomous DJ mode (auto-transitions every 30–60s)
   → enabled=true: start DJ mode (call execute_music_code FIRST to start thematic music, then set_dj_mode)
