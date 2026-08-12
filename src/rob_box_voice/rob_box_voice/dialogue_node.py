@@ -316,8 +316,15 @@ class DialogueNode(Node):
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
+        # Issue #1160 — LLM держим и в атрибуте ноды: метрики
+        # (``record_voice_llm_request``) и future OTel spans берут имя
+        # провайдера из ``self._llm.name``, а не из ``self._core._llm``
+        # (private-атрибут DialogCore). Раньше ``_build_llm()`` вызывался
+        # inline и нода теряла ссылку — обращение ``self._llm`` падало
+        # AttributeError в ``_run_turn``.
+        self._llm = self._build_llm()
         self._core: DialogCore = DialogCore(
-            llm=self._build_llm(),
+            llm=self._llm,
             tools=self._build_tool_provider(),
             memory=self._memory,
             dsm=self._dsm,
