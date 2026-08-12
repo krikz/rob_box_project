@@ -76,6 +76,16 @@ from rob_box_voice.speaker_profiles import (
     format_speaker_context,
 )
 
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+# ``prometheus_client`` — optional dep; если её нет, всё превращается в
+# no-op и старт сервера тихо возвращает ``False``.
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    record_fallback,
+    record_voice_llm_request,
+    start_metrics_server,
+)
+
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
@@ -479,6 +489,26 @@ class DialogueNode(Node):
             self.create_timer(
                 self._startup_greeting_sec, self._on_startup_greeting
             )
+        # Issue #1160 — Prometheus metrics server (этап 1).
+        # Порт 9100 — стандартный для voice-assistant (см.
+        # ``observability/__init__.py``); в проде используется
+        # ``10.1.1.11:9100/metrics`` для Grafana scrape.
+        # ``start_metrics_server`` идемпотентен: если уже бежит — no-op.
+        # Если ``prometheus_client`` не установлен — молча False в лог.
+        self._metrics_port: int = int(
+            self.get_parameter("metrics_port").value or 0
+        )
+        if self._metrics_port > 0 and is_metrics_enabled():
+            started = start_metrics_server(self._metrics_port)
+            if started:
+                self.get_logger().info(
+                    f"📊 Metrics server listening on :{self._metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 Metrics port {self._metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
         self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
@@ -551,6 +581,10 @@ class DialogueNode(Node):
             "Я на связи, все системы в норме!",
         )
         self._startup_greeting_fired = False
+        # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
+        # latency / fallback). 0 = отключить старт сервера (полезно для
+        # юнит-тестов и CI, где рконфликтует с другими тестами).
+        self.declare_parameter("metrics_port", 9100)
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
@@ -1834,14 +1868,53 @@ class DialogueNode(Node):
                 f"🚀 [turn] calling process_input: user_input={user_input[:100]!r} "
                 f"speaker_tag={speaker_tag!r} was_dj_auto={was_dj_auto}"
             )
-            result: DialogResult = await self._core.process_input(
-                user_input,
-                is_dj_auto=was_dj_auto,
-                speaker_tag=speaker_tag,
-                speaker_context=speaker_context,
-                dynamic_system=dynamic_system,
-                preclassified_event=DialogueEvent.STT_RESULT,
+            # Issue #1160 — Prometheus metrics: замер LLM-запроса.
+            # ``time.monotonic`` (а не time.time) — чтобы NTP-resync
+            # не сломал latency histogram. Провайдер берём из
+            # текущего self._llm: для одиночного провайдера это
+            # ``provider.name`` (HarnessDeepSeekProvider.name =
+            # "deepseek", MiniMaxProvider.name = "minimax"); для
+            # ``HealthAwareFallbackLLM`` это ``type(provider).__name__``
+            # (= "HealthAwareFallbackLLM"), что норм — counter
+            # ``result=fallback`` покажет сколько реально ушло на
+            # fallback, а histogram latency останется на уровне цепочки.
+            _llm_metric_start = time.monotonic()
+            _llm_provider_name = getattr(
+                self._llm, "name", type(self._llm).__name__
             )
+            _llm_metric_recorded = False
+            try:
+                result: DialogResult = await self._core.process_input(
+                    user_input,
+                    is_dj_auto=was_dj_auto,
+                    speaker_tag=speaker_tag,
+                    speaker_context=speaker_context,
+                    dynamic_system=dynamic_system,
+                    preclassified_event=DialogueEvent.STT_RESULT,
+                )
+            finally:
+                if not _llm_metric_recorded and is_metrics_enabled():
+                    _llm_metric_recorded = True
+                    _duration = time.monotonic() - _llm_metric_start
+                    # result может быть не определён, если process_input
+                    # упал до return — тогда success=False.
+                    _result_obj = locals().get("result")
+                    _success = _result_obj is not None and not _result_obj.error
+                    # Fallback-флажок: HealthAwareFallbackLLM.complete/stream
+                    # логирует fallback в свой [health] → можно отследить
+                    # через ``_provider_name == "HealthAwareFallbackLLM"``.
+                    # Точнее определяется через ``_last_used_provider``,
+                    # который мы не видим без патча upstream. Для этапа 1
+                    # довольствуемся ``result=fallback`` через отдельный
+                    # record_fallback() в health.py (TODO #1160, шаг 2B).
+                    record_voice_llm_request(
+                        _llm_provider_name,
+                        success=_success,
+                        fallback=(
+                            _llm_provider_name == "HealthAwareFallbackLLM"
+                        ),
+                        duration_s=_duration,
+                    )
             self.get_logger().info(
                 f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
                 f"tools={list(result.tools_called or ())!r} error={result.error!r}"

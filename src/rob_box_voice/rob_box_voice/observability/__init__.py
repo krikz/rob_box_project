@@ -25,10 +25,19 @@ Issue #1160 — этап 1: минимальный набор метрик дл�
 
 Endpoints (per issue #1160)
 ---------------------------
-* ``9100`` — voice-assistant (dialogue/tts/stt/speaker/audio metrics)
+Каждый ROS2-нода — отдельный процесс, поэтому биндит СВОЙ порт:
+
+* ``9100`` — dialogue_node (LLM latency / fallback counter)
+* ``9110`` — tts_node (TTS latency / provider fallback)
+* ``9111`` — stt_node (recognize counter)
+* ``9112`` — speaker_id_node (recognize counter)
+* ``9113`` — audio_node (barge-in, session_duration)
 * ``9101`` — telegram-bot (message counter)
-* ``9102`` — supercollider / music (резерв; music-нода пока не
-  использует метрики — будет добавлено, когда нода появится в репо)
+
+Музыкальная нода (supercollider) — ``9102`` — будет добавлена
+отдельной задачей, когда ``rob_box_music`` появится в репо.
+Prometheus scrape config (см. ``docker/monitoring/config/prometheus.yml``)
+должен включать каждый из этих endpoint'ов.
 """
 
 from .metrics import (

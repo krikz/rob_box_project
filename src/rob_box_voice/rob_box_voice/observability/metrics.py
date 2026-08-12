@@ -229,9 +229,19 @@ def start_metrics_server(port: int) -> bool:
     нодами-инстансами — флаг ``_HTTP_SERVER_STARTED`` не даёт
     словить ``OSError: [Errno 98] Address already in use``.
 
-    :param port: TCP-порт (9100 voice / 9101 telegram / 9102 music).
+    ВНИМАНИЕ: каждый ROS2-нода — отдельный процесс, но в проде мы
+    стартуем по ОДНОМУ http-server'у на НОДУ. Поэтому если два
+    разных node-экземпляра стартуют в одном процессе (юнит-тест)
+    с одним портом, второй получит ``OSError`` и мы залогируем
+    warning. Каждый ROS2-нода в проде использует СВОЙ порт
+    (dialogue=9100, tts=9110, stt=9111, speaker_id=9112, audio=9113,
+    telegram=9101). Промежутки в нумерации оставлены для будущих
+    нод.
+
+    :param port: TCP-порт.
     :return: ``True`` если сервер стартанул (или уже бежит),
-        ``False`` если ``prometheus_client`` недоступен.
+        ``False`` если ``prometheus_client`` недоступен ИЛИ порт
+        занят другим процессом/нодой.
     """
     if not is_metrics_enabled():
         return False
