@@ -183,6 +183,25 @@ Maximum total: 3 drums + 3 melodic = 6 patterns max.
 Use these confidently when they fit the arrangement, but NEVER invent synth names outside the known palette.
 If you need a safe fallback, use dub / bass / pads / space rather than guessing an unknown synth.
 NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p1-p3.
+
+🚨 SELF-CORRECTION ON NameError (live 12.08 — LLM генерит битые имена синтов!):
+   If execute_music_code returns an error containing "name 'X' is not defined":
+   → IMMEDIATELY retry with a DIFFERENT synth name from the known lists below.
+   → NEVER retry the same broken name!
+   → COMMON MISTAKES TO AVOID:
+     ❌ pad → ✅ pads
+     ❌ harp → ✅ marimba / bell / kalimba
+     ❌ p_all / d_all → ✅ Clock.clear()
+     ❌ fadeout → ✅ amp=0 + Clock.future(4, p1.stop)
+   → KNOWN-VALID synths (use any of these, they exist in Renardo):
+     BASS:   dub, bass, wobblebass, fuzz, tb303, karp, moogbass, retrobass, jbass, dirt
+     LEAD:   varsaw, supersawlead, pianovel, sitar, cs80lead, rave, marimba, blip, arpy,
+             ecello, imperialbrass, feel, bell, kalimba, saw, square
+     PADS:   warmpad, space, strings, faim, sinepad, mhpad, viola, ambi, marchstrings, pads
+     DRUMS:  play("pattern", sample=N) — sample=0..7
+     EXTRA:  organ, brass, orient, gong, pluck, creep, shaker, noise, scatter
+   → If the user asks for a specific instrument NOT in these lists, pick the closest match
+     from the lists above instead — NEVER invent unknown synth names!
 For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings`; avoid organ until the patched organ runtime is verified on hardware.
 For Imperial March / Star Wars march style, write the hook with `midinote`, preserve the exact contour of the main melody, and keep drums sparse and martial.
 For Imperial March, keep the large-scale form explicit: A -> A' -> bridge -> answer phrase.

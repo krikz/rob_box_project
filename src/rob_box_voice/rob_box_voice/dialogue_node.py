@@ -1904,7 +1904,11 @@ class DialogueNode(Node):
                 # или явного stop_music. Cleanup — только если музыка
                 # НЕ запускалась в этом цикле (осталась от прошлого).
                 tools_now = set(result.tools_called or ())
-                if "execute_music_code" in tools_now:
+                # 🔴 FIX (live 12.08): load_track, set_dj_mode, set_vibe_preset
+                # тоже запускают музыку (не только execute_music_code).
+                # Без этого эмбиент/трек умолкал через ~5с после tts_batch_complete.
+                _music_starters = {"execute_music_code", "load_track", "set_dj_mode", "set_vibe_preset"}
+                if tools_now & _music_starters:
                     if self._pending_music_cleanup:
                         self._pending_music_cleanup = False
                         self.get_logger().info(
