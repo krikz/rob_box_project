@@ -11,6 +11,7 @@
 
 dialogue_node:
   ros__parameters:
+    metrics_port: 9100  # issue #1160 — Prometheus metrics endpoint
     wake_words:
     - робок
     - робот

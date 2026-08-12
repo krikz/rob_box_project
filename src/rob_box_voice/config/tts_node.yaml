@@ -11,6 +11,7 @@
 
 tts_node:
   ros__parameters:
+    metrics_port: 9110  # issue #1160 — Prometheus metrics endpoint
     provider: minimax
     silero_speaker: aidar
     silero_sample_rate: 48000
