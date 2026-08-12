@@ -79,7 +79,7 @@ WARNING_EXCLUDE_COMMON = [
     # deployment failure (retro 12.08 t_d3e44336, issue #989, #684).
     r"отклонено \(пустое\)",
     r"yandex:empty\(.*\)->.*:empty\(.*\) -> rejected",
-    r"отклонено \(короткое\)",
+    r"отклонено \(короткое",
     r"интернет недоступен",
     # PyAudio overflow: input overrun is handled by the audio pipeline,
     # no data loss reported (retro 12.08 t_d3e44336).
