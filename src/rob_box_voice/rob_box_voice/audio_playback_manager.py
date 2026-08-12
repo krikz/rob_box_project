@@ -93,8 +93,45 @@ class AudioPlaybackManager:
             self._current_stream = True
 
             if blocking:
-                # Ждать окончания воспроизведения
-                sd.wait()
+                # Ждать окончания воспроизведения С ТАЙМАУТОМ (issue #1133:
+                # sd.wait() зависал навечно при PaErrorCode -9985 / dmix
+                # race — ALSA-девайс занят. Без таймаута worker в
+                # ThreadPoolExecutor залипал на sd.wait(), семафор
+                # _synthesis_slots не освобождался, через max_workers+max_queue
+                # запросов tts_node полностью переставал обрабатывать callback
+                # → watchdog (PR #1133) был единственной защитой).
+                # Таймаут = duration + grace, минимум 8.0 с — больше чем
+                # duration=4s (типичный TTS-чанк) + ALSA tail.
+                _duration = len(audio_data) / float(sample_rate)
+                _wait_timeout = max(8.0, _duration + 3.0)
+                _deadline = time.monotonic() + _wait_timeout
+                _completed = False
+                # Issue #1133: цикл с poll, а не голый sd.wait() — последний
+                # может зависнуть, если ALSA-stream не сообщает о конце.
+                # _current_stream выставляется в None ниже после фактического
+                # завершения, поэтому проверяем состояние polling'ом.
+                while time.monotonic() < _deadline:
+                    try:
+                        if not sd.get_stream().active:
+                            _completed = True
+                            break
+                    except Exception:
+                        # sd.get_stream() может бросить если stream уже
+                        # закрыт — это и есть сигнал завершения.
+                        _completed = True
+                        break
+                    time.sleep(0.05)
+                if not _completed:
+                    print(
+                        f"⚠️  [{node_name}] sd.wait() завис на {_wait_timeout:.1f}с "
+                        f"(ALSA Device unavailable / dmix race) — принудительный sd.stop()"
+                    )
+                    try:
+                        sd.stop()
+                    except Exception:
+                        pass
+                    # Не возвращаем False сразу — попробуем дождаться ещё чуть-чуть
+                    time.sleep(0.1)
                 self._current_stream = None
                 # ВАЖНО: небольшая задержка чтобы ALSA успел закрыть stream
                 # Без этого следующий play() может получить "Device unavailable"
