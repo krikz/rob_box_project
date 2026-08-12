@@ -467,6 +467,19 @@ class TTSNode(Node):
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
+        # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
+        # ~700 MB-1 GB RSS постоянно (PyTorch + модель), даже когда Silero —
+        # только fallback и Yandex/MiniMax работают. На конфигурациях с
+        # жёстким mem_limit (2-4 GB на контейнер из 9 нод) этот постоянный
+        # RSS складывается с остальными нодами (speaker_id + torch, sclang,
+        # Vosk) и доводит контейнер до OOM при первой же попытке догрузить
+        # модель. Параметр ``silero_warm_load`` (default True — сохраняет
+        # контракт G-933-B) позволяет ОТЛОЖИТЬ загрузку Silero до первого
+        # реального fallback (lazy): при False warm-load при старте не
+        # запускается, модель грузится синхронно в hot-path (первый
+        # fallback платит 2-3 с — приемлемо для аварийного пути).
+        self.declare_parameter("silero_warm_load", True)
+
         # Читаем параметры
         self.provider = self.get_parameter("provider").value
         if self.provider not in {"yandex", "silero", "minimax"}:
@@ -508,6 +521,14 @@ class TTSNode(Node):
         # Silero
         self.silero_speaker = self.get_parameter("silero_speaker").value
         self.silero_sample_rate = self.get_parameter("silero_sample_rate").value
+
+        # Issue #929: warm-load Silero при старте отключаем через параметр.
+        # True (default) — прежнее поведение (G-933-B); False — Silero
+        # грузится лениво при первом реальном fallback (экономия ~1 GB RSS,
+        # спасает от OOM kill в контейнере с жёстким mem_limit).
+        self.silero_warm_load_enabled = bool(
+            self.get_parameter("silero_warm_load").value
+        )
 
         # Silero v5: новые флаги
         self.silero_put_accent = self.get_parameter("silero_put_accent").value
@@ -675,8 +696,18 @@ class TTSNode(Node):
         else:
             # provider=yandex (or minimax) — Silero is a *fallback*.
             # Kick off the background warm-load so the first fallback
-            # doesn't pay the 2-3 s cold-load cost.
-            self._start_silero_warm_load()
+            # doesn't pay the 2-3 s cold-load cost.  Issue #929: skip the
+            # warm-load entirely when ``silero_warm_load=false`` — the
+            # constant ~1 GB RSS (PyTorch + model) contributes to OOM kill
+            # in the 2-4 GB container.  The hot-path lazy-load covers the
+            # first fallback (2-3 s, acceptable for the emergency path).
+            if self.silero_warm_load_enabled:
+                self._start_silero_warm_load()
+            else:
+                self.get_logger().info(
+                    "🌡️ Silero warm-load disabled (silero_warm_load=false) — "
+                    "lazy-load on first fallback (issue #929)"
+                )
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
         self.yandex_channel = None
@@ -1664,7 +1695,19 @@ class TTSNode(Node):
                 # * warm-load ещё не запущен (тест / нестандартный init)
                 #   → событие не set → timeout → skip chunk
                 _warm_wait_s = 1.5
-                _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
+                # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
+                # не проходят через __init__ и не несут атрибут — считаем
+                # warm-load включённым (историческое поведение G-933-B).
+                if getattr(self, "silero_warm_load_enabled", True):
+                    _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
+                else:
+                    # Issue #929: warm-load отключён (silero_warm_load=false).
+                    # Событие никогда не будет set фоновым потоком — не ждём
+                    # таймаут впустую. Считаем «прогретым» (пропускаем
+                    # skip-блок) и идём в синхронный lazy-load ниже: первый
+                    # fallback платит 2-3 с cold-load — приемлемо для
+                    # аварийного пути.
+                    _warmed_in_time = True
                 if not _warmed_in_time:
                     self.get_logger().warn(
                         f"⏳ Silero still warming up after {_warm_wait_s}s — "

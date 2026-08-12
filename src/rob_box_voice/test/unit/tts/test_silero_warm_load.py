@@ -372,6 +372,145 @@ def test_warm_load_is_idempotent(tts_node_module) -> None:
         _destroy_node(node)
 
 
+# ── Issue #929: silero_warm_load=false (OOM mitigation) ─────────────────────
+
+
+def test_warm_load_disabled_by_parameter(tts_node_module) -> None:
+    """``silero_warm_load=false`` must NOT spawn the warm-load thread.
+
+    Issue #929: the background warm-load keeps ~700 MB-1 GB RSS
+    (PyTorch + Silero model) alive for the whole node lifetime, even
+    when the primary provider (yandex/minimax) works fine.  In the
+    2-4 GB container hosting 9 nodes the constant RSS contributed to
+    the OOM kill of tts_node.  With ``silero_warm_load=false`` the
+    model is loaded lazily on the first real fallback instead.
+    """
+    cls = tts_node_module.TTSNode
+
+    def _fake_load(self):
+        self.silero_model = MagicMock(name="FakeSileroModel")
+
+    rclpy_node_mod = __import__("sys").modules["rclpy.node"]
+    orig_declare = rclpy_node_mod.Node.declare_parameter
+
+    def _patched_declare(self, name, default=None):
+        if name == "silero_warm_load":
+            default = False
+        return orig_declare(self, name, default=default)
+
+    with patch.object(
+        cls, "_load_silero_model", autospec=True, side_effect=_fake_load
+    ) as mock_load, patch.object(
+        rclpy_node_mod.Node, "declare_parameter", _patched_declare
+    ):
+        node = cls()
+
+    try:
+        # No warm-load requested → no daemon thread, no background load.
+        assert node._silero_warm_requested is False, (
+            "silero_warm_load=false must NOT request the background warm-load"
+        )
+        assert mock_load.call_count == 0, (
+            "silero_warm_load=false must not load the model in __init__ "
+            f"(lazy path only); got {mock_load.call_count} calls"
+        )
+        assert node.silero_model is None, (
+            "silero_warm_load=false must leave silero_model=None until "
+            "the first real fallback"
+        )
+        # Flag is readable for hot-path branching.
+        assert node.silero_warm_load_enabled is False, (
+            "silero_warm_load_enabled must mirror the parameter"
+        )
+    finally:
+        _destroy_node(node)
+
+
+def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
+    """With warm-load disabled, hot-path fallback lazy-loads synchronously.
+
+    Issue #929: the skip-on-timeout branch (G-933-B) exists for the
+    *warm-load* case — an in-flight background load.  When
+    ``silero_warm_load=false`` there is no background load, so the
+    hot-path must NOT skip the chunk: it loads the model synchronously
+    (first fallback pays the 2-3 s cold-load — acceptable for the
+    emergency path).
+    """
+    cls = tts_node_module.TTSNode
+    load_calls = []
+
+    def _fake_load(self):
+        load_calls.append(1)
+        self.silero_model = MagicMock(name="FakeSileroModel")
+
+    rclpy_node_mod = __import__("sys").modules["rclpy.node"]
+    orig_declare = rclpy_node_mod.Node.declare_parameter
+
+    def _patched_declare(self, name, default=None):
+        if name == "silero_warm_load":
+            default = False
+        if name == "provider":
+            default = "yandex"
+        return orig_declare(self, name, default=default)
+
+    node = None
+    try:
+        with patch.object(
+            cls, "_load_silero_model", autospec=True, side_effect=_fake_load
+        ) as mock_load, patch.object(
+            rclpy_node_mod.Node, "declare_parameter", _patched_declare
+        ):
+            node = cls()
+
+            # Hot-path: Yandex fails → Silero branch must lazy-load.
+            # NOTE: _load_silero_model patch stays ACTIVE for the whole
+            # with-block — the call below must hit the fake, not the real
+            # torch.package loader.
+            node.yandex_stub = MagicMock()
+            synth_mock = MagicMock(
+                side_effect=RuntimeError("simulated Yandex gRPC fail")
+            )
+            with patch.object(node, "_synthesize_yandex", synth_mock):
+                t0 = time.monotonic()
+                node._synthesize_and_play(
+                    ssml="<speak>test</speak>",
+                    text="test",
+                    dialogue_id="dlg-lazy-load",
+                )
+                elapsed = time.monotonic() - t0
+
+            # Sanity: no warm-load was started.
+            assert node._silero_warm_requested is False
+
+            # Lazy-load happens synchronously (mock returns instantly, so
+            # elapsed is small — well below the 1.5 s skip threshold).
+            assert load_calls, (
+                "hot-path must call _load_silero_model when warm-load is disabled"
+            )
+            assert elapsed < 1.0, (
+                f"lazy-load path must be synchronous and fast with stubbed model; "
+                f"got {elapsed:.2f}s"
+            )
+            # No silero_warming skip marker — the chunk actually played.
+            published = []
+            for call in node.finished_pub.publish.call_args_list:
+                try:
+                    published.append(call.args[0].data)
+                except Exception:  # noqa: BLE001
+                    pass
+            assert not any("silero_warming" in p for p in published), (
+                f"warm-load-disabled path must NOT publish silero_warming skip "
+                f"marker; got publishes: {published}"
+            )
+            # NOTE: processing_dialogue_id is intentionally NOT asserted
+            # here — it is cleared at the very end of _synthesize_and_play
+            # (playback completion / barge-in bookkeeping), which is
+            # orthogonal to the warm-load-disabled lazy-load path.
+    finally:
+        if node is not None:
+            _destroy_node(node)
+
+
 def test_warm_load_failure_still_sets_event(tts_node_module) -> None:
     """If warm-load raises, the event must still fire.
 

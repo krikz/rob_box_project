@@ -12,6 +12,14 @@
 tts_node:
   ros__parameters:
     provider: minimax
+    # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
+    # ~700 MB-1 GB RSS постоянно (PyTorch + модель), даже когда Silero —
+    # только fallback и Yandex/MiniMax работают. Контейнер voice-assistant
+    # (mem_limit 4g) hosting 9 нод: tts_node+torch, speaker_id+torch,
+    # sclang, Vosk — суммарный RSS ~4.2 GB, при лимите 2 GB это был
+    # гарантированный OOM kill. Отключаем warm-load: Silero грузится
+    # лениво при первом реальном fallback (2-3 с, аварийный путь).
+    silero_warm_load: false
     silero_speaker: aidar
     silero_sample_rate: 48000
     synthesis_max_workers: 2
