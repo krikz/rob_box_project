@@ -1983,7 +1983,7 @@ class DialogueNode(Node):
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 
-    # Issue #992 Bug C — narrow keyword heuristic. ``трек`` and ``бит``
+    # Issue #1016 Bug C — narrow keyword heuristic. ``трек`` and ``бит``
     # are deliberately excluded because they fire on chit-chat like
     # "роббокс какой трек посоветуешь?" (issue 992 test_user_normal_chat
     # regression). Keep the list focused on unambiguous "play something
@@ -2007,6 +2007,41 @@ class DialogueNode(Node):
         "включи музык",
         "запусти музык",
     )
+
+    # Issue #1016 — empty-response music fallback. Более широкая эвристика
+    # чем _MUSIC_GUARD_KEYWORDS: используется ТОЛЬКО в ветке «LLM вернула
+    # пустоту и не вызвала ни одного тула» — там цена ложного
+    # срабатывания ниже (вместо «Принял.» + тишины юзер услышит топ-трек
+    # из библиотеки). «Поставь что-нибудь» — канонический TRACK-триггер
+    # из issue #1016, поэтому «поставь» и «включи» входят сюда.
+    # Жанровые слова (джаз/рок/блюз) и «трек»/«бит» сознательно НЕ
+    # включены — они встречаются в вопросах-рекомендациях («какой трек
+    # посоветуешь?»), где музыка ни к чему.
+    _MUSIC_FALLBACK_KEYWORDS = (
+        "спой",
+        "пой ",
+        "рэп",
+        "рап",
+        "диджей",
+        "dj ",
+        "dj-",
+        "песня",
+        "песню",
+        "песенк",
+        "зачитай",
+        "зачита",
+        "зачитывай",
+        "сыграй",
+        "играй",
+        "поставь",
+        "включи",
+        "музык",
+        "мелоди",
+        "классик",
+        "танцевальн",
+    )
+
+
 
     # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
     # остановить музыку/DJ, а НЕ замолчать робота. Подстрока «хватит»
@@ -2070,6 +2105,28 @@ class DialogueNode(Node):
                 f"MUSIC_GUARD_KEYWORDS → wants_music=False "
                 f"(возможно, нужно добавить keyword в _MUSIC_GUARD_KEYWORDS)"
             )
+        return False
+
+    def _user_wants_music_fallback(self, user_input: str) -> bool:
+        """Issue #1016 — broader heuristic for the empty-response fallback.
+
+        Unlike :meth:`_user_wants_music` (which drives the spoken
+        "бит не запустился" nudge), this one is used ONLY in the
+        empty-response branch where the LLM returned nothing and no
+        tool was called. There the cost of a false positive is low —
+        the robot would otherwise say «Принял.» and stay silent, so
+        playing the top library track is strictly better.
+        """
+        if not user_input:
+            return False
+        low = user_input.lower()
+        matched = [kw for kw in self._MUSIC_FALLBACK_KEYWORDS if kw in low]
+        if matched:
+            self.get_logger().debug(
+                f"🎵 [music_fallback] user_input={user_input!r} matched "
+                f"keywords={matched!r} → fallback music"
+            )
+            return True
         return False
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
@@ -2846,8 +2903,11 @@ class DialogueNode(Node):
                 # «сыграй классику», «включи музыку») и НЕ вызвала ни одного
                 # тула. Просим mcp_server сыграть топ-трек из библиотеки
                 # (rating DESC), чтобы юзер услышал музыку, а не тишину.
+                # Эвристика шире _MUSIC_GUARD_KEYWORDS — это единственная
+                # ветка, где цена ложного срабатывания низкая (робот и так
+                # молчал бы).
                 try:
-                    if self._user_wants_music(user_input or ""):
+                    if self._user_wants_music_fallback(user_input or ""):
                         self._publish_music_fallback(reason="empty_response")
                 except Exception as exc:  # noqa: BLE001
                     try:
