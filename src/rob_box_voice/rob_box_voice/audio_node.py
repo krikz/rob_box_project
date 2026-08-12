@@ -203,6 +203,14 @@ class AudioNode(Node):
         self._overflow_last_logged = 0.0
         self._overflow_log_window_s = 60.0
 
+        # Issue #1125 / t_1bbc233a: rate-limit broad-catch VAD/DoA WARN.
+        # Раньше broad-catch стрелял WARN ~20 раз/сек (каждый timer-callback),
+        # забивая docker logs и тратя CPU на f-string/PID-парсинг. Период
+        # 60с — компромисс: не теряем сигнал, но WARN не молчит дольше
+        # минуты. Инициализируется None (первая ошибка всегда логируется).
+        self._vad_doa_last_warn_ns: Optional[int] = None
+        self._vad_doa_warn_period_ns: int = int(60.0 * 1e9)  # 60 секунд
+
         # Issue 989: анти-эхо состояние.
         # TTS: True пока робот говорит (synthesizing/playing); после перехода
         # в ready/idle запоминаем момент окончания для grace period.
@@ -646,9 +654,32 @@ class AudioNode(Node):
                 pass
 
         except Exception as e:
-            # Общая ошибка - логируем только если это не Pipe error
-            if 'Pipe error' not in str(e):
-                self.get_logger().warn(f'VAD/DoA ошибка: {e}')
+            # Issue #1125 / t_1bbc233a: bare `pre` NameError регрессировал
+            # один раз из-за опечатки `pre` (с дефисом, без подчёркивания)
+            # в f-string. Python-парсер разобрал её как `pre - roll_msg`
+            # (BINARY_SUBTRACT), и broad-catch стрелял `NameError: name
+            # 'pre' is not defined` каждые 50мс. Чтобы будущие регрессии
+            # NameError/AttributeError не выглядели как безобидный WARN,
+            # логируем stack trace (exc_info=True). Это даёт полный
+            # traceback в docker logs и сильно ускоряет будущую
+            # диагностику. Сверху — дросселирование (иначе 20 WARN/сек
+            # забивают лог и съедают CPU на f-string/PID-парсинг).
+            if 'Pipe error' in str(e):
+                # Известная шумная ошибка USB-стека — пропускаем без лога.
+                return
+            # Используем time.monotonic (не get_clock), чтобы внутри
+            # except-блока не зависеть от rclpy — исключение в самом
+            # get_clock() привело бы к рекурсивному except.
+            now = int(time.monotonic() * 1e9)
+            if (
+                self._vad_doa_last_warn_ns is None
+                or (now - self._vad_doa_last_warn_ns)
+                >= self._vad_doa_warn_period_ns
+            ):
+                self._vad_doa_last_warn_ns = now
+                self.get_logger().warn(
+                    f'VAD/DoA ошибка: {e}', exc_info=True,
+                )
 
     def publish_state(self, state: str):
         """Публиковать состояние ноды."""
