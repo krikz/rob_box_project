@@ -190,7 +190,11 @@ check_patterns() {
             ok=0
         fi
     done
-    return $ok
+    # Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
+    # ``ok=1`` означала success — инвертируем при возврате, иначе callers
+    # через ``if check_patterns; then`` всегда ловят FAIL несмотря на
+    # PATTERN_OK (как в round-52 run 31579343052).
+    return $((1 - ok))
 }
 
 # --- один атомарный шаг -----------------------------------------------------
