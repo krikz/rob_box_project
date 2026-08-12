@@ -119,6 +119,16 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
     MiniMaxTTSRateLimitError = Exception  # type: ignore[assignment,misc]
 
 
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+# ``prometheus_client`` — optional dep; если её нет, всё превращается в
+# no-op и старт сервера тихо возвращает ``False``.
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    record_tts_synthesize,
+    start_metrics_server,
+)
+
+
 @contextmanager
 def ignore_stderr(enable=True):
     """Подавить ALSA ошибки от sounddevice."""
@@ -457,6 +467,10 @@ class TTSNode(Node):
         self.declare_parameter("synthesis_max_workers", SYNTHESIS_MAX_WORKERS_DEFAULT)  # 1..4
         self.declare_parameter("synthesis_max_queue", SYNTHESIS_MAX_QUEUE_DEFAULT)  # pending tasks cap before drop
 
+        # Issue #1160 — Prometheus metrics endpoint. 9110 — TTS-нода в voice
+        # (synthesize latency / provider fallback counter). 0 = отключить.
+        self.declare_parameter("metrics_port", 9110)
+
         # Per-provider TTS chunking + retry-halve параметры объявлены
         # выше (issue #933 + дополнение #976 для minimax). Дубликат
         # удалён — см. задачу t_20265b43.
@@ -773,6 +787,26 @@ class TTSNode(Node):
         self.current_dialogue_id = None
         self.processing_dialogue_id = None  # ID диалога в процессе синтеза/воспроизведения
         self.current_speech_id = None  # ID текущего произношения (для MCP tools)
+
+        # Issue #1160 — Prometheus metrics server (этап 1).
+        # Порт 9110 — стандартный для tts_node (см. observability/__init__.py);
+        # в проде используется ``10.1.1.11:9110/metrics`` для Grafana scrape.
+        # ``start_metrics_server`` идемпотентен: если уже бежит — no-op.
+        # Если ``prometheus_client`` не установлен — молча False в лог.
+        self._metrics_port: int = int(
+            self.get_parameter("metrics_port").value or 0
+        )
+        if self._metrics_port > 0 and is_metrics_enabled():
+            started = start_metrics_server(self._metrics_port)
+            if started:
+                self.get_logger().info(
+                    f"� TTS metrics server listening on :{self._metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 TTS metrics port {self._metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
 
         # Публикуем начальное состояние
         self.publish_state("ready")
@@ -1584,6 +1618,10 @@ class TTSNode(Node):
 
                 if provider_name == "minimax":
                     self.publish_state("synthesizing")
+                    # Issue #1160 — Prometheus metrics: замер MiniMax-synthesis.
+                    # ``time.monotonic`` — wall-clock может прыгать на NTP.
+                    _minimax_metric_start = time.monotonic()
+                    _minimax_succeeded = False
                     try:
                         if self.minimax_streaming:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
@@ -1598,6 +1636,7 @@ class TTSNode(Node):
                             f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
                             f"(model={self.minimax_model}, voice={self.minimax_voice})"
                         )
+                        _minimax_succeeded = True
                     except Exception as e:
                         mark_dead = getattr(self, "_mark_provider_dead", None)
                         if mark_dead is not None:
@@ -1618,24 +1657,43 @@ class TTSNode(Node):
                             f"переключаюсь на {_display}"
                         )
                         audio_np = None
+                    finally:
+                        if is_metrics_enabled():
+                            record_tts_synthesize(
+                                "minimax", success=_minimax_succeeded,
+                                duration_s=time.monotonic() - _minimax_metric_start,
+                            )
+                    if not _minimax_succeeded:
                         continue
 
                 elif provider_name == "yandex":
                     if not self.yandex_stub:  # Проверяем что gRPC канал инициализирован
                         self.get_logger().warn("⚠️  Yandex gRPC не подключен — пропускаю")
                         continue
+                    # Issue #1160 — Prometheus metrics: замер Yandex-synthesis.
+                    # ``time.monotonic`` — wall-clock может прыгать на NTP.
+                    _yandex_metric_start = time.monotonic()
+                    _yandex_succeeded = False
                     try:
                         self.publish_state("synthesizing")
                         self.get_logger().info("🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...")
                         audio_np = self._synthesize_yandex(text, ssml_attributes)
                         sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
                         used_provider = "yandex"
+                        _yandex_succeeded = True
                     except Exception as e:
                         mark_dead = getattr(self, "_mark_provider_dead", None)
                         if mark_dead is not None:
                             mark_dead("yandex", e)
                         self.get_logger().warn(f"⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback")
                         audio_np = None
+                    finally:
+                        if is_metrics_enabled():
+                            record_tts_synthesize(
+                                "yandex", success=_yandex_succeeded,
+                                duration_s=time.monotonic() - _yandex_metric_start,
+                            )
+                    if not _yandex_succeeded:
                         continue
 
                 elif provider_name == "silero":
@@ -1708,9 +1766,21 @@ class TTSNode(Node):
 
                 # Логируем SSML атрибуты если есть (для консистентности с Yandex)
                 if ssml_attributes:
-                    self.get_logger().info(f"🎵 SSML атрибуты для Silero: {ssml_attributes}")
+                    self.get_logger().info(f"� SSML атрибуты для Silero: {ssml_attributes}")
 
-                audio_np = self._synthesize_silero(text, ssml_attributes)
+                # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
+                # ``time.monotonic`` — wall-clock может прыгать на NTP.
+                _silero_metric_start = time.monotonic()
+                _silero_succeeded = False
+                try:
+                    audio_np = self._synthesize_silero(text, ssml_attributes)
+                    _silero_succeeded = True
+                finally:
+                    if is_metrics_enabled():
+                        record_tts_synthesize(
+                            "silero", success=_silero_succeeded,
+                            duration_s=time.monotonic() - _silero_metric_start,
+                        )
                 sample_rate = self.silero_sample_rate  # 48000 Hz (v5)
                 # Structural anchor: ``silero_model.apply_tts`` is the
                 # canonical Silero entry point (see gap G-933-B + the
