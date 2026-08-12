@@ -326,6 +326,11 @@ fi
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
     echo "PASS" > "$OUT_DIR/verdict.txt"
+    # Issue #1134: маркер для пост-валидатора в L-E2E Voice Test.yml —
+    # retry-скрипт подтвердил реакцию робота (TTS finished после команды).
+    # Без этого маркера fallback-логика валидатора сравнивает первые
+    # TTS/STT строки и фейлит как «ONLY GREETING» (приветствие ДО команды).
+    echo "E2E_REACTION_OK"
 else
     echo "E2E_VERDICT FAIL"
     echo "FAIL" > "$OUT_DIR/verdict.txt"
