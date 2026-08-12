@@ -38,15 +38,23 @@ jobs:
       - name: Set build configuration
         id: set-config
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          if [ "$BRANCH_NAME" = "main" ]; then
+          # Issue #1041: GITHUB_REF для тега = refs/tags/vX.Y.Z... — strip refs/heads/
+          # ничего не даёт, иначе BRANCH_NAME="refs/tags/v..." попадает в else → DOCKER_TAG=local
+          # → .image-versions.local не существует. Релизные теги v* мапим в latest (production),
+          # это согласуется с L-Deploy and Verify.yml (production → IMAGE_TAG=latest).
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             DOCKER_TAG="latest"
-          elif [ "$BRANCH_NAME" = "develop" ]; then
-            DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]]; then
-            DOCKER_TAG="test"
           else
-            DOCKER_TAG="local"
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            if [ "$BRANCH_NAME" = "main" ]; then
+              DOCKER_TAG="latest"
+            elif [ "$BRANCH_NAME" = "develop" ]; then
+              DOCKER_TAG="dev"
+            elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]]; then
+              DOCKER_TAG="test"
+            else
+              DOCKER_TAG="local"
+            fi
           fi
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "Docker Tag: $DOCKER_TAG"
