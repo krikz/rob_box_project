@@ -156,6 +156,32 @@ Hermes-cron недоступен). Маленький, 854 байт.
 Сторожевой таймер для долгоиграющих процессов (e2e-build, deploy).
 Запускается параллельно, проверяет живость по pid-файлу и heartbeat.
 
+## Vendor-патчи hermes-agent (ретро t_f00676f8)
+
+Локальные фиксы `hermes-agent` (валидация скиллов по профилю — t_1ab37fa8:
+`_profile_skill_names`/`_validate_skills_for_assignee` в `hermes_cli/kanban_db.py`,
+symlink-following подсчёт скиллов в `hermes_cli/profiles.py`) накладывались на
+хост руками **без сохранения в репо** → при `git pull`/`pip install -U
+hermes-agent` патчи терялись, регресс t_1ab37fa8 возвращался (карточки со
+скилами не из профиля падали — главная ошибка ретро t_6c6c98fb).
+
+Как устроено теперь:
+- Дифф хранится в репо: `vendor/hermes-agent-skill-validation.patch`.
+- `install.sh` применяет его идемпотентно (`git apply --reverse --check` →
+  уже применён; `git apply --check` → применяет). Вызывать **после** каждого
+  обновления hermes-agent.
+- Если upstream сдвинулся и патч не ложится — `install.sh` честно падает с
+  ошибкой «regenerate vendor patch»; перегенерировать: `git -C
+  ~/.hermes/hermes-agent diff hermes_cli/kanban_db.py hermes_cli/profiles.py
+  tests/hermes_cli/test_kanban_db.py > vendor/hermes-agent-skill-validation.patch`
+  и обновить тесты.
+
+Проверка после обновления:
+```bash
+bash scripts/agent_flow/tests/test_vendor_patch_apply.sh   # патч ложится на origin/main
+python3 scripts/agent_flow/tests/e2e_skill_validation.py devops  # валидация работает
+```
+
 ## Связь с cron-jobs
 
 Скрипты регистрируются как `cronjob` через `hermes cron run --script
