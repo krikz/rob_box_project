@@ -1558,7 +1558,13 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
     elif has_label "$_r_labels_norm" "$ISSUE_LABEL" \
         || has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$DONE_LABEL" \
-        || has_label "$_r_labels_norm" "$NO_E2E_LABEL"; then
+        || has_label "$_r_labels_norm" "$NO_E2E_LABEL" \
+        || has_label "$_r_labels_norm" "$NEEDS_REVIEW_LABEL"; then
+        # needs-review в skip-листе (ретро 13.08, надзор, #942): иначе ретро-путь
+        # КАЖДЫЙ тик re-add'ил needs-e2e на issue под ревью юзера — взаимная
+        # исключаемость needs-review/needs-e2e (как в основном цикле, стр. 366).
+        # Цикл: ручная чистка → ретро-путь снова ставит needs-e2e → e2e-process
+        # скипает (нет PR-ветки) → issue висит с двумя метками навсегда.
         log "retro-path: issue #${r_issue} уже в process-цикле (${_r_labels_norm}) — skip"
         continue
     fi
