@@ -1061,3 +1061,96 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
     assert len(memory.turns) == 1
     assert memory.turns[0].role == "user"
     assert memory.turns[0].content == "hello"
+
+
+# ---------------------------------------------------------------------------
+# W7a — batch re-ordering (_order_tool_calls)
+# ---------------------------------------------------------------------------
+
+
+def _call(cid: str, name: str) -> ToolCall:
+    return ToolCall(id=cid, name=name, arguments={})
+
+
+def test_order_tool_calls_puts_stop_music_after_speak_text() -> None:
+    """[speak_text, stop_music] keeps order but flags stop as deferred."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [_call("c1", "speak_text"), _call("c2", "stop_music")]
+    )
+    assert [c.name for c in ordered] == ["speak_text", "stop_music"]
+    # stop_music must wait for the voice channel to drain.
+    assert deferred == {"c2"}
+
+
+def test_order_tool_calls_music_prelude_before_speak_text() -> None:
+    """Music tools run before voice; destructive tools run last."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [
+            _call("c1", "stop_music"),
+            _call("c2", "speak_text"),
+            _call("c3", "execute_music_code"),
+        ]
+    )
+    assert [c.name for c in ordered] == [
+        "execute_music_code",
+        "speak_text",
+        "stop_music",
+    ]
+    assert deferred == {"c1"}
+
+
+def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
+    """A lone stop_music has no voice to wait for — not deferred."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls([_call("c1", "stop_music")])
+    assert [c.name for c in ordered] == ["stop_music"]
+    assert deferred == set()
+
+
+def test_order_tool_calls_independent_tools_keep_relative_order() -> None:
+    """Bypass tools (memory_save etc.) keep their original relative order."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [
+            _call("c1", "memory_save"),
+            _call("c2", "speak_text"),
+            _call("c3", "search_web"),
+        ]
+    )
+    assert [c.name for c in ordered] == [
+        "memory_save",
+        "speak_text",
+        "search_web",
+    ]
+    assert deferred == set()
+
+
+def test_order_tool_calls_stop_navigation_is_destructive_too() -> None:
+    """stop_navigation is treated like stop_music (defer to end)."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [_call("c1", "stop_navigation"), _call("c2", "speak_text")]
+    )
+    assert [c.name for c in ordered] == ["speak_text", "stop_navigation"]
+    assert deferred == {"c1"}
+
+
+def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> None:
+    """Execution re-orders, but tool-result messages keep the LLM's order."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    calls = [
+        _call("c1", "stop_music"),
+        _call("c2", "speak_text"),
+    ]
+    ordered, deferred = _order_tool_calls(calls)
+    assert [c.name for c in ordered] == ["speak_text", "stop_music"]
+    # And the original tuple is untouched (frozen dataclass semantics).
+    assert [c.name for c in calls] == ["stop_music", "speak_text"]
