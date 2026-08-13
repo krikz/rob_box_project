@@ -77,6 +77,11 @@ on:
         required: false
         default: ''
         type: string
+      check_tg_echo:
+        description: 'Issue #1196 L2 — after the voice round, verify telegram_node got the dialogue response (metrics :9101 / send_message evidence). Diagnostic only, does not fail the verdict.'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   e2e-voice:
@@ -155,6 +160,10 @@ jobs:
           fi
           [ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"
           CMD="$CMD --retries ${{ inputs.retries }} --react-window ${{ inputs.react_window }}"
+          # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue.
+          if [ "${{ inputs.check_tg_echo }}" = "true" ]; then
+            CMD="$CMD --check-tg-echo"
+          fi
 
           echo "RUN_CMD: $CMD"
           # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps)
@@ -193,6 +202,7 @@ jobs:
             "voice_text": "${{ inputs.voice_text }}",
             "scenario_file": "${{ inputs.scenario_file }}",
             "patterns": "${{ inputs.patterns }}",
+            "check_tg_echo": "${{ inputs.check_tg_echo }}",
             "harness": "e2e_voice_test.sh (atomic v2)",
             "ts":   "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "run_id": "${RID}"
