@@ -162,6 +162,7 @@ EXPECTED=(
     cron-loop.sh
     watchdog.sh
     agent-flow-drift-detect.sh
+    kanban-retro-create.sh
 )
 for f in "${EXPECTED[@]}"; do
     if [ ! -f "$SCRIPT_DIR/$f" ]; then
