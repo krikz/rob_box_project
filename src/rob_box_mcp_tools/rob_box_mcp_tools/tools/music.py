@@ -408,18 +408,32 @@ class MusicManager:
             probe_sock.settimeout(0.4)
             for i, name in enumerate(names):
                 node_id = 9000 + i
-                msg = bytearray(b"/s_new\x00")
-                types = b",siii\x00\x00"
+                # 🔴 FIX (live 13.08): OSC-адрес обязан быть выровнен до
+                # кратного 4. "/s_new" = 6 байт + 2 нуля = 8 (было 7 —
+                # scsynth отвечал "FAILURE IN SERVER: /s_new Command not
+                # found", а строка "not found" матчилась как «синт
+                # отсутствует» → ложные 3 раунда досылки всех 31 синтов).
+                msg = bytearray(b"/s_new\x00\x00")
+                # type string: name + node/addAction/target + amp=0
+                # (бесшумный пробный нод — иначе после фикса padding'а
+                # 31 синт играл бы с дефолтным amp на каждый init).
+                # ",siiiif" = 7 символов + 1 null = 8 (кратно 4).
+                types = b",siiiif\x00"
                 name_b = name.encode() + b"\x00"
                 while len(name_b) % 4:
                     name_b += b"\x00"
                 msg.extend(types)
                 msg.extend(name_b)
                 msg.extend(_struct.pack(">iii", node_id, 0, 1))
+                msg.extend(b"amp\x00")
+                msg.extend(_struct.pack(">f", 0.0))
                 try:
                     probe_sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
                     data, _ = probe_sock.recvfrom(512)
-                    if b"not found" in data:
+                    # Only a REAL "SynthDef X not found" counts as missing.
+                    # "Command not found" (malformed) and "Group N not found"
+                    # must not trigger re-sending.
+                    if b"SynthDef" in data and b"not found" in data:
                         missing.append(name)
                 except socket.timeout:
                     pass  # синт создан — def на месте

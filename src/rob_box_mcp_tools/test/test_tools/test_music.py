@@ -462,6 +462,112 @@ class TestMusicManagerRenardoInitialize:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — SynthDef verification probe (regression 13.08.2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestVerifyAndRetrySynthdefsProbe:
+    """Regression: probe sent ``/s_new`` without 4-byte OSC alignment.
+
+    ``b"/s_new\x00"`` is 7 bytes — the address pattern must be padded to
+    a multiple of 4 (8). scsynth answered ``FAILURE IN SERVER: /s_new
+    Command not found`` and the old check ``b"not found" in data``
+    counted every one of the 31 critical SynthDefs as missing → 3 full
+    re-send rounds per init → repeated ``sdef.add()`` mutations
+    compounded the generated SynthDef graphs into 3+ MB ``.scd`` files.
+    """
+
+    @staticmethod
+    def _fake_rt():
+        return SimpleNamespace(
+            SynthDefs={
+                name: SimpleNamespace(add=Mock())
+                for name in ("pads", "noise")
+            }
+        )
+
+    def test_probe_padding_and_command_not_found_not_missing(
+        self, monkeypatch, capsys
+    ):
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        sent: list[bytes] = []
+
+        class _FakeSock:
+            def __init__(self, *a, **k):
+                pass
+
+            def settimeout(self, t):
+                pass
+
+            def sendto(self, data, addr):
+                sent.append(bytes(data))
+
+            def recvfrom(self, n):
+                # scsynth's exact reply for a malformed command —
+                # must NOT be treated as "SynthDef missing".
+                return (
+                    b"/fail\x00\x00\x00,ss\x00/s_new\x00\x00Command not found\x00",
+                    ("127.0.0.1", 57110),
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
+        mgr = _make_manager()
+        rt = self._fake_rt()
+
+        mgr._verify_and_retry_synthdefs(rt, mgr._send_osc_raw)
+
+        # Every /s_new must be 4-byte aligned (address + type string).
+        assert sent, "probe должен отправлять OSC-сообщения"
+        for data in sent:
+            assert len(data) % 4 == 0, f"OSC not aligned: {len(data)}"
+            assert data.startswith(b"/s_new\x00\x00"), f"bad address pad: {data[:16]!r}"
+        # No re-send round may be triggered by "Command not found".
+        assert rt.SynthDefs["pads"].add.call_count == 0
+        assert rt.SynthDefs["noise"].add.call_count == 0
+        assert "round 1" not in capsys.readouterr().err
+
+    def test_probe_resends_when_synthdef_really_missing(self, monkeypatch):
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        class _FakeSock:
+            def __init__(self, *a, **k):
+                pass
+
+            def settimeout(self, t):
+                pass
+
+            def sendto(self, data, addr):
+                pass
+
+            def recvfrom(self, n):
+                return (
+                    b"/fail\x00\x00\x00,ss\x00/s_new\x00\x00SynthDef pads not found\x00",
+                    ("127.0.0.1", 57110),
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
+        mgr = _make_manager()
+        rt = self._fake_rt()
+
+        mgr._verify_and_retry_synthdefs(rt, mgr._send_osc_raw)
+
+        # "SynthDef pads not found" IS a real miss → re-send per round.
+        assert rt.SynthDefs["pads"].add.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — execute_code
 # ---------------------------------------------------------------------------
 

@@ -551,12 +551,24 @@ class MCPServer(Node):
         # классику"), dialogue_node publishes /mcp/music_fallback and we
         # play the top-rated human track from the library instead of
         # leaving the user in silence.
+        # 🔴 FIX (live 13.08): _register_music_tools() выполняется в
+        # _register_tools() РАНЬШЕ, чем __init__ присваивает
+        # self._qos_profile → AttributeError глотался try/except'ом, и
+        # подписка на /mcp/music_fallback никогда не создавалась.
+        qos = getattr(self, "_qos_profile", None)
+        if qos is None:
+            qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+            )
+            self._qos_profile = qos
         try:
             self._music_fallback_sub = self.create_subscription(
                 String,
                 "/mcp/music_fallback",
                 self._on_music_fallback,
-                self._qos_profile,
+                qos,
             )
             self.get_logger().info("🎵 Подписан на /mcp/music_fallback (issue #1016)")
         except Exception as exc:  # noqa: BLE001

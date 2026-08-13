@@ -302,3 +302,36 @@ def test_music_fallback_skips_when_library_empty(monkeypatch):
     module.MCPServer._on_music_fallback(server, msg)
     manager.execute_code.assert_not_called()
     assert any("пуста" in m for m in server.get_logger().warning_messages)
+
+
+@pytest.mark.unit
+def test_music_fallback_subscription_survives_missing_qos_profile(monkeypatch):
+    """Regression 13.08.2026: ``_register_music_tools()`` runs BEFORE
+    ``__init__`` assigns ``self._qos_profile`` → the subscription died
+    with AttributeError (swallowed by try/except) and the empty-response
+    music fallback never got wired on the robot."""
+    module = _load_mcp_server_module(monkeypatch)
+
+    class _OkLibrary:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_tracks(self, *args, **kwargs):
+            return {"total": 0, "tracks": []}
+
+    monkeypatch.setattr(module, "TrackLibrary", _OkLibrary)
+    server = _FakeServer()
+    server._on_music_fallback = lambda msg: None
+    assert not hasattr(server, "_qos_profile"), "precondition: init order reproduces the bug"
+    subscriptions: list[tuple[str, object]] = []
+    server.create_subscription = (
+        lambda msg_type, topic, callback, qos: subscriptions.append((topic, qos))
+    )
+
+    module.MCPServer._register_music_tools(server)
+
+    assert any(topic == "/mcp/music_fallback" for topic, _ in subscriptions)
+    assert not any(
+        "Не удалось подписаться" in message
+        for message in server.get_logger().warning_messages
+    )
