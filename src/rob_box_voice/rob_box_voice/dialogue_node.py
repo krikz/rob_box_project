@@ -314,6 +314,12 @@ class DialogueNode(Node):
             self.get_parameter("speaker_id_enabled").value)
         self._current_speaker: dict = {"is_known": False}
         self._speaker_lock = threading.Lock()
+        # Issue #1195 — последний chat_id из Telegram (source-маркер
+        # [TG:chat_id] в /voice/stt/result). Используется для
+        # маршрутизации ответа: dialogue_node кладёт tg_chat_id в
+        # payload /voice/dialogue/response, telegram_node читает его и
+        # шлёт send_message в нужный чат. None = голосовой ввод.
+        self._active_tg_chat_id: Optional[int] = None
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
@@ -1250,6 +1256,25 @@ class DialogueNode(Node):
         text = (msg.data or "").strip()
         if not text:
             return
+        # Issue #1195 — source marker from telegram_node: ``[TG:chat_id]
+        # текст``. Означает, что текст пришёл из Telegram-чата:
+        #   * wake-gate не нужен — обращение в чате очевидно;
+        #   * запоминаем chat_id для маршрутизации ответа (echo-path);
+        #   * голосовая биометрия ([Spkr:...]) к такому тексту НЕ
+        #     применима — это не микрофон.
+        tg_chat_id: Optional[int] = None
+        if text.startswith("[TG:"):
+            marker_end = text.find("]")
+            if marker_end != -1:
+                raw = text[4:marker_end].strip()
+                try:
+                    tg_chat_id = int(raw)
+                except (TypeError, ValueError):
+                    tg_chat_id = None
+                if tg_chat_id is not None:
+                    self._active_tg_chat_id = tg_chat_id
+                    text = text[marker_end + 1:].strip()
+        text_lower = text.lower()
         # Issue #1077 — забираем speaker_tag для ЭТОГО текста (если stt_node
         # успел прислать speaker-событие). pop: один текст — один tag.
         speaker_event = self._speaker_by_text.pop(text, None)
@@ -1263,7 +1288,6 @@ class DialogueNode(Node):
                 speaker_duration_s = 0.0
             if not speaker_tag:
                 speaker_tag = None
-        text_lower = text.lower()
         # Issue #1101 — auto-register спикера через regex УДАЛЁН.
         # Теперь LLM сам извлекает имя из user_input и вызывает MCP tool
         # register_speaker(name=X) — см. master_prompt_compact.txt RULE #SYSCTX.
@@ -1299,7 +1323,9 @@ class DialogueNode(Node):
         # думает «LLM молчит», а на самом деле фраза не дошла до LLM.
         # Поднимаем до info() с подсчётом причин, плюс раз в окно
         # печатаем сводку ``llm_skipped_total``.
-        if not has_wake_word(text_lower, self._wake_words):
+        # Issue #1195 — для текста из Telegram-чата ([TG:...]) wake-gate
+        # пропускается: обращение в чате очевидно, нечего фильтровать.
+        if tg_chat_id is None and not has_wake_word(text_lower, self._wake_words):
             self._llm_skipped_counter["no_wake_word"] += 1
             self.get_logger().info(
                 f"🔇 [diagnostics] ignored: no_wake_word text={text[:60]!r} "
@@ -1356,6 +1382,7 @@ class DialogueNode(Node):
             raw_user_command=raw_user_command,
             speaker_tag=speaker_tag,
             speaker_duration_s=speaker_duration_s,
+            from_tg=bool(tg_chat_id is not None),
         )
     def _on_tts_finished(self, msg: String) -> None:
         """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
@@ -1581,6 +1608,7 @@ class DialogueNode(Node):
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
+        from_tg: bool = False,
     ) -> None:
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
@@ -1620,6 +1648,7 @@ class DialogueNode(Node):
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
+                from_tg=from_tg,
             ),
             self._loop,
         )
@@ -1833,6 +1862,7 @@ class DialogueNode(Node):
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
+        from_tg: bool = False,
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
@@ -1892,7 +1922,15 @@ class DialogueNode(Node):
             # биометрию. Session lock: первый известный спикер сессии
             # фиксируется; чужие известные/незнакомцы в той же сессии
             # игнорируются (TASK-048).
-            if self._speaker_id_enabled and not was_dj_auto:
+            # Issue #1195 — текст из Telegram-чата ([TG:...]): голосовая
+            # биометрия НЕ применима (это не микрофон) и не должна
+            # «прилипать» от последнего распознанного голосом спикера.
+            # Помечаем источник для LLM префиксом [TG] (без wake-слов —
+            # DSM-классификатор не матчит). Роли описаны в system prompt
+            # (RULE #SRC): оператор/режиссёр vs гости в чате.
+            if from_tg:
+                user_input = f"[TG] {user_input}"
+            elif self._speaker_id_enabled and not was_dj_auto:
                 user_input = await self._apply_speaker_identity(
                     user_input, speaker_context
                 )
@@ -3350,9 +3388,15 @@ class DialogueNode(Node):
         For multi-chunk turns prefer :meth:`_publish_response_batch` which
         attaches a shared ``batch_id`` so ``tts_node`` can fire
         ``/voice/tts/batch_complete`` once the last chunk lands (issue #980).
+
+        Issue #1195 — если последний вход пришёл из Telegram-чата,
+        кладём ``tg_chat_id`` в payload: telegram_node использует его для
+        маршрутизации эхо-ответа в правильный чат.
         """
         msg = String()
-        msg.data = build_ssml_payload(text, animation)
+        msg.data = build_ssml_payload(
+            text, animation, tg_chat_id=self._active_tg_chat_id
+        )
         self._response_pub.publish(msg)
 
     def _publish_response_batch(self, chunks: List[str], animation: str = "neutral") -> int:
@@ -3382,6 +3426,7 @@ class DialogueNode(Node):
                 batch_id=batch_id,
                 batch_index=idx,
                 batch_total=total,
+                tg_chat_id=self._active_tg_chat_id,
             )
             self._response_pub.publish(msg)
         return total

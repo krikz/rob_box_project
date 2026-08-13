@@ -63,6 +63,16 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await _react_eyes(update)
 
     # ── Debounce: buffer split messages ──
+    # 🔴 FIX (issue #1195): раньше таймер создавался через
+    # ``loop.call_later`` и хранился в buf["task"] — это
+    # ``asyncio.TimerHandle``, у которого НЕТ ``.done()``. При 2+
+    # сообщениях подряд ``buf["task"].done()`` падал с AttributeError
+    # (traceback в логах telegram-bot). Теперь используем
+    # ``asyncio.create_task`` — Task имеет ``.done()``/``.cancel()``.
+    async def _flush_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await asyncio.sleep(_DEBOUNCE_DELAY)
+        await _flush_buffer(chat_id, context)
+
     buf = context.user_data.get("msg_buffer")
     if buf is not None:
         # Already buffering — append text and reset timer
@@ -71,28 +81,17 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if buf.get("task") and not buf["task"].done():
             buf["task"].cancel()
         # Schedule forward after delay
-        loop = asyncio.get_event_loop()
-        buf["task"] = loop.call_later(
-            _DEBOUNCE_DELAY,
-            lambda: asyncio.ensure_future(
-                _flush_buffer(chat_id, context)
-            ),
-        )
+        buf["task"] = asyncio.create_task(_flush_after_delay(chat_id, context))
         logger.debug("Buffered message part %d for chat %d", len(buf["texts"]), chat_id)
         return
 
     # First message — start buffering
-    context.user_data["msg_buffer"] = {
+    new_buf = {
         "texts": [user_text],
         "task": None,
     }
-    loop = asyncio.get_event_loop()
-    context.user_data["msg_buffer"]["task"] = loop.call_later(
-        _DEBOUNCE_DELAY,
-        lambda: asyncio.ensure_future(
-            _flush_buffer(chat_id, context)
-        ),
-    )
+    context.user_data["msg_buffer"] = new_buf
+    new_buf["task"] = asyncio.create_task(_flush_after_delay(chat_id, context))
     logger.debug("Started message buffer for chat %d", chat_id)
 
 
@@ -108,11 +107,12 @@ async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
     if len(buf["texts"]) > 1:
         logger.info("Merged %d message parts for chat %d", len(buf["texts"]), chat_id)
 
-    # Forward to the unified dialogue pipeline. We keep the chat_id as a
-    # debug suffix so downstream can correlate messages even though the
-    # current /voice/stt/result channel is plain text. dialogue_node will
-    # strip anything after the marker before wake-word matching.
-    node.forward_to_stt(combined_text)
+    # Forward to the unified dialogue pipeline with the source marker
+    # (issue #1195): [TG:chat_id] lets dialogue_node skip the wake-word
+    # gate (chat messages are explicit address) and route the LLM reply
+    # back into this chat. The chat_id is also recorded as "active chat"
+    # so voice-initiated replies echo here too.
+    node.forward_to_stt(combined_text, chat_id=chat_id)
 
 
 # ─── Voice messages ──────────────────────────────────────────────────────
@@ -128,6 +128,7 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """
     node = _node(context)
     voice = update.message.voice
+    chat_id = update.effective_chat.id
 
     if not voice:
         return
@@ -178,6 +179,8 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown",
         )
     else:
-        # Mode A: Forward to the unified dialogue pipeline.
+        # Mode A: Forward to the unified dialogue pipeline with the
+        # source marker (issue #1195) — same as text messages, so the
+        # LLM reply is routed back into this chat.
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
-        node.forward_to_stt(text)
+        node.forward_to_stt(text, chat_id=chat_id)
