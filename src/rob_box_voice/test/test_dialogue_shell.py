@@ -338,7 +338,7 @@ class _TestableDialogueNode(DialogueNode):
                 "🎧 [issue 992 test] DJ auto-transition — skipping "
                 "new_dialogue music_cleanup"
             )
-        elif self._pending_music_cleanup:
+        elif self._pending_music_cleanup and was_idle:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         self._run_task = self._test_loop.create_task(

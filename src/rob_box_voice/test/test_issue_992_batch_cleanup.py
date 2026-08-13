@@ -98,6 +98,34 @@ def _stop_music_tools() -> FakeToolProvider:
     return tools
 
 
+def _music_tools() -> FakeToolProvider:
+    """FakeToolProvider with ``execute_music_code`` (no-op) + ``speak_text``.
+
+    Used by the BACKING/TRACK tests below: the LLM starts a beat and
+    sings (or speaks a short accept phrase) in the same cycle, exactly
+    like the production e2e scenario «спой песенку про енотика».
+    """
+
+    tools = _speak_text_tools()
+    music_spec = ToolSpec(
+        name="execute_music_code",
+        description="Execute Renardo music code.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string"},
+                "segments": {"type": "integer"},
+            },
+        },
+    )
+
+    async def _music_handler(_args):
+        return json.dumps({"ok": True})
+
+    tools.register(music_spec, _music_handler)
+    return tools
+
+
 def _simulate_batch(node: _TestableDialogueNode, batch_id: str,
                     chunks_total: int, success: bool = True) -> None:
     """End-to-end replay: register the batch and then drive it to completion.
@@ -220,12 +248,16 @@ class TestIssue992BatchCleanup:
         ])
         node = _TestableDialogueNode(llm=llm, tools=_speak_text_tools())
         try:
-            self._drive(node)
-
             # Step 1 — both speak_text calls fire and register their
-            # batches (mirrors back-to-back SpeakTextTool.execute()).
+            # batches BEFORE the turn's finally block runs (mirrors
+            # back-to-back SpeakTextTool.execute() publishing the
+            # batch_registered prelude DURING the LLM cycle). With the
+            # prelude-deferral catch-up (issue #992 live 09:09) the
+            # turn-end cleanup fires only when _active_batches is empty;
+            # pre-registering both batches keeps it deferred.
             _register_batch(node, "batch-1", chunks_total=1)
             _register_batch(node, "batch-2", chunks_total=1)
+            self._drive(node)
             assert len(node._active_batches) == 2, (
                 f"both batches must be registered as active: "
                 f"{list(node._active_batches)!r}"
@@ -356,6 +388,13 @@ class TestIssue992BatchCleanup:
         ])
         node = _TestableDialogueNode(llm=llm, tools=_stop_music_tools())
         try:
+            # An active TTS batch keeps the cleanup pending: in
+            # production the robot is still speaking (TTS batch in
+            # flight) when the user asks to stop the music, so the
+            # turn-end prelude-deferral catch-up (issue #992 live
+            # 09:09) must NOT fire cleanup while a batch is active.
+            _register_batch(node, "batch-playing", chunks_total=1)
+
             # Drive first turn — this sets _pending_music_cleanup=True
             # and the test logs would normally emit "stop_music deferred".
             node._dsm.on_event(DialogueEvent.WAKE_WORD)
@@ -384,6 +423,14 @@ class TestIssue992BatchCleanup:
                 finish_reason="tool_calls",
             ))
             llm.push(LLMResponse(content="ok", finish_reason="stop"))
+            # The second stop_music arrives as a barge-in continuation
+            # (robot still speaking, TTS batch active): the DSM must NOT
+            # be in IDLE, otherwise _dispatch_turn treats it as a fresh
+            # dialogue and clears the pending cleanup (new_dialogue
+            # reason) before _run_turn even sees the flag. Fire
+            # WAKE_WORD first (IDLE → LISTENING) so was_idle=False and
+            # the pending cleanup survives into the second turn.
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
             node._on_stt(_make_string("роббокс выключи музыку ещё раз"))
             node.drive_one_turn()
 
@@ -396,6 +443,132 @@ class TestIssue992BatchCleanup:
                 "while _pending_music_cleanup is already True"
             )
             assert node._pending_music_cleanup is True
+        finally:
+            node.close()
+
+    def test_backing_execute_music_code_with_lyrics_schedules_cleanup(self):
+        """BACKING (спой/рэп): execute_music_code + 2 speak_text → cleanup.
+
+        Issue #992 TWO MUSIC MODES (e2e run #31662735824 regression):
+        when the LLM starts a backing beat and sings lyrics via 2+
+        ``speak_text`` calls, the system must stop the music after ALL
+        TTS batches finish (master_prompt: "Music stops automatically
+        after tts_batch_complete"; the LLM does NOT call stop_music).
+        The turn-end logic used to treat every ``execute_music_code``
+        as TRACK and cancelled the pending cleanup — the e2e patterns
+        ``tts_batch_complete fired music_cleanup`` /
+        ``music_cleanup sent: reason=tts_batch_complete`` never fired.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="music-1",
+                        name="execute_music_code",
+                        arguments={
+                            "code": "p1 >> blip([0,2,4], dur=0.5)",
+                            "segments": 24,
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Первый куплет, длинный текст."},
+                    ),
+                    ToolCall(
+                        id="call-2",
+                        name="speak_text",
+                        arguments={"text": "Второй куплет, тоже длинный."},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            # Batches register DURING the LLM cycle (batch_registered
+            # prelude) — mirror production timing so the turn-end
+            # catch-up defers cleanup to the real batch_complete events.
+            _register_batch(node, "backing-1", chunks_total=1)
+            _register_batch(node, "backing-2", chunks_total=1)
+            self._drive(node)
+            assert node._pending_music_cleanup is True, (
+                "BACKING mode must schedule music_cleanup at "
+                "tts_batch_complete (speak_text_count>=2)"
+            )
+            assert len(node._active_batches) == 2
+            # First batch completes — cleanup must NOT fire (second
+            # batch still in flight, issue #992 core contract).
+            _complete_batch(node, "backing-1", chunks_total=1)
+            assert _music_cleanup_payloads(node) == [], (
+                "cleanup must wait for the LAST backing batch"
+            )
+            # Last batch completes — cleanup fires exactly once with
+            # the tts_batch_complete reason (e2e pattern).
+            _complete_batch(node, "backing-2", chunks_total=1)
+            cleanups = _music_cleanup_payloads(node)
+            assert len(cleanups) == 1, (
+                f"backing cleanup must fire exactly once; got: {cleanups!r}"
+            )
+            assert cleanups[0].get("reason") == "tts_batch_complete"
+        finally:
+            node.close()
+
+    def test_track_execute_music_code_single_accept_no_cleanup(self):
+        """TRACK (сыграй баха): execute_music_code + 1 accept → NO cleanup.
+
+        The live 09:35 fix must be preserved: a composition started via
+        ``execute_music_code`` lives until the user stops it. A single
+        short accept phrase («Ок, играю Бах») must NOT trigger
+        music_cleanup on tts_batch_complete.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="music-1",
+                        name="execute_music_code",
+                        arguments={
+                            "code": "p1 >> pads([0,2,4], dur=1)",
+                            "segments": 96,
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Ок, играю Бах."},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            _register_batch(node, "track-1", chunks_total=1)
+            self._drive(node)
+            assert node._pending_music_cleanup is False, (
+                "TRACK mode must NOT schedule cleanup on tts_batch_complete"
+            )
+            _complete_batch(node, "track-1", chunks_total=1)
+            assert _music_cleanup_payloads(node) == [], (
+                "TRACK: music_cleanup must not fire after the accept phrase"
+            )
         finally:
             node.close()
 

@@ -90,6 +90,14 @@ class DialogResult:
     spoken_text: str = ""
     new_state: DialogueStateKind = DialogueStateKind.IDLE
     tools_called: list[str] = field(default_factory=list)
+    # Issue #992 (TWO MUSIC MODES): how many times the LLM invoked
+    # ``speak_text`` during this turn. ``tools_called`` only keeps
+    # *unique* names, but the dialogue_node music-cleanup gate needs
+    # the raw count to distinguish BACKING (спой/рэп — lyrics via 2+
+    # speak_text calls, music must stop at tts_batch_complete) from
+    # TRACK (сыграй баха — at most one short accept phrase, music
+    # lives until the user stops it).
+    speak_text_count: int = 0
     error: BaseException | None = None
     # ── LLM diagnostics (live 16:58) ────────────────────────────────────
     # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
@@ -381,11 +389,12 @@ class DialogCore:
                             metadata=user_metadata,
                         ),
                     )
-                spoken, tools_called, finish_reason, raw_response = (
+                spoken, tools_called, finish_reason, raw_response, speak_text_count = (
                     await self._run_with_tools(messages)
                 )
                 result.spoken_text = spoken
                 result.tools_called = list(tools_called)
+                result.speak_text_count = speak_text_count
                 result.finish_reason = finish_reason
                 result.raw_response = raw_response
                 if not is_dj_auto:
@@ -414,8 +423,9 @@ class DialogCore:
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
-    ) -> tuple[str, list[str]]:
-        """Run the LLM tool loop and return ``(spoken_text, tools_called)``.
+    ) -> tuple[str, list[str], str | None, Any, int]:
+        """Run the LLM tool loop and return ``(spoken_text, tools_called,
+        finish_reason, raw_response, speak_text_count)``.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -445,6 +455,7 @@ class DialogCore:
 
         tools_called: list[str] = []
         seen: set[str] = set()
+        speak_text_count: int = 0
         response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
@@ -453,8 +464,13 @@ class DialogCore:
             if not response.tool_calls:
                 break
 
-            # Record unique tool names actually invoked.
+            # Record unique tool names actually invoked, and count
+            # speak_text occurrences (issue #992 — the raw count lets
+            # dialogue_node tell BACKING sing/rap turns from TRACK
+            # composition turns; unique names alone cannot).
             for call in response.tool_calls:
+                if call.name == "speak_text":
+                    speak_text_count += 1
                 if call.name not in seen:
                     seen.add(call.name)
                     tools_called.append(call.name)
@@ -531,7 +547,13 @@ class DialogCore:
                 _MAX_TOOL_ITERATIONS,
             )
 
-        return response.content, tools_called, response.finish_reason, response.raw
+        return (
+            response.content,
+            tools_called,
+            response.finish_reason,
+            response.raw,
+            speak_text_count,
+        )
 
     async def _stream_response(
         self,
