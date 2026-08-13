@@ -158,6 +158,7 @@ EXPECTED=(
     agent-flow-cleanup-249.sh
     agent-flow-deploy-sweep.sh
     agent-flow-unlabeled-sweep.sh
+    kanban-retro-create.sh
     cron-loop.sh
     watchdog.sh
     agent-flow-drift-detect.sh
