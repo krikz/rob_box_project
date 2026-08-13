@@ -995,7 +995,7 @@ git push --force-with-lease origin ${pr_head_ref}
                     backend)   _skill="test-driven-development" ;;
                     developer) _skill="test-driven-development" ;;
                     tester)    _skill="test-driven-development" ;;
-                    devops)    _skill="hermes-agent-flow" ;;
+                    devops)    _skill="agent-flow-e2e-pipeline" ;;  # надзор 13.08: hermes-agent-flow не существует → карточка падала в crashed (класс t_6c6c98fb)
                 esac
                 hermes kanban --board "$KANBAN_BOARD" create \
                     --assignee "$_assignee" --skill "$_skill" --priority 80 --max-runtime 1800 \
