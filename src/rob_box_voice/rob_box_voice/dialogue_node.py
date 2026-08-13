@@ -97,6 +97,21 @@ ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
+# Issue #992 (live 13.08): BACKING-детектор «2+ speak_text» ложно
+# срабатывал на разговорчивую LLM (приветствие + комментарий) и убивал
+# только что запущенный TRACK сразу после tts_batch_complete
+# («наполни комнату музыкой» → музыка умолкала через ~8с).
+# Теперь BACKING требует ПЕВЧЕСКИЙ интент в тексте юзера.
+_SINGING_INTENT_RE = re.compile(
+    r"\b(?:спо[йюё]\w*|по[йюё]\w*|рэп\w*|реп\w*|песенк\w*|куплет\w*|частушк\w*|напев\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_singing_intent(text: "str | None") -> bool:
+    """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
+    return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
+
 # Module-level skill class aliases (test contracts). Production code uses
 # these via ``MusicSkill`` etc, and tests can check ``hasattr(dialogue_node,
 # 'MusicSkill')`` to assert availability.
@@ -2029,12 +2044,13 @@ class DialogueNode(Node):
                     # (master_prompt_compact: "Music stops automatically after
                     # tts_batch_complete"; LLM НЕ зовёт stop_music). TRACK
                     # (сыграй баха/классику) — композиция живёт до команды
-                    # юзера. Дискриминатор: BACKING говорит куплеты через
-                    # 2+ speak_text в этом цикле, TRACK — максимум одна
-                    # короткая фраза-акцепт («Ок, играю Бах»).
-                    backing_singing = bool(result) and getattr(
-                        result, "speak_text_count", 0
-                    ) >= 2
+                    # юзера. Дискриминатор: BACKING = 2+ speak_text В ЭТОМ
+                    # цикле И певческий интент в тексте юзера. Без интента
+                    # (live 13.08: «наполни комнату музыкой» + приветствие +
+                    # комментарий) — это TRACK, cleanup не планируется.
+                    backing_singing = bool(result) and (
+                        getattr(result, "speak_text_count", 0) >= 2
+                    ) and _has_singing_intent(raw_user_command or user_input)
                     if backing_singing:
                         if not self._pending_music_cleanup:
                             self._pending_music_cleanup = True

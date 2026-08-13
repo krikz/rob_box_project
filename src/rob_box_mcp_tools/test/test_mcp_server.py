@@ -217,7 +217,7 @@ def test_register_tools_skips_track_library_failures_without_crashing(monkeypatc
 def test_recommended_executor_threads_never_returns_less_than_two(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
 
-    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0})
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0}, raising=False)
 
     assert module._recommended_executor_threads() == 2
 
@@ -226,7 +226,7 @@ def test_recommended_executor_threads_never_returns_less_than_two(monkeypatch):
 def test_recommended_executor_threads_uses_affinity_when_available(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
 
-    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3})
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
 
     assert module._recommended_executor_threads() == 4
 

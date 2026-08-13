@@ -204,6 +204,73 @@ class TestIssue992BatchCleanup:
         node._on_stt(_make_string("роббокс спой куплет и ещё куплет"))
         node.drive_one_turn()
 
+    def test_chatty_track_turn_is_not_backing(self):
+        """Regression 13.08.2026: «наполни комнату музыкой» + 2 speak_text
+        (приветствие + комментарий) ложно классифицировалось как BACKING →
+        music_cleanup на tts_batch_complete убивал только что запущенный
+        трек. Без певческого интента (спой/куплет/рэп...) cleanup не должен
+        планироваться вообще."""
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-music",
+                        name="execute_music_code",
+                        arguments={"code": "p1 >> pads([0,3,7], dur=8)", "segments": 32},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Привет! Сейчас наполню комнату музыкой!"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="speak_text",
+                        arguments={"text": "Офигенная подложка играет!"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            _register_batch(node, "batch-1", chunks_total=1)
+            _register_batch(node, "batch-2", chunks_total=1)
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("роббокс наполни эту комнату музыкой"))
+            node.drive_one_turn()
+
+            # Pending cleanup MUST NOT be armed for a TRACK request.
+            assert node._pending_music_cleanup is False, (
+                "TRACK (без певческого интента) не должен планировать "
+                "music_cleanup (issue 992 backing-детектор ложно сработал)"
+            )
+
+            _complete_batch(node, "batch-1", chunks_total=1)
+            _complete_batch(node, "batch-2", chunks_total=1)
+
+            cleanups = _music_cleanup_payloads(node)
+            assert cleanups == [], (
+                "TRACK: music_cleanup не должен уйти после tts_batch_complete; "
+                f"получено: {cleanups!r}"
+            )
+        finally:
+            node.close()
+
     def test_two_speak_text_batches_hold_cleanup_until_last(self):
         """LLM вызвал speak_text дважды — music_cleanup только после второго.
 

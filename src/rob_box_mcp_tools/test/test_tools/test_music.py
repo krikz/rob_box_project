@@ -568,6 +568,55 @@ class TestVerifyAndRetrySynthdefsProbe:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — sample buffer prewarm (regression 13.08.2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSampleBufferPrewarm:
+    """Regression: play("x-o-") стартовал раньше, чем scsynth дочитал
+    сэмпл в буфер → "Buffer UGen: no buffer data" + резкий свист на
+    старте музыки. Предзагрузка должна дёргать Samples.getBufferFromSymbol
+    для каждого символа (кроме пробелов/пауз) ДО exec."""
+
+    def test_prewarm_loads_symbols_and_skips_rests(self):
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        calls: list[str] = []
+
+        class _FakeSamples:
+            def getBufferFromSymbol(self, symbol, spack, index=0):
+                calls.append((symbol, spack))
+                return f"buf-{symbol}"
+
+        mgr = _make_manager()
+        mgr._renardo_context = {"Samples": _FakeSamples()}
+
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-", dur=0.5, sample=1)')
+
+        assert [c[0] for c in calls] == ["x", "o"], (
+            f"должны грузиться только символы x и o, получено: {calls!r}"
+        )
+        assert all(spack == 0 for _, spack in calls)
+
+    def test_prewarm_ignores_missing_samples_manager(self):
+        mgr = _make_manager()
+        mgr._renardo_context = {}
+        # Не должно падать при отсутствии Samples в контексте.
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-")')
+
+    def test_prewarm_survives_broken_samples_manager(self):
+        class _Broken:
+            def getBufferFromSymbol(self, symbol, spack, index=0):
+                raise RuntimeError("no such sample")
+
+        mgr = _make_manager()
+        mgr._renardo_context = {"Samples": _Broken()}
+        # Ошибки менеджера не должны ронять предзагрузку.
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-")')
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — execute_code
 # ---------------------------------------------------------------------------
 

@@ -199,7 +199,7 @@ NEVER use d4/d5/p4/p5 in generated music for this robot. Stay within d1-d3 and p
              ecello, imperialbrass, feel, bell, kalimba, saw, square
      PADS:   warmpad, space, strings, faim, sinepad, mhpad, viola, ambi, marchstrings, pads
      DRUMS:  play("pattern", sample=N) — sample=0..7
-     EXTRA:  organ, brass, orient, gong, pluck, creep, shaker, noise, scatter
+     EXTRA:  organ, brass, orient, gong, pluck, creep, noise, scatter
    → If the user asks for a specific instrument NOT in these lists, pick the closest match
      from the lists above instead — NEVER invent unknown synth names!
 For Imperial March / Star Wars march style, prefer `imperialbrass + marchstrings + strings`; avoid organ until the patched organ runtime is verified on hardware.

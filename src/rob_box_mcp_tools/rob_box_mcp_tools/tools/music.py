@@ -47,6 +47,9 @@ _BLOCKED_TOKENS = re.compile(
     r")\b"
 )
 
+# Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
+_PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
+
 # ---------------------------------------------------------------------------
 # Issue #1016 — music-quality guardrail (dramaturgy validator)
 # ---------------------------------------------------------------------------
@@ -396,7 +399,7 @@ class MusicManager:
             "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
             "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
             "ambi", "faim", "marimba", "sitar", "viola", "noise",
-            "scatter", "orient", "creep", "shaker",
+            "scatter", "orient", "creep",
             "strings", "wobblebass", "brass", "organ", "tb303",
             "play1", "play2",
         )
@@ -935,6 +938,12 @@ class MusicManager:
             self._renardo_context["__duration_sec"] = clamped
             self._renardo_context["__bpm"] = current_bpm
 
+        # 🔴 FIX (live 13.08): предзагружаем сэмпл-буферы для play("...")
+        # ДО exec — иначе первая запланированная нота бьёт в PlayBuf, пока
+        # scsynth ещё читает файл в буфер (Buffer UGen: no buffer data),
+        # и на старте музыки слышен резкий свист/хруст (xrun-бурст).
+        self._prewarm_sample_buffers(code)
+
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
@@ -989,6 +998,34 @@ class MusicManager:
             }
 
         return {"success": True, "message": "Код выполнен успешно", "code": code}
+
+    def _prewarm_sample_buffers(self, code: str) -> None:
+        """Pre-allocate sample buffers for ``play("...")`` symbols.
+
+        Live 13.08: ``play("x-o-")`` стартовал в тот же тик, что и
+        ``/b_allocRead`` — scsynth логировал ``Buffer UGen: no buffer
+        data`` и на старте музыки слышался резкий свист/xrun-бурст.
+        Renardo кэширует буферы в ``Samples`` (BufferManager), поэтому
+        предзагрузка до ``exec`` — это cache-hit и для самого renardo.
+
+        Args:
+            code: FoxDot-код, который сейчас выполнится.
+        """
+        try:
+            samples = self._renardo_context.get("Samples")
+            if samples is None:
+                return
+            for match in _PLAY_SYMBOLS_RE.finditer(code):
+                for symbol in match.group(1):
+                    # "-" — пауза (rest), пробел — разделитель; сэмплов нет.
+                    if symbol.isspace() or symbol == "-":
+                        continue
+                    try:
+                        samples.getBufferFromSymbol(symbol, 0)
+                    except Exception:  # noqa: BLE001 — символ может не иметь сэмпла
+                        continue
+        except Exception:  # noqa: BLE001 — предзагрузка не должна ломать exec
+            return
 
     def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
         """Остановить именованный паттерн.
