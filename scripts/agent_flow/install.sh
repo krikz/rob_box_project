@@ -40,6 +40,35 @@
 # Идемпотентен — повторный запуск обновляет ссылки, ничего не ломает.
 
 set -e
+
+# Единый список процессных скриптов. Владелец списка — ЭТОТ файл:
+#   - install.sh раскладывает EXPECTED по хостам;
+#   - agent-flow-drift-detect.sh читает список через `install.sh --list-files`
+#     (ретро 13.08 t_2cae75c0: раньше список дублировался в drift-detect.sh,
+#     из-за чего kanban-retro-create.sh и ещё 2 скрипта не контролировались
+#     drift-детектором; теперь источник один).
+EXPECTED=(
+    agent-flow-triage.sh
+    agent-flow-merge-gate.sh
+    agent-flow-e2e-process.sh
+    agent-flow-handoff.sh
+    round_ensure.sh
+    agent-flow-cleanup-249.sh
+    agent-flow-deploy-sweep.sh
+    agent-flow-unlabeled-sweep.sh
+    cron-loop.sh
+    watchdog.sh
+    agent-flow-drift-detect.sh
+    kanban-retro-create.sh
+)
+
+# Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
+# Используется agent-flow-drift-detect.sh как единый источник списка.
+if [ "${1:-}" = "--list-files" ]; then
+    printf '%s\n' "${EXPECTED[@]}"
+    exit 0
+fi
+
 DRY_RUN=false
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=true
 
@@ -148,22 +177,8 @@ if [ ! -d "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
-# sanity check — файлы на месте
-EXPECTED=(
-    agent-flow-triage.sh
-    agent-flow-merge-gate.sh
-    agent-flow-e2e-process.sh
-    agent-flow-handoff.sh
-    round_ensure.sh
-    agent-flow-cleanup-249.sh
-    agent-flow-deploy-sweep.sh
-    agent-flow-unlabeled-sweep.sh
-    kanban-retro-create.sh
-    cron-loop.sh
-    watchdog.sh
-    agent-flow-drift-detect.sh
-    kanban-retro-create.sh
-)
+# sanity check — файлы на месте (EXPECTED объявлен в начале файла — единый
+# список для раскладки и для agent-flow-drift-detect.sh --list-files)
 for f in "${EXPECTED[@]}"; do
     if [ ! -f "$SCRIPT_DIR/$f" ]; then
         echo "ERROR: missing canonical file $SCRIPT_DIR/$f"
