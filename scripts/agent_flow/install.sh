@@ -202,7 +202,7 @@ HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
 HERMES_AGENT_PATCH="$SCRIPT_DIR/vendor/hermes-agent-skill-validation.patch"
 
 apply_hermes_agent_patch() {
-    if [ ! -d "$HERMES_AGENT_DIR/.git" ]; then
+    if ! git -C "$HERMES_AGENT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "  SKIP hermes-agent patch ($HERMES_AGENT_DIR not a git checkout)"
         return 0
     fi
