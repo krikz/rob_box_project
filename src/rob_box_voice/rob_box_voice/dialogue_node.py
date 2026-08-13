@@ -330,6 +330,17 @@ class DialogueNode(Node):
         # inline и нода теряла ссылку — обращение ``self._llm`` падало
         # AttributeError в ``_run_turn``.
         self._llm = self._build_llm()
+        # W7c (issue #968): /harness/task_events publisher — scheduler
+        # lifecycle events (task.created/started/completed/...) for
+        # monitoring. Created BEFORE _build_tool_provider so the W7b
+        # scheduler's on_event callback can publish immediately.
+        self._task_events_pub = self.create_publisher(
+            String, "/harness/task_events", 10)
+        # W7b: the SchedulerToolExecutor wrapping the tool provider
+        # (created inside _build_tool_provider). Kept as an attribute so
+        # _build_dynamic_system_context can render the [ACTIVE TASKS]
+        # block for the LLM. None when scheduler is disabled/failed.
+        self._scheduler_executor: Any = None
         self._core: DialogCore = DialogCore(
             llm=self._llm,
             tools=self._build_tool_provider(),
@@ -1019,7 +1030,54 @@ class DialogueNode(Node):
         # DialogCore consumes the legacy ``discover/execute`` port
         # contract; adapt the core provider so the harness's
         # orchestration layer stays unchanged.
-        return adapt_tool_provider(provider)
+        provider_adapter = adapt_tool_provider(provider)
+        # W7b (issue #968): route channel tools (speak_text / music /
+        # anim) through the TaskScheduler. stop_music is deferred until
+        # the VOICE channel drains, so it can no longer outrun the TTS
+        # chunk (e2e v36). Fail-open: if the scheduler cannot start,
+        # the adapter is returned unwrapped and tools execute directly.
+        try:
+            from rob_box_voice.scheduler.tool_executor import (
+                SchedulerToolExecutor,
+            )
+
+            scheduler_executor = SchedulerToolExecutor(
+                provider_adapter,
+                on_event=self._on_task_event,
+            )
+            self._scheduler_executor = scheduler_executor
+            self.get_logger().info(
+                "✅ W7b: tool calls routed through TaskScheduler "
+                "(voice/music/anim channels; stop_music deferred)."
+            )
+            return scheduler_executor
+        except Exception as exc:  # noqa: BLE001 — fail-open, never break voice
+            self.get_logger().warning(
+                f"⚠️ W7b SchedulerToolExecutor disabled ({exc!r}); "
+                "tools execute directly (pre-W7b path)."
+            )
+            return provider_adapter
+
+    def _on_task_event(self, event: str, payload: dict) -> None:
+        """W7c: publish scheduler lifecycle events to /harness/task_events.
+
+        Payload format follows the issue #968 contract:
+        ``{"event": "task.created", "task_id": ..., "tool": ..., ...}``.
+        Publishing failures are debug-level only — the event bus must
+        never break the scheduler or the dialogue loop.
+        """
+        try:
+            pub = getattr(self, "_task_events_pub", None)
+            if pub is None:
+                return
+            msg = String(
+                data=json.dumps(
+                    {"event": event, **payload}, ensure_ascii=False
+                )
+            )
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — observer must not break
+            self.get_logger().debug(f"⚠️ task_events publish failed: {exc}")
     def _on_vad(self, msg: Bool) -> None:
         # Use the public attribute name (no underscore) since the pure-method
         # unit tests assert against ``vad_speech_detected``. The legacy
@@ -1781,6 +1839,20 @@ class DialogueNode(Node):
         lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
         lines.append("  </hardware>")
         lines.append("</system_context>")
+        # W7c (issue #968): активные задачи планировщика (voice/music/anim
+        # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
+        # и НЕ добавляет пост-амбл «Готово!» поверх играющего трека
+        # (INSIGHT #8 из W7_INTEGRATION_PLAN.md).
+        executor = getattr(self, "_scheduler_executor", None)
+        if executor is not None:
+            try:
+                block = executor.active_tasks_block()
+                if block:
+                    lines.append(block)
+            except Exception as exc:  # noqa: BLE001 — контекст не должен падать
+                self.get_logger().debug(
+                    f"⚠️ active_tasks_block failed: {exc}"
+                )
         return "\n".join(lines)
 
     async def _handle_speaker_turn(
