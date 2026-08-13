@@ -726,6 +726,12 @@ if printf '%s' "$*" | grep -q -- ' create '; then
     printf 'Created %s  (ready, assignee=default)\n' "$_create_id"
     exit 0
 fi
+# `kanban --board <b> archive <id>...` → record and succeed (ретро 14.08
+# t_36c9ac4e: retro-card-archive pass archives done cards). Journal line
+# already written above ("hermes ... archive ..."), assertions grep it.
+if printf '%s' "$*" | grep -q -- ' archive '; then
+    exit 0
+fi
 # Simulate success; specific subcommands are recorded for assertions.
 HERMES_MOCK_EOF
     chmod +x "$bin_dir/hermes"
