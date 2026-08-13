@@ -402,6 +402,18 @@ except Exception: print("")')"
         skipped=$((skipped+1)); continue
     fi
 
+    # Ретро-фикс (13.08, #968): REOPENED issue, но на ветке уже есть OPEN PR —
+    # работа в PR (ждёт merge-gate/юзера), карточку НЕ создаём. Без этого гарда
+    # триаж плодил бесконечный цикл карточек на один issue: прошлая карточка
+    # done → «старая мертва → создаю свежую» → воркер делает ту же работу →
+    # done → ... (5+ карточек architect за 20 мин, t_6a4d501b → t_e25720e3).
+    if open_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state open \
+        --json number --jq '.[0].number' 2>/dev/null || true)" \
+        && [ -n "$open_pr" ]; then
+        log "issue #${number}: branch ${branch} already has OPEN PR #${open_pr} — работа в PR, карточку не создаём (reopened-loop guard)"
+        skipped=$((skipped+1)); continue
+    fi
+
     # Ретро-фикс (09.08 #1): освободить stale worktree'ы на этой ветке от
     # done/archived карточек ДО create — иначе диспетчер при спавне упадёт
     # «git worktree add failed» (ветка уже занята) и карточка навсегда
