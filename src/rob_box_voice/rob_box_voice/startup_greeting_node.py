@@ -33,27 +33,23 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from rob_box_voice.startup_greeting import (
+    FINISH_SOUNDS,
+    GREETINGS,
+    THINKING_SOUND,
+)
+
 
 class StartupGreetingNode(Node):
     """Нода одноразового приветствия при старте системы."""
 
     # Прикольные варианты. Тон — дружелюбный кот-робот, не сухой.
-    # Их сейчас 9, попадает под требование "6–10 вариантов".
-    GREETINGS: tuple[str, ...] = (
-        "Мяу, я на связи! Все системы в норме, можно играть!",
-        "Привет-привет! Только что проснулся, готов к приключениям!",
-        "Я вернулся! Датчики заряжены, мурчание включено.",
-        "Здравствуйте! Загрузка завершена — скучать было некогда.",
-        "Онлайн! Усы на месте, ушки на макушке.",
-        "Готов помогать! Только не обижайте мои сенсоры.",
-        "Рад вас слышать! Все модули мурлычут.",
-        "Пи-пи-пип! Ой, то есть — доброе утро, хозяин.",
-        "Слушаю вас внимательно. Ну, насколько микрофон позволяет.",
-    )
+    # Общие данные лежат в startup_greeting.py (issue #1003).
+    GREETINGS: tuple[str, ...] = GREETINGS
 
     # Звуки, которые мы умеем триггерить через sound_node.
-    THINKING_SOUND = "thinking"
-    FINISH_SOUNDS = ("cute", "very_cute")
+    THINKING_SOUND = THINKING_SOUND
+    FINISH_SOUNDS = FINISH_SOUNDS
 
     # Топики — те же, что использует dialogue_node и tts_node.
     SOUND_TOPIC = "/voice/sound/trigger"
