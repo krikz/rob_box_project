@@ -1529,6 +1529,17 @@ fi
 # накапливались в текущем shell и попали в summary.
 while IFS=$'\t' read -r r_issue r_pr r_head; do
     [ -z "$r_issue" ] && continue
+    # Guard (ретро 13.08, надзор): извлечённый номер может оказаться ПРИН-номером,
+    # а не issue — PR #1186 (сам фикс merge-gate) ссылался в title на #1172/#1173
+    # (реальные кодовые PR), ретро-путь принял их за issues, нашёл e2e-PASS на их
+    # ветках (e2e-done был на issue) и ЗАКРЫЛ живые PR через gh issue close
+    # (issues и PR делят нумерацию): #1172 закрыт 02:33, #1173 закрыт 02:45 и
+    # добит повторно 03:54 после reopen. Фикс #918/#979 НЕ попал в develop.
+    # Проверяем: номер существует как PR (даже closed) → это не issue → skip.
+    if gh pr view "$r_issue" --repo "$GH_REPO" --json number >/dev/null 2>&1; then
+        log "retro-path: #${r_issue} — это PR (не issue), ref из PR #${r_pr} — skip (guard t_d8e2c3f1)"
+        continue
+    fi
     log "retro-path: issue #${r_issue} referenced by merged PR #${r_pr} (${r_head})"
 
     # Перечитываем labels/state — race с e2e-process (как в основном цикле).
