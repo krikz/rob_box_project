@@ -279,18 +279,32 @@ jobs:
             sleep 5
           done
 
-      - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139)"
+      - name: "[Vision Pi] Fetch .image-versions from ci/image-versions-vision"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1139 13.08)"
+          echo "🔖 Fetching .image-versions from ci/image-versions-vision branch..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # 🔴 РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся ПРЯМО в ту ветку,
-          # из которой собран билд (develop/test/round). Отдельная ветка
-          # ci/image-versions ломала деплой: DevOps Agent пустыми коммитами
-          # «ci: trigger PR checks» перезаписывал её, SHA-теги терялись, deploy
-          # тянул старые образы → робот получал старый код.
-          # Файлы уже на Pi после шага Update Code (git reset --hard origin/...).
+          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): SHA-теги НЕ коммитятся
+          # в develop/main/round — .image-versions живут в per-service ветке
+          # ci/image-versions-vision (пишется только Vision-билдами, гонка
+          # с main исключена). Подтягиваем актуальный файл на Pi перед pull/up.
+          # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
+          # файл из origin/<branch> (stale fallback, compose возьмёт его).
+          for attempt in 1 2 3; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && git fetch origin ci/image-versions-vision 2>/dev/null; \
+               if git cat-file -e origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
+                 git show origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} > docker/vision/.image-versions.${{ env.IMAGE_TAG }} && \
+                 echo '✅ .image-versions.${{ env.IMAGE_TAG }} overlayed from ci/image-versions-vision'; \
+               else \
+                 echo '⚠️ ci/image-versions-vision: нет .image-versions.${{ env.IMAGE_TAG }} — используем файл из origin/${{ github.ref_name }}'; \
+               fi"; then
+              break
+            fi
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -389,18 +403,32 @@ jobs:
             sleep 5
           done
 
-      - name: "[Main Pi] .image-versions — из текущей ветки (реверт #1139)"
+      - name: "[Main Pi] Fetch .image-versions from ci/image-versions-main"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1139 13.08)"
+          echo "🔖 Fetching .image-versions from ci/image-versions-main branch..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # 🔴 РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся ПРЯМО в ту ветку,
-          # из которой собран билд (develop/test/round). Отдельная ветка
-          # ci/image-versions ломала деплой: DevOps Agent пустыми коммитами
-          # «ci: trigger PR checks» перезаписывал её, SHA-теги терялись, deploy
-          # тянул старые образы → робот получал старый код.
-          # Файлы уже на Pi после шага Update Code (git reset --hard origin/...).
+          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): SHA-теги НЕ коммитятся
+          # в develop/main/round — .image-versions живут в per-service ветке
+          # ci/image-versions-main (пишется только Main-билдами, гонка
+          # с vision исключена). Подтягиваем актуальный файл на Pi перед pull/up.
+          # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
+          # файл из origin/<branch> (stale fallback, compose возьмёт его).
+          for attempt in 1 2 3; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "cd ~/rob_box_project && git fetch origin ci/image-versions-main 2>/dev/null; \
+               if git cat-file -e origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
+                 git show origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} > docker/main/.image-versions.${{ env.IMAGE_TAG }} && \
+                 echo '✅ .image-versions.${{ env.IMAGE_TAG }} overlayed from ci/image-versions-main'; \
+               else \
+                 echo '⚠️ ci/image-versions-main: нет .image-versions.${{ env.IMAGE_TAG }} — используем файл из origin/${{ github.ref_name }}'; \
+               fi"; then
+              break
+            fi
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
