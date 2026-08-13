@@ -420,7 +420,12 @@ except Exception: print("")')"
     # 13:02, 13:05...): воркер падал на spawn (worktree занят живой веткой),
     # карточка уходила в archived, следующий тик видел «нет живой» и создавал
     # снова. OPEN-PR guard не ловит, т.к. PR #1197 уже CLOSED.
-    _recent_cards="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c '
+    # Ретро-фикс (13.08, #968 v3.1): list БЕЗ --archived НЕ возвращает archived-
+    # карточки, поэтому throttle не видел предыдущие карточки цикла (все они
+    # уходили в archived) и тик создавал новую каждые ~2-5 мин (13:13, 13:18 —
+    # даже после деплоя v3 в 13:07). Добавляем --archived: throttle видит ВСЕ
+    # карточки за 4ч, включая archived, и цикл останавливается.
+    _recent_cards="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json --archived 2>/dev/null | python3 -c '
 import json, sys, re, time
 try:
     d = json.load(sys.stdin)
