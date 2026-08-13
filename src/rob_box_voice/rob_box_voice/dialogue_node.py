@@ -2018,7 +2018,31 @@ class DialogueNode(Node):
                 # Без этого эмбиент/трек умолкал через ~5с после tts_batch_complete.
                 _music_starters = {"execute_music_code", "load_track", "set_dj_mode", "set_vibe_preset"}
                 if tools_now & _music_starters:
-                    if self._pending_music_cleanup:
+                    # Issue #992 TWO MUSIC MODES: BACKING (спой/рэп/песенку) —
+                    # музыка это подложка под куплеты, систему ПРОСЯТ
+                    # остановить её после финального tts_batch_complete
+                    # (master_prompt_compact: "Music stops automatically after
+                    # tts_batch_complete"; LLM НЕ зовёт stop_music). TRACK
+                    # (сыграй баха/классику) — композиция живёт до команды
+                    # юзера. Дискриминатор: BACKING говорит куплеты через
+                    # 2+ speak_text в этом цикле, TRACK — максимум одна
+                    # короткая фраза-акцепт («Ок, играю Бах»).
+                    backing_singing = bool(result) and getattr(
+                        result, "speak_text_count", 0
+                    ) >= 2
+                    if backing_singing:
+                        if not self._pending_music_cleanup:
+                            self._pending_music_cleanup = True
+                            self.get_logger().info(
+                                "🎵 [issue 992] backing mode (2+ speak_text) — "
+                                "music_cleanup scheduled at tts_batch_complete"
+                            )
+                        else:
+                            self.get_logger().debug(
+                                "🎵 [issue 992] backing mode — cleanup "
+                                "already pending"
+                            )
+                    elif self._pending_music_cleanup:
                         self._pending_music_cleanup = False
                         self.get_logger().info(
                             "🎵 [issue 992] LLM restarted music via "
