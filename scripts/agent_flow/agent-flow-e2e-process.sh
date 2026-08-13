@@ -679,6 +679,7 @@ try:
 except Exception:
     pass' 2>/dev/null || true)"
     _sweep_run_id="$(printf '%s\n' "$_sweep_run" | sed -n 1p)"
+    _sweep_run_id="$(printf '%s' "$_sweep_run_id" | grep -oE '[0-9]+' | head -n1 || true)"
     _sweep_concl="$(printf '%s\n' "$_sweep_run" | sed -n 2p)"
     if [ -z "$_sweep_run_id" ]; then
         log "post-round sweep: no completed e2e run on ${_sweep_round} — skip"
@@ -1343,9 +1344,18 @@ for t in data:
         # Ждём ПОЯВЛЕНИЯ нового run (createdAt >= момента триггера)
         dl=$((SECONDS + 120))
         while [ "$SECONDS" -lt "$dl" ]; do
+            _jq_filter="[.[] | select(.createdAt >= \"$min_epoch\")][0].databaseId"
             rid="$(gh run list --repo "$GH_REPO" --workflow "$wf" --branch "$br" \
-                --limit 3 --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$min_epoch\")][0].databaseId" 2>/dev/null || echo "")"
-            if [ -n "$rid" ] && [ "$rid" != "null" ] && [ "$rid" != "" ]; then
+                --limit 3 --json databaseId,createdAt --jq "$_jq_filter" 2>/dev/null || echo "")"
+            # Надзор 13.08 (t_e75b74d1/t_d2aab049): cobra-краш 'accepts at most 1
+            # arg(s), received 2' — run_id из gh run list приходил МУЛЬТИСТРОЧНЫМ
+            # (2+ id при перекрытии ранов/пустой выдаче) и разбивался на 2
+            # позиционных аргумента gh run view → тик умирал на wait-фазе
+            # (17/23 раундов 12-13.08: двойные прогоны, needs-review не ставился).
+            # Санитизируем ДО любого использования: только первая числовая
+            # последовательность, иначе пусто.
+            rid="$(printf '%s' "$rid" | grep -oE '[0-9]+' | head -n1 || true)"
+            if [ -n "$rid" ] && [[ "$rid" =~ ^[0-9]+$ ]]; then
                 break
             fi
             sleep 5
@@ -1391,6 +1401,7 @@ for t in data:
     _existing_build="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
         --limit 10 --json databaseId,conclusion,headSha \
         --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_head}\")][0].databaseId" 2>/dev/null || echo '')"
+    _existing_build="$(printf '%s' "$_existing_build" | grep -oE '[0-9]+' | head -n1 || true)"
     if [ -n "$_existing_build" ] && [ "$_existing_build" != "null" ]; then
         log "issue #${number}: build already SUCCESS for round HEAD ${_round_head:0:7} (run ${_existing_build}) — skip build trigger (resume)"
     else
@@ -1416,6 +1427,7 @@ for t in data:
     _existing_deploy="$(gh run list --repo "$GH_REPO" --workflow "$DEPLOY_WORKFLOW" --branch "$ROUND_BRANCH" \
         --limit 10 --json databaseId,conclusion,headSha \
         --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_head}\")][0].databaseId" 2>/dev/null || echo '')"
+    _existing_deploy="$(printf '%s' "$_existing_deploy" | grep -oE '[0-9]+' | head -n1 || true)"
     if [ -n "$_existing_deploy" ] && [ "$_existing_deploy" != "null" ]; then
         log "issue #${number}: deploy already SUCCESS for round HEAD ${_round_head:0:7} (run ${_existing_deploy}) — skip deploy trigger (resume)"
     else
@@ -1474,9 +1486,12 @@ for t in data:
     run_id=""
     verdict=""
     while [ "$SECONDS" -lt "$deadline" ]; do
+        _jq_filter="[.[] | select(.createdAt >= \"$e_epoch\")][0].databaseId"
         run_id="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" --branch "$ROUND_BRANCH" \
-            --limit 3 --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$e_epoch\")][0].databaseId" 2>/dev/null || echo "")"
-        if [ -n "$run_id" ] && [ "$run_id" != "null" ] && [ "$run_id" != "" ]; then
+            --limit 3 --json databaseId,createdAt --jq "$_jq_filter" 2>/dev/null || echo "")"
+        # Надзор 13.08: санитизация run_id (cobra-краш 2-х аргументов, см. wait_workflow).
+        run_id="$(printf '%s' "$run_id" | grep -oE '[0-9]+' | head -n1 || true)"
+        if [ -n "$run_id" ] && [[ "$run_id" =~ ^[0-9]+$ ]]; then
             status="$(gh run view "$run_id" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo "")"
             if [ "$status" = "completed" ]; then
                 # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
@@ -1504,7 +1519,11 @@ for t in data:
     # --- download artifact (best-effort) ---
     artifact_dir="${WORKTREE_DIR}/.e2e-artifacts/${number}"
     mkdir -p "$artifact_dir"
-    gh run download "$run_id" --repo "$GH_REPO" --dir "$artifact_dir" 2>/dev/null || true
+    # Надзор 13.08: guard — download только с валидным числовым run_id
+    # (cobra-краш 'accepts at most 1 arg(s), received 2' на мусорном id).
+    if [[ "$run_id" =~ ^[0-9]+$ ]]; then
+        gh run download "$run_id" --repo "$GH_REPO" --dir "$artifact_dir" 2>/dev/null || true
+    fi
     audio_line=""
     if [ -n "$(ls -A "$artifact_dir" 2>/dev/null)" ]; then
         audio_files="$(find "$artifact_dir" -maxdepth 3 -type f | sed "s|^${artifact_dir}/||" | head -n5 | sed 's/^/  - /' || true)"
