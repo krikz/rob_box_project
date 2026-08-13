@@ -1026,6 +1026,37 @@ class TestExecuteMusicCodeTool:
         param_names = [p.name for p in tool.parameters]
         assert "pattern_name" in param_names
 
+    def test_tool_has_segments_parameter(self, mock_node):
+        """Issue #990: execute_music_code schema exposes ``segments``."""
+        tool, _ = self._make_tool(mock_node)
+        param_names = [p.name for p in tool.parameters]
+        assert "segments" in param_names
+        seg_param = next(p for p in tool.parameters if p.name == "segments")
+        assert seg_param.type == "integer"
+        assert seg_param.required is False
+
+    def test_tool_has_duration_sec_parameter_deprecated(self, mock_node):
+        """Issue #990: duration_sec stays in schema for backward compat only."""
+        tool, _ = self._make_tool(mock_node)
+        param_names = [p.name for p in tool.parameters]
+        assert "duration_sec" in param_names
+        dur_param = next(p for p in tool.parameters if p.name == "duration_sec")
+        assert "DEPRECATED" in dur_param.description
+
+    def test_execute_forwards_segments_to_manager(self, mock_node):
+        """Issue #990: tool passes ``segments`` through to MusicManager."""
+        tool, mgr = self._make_tool(mock_node, sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=110)
+        with patch("builtins.exec"), patch.object(mgr, "execute_code", wraps=mgr.execute_code) as spy:
+            result = tool.execute(code="p1 >> pluck([0])", segments=16)
+        assert result.success is True
+        spy.assert_called_once()
+        kwargs = spy.call_args
+        # execute_code(code, pattern_name, *, segments, duration_sec)
+        assert kwargs.args[0] == "p1 >> pluck([0])"
+        assert kwargs.kwargs.get("segments") == 16
+        assert mgr._renardo_context["__total_segments"] == 16
+
     def test_execute_success(self, mock_node):
         tool, mgr = self._make_tool(mock_node, sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
