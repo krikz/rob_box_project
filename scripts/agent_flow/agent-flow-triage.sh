@@ -326,6 +326,18 @@ errored=0
 while IFS=$'\t' read -r number title labels body; do
     [ -z "$number" ] && continue
 
+    # Ретро-фикс (13.08, #968): переоткрытые issue (closed → reopened) —
+    # это доработка, карточку создавать ЗАНОВО. Для них оба idempotency-гарда
+    # (мёртвый kanban-маркер от archived-карточки, merged PR guard) — ложные:
+    # работа была сделана, но юзер вернул задачу на доработку.
+    is_reopened=false
+    if _reopen_ts="$(gh api "repos/${GH_REPO}/issues/${number}/events" \
+        --jq '[.[] | select(.event=="reopened")] | last | .created_at' 2>/dev/null || true)" \
+        && [ -n "$_reopen_ts" ]; then
+        is_reopened=true
+        log "issue #${number} was REOPENED at ${_reopen_ts} — доработка, создаю свежую карточку"
+    fi
+
     # Ретро-фикс (11.08 t_ce3ca0d9): НЕ создаём карточку для issue, где работа
     # уже завершена — метка $DONE_LABEL (e2e-done) ставится merge-gate после
     # мержа PR + успешного e2e. Раньше триаж плодил дубликаты для таких issue
@@ -339,7 +351,8 @@ while IFS=$'\t' read -r number title labels body; do
     # Ретро-фикс (11.08 t_ce3ca0d9): раньше использовался `gh issue view
     # --comments` (GraphQL), который может не вернуть старые комментарии при
     # пагинации. Теперь — REST API с --paginate, гарантированно все комментарии.
-    if gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
+    if [ "$is_reopened" = "false" ] && \
+        gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
         --jq '.[].body' 2>/dev/null \
         | grep -Eq '^kanban: t_[a-f0-9]+'; then
         log "issue #${number} already has kanban marker — skip"
@@ -347,7 +360,10 @@ while IFS=$'\t' read -r number title labels body; do
     fi
 
     # Idempotency v2 (ретро 09.08 #14): карточка для этого issue уже есть.
-    if existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')" \
+    # Ретро-фикс (13.08, #968): для REOPENED issue пропускаем — старая карточка
+    # archived/done, нужна свежая.
+    if [ "$is_reopened" = "false" ] && \
+        existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')" \
         && [ -n "$existing_id" ]; then
         log "issue #${number} already has card ${existing_id} (issue: #${number} in body) — skip"
         skipped=$((skipped+1)); continue
@@ -361,7 +377,10 @@ while IFS=$'\t' read -r number title labels body; do
     # этого issue, уже есть MERGED PR — работа ушла в develop, карточка не нужна.
     # Это второй рубеж после DONE_LABEL (страховка, если e2e-done не успели
     # проставить, а PR уже смержен).
-    if merged_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state merged \
+    # Ретро-фикс (13.08, #968): для REOPENED issue этот гард ложный — юзер
+    # вернул задачу на доработку, карточку создаём заново.
+    if [ "$is_reopened" = "false" ] && \
+        merged_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state merged \
         --json number --jq '.[0].number' 2>/dev/null || true)" \
         && [ -n "$merged_pr" ]; then
         log "issue #${number}: branch ${branch} already has MERGED PR #${merged_pr} — skip"
