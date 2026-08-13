@@ -347,6 +347,53 @@ test_I_retro_rejected_no_evidence_no_loop() {
 }
 
 # ===========================================================================
+# J. (13.08, надзор, t_42741511 кейс #1172/#1173): merged PR ссылается на
+#    PR-номер (не issue) → ретро-путь НЕ закрывает живой PR. Реальный
+#    инцидент: PR #1186 (сам фикс merge-gate) имел в title #1172/#1173 —
+#    ретро-путь принял их за issues, нашёл e2e-PASS на их ветках и закрыл
+#    кодовые PR #1172/#1173 через gh issue close (общая нумерация).
+#    Guard: gh pr view N → exit 0 (это PR) → skip. Реальный issue рядом
+#    (#1138) при этом обрабатывается как раньше.
+# ===========================================================================
+test_J_retro_pr_number_not_closed() {
+    new_test
+    # merged PR #1186 ссылается на #1172 (это PR!) и #1138 (это issue).
+    local pr=1186 issue=1138 pr_ref=1172 head='z-devops/t_1186-merge-gate-idempotency'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow merge-gate #${pr_ref}/#${issue}): recovery-карточка done блокирует\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T22:35:51Z\"}]"
+    # #1172 — это PR (существует как pull request) → guard должен скипнуть.
+    set_state "PR_EXISTS_${pr_ref}" "1"
+    # #1138 — обычный issue без меток, e2e PASS на ветке merged PR.
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # Guard сработал: #1172 (PR) НЕ закрыт, коммента ретро-пути на него нет.
+    local close_pr_ref
+    close_pr_ref="$(printf '%s\n' "$journal" | grep -c "gh issue close ${pr_ref}" || true)"
+    assert_eq "0" "$close_pr_ref" "PR-number reference is NOT closed by retro-path (guard)"
+
+    local comment_pr_ref
+    comment_pr_ref="$(printf '%s\n' "$journal" | grep -c "gh issue comment ${pr_ref}" || true)"
+    assert_eq "0" "$comment_pr_ref" "no retro-path comment on PR-number reference"
+
+    # Реальный issue рядом продолжает обрабатываться (e2e PASS → close).
+    local close_issue
+    close_issue="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_issue" "real issue still closed by retro-path (guard не блокирует issues)"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. retro-path: e2e PASS evidence → close unlabeled issue" test_A_retro_e2e_pass_closes
@@ -358,5 +405,6 @@ run_test "F. retro-path: old PR outside window → skip" test_F_retro_skips_old_
 run_test "G. retro-path: self-reference ignored" test_G_retro_ignores_self_reference
 run_test "H. retro-path: e2e:rejected + merged CI-only green → close + remove rejected" test_H_retro_rejected_ci_only_green_closes
 run_test "I. retro-path: e2e:rejected + merged no PASS → no needs-e2e loop" test_I_retro_rejected_no_evidence_no_loop
+run_test "J. retro-path: PR-number reference NOT closed (guard 13.08)" test_J_retro_pr_number_not_closed
 
 summary

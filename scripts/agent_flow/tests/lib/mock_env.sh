@@ -516,6 +516,17 @@ case "$subcmd" in
                     journal "gh pr view $pr_num --json statusCheckRollup"
                     _data="$(get_state PR_${pr_num}_ROLLUP_JSON)"
                     apply_jq "$_data" "$_jq_filter"
+                elif printf '%s' "$*" | grep -q -- '--json number'; then
+                    # Ретро-путь guard PR/issue (13.08, надзор): gh pr view N
+                    # на не-PR-номере падает с exit 1 — так ведёт себя настоящий
+                    # gh. Fixture-флаг PR_EXISTS_<n>=1 означает «это PR».
+                    journal "gh pr view $pr_num --json number"
+                    if [ "$(get_state PR_EXISTS_${pr_num})" = "1" ]; then
+                        printf '{"number":%s}' "$pr_num"
+                        exit 0
+                    fi
+                    echo "simulated: no pull request #$pr_num" >&2
+                    exit 1
                 else
                     journal "gh pr view $pr_num (other)"
                     _data="$(get_state PR_${pr_num}_VIEW_JSON)"
