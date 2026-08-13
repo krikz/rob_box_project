@@ -116,17 +116,24 @@ run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" 
 # devops/architect issues не имеют — иначе guard бы не сработал вообще).
 stale_branch_scan_all() {
     _stale_all_prs="$(gh pr list --repo "$GH_REPO" --state open \
-        --json number,headRefName,title 2>/dev/null || echo '[]')"
+        --json number,headRefName,title,additions,deletions 2>/dev/null || echo '[]')"
     printf '%s' "$_stale_all_prs" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 for pr in data:
-    print("{}\t{}\t{}".format(pr["number"], pr.get("headRefName",""), pr.get("title","")))
-' 2>/dev/null | while IFS=$'\t' read -r _spr_num _spr_head _spr_title; do
+    print("{}\t{}\t{}\t{}\t{}".format(pr["number"], pr.get("headRefName",""), pr.get("title",""), pr.get("additions",0), pr.get("deletions",0)))
+' 2>/dev/null | while IFS=$'\t' read -r _spr_num _spr_head _spr_title _spr_additions _spr_deletions; do
         [ -z "$_spr_num" ] && continue
         _spr_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$_spr_head" \
             --json number --jq '.[0].number // ""' 2>/dev/null || true)"
         if [ -n "$_spr_prev_merged" ] && [ "$_spr_prev_merged" != "$_spr_num" ]; then
+            # Ретро 13.08 t_a3f170fe: guard бьёт по ИМЕНИ ветки, но аддитивный
+            # PR (docs/ci, deletions≈0) — НЕ регрессия: ветка влита, воркер
+            # до-пушил НОВЫЙ контент (#1197 docs W7: +308/-1). Регрессия =
+            # удаление влитых фиксов → deletions значимы. Блокируем только её.
+            if [ "${_spr_deletions:-0}" -le 20 ] 2>/dev/null; then
+                log "stale-branch-scan: ветка ${_spr_head} влита через PR #${_spr_prev_merged}, но PR #${_spr_num} аддитивный (del=${_spr_deletions:-0}) — НЕ регрессия, не блокируем (ретро 13.08 t_a3f170fe)"
+            else
             log "stale-branch-scan: 🛑 ветка ${_spr_head} уже влита через PR #${_spr_prev_merged}, PR #${_spr_num} снова OPEN — block"
             if [ "$DRY_RUN" = "true" ]; then
                 log "DRY-RUN would: comment stale-branch block on PR #${_spr_num}"
@@ -147,6 +154,7 @@ for pr in data:
 3. Закрой/удали этот PR (ветка влита, PR-дифф регрессионный).
 
 Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
+            fi
             fi
         fi
     done
@@ -464,7 +472,7 @@ except Exception: print("")' 2>/dev/null || true)"
         --repo "$GH_REPO" \
         --state all \
         --head "$branch" \
-        --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,commits 2>/dev/null || true)"
+        --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,deletions,commits 2>/dev/null || true)"
 
     # Процесс-фикс (09.08): воркеры ретро-карточек создают ветки `wt/<task_id>`
     # (нет issue → конвенция z-{agent}/<id>-<slug> неприменима). Такие PR
@@ -477,7 +485,7 @@ except Exception: print("")' 2>/dev/null || true)"
                 --repo "$GH_REPO" \
                 --state all \
                 --head "$wt_branch" \
-                --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,commits 2>/dev/null || true)"
+                --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,deletions,commits 2>/dev/null || true)"
             if [ -n "$pr_json" ] && [ "$pr_json" != "[]" ]; then
                 branch="$wt_branch"
                 log "issue #${number}: PR найден по fallback-ветке ${wt_branch}"
@@ -525,8 +533,10 @@ pr_labels_csv = ",".join(sorted(
 # (no PR, no override needed).
 pr_commits_count = len(pr.get("commits") or [])
 pr_additions = int(pr.get("additions") or 0)
+pr_deletions = int(pr.get("deletions") or 0)
 print(f"pr_number={shlex.quote(pr_number)}")
 print(f"pr_base={shlex.quote(pr_base)}")
+print(f"pr_deletions={pr_deletions}")
 print(f"pr_state={shlex.quote(pr_state)}")
 print(f"pr_mergeable={shlex.quote(pr_mergeable)}")
 print(f"pr_merge_state={shlex.quote(pr_merge_state)}")
@@ -555,6 +565,13 @@ print(f"pr_additions={pr_additions}")
         _prev_merged_pr="$(gh pr list --repo "$GH_REPO" --state merged --head "$branch" \
             --json number --jq '.[0].number // ""' 2>/dev/null || true)"
         if [ -n "$_prev_merged_pr" ] && [ "$_prev_merged_pr" != "$pr_number" ]; then
+            # Ретро 13.08 t_a3f170fe: guard бьёт по ИМЕНИ ветки, но аддитивный
+            # PR (docs/ci, deletions≈0) — НЕ регрессия: ветка влита, воркер
+            # до-пушил НОВЫЙ контент (#1197 docs W7: +308/-1). Регрессия =
+            # удаление влитых фиксов → deletions значимы. Блокируем только её.
+            if [ "${pr_deletions:-0}" -le 20 ] 2>/dev/null; then
+                log "issue #${number}: ветка ${branch} влита через PR #${_prev_merged_pr}, но PR #${pr_number} аддитивный (del=${pr_deletions:-0}) — НЕ регрессия, не блокируем (ретро 13.08 t_a3f170fe)"
+            else
             log "issue #${number}: 🛑 stale-branch re-commit — ветка ${branch} уже влита через PR #${_prev_merged_pr}, PR #${pr_number} снова OPEN — block"
             if [ "$DRY_RUN" = "true" ]; then
                 log "DRY-RUN would: comment stale-branch block on issue #${number}"
@@ -578,6 +595,7 @@ print(f"pr_additions={pr_additions}")
 Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
             fi
             skipped=$((skipped+1)); continue
+            fi
         fi
     fi
 
@@ -1476,6 +1494,138 @@ for t in data:
 done
 
 # ============================================================================
+# Clean-PR sweep (ретро 13.08 t_a3f170fe, надзор #1194/#1197/#1198)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: CLEAN/MERGEABLE OPEN PR без process-меток выпадали из ВСЕХ путей:
+#   - основной цикл: только OPEN issues с меткой `hermes` + КАНОНИЧЕСКАЯ ветка
+#     z-{agent}/<id>-<slug>. Невидимы: issue CLOSED (#1194/#1198), НЕканоническая
+#     ветка (#1197 z-{agent}/968-tool-..., #1201 z-{agent}/968-triage-...),
+#     ретро-ветки без issue (#1202 z-devops/t_...).
+#   - scan-all-prs выше: только UNSTABLE/DIRTY/CONFLICTING — CLEAN не трогает.
+#   - retro-path ниже: только MERGED PR.
+#   Итог: PR висит в лимбо с 0 меток, очередь ревью товарища Шифу пуста.
+# РЕШЕНИЕ: сканируем ВСЕ open PR (base=develop, не draft, CLEAN/MERGEABLE, без
+# process-меток) и классифицируем как основной цикл (ретро 10.08 #2):
+#   - lint / CI-only (все файлы .github/, scripts/agent_flow/, docs/) →
+#     needs-review на PR напрямую (e2e не нужен);
+#   - functional + OPEN issue → needs-e2e на issue (стандартный путь);
+#   - functional + issue CLOSED/нет → needs-review на PR (e2e невозможен;
+#     НЕ close автоматически — Шифу решает, урок 13.08 t_42741511).
+# Идемпотентно: PR с process-меткой пропускаем; add-label — no-op при повторе.
+# ============================================================================
+clean_labeled=0
+log "clean-pr-sweep: scanning CLEAN/MERGEABLE OPEN PRs without process labels"
+_clean_prs_json="$(gh pr list --repo "$GH_REPO" --state open --base "$DEVELOP_BRANCH" \
+    --json number,title,headRefName,mergeStateStatus,isDraft,labels,files 2>/dev/null || echo '[]')"
+if [ -z "$_clean_prs_json" ]; then
+    _clean_prs_json='[]'
+fi
+# ВАЖНО: process substitution (а не pipe), чтобы clean_labeled накапливался
+# в текущем shell и попал в summary (как retro-path, ретро 13.08).
+while IFS=$'\t' read -r c_pr c_head c_issue c_title c_labels c_files; do
+    [ -z "$c_pr" ] && continue
+    [ "$c_issue" = "-" ] && c_issue=""
+    # CI-only? (как ретро-путь t_061d466e): все файлы в .github/, scripts/agent_flow/, docs/
+    _ci_only="$(printf '%s' "$c_files" | python3 -c '
+import sys
+files = [f for f in sys.stdin.read().split(",") if f]
+ok = bool(files) and all(
+    f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+    for f in files
+)
+print("1" if ok else "0")
+' 2>/dev/null || echo 0)"
+    _c_kind="$(detect_pr_kind "$(printf '%s' "$c_labels" | tr '[:upper:]' '[:lower:]')" "$c_title")"
+    if [ "$_ci_only" = "1" ]; then
+        _c_kind="lint"
+        log "clean-pr-sweep: PR #${c_pr} CI-only (files: ${c_files}) → lint"
+    fi
+    log "clean-pr-sweep: PR #${c_pr} (${c_head}) kind=${_c_kind} issue=${c_issue:-?}"
+
+    if [ "$_c_kind" = "lint" ]; then
+        log "clean-pr-sweep: PR #${c_pr} lint/CI-only → ${NEEDS_REVIEW_LABEL} (skip e2e)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would run: gh pr edit ${c_pr} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
+            clean_labeled=$((clean_labeled+1)); continue
+        fi
+        if gh pr edit "$c_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+            clean_labeled=$((clean_labeled+1))
+            log "clean-pr-sweep: PR #${c_pr} → ${NEEDS_REVIEW_LABEL}"
+        else
+            log "clean-pr-sweep: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${c_pr} failed"
+        fi
+        continue
+    fi
+
+    # functional: нужен e2e. Если issue OPEN → needs-e2e; иначе (CLOSED/нет)
+    # e2e невозможен → needs-review (Шифу решит; НЕ close автоматически).
+    _c_state=""
+    if [ -n "$c_issue" ]; then
+        _c_state="$(gh issue view "$c_issue" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo '')"
+    fi
+    if [ "$_c_state" = "OPEN" ]; then
+        # Взаимоисключение needs-review/needs-e2e (ретро 13.08 t_de63be1f, #942):
+        # если issue под ревью юзера — не ставим needs-e2e.
+        _c_issue_labels="$(gh issue view "$c_issue" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        if has_label "$(printf '%s' "$_c_issue_labels" | tr '[:upper:]' '[:lower:]')" "$NEEDS_REVIEW_LABEL"; then
+            log "clean-pr-sweep: PR #${c_pr} functional, issue #${c_issue} под ревью — skip (взаимоисключение)"
+            skipped=$((skipped+1)); continue
+        fi
+        log "clean-pr-sweep: PR #${c_pr} functional, issue #${c_issue} OPEN → ${NEEDS_E2E_LABEL}"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would run: gh issue edit ${c_issue} --repo ${GH_REPO} --add-label ${NEEDS_E2E_LABEL}"
+            clean_labeled=$((clean_labeled+1)); continue
+        fi
+        if gh issue edit "$c_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1; then
+            gh pr edit "$c_pr" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            clean_labeled=$((clean_labeled+1))
+            log "clean-pr-sweep: issue #${c_issue} + PR #${c_pr} → ${NEEDS_E2E_LABEL}"
+        else
+            log "clean-pr-sweep: WARNING add ${NEEDS_E2E_LABEL} to issue #${c_issue} failed"
+        fi
+        continue
+    fi
+    log "clean-pr-sweep: PR #${c_pr} functional, issue ${c_issue:-?} state=${_c_state:-?} — e2e невозможен → ${NEEDS_REVIEW_LABEL}"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would run: gh pr edit ${c_pr} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
+        clean_labeled=$((clean_labeled+1)); continue
+    fi
+    if gh pr edit "$c_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+        clean_labeled=$((clean_labeled+1))
+        log "clean-pr-sweep: PR #${c_pr} → ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
+    else
+        log "clean-pr-sweep: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${c_pr} failed"
+    fi
+done < <(printf '%s' "$_clean_prs_json" | python3 -c '
+import json, sys, re
+data = json.load(sys.stdin)
+PROCESS = {"needs-e2e", "needs-review", "e2e-done", "e2e:rejected", "no-e2e-required"}
+for pr in data:
+    if pr.get("isDraft"):
+        continue
+    if pr.get("mergeStateStatus") not in ("CLEAN", "MERGEABLE"):
+        continue
+    labels = {l.get("name", "") for l in (pr.get("labels") or [])}
+    if PROCESS & labels:
+        continue
+    pr_num = str(pr.get("number", ""))
+    head = pr.get("headRefName") or ""
+    title = pr.get("title") or ""
+    files = ",".join(f.get("path", "") for f in (pr.get("files") or []))
+    labels_csv = ",".join(sorted(labels))
+    m = re.search(r"#(\d+)", title)
+    issue_num = m.group(1) if m else ""
+    if not issue_num:
+        m2 = re.search(r"z-\{agent\}/(\d+)-", head)
+        issue_num = m2.group(1) if m2 else ""
+    if issue_num.startswith("t_") or len(issue_num) > 7:
+        issue_num = ""
+    issue_num_out = issue_num if issue_num else "-"
+    print(f"{pr_num}\t{head}\t{issue_num_out}\t{title}\t{labels_csv}\t{files}")
+' 2>/dev/null)
+
+# ============================================================================
 # Ретро-путь (12.08 t_68607832 + t_061d466e): merged PR → issue без меток /
 # с e2e:rejected
 # ----------------------------------------------------------------------------
@@ -1696,7 +1846,7 @@ for pr in data:
 ' "$_retro_since" 2>/dev/null)
 
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
