@@ -150,6 +150,17 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
         issues.append(f"[{board}] db error: {exc}")
 
 # 2. dispatcher status
+# Реальный диспетчер — внутренний loop gateway'а профиля agent-flow
+# (hermes-gateway-agent-flow.service), а НЕ одноразовый процесс
+# 'hermes kanban dispatch' (спавн → exit). Живость определяем по
+# процессу 'gateway run --profile agent-flow' и свежести heartbeat.
+def _dispatcher_heartbeat() -> str:
+    """Путь к heartbeat gateway'а agent-flow (реальный диспетчер)."""
+    base = os.path.basename(hermes_home.rstrip("/"))
+    if base == "agent-flow":  # HERMES_HOME уже профильный
+        return os.path.join(hermes_home, "state", "gateway.heartbeat")
+    return os.path.join(hermes_home, "profiles", "agent-flow", "state", "gateway.heartbeat")
+
 dispatcher_alive = False
 try:
     # Use ps + grep instead of pgrep -f to avoid self-match on the
@@ -165,43 +176,94 @@ try:
             continue
         if "watchdog.sh" in line:
             continue
-        if "hermes" in line and "kanban" in line and "dispatch" in line:
+        if "hermes_cli.main" in line and "gateway run" in line and "--profile agent-flow" in line:
             dispatcher_alive = True
             break
 except Exception:
     dispatcher_alive = False
 
+# fallback: свежий heartbeat gateway'а = диспетчер жив (даже если ps-матч
+# не сработал — например, изменилась cmdline). Heartbeat пишется gateway'ом
+# каждые ~2 мин, поэтому свежесть < stale_sec означает живой внутренний loop.
 if not dispatcher_alive:
-    issues.append("[dispatcher] no dispatcher process running")
+    try:
+        hb_path = _dispatcher_heartbeat()
+        if os.path.isfile(hb_path) and time.time() - os.path.getmtime(hb_path) < stale_sec:
+            dispatcher_alive = True
+    except Exception:
+        pass
 
-# 3. restart dispatcher if dead (with cooldown)
+if not dispatcher_alive:
+    issues.append("[dispatcher] gateway agent-flow (реальный диспетчер) не запущен")
+
+# 3. restart dispatcher if dead AND ready tasks exist (with cooldown)
+# uvx-рестарт УБРАН (ретро 13.08 t_901c790b): 'uvx --from hermes-agent hermes
+# kanban dispatch' тянул hermes-agent из PyPI (32× установки, 4438 прогонов,
+# Spawned: 0 — gateway-диспетчер делает всё сам; 1× 'Read-only file system'
+# в uv-кэше). Вместо этого: если gateway agent-flow мёртв и есть ready-задачи —
+# рестарт systemd-юнита (локально, без PyPI). Комментарий в шапке: рестарт
+# только при ready-задачах.
 restarted = False
 cooldown_file = f"{hermes_home}/state/watchdog.last_restart"
 if not dispatcher_alive:
-    cooldown_ok = True
-    if os.path.exists(cooldown_file):
+    ready_count = 0
+    for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
         try:
-            last = int(open(cooldown_file).read().strip())
-            if int(time.time()) - last < 300:
-                cooldown_ok = False
+            con = sqlite3.connect(db)
+            ready_count += con.execute("SELECT COUNT(*) FROM tasks WHERE status='ready'").fetchone()[0]
+            con.close()
         except Exception:
             pass
-    if cooldown_ok:
-        boards = sorted(glob.glob(f"{boards_dir}/*/kanban.db"))
-        if boards:
-            first_board = os.path.basename(os.path.dirname(boards[0]))
-            with open(cooldown_file, "w") as f:
-                f.write(str(int(time.time())))
-            log_path = f"{hermes_home}/logs/dispatcher.log"
-            os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            uvx = f"{hermes_home}/bin/uvx"
-            subprocess.Popen(
-                [uvx, "--from", "hermes-agent", "hermes", "kanban",
-                 "--board", first_board, "dispatch"],
-                stdout=open(log_path, "ab"), stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            restarted = True
+    unit = "hermes-gateway-agent-flow.service"
+    if ready_count > 0 and unit not in workers_by_unit:
+        cooldown_ok = True
+        if os.path.exists(cooldown_file):
+            try:
+                last = int(open(cooldown_file).read().strip())
+                if int(time.time()) - last < 300:
+                    cooldown_ok = False
+            except Exception:
+                pass
+        if cooldown_ok:
+            env = dict(os.environ)
+            uid = os.getuid()
+            env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+            env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+            # Страховка: рестартим только если юнит НЕ active (реально мёртв).
+            # Активный юнит при устаревшем heartbeat = завис, но systemd
+            # Restart=always сам поднимет при краше; ручной рестарт активного
+            # юнита рискован при ложном детекте.
+            try:
+                ia = subprocess.run(
+                    ["systemctl", "--user", "is-active", unit],
+                    capture_output=True, text=True, timeout=30, env=env,
+                )
+                unit_active = ia.stdout.strip() == "active"
+            except Exception:
+                unit_active = False
+            if unit_active:
+                issues.append(f"[dispatcher] gateway {unit} active, но диспетчер не найден (heartbeat устарел?) — ручная проверка")
+            else:
+                with open(cooldown_file, "w") as f:
+                    f.write(str(int(time.time())))
+                log_path = f"{hermes_home}/logs/dispatcher.log"
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                try:
+                    r = subprocess.run(
+                        ["systemctl", "--user", "restart", unit],
+                        capture_output=True, text=True, timeout=60, env=env,
+                    )
+                    restarted = r.returncode == 0
+                    msg = f"[watchdog] dispatcher dead (ready={ready_count}) — restart {unit}: " + \
+                          ("OK" if restarted else (r.stderr or r.stdout).strip()[:300])
+                    with open(log_path, "ab") as lf:
+                        lf.write((msg + "\n").encode())
+                except Exception as exc:
+                    restarted = False
+                    with open(log_path, "ab") as lf:
+                        lf.write(f"[watchdog] dispatcher dead (ready={ready_count}) — restart {unit} EXC: {exc}\n".encode())
+    elif ready_count > 0:
+        issues.append(f"[dispatcher] gateway {unit} hosts in-flight workers — restart deferred")
 
 # 3.5 telegram: duplicate token holders + reconnect loops (retro 12.08 t_5af222ea)
 # Root cause of the 22h reconnect loop: several profiles shared ONE
