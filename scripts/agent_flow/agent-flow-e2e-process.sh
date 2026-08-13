@@ -935,7 +935,8 @@ while IFS=$'\t' read -r number title labels body; do
     e2e_tts=""
     e2e_stt=""
     e2e_acceptance_check=""
-    # Python-парсер issues_json экранирует переносы в литеральные \n — вернём реальные.
+    e2e_check_tg_echo=""
+    # Python-парсер issues_json экранирует переносы в литеральные \\n — вернём реальные.
     # (иначе grep '^voice_text' не находит поле в середине однострочного body,
     #  а grep exit 1 + pipefail + set -e убивают скрипт)
     body_real="$(printf '%s' "$body" | sed 's/\\n/\
@@ -951,7 +952,8 @@ while IFS=$'\t' read -r number title labels body; do
         e2e_tts="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*tts[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*tts[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
         e2e_stt="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*stt[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*stt[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
         e2e_acceptance_check="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
-        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default}"
+        e2e_check_tg_echo="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*check_tg_echo[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*check_tg_echo[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
+        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default}"
     else
         log "issue #${number}: no '## e2e' block in body — using defaults"
     fi
@@ -1389,6 +1391,11 @@ for t in data:
     [ -n "$e2e_tts" ] && e2e_args+=(-f "tts=$e2e_tts")
     [ -n "$e2e_stt" ] && e2e_args+=(-f "stt=$e2e_stt")
     [ -n "$e2e_acceptance_check" ] && e2e_args+=(-f "acceptance_check=$e2e_acceptance_check")
+    # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue
+    # (check_tg_echo: true в блоке ## e2e).
+    if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
+        e2e_args+=(-f "check_tg_echo=true")
+    fi
     if ! _trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}"; then
         log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries"; errored=$((errored+1)); continue
     fi
