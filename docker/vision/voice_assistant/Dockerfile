@@ -134,12 +134,21 @@ themes = "/usr/local/lib/python3.10/FoxDotEditor/FoxDotEditor/themes"
 os.makedirs(themes, exist_ok=True)
 theme = os.path.join(themes, "default.json")
 if not os.path.exists(theme):
+    # ВАЖНО: conf.py делает json_object[TEXT_COLORS]['plaintext'] и т.д.
+    # Т.е. файл ДОЛЖЕН быть вложенным словарём {"default": {...}}.
+    # Плоская схема ломает импорт renardo_lib.runtime:
+    # KeyError: 'default' (live 13.08, round-2 hotfix).
     json.dump({
-        "functions": "#bf4acc", "key_types": "#29abe2", "user_defn": "#29abe2",
-        "other_kws": "#49db8b", "comments": "#666666", "numbers": "#e89c18",
-        "strings": "#7ee787", "dollar": "#e89c18", "arrow": "#bf4acc",
-        "players": "#29abe2", "prompt_fg": "#ffffff", "prompt_bg": "#1a1a1a",
-        "console_text": "#ffffff", "console_bg": "#1a1a1a",
+        "default": {
+            "plaintext": "#ffffff", "background": "#1a1a1a",
+            "functions": "#bf4acc", "key_types": "#29abe2",
+            "user_defn": "#29abe2", "other_kws": "#49db8b",
+            "comments": "#666666", "numbers": "#e89c18",
+            "strings": "#eae02a", "dollar": "#ec4e20",
+            "arrow": "#eae02a", "players": "#ec4e20",
+            "prompt_fg": "#ffffff", "prompt_bg": "#1a1a1a",
+            "console_text": "#ffffff", "console_bg": "#1a1a1a",
+        },
     }, open(theme, "w"))
 print("renardo conf.json + FoxDotEditor theme stub created")
 PY
