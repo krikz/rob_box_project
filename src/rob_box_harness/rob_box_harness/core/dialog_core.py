@@ -56,6 +56,68 @@ if TYPE_CHECKING:
 #: fails loudly rather than running away.
 _MAX_TOOL_ITERATIONS: int = 8
 
+# W7a (issue #968, INSIGHT #1): a single LLM response may carry several
+# tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
+# them in the model's raw order fires destructive tools before the voice
+# pipeline has even started — ``stop_music`` used to land on the robot
+# milliseconds after ``speak_text`` was requested, killing the music mid-phrase
+# (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
+# re-ordering fixes the *intra-batch* race:
+#
+# * music tools (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``)
+#   run FIRST so the prelude starts before speech,
+# * ordinary tools keep their relative order,
+# * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
+#   flagged ``defer_until_voice_drained`` when the same batch also speaks —
+#   the flag tells the scheduler not to fire the side effect until the voice
+#   channel is empty.
+_MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
+    {"execute_music_code", "set_vibe_preset", "load_track"}
+)
+_VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
+_DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
+    {"stop_music", "stop_navigation"}
+)
+
+
+def _order_tool_calls(
+    calls: Iterable[ToolCall],
+) -> tuple[list[ToolCall], set[str]]:
+    """Re-order one LLM batch for safe execution.
+
+    Returns ``(ordered, deferred_call_ids)``:
+
+    * ``ordered`` — stable partition: music prelude tools first, then the
+      remaining tools in their original relative order, then destructive
+      tools last.
+    * ``deferred_call_ids`` — ids of destructive calls whose side effect
+      must wait until the voice channel drains (only set when the batch
+      also contains a voice tool such as ``speak_text``).
+
+    The re-ordering changes execution order ONLY. Tool results are still
+    returned to the LLM in the model's original order (see
+    :meth:`DialogCore._run_with_tools`), so the OpenAI-style conversation
+    history stays valid.
+    """
+    ordered = list(calls)
+
+    def _partition_key(call: ToolCall) -> int:
+        if call.name in _DEFER_TO_END_TOOLS:
+            return 2
+        if call.name in _MUSIC_PRELUDE_TOOLS:
+            return 0
+        return 1
+
+    ordered.sort(key=_partition_key)
+    has_voice = any(call.name in _VOICE_TOOLS for call in ordered)
+    deferred_call_ids = {
+        call.id
+        for call in ordered
+        if has_voice and call.name in _DEFER_TO_END_TOOLS
+    }
+    return ordered, deferred_call_ids
+
+
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -492,7 +554,19 @@ class DialogCore:
             # is NOT blocked (§4.4: MERGE/QUEUE/AWAITING don't cancel the
             # LLM cycle), and the user gets to confirm/reject before the
             # call ever reaches the executor.
-            for call in response.tool_calls:
+            #
+            # W7a (issue #968): execution order is re-ordered so music
+            # prelude tools run before voice, and destructive tools
+            # (stop_music / stop_navigation) run last — otherwise a
+            # ``[speak_text, stop_music]`` batch fires stop_music before
+            # TTS even starts (e2e v36). Results are still appended in
+            # the model's ORIGINAL order (keyed by tool_call_id) so the
+            # OpenAI-style history stays valid.
+            execution_order, _deferred = _order_tool_calls(
+                response.tool_calls
+            )
+            results_by_call_id: dict[str, ToolResult] = {}
+            for call in execution_order:
                 if self._acceptance_gate is not None:
                     segment, decision = self._acceptance_gate.submit(
                         tool=call.name,
@@ -502,7 +576,7 @@ class DialogCore:
                     if decision.kind is ConfirmationKind.REQUIRE:
                         # Don't call the executor — gate will dispatch it
                         # later via the future scheduler (Фаза 2).
-                        tool_result = ToolResult(
+                        results_by_call_id[call.id] = ToolResult(
                             tool_call_id=call.id,
                             content=json.dumps(
                                 {
@@ -518,17 +592,12 @@ class DialogCore:
                             ),
                             is_error=False,
                         )
-                        messages.append(
-                            LLMMessage(
-                                role="tool",
-                                content=tool_result.content,
-                                tool_call_id=tool_result.tool_call_id,
-                                tool_result=tool_result,
-                            )
-                        )
                         continue
 
-                tool_result = await self._tools.execute(call)
+                results_by_call_id[call.id] = await self._tools.execute(call)
+
+            for call in response.tool_calls:
+                tool_result = results_by_call_id[call.id]
                 messages.append(
                     LLMMessage(
                         role="tool",
