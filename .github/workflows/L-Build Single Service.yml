@@ -459,21 +459,20 @@ jobs:
           sed -i "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|" "$VERSIONS_FILE"
           echo "✅ Updated: ${VERSION_VAR}=${NEW_TAG} in $VERSIONS_FILE"
 
-          # Commit and push the updated versions file ПРЯМО в текущую ветку
-          # (🔴 РЕВЕРТ #1139 13.08: отдельная ветка ci/image-versions ломала
-          # деплой — DevOps Agent пустыми коммитами «ci: trigger PR checks»
-          # перезаписывал её, SHA-теги терялись, робот получал старый код)
+          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): коммитим .image-versions
+          # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-{pi_type} — текущая
+          # ветка не засоряется 'ci: ... → ...' коммитами. Ветка базируется
+          # на origin-типе и НЕ сбрасывается → теги накапливаются и не теряются.
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           git add "$VERSIONS_FILE"
           if git diff --cached --quiet; then
             echo "ℹ️  No changes to commit"
           else
-            CURRENT_BRANCH="$(git branch --show-current)"
-            git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"
-            git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
-              && echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
-              || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
+            bash scripts/ci/commit-image-versions.sh \
+              "ci/image-versions-${PI_TYPE}" \
+              "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]" \
+              "$VERSIONS_FILE"
           fi
 
   # Итоговая сводка

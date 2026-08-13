@@ -177,16 +177,31 @@ jobs:
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           if ! git diff --cached --quiet; then
-            # 🔴 РЕВЕРТ #1139 (13.08): коммитим .image-versions ПРЯМО в текущую
-            # ветку (как было до #1139). Отдельная ветка ci/image-versions
-            # ломала деплой: DevOps Agent пустыми коммитами «ci: trigger PR
-            # checks» перезаписывал ветку, SHA-теги терялись, deploy тянул
-            # старые образы → робот получал старый код (ретро 13.08).
-            CURRENT_BRANCH="$(git branch --show-current)"
-            git commit -m "ci: SHA tags → ${NEW_TAG} [skip ci]"
-            git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
-              && echo "✅ Committed and pushed .image-versions (branch ${CURRENT_BRANCH})" \
-              || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
+            # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): .image-versions коммитим
+            # в ОТДЕЛЬНЫЕ per-service ветки ci/image-versions-main/-vision —
+            # develop/main не засоряются 'ci: SHA tags' коммитами. Ветки
+            # базируются на origin-типе и НЕ сбрасываются → теги накапливаются.
+            # Сохраняем новое содержимое ДО переключения веток (checkout -f
+            # сбросит рабочее дерево).
+            BASE_REF="$(git rev-parse HEAD)"
+            TMP_IV="$(mktemp -d)"
+            [ -f "$MAIN_VERSIONS" ] && cp "$MAIN_VERSIONS" "$TMP_IV/main"
+            [ -f "$VISION_VERSIONS" ] && cp "$VISION_VERSIONS" "$TMP_IV/vision"
+            if [ -f "$MAIN_VERSIONS" ]; then
+              cp "$TMP_IV/main" "$MAIN_VERSIONS"
+              IV_BASE_REF="$BASE_REF" bash scripts/ci/commit-image-versions.sh \
+                "ci/image-versions-main" \
+                "ci: SHA tags → ${NEW_TAG} [skip ci]" \
+                "$MAIN_VERSIONS"
+            fi
+            if [ -f "$VISION_VERSIONS" ]; then
+              cp "$TMP_IV/vision" "$VISION_VERSIONS"
+              IV_BASE_REF="$BASE_REF" bash scripts/ci/commit-image-versions.sh \
+                "ci/image-versions-vision" \
+                "ci: SHA tags → ${NEW_TAG} [skip ci]" \
+                "$VISION_VERSIONS"
+            fi
+            rm -rf "$TMP_IV"
           else
             echo "ℹ️  No changes to .image-versions"
           fi
