@@ -961,6 +961,23 @@ find_open_pr_by_issue() {  # $1=issue_number
         --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo ""
 }
 
+# --- post-round sweep ДО guard и round_ensure (ретро 13.08 t_fe266643) -------
+# Гонка guard/sweep: pre-round guard видел кандидата живым (ПЕРВЫЙ снимок
+# issues_json), round_ensure создавал round-ветку, а post_round_sweep ТОГО ЖЕ
+# тика (вызванный ПОСЛЕ round_ensure) обрабатывал результат ПРОШЛОГО round и
+# снимал кандидата (e2e-done) → round-ветка оставалась без единого прогона
+# (наблюдение: round-104, #968, 13.08 19:50Z). 
+# РЕШЕНИЕ: sweep выполняется ДО round_ensure (и ДО guard); после sweep очередь
+# перечитывается. Если sweep снял всех кандидатов — round не создаём, счётчик
+# не инкрементируется (guard ниже увидит 0 и выйдет без round_ensure).
+post_round_sweep || true
+collect_issues_json
+if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
+    log "no live candidates after post-round sweep — round-ветку НЕ создаю (ретро 13.08 t_fe266643)"
+    log "tick done: processed=0 skipped=0 round=NONE (sweep снял всех кандидатов)"
+    exit 0
+fi
+
 # --- pre-round: live-candidate guard (ретро 13.08 t_4212e8ad) ----------------
 # ПРОБЛЕМА: round_ensure создавал round-ветку ДО подсчёта кандидатов. Если у
 # ВСЕХ needs-e2e issues нет живых PR (orphan/без PR/удалённые ветки), основной
@@ -1035,8 +1052,9 @@ for i in sorted(json.load(sys.stdin), key=lambda x: x["number"]):
 
 if [ "${live_candidates:-0}" -eq 0 ]; then
     _g_total="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
-    log "🛑 no live e2e candidates (${_g_total} needs-e2e issues, все без живых PR) — round-ветку НЕ создаю, только post-round sweep (ретро 13.08 t_4212e8ad)"
-    post_round_sweep || true
+    # post_round_sweep уже выполнен ВЫШЕ (ретро 13.08 t_fe266643) — здесь
+    # только лог и выход; round-ветка не создавалась, счётчик не тронут.
+    log "🛑 no live e2e candidates (${_g_total} needs-e2e issues, все без живых PR) — round-ветку НЕ создаю (ретро 13.08 t_4212e8ad)"
     log "tick done: processed=0 skipped=0 round=NONE (guard: no live candidates)"
     exit 0
 fi
@@ -1049,10 +1067,10 @@ log "round branch: ${ROUND_BRANCH}"
 processed=0
 errored=0
 skipped=0
-# Post-round sweep (ретро 12.08 t_8af6bf29): применяем потерянные e2e-done
-# метки с прошлого round ДО обработки issues — идемпотентно, независимо от
-# wait-фазы прошлого тика. Все helpers (has_label, slugify) уже определены.
-post_round_sweep || true
+# Post-round sweep (ретро 12.08 t_8af6bf29) уже выполнен ВЫШЕ, ДО pre-round
+# guard и round_ensure (ретро 13.08 t_fe266643) — иначе sweep того же тика
+# снимал кандидата ПОСЛЕ создания round-ветки → пустой round без единого
+# прогона (round-104, #968). Здесь только свежий снимок очереди перед циклом.
 # Ретро 13.08 t_7eab35a0: sweep мог поставить e2e-done/снять needs-e2e на
 # issue из СТАРОГО снимка issues_json. Перечитываем очередь ПЕРЕД основным
 # циклом, иначе цикл работает со stale-снимком и повторно мержит уже

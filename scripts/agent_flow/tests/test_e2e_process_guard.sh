@@ -11,6 +11,9 @@
 #   A. 2 issues, у обоих НЕТ PR (NONE)                        → 0 кандидатов, exit 0
 #   B. issue с PR MERGED, ветка удалена (orphan, #1160)       → 0 кандидатов, exit 0
 #   C. issue с OPEN PR (functional)                           → 1 кандидат, round_ensure вызван
+#   D. ветка PR вне конвенции → fallback '<number> in:title'  → кандидат, round создаётся
+#   E. e2e-done от sweep → живой чек меток скипает merge      → merge не выполняется
+#   F. кандидат снят sweep'ом того же тика (t_fe266643)       → round НЕ создаётся
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_e2e_process_guard.sh
@@ -58,7 +61,20 @@ case "$subcmd" in
                     exit 0
                 fi
                 journal "gh issue list --label"
+                # Ретро 13.08 t_fe266643: collect_issues_json вызывается дважды
+                # за тик (старт + после post_round_sweep). Первый снимок —
+                # ISSUE_LIST_JSON, повторный — ISSUE_LIST_JSON_2 (сценарий
+                # «кандидат снят sweep'ом того же тика»).
+                _cnt_file="${GH_STATE}.ilist_count"
+                _cnt=0
+                [ -f "$_cnt_file" ] && _cnt="$(cat "$_cnt_file" 2>/dev/null || echo 0)"
+                _cnt=$((_cnt+1))
+                printf '%s' "$_cnt" > "$_cnt_file"
                 _data="$(get_state ISSUE_LIST_JSON)"
+                if [ "$_cnt" -gt 1 ]; then
+                    _data2="$(get_state ISSUE_LIST_JSON_2)"
+                    [ -n "$_data2" ] && _data="$_data2"
+                fi
                 printf '%s' "$_data"
                 exit 0
                 ;;
@@ -184,7 +200,11 @@ except Exception: print("")'
         ;;
     run)
         journal "gh run $*"
-        printf '%s' '[]'
+        # Ретро 13.08 t_fe266643: post_round_sweep читает последний завершённый
+        # e2e run на прошлом round. RUN_LIST_JSON — фикстура (массив runs).
+        _data="$(get_state RUN_LIST_JSON)"
+        [ -n "$_data" ] || _data='[]'
+        printf '%s' "$_data"
         exit 0
         ;;
     api)
@@ -222,9 +242,20 @@ case "$1" in
         # Формат: git ls-remote <url> <ref>  или  git -C <dir> ls-remote --heads <url> <pattern>
         ref="${@: -1}"
         journal "git ls-remote ... $ref"
-        # Паттерн со звёздочкой (test-round-*) → веток нет.
+        # Паттерн со звёздочкой (test-round-*) → ROUND_BRANCHES (пробелы),
+        # иначе веток нет (ретро 13.08 t_fe266643: post_round_sweep ищет
+        # последний round-бранч на remote).
         case "$ref" in
-            *'*'*) exit 1 ;;
+            *'*'*)
+                _rb="$(grep -E '^ROUND_BRANCHES=' "$state" 2>/dev/null | head -n1 | sed 's@^ROUND_BRANCHES=@@')"
+                if [ -n "$_rb" ]; then
+                    for _b in $_rb; do
+                        printf '%040x\trefs/heads/%s\n' $RANDOM "$_b"
+                    done
+                    exit 0
+                fi
+                exit 1
+                ;;
         esac
         # ref вида "develop:RUN_NOW" / "develop:MAINTENANCE" — никогда нет.
         case "$ref" in
@@ -264,7 +295,17 @@ case "$1" in
         journal "git show $*"
         exit 1
         ;;
-    rm|commit|prune|checkout|merge|log|branch)
+    log)
+        journal "git log $*"
+        # Ретро 13.08 t_fe266643: post_round_sweep ищет merge-коммиты
+        # "for issue #N" на прошлом round. GIT_LOG_MERGES — фикстура (строки).
+        if printf '%s' "$*" | grep -q -- '--merges'; then
+            _d="$(grep -E '^GIT_LOG_MERGES=' "$state" 2>/dev/null | head -n1 | sed 's@^GIT_LOG_MERGES=@@')"
+            [ -n "$_d" ] && printf '%s\n' "$_d"
+        fi
+        exit 0
+        ;;
+    rm|commit|prune|checkout|merge|branch)
         journal "git $*"
         exit 0
         ;;
@@ -512,10 +553,62 @@ test_E_live_labels_skip_after_sweep() {
 }
 
 # ===========================================================================
+# F. Кандидат снят post_round_sweep ТОГО ЖЕ тика (ретро 13.08 t_fe266643,
+#    round-104/#968): первый снимок очереди содержит issue с OPEN PR (живой
+#    кандидат), но sweep ДО round_ensure обрабатывает результат прошлого
+#    round-103 (SUCCESS run, в который смержен этот issue) и ставит e2e-done
+#    → очередь после sweep пуста → round НЕ создаётся, счётчик не растёт.
+# ---------------------------------------------------------------------------
+test_F_candidate_swept_same_tick() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4701
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+
+    # Первый снимок: issue #4701 needs-e2e с OPEN PR → живой кандидат.
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":4702,\"state\":\"OPEN\",\"headRefName\":\"${branch}\"}]"
+    set_state "PR_4702_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:devops\"}]}"
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Прошлый round-103 с SUCCESS e2e run, в который смержен #4701.
+    set_state ROUND_BRANCHES "z-{e2e}/test-round-103"
+    set_state RUN_LIST_JSON '[{"databaseId":31727291126,"status":"completed","conclusion":"success"}]'
+    set_state GIT_LOG_MERGES "agent-flow: merge ${branch} for issue #${issue}"
+    # После sweep (2-й вызов collect_issues_json): очередь пуста — sweep снял
+    # needs-e2e, поставив e2e-done (в реальном GitHub issue пропал из очереди).
+    set_state ISSUE_LIST_JSON_2 "[]"
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "post-round sweep: issue #${issue} → e2e-done" "$errlog" "F: sweep снял кандидата в e2e-done"
+    assert_contains "no live candidates after post-round sweep" "$errlog" "F: очередь после sweep пуста → round НЕ создаётся"
+    local push_calls
+    push_calls="$(printf '%s\n' "$journal" | grep -c "git push" || true)"
+    assert_eq "0" "$push_calls" "F: round-ветка НЕ пушится (кандидат снят sweep'ом того же тика)"
+    local counter
+    counter="$(cat "$TEST_TMP/round-counter" 2>/dev/null || echo '')"
+    assert_eq "" "$counter" "F: счётчик раундов не инкрементирован"
+}
+
+# ===========================================================================
 run_test "A. issues без PR → round НЕ создаётся" test_A_no_prs_no_round
 run_test "B. orphan (MERGED+ветка удалена) → round НЕ создаётся" test_B_orphan_no_round
 run_test "C. живой OPEN PR → round создаётся" test_C_live_candidate_creates_round
 run_test "D. ветка вне конвенции → fallback '<number> in:title' → кандидат" test_D_nonconventional_branch_fallback
 run_test "E. e2e-done от sweep → живой чек меток скипает merge" test_E_live_labels_skip_after_sweep
+run_test "F. кандидат снят sweep'ом того же тика → round НЕ создаётся" test_F_candidate_swept_same_tick
 
 summary
