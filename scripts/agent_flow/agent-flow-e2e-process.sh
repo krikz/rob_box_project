@@ -1261,9 +1261,19 @@ for t in data:
         if [ -n "$_conflict_id" ]; then
             case "$_conflict_status" in
                 done|archived)
-                    hermes kanban --board "$KANBAN_BOARD" requeue "$_conflict_id" --reason "🔀 свежий конфликт: \`${branch}\` снова не мержится с origin/develop (ретро 12.08 t_bff6eccf)" >/dev/null 2>&1 \
-                        && log "issue #${number}: conflict card ${_conflict_id} requeued (was ${_conflict_status})" \
-                        || log "issue #${number}: WARNING requeue ${_conflict_id} failed (${_conflict_status})"
+                    # Ретро-фикс 13.08: reclaim НЕ работает с done (только для
+                    # running) — done-карточка терминальна. Вместо этого
+                    # создаём СВЕЖУЮ ready-карточку: PR снова конфликтный →
+                    # нужен новый воркер, старый ушёл. idempotency-key НЕ
+                    # используем (вернёт старую done — та же ловушка).
+                    hermes kanban --board "$KANBAN_BOARD" create \
+                        --assignee "$_conflict_assignee" \
+                        --priority 90 \
+                        --max-runtime 1800 \
+                        --body "🔀 merge conflict: \`${branch}\` снова не мержится с origin/develop (старая карточка ${_conflict_id} была ${_conflict_status}). Rebase на develop в той же ветке, CI green." \
+                        "🔀 merge conflict: \`${branch}\` vs develop (повтор, issue #${number})" >/dev/null 2>&1 \
+                        && log "issue #${number}: fresh conflict card created (old ${_conflict_id} was ${_conflict_status})" \
+                        || log "issue #${number}: WARNING fresh conflict card create failed"
                     ;;
                 blocked)
                     hermes kanban --board "$KANBAN_BOARD" unblock "$_conflict_id" --reason "🔀 свежий конфликт — retry (ретро 12.08 t_bff6eccf)" >/dev/null 2>&1 || true

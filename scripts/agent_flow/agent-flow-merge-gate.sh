@@ -1298,7 +1298,7 @@ git push --force-with-lease origin ${head}
             log "scan-all-prs: reminder appended to existing card ${task_id} for PR #${pr_num}"
         fi
         # Процесс-фикс (12.08, ретро t_8af6bf29): РЕСПАВН-ГАРД ДЕДЛОК.
-        # Раньше: requeue done/archived/blocked карточки → hermes-agent dispatcher
+        # Раньше: reclaim done/archived/blocked карточки → hermes-agent dispatcher
         # check_respawn_guard блокирует респавн на 24ч по правилу active_pr (URL PR
         # в комментариях воркера; _RESPAWN_GUARD_PR_WINDOW=86400) → воркер не
         # стартует, rebase не делается, PR вечно CONFLICTING, merge-gate комментит
@@ -1312,7 +1312,7 @@ git push --force-with-lease origin ${head}
         # возвращает id карточки в ЛЮБОМ не-archived статусе — если recovery-
         # карточка УЖЕ done, create вернёт её id и свежая НЕ создастся, PR висит
         # CONFLICTING навсегда. Поэтому: ищем recovery-карточку по PR/branch в
-        # ЛЮБОМ статусе (как e2e-process t_bff6eccf) и requeue'им done/archived;
+        # ЛЮБОМ статусе (как e2e-process t_bff6eccf) и reclaim'им done/archived;
         # НО если на ветке уже есть АКТИВНАЯ карточка (running/ready/todo) —
         # не трогаем (гонка force-push, урок 13.08 t_ede84713/t_fb3796e2).
         _card_status="$(kanban_card_status "$task_id")"
@@ -1344,20 +1344,30 @@ for t in data:
                     log "scan-all-prs: recovery card ${_blocked_id} unblocked (was blocked) for PR #${pr_num}"
                 elif [ -n "$_done_match" ]; then
                     _done_id="${_done_match%% *}"
-                    hermes kanban --board "$KANBAN_BOARD" requeue "$_done_id" --reason "🔀 свежий конфликт/CI: PR #${pr_num} снова не мержится с develop (ретро 13.08 t_42741511)" >/dev/null 2>&1 \
-                        && log "scan-all-prs: recovery card ${_done_id} requeued (was done/archived) for PR #${pr_num}" \
-                        || log "scan-all-prs: WARNING requeue ${_done_id} failed for PR #${pr_num}"
+                    hermes kanban --board "$KANBAN_BOARD" reclaim "$_done_id" --reason "🔀 свежий конфликт/CI: PR #${pr_num} снова не мержится с develop (ретро 13.08 t_42741511, requeue→reclaim)" >/dev/null 2>&1 \
+                        && log "scan-all-prs: recovery card ${_done_id} reclaimed (was done/archived) for PR #${pr_num}" \
+                        || log "scan-all-prs: WARNING reclaim ${_done_id} failed for PR #${pr_num}"
                 else
                     _rec_key="merge-conflict-recovery-pr-${pr_num}"
                     _rec_title="🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI"
+                    # Ретро-фикс 13.08 (requeue→reclaim, requeue не существует в
+                    # kanban CLI): idempotency-key возвращает существующую
+                    # ДАЖЕ done карточку (SELECT ... status != 'archived'), из-за
+                    # чего recovery-карточка после done НЕ пере-создавалась и PR
+                    # висел CONFLICTING навсегда. Старые карточки выше уже
+                    # обработаны (active/blocked/done match) — до else доходим
+                    # только когда карточки НЕТ вообще. Поэтому create БЕЗ
+                    # idempotency-key: каждая свежая конфликтная ситуация
+                    # получает СВЕЖУЮ ready-карточку. Гонка (два merge-gate
+                    # тика подряд) → дубликат, но дубликат безопаснее deadlock.
+                    _rec_key="merge-conflict-recovery-pr-${pr_num}-$(date +%s)"
                     hermes kanban --board "$KANBAN_BOARD" create \
                         --assignee "$_assignee" \
                         --max-runtime 1800 \
-                        --idempotency-key "$_rec_key" \
                         --body "$_reminder" \
                         "$_rec_title" >/dev/null 2>&1 \
-                        && log "scan-all-prs: recovery card ensured for PR #${pr_num} (key=${_rec_key}, assignee=${_assignee}, status=${_card_status:-?})" \
-                        || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num}, key=${_rec_key})"
+                        && log "scan-all-prs: recovery card created fresh for PR #${pr_num} (assignee=${_assignee})" \
+                        || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num})"
                 fi
                 ;;
         esac
@@ -1398,7 +1408,7 @@ git push --force-with-lease origin ${head}
                 log "scan-all-prs: PR comment dedup'd for #${pr_num} (×${_prc_dup_count} in 24h)"
             fi
             # Конфликт-карточка: ищем по branch в title в ЛЮБОМ статусе
-            # (идемпотентно, урок t_bff6eccf), requeue если done/archived,
+            # (идемпотентно, урок t_bff6eccf), reclaim если done/archived,
             # unblock если blocked, create если нет.
             _existing_conflict="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
 import json,sys
@@ -1413,9 +1423,9 @@ for t in data:
             if [ -n "$_conflict_id" ]; then
                 case "$_conflict_status" in
                     done|archived)
-                        hermes kanban --board "$KANBAN_BOARD" requeue "$_conflict_id" --reason "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (ретро 12.08 t_618208c0)" >/dev/null 2>&1 \
-                            && log "scan-all-prs: conflict card ${_conflict_id} requeued (was ${_conflict_status}) for PR #${pr_num}" \
-                            || log "scan-all-prs: WARNING requeue ${_conflict_id} failed (${_conflict_status})"
+                        hermes kanban --board "$KANBAN_BOARD" reclaim "$_conflict_id" --reason "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (ретро 12.08 t_618208c0, requeue→reclaim)" >/dev/null 2>&1 \
+                            && log "scan-all-prs: conflict card ${_conflict_id} reclaimed (was ${_conflict_status}) for PR #${pr_num}" \
+                            || log "scan-all-prs: WARNING reclaim ${_conflict_id} failed (${_conflict_status})"
                         ;;
                     blocked)
                         hermes kanban --board "$KANBAN_BOARD" unblock "$_conflict_id" --reason "🔀 свежий конфликт — retry (ретро 12.08 t_618208c0)" >/dev/null 2>&1 || true
