@@ -172,11 +172,15 @@ IFS=' ' read -r -a _blocker_sigs <<< "$KNOWN_BLOCKER_SIGNATURES" || true
 
 # blocker_issue_for_sig <sig> — открытый issue, в title/body которого есть
 # сигнатура (например `no_wake_word` → #1117). Печатает номер issue (или пусто).
+# Ретро-фикс (13.08): issue с меткой needs-e2e/e2e-done НЕ считаем блокером —
+# они сами кандидаты на e2e-ротацию (кейс #1195: no_wake_word в body → сам
+# себя блокировал, e2e rotation PAUSED вечно).
 blocker_issue_for_sig() {  # $1=sig
     local sig="$1"
     gh issue list --repo "$GH_REPO" --state open \
         --search "${sig} in:title,body" \
-        --limit 5 --json number --jq '[.[].number] | max // ""' 2>/dev/null || true
+        --limit 5 --json number,labels --jq \
+        '[.[] | select([.labels[].name] | index("needs-e2e") | not) | select([.labels[].name] | index("e2e-done") | not) | .number] | max // ""' 2>/dev/null || true
 }
 
 # detect_known_blocker — известный блокер открыт? Источники:
