@@ -235,45 +235,26 @@ class _FallbackLLM:
             yield chunk
 
 
-def _rclpy_logger_safe(orig):
-    """Monkey-patch: rclpy RcutilsLogger rejects %s-args (python-logging style).
-
-    09.08: ``RcutilsLogger.warning() takes 2 positional arguments but 5 were
-    given`` — TypeError внутри обработки LLM-ответа ломал цикл и давал
-    «Empty assistant response» → робот молчал. rclpy принимает только
-    message, а какой-то %s-вызов (python-logging стиль) в стеке это
-    нарушал. Обёртка склеивает args в message до вызова.
-    """
-    def wrapper(self, msg, *args, **kwargs):
-        if args:
-            try:
-                msg = msg % args if isinstance(msg, str) else msg
-            except Exception:
-                pass
-        return orig(self, msg, **kwargs)
-    return wrapper
-
-
-# Apply the RcutilsLogger monkey-patch defensively. ROS2 Humble does not
-# expose ``rclpy.impl.rcutils_logger`` (only newer distros do), so we must
-# guard the import — otherwise unit tests on Humble fail at import time
-# (``ModuleNotFoundError: No module named 'rclpy.impl'``). The explicit
-# ``_rl is None`` branch keeps the patch a no-op when the module is missing
-# (unit/CI environment) while still running on the robot runtime.
-try:  # pragma: no cover — rclpy.impl отсутствует в unit-окружении CI
-    import rclpy.impl.rcutils_logger as _rl
-except (ImportError, AttributeError):
-    # ROS2 distro without rclpy.impl — original logger is %s-safe enough
-    # (no RcutilsLogger bug to work around here).
-    _rl = None
-
-if _rl is not None:  # pragma: no cover — runtime-робот (rclpy доступен)
-    for _m in ("debug", "info", "warning", "error", "fatal"):
-        _orig = getattr(_rl.RcutilsLogger, _m)
-        if not getattr(_orig, "_rclpy_safe", False):
-            _w = _rclpy_logger_safe(_orig)
-            _w._rclpy_safe = True
-            setattr(_rl.RcutilsLogger, _m, _w)
+# 🔴 FIX (13.08, надзор): monkey-patch `_rclpy_logger_safe` УДАЛЁН.
+#
+# История: 09.08 патч добавлялся против
+# ``RcutilsLogger.warning() takes 2 positional arguments but 5 were given``
+# (TypeError от %s-вызова в python-logging стиле). Обёртка склеивала args
+# в message и звала оригинал.
+#
+# Проблема патча: обёртка добавляет кадр `wrapper` в стек вызова, и rclpy
+# `_find_caller()` (rcutils_logger.py) останавливается на первом кадре ВНЕ
+# rclpy — это wrapper. В результате CallerId одинаков для ВСЕХ вызовов
+# логгера через патч, а rclpy кэширует контекст (severity/name/filters) по
+# CallerId и падает, если тот же CallerId логирует с другим severity:
+#   ValueError: Logger severity cannot be changed between calls.
+# → крах dialogue_node (DJ tick: warning на 176 + info на 192) → Empty
+#   assistant response → робот молчит.
+#
+# Почему безопасно удалить: реальных %s-вызовов RcutilsLogger в коде НЕТ
+# (проверено 13.08: все rclpy-вызовы — f-строки; найденные %s — это
+# python logging `logging.getLogger`, он поддерживает %s сам). Патч был
+# мёртвым хаком, который только ломал CallerId-механизм rclpy.
 
 
 class DialogueNode(Node):
