@@ -145,7 +145,7 @@ jobs:
           # re-import. Пофайлово всё зелёное. Поэтому гоняем КАЖДЫЙ файл в
           # отдельном pytest-процессе (для цикле) — изоляция от pollution.
           echo "=== pytest: rob_box_telegram (per-file, issue #1196 L1) ==="
-          python3 -m pip install --quiet --no-cache-dir aiohttp 2>/dev/null || true
+          python3 -m pip install --quiet --no-cache-dir aiohttp 'python-telegram-bot[job-queue]==21.*' 2>/dev/null || true
           TG_DIR="${{ github.workspace }}/test_ws/src/rob_box_telegram"
           TG_FAILED=0
           for TG_TEST in "$TG_DIR"/test/test_*.py; do
