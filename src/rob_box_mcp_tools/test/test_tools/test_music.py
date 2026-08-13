@@ -398,6 +398,70 @@ class TestMusicManagerSCCheck:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — Renardo initialization (regression 795d5447)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerRenardoInitialize:
+    """Regression: commit 795d5447 broke `_initialize_renardo`.
+
+    The commit added `_time.sleep(0.1)` between `sdef.add()` calls but the
+    `import time as _time` lived only in `_verify_and_retry_synthdefs()`,
+    so any run with >=5 SynthDefs died with ``NameError: name '_time' is
+    not defined`` → ``_renardo_available = False`` → every musical e2e red.
+
+    Fixing only `_time` would unmask a second NameError: the verification
+    call passed bare ``_send_osc_raw`` which is never defined in this
+    method (only ``self._send_osc_raw`` exists). Both must be covered.
+    """
+
+    @staticmethod
+    def _make_rt() -> SimpleNamespace:
+        """Fake renardo_lib.runtime with >5 SynthDefs (hits ``idx % 5 == 4``)."""
+        return SimpleNamespace(
+            Server=SimpleNamespace(booted=True),
+            effect_manager=SimpleNamespace(reload=lambda: None),
+            SynthDefs={
+                f"s{i}": SimpleNamespace(add=lambda: None)
+                for i in range(12)
+            },
+            # Factory used by register_sc_only_custom_synthdefs
+            SynthDef=lambda name: SimpleNamespace(name=name),
+        )
+
+    def test_initialize_renardo_completes_without_nameerror(self, tmp_path, monkeypatch):
+        import socket
+        import types
+
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        mgr = _make_manager()
+        mgr._logger = None
+        mgr._renardo_last_error = "sentinel"
+        mgr._renardo_available = False
+
+        rt = self._make_rt()
+        renardo_lib = types.ModuleType("renardo_lib")
+        renardo_lib.runtime = rt
+        monkeypatch.setitem(sys.modules, "renardo_lib", renardo_lib)
+        monkeypatch.setitem(sys.modules, "renardo_lib.runtime", rt)
+        # Sample-dir bootstrap writes under $HOME — keep it out of the real home.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # Don't actually sleep; the NameError would still fire on _time before sleep.
+        monkeypatch.setattr(music_mod.time, "sleep", lambda _seconds: None)
+        # Probe socket: recvfrom timeout == "SynthDef exists" → nothing missing.
+        fake_sock = MagicMock()
+        fake_sock.recvfrom.side_effect = socket.timeout
+        monkeypatch.setattr(music_mod.socket, "socket", lambda *a, **k: fake_sock)
+
+        mgr._initialize_renardo()
+
+        assert mgr._renardo_available is True
+        assert mgr._renardo_last_error is None
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — execute_code
 # ---------------------------------------------------------------------------
 

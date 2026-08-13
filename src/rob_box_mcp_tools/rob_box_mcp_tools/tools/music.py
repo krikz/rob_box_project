@@ -314,7 +314,7 @@ class MusicManager:
             for idx, sdef in enumerate(_rt.SynthDefs.values()):
                 sdef.add()
                 if idx % 5 == 4:
-                    _time.sleep(0.1)
+                    time.sleep(0.1)
 
             # Загружаем эффекты (reverb/volume) — иначе scsynth отвечает
             # "SynthDef reverb not found" / "SynthDef volume not found" на каждый
@@ -334,7 +334,7 @@ class MusicManager:
             # 🔴 FIX (live 12.08): верификация — пробуем /s_new на критичные
             # синты и досылаем пропавшие через sdef.add() (до 3 раундов).
             # Без этого музыка тихо молчит при "SynthDef not found".
-            self._verify_and_retry_synthdefs(_rt, _send_osc_raw)
+            self._verify_and_retry_synthdefs(_rt, self._send_osc_raw)
 
             self._renardo_context = vars(_rt).copy()
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
