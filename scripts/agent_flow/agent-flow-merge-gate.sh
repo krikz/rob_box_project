@@ -297,7 +297,12 @@ has_label() {  # $1=labels_csv (lowercased) $2=label_name
 # Signal sources (priority order):
 #   1) PR label `${NO_E2E_LABEL}` → lint (explicit worker opt-out)
 #   2) PR title prefix `[lint]` / `[refactor]` → lint (worker shorthand)
-#   3) otherwise → functional (e2e mandatory)
+#   3) PR title prefix `fix(agent-flow` / `fix(agent_flow` → lint (ретро 13.08
+#      t_de63be1f): фиксы КОНВЕЙЕРА (e2e-process/merge-gate/triage/watchdog)
+#      не меняют поведение робота — e2e на железе не нужен, CI green
+#      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
+#      functional и застревали.
+#   4) otherwise → functional (e2e mandatory)
 # Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
 # Output: prints "lint" or "functional"; rc=0 always.
 detect_pr_kind() {  # $1=labels_csv $2=title
@@ -306,7 +311,7 @@ detect_pr_kind() {  # $1=labels_csv $2=title
         printf '%s' "lint"; return 0
     fi
     case "$title" in
-        '[lint]'*|'[refactor]'*) printf '%s' "lint"; return 0 ;;
+        '[lint]'*|'[refactor]'*|'fix(agent-flow'*|'fix(agent_flow'*) printf '%s' "lint"; return 0 ;;
     esac
     printf '%s' "functional"; return 0
 }
@@ -357,6 +362,26 @@ while IFS=$'\t' read -r number title labels body; do
     considered=$((considered+1))
 
     labels_norm="$(printf '%s' "$labels" | tr '[:upper:]' '[:lower:]')"
+
+    # --- взаимоисключение needs-review / needs-e2e (ретро 13.08 t_de63be1f, #942) ---
+    # Обе метки одновременно на ISSUE — конфликт: needs-review (ждёт юзера на
+    # ревью) и needs-e2e (ждёт e2e-ротации) несовместимы. merge-gate ставит
+    # needs-review ТОЛЬКО на PR; needs-review на ISSUE — внешнее/ручное
+    # решение (юзер уже смотрит) → issue вне e2e-ротации: снимаем needs-e2e и
+    # НЕ трогаем issue в этом тике (иначе ниже functional-PR снова навесит
+    # needs-e2e и конфликт вернётся следующим тиком). Чиним ДО проверки
+    # kanban-маркера, чтобы лечились и issue без маркера (#942 — конфликт
+    # ровно из-за этого: merge-gate скипал её как «triage not finished»).
+    if has_label "$labels_norm" "$NEEDS_REVIEW_LABEL"; then
+        if has_label "$labels_norm" "$NEEDS_E2E_LABEL"; then
+            log "issue #${number}: конфликт ${NEEDS_REVIEW_LABEL}+${NEEDS_E2E_LABEL} — снимаю ${NEEDS_E2E_LABEL} (needs-review приоритетнее)"
+            if [ "$DRY_RUN" != "true" ]; then
+                gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            fi
+        fi
+        log "issue #${number}: ${NEEDS_REVIEW_LABEL} на issue — юзер ревьюит, вне e2e-ротации — skip"
+        skipped=$((skipped+1)); continue
+    fi
 
     # Look up the kanban card id from the comment marker. We don't need the
     # card itself here, but its presence is the contract that Phase 1

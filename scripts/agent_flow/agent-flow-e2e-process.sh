@@ -745,7 +745,13 @@ has_label() {
 # Signal sources (priority order):
 #   1) PR label `${NO_E2E_LABEL}` → lint (explicit worker opt-out)
 #   2) PR title prefix `[lint]` / `[refactor]` → lint (worker shorthand)
-#   3) otherwise → functional (e2e mandatory)
+#   3) PR title prefix `fix(agent-flow` / `fix(agent_flow` → lint (ретро 13.08
+#      t_de63be1f): фиксы КОНВЕЙЕРА (e2e-process/merge-gate/triage/watchdog)
+#      не меняют поведение робота — e2e на железе для них не нужен, CI green
+#      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
+#      functional и застревали (ротация жжёт build+deploy на заведомо
+#      непрофильный сценарий).
+#   4) otherwise → functional (e2e mandatory)
 # Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
 # Output: prints "lint" or "functional"; rc=0 always.
 detect_pr_kind() {  # $1=labels_csv $2=title
@@ -758,7 +764,7 @@ detect_pr_kind() {  # $1=labels_csv $2=title
     # Title prefix detection (case-insensitive): первый токен до первого пробела.
     prefix="${title_lc%% *}"
     case "$prefix" in
-        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
+        '[lint]'|'[refactor]'|'fix(agent-flow'|'fix(agent_flow') printf '%s' "lint"; return 0 ;;
     esac
     printf '%s' "functional"; return 0
 }
