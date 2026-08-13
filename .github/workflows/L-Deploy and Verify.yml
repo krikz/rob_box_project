@@ -279,25 +279,18 @@ jobs:
             sleep 5
           done
 
-      - name: "[Vision Pi] Fetch .image-versions from ci/image-versions"
+      - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139)"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔖 Fetching .image-versions from ci/image-versions branch..."
+          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1139 13.08)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Issue #1139: SHA-теги больше не коммитятся в develop/main/vision —
-          # .image-versions живут в отдельной ветке ci/image-versions.
-          # Подтягиваем актуальные файлы на Pi перед pull/up (если ветка уже создана билдом).
-          for attempt in 1 2 3; do
-            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-              "cd ~/rob_box_project && \
-               git fetch origin ci/image-versions && \
-               git checkout origin/ci/image-versions -- docker/vision/.image-versions.* 2>/dev/null || true" \
-              && break
-            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
-            sleep 5
-          done
+          # 🔴 РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся ПРЯМО в ту ветку,
+          # из которой собран билд (develop/test/round). Отдельная ветка
+          # ci/image-versions ломала деплой: DevOps Agent пустыми коммитами
+          # «ci: trigger PR checks» перезаписывал её, SHA-теги терялись, deploy
+          # тянул старые образы → робот получал старый код.
+          # Файлы уже на Pi после шага Update Code (git reset --hard origin/...).
 
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -388,25 +381,18 @@ jobs:
             sleep 5
           done
 
-      - name: "[Main Pi] Fetch .image-versions from ci/image-versions"
+      - name: "[Main Pi] .image-versions — из текущей ветки (реверт #1139)"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔖 Fetching .image-versions from ci/image-versions branch..."
+          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1139 13.08)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Issue #1139: SHA-теги больше не коммитятся в develop/main/vision —
-          # .image-versions живут в отдельной ветке ci/image-versions.
-          # Подтягиваем актуальные файлы на Pi перед pull/up (если ветка уже создана билдом).
-          for attempt in 1 2 3; do
-            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-              "cd ~/rob_box_project && \
-               git fetch origin ci/image-versions && \
-               git checkout origin/ci/image-versions -- docker/main/.image-versions.* 2>/dev/null || true" \
-              && break
-            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
-            sleep 5
-          done
+          # 🔴 РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся ПРЯМО в ту ветку,
+          # из которой собран билд (develop/test/round). Отдельная ветка
+          # ci/image-versions ломала деплой: DevOps Agent пустыми коммитами
+          # «ci: trigger PR checks» перезаписывал её, SHA-теги терялись, deploy
+          # тянул старые образы → робот получал старый код.
+          # Файлы уже на Pi после шага Update Code (git reset --hard origin/...).
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''

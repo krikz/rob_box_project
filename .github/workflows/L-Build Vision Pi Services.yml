@@ -42,8 +42,8 @@ jobs:
           # что не матчит ни одну ветку — попадает в else → DOCKER_TAG=local,
           # а файла docker/vision/.image-versions.local не существует.
           # Релизные теги v* мапим в latest (production), это согласовано с
-          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest) и с тем, что
-          # build кладёт SHA-теги в отдельную ветку ci/image-versions (c873f479).
+          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest).
+          # РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся прямо в текущую ветку.
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             DOCKER_TAG="latest"
           else
@@ -433,21 +433,16 @@ jobs:
             git config user.name "Rob Box CI"
             git add "$VERSIONS_FILE"
             if ! git diff --cached --quiet; then
-              # Issue #1139: SHA-теги пишем в отдельную ветку ci/image-versions,
-              # а не коммитим в develop/main/vision — не засоряем историю
-              VERSIONS_BRANCH="ci/image-versions"
-              # Создаём локальную ветку от текущего HEAD (staged изменения сохраняются)
-              git checkout -B "$VERSIONS_BRANCH"
+              # 🔴 РЕВЕРТ #1139 (13.08): коммитим .image-versions ПРЯМО в текущую
+              # ветку (как было до #1139). Отдельная ветка ci/image-versions
+              # ломала деплой: DevOps Agent пустыми коммитами «ci: trigger PR
+              # checks» перезаписывал ветку, SHA-теги терялись, deploy тянул
+              # старые образы → робот получал старый код (ретро 13.08).
+              CURRENT_BRANCH="$(git branch --show-current)"
               git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
-              # Retry push (гонка: Main и Vision параллельно пушат в одну ветку)
-              for i in 1 2 3 4 5; do
-                git pull --rebase origin "$VERSIONS_BRANCH" >/dev/null 2>&1 || true
-                if git push origin "HEAD:${VERSIONS_BRANCH}" >/dev/null 2>&1; then
-                  break
-                fi
-                sleep 5
-              done
-              echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG} (branch ${VERSIONS_BRANCH})"
+              git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
+                && echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
+                || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"

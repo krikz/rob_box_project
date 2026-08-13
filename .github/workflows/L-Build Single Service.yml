@@ -459,25 +459,21 @@ jobs:
           sed -i "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|" "$VERSIONS_FILE"
           echo "✅ Updated: ${VERSION_VAR}=${NEW_TAG} in $VERSIONS_FILE"
 
-          # Commit and push the updated versions file to a dedicated branch (issue #1139)
-          # — не коммитим в develop/main/vision, чтобы не засорять историю
+          # Commit and push the updated versions file ПРЯМО в текущую ветку
+          # (🔴 РЕВЕРТ #1139 13.08: отдельная ветка ci/image-versions ломала
+          # деплой — DevOps Agent пустыми коммитами «ci: trigger PR checks»
+          # перезаписывал её, SHA-теги терялись, робот получал старый код)
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           git add "$VERSIONS_FILE"
           if git diff --cached --quiet; then
             echo "ℹ️  No changes to commit"
           else
-            VERSIONS_BRANCH="ci/image-versions"
-            git checkout -B "$VERSIONS_BRANCH"
+            CURRENT_BRANCH="$(git branch --show-current)"
             git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"
-            for i in 1 2 3 4 5; do
-              git pull --rebase origin "$VERSIONS_BRANCH" >/dev/null 2>&1 || true
-              if git push origin "HEAD:${VERSIONS_BRANCH}" >/dev/null 2>&1; then
-                break
-              fi
-              sleep 5
-            done
-            echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG} (branch ${VERSIONS_BRANCH})"
+            git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
+              && echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
+              || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
           fi
 
   # Итоговая сводка

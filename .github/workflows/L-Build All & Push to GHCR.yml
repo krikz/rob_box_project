@@ -177,19 +177,16 @@ jobs:
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           if ! git diff --cached --quiet; then
-            # Issue #1139: SHA-теги пишем в отдельную ветку ci/image-versions,
-            # а не коммитим в develop/main/vision — не засоряем историю
-            VERSIONS_BRANCH="ci/image-versions"
-            git checkout -B "$VERSIONS_BRANCH"
+            # 🔴 РЕВЕРТ #1139 (13.08): коммитим .image-versions ПРЯМО в текущую
+            # ветку (как было до #1139). Отдельная ветка ci/image-versions
+            # ломала деплой: DevOps Agent пустыми коммитами «ci: trigger PR
+            # checks» перезаписывал ветку, SHA-теги терялись, deploy тянул
+            # старые образы → робот получал старый код (ретро 13.08).
+            CURRENT_BRANCH="$(git branch --show-current)"
             git commit -m "ci: SHA tags → ${NEW_TAG} [skip ci]"
-            for i in 1 2 3 4 5; do
-              git pull --rebase origin "$VERSIONS_BRANCH" >/dev/null 2>&1 || true
-              if git push origin "HEAD:${VERSIONS_BRANCH}" >/dev/null 2>&1; then
-                break
-              fi
-              sleep 5
-            done
-            echo "✅ Committed and pushed .image-versions (branch ${VERSIONS_BRANCH})"
+            git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
+              && echo "✅ Committed and pushed .image-versions (branch ${CURRENT_BRANCH})" \
+              || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
           else
             echo "ℹ️  No changes to .image-versions"
           fi
