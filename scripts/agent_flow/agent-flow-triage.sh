@@ -414,6 +414,34 @@ except Exception: print("")')"
         skipped=$((skipped+1)); continue
     fi
 
+    # Ретро-фикс (13.08, #968 v3): THROTTLE — если по issue в БД уже есть
+    # карточка (ЛЮБОЙ статус, включая archived) за последние 4 часа — не
+    # создаём новую. Без этого тик каждые 2 мин плодил карточку (13:00,
+    # 13:02, 13:05...): воркер падал на spawn (worktree занят живой веткой),
+    # карточка уходила в archived, следующий тик видел «нет живой» и создавал
+    # снова. OPEN-PR guard не ловит, т.к. PR #1197 уже CLOSED.
+    _recent_cards="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c '
+import json, sys, re, time
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+except Exception:
+    tasks = []
+now = time.time()
+cutoff = now - 4 * 3600
+for t in tasks:
+    if (t.get("created_at") or 0) < cutoff:
+        continue
+    body = t.get("body") or ""
+    if re.search(r"issue:\s*#%s" % re.escape("'"$number"'"), body):
+        print(t.get("id", ""))
+        break
+' 2>/dev/null || true)"
+    if [ -n "$_recent_cards" ]; then
+        log "issue #${number}: свежая карточка ${_recent_cards} за последние 4ч — throttle, не создаём (reopened-loop v3)"
+        skipped=$((skipped+1)); continue
+    fi
+
     # Ретро-фикс (09.08 #1): освободить stale worktree'ы на этой ветке от
     # done/archived карточек ДО create — иначе диспетчер при спавне упадёт
     # «git worktree add failed» (ветка уже занята) и карточка навсегда
