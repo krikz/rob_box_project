@@ -735,11 +735,6 @@ except Exception:
     return 0
 }
 
-# --- prepare worktree --------------------------------------------------------
-ensure_worktree || { log "worktree setup failed"; exit 1; }
-round_ensure || { log "round setup failed"; exit 1; }
-log "round branch: ${ROUND_BRANCH}"
-
 # --- shared helpers (kept compatible with merge-gate.sh) --------------------
 slugify() {
     printf '%s' "$1" \
@@ -938,6 +933,80 @@ compute_agent_branch() {  # $1=issue_number $2=title
     local n="$1" t="$2"
     printf '%s' "z-{agent}/${n}-$(slugify "$t")"
 }
+
+# --- pre-round: live-candidate guard (ретро 13.08 t_4212e8ad) ----------------
+# ПРОБЛЕМА: round_ensure создавал round-ветку ДО подсчёта кандидатов. Если у
+# ВСЕХ needs-e2e issues нет живых PR (orphan/без PR/удалённые ветки), основной
+# цикл скипает их (processed=0), а пустая round-ветка остаётся на remote и
+# счётчик улетает вперёд (round-94..98 без единого прогона, 13.08).
+# РЕШЕНИЕ: считаем живых кандидатов ДО round_ensure; если 0 — round-ветку НЕ
+# создаём (только post-round sweep + exit). Счётчик не инкрементируется.
+live_candidates=0
+while IFS=$'\t' read -r _g_n _g_t; do
+    if [ -z "$_g_n" ]; then continue; fi
+    _g_br="$(compute_agent_branch "$_g_n" "$_g_t")"
+    _g_st="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
+        --json number,state --jq 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
+    if [ "$_g_st" = "NONE" ]; then
+        log "pre-round guard: issue #${_g_n} no PR (${_g_br}) — skip"
+        continue
+    fi
+    # Orphan (ретро 13.08 t_423453b1, #1160): PR MERGED, ветка удалена — e2e невозможен.
+    if [ "$_g_st" = "MERGED" ] \
+        && ! git -C "$REPO_DIR" ls-remote --heads "https://github.com/$GH_REPO.git" "$_g_br" 2>/dev/null | grep -q "$_g_br"; then
+        log "pre-round guard: issue #${_g_n} PR MERGED, ветка ${_g_br} удалена (orphan) — skip"
+        continue
+    fi
+    # Follow-up OPEN PR поверх MERGED (как в основном цикле, ретро 10.08).
+    if [ "$_g_st" = "MERGED" ]; then
+        _g_fu="$(gh pr list --repo "$GH_REPO" --state open --search "${_g_n} in:title" \
+            --json number,mergeStateStatus \
+            --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo "")"
+        if [ -n "$_g_fu" ] && [ "$_g_fu" != "null" ]; then
+            _g_br="${_g_fu#*$'\t'}"
+            _g_st="OPEN"
+            log "pre-round guard: issue #${_g_n} follow-up OPEN PR (${_g_br}) — live"
+        fi
+    fi
+    # Lint-кандидат не требует round (основной цикл обработает без merge).
+    if [ "$_g_st" = "OPEN" ]; then
+        _g_pn="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
+            --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
+        if [ -n "$_g_pn" ]; then
+            _g_meta="$(gh pr view "$_g_pn" --repo "$GH_REPO" --json title,labels \
+                --jq '{title: .title, labels: ([.labels[].name] | join(","))}' 2>/dev/null || echo '{}')"
+            _g_pt="$(printf '%s' "$_g_meta" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("title",""))
+except Exception: pass' 2>/dev/null || true)"
+            _g_pl="$(printf '%s' "$_g_meta" | python3 -c 'import json,sys
+try: print((json.load(sys.stdin).get("labels","") or "").lower())
+except Exception: pass' 2>/dev/null || true)"
+            if [ "$(detect_pr_kind "${_g_pl:-}" "${_g_pt:-}")" = "lint" ]; then
+                log "pre-round guard: issue #${_g_n} PR #${_g_pn} lint — round не нужен"
+                continue
+            fi
+        fi
+    fi
+    live_candidates=$((live_candidates+1))
+    log "pre-round guard: issue #${_g_n} PR ${_g_st} (${_g_br}) — live candidate"
+done < <(printf '%s' "$issues_json" | python3 -c '
+import json, sys
+for i in sorted(json.load(sys.stdin), key=lambda x: x["number"]):
+    n = i["number"]
+    t = i["title"].replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+    sys.stdout.write(str(n) + "\t" + t + "\n")' 2>/dev/null || true)
+
+if [ "${live_candidates:-0}" -eq 0 ]; then
+    _g_total="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
+    log "🛑 no live e2e candidates (${_g_total} needs-e2e issues, все без живых PR) — round-ветку НЕ создаю, только post-round sweep (ретро 13.08 t_4212e8ad)"
+    post_round_sweep || true
+    log "tick done: processed=0 skipped=0 round=NONE (guard: no live candidates)"
+    exit 0
+fi
+log "pre-round guard: ${live_candidates} live candidate(s) — создаю round"
+ensure_worktree || { log "worktree setup failed"; exit 1; }
+round_ensure || { log "round setup failed"; exit 1; }
+log "round branch: ${ROUND_BRANCH}"
 
 # --- process each issue ------------------------------------------------------
 processed=0
