@@ -118,6 +118,15 @@ def _order_tool_calls(
     return ordered, deferred_call_ids
 
 
+#: Completion markers the master prompt teaches the LLM to return AFTER the
+#: last ``speak_text`` call. They are ONLY valid when the turn actually
+#: performed work (tool calls happened in an earlier iteration). When the
+#: model emits a bare marker as its FIRST response with zero tool calls it
+#: is a silent failure — the user hears nothing and nothing happened
+#: (issue #1217, deepseek-v4-flash intermittently does this).
+_SILENT_DONE_MARKERS: frozenset[str] = frozenset(
+    {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
+)
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -460,14 +469,25 @@ class DialogCore:
                 result.finish_reason = finish_reason
                 result.raw_response = raw_response
                 if not is_dj_auto:
-                    await self._memory.append_turn(
-                        self._user_id,
-                        Turn(
-                            role="assistant",
-                            content=spoken,
-                            metadata=dict(user_metadata),
-                        ),
-                    )
+                    # Issue #1217 — do NOT persist a silent-failure assistant
+                    # turn (bare 'done' / empty payload with zero tools). The
+                    # corrective retry inside _run_with_tools already gave the
+                    # model a second chance; if it STILL failed, writing
+                    # "done" / "" into the conversation memory would teach the
+                    # model that an empty marker is a normal assistant reply
+                    # and the next turn would mimic it (memory DB showed rows
+                    # of consecutive assistant 'done' turns biasing deepseek).
+                    # Control traffic and failed turns stay out of dialogue
+                    # memory — see the DJ-auto gating above (same rule).
+                    if not self._is_silent_spoken(spoken, tools_called):
+                        await self._memory.append_turn(
+                            self._user_id,
+                            Turn(
+                                role="assistant",
+                                content=spoken,
+                                metadata=dict(user_metadata),
+                            ),
+                        )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 import traceback as _tb
                 result.error = Exception(f"{exc}\n{_tb.format_exc()}")
@@ -481,6 +501,37 @@ class DialogCore:
             result.new_state = self._dsm.current_state
 
         return result
+
+    @staticmethod
+    def _is_silent_response(response: LLMResponse) -> bool:
+        """Issue #1217 — did the LLM do nothing useful for the user?
+
+        ``True`` when the response carries no tool calls AND its content is
+        either empty or a bare completion marker (``done`` / ``готово`` /
+        ...). The master prompt teaches those markers as the terminal reply
+        AFTER ``speak_text``; when the model emits one as its first answer it
+        means it skipped the actual work — the user hears nothing and nothing
+        happened. Any substantive text is NOT silent even without tools
+        (a plain-text answer is a valid response).
+        """
+        if response.tool_calls:
+            return False
+        content = (response.content or "").strip().lower()
+        return (not content) or content in _SILENT_DONE_MARKERS
+
+    @staticmethod
+    def _is_silent_spoken(spoken: str, tools_called: Iterable[str]) -> bool:
+        """Issue #1217 — is this turn's OUTCOME a silent failure?
+
+        Mirrors :meth:`_is_silent_response` for the post-loop values: no
+        tool ran AND the final text is empty or a bare completion marker.
+        Such turns must not be persisted to conversation memory (they would
+        teach the model that an empty marker is a normal assistant reply).
+        """
+        if tools_called:
+            return False
+        content = (spoken or "").strip().lower()
+        return (not content) or content in _SILENT_DONE_MARKERS
 
     async def _run_with_tools(
         self,
@@ -522,8 +573,47 @@ class DialogCore:
             messages, tools=openai_tools
         )
 
+        # Issue #1217 — deepseek-v4-flash intermittently answers with a bare
+        # completion marker ("done") or an EMPTY payload as its FIRST reply,
+        # without any tool call. The user hears nothing and nothing happens.
+        # Allow ONE corrective retry inside the same turn before accepting the
+        # silent failure. The correction is appended to the live message list
+        # (assistant echo when non-empty + a user-role instruction) so the
+        # model sees exactly what went wrong; OpenAI-compatible providers
+        # accept all the resulting shapes (verified against DeepSeek API).
+        #
+        # The retry fires ONLY when NO tool ran in this whole turn
+        # (``not tools_called``): a final "done" AFTER speak_text is
+        # legitimate per the master-prompt contract and must not be retried.
+        _silent_retried = False
+
         for _ in range(_MAX_TOOL_ITERATIONS):
             if not response.tool_calls:
+                if (
+                    not _silent_retried
+                    and not tools_called
+                    and self._is_silent_response(response)
+                ):
+                    _silent_retried = True
+                    if response.content:
+                        messages.append(
+                            LLMMessage(role="assistant", content=response.content)
+                        )
+                    messages.append(
+                        LLMMessage(
+                            role="user",
+                            content=(
+                                "[SYSTEM CORRECTION] Твой предыдущий ответ "
+                                "был пустым: ни текста, ни tool-вызова. "
+                                "Пользователь ничего не услышал, ничего не "
+                                "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
+                                "нужный tool (speak_text — для речи) или дай "
+                                "содержательный текстовый ответ."
+                            ),
+                        )
+                    )
+                    response = await self._stream_response(messages, tools=openai_tools)
+                    continue
                 break
 
             # Record unique tool names actually invoked, and count

@@ -1011,6 +1011,190 @@ def test_process_input_tool_loop_survives_tool_level_error(
     assert result.tools_called == ["memory_context"]
 
 
+def test_silent_done_first_response_triggers_corrective_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — bare 'done' with no tools must be retried once.
+
+    deepseek-v4-flash intermittently answers with the completion marker
+    'done' as its FIRST response and no tool calls — the user hears
+    nothing and nothing happens. DialogCore must inject a corrective
+    user message and ask the LLM once more; the retry's real answer
+    then reaches the user instead of the silent 'done'.
+    """
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="Привет, Саша!", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Привет, Саша!"
+    assert result.tools_called == []
+    # Two LLM calls: the silent 'done' + the corrective retry.
+    assert len(llm.calls) == 2
+    # The retry's message list carries the correction after the 'done' echo.
+    retry_messages = llm.calls[1][0]
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+    assert retry_messages[-2].role == "assistant"
+    assert retry_messages[-2].content == "done"
+
+
+def test_empty_first_response_triggers_corrective_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — an EMPTY first payload is retried once too.
+
+    The empty-content variant (stream ended with no deltas) must get
+    the same corrective retry; no assistant echo is appended because
+    there is no content to echo (OpenAI-compatible shape stays valid).
+    """
+    llm.responses = [
+        LLMResponse(content="", tool_calls=()),
+        LLMResponse(content="ok", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "ok"
+    assert len(llm.calls) == 2
+    retry_messages = llm.calls[1][0]
+    # No assistant echo for the empty content — the correction is the
+    # last message and follows the user turn directly.
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_silent_done_retry_does_not_loop(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — a second silent 'done' is accepted, not retried again.
+
+    The corrective retry is one-shot: if the model STILL returns a bare
+    marker, DialogCore returns it as-is so the shell's existing
+    empty-response fallback (e.g. «Принял.») can handle it. No infinite
+    LLM ping-pong.
+    """
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert len(llm.calls) == 2
+    assert result.spoken_text == "done"
+    assert result.error is None
+
+
+def test_tool_then_done_does_not_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A legitimate 'done' AFTER a tool call must NOT be retried.
+
+    The master-prompt contract: the model calls speak_text (etc.), then
+    answers 'done'. Because a tool ran in this turn, the final marker is
+    valid — the corrective retry must not fire (it would confuse the model
+    with a false «твой ответ был пустым» and burn an extra LLM call).
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "hi"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    # Tool + final marker = exactly 2 LLM calls, no corrective retry.
+    assert len(llm.calls) == 2
+    assert result.spoken_text == "done"
+    assert result.tools_called == ["echo"]
+    # The final call's messages must NOT contain the correction.
+    final_messages = llm.calls[1][0]
+    assert not any("[SYSTEM CORRECTION]" in str(m.content) for m in final_messages)
+
+
+def test_normal_plain_reply_does_not_retry(
+    core: DialogCore,
+    llm: _FakeLLMProvider,
+) -> None:
+    """A substantive plain-text reply must NOT trigger the silent-retry."""
+    # Default fake returns "hello back" — a real answer.
+    result = asyncio.run(core.process_input("hello", history=[]))
+    assert result.spoken_text == "hello back"
+    assert len(llm.calls) == 1
+
+
+def test_silent_failure_turn_not_persisted_to_memory(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — a silent-failure assistant turn stays OUT of memory.
+
+    When the corrective retry also fails (second bare 'done'), the turn
+    produced no real assistant reply. Persisting it would teach the model
+    that 'done' is a normal reply and the next history would mimic it.
+    The user turn IS stored (real input), the failed assistant reply is not.
+    """
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+    assert result.spoken_text == "done"
+
+    roles = [t.role for t in memory.turns]
+    # Only the user turn was persisted — no synthetic 'done' assistant turn.
+    assert roles == ["user"]
+
+
+def test_normal_turn_still_persisted_to_memory(
+    core: DialogCore,
+    memory: _FakeMemoryStore,
+) -> None:
+    """A healthy turn (real reply) is still persisted as user+assistant."""
+    asyncio.run(core.process_input("hello", history=[]))
+    roles = [t.role for t in memory.turns]
+    assert roles == ["user", "assistant"]
+    assert memory.turns[-1].content == "hello back"
+
+
 def test_process_input_tool_loop_aborts_on_transport_error(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
