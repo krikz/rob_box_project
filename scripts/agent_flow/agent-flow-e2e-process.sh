@@ -538,19 +538,25 @@ if [ "${ROUND_ONLY:-0}" = "1" ]; then
 fi
 
 # --- get current open issue numbers with needs-e2e ---------------------------
-issues_json="$(gh issue list \
-    --repo "$GH_REPO" \
-    --label "$NEEDS_E2E_LABEL" \
-    --state open \
-    --limit "$ISSUE_LIMIT" \
-    --json number,title,labels,body 2>/dev/null || true)"
+# collect_issues_json — свежий снимок очереди needs-e2e. Вызывается в начале
+# тика И ПОВТОРНО после post_round_sweep (ретро 13.08 t_7eab35a0): sweep может
+# поставить e2e-done на issue из старого снимка, а основной цикл иначе работал
+# бы со СТАРЫМ issues_json и повторно смержил бы уже обработанный issue в новый
+# round (дубль #1195 в round-101 при уже e2e-done; #1196 голодал — не смержен).
+collect_issues_json() {
+    issues_json="$(gh issue list \
+        --repo "$GH_REPO" \
+        --label "$NEEDS_E2E_LABEL" \
+        --state open \
+        --limit "$ISSUE_LIMIT" \
+        --json number,title,labels,body 2>/dev/null || true)"
 
-# Issue #1141: даже для OPEN issues — skip если уже есть метка e2e-done
-# (workflow_dispatch мог триггериться от старого e2e-блока в issue).
-# Без этой защиты скрипт лупит команды (например «спой песню про шисюна»)
-# для закрытых фактически задач.
-if [ -n "$issues_json" ] && [ "$issues_json" != "[]" ]; then
-    _filtered="$(printf '%s' "$issues_json" | python3 -c '
+    # Issue #1141: даже для OPEN issues — skip если уже есть метка e2e-done
+    # (workflow_dispatch мог триггериться от старого e2e-блока в issue).
+    # Без этой защиты скрипт лупит команды (например «спой песню про шисюна»)
+    # для закрытых фактически задач.
+    if [ -n "$issues_json" ] && [ "$issues_json" != "[]" ]; then
+        _filtered="$(printf '%s' "$issues_json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 keep = []
@@ -561,13 +567,16 @@ for issue in data:
         continue
     keep.append(issue)
 print(json.dumps(keep, ensure_ascii=False))')"
-    _filtered_count="$(printf '%s' "$_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-    _original_count="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-    if [ "$_filtered_count" -lt "$_original_count" ]; then
-        log "filtered: ${_original_count} → ${_filtered_count} issues (skipped $((_original_count - _filtered_count)) already-labeled)"
+        _filtered_count="$(printf '%s' "$_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+        _original_count="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+        if [ "$_filtered_count" -lt "$_original_count" ]; then
+            log "filtered: ${_original_count} → ${_filtered_count} issues (skipped $((_original_count - _filtered_count)) already-labeled)"
+        fi
+        issues_json="$_filtered"
     fi
-    issues_json="$_filtered"
-fi
+}
+
+collect_issues_json
 
 # G3: rate-limit check on empty output.
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
@@ -938,6 +947,20 @@ compute_agent_branch() {  # $1=issue_number $2=title
     printf '%s' "z-{agent}/${n}-$(slugify "$t")"
 }
 
+# Найти OPEN functional PR по номеру issue в title (ретро 13.08 t_7eab35a0):
+# ветка PR может НЕ следовать конвенции z-{agent}/<id>-<slug> (наблюдение:
+# #1204 → PR #1206 на ветке '1204-fixvoice-...' без префикса) — тогда
+# compute_agent_branch/--head lookup даёт NONE и issue «невидим» для e2e.
+# Используем тот же поиск '<number> in:title', что и follow-up логика для
+# MERGED (ретро 10.08). Вывод: headRefName найденного PR или пусто.
+find_open_pr_by_issue() {  # $1=issue_number
+    local n="$1"
+    gh pr list --repo "$GH_REPO" --state open \
+        --search "${n} in:title" \
+        --json number,headRefName,mergeStateStatus \
+        --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo ""
+}
+
 # --- pre-round: live-candidate guard (ретро 13.08 t_4212e8ad) ----------------
 # ПРОБЛЕМА: round_ensure создавал round-ветку ДО подсчёта кандидатов. Если у
 # ВСЕХ needs-e2e issues нет живых PR (orphan/без PR/удалённые ветки), основной
@@ -952,8 +975,18 @@ while IFS=$'\t' read -r _g_n _g_t; do
     _g_st="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
         --json number,state --jq 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
     if [ "$_g_st" = "NONE" ]; then
-        log "pre-round guard: issue #${_g_n} no PR (${_g_br}) — skip"
-        continue
+        # Ретро 13.08 t_7eab35a0: ветка PR вне конвенции z-{agent}/<id>-<slug>
+        # (напр. #1204 → PR #1206 на '1204-fixvoice-...') — ищем OPEN PR по
+        # '<номер> in:title' перед тем, как объявить issue «без PR».
+        _g_fb="$(find_open_pr_by_issue "$_g_n")"
+        if [ -n "$_g_fb" ] && [ "$_g_fb" != "null" ] && [ "$_g_fb" != "[]" ]; then
+            _g_br="${_g_fb#*$'\t'}"
+            _g_st="OPEN"
+            log "pre-round guard: issue #${_g_n} PR найден по fallback '<number> in:title' (${_g_br}) — live candidate"
+        else
+            log "pre-round guard: issue #${_g_n} no PR (${_g_br}) — skip"
+            continue
+        fi
     fi
     # Orphan (ретро 13.08 t_423453b1, #1160): PR MERGED, ветка удалена — e2e невозможен.
     if [ "$_g_st" = "MERGED" ] \
@@ -1020,6 +1053,12 @@ skipped=0
 # метки с прошлого round ДО обработки issues — идемпотентно, независимо от
 # wait-фазы прошлого тика. Все helpers (has_label, slugify) уже определены.
 post_round_sweep || true
+# Ретро 13.08 t_7eab35a0: sweep мог поставить e2e-done/снять needs-e2e на
+# issue из СТАРОГО снимка issues_json. Перечитываем очередь ПЕРЕД основным
+# циклом, иначе цикл работает со stale-снимком и повторно мержит уже
+# обработанный issue (дубль #1195 в round-101 при e2e-done, #1196 голодал).
+collect_issues_json
+log "queue refreshed after post-round sweep: $(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0) candidate(s)"
 # Each per-issue pipeline step is bounded by E2E_CI_TIMEOUT + E2E_RUN_TIMEOUT.
 # We process all `needs-e2e` issues per tick; failures on one issue do not
 # stop the others. The chron rhythm (every 1h) caps the effective capacity.
@@ -1118,6 +1157,21 @@ while IFS=$'\t' read -r number title labels body; do
             if [ -n "$_followup_num" ] && [ "$_followup_num" != "null" ]; then
                 log "issue #${number}: follow-up OPEN PR #${_followup_num} (${_followup_head}) — тестируем вместо MERGED ${branch}"
                 branch="$_followup_head"
+                pr_state="OPEN"
+            fi
+        fi
+    fi
+    if [ "$pr_state" = "NONE" ]; then
+        # Ретро 13.08 t_7eab35a0: ветка PR вне конвенции z-{agent}/<id>-<slug>
+        # (напр. #1204 → PR #1206 на '1204-fixvoice-...') — пробуем найти OPEN
+        # PR по '<номер> in:title' перед объявлением «no PR».
+        _bytitle="$(find_open_pr_by_issue "$number")"
+        if [ -n "$_bytitle" ] && [ "$_bytitle" != "null" ] && [ "$_bytitle" != "[]" ]; then
+            _bytitle_num="${_bytitle%%$'\t'*}"
+            _bytitle_head="${_bytitle#*$'\t'}"
+            if [ -n "$_bytitle_num" ] && [ "$_bytitle_num" != "null" ]; then
+                log "issue #${number}: PR найден по fallback '<number> in:title' → #${_bytitle_num} (${_bytitle_head}) — ветка вне конвенции z-{agent}/"
+                branch="$_bytitle_head"
                 pr_state="OPEN"
             fi
         fi
@@ -1226,6 +1280,18 @@ EOF
     if [ "$DRY_RUN" = "true" ]; then
         log "DRY-RUN would: merge ${branch} into ${ROUND_BRANCH} and push"
         processed=$((processed+1)); continue
+    fi
+
+    # Ретро 13.08 t_7eab35a0: финальный живой чек меток issue прямо перед
+    # merge. Даже после refresh issues_json между снимком и merge мог пройти
+    # post_round_sweep/merge-gate и поставить e2e-done (или снять needs-e2e).
+    # Если так — не жжём build+deploy+e2e на уже обработанный issue.
+    _live_labels="$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+    _live_norm="$(printf '%s' "$_live_labels" | tr '[:upper:]' '[:lower:]')"
+    if has_label "$_live_norm" "$DONE_LABEL" || has_label "$_live_norm" "$REJECTED_LABEL" || ! has_label "$_live_norm" "$NEEDS_E2E_LABEL"; then
+        log "issue #${number}: live labels (${_live_norm}) уже e2e-done/rejected/без needs-e2e — skip merge (ретро 13.08)"
+        skipped=$((skipped+1)); continue
     fi
 
     git -C "$WORKTREE_DIR" fetch origin "$branch" --quiet 2>/dev/null || true
