@@ -42,10 +42,10 @@ Issue #968 переоткрыт пользователем: целевой сц�
 **W7 — подключение scheduler к живому пути не сделано:**
 
 1. `dialogue_node.py` **не импортирует** `rob_box_voice.scheduler` нигде.
-2. Живой tool loop — `DialogCore._run_with_tools` (`dialog_core.py:414–531`): каждый
+2. Живой tool loop — `DialogCore._run_with_tools` (`dialog_core.py:423–531`): каждый
    `tool_call` из ответа LLM исполняется **напрямую**:
    ```python
-   # dialog_core.py:515
+   # dialog_core.py:531
    tool_result = await self._tools.execute(call)
    ```
    Все tool_calls одного батча исполняются последовательно, **без ре-ордеринга
@@ -53,7 +53,7 @@ Issue #968 переоткрыт пользователем: целевой сц�
    ответа LLM: `speak_text` + `stop_music` в одном батче → stop_music улетает на
    железо через миллисекунды, TTS ещё не синтезирован).
 3. Костыли из #935/#980/#992 всё ещё в `dialogue_node.py`:
-   `_pending_music_cleanup` (строки ~411–419, 1430–1436, 1882–1935),
+   `_pending_music_cleanup` (строки 454, 1499–1505, 1597–1606, 2018–2088),
    `_publish_music_cleanup`, deferred cleanup по `batch_complete` — каждый лечит
    симптом, а не корень.
 
@@ -62,15 +62,15 @@ Issue #968 переоткрыт пользователем: целевой сц�
 Единственная точка, через которую проходят ВСЕ tool_call'ы LLM в живом пути:
 
 ```
-dialogue_node._run_turn (dialogue_node.py:1750)
-  → self._core.process_input (dialogue_node.py:1837)
-    → DialogCore._run_with_tools (dialog_core.py:414)
-      → for call in response.tool_calls:          # dialog_core.py:457
-          if acceptance_gate: ...                  # dialog_core.py:480  (уже есть)
-          tool_result = await self._tools.execute(call)   # dialog_core.py:515 ← ВРЕЗКА
+dialogue_node._run_turn (dialogue_node.py:1827)
+  → self._core.process_input (dialogue_node.py:~1904)
+    → DialogCore._run_with_tools (dialog_core.py:423)
+      → for call in response.tool_calls:          # dialog_core.py:471
+          if acceptance_gate: ...                  # dialog_core.py:496  (уже есть)
+          tool_result = await self._tools.execute(call)   # dialog_core.py:531 ← ВРЕЗКА
 ```
 
-Рядом с `_acceptance_gate` (уже встроен, строки 480–514) добавляется второй hook —
+Рядом с `_acceptance_gate` (уже встроен, строки 496–514) добавляется второй hook —
 `task_scheduler`. AcceptanceGate решает «можно ли исполнять» (AWAITING), scheduler —
 «в каком порядке и на каком канале».
 
@@ -151,10 +151,10 @@ LLM tool_call (батч)
 «LLM свободна» из итоговой модели. Реальный результат (success/error) доставляется
 через feedback events (W7c) и в следующий tool-result при необходимости.
 
-**Где врезать:** `dialogue_node.py:_build_tool_provider()` (строка ~842) — обернуть
+**Где врезать:** `dialogue_node.py:_build_tool_provider()` (строка ~911) — обернуть
 текущий `ROSMCPToolProvider` в `SchedulerToolExecutor`; либо передать scheduler
 отдельным аргументом в `DialogCore` рядом с `acceptance_gate`
-(`dialog_core.py:134`, `194`).
+(`dialog_core.py:132`, `202`).
 
 **Acceptance:**
 - unit: `speak_text` → task на voice-канале, `stop_music` → отложен до drain;
@@ -180,7 +180,7 @@ task.cancelled(id, reason)
 ```
 
 **В LLM-контекст:** `dialogue_node._build_dynamic_system_context()`
-(строка ~1624) — добавить блоки:
+(строка ~1701) — добавить блоки:
 ```
 [ACTIVE TASKS]
 - id=t_001, type=sing, topics=["комар"], progress=0.4,
@@ -200,11 +200,11 @@ task.cancelled(id, reason)
 ### W7d — Снять костыли
 
 После того как scheduler владеет каналами (W7b) и есть честный сигнал
-`/voice/tts/batch_complete` (уже существует, `dialogue_node.py:385`, `tts_node.py`),
+`/voice/tts/batch_complete` (уже существует, `dialogue_node.py:420–421`, `tts_node.py`),
 удалить/выключить:
 
 - `_pending_music_cleanup` и всю логику deferred cleanup по `batch_complete`
-  (`dialogue_node.py`: ~411–419, 1430–1436, 1882–1935);
+  (`dialogue_node.py`: 454, 1499–1505, 1597–1606, 2018–2088);
 - `_publish_music_cleanup(reason=...)` как «костыль на таймере» — cleanup теперь
   делает scheduler (REPLACE/стоп на естественной границе);
 - 3-секундный debounce в `_on_tts_finished` (если остался) — заменяется на
@@ -257,20 +257,27 @@ W7b+W7c+W7d — один PR (интеграция).
 
 ## 6. e2e-контракт (для e2e-process, после merge)
 
-Голосовая команда уже есть в репо: `.github/e2e/voice_commands/rabot_spoy_pro_kotika.ogg`
-(«робот, спой про котика») — подходит как базовый сценарий «спой»; для проверки
-MERGE-сценария «комар + енот» используется фраза с wake word и двумя топиками
-(см. `.github/e2e/VOICE_COMMANDS_RESEARCH.md` — какие .ogg уже проверены).
+Основная голосовая команда (два топика — покрывает MERGE-сценарий «комар + енот»):
 
-Параметры прогона (ориентир):
 ```
 voice_text: "Робот, спой песню про комара и про енота"
+voice_file: .github/e2e/voice_commands/rabot_spoy_pro_komara_i_enota.ogg
 volume: 150
 record_seconds: 90
 llm: deepseek (текущий fallback-провайдер)
 tts: yandex
 stt: yandex
 ```
+
+Если файла `rabot_spoy_pro_komara_i_enota.ogg` нет в репо — e2e-process синтезирует
+его сам (ensure_voice_file, Yandex TTS, голос anton) и после первого прогона файл
+забирается в репо.
+
+**Запасной вариант** (если синтез новой команды распознаётся нечисто): проверенный
+`.github/e2e/voice_commands/rabot_zachitay_rap_pro_enotika.ogg` («робот, зачитай рэп
+про енотика», распознаётся чисто при volume=150) — покрывает ту же acceptance
+(рэп до конца, stop_music после последнего чанка), но без двух топиков.
+
 Критерий e2e: рэп/песня с музыкой играет до конца (4+ чанка), `stop_music`
 публикуется строго после `tts/batch_complete` последнего чанка; нет пост-амбла
 «Готово!» поверх трека.
