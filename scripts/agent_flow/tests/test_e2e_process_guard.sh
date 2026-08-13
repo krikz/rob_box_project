@@ -200,6 +200,22 @@ except Exception: print("")'
         ;;
     run)
         journal "gh run $*"
+        # Ретро 13.08 t_da3e0bd5: gh run list --branch <round> ... --json status
+        # --jq (dedup active_round_with_issue). State: RUN_<branch>_JSON = массив
+        # {databaseId,status,...}; по умолчанию пусто (нет активных run'ов).
+        # Только для list --branch --jq; gh run view и прочее — RUN_LIST_JSON.
+        if [ "${1:-}" = "list" ] && printf '%s' "$*" | grep -q -- '--branch' \
+            && printf '%s' "$*" | grep -q -- '--jq'; then
+            _rb="$(printf '%s' "$*" | sed -nE 's/.*--branch[[:space:]]+([^ ]+).*/\1/p')"
+            _data="$(get_state "RUN_${_rb}_JSON")"
+            [ -n "$_data" ] || _data='[]'
+            printf '%s' "$_data" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(sum(1 for r in d if r.get("status") in ("queued","in_progress")))
+except Exception: print(0)'
+            exit 0
+        fi
         # Ретро 13.08 t_fe266643: post_round_sweep читает последний завершённый
         # e2e run на прошлом round. RUN_LIST_JSON — фикстура (массив runs).
         _data="$(get_state RUN_LIST_JSON)"
@@ -245,16 +261,25 @@ case "$1" in
         # Паттерн со звёздочкой (test-round-*) → ROUND_BRANCHES (пробелы),
         # иначе веток нет (ретро 13.08 t_fe266643: post_round_sweep ищет
         # последний round-бранч на remote).
+        # Ретро 13.08 t_da3e0bd5: список round-веток (паттерн test-round-*)
+        # приходит из state ROUND_BRANCHES. Элементы могут быть ПОЛНЫМ именем
+        # ветки (sweep-фикстура "z-{e2e}/test-round-103") или НОМЕРОМ (dedup-
+        # фикстура "90") — нормализуем оба к refs/heads/z-{e2e}/test-round-N.
         case "$ref" in
-            *'*'*)
-                _rb="$(grep -E '^ROUND_BRANCHES=' "$state" 2>/dev/null | head -n1 | sed 's@^ROUND_BRANCHES=@@')"
-                if [ -n "$_rb" ]; then
-                    for _b in $_rb; do
-                        printf '%040x\trefs/heads/%s\n' $RANDOM "$_b"
+            *'test-round-'*'*'*)
+                _rounds=""
+                if [ -f "$state" ]; then
+                    _rounds="$(grep -E '^ROUND_BRANCHES=' "$state" | head -n1 | sed 's/^ROUND_BRANCHES=//')"
+                fi
+                if [ -n "$_rounds" ]; then
+                    for _rb in $_rounds; do
+                        case "$_rb" in
+                            *'test-round-'*) printf '%040x\trefs/heads/%s\n' $RANDOM "$_rb" ;;
+                            *) printf '%040x\trefs/heads/z-{e2e}/test-round-%s\n' $RANDOM "$_rb" ;;
+                        esac
                     done
                     exit 0
                 fi
-                exit 1
                 ;;
         esac
         # ref вида "develop:RUN_NOW" / "develop:MAINTENANCE" — никогда нет.
@@ -604,11 +629,97 @@ test_F_candidate_swept_same_tick() {
 }
 
 # ===========================================================================
+# F2. Dedup (ретро 13.08 t_da3e0bd5): issue уже смержен в АКТИВНЫЙ round
+#     (на round-ветке есть build run в queued/in_progress) → guard НЕ создаёт
+#     новый round и НЕ мержит повторно (петля #968: round-102 → TIMEOUT →
+#     round-103 с тем же issue → 2 параллельных L-Build).
+# ---------------------------------------------------------------------------
+test_F_active_round_dedup_no_new_round() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4701
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+    local round="z-{e2e}/test-round-90"
+
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":4702,\"state\":\"OPEN\",\"headRefName\":\"${branch}\"}]"
+    set_state "PR_4702_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:backend\"}]}"
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Активный round-90: ветка существует, на ней build run в in_progress.
+    set_state ROUND_BRANCHES "90"
+    set_state "RUN_${round}_JSON" '[{"databaseId":4703,"status":"in_progress"}]'
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "уже в активном" "$errlog" "F2: guard увидел issue в активном round (dedup)"
+    assert_contains "no live e2e candidates" "$errlog" "F2: 0 живых кандидатов после dedup → round НЕ создаётся"
+    local push_calls
+    push_calls="$(printf '%s\n' "$journal" | grep -c "git push" || true)"
+    assert_eq "0" "$push_calls" "F2: round-ветка НЕ пушится (dedup заблокировал новый round)"
+    local counter
+    counter="$(cat "$TEST_TMP/round-counter" 2>/dev/null || echo '')"
+    assert_eq "" "$counter" "F2: счётчик раундов не инкрементирован"
+}
+
+# ===========================================================================
+# G. Dedup НЕ срабатывает, когда round завершён (нет queued/in_progress run'ов):
+#    issue в round-90, но все run'ы completed → живой кандидат → round создаётся.
+# ---------------------------------------------------------------------------
+test_G_completed_round_not_active() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4801
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+    local round="z-{e2e}/test-round-90"
+
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":4802,\"state\":\"OPEN\",\"headRefName\":\"${branch}\"}]"
+    set_state "PR_4802_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:backend\"}]}"
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Round-90 существует, но его build run уже completed → НЕ активен.
+    set_state ROUND_BRANCHES "90"
+    set_state "RUN_${round}_JSON" '[{"databaseId":4803,"status":"completed","conclusion":"success"}]'
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "live candidate(s) — создаю round" "$errlog" "G: completed round не блокирует новый round"
+}
+
+
+# ===========================================================================
 run_test "A. issues без PR → round НЕ создаётся" test_A_no_prs_no_round
 run_test "B. orphan (MERGED+ветка удалена) → round НЕ создаётся" test_B_orphan_no_round
 run_test "C. живой OPEN PR → round создаётся" test_C_live_candidate_creates_round
 run_test "D. ветка вне конвенции → fallback '<number> in:title' → кандидат" test_D_nonconventional_branch_fallback
 run_test "E. e2e-done от sweep → живой чек меток скипает merge" test_E_live_labels_skip_after_sweep
 run_test "F. кандидат снят sweep'ом того же тика → round НЕ создаётся" test_F_candidate_swept_same_tick
+run_test "F2. issue в АКТИВНОМ round → round НЕ создаётся (dedup)" test_F_active_round_dedup_no_new_round
+run_test "G. round завершён → dedup НЕ блокирует новый round" test_G_completed_round_not_active
 
 summary

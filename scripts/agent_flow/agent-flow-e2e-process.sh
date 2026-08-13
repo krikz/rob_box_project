@@ -978,6 +978,48 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     exit 0
 fi
 
+# --- dedup по активным round (ретро 13.08 t_da3e0bd5) -----------------------
+# ПРОБЛЕМА: build TIMEOUT не отменял build; следующий тик создавал НОВЫЙ round
+# и повторно мержил тот же issue (петля #968: round-102 → TIMEOUT → round-103
+# с тем же issue → 2 параллельных L-Build → ~50 job'ов на 8 раннерах, e2e-конвейер
+# встал на 3 часа).
+# РЕШЕНИЕ: перед созданием round/merge проверяем, не смержен ли issue уже в
+# АКТИВНЫЙ (незакрытый) round — round-ветку, на которой есть build/deploy/e2e
+# run со status queued/in_progress. Если да — НЕ создаём новый round и НЕ мержим
+# повторно; ждём, пока активный round завершится (или будет отменён по TIMEOUT).
+# Вывод: имя round-ветки, где issue уже тестируется, или пусто.
+# Ограничение: проверяем только последние DEDUP_ROUNDS_TAIL round-веток —
+# старые round'ы либо завершены, либо их run'ы давно отменены по TIMEOUT.
+DEDUP_ROUNDS_TAIL="${DEDUP_ROUNDS_TAIL:-8}"
+active_round_with_issue() {  # $1=agent_branch
+    local agent_branch="$1" _r_list _r _round _has _st _cur_num
+    # Текущий (новый) round в этом тике ещё не содержит issue — исключаем его.
+    _cur_num=""
+    [ -n "${ROUND_BRANCH:-}" ] && _cur_num="${ROUND_BRANCH##*-}"
+    _r_list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
+        | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" \
+        | grep -v "^${_cur_num}$" | sort -n | tail -n "$DEDUP_ROUNDS_TAIL" || true)"
+    log "dedup: проверяю ${DEDUP_ROUNDS_TAIL} последних round-веток на предмет наличия ${agent_branch}"
+    [ -z "$_r_list" ] && return 0
+    git -C "$REPO_DIR" fetch origin "$agent_branch" --quiet 2>/dev/null || true
+    for _r in $_r_list; do
+        [ -z "$_r" ] && continue
+        _round="${TEST_ROUND_PREFIX}${_r}"
+        git -C "$REPO_DIR" fetch origin "$_round" --quiet 2>/dev/null || true
+        if git -C "$REPO_DIR" merge-base --is-ancestor "origin/${agent_branch}" "origin/${_round}" 2>/dev/null; then
+            _has="$(gh run list --repo "$GH_REPO" --branch "$_round" --limit 20 \
+                --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length' 2>/dev/null || echo 0)"
+            _has="$(printf '%s' "$_has" | grep -oE '[0-9]+' | head -n1 || echo 0)"
+            if [ "${_has:-0}" -gt 0 ] 2>/dev/null; then
+                log "dedup: branch ${agent_branch} уже в ${_round} (${_has} run в queued/in_progress) — не дублирую"
+                echo "$_round"
+                return 0
+            fi
+        fi
+    done
+    return 0
+}
+
 # --- pre-round: live-candidate guard (ретро 13.08 t_4212e8ad) ----------------
 # ПРОБЛЕМА: round_ensure создавал round-ветку ДО подсчёта кандидатов. Если у
 # ВСЕХ needs-e2e issues нет живых PR (orphan/без PR/удалённые ветки), основной
@@ -1040,6 +1082,14 @@ except Exception: pass' 2>/dev/null || true)"
                 continue
             fi
         fi
+    fi
+    # Ретро 13.08 t_da3e0bd5: issue уже в АКТИВНОМ round (build/deploy/e2e
+    # ещё идёт) — НЕ создаём новый round и НЕ мержим повторно (петля #968:
+    # round-102 build TIMEOUT → round-103 с тем же issue → 2 build в очереди).
+    _g_dedup="$(active_round_with_issue "$_g_br")"
+    if [ -n "$_g_dedup" ]; then
+        log "pre-round guard: issue #${_g_n} уже в активном ${_g_dedup} — НЕ создаю новый round (dedup t_da3e0bd5)"
+        continue
     fi
     live_candidates=$((live_candidates+1))
     log "pre-round guard: issue #${_g_n} PR ${_g_st} (${_g_br}) — live candidate"
@@ -1314,6 +1364,16 @@ EOF
         skipped=$((skipped+1)); continue
     fi
 
+    # Ретро 13.08 t_da3e0bd5: dedup — issue уже смержен в АКТИВНЫЙ round
+    # (например, прошлый тик создал round-N с этим issue, build ещё идёт).
+    # Не мержим повторно в новый round: ждём завершения активного (или его
+    # отмены по TIMEOUT). Дубликат #968 в round-102+round-103 — именно эта петля.
+    _dedup_round="$(active_round_with_issue "$branch")"
+    if [ -n "$_dedup_round" ]; then
+        log "issue #${number}: уже смержен в активный ${_dedup_round} — skip merge в ${ROUND_BRANCH} (dedup t_da3e0bd5)"
+        skipped=$((skipped+1)); continue
+    fi
+
     git -C "$WORKTREE_DIR" fetch origin "$branch" --quiet 2>/dev/null || true
     # Refresh the round ref RIGHT BEFORE checkout. The build workflow pushes
     # "[skip ci]" SHA-tag commits back to the round branch, so origin/<round>
@@ -1548,6 +1608,22 @@ for t in data:
             sleep "$E2E_POLL_INTERVAL"
         done
         log "issue #${number}: ${lbl} TIMEOUT (${tmo}s)"
+        # Ретро 13.08 t_da3e0bd5: build/deploy TIMEOUT — НЕ оставляем run висеть.
+        # Залипший docker build (job in_progress часами) держит раннер и ~20 job'ов
+        # round в очереди (наблюдение 13.08: 4 параллельных L-Build ≈ 50 job'ов на
+        # 8 раннерах, e2e-конвейер стоял 3 часа). gh run cancel освобождает раннеры;
+        # следующий тик сделает новый round, а dedup (active_round_with_issue) не
+        # даст задвоить issue, пока активный round жив.
+        if [ -n "$rid" ] && [[ "$rid" =~ ^[0-9]+$ ]]; then
+            _st_now="$(gh run view "$rid" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo '')"
+            if [ "$_st_now" != "completed" ]; then
+                if gh run cancel "$rid" --repo "$GH_REPO" >/dev/null 2>&1; then
+                    log "issue #${number}: ${lbl} run ${rid} CANCELED после TIMEOUT (освобождаю раннеры)"
+                else
+                    log "issue #${number}: WARNING ${lbl} cancel run ${rid} failed (возможно уже completed)"
+                fi
+            fi
+        fi
         return 1
     }
 
