@@ -21,7 +21,8 @@
 #   agent-flow-cleanup-249.sh [--min-age 30] [--dry-run]
 # Env: BUILD_HOST=10.1.1.249, BUILD_USER=ros2, SSHPASS (или -p open),
 #      LOCK_FILE=/tmp/agent-flow-e2e-process.lock (локальный flock e2e-process),
-#      GH_REPO (owner/repo; для round-branch cleanup), ROUND_STALE_HOURS (default 48)
+#      GH_REPO (owner/repo; для round-branch cleanup), ROUND_STALE_HOURS (default 24)
+# Cron: devops-профиль every 6h (ретро 13.08 t_04d73108 — регистрация в install.sh)
 # ============================================================================
 set -euo pipefail
 
@@ -47,7 +48,11 @@ BUILD_USER="${BUILD_USER:-ros2}"
 SSHPASS_VAL="${SSHPASS:-open}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
 MIN_AGE_MIN="${MIN_AGE_MIN:-30}"
-ROUND_STALE_HOURS="${ROUND_STALE_HOURS:-48}"
+# Ретро 13.08 t_04d73108: cleanup-249 зарегистрирован в cron devops every 6h.
+# Порог снижен 48→24ч, чтобы наверстать накопленные round-ветки 61-76/100-103
+# (e2e-process пушит коммит в round ПЕРЕД каждым прогоном — ветка без коммитов
+# 24ч гарантированно не в активной ротации; плюс flock-guard секции 1).
+ROUND_STALE_HOURS="${ROUND_STALE_HOURS:-24}"
 DRY_RUN=0
 LOG_PREFIX="[cleanup-249]"
 

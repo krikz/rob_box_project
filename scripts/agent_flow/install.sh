@@ -253,6 +253,52 @@ else
 fi
 
 echo
+echo "==> Ensure cron job registration: agent-flow-cleanup-249.sh (ретро 13.08 t_04d73108)"
+# Проблема: cleanup-249 раскладывался install.sh, но cron-job НЕ создавался —
+# stale round-ветки (61-76/100-103) копились на origin. Регистрируем джоб
+# идемпотентно в devops-профиле: every 6h, no_agent (скрипт = джоб).
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий джоб.
+ensure_cleanup_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Cleanup 249"
+    local job_script="agent-flow-cleanup-249.sh"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    if grep -q "\"script\": \"$job_script\"" "$jobs_file"; then
+        echo "  OK   cron job '$job_name' already registered ($job_script)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, every 6h, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create 'every 6h' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "every 6h" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create 'every 6h' --name '$job_name' --script '$job_script' --no-agent --deliver local"
+    fi
+}
+ensure_cleanup_cron
+
+echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
 TOKEN_HOLDERS=()
 for envf in /home/builder/.hermes/.env /home/builder/.hermes/profiles/*/.env; do

@@ -140,9 +140,21 @@ bash <repo>/scripts/agent_flow/round_ensure.sh --wait 300 # ждать до 5 м
    `/tmp/agent-flow-e2e-process.lock` занят);
 3. никогда не удаляет `e2e_voice_test.sh` (актуальный харнесс).
 
+Дополнительно (ретро 12.08 t_d3aeaa9b): удаляет **stale round-ветки** на
+remote (`z-{e2e}/test-round-N` без e2e-активности > `ROUND_STALE_HOURS`,
+default **24ч**; e2e-активность = свежий коммит в ветке, e2e-process пушит
+перед каждым прогоном). Guard: тот же flock e2e-process — активный round
+не тронем.
+
+**Cron (ретро 13.08 t_04d73108):** зарегистрирован в devops-профиле,
+`every 6h`, no_agent=true. Регистрация идемпотентно пересоздаётся
+`install.sh` (секция "Ensure cron job registration") — не потеряется при
+переустановке.
+
 ```bash
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # показать, что удалит
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh            # удалить (с guard'ами)
+ROUND_STALE_HOURS=48 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh  # консервативный порог
 ```
 
 ### `agent-flow-deploy-sweep.sh` — авто-sweep stale deployment issues (ретро 12.08 t_d3e44336)
