@@ -133,14 +133,14 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
 
         await self.commands.stopmusic_handler(update, context)
 
-        node.forward_to_stt.assert_called_once_with("/stopmusic")
+        node.forward_to_stt.assert_called_once_with("/stopmusic", chat_id=42)
 
     async def test_status_handler_forwards_status_intent(self):
         update, context, node = self._make_update_and_context("/status")
 
         await self.commands.status_handler(update, context)
 
-        node.forward_to_stt.assert_called_once_with("/status")
+        node.forward_to_stt.assert_called_once_with("/status", chat_id=42)
 
     async def test_goto_handler_forwards_waypoint_name(self):
         update, context, node = self._make_update_and_context(
@@ -156,7 +156,7 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
 
         await self.commands.clear_handler(update, context)
 
-        node.forward_to_stt.assert_called_once_with("/clear")
+        node.forward_to_stt.assert_called_once_with("/clear", chat_id=42)
 
     async def test_volume_handler_validates_range(self):
         update, context, node = self._make_update_and_context(
