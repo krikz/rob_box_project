@@ -688,18 +688,28 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                         log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — branch ${branch} exists, destructive cleanup deferred"
                         labeled=$((labeled+1)); continue
                     fi
-                    log "issue #${number}: MERGED без ${DONE_LABEL}, ветка ${branch} удалена — e2e невозможен (Q22 user-merge), снимаю ${NEEDS_E2E_LABEL}"
-                    # Dedup комментария (24h окно, как stale-branch guard):
-                    # issue остаётся в hermes-цикле (метка hermes не снята),
-                    # поэтому каждый тик сюда снова зайдёт — не спамим.
+                    log "issue #${number}: MERGED без ${DONE_LABEL}, ветка ${branch} удалена — e2e невозможен (Q22 user-merge), закрываю issue"
+                    # Ретро 13.08 t_0b76514f (#1004/#982/#988/#990/#1160/#1188):
+                    # раньше только снимали needs-e2e и комментили «закрой вручную»
+                    # — issue висела OPEN вечно, Шифу не видел очередь. Q22:
+                    # юзер сам смержил PR (принял фикс), e2e физически невозможен
+                    # (ветки нет) → закрываем issue с reason=completed.
+                    # Dedup комментария (24h окно, подстрока тела — ретро
+                    # bfc18c85: startswith-префикс не совпадал с реальным телом).
                     _orphan_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
                     _orphan_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_orphan_since}&per_page=100" \
-                        --jq '[.[] | select(.body | contains("PR #'"${pr_number}"' смержен без e2e"))] | length' 2>/dev/null || echo 0)"
+                        --jq '[.[] | select(.body | contains("Фикс влит по Q22"))] | length' 2>/dev/null || echo 0)"
                     gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
                     gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
                     if [ "${_orphan_dup:-0}" -eq 0 ]; then
                         gh issue comment "$number" --repo "$GH_REPO" --body \
-                            "🛠 merge-gate (ретро 13.08 t_423453b1): PR #${pr_number} смержен без e2e-прогона (Q22), ветка \`${branch}\` удалена → e2e невозможен. Снят \`${NEEDS_E2E_LABEL}\`. Решение: закрыть issue вручную (принято по Q22) или завести follow-up на e2e." >/dev/null 2>&1 || true
+                            "🛠 merge-gate (ретро 13.08 t_0b76514f): PR #${pr_number} смержен вручную (Q22) без e2e-прогона, ветка \`${branch}\` удалена → e2e невозможен. Фикс влит по Q22 — issue закрыта." >/dev/null 2>&1 || true
+                    fi
+                    if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                        _closed_this_tick=1
+                        log "issue #${number}: CLOSED (Q22 user-merge, e2e невозможен)"
+                    else
+                        log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
                     fi
                     labeled=$((labeled+1)); continue
                 fi

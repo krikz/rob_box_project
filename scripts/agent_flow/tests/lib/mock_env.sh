@@ -244,6 +244,18 @@ if m:
         if isinstance(v, str) and v.startswith(prefix): count += 1
     print(count); sys.exit(0)
 
+# Pattern: [.[] | select(.field | contains("SUBSTR"))] | length
+# (orphan-comment dedup, ретро 13.08 t_0b76514f: contains-подстрока тела,
+#  не startswith — иначе префикс не совпадает с реальным телом коммена.)
+m = re.match(r"^\[\.\[\]\s*\|\s*select\(\.([\w]+)\s*\|\s*contains\(\"([^\"]+)\"\)\)\]\s*\|\s*length$", filt)
+if m:
+    field, substr = m.group(1), m.group(2)
+    count = 0
+    for el in data:
+        v = el.get(field) if isinstance(el, dict) else None
+        if isinstance(v, str) and substr in v: count += 1
+    print(count); sys.exit(0)
+
 # Pattern: .field(.subfield)*
 if filt.startswith("."):
     # Special: .[0].field // "default" — used by stale-branch guard

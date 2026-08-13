@@ -526,11 +526,11 @@ test_K_conflict_comment_rate_limited() {
 }
 
 # ===========================================================================
-# L. Ретро 13.08 t_423453b1 (#1160): user-merge БЕЗ e2e, ветка удалена →
-#    merge-gate снимает needs-e2e + комментит юзеру (Q22), НЕ ставит
-#    needs-review, НЕ закрывает issue, НЕ делает destructive cleanup.
-#    Раньше: issue навсегда висла в needs-e2e (e2e-process физически не
-#    мог прогнать — ветки нет; merge-gate ждал e2e-done бесконечно).
+# L. Ретро 13.08 t_0b76514f (#1004/#982/#988/#990/#1160/#1188): user-merge БЕЗ
+#    e2e, ветка удалена → merge-gate снимает needs-e2e, комментит юзеру (Q22),
+#    и ЗАКРЫВАЕТ issue (фикс влит по Q22, e2e невозможен). НЕ ставит
+#    needs-review, НЕ делает destructive cleanup.
+#    Раньше (t_423453b1): issue оставалась OPEN вечно — Шифу не видел очередь.
 # ===========================================================================
 test_L_merged_branch_deleted_unlabels_orphan() {
     new_test
@@ -561,7 +561,7 @@ test_L_merged_branch_deleted_unlabels_orphan() {
 
     # 2) Комментарий юзеру (Q22) опубликован.
     local q22_comment
-    q22_comment="$(printf '%s\n' "$journal" | grep -c 'смержен без e2e-прогона (Q22)' || true)"
+    q22_comment="$(printf '%s\n' "$journal" | grep -c 'Фикс влит по Q22' || true)"
     assert_eq "1" "$q22_comment" "orphan: Q22 comment posted to user"
 
     # 3) needs-review НЕ ставится (PR уже нет — ревьюить нечего).
@@ -569,21 +569,64 @@ test_L_merged_branch_deleted_unlabels_orphan() {
     add_review="$(printf '%s\n' "$journal" | grep -c 'gh issue edit '"${issue}"' --add-label needs-review' || true)"
     assert_eq "0" "$add_review" "orphan: needs-review NOT set"
 
-    # 4) Issue НЕ закрывается (решение за юзером).
+    # 4) Issue ЗАКРЫВАЕТСЯ (фикс влит по Q22, e2e невозможен) — ретро 13.08
+    #    t_0b76514f. Раньше: NOT closed (решение за юзером) → вечное OPEN.
     local close_calls
-    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close' || true)"
-    assert_eq "0" "$close_calls" "orphan: issue NOT closed"
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close 1160 --reason completed' || true)"
+    assert_eq "1" "$close_calls" "orphan: issue closed (Q22 user-merge)"
 
-    # 5) Destructive cleanup НЕ запускается (ветки уже нет; карточку не
-    #    архивируем — issue открыта и ждёт ручного решения).
+    # 5) Destructive cleanup НЕ запускается (ветки уже нет).
     local del_calls
     del_calls="$(printf '%s\n' "$journal" | grep -c 'gh api -X DELETE' || true)"
     assert_eq "0" "$del_calls" "orphan: no destructive branch delete"
 
-    # 6) Issue остаётся OPEN.
+    # 6) Issue переведена в CLOSED (mock close флипает state).
     local state_now
     state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
-    assert_contains '"OPEN"' "$state_now" "orphan: issue stays OPEN (user decision)"
+    assert_contains '"CLOSED"' "$state_now" "orphan: issue CLOSED (Q22 user-merge)"
+}
+
+# ===========================================================================
+# M. Ретро 13.08 t_0b76514f: orphan-comment dedup по ПОДСТРОКЕ тела
+#    (фикс bfc18c85: startswith-префикс не совпадал с реальным телом →
+#    14 дублей на #1188). Если идентичный коммент уже есть (24h окно) —
+#    повторно НЕ комментим, но issue всё равно закрываем.
+# ===========================================================================
+test_M_orphan_comment_dedup_still_closes() {
+    new_test
+    local issue=1004 branch
+    branch="$(slugify_branch "$issue" 'orphan dedup demo')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"orphan dedup demo\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\\n\"}]}"
+    # Уже есть идентичный orphan-коммент в окне dedup.
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[{"body":"🛠 merge-gate (ретро 13.08 t_0b76514f): PR #1170 смержен вручную (Q22) без e2e-прогона, ветка `z-{agent}/1004-orphan-dedup-demo` удалена → e2e невозможен. Фикс влит по Q22 — issue закрыта."}]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1170,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-13T05:05:00Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] orphan dedup demo\",\"labels\":[]}]"
+    set_state PR_1170_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Повторный коммент НЕ постится (dedup по подстроке тела).
+    local comment_calls
+    comment_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue comment 1004 --body' || true)"
+    assert_eq "0" "$comment_calls" "orphan dedup: identical comment NOT re-posted"
+
+    # 2) needs-e2e снят.
+    local unlabel_calls
+    unlabel_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue edit 1004 --remove-label needs-e2e' || true)"
+    assert_eq "1" "$unlabel_calls" "orphan dedup: needs-e2e removed"
+
+    # 3) Issue всё равно закрывается.
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close 1004 --reason completed' || true)"
+    assert_eq "1" "$close_calls" "orphan dedup: issue closed despite dedup"
 }
 
 # ===========================================================================
@@ -601,5 +644,6 @@ run_test "I. regression: card archived after close (card_state parse)" test_I_ca
 run_test "J. CONFLICTING → recovery card (not requeue) — respawn-guard fix" test_J_conflict_creates_recovery_card_not_requeue
 run_test "K. conflict comment rate-limit / no recovery for running card" test_K_conflict_comment_rate_limited
 run_test "L. merged PR + branch deleted → unlabel orphan (Q22, t_423453b1)" test_L_merged_branch_deleted_unlabels_orphan
+run_test "M. orphan comment dedup by substring → no re-post, still closes (t_0b76514f)" test_M_orphan_comment_dedup_still_closes
 
 summary
