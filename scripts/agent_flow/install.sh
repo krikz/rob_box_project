@@ -184,6 +184,55 @@ for target_dir in "${TARGET_DIRS[@]}"; do
     done
 done
 
+# ---------------------------------------------------------------------------
+# Применение vendor-патчей к hermes-agent (ретро t_f00676f8).
+#
+# Проблема: локальные фиксы hermes-agent (валидация скиллов по профилю
+# t_1ab37fa8: _profile_skill_names/_validate_skills_for_assignee в
+# hermes_cli/kanban_db.py, symlink-following подсчёт скиллов в
+# hermes_cli/profiles.py) накладывались на хост руками БЕЗ сохранения в репо.
+# При `git pull`/`pip install -U hermes-agent` патчи теряются, и регресс
+# t_1ab37fa8 возвращается (карточки со скилами не из профиля падают).
+#
+# Решение: дифф хранится в репо как scripts/agent_flow/vendor/
+# hermes-agent-skill-validation.patch; этот скрипт применяет его идемпотентно
+# (git apply --reverse --check => уже применён; git apply --check => можно
+# применить). Вызывать ПОСЛЕ обновления hermes-agent.
+HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
+HERMES_AGENT_PATCH="$SCRIPT_DIR/vendor/hermes-agent-skill-validation.patch"
+
+apply_hermes_agent_patch() {
+    if [ ! -d "$HERMES_AGENT_DIR/.git" ]; then
+        echo "  SKIP hermes-agent patch ($HERMES_AGENT_DIR not a git checkout)"
+        return 0
+    fi
+    if [ ! -f "$HERMES_AGENT_PATCH" ]; then
+        echo "  SKIP hermes-agent patch ($HERMES_AGENT_PATCH not found)"
+        return 0
+    fi
+    echo "==> hermes-agent patch: $HERMES_AGENT_PATCH"
+    # Уже применён?
+    if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+        echo "  OK   patch already applied (reverse-check clean)"
+        return 0
+    fi
+    # Применится чисто?
+    if ( cd "$HERMES_AGENT_DIR" && git apply --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+        if $DRY_RUN; then
+            echo "  [DRY] would apply patch in $HERMES_AGENT_DIR"
+            return 0
+        fi
+        if ( cd "$HERMES_AGENT_DIR" && git apply "$HERMES_AGENT_PATCH" ); then
+            echo "  APPLIED hermes-agent patch (re-run install.sh after every hermes-agent update)"
+            return 0
+        fi
+        echo "  ERROR applying hermes-agent patch" >&2
+        return 1
+    fi
+    echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved; regenerate vendor patch from current diff (ретро t_f00676f8)" >&2
+    return 1
+}
+
 echo
 echo "==> Anti-escape guard: проверяю, что ни один файл в $HERMES_SCRIPTS_DIR не указывает наружу"
 ANTI_ESCAPE_OK=true
@@ -275,6 +324,11 @@ if [ "${#TOKEN_HOLDERS[@]}" -gt 1 ]; then
 else
     echo "  OK  telegram token holders: ${TOKEN_HOLDERS[*]:-none}"
 fi
+
+echo
+echo "==> hermes-agent vendor patch"
+apply_hermes_agent_patch
+
 
 echo
 echo "==> Done. Verify:"
