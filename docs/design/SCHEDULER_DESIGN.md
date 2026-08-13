@@ -1654,7 +1654,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 | 2.5 (Reflex) | `ReflexLayer` (STOP/direction/debounce/metrics) | `src/rob_box_voice/rob_box_voice/scheduler/reflex.py` | ✅ приземлено |
 | 3 (Estimators + speculative) | `SegmentEstimator`, `EstimatorQualityTracker`, `SpeculativePreGenerator` | `scheduler/estimator.py`, `quality.py`, `pre_gen.py`, `speculative_executor.py` | ✅ приземлено |
 | 4 (Action server + PASTE) | HTTP+JSON action server, PASTE shadow queue, docker sidecar | `src/rob_box_voice/rob_box_voice/action_server/`, `docker/vision/docker-compose.yaml` | ✅ приземлено (ADR-0011 accepted) |
-| W7 (интеграция) | Подключение `TaskScheduler` к `speak_text`/`execute_music_code`/`stop_music` в `dialogue_node` | `dialogue_node.py` | ⏳ **открыто** — следующий PR (см. §9) |
+| W7 (интеграция) | Подключение `TaskScheduler` к `speak_text`/`execute_music_code`/`stop_music` в `dialogue_node` | `dialogue_node.py` | ⏳ **открыто** — следующий PR. **Код-точный план: `docs/design/W7_INTEGRATION_PLAN.md` v1.0 (2026-08-13)** — W7a ре-ордеринг батча в `dialog_core.py` (INSIGHT #1: гонка внутри одного ответа LLM), W7b SchedulerToolExecutor, W7c task_events + [ACTIVE TASKS] в LLM-контекст, W7d снятие костылей (_pending_music_cleanup, deferred cleanup, debounce). |
 
 **Вывод для исполнителя:** архитектурные блоки готовы и покрыты unit-тестами; осталась интеграционная работа — «обернуть» function_tool'ы `dialogue_node` в `SchedulerTask` и провести e2e «комар + енот». Решение по AWAITING-рендеру — §8.11 (A'2), по `task_events` — §14.1 (publisher в dialogue_node).
 
