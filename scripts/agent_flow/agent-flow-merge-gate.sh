@@ -694,7 +694,7 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                     # поэтому каждый тик сюда снова зайдёт — не спамим.
                     _orphan_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
                     _orphan_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_orphan_since}&per_page=100" \
-                        --jq '[.[] | select(.body | startswith("🛠 merge-gate: PR #'"${pr_number}"' смержен без e2e"))] | length' 2>/dev/null || echo 0)"
+                        --jq '[.[] | select(.body | contains("PR #'"${pr_number}"' смержен без e2e"))] | length' 2>/dev/null || echo 0)"
                     gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
                     gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
                     if [ "${_orphan_dup:-0}" -eq 0 ]; then
