@@ -529,11 +529,12 @@ class TestDialogueShell(unittest.TestCase):
         The first part of the wake-word sequence (IDLE → LISTENING) is
         covered by ``test_wake_word_detection_routes_to_listening``.
         Here we focus on the second half: once we're in LISTENING, a
-        follow-up STT message (no wake word needed) must drive
+        follow-up STT message (wake word still required by the
+        universal wake-word gate, issue #1101) must drive
         DIALOGUE and the LLM reply is published to the response topic.
         """
         # Pre-seed LISTENING via a synthetic WAKE_WORD transition so
-        # the next STT message skips the wake-word gate cleanly.
+        # the next STT message skips the IDLE wake-word transition.
         from rob_box_harness.core.dialogue_state_machine import (
             DialogueEvent as _DE,
         )
@@ -542,7 +543,7 @@ class TestDialogueShell(unittest.TestCase):
 
         # Script a deterministic LLM reply.
         self.llm.push("Готов к работе!")
-        self.node._on_stt(_make_string("как дела?"))
+        self.node._on_stt(_make_string("робок как дела?"))
         self._drive_turn()
         # Final state: DIALOGUE → DIALOGUE_END → IDLE
         self.assertEqual(_state_name(self.node), "IDLE")
@@ -575,7 +576,7 @@ class TestDialogueShell(unittest.TestCase):
         self.node._dsm.on_event(_DE.WAKE_WORD)
         self.llm.push("Готово")
 
-        self.node._on_stt(_make_string("как дела?"))
+        self.node._on_stt(_make_string("робок как дела?"))
         self._drive_turn()
 
         published_states = [p.data for p in self.node._state_pub.published]
@@ -607,7 +608,7 @@ class TestDialogueShell(unittest.TestCase):
         node = _TestableDialogueNode(llm=llm)
         try:
             node._dsm.on_event(_DE.WAKE_WORD)
-            node._on_stt(_make_string("как дела?"))
+            node._on_stt(_make_string("робок как дела?"))
             node.drive_one_turn()
 
             self.assertEqual(llm.call_count, 2)
@@ -617,21 +618,82 @@ class TestDialogueShell(unittest.TestCase):
         finally:
             node.close()
 
+    # ── Regression (issue #918): interrupted turn must still finalize ──
+    # A turn cancelled by barge-in / VAD interrupt / silence (or one
+    # that raised before the LLM) used to crash the finally block at
+    # ``result.tools_called`` (result=None) BEFORE the DIALOGUE_END
+    # transition and the state publish. The DSM stayed DIALOGUE, the
+    # /voice/dialogue/state topic stayed 'dialogue', and
+    # scenario_runner's wait_for_idle timed out (vad_interrupt_no_hang,
+    # rapid_messages_no_crash, response_is_valid_json).
+
+    def test_cancelled_turn_returns_to_idle_and_publishes(self):
+        """A barge-in-cancelled turn still returns the DSM to IDLE.
+
+        Also publishes the final state (issue #918).
+        """
+        import asyncio as _asyncio
+
+        class _NeverResolves:
+            def __await__(self):
+                fut = _asyncio.get_event_loop().create_future()
+                return fut.__await__()
+
+        async def _hanging_complete(*_a, **_kw):
+            self.llm.call_count += 1
+            return _NeverResolves()  # type: ignore[return-value]
+
+        original_complete = self.llm.complete
+        self.llm.complete = _hanging_complete  # type: ignore[assignment]
+        try:
+            self.node._on_stt(_make_string("робок первый запрос"))
+            # Simulate barge-in / VAD interrupt — cancel the in-flight
+            # turn without dispatching a replacement.
+            self.node._cancel_run("test barge-in")
+            self._drive_turn()
+            # No crash: the DSM must finalize to IDLE and publish it.
+            self.assertEqual(_state_name(self.node), "IDLE")
+            published_states = [p.data for p in self.node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            self.llm.complete = original_complete  # type: ignore[assignment]
+
+    def test_errored_turn_returns_to_idle_and_publishes(self):
+        """A turn that raises before the LLM still returns the DSM to IDLE.
+
+        Also publishes the final state (issue #918).
+        """
+        original = self.node._build_dynamic_system_context
+
+        def _boom() -> str:
+            raise RuntimeError("test failure before LLM")
+
+        self.node._build_dynamic_system_context = _boom  # type: ignore[assignment]
+        try:
+            self.node._on_stt(_make_string("робок привет"))
+            self._drive_turn()
+            self.assertEqual(_state_name(self.node), "IDLE")
+            published_states = [p.data for p in self.node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            self.node._build_dynamic_system_context = original  # type: ignore[assignment]
+
     # ── 3. Silence command → state SILENCED ──────────────────────────
 
     def test_silence_command_silences(self):
         """A silence command from STT transitions active state → SILENCED."""
-        # Drive LISTENING explicitly — the shell's wake-word-only STT
-        # is filtered by the empty-clean-text guard, so the DSM
-        # transition has to come via a direct WAKE_WORD event.
+        # Drive LISTENING explicitly — the shell's universal wake-word
+        # gate (issue #1101) requires the wake word in the STT text, so
+        # we seed the IDLE → LISTENING transition directly and inject a
+        # wake-word-prefixed silence command below.
         from rob_box_harness.core.dialogue_state_machine import (
             DialogueEvent as _DE,
         )
         self.node._dsm.on_event(_DE.WAKE_WORD)
         self.assertEqual(_state_name(self.node), "LISTENING")
-        # Now issue a silence command ("помолчи") — strip_wake_word
+        # Now issue a silence command ("робок помолчи") — strip_wake_word
         # leaves "помолчи" so is_silence_command() matches.
-        self.node._on_stt(_make_string("помолчи"))
+        self.node._on_stt(_make_string("робок помолчи"))
         self.assertEqual(_state_name(self.node), "SILENCED")
         # State publish path was driven
         published_states = [p.data for p in self.node._state_pub.published]

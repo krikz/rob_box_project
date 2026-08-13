@@ -1868,6 +1868,12 @@ class DialogueNode(Node):
         # prompt as STT_RESULT but stays in IDLE (no-op), and the
         # LLM is never called — the user hears nothing.
         babble_retry_pending = False
+        # Issue #918 — turn может быть отменён или упасть ДО присваивания
+        # result (speaker-профиль, LLM, тул-луп). Инициализируем None
+        # заранее, чтобы finally-блок мог безопасно отличить «результата
+        # нет» от «код ниже упал» — и ВСЕГДА довести DIALOGUE_END +
+        # _publish_state до конца.
+        result = None
         try:
             # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
             # собираем контекст о нём (имя, факты, число диалогов). Только
@@ -2026,13 +2032,21 @@ class DialogueNode(Node):
                         "🎵 stop_music deferred — will cleanup after TTS finishes"
                     )
             else:
-                # 🔴 FIX (live 09:35): если LLM в этом цикле САМ запустила
+                # 🔴 FIX (live 09:35): если LLM в этом цикле САМА запустила
                 # музыку (execute_music_code) — НЕ убивать её по
                 # tts_batch_complete короткой прелюдии («Слушай Баха!»).
                 # Музыка, запущенная как композиция, живёт до segments
                 # или явного stop_music. Cleanup — только если музыка
                 # НЕ запускалась в этом цикле (осталась от прошлого).
-                tools_now = set(result.tools_called or ())
+                # 🔴 FIX (issue #918): turn может быть отменён (barge-in,
+                # VAD-interrupt, silence) или упасть — тогда result=None
+                # (except-ветки выше). Без guard'а здесь AttributeError
+                # убивает finally ДО DIALOGUE_END/_publish_state → DSM
+                # навсегда остаётся в DIALOGUE, /voice/dialogue/state
+                # зависает на 'dialogue', scenario_runner.wait_for_idle
+                # таймаутит. Guard обязателен: state finalization ниже —
+                # критический контракт, music-cleanup — best-effort.
+                tools_now = set(result.tools_called or ()) if result else set()
                 # 🔴 FIX (live 12.08): load_track, set_dj_mode, set_vibe_preset
                 # тоже запускают музыку (не только execute_music_code).
                 # Без этого эмбиент/трек умолкал через ~5с после tts_batch_complete.
