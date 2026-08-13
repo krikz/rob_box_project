@@ -360,13 +360,28 @@ while IFS=$'\t' read -r number title labels body; do
     fi
 
     # Idempotency v2 (ретро 09.08 #14): карточка для этого issue уже есть.
-    # Ретро-фикс (13.08, #968): для REOPENED issue пропускаем — старая карточка
-    # archived/done, нужна свежая.
-    if [ "$is_reopened" = "false" ] && \
-        existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')" \
-        && [ -n "$existing_id" ]; then
-        log "issue #${number} already has card ${existing_id} (issue: #${number} in body) — skip"
-        skipped=$((skipped+1)); continue
+    # Ретро-фикс (13.08, #968): для REOPENED issue проверяем статус существующей
+    # карточки: если она ЖИВАЯ (running/ready/todo/blocked) — воркер уже работает,
+    # дубль НЕ создаём; если мертва (done/archived) — создаём свежую.
+    existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')"
+    if [ -n "$existing_id" ]; then
+        if [ "$is_reopened" = "false" ]; then
+            log "issue #${number} already has card ${existing_id} (issue: #${number} in body) — skip"
+            skipped=$((skipped+1)); continue
+        fi
+        _existing_status="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$existing_id" --json 2>/dev/null \
+            | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("task",{}).get("status",""))
+except Exception: print("")')"
+        case "$_existing_status" in
+            running|ready|todo|blocked)
+                log "issue #${number}: карточка ${existing_id} ЖИВАЯ (status=${_existing_status}) — воркер уже работает, дубль не создаём"
+                skipped=$((skipped+1)); continue
+                ;;
+            done|archived|"")
+                log "issue #${number}: старая карточка ${existing_id} мертва (status=${_existing_status:-unknown}) — создаю свежую на доработку"
+                ;;
+        esac
     fi
 
     role="$(role_for "$labels")"
