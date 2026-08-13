@@ -1,13 +1,12 @@
 # dialogue_node.yaml — per-node ROS2 config (issue #1004 fix)
 #
-# Сгенерировано из voice_assistant.yaml при разделении на per-node файлы.
-# Меняйте именно этот файл (или src/rob_box_voice/config/<node>.yaml для
-# других нод), НЕ voice_assistant.yaml — он остаётся как легаси/источник
-# правды для совместимости с тестами test_dialogue_shell.
-#
 # Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
 # Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
 # get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в dialogue_node.py 1:1.
+# (Ключи silence_timeout/silence_commands/max_question_time/sentence_split/
+# streaming удалены — код их НЕ читает; YAML молча игнорировался, issue #1004.)
 
 dialogue_node:
   ros__parameters:
@@ -25,23 +24,12 @@ dialogue_node:
     - бот
     - робо
     - роб
-    silence_commands:
-    - помолч
-    - замолч
-    - хватит
-    - закрой
-    - заткн
-    - не меша
-    silence_timeout: 3.5
-    max_question_time: 20.0
+    dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
     system_prompt_file: master_prompt_compact.txt
     history_max_turns: 20
-    dialogue_timeout: 300.0
     faq_mode_enabled: false
     faq_event_config_file: ''
-    streaming: false
-    sentence_split: true
     tool_provider: ros_mcp
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
