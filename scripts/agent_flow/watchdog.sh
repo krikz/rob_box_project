@@ -353,3 +353,78 @@ if recovery:
 print()
 print(f"Dispatcher: {'alive' if dispatcher_alive else 'dead'} (restarted: {restarted})")
 PYEOF
+
+# ============================================================================
+# SOT→host auto-sync (ретро 13.08 t_767ab9b8)
+# Проблема: фиксы agent-flow-*.sh в develop неактивны на хосте, пока кто-то
+# вручную не запустит install.sh (лаг 13.07→13.14 UTC 13.08; при 429-квоте
+# LLM-тики падаван-вахты не помогут — лаг неограничен).
+# Решение: watchdog (no-agent, без LLM) сам сверяет SHA локальных
+# agent-flow-*.sh с origin/develop SOT и при расхождении запускает install.sh
+# (он сам делает .bak-бэкап перед заменой). Убирает зависимость от LLM-тиков.
+# ============================================================================
+SOT_SYNC_STATE="${SOT_SYNC_STATE:-$HERMES_HOME/state/agent-flow-sot-sync.last_sha}"
+SOT_SYNC_LOG="${SOT_SYNC_LOG:-$HERMES_HOME/logs/agent-flow-sot-sync.log}"
+SOT_SYNC_REPO="${SOT_SYNC_REPO:-$REPO_DIR}"
+SOT_SYNC_SCRIPTS=(
+    agent-flow-triage.sh
+    agent-flow-merge-gate.sh
+    agent-flow-e2e-process.sh
+    agent-flow-handoff.sh
+    round_ensure.sh
+    agent-flow-cleanup-249.sh
+    agent-flow-deploy-sweep.sh
+    agent-flow-unlabeled-sweep.sh
+    cron-loop.sh
+    watchdog.sh
+    agent-flow-drift-detect.sh
+    install.sh
+)
+
+_sot_sync() {
+    [ -d "$SOT_SYNC_REPO/.git" ] || { log "SOT-sync: repo $SOT_SYNC_REPO missing — skip"; return 0; }
+
+    local remote_sha last_sha f sot_md5 loc_md5 drift=0
+    remote_sha="$(git -C "$SOT_SYNC_REPO" ls-remote origin refs/heads/develop 2>/dev/null | awk '{print $1}')"
+    [ -n "$remote_sha" ] || { log "SOT-sync: ls-remote failed (network/auth?) — skip"; return 0; }
+    last_sha="$(cat "$SOT_SYNC_STATE" 2>/dev/null || true)"
+    [ "$remote_sha" = "$last_sha" ] && return 0   # develop не двигался — ничего не делаем
+
+    # fetch, чтобы origin/develop был свежим
+    git -C "$SOT_SYNC_REPO" fetch --quiet origin develop 2>/dev/null \
+        || { log "SOT-sync: fetch failed — skip"; return 0; }
+
+    for f in "${SOT_SYNC_SCRIPTS[@]}"; do
+        sot_md5="$(git -C "$SOT_SYNC_REPO" show "origin/develop:scripts/agent_flow/$f" 2>/dev/null | md5sum | awk '{print $1}')"
+        loc_md5="$(md5sum "$HERMES_HOME/scripts/$f" 2>/dev/null | awk '{print $1}')"
+        [ -n "$sot_md5" ] || continue
+        if [ "$sot_md5" != "$loc_md5" ]; then
+            drift=1
+            log "SOT-sync: drift $f (local=$loc_md5 sot=$sot_md5)"
+        fi
+    done
+
+    if [ "$drift" = "1" ]; then
+        log "SOT-sync: drift detected — running install.sh (bak-копии делает сам install.sh)"
+        local tmpdir
+        tmpdir="$(mktemp -d /tmp/agent-flow-sot.XXXXXX)" || { log "SOT-sync: mktemp failed"; return 0; }
+        # Раскладываем из origin/develop (git archive), а НЕ из рабочего дерева
+        # репо: основной клон может сидеть на чужой worker-ветке.
+        if git -C "$SOT_SYNC_REPO" archive origin/develop scripts/agent_flow 2>/dev/null \
+            | tar -x -C "$tmpdir" 2>/dev/null; then
+            if REPO_DIR="$tmpdir" bash "$tmpdir/scripts/agent_flow/install.sh" >>"$SOT_SYNC_LOG" 2>&1; then
+                log "SOT-sync: install.sh OK — scripts synced to origin/develop"
+                echo "$remote_sha" > "$SOT_SYNC_STATE"
+            else
+                log "SOT-sync: install.sh FAILED (see $SOT_SYNC_LOG) — state NOT updated, retry next tick"
+            fi
+        else
+            log "SOT-sync: git archive failed — skip install"
+        fi
+        rm -rf "$tmpdir"
+    else
+        log "SOT-sync: develop moved ($last_sha→$remote_sha) but no script drift"
+        echo "$remote_sha" > "$SOT_SYNC_STATE"
+    fi
+}
+_sot_sync
