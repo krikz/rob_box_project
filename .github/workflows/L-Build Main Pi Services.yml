@@ -451,9 +451,15 @@ jobs:
               # старые образы → робот получал старый код (ретро 13.08).
               CURRENT_BRANCH="$(git branch --show-current)"
               git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
-              git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
-                && echo "✅ Committed .image-versions: all main tags → ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
-                || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
+              # Retry push (гонка: Main и Vision параллельно коммитят в develop)
+              for i in 1 2 3 4 5; do
+                git pull --rebase origin "$CURRENT_BRANCH" >/dev/null 2>&1 || true
+                if git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1; then
+                  echo "✅ Committed .image-versions: all main tags → ${NEW_TAG} (branch ${CURRENT_BRANCH})"
+                  break
+                fi
+                sleep 5
+              done
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"
