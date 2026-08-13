@@ -1344,9 +1344,17 @@ for t in data:
                     log "scan-all-prs: recovery card ${_blocked_id} unblocked (was blocked) for PR #${pr_num}"
                 elif [ -n "$_done_match" ]; then
                     _done_id="${_done_match%% *}"
-                    hermes kanban --board "$KANBAN_BOARD" reclaim "$_done_id" --reason "🔀 свежий конфликт/CI: PR #${pr_num} снова не мержится с develop (ретро 13.08 t_42741511, requeue→reclaim)" >/dev/null 2>&1 \
-                        && log "scan-all-prs: recovery card ${_done_id} reclaimed (was done/archived) for PR #${pr_num}" \
-                        || log "scan-all-prs: WARNING reclaim ${_done_id} failed for PR #${pr_num}"
+                    # Ретро-фикс 13.08 #2: reclaim НЕ работает с done (только
+                    # для running — «cannot reclaim (not running)»). done —
+                    # терминальное состояние. PR снова конфликтный → создаём
+                    # СВЕЖУЮ ready-карточку (воркер отработал, нужен новый).
+                    hermes kanban --board "$KANBAN_BOARD" create \
+                        --assignee "$_assignee" \
+                        --max-runtime 1800 \
+                        --body "$_reminder" \
+                        "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI (повтор)" >/dev/null 2>&1 \
+                        && log "scan-all-prs: fresh recovery card created (old ${_done_id} was done) for PR #${pr_num}" \
+                        || log "scan-all-prs: WARNING fresh recovery card create failed for PR #${pr_num}"
                 else
                     _rec_key="merge-conflict-recovery-pr-${pr_num}"
                     _rec_title="🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI"
@@ -1423,9 +1431,15 @@ for t in data:
             if [ -n "$_conflict_id" ]; then
                 case "$_conflict_status" in
                     done|archived)
-                        hermes kanban --board "$KANBAN_BOARD" reclaim "$_conflict_id" --reason "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (ретро 12.08 t_618208c0, requeue→reclaim)" >/dev/null 2>&1 \
-                            && log "scan-all-prs: conflict card ${_conflict_id} reclaimed (was ${_conflict_status}) for PR #${pr_num}" \
-                            || log "scan-all-prs: WARNING reclaim ${_conflict_id} failed (${_conflict_status})"
+                        # Ретро-фикс 13.08 #2: reclaim не работает с done —
+                        # создаём СВЕЖУЮ ready-карточку.
+                        hermes kanban --board "$KANBAN_BOARD" create \
+                            --assignee "$_assignee" \
+                            --max-runtime 1800 \
+                            --body "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (старая карточка ${_conflict_id} была ${_conflict_status}). Rebase на develop в той же ветке, CI green." \
+                            "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI (повтор)" >/dev/null 2>&1 \
+                            && log "scan-all-prs: fresh conflict card created (old ${_conflict_id} was ${_conflict_status}) for PR #${pr_num}" \
+                            || log "scan-all-prs: WARNING fresh conflict card create failed for PR #${pr_num}"
                         ;;
                     blocked)
                         hermes kanban --board "$KANBAN_BOARD" unblock "$_conflict_id" --reason "🔀 свежий конфликт — retry (ретро 12.08 t_618208c0)" >/dev/null 2>&1 || true
