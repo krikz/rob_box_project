@@ -94,18 +94,33 @@ DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 [ "${DRIFT_DRY_RUN:-}" = "1" ] && DRY_RUN=1
 
-# Какие файлы проверяем (только те, что в install.sh EXPECTED)
-FILES=(
-    agent-flow-triage.sh
-    agent-flow-merge-gate.sh
-    agent-flow-e2e-process.sh
-    agent-flow-handoff.sh
-    round_ensure.sh
-    agent-flow-cleanup-249.sh
-    cron-loop.sh
-    watchdog.sh
-    agent-flow-drift-detect.sh
-)
+# Какие файлы проверяем — единый источник: EXPECTED из install.sh
+# (`install.sh --list-files`). Ретро 13.08 t_2cae75c0: раньше список
+# дублировался здесь и разошёлся с install.sh (deploy-sweep, unlabeled-sweep,
+# kanban-retro-create отсутствовали) — drift-контроль молча не работал.
+FILES=()
+if [ -f "$INSTALL_SH" ]; then
+    while IFS= read -r f; do
+        [ -n "$f" ] && FILES+=("$f")
+    done < <(bash "$INSTALL_SH" --list-files 2>/dev/null)
+fi
+# fallback: если install.sh недоступен/сломан — прежний статический список
+if [ "${#FILES[@]}" = "0" ]; then
+    FILES=(
+        agent-flow-triage.sh
+        agent-flow-merge-gate.sh
+        agent-flow-e2e-process.sh
+        agent-flow-handoff.sh
+        round_ensure.sh
+        agent-flow-cleanup-249.sh
+        agent-flow-deploy-sweep.sh
+        agent-flow-unlabeled-sweep.sh
+        cron-loop.sh
+        watchdog.sh
+        agent-flow-drift-detect.sh
+        kanban-retro-create.sh
+    )
+fi
 
 TARGETS=(
     "$REPO_DIR/scripts/agent_flow"

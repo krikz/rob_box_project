@@ -156,8 +156,9 @@ for s in "${SKILLS[@]}"; do
     SKILL_ARGS+=(--skill "$s")
 done
 
-CREATE_OUT="$("$KANBAN_BIN" kanban --board "$BOARD" create \
-    --title "$TITLE" \
+# title — ПОЗИЦИОННЫЙ аргумент `hermes kanban create` (фикс 13.08 надзор:
+# `--title` CLI не знает → exit 3, карточки не создавались через обёртку)
+CREATE_OUT="$("$KANBAN_BIN" kanban --board "$BOARD" create "$TITLE" \
     --body "$BODY_WITH_MARKER" \
     --assignee "$ASSIGNEE" \
     --max-runtime "$MAX_RUNTIME" \
