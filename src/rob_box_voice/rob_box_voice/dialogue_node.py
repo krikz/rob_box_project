@@ -1977,7 +1977,12 @@ class DialogueNode(Node):
                 f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
                 f"tools={list(result.tools_called or ())!r} error={result.error!r}"
             )
-            self._handle_result(result, user_input=user_input, is_dj_auto=was_dj_auto)
+            self._handle_result(
+                result,
+                user_input=user_input,
+                is_dj_auto=was_dj_auto,
+                raw_user_command=raw_user_command,
+            )
             babble_retry_pending = bool(self._babble_retry_used)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
@@ -2105,6 +2110,24 @@ class DialogueNode(Node):
                     "🎵 turn finished, no active batches — fired music_cleanup "
                     "(issue 992 prelude-deferral catch-up)"
                 )
+            # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
+            # ``is_dj_auto`` was threaded through the dispatch path so no
+            # shared flag needs to be cleared here. The guard may
+            # synchronously dispatch a follow-up DJ turn while we are
+            # still inside this turn's ``finally``; that is intentional —
+            # ``drive_one_turn`` (and any production loop) drains the
+            # retry as part of this very turn cycle.
+            #
+            # 🔴 FIX (issue #1204, 13.08 DJ incident): guard вызывается
+            # ДО DIALOGUE_END. Сам guard переоткрывает DIALOGUE перед
+            # ретраем, поэтому закрывать диалог здесь нужно только если
+            # ретрай НЕ был задиспатчен — иначе ретрай-тур придёт в IDLE
+            # и его process_input короткозамкнётся без вызова LLM.
+            music_retry_dispatched = self._apply_music_guard(
+                was_dj_auto=was_dj_auto,
+                user_input=raw_user_command or user_input,
+                tools_called=result.tools_called if result else (),
+            )
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
             # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
@@ -2114,6 +2137,7 @@ class DialogueNode(Node):
             if (
                 self._dsm.current_state == DialogueStateKind.DIALOGUE
                 and not babble_retry_pending
+                and not music_retry_dispatched
             ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 # Issue #1160 — Prometheus metrics: сессия закрылась
@@ -2124,18 +2148,6 @@ class DialogueNode(Node):
             # here; otherwise the ROS state topic remains stuck at the
             # earlier DIALOGUE notification and scenario runners wait forever.
             self._publish_state()
-            # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
-            # ``is_dj_auto`` was threaded through the dispatch path so no
-            # shared flag needs to be cleared here. The guard may
-            # synchronously dispatch a follow-up DJ turn while we are
-            # still inside this turn's ``finally``; that is intentional —
-            # ``drive_one_turn`` (and any production loop) drains the
-            # retry as part of this very turn cycle.
-            self._apply_music_guard(
-                was_dj_auto=was_dj_auto,
-                user_input=raw_user_command or user_input,
-                tools_called=result.tools_called if result else (),
-            )
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 
@@ -2437,13 +2449,31 @@ class DialogueNode(Node):
             "'Могу бит добавить, хочешь?' — это BUG."
         )
 
+    def _reopen_dialogue_for_retry(self) -> None:
+        """Re-drive the DSM to DIALOGUE before a synchronous retry dispatch.
+
+        ``dialog_core.process_input`` gates the LLM on
+        ``current_state == DIALOGUE``. The parent turn's ``process_input``
+        already fired ``DIALOGUE_END``, so by the time the post-turn guard
+        runs the state is IDLE — a retry dispatched from here would
+        short-circuit and never reach the LLM (13.08 DJ incident: retry
+        returned in ~1 ms with zero ``[health]`` logs).
+
+        Same pattern as ``_check_babble_and_retry`` (issue #992 Bug D).
+        """
+        if self._dsm.current_state == DialogueStateKind.IDLE:
+            self._dsm.on_event(DialogueEvent.WAKE_WORD)
+            self._publish_state()
+        self._dsm.on_event(DialogueEvent.STT_RESULT)
+        self._publish_state()
+
     def _apply_music_guard(
         self,
         *,
         was_dj_auto: bool,
         user_input: str,
         tools_called: tuple,
-    ) -> None:
+    ) -> bool:
         """Post-turn guard that catches LLM music-skip regressions.
 
         Issue #992 Bug B — DJ auto-transitions: the LLM was told
@@ -2461,6 +2491,12 @@ class DialogueNode(Node):
         acknowledgment so the user hears *something* and can repeat
         the request. We deliberately do NOT auto-pick a beat without
         user consent: that would surprise the operator.
+
+        Returns:
+            ``True`` when a synchronous retry turn was dispatched — the
+            caller (:meth:`_run_turn` finally block) must then defer its
+            own ``DIALOGUE_END`` so the retry's LLM gate fires
+            (issue #1204). ``False`` otherwise.
         """
         tools_set = set(tools_called or ())
         if "execute_music_code" in tools_set:
@@ -2468,7 +2504,7 @@ class DialogueNode(Node):
             # gets a fresh budget.
             self._dj_auto_retry_count = 0
             self._music_guard_retry_count = 0
-            return
+            return False
         if was_dj_auto and self._dj.state.enabled:
             # Bug B — DJ was supposed to play but didn't.
             if self._dj_auto_retry_count >= self.MAX_DJ_AUTO_RETRIES:
@@ -2478,7 +2514,7 @@ class DialogueNode(Node):
                     "letting 5 s tick take over"
                 )
                 self._dj_auto_retry_count = 0
-                return
+                return False
             self._dj_auto_retry_count += 1
             self.get_logger().warning(
                 "🎵 [issue 992 Bug B] DJ auto-transition completed "
@@ -2488,8 +2524,11 @@ class DialogueNode(Node):
             self._dj.state.next_transition_at = (
                 time.time() + DJModeController.POSTPONE_INTERVAL_S
             )
+            # Issue #1204: ретрай должен реально дойти до LLM —
+            # переоткрываем DIALOGUE (process_input уже закрыл его).
+            self._reopen_dialogue_for_retry()
             self._dispatch_dj_turn(self._build_dj_retry_prompt())
-            return
+            return True
         if self._user_wants_music(user_input):
             tools_now = set(tools_called or ())
             # 🔴 FIX (live 06.08): стоп-команды («хватит диджеить»,
@@ -2502,7 +2541,7 @@ class DialogueNode(Node):
                     "🎵 [issue 992 Bug C] stop-command — skipping music "
                     "guard entirely"
                 )
-                return
+                return False
             # 🔴 FIX (live 10:00): вокальные запросы («спой/пой/песня»)
             # — speak_text уже есть (песня озвучена), бит не обязателен:
             # не нудить. Только если LLM вообще ничего не сделала
@@ -2513,7 +2552,7 @@ class DialogueNode(Node):
                         "🎵 [issue 992 Bug C] vocal request, LLM replied "
                         f"(tools={sorted(tools_now)!r}) — no nudge needed"
                     )
-                    return
+                    return False
             # Bug C — user asked for rap/song/DJ but LLM skipped music.
             # 🔴 FIX (live 06.08): для ЯВНЫХ запросов (диджей/рэп/зачитай)
             # — retry с CRITICAL-промптом (как Bug B), а не только нудж:
@@ -2527,12 +2566,15 @@ class DialogueNode(Node):
                     f"synchronous retry {self._music_guard_retry_count}/"
                     f"{self.MAX_MUSIC_GUARD_RETRIES}"
                 )
+                # Issue #1204: ретрай должен реально дойти до LLM —
+                # переоткрываем DIALOGUE (process_input уже закрыл его).
+                self._reopen_dialogue_for_retry()
                 self._dispatch_turn(
                     self._build_music_retry_prompt(user_input),
                     was_idle=False,
                     raw_user_command=user_input,
                 )
-                return
+                return True
             self.get_logger().warning(
                 "🎵 [issue 992 Bug C] user asked for music but LLM "
                 f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
@@ -2550,6 +2592,7 @@ class DialogueNode(Node):
                 f"user_input={user_input!r} tools={sorted(tools_now)!r} "
                 f"→ no action (user does NOT want music OR guard not applicable)"
             )
+        return False
 
     def _build_music_retry_prompt(self, user_input: str) -> str:
         """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
@@ -2955,6 +2998,7 @@ class DialogueNode(Node):
         result: DialogResult,
         user_input: Optional[str] = None,
         is_dj_auto: bool = False,
+        raw_user_command: Optional[str] = None,
     ) -> None:
         """Publish (or swallow) the LLM response for one turn.
 
@@ -2967,6 +3011,12 @@ class DialogueNode(Node):
         ``None`` the babble-retry path falls back to "promise-only"
         detection which is still safe (no false positives on
         ordinary answers).
+
+        ``raw_user_command`` (issue #1204) — оригинальная команда юзера.
+        На синтетических ретрай-турах ``user_input`` содержит CRITICAL-
+        промпт (со словом «диджея» внутри), который НЕЛЬЗЯ сканировать
+        эвристиками стоп-слов / music-intent — иначе ложный
+        «stop-command» убивает музыку и выключает DJ.
 
         ``is_dj_auto`` marks DJ auto-transition turns (was_dj_auto=True,
         generated by the DJ ticker every ~45s, not by the user). For such
@@ -3038,7 +3088,9 @@ class DialogueNode(Node):
         # would hear the babble AND then the retry answer.
         if spoken and self._check_babble_and_retry(
             spoken=spoken,
-            user_input=user_input,
+            # Issue #1204: на синтетических ретрай-турах юзер-интент
+            # смотрим по оригинальной команде, а не по CRITICAL-промпту.
+            user_input=raw_user_command or user_input,
             tools_called=tools_called,
         ):
             return
@@ -3062,6 +3114,11 @@ class DialogueNode(Node):
             # СЛЕДУЮЩИЙ turn LLM увидела, что прислала пустоту и так
             # делать не надо. Юзер не получает ложного «задумался».
             if not tools_called:
+                # Issue #1204: на синтетических ретрай-турах ``user_input`` —
+                # это CRITICAL-промпт («...музыку/диджея...»), а не слова
+                # юзера. Все эвристики ниже (music_fallback, стоп-команды)
+                # должны смотреть на оригинальную команду юзера.
+                _source = raw_user_command or user_input
                 # Issue #1016 — empty-response music fallback: LLM вернула
                 # пустоту на музыкальный запрос («поставь что-нибудь»,
                 # «сыграй классику», «включи музыку») и НЕ вызвала ни одного
@@ -3071,7 +3128,7 @@ class DialogueNode(Node):
                 # ветка, где цена ложного срабатывания низкая (робот и так
                 # молчал бы).
                 try:
-                    if self._user_wants_music_fallback(user_input or ""):
+                    if self._user_wants_music_fallback(_source or ""):
                         self._publish_music_fallback(reason="empty_response")
                 except Exception as exc:  # noqa: BLE001
                     try:
@@ -3093,8 +3150,11 @@ class DialogueNode(Node):
                     # останавливаем музыку/DJ. LLM иногда возвращает пустоту
                     # (DeepSeek empty), и без этого fallback музыка играет
                     # бесконечно (юзер: «сказал хорошо молчу, музло ебашит»).
-                    if user_input and any(
-                        kw in user_input.lower()
+                    # 🔴 FIX (issue #1204): проверяем _source (оригинальная
+                    # команда юзера), а не user_input — на ретрай-турах это
+                    # синтетический CRITICAL-промпт с «диджея» внутри.
+                    if _source and any(
+                        kw in _source.lower()
                         for kw in self._MUSIC_STOP_OVERRIDES
                     ):
                         self.get_logger().warning(
