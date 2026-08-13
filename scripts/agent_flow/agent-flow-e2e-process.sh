@@ -756,7 +756,8 @@ worker_evidence_recent() {  # $1=pr_number $2=since_iso
     gh api "repos/${GH_REPO}/issues/${pr_number}/comments?since=${since_iso}&per_page=100" \
         --jq '.[] | select(.body | startswith("worker-evidence:")) | .user.login' \
         2>/dev/null | head -n1 \
-        | { read -r _u; [ -n "$_u" ] && printf 'yes' || printf 'no'; }
+        | { read -r _u; [ -n "$_u" ] && printf 'yes' || printf 'no'; } \
+        || printf 'no'
 }
 
 # --- infra-fail detection (ретро 10.08 t_9caf5d52) --------------------------
@@ -1459,7 +1460,7 @@ for t in data:
     gh run download "$run_id" --repo "$GH_REPO" --dir "$artifact_dir" 2>/dev/null || true
     audio_line=""
     if [ -n "$(ls -A "$artifact_dir" 2>/dev/null)" ]; then
-        audio_files="$(find "$artifact_dir" -maxdepth 3 -type f | sed "s|^${artifact_dir}/||" | head -n5 | sed 's/^/  - /')"
+        audio_files="$(find "$artifact_dir" -maxdepth 3 -type f | sed "s|^${artifact_dir}/||" | head -n5 | sed 's/^/  - /' || true)"
         audio_line="### Audio artifacts
 ${audio_files}"
     fi
@@ -1469,10 +1470,10 @@ ${audio_files}"
     # попасть ДОКАЗАТЕЛЬСТВА работы фичи (не только verdict). Ищем артефакт
     # e2e-acceptance-<run_id>/e2e_acceptance_<run_id>.txt, скачанный выше.
     acceptance_line=""
-    acc_file="$(find "$artifact_dir" -maxdepth 3 -type f -name 'e2e_acceptance_*.txt' 2>/dev/null | head -n1)"
+    acc_file="$(find "$artifact_dir" -maxdepth 3 -type f -name 'e2e_acceptance_*.txt' 2>/dev/null | head -n1 || true)"
     if [ -n "$acc_file" ] && [ -s "$acc_file" ]; then
         acceptance_line="### Acceptance ($e2e_acceptance_check)
-$(cat "$acc_file")"
+$(cat "$acc_file" 2>/dev/null || true)"
     fi
 
     # --- comment to issue ---
@@ -1797,7 +1798,7 @@ for t in data:
             || date -u +%Y-%m-%dT%H:%M:%SZ)"
         worker_evidence="no"
         if [ "$verdict" = "success" ]; then
-            worker_evidence="$(worker_evidence_recent "$pr_number" "$since_iso")"
+            worker_evidence="$(worker_evidence_recent "$pr_number" "$since_iso" || echo no)"
         fi
 
         if [ "$worker_evidence" = "yes" ]; then
