@@ -71,6 +71,22 @@ case "$subcmd" in
                     printf '%s' "$_data"
                     exit 0
                 fi
+                # Живой чек меток перед merge (ретро 13.08 t_7eab35a0):
+                # gh issue view N --json labels --jq '[.labels[].name] | join(",")'
+                if printf '%s' "$*" | grep -q -- '--json labels'; then
+                    journal "gh issue view $issue_num --json labels"
+                    _data="$(get_state ISSUE_${issue_num}_LABELS_JSON)"
+                    [ -n "$_data" ] || _data='{"labels":[{"name":"needs-e2e"}]}'
+                    if printf '%s' "$*" | grep -q -- '--jq'; then
+                        printf '%s' "$_data" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); print(",".join(sorted({l["name"] for l in d.get("labels",[])})))
+except Exception: print("")'
+                        exit 0
+                    fi
+                    printf '%s' "$_data"
+                    exit 0
+                fi
                 journal "gh issue view $issue_num (other)"
                 printf '%s' '{}'
                 exit 0
@@ -91,7 +107,25 @@ case "$subcmd" in
             list)
                 if printf '%s' "$*" | grep -q -- '--search'; then
                     journal "gh pr list --search"
-                    printf '%s' '[]'
+                    # Ретро 13.08 t_7eab35a0: поиск PR по '<номер> in:title'
+                    # (fallback для веток вне конвенции z-{agent}/). Мок
+                    # возвращает PR_SEARCH_<n>_JSON (массив) и применяет jq
+                    # так же, как реальный gh: 'num\thead' или пусто.
+                    _q="$(printf '%s' "$*" | sed -nE 's/.*--search[[:space:]]+([^ ]+).*/\1/p')"
+                    _n="$(printf '%s' "$_q" | grep -oE '[0-9]+' | head -n1)"
+                    _data="$(get_state "PR_SEARCH_${_n}_JSON")"
+                    [ -n "$_data" ] || _data='[]'
+                    if printf '%s' "$*" | grep -q -- '--jq'; then
+                        printf '%s' "$_data" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    for p in d:
+        if p.get("mergeStateStatus") in ("CLEAN","MERGEABLE"):
+            print(str(p.get("number",""))+"\t"+str(p.get("headRefName",""))); break
+except Exception: pass'
+                        exit 0
+                    fi
+                    printf '%s' "$_data"
                     exit 0
                 fi
                 if printf '%s' "$*" | grep -q -- '--head'; then
@@ -282,7 +316,10 @@ run_e2e() {
         # round_ensure вызван (C) или guard вышел (A/B). Для A/B скрипт
         # завершится сам (exit 0); для C он уйдёт в build trigger и зависнет
         # на моках — timeout 30 снимает процесс, журнал уже записан.
-        timeout 30 bash "$E2E_PROCESS" 2>>"$TEST_TMP/stderr.log" || true
+        # -k 5: скрипт держит `trap cleanup EXIT INT TERM`, по SIGTERM он
+        # чистит worktree и ПРОДОЛЖАЕТ цикл ожидания build — без SIGKILL
+        # timeout никогда не вернётся (наблюдение 13.08, ретро t_7eab35a0).
+        timeout -k 5 30 bash "$E2E_PROCESS" 2>>"$TEST_TMP/stderr.log" || true
     )
 }
 
@@ -394,8 +431,91 @@ test_C_live_candidate_creates_round() {
 }
 
 # ===========================================================================
+# D. Ветка PR вне конвенции z-{agent}/<id>-<slug> (ретро 13.08 t_7eab35a0,
+#    #1204 → PR #1206 '1204-fixvoice-...') → fallback '<number> in:title'
+#    находит OPEN PR → живой кандидат → round создаётся.
+# ---------------------------------------------------------------------------
+test_D_nonconventional_branch_fallback() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4501
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+    local alt_branch="${issue}-fixvoice-bug-c-retry"  # вне конвенции
+
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    # Каноническая ветка z-{agent}/... → PR нет (NONE).
+    # set_state "PR_HEAD_${branch}_JSON" НЕ задаём → [] → NONE.
+    # Fallback-поиск по '<номер> in:title' находит OPEN PR на alt-ветке.
+    set_state "PR_SEARCH_${issue}_JSON" "[{\"number\":4502,\"headRefName\":\"${alt_branch}\",\"mergeStateStatus\":\"CLEAN\"}]"
+    set_state "PR_HEAD_${alt_branch}_JSON" "[{\"number\":4502,\"state\":\"OPEN\",\"headRefName\":\"${alt_branch}\"}]"
+    set_state "PR_4502_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:backend\"}]}"
+    set_state "BRANCH_PRESENT_${alt_branch}" 1
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "PR найден по fallback '<number> in:title'" "$errlog" "D: guard нашёл PR по fallback (ветка вне конвенции)"
+    assert_contains "live candidate(s) — создаю round" "$errlog" "D: guard пропустил к round_ensure"
+    assert_contains "merging ${alt_branch} directly" "$errlog" "D: в round смержена именно alt-ветка (вне конвенции)"
+}
+
+# ===========================================================================
+# E. Stale-снимок issues_json после post_round_sweep (ретро 13.08 t_7eab35a0):
+#    issue уже получил e2e-done от sweep → повторно НЕ мержится в новый round.
+#    Проверяем через живой чек меток перед merge (метка e2e-done → skip).
+# ---------------------------------------------------------------------------
+test_E_live_labels_skip_after_sweep() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4601
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    # Свежий чек меток: sweep уже поставил e2e-done (stale-снимок бы этого не увидел).
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"e2e-done"}]}'
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":4602,\"state\":\"OPEN\",\"headRefName\":\"${branch}\"}]"
+    set_state "PR_4602_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:backend\"}]}"
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "live labels" "$errlog" "E: живой чек меток выполнен"
+    assert_contains "skip merge" "$errlog" "E: merge пропущен для e2e-done issue"
+    # Лог «merging ... directly» пишется ДО живого чека (это intent) — проверяем
+    # по журналу, что реальный git merge НЕ выполнялся.
+    assert_not_contains "git merge" "$journal" "E: НЕТ реального git merge в round"
+    assert_not_contains "merged & pushed" "$errlog" "E: НЕТ push смерженной ветки"
+}
+
+# ===========================================================================
 run_test "A. issues без PR → round НЕ создаётся" test_A_no_prs_no_round
 run_test "B. orphan (MERGED+ветка удалена) → round НЕ создаётся" test_B_orphan_no_round
 run_test "C. живой OPEN PR → round создаётся" test_C_live_candidate_creates_round
+run_test "D. ветка вне конвенции → fallback '<number> in:title' → кандидат" test_D_nonconventional_branch_fallback
+run_test "E. e2e-done от sweep → живой чек меток скипает merge" test_E_live_labels_skip_after_sweep
 
 summary
