@@ -3322,62 +3322,18 @@ class DialogueNode(Node):
                         f"finish_reason={fr!r} tools={list(tools_called)!r} "
                         f"raw={raw_hint!r}"
                     )
-                    # Reminder в долгую память — следующий turn LLM его
-                    # увидит через memory_context / history. _handle_result
-                    # синхронный → планируем фоновую запись.
-                    try:
-                        from rob_box_harness.memory import Turn
-
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(
-                            self._memory.append_turn(
-                                # DialogCore строится с user_id="default"
-                                # (см. __init__) — дублируем здесь.
-                                "default",
-                                Turn(
-                                    role="assistant",
-                                    content=(
-                                        "[SYSTEM REMINDER] В прошлом цикле ты "
-                                        "вернул ПУСТОЙ ответ (ни текста, ни "
-                                        "tool-вызова) — пользователь ничего не "
-                                        "услышал. Так делать НЕЛЬЗЯ. Всегда "
-                                        "отвечай текстом или вызови tool."
-                                    ),
-                                ),
-                            )
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        self.get_logger().warning(
-                            f"⚠️ empty-reminder append failed: {exc}"
-                        )
-                    # Persist a synthetic assistant turn so the next LLM call
-                    # still sees a continuous conversation; otherwise
-                    # «продолжай» looks like a fresh exchange
-                    # and the robot appears to forget the running topic.
-                    try:
-                        from rob_box_harness.memory import Turn
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(
-                            self._memory.append_turn(
-                                "default",
-                                Turn(
-                                    role="assistant",
-                                    content=(
-                                        "[silent_accept] Вопрос принят, "
-                                        "но ответа не последовало "
-                                        "(LLM вернула done без speak_text). "
-                                        "user=\"" + (user_input or "")[:200] + "\""
-                                    ),
-                                ),
-                            )
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        try:
-                            self.get_logger().warning(
-                                f"⚠️ silent-marker append failed: {exc}"
-                            )
-                        except Exception:
-                            pass
+                    # 🔴 FIX (issue #1217): НЕ пишем [SYSTEM REMINDER] /
+                    # [silent_accept] в долгую память как assistant-реплики.
+                    # Раньше каждый пустой ответ добавлял в history
+                    # синтетические assistant-turn'ы («done» + REMINDER +
+                    # silent_accept), и через несколько циклов LLM видела
+                    # историю из десятков «done» — и МИМИКИРОВАЛА этот
+                    # паттерн, возвращая «done» без tool-вызовов (memory DB
+                    # показывала 15+ подряд assistant 'done'). Корректирующий
+                    # retry теперь живёт ВНУТРИ DialogCore._run_with_tools
+                    # (issue #1217) и учит модель в том же turn; служебные
+                    # записи в диалоговую память не нужны (правило control
+                    # traffic — как для DJ-auto в dialog_core.process_input).
                 except Exception as _empty_fallback_exc:
                     # 🔴 КРИТИЧНО: даже если ВСЁ внутри блока упало
                     # (логгер, память, etc.), пользователь НЕ должен
