@@ -133,6 +133,7 @@ class MCPServer(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
+        self._qos_profile = qos_profile
 
         # Publisher для списка инструментов
         self.tools_pub = self.create_publisher(String, "/mcp/tools", qos_profile)
@@ -293,6 +294,67 @@ class MCPServer(Node):
             self.get_logger().info(
                 f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
                 f"(stop_all вызван профилактически). msg={result.get('message')}"
+            )
+
+    def _on_music_fallback(self, msg: "String") -> None:
+        """Issue #1016 — play the top-rated library track when the LLM
+        returned an empty reply to a music request.
+
+        Triggered by messages on ``/mcp/music_fallback`` published by
+        :class:`dialogue_node` (empty-response branch). The library query
+        is already ordered ``rating DESC, name ASC`` (:meth:`TrackLibrary.
+        list_tracks`), so the first result is the best human track we have.
+
+        Best-effort: if the music stack is unavailable, or the library is
+        empty, this is a silent no-op (the robot already said "Принял.").
+        """
+        manager = getattr(self, "_music_manager", None)
+        library = getattr(self, "_track_library", None)
+        if manager is None or library is None:
+            self.get_logger().warning(
+                "🎵 [music_fallback] music manager/library unavailable — skip"
+            )
+            return
+        try:
+            reason = ""
+            if msg.data:
+                try:
+                    payload = json.loads(msg.data)
+                    if isinstance(payload, dict):
+                        reason = f" ({payload.get('reason', '')})"
+                except (TypeError, ValueError):
+                    pass
+            listing = library.list_tracks(min_rating=0)
+            tracks = listing.get("tracks", [])
+            if not tracks:
+                self.get_logger().warning(
+                    "🎵 [music_fallback] библиотека пуста — нечего играть"
+                )
+                return
+            top = tracks[0]
+            loaded = library.load_track(top["name"])
+            if not loaded.get("success"):
+                self.get_logger().warning(
+                    f"🎵 [music_fallback] не удалось загрузить "
+                    f"'{top['name']}': {loaded.get('error')}"
+                )
+                return
+            result = manager.execute_code(
+                loaded["code"], pattern_name=top["name"]
+            )
+            if result.get("success"):
+                self.get_logger().info(
+                    f"🎵 [music_fallback{reason}] играю топ-трек "
+                    f"'{top['name']}' (rating={top.get('rating')})"
+                )
+            else:
+                self.get_logger().warning(
+                    f"🎵 [music_fallback] топ-трек '{top['name']}' "
+                    f"не запустился: {result.get('error')}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [music_fallback] обработчик упал: {exc}"
             )
 
     def _run_music_watchdog(self) -> None:
@@ -477,11 +539,30 @@ class MCPServer(Node):
             )
             return
 
+        self._track_library = track_library
         self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
         self.registry.register(SaveTrackTool(self, track_library, music_manager))
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+
+        # Issue #1016 — empty-response music fallback. When the LLM returns
+        # an empty reply to a music request ("поставь что-нибудь", "сыграй
+        # классику"), dialogue_node publishes /mcp/music_fallback and we
+        # play the top-rated human track from the library instead of
+        # leaving the user in silence.
+        try:
+            self._music_fallback_sub = self.create_subscription(
+                String,
+                "/mcp/music_fallback",
+                self._on_music_fallback,
+                self._qos_profile,
+            )
+            self.get_logger().info("🎵 Подписан на /mcp/music_fallback (issue #1016)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /mcp/music_fallback: {exc}"
+            )
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""

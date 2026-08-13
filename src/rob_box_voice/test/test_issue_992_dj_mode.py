@@ -500,6 +500,74 @@ class TestIssue992BugC(unittest.TestCase):
             node.close()
 
 
+class TestIssue1016MusicFallback(unittest.TestCase):
+    """Issue #1016 — empty-response music fallback.
+
+    When the LLM returns an empty reply (no text, no tool calls) for a
+    music request («поставь что-нибудь», «сыграй классику»), the
+    dialogue node must publish ``/mcp/music_fallback`` so mcp_server
+    plays the top-rated human track instead of leaving the user in
+    silence.
+    """
+
+    def _fallback_payloads(self, node: _TestableDialogueNode) -> List[dict]:
+        pub = node._publishers.get("/mcp/music_fallback")
+        if pub is None:
+            return []
+        out: List[dict] = []
+        for msg in getattr(pub, "published", []):
+            data = getattr(msg, "data", None)
+            if not data:
+                continue
+            try:
+                out.append(json.loads(data))
+            except (TypeError, ValueError):
+                out.append({"raw": data})
+        return out
+
+    def test_empty_response_on_music_request_publishes_fallback(self):
+        """LLM пустой ответ + музыкальный запрос → /mcp/music_fallback."""
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("роббокс поставь что-нибудь"))
+            node.drive_one_turn()
+
+            payloads = self._fallback_payloads(node)
+            self.assertTrue(
+                payloads,
+                "empty response on a music request must publish "
+                "/mcp/music_fallback; "
+                f"publishers={list(node._publishers)!r}",
+            )
+            self.assertEqual(payloads[0].get("reason"), "empty_response")
+        finally:
+            node.close()
+
+    def test_empty_response_on_plain_chat_no_fallback(self):
+        """Обычный вопрос + пустой ответ LLM → НЕ публикуем fallback."""
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("роббокс расскажи анекдот"))
+            node.drive_one_turn()
+
+            payloads = self._fallback_payloads(node)
+            self.assertEqual(
+                payloads, [],
+                "plain chat must NOT trigger the music fallback; "
+                f"payloads={payloads!r}",
+            )
+        finally:
+            node.close()
+
+
 # ── module-level helpers ──────────────────────────────────────────────
 
 

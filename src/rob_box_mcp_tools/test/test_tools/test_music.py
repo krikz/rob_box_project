@@ -1478,3 +1478,157 @@ class TestMusicSessionLifecycle:
         assert second["was_active"] is False
         assert second["stopped_patterns"] == []
         assert "профилактически" in second["message"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #1016 — music-quality guardrail (dramaturgy validator)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicQualityValidator:
+    """Валидатор музыкального качества (issue #1016).
+
+    Отделен от ``_filter_code`` (безопасность): этот валидатор ловит
+    *музыкальные* ошибки LLM — абсолютные частоты, отсутствие ``dur=``
+    и статичные лупы без развития. errors блокируют выполнение,
+    warnings только добавляются в message.
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    # ----- absolute frequencies (hard errors) ------------------------------
+
+    def test_freq_kwarg_is_rejected(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck(freq=440, dur=1)"
+        )
+        assert errors, "freq=440 must be a hard error"
+        assert "частот" in errors[0]
+
+    def test_hz_kwarg_is_rejected(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck(hz=220, dur=1)"
+        )
+        assert errors
+
+    def test_midinote_kwarg_is_rejected(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck(midinote=69, dur=1)"
+        )
+        assert errors
+
+    def test_scale_degrees_pass(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,4,7], dur=0.5)"
+        )
+        assert errors == []
+
+    def test_execute_code_blocks_absolute_frequency(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.execute_code("p1 >> pluck(freq=440, dur=1)")
+        assert result["success"] is False
+        assert "валидатор" in result["error"]
+        exec_mock.assert_not_called()  # код не ушёл в Renardo
+
+    # ----- dur= warnings ---------------------------------------------------
+
+    def test_missing_dur_warns_but_passes(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4])"
+        )
+        assert errors == []
+        assert any("dur" in w for w in warnings)
+
+    def test_play_without_dur_is_ok(self):
+        # play() имеет собственный dur из строки паттерна — не нудим.
+        errors, warnings = self.mgr._validate_music_code(
+            'd1 >> play("x-o-", sample=1, amp=0.2)'
+        )
+        assert errors == []
+        assert warnings == []
+
+    def test_missing_dur_warning_surfaces_in_execute_result(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0,2,4])")
+        assert result["success"] is True
+        assert "dur" in result["message"]
+
+    # ----- static-loop warning (developing patterns) -----------------------
+
+    def test_static_loop_without_dev_pattern_warns(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4], dur=0.5)\n"
+            "p2 >> bass([0,-2], dur=1)"
+        )
+        assert errors == []
+        assert any("статичн" in w for w in warnings)
+
+    def test_dev_pattern_suppresses_static_loop_warning(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4], dur=0.5).every(4, 'stutter')\n"
+            "p2 >> bass([0,-2], dur=1)"
+        )
+        assert errors == []
+        assert not any("статичн" in w for w in warnings)
+
+    def test_pvar_suppresses_static_loop_warning(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "current_chord = Pvar([[0,2,4],[3,5,7]], 8)\n"
+            "p1 >> pad(current_chord, dur=4)\n"
+            "p2 >> dub([0,-2], dur=2)"
+        )
+        assert errors == []
+        assert not any("статичн" in w for w in warnings)
+
+    # ----- Clock.future structures from the library ------------------------
+
+    def test_bootstrap_track_passes_validator(self):
+        """csm_132_full_track (Intro→Verse→Chorus→Outro через Clock.future)
+        не должен блокироваться валидатором и не должен нудить про
+        статичный луп — это эталон драматургии (issue #1016)."""
+        code = (
+            "Clock.bpm = 132\n"
+            "Scale.default = 'minor'\n"
+            "Root.default = 'C#'\n"
+            "def intro():\n"
+            "    d1 >> play('X...', sample=1, amp=0.2)\n"
+            "    p1 >> pads([0,4,5,3], dur=8, amp=0.15)\n"
+            "    Clock.future(16, verse)\n"
+            "def verse():\n"
+            "    p2 >> dub([0,-2,0,-3], dur=2, oct=3, amp=0.3)\n"
+            "    p3 >> blip([0,2,4,7,4,2,0,-2], dur=0.5, amp=0.5)\n"
+            "    Clock.future(32, chorus)\n"
+            "def chorus():\n"
+            "    d2 >> play('--.-', sample=3, amp=0.15)\n"
+            "    p1 >> pads([0,4,7,4], dur=2, amp=0.25)\n"
+            "    Clock.future(32, bridge)\n"
+            "def bridge():\n"
+            "    d2.stop()\n"
+            "    p3.stop()\n"
+            "    Clock.future(16, outro)\n"
+            "def outro():\n"
+            "    p2.stop()\n"
+            "    Clock.future(16, lambda: Clock.clear())\n"
+            "intro()"
+        )
+        errors, warnings = self.mgr._validate_music_code(code)
+        assert errors == []
+        # Play-плееры (d1/d2) без dur= — это ок; synth-плееры с dur=.
+        assert not any("статичн" in w for w in warnings)
+
+    def test_filter_code_does_not_block_clock_future(self):
+        """_filter_code (безопасность) не должен ломать Clock.future —
+        это требование acceptance (bootstrap-трек использует
+        Clock.future(16, verse) для смены секций)."""
+        ok, err = self.mgr._filter_code(
+            "def verse():\n"
+            "    p1 >> pads([0,4,5,3], dur=8)\n"
+            "    Clock.future(16, verse)"
+        )
+        assert ok is True
+        assert err == ""
+

@@ -374,6 +374,21 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
             )
+        # Issue #1016 — empty-response music fallback. When the LLM returns
+        # an empty reply to a music request, dialogue_node asks mcp_server
+        # to play the top-rated human track from the library instead of
+        # leaving the user in silence.
+        try:
+            self._music_fallback_pub = self.create_publisher(
+                String, "/mcp/music_fallback", 10)
+            self.get_logger().info(
+                "🎵 [dialogue_node] Publisher на /mcp/music_fallback готов (issue #1016)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._music_fallback_pub = None
+            self.get_logger().warning(
+                f"⚠️ [dialogue_node] Не удалось создать /mcp/music_fallback publisher: {exc}"
+            )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
         # Issue #1077 — speaker_tag от Yandex speaker_analysis (отдельный
@@ -2080,7 +2095,7 @@ class DialogueNode(Node):
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 
-    # Issue #992 Bug C — narrow keyword heuristic. ``трек`` and ``бит``
+    # Issue #1016 Bug C — narrow keyword heuristic. ``трек`` and ``бит``
     # are deliberately excluded because they fire on chit-chat like
     # "роббокс какой трек посоветуешь?" (issue 992 test_user_normal_chat
     # regression). Keep the list focused on unambiguous "play something
@@ -2104,6 +2119,41 @@ class DialogueNode(Node):
         "включи музык",
         "запусти музык",
     )
+
+    # Issue #1016 — empty-response music fallback. Более широкая эвристика
+    # чем _MUSIC_GUARD_KEYWORDS: используется ТОЛЬКО в ветке «LLM вернула
+    # пустоту и не вызвала ни одного тула» — там цена ложного
+    # срабатывания ниже (вместо «Принял.» + тишины юзер услышит топ-трек
+    # из библиотеки). «Поставь что-нибудь» — канонический TRACK-триггер
+    # из issue #1016, поэтому «поставь» и «включи» входят сюда.
+    # Жанровые слова (джаз/рок/блюз) и «трек»/«бит» сознательно НЕ
+    # включены — они встречаются в вопросах-рекомендациях («какой трек
+    # посоветуешь?»), где музыка ни к чему.
+    _MUSIC_FALLBACK_KEYWORDS = (
+        "спой",
+        "пой ",
+        "рэп",
+        "рап",
+        "диджей",
+        "dj ",
+        "dj-",
+        "песня",
+        "песню",
+        "песенк",
+        "зачитай",
+        "зачита",
+        "зачитывай",
+        "сыграй",
+        "играй",
+        "поставь",
+        "включи",
+        "музык",
+        "мелоди",
+        "классик",
+        "танцевальн",
+    )
+
+
 
     # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
     # остановить музыку/DJ, а НЕ замолчать робота. Подстрока «хватит»
@@ -2167,6 +2217,28 @@ class DialogueNode(Node):
                 f"MUSIC_GUARD_KEYWORDS → wants_music=False "
                 f"(возможно, нужно добавить keyword в _MUSIC_GUARD_KEYWORDS)"
             )
+        return False
+
+    def _user_wants_music_fallback(self, user_input: str) -> bool:
+        """Issue #1016 — broader heuristic for the empty-response fallback.
+
+        Unlike :meth:`_user_wants_music` (which drives the spoken
+        "бит не запустился" nudge), this one is used ONLY in the
+        empty-response branch where the LLM returned nothing and no
+        tool was called. There the cost of a false positive is low —
+        the robot would otherwise say «Принял.» and stay silent, so
+        playing the top library track is strictly better.
+        """
+        if not user_input:
+            return False
+        low = user_input.lower()
+        matched = [kw for kw in self._MUSIC_FALLBACK_KEYWORDS if kw in low]
+        if matched:
+            self.get_logger().debug(
+                f"🎵 [music_fallback] user_input={user_input!r} matched "
+                f"keywords={matched!r} → fallback music"
+            )
+            return True
         return False
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
@@ -2938,6 +3010,24 @@ class DialogueNode(Node):
             # СЛЕДУЮЩИЙ turn LLM увидела, что прислала пустоту и так
             # делать не надо. Юзер не получает ложного «задумался».
             if not tools_called:
+                # Issue #1016 — empty-response music fallback: LLM вернула
+                # пустоту на музыкальный запрос («поставь что-нибудь»,
+                # «сыграй классику», «включи музыку») и НЕ вызвала ни одного
+                # тула. Просим mcp_server сыграть топ-трек из библиотеки
+                # (rating DESC), чтобы юзер услышал музыку, а не тишину.
+                # Эвристика шире _MUSIC_GUARD_KEYWORDS — это единственная
+                # ветка, где цена ложного срабатывания низкая (робот и так
+                # молчал бы).
+                try:
+                    if self._user_wants_music_fallback(user_input or ""):
+                        self._publish_music_fallback(reason="empty_response")
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ music_fallback trigger failed: {exc}"
+                        )
+                    except Exception:
+                        pass
                 # 🔴 FIX (live 12.08): весь empty-response fallback
                 # обёрнут в try/except — если любой внутренний вызов
                 # (включая логгер!) упадёт, пользователь ВСЁ РАВНО
@@ -3222,6 +3312,33 @@ class DialogueNode(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
+            )
+
+    def _publish_music_fallback(self, reason: str = "empty_response") -> None:
+        """Issue #1016 — ask mcp_server to play the top-rated library track.
+
+        Used in the empty-response fallback: when the LLM returns no text
+        AND no tool calls for a music request («поставь что-нибудь»,
+        «сыграй классику»), the user should hear *something* — the best
+        human track from the library — instead of silence.
+
+        Best-effort: if the publisher was never created (mcp_server not
+        running in this container), this is a silent no-op. mcp_server
+        decides what to do — currently it plays the top-rated track from
+        ``music_tracks`` (rating DESC).
+        """
+        if getattr(self, "_music_fallback_pub", None) is None:
+            self.get_logger().debug("music_fallback publisher not available")
+            return
+        try:
+            payload = json.dumps({"reason": reason})
+            msg = String()
+            msg.data = payload
+            self._music_fallback_pub.publish(msg)
+            self.get_logger().info(f"music_fallback sent: reason={reason}")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
             )
     def _speak_direct(self, text: str) -> None:
         for chunk in split_into_chunks(text):
