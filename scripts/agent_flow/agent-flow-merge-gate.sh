@@ -1696,7 +1696,14 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
     # (issues и PR делят нумерацию): #1172 закрыт 02:33, #1173 закрыт 02:45 и
     # добит повторно 03:54 после reopen. Фикс #918/#979 НЕ попал в develop.
     # Проверяем: номер существует как PR (даже closed) → это не issue → skip.
-    if gh pr view "$r_issue" --repo "$GH_REPO" --json number >/dev/null 2>&1; then
+    # ВАЖНО (ретро 13.08 t_2d78fbdd, #942): НЕЛЬЗЯ проверять через
+    # `gh pr view N --json number` — gh CLI для одного поля number НЕ ходит
+    # в API и возвращает success для ЛЮБОГО числа (даже несуществующего),
+    # поэтому guard скипал ВСЕ ретро-issues как «это PR» и ретро-путь
+    # молчал (issue #942 висела OPEN при смерженном PR #1192). Используем
+    # REST `gh api pulls/N` — он реально проверяет существование PR:
+    # 404 = это issue (не PR) → обрабатываем ретро-путь; 200 = это PR → skip.
+    if gh api "repos/${GH_REPO}/pulls/${r_issue}" --jq '.number' >/dev/null 2>&1; then
         log "retro-path: #${r_issue} — это PR (не issue), ref из PR #${r_pr} — skip (guard t_d8e2c3f1)"
         continue
     fi

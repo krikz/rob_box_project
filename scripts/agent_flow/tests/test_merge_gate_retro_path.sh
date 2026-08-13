@@ -433,6 +433,50 @@ test_K_retro_skips_needs_review_issue() {
 }
 
 # ===========================================================================
+# L. (13.08, ретро t_2d78fbdd, #942): merged PR #1192 ссылается на ISSUE
+#    #942 (не PR!). Guard PR/issue НЕ должен скипать issue: `gh api pulls/942`
+#    → 404 (это issue) → ретро-путь обрабатывает. Регрессия: раньше guard
+#    использовал `gh pr view N --json number`, который gh CLI выполняет БЕЗ
+#    обращения к API и возвращает success для ЛЮБОГО числа → issue #942
+#    скипалась как «это PR» → висела OPEN при смерженном PR.
+# ===========================================================================
+test_L_retro_issue_942_not_skipped_by_guard() {
+    new_test
+    local issue=942 pr=1192 head='wt/t_de63be1f-detect-pr-kind'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow t_de63be1f): detect_pr_kind — 'fix(agent-flow' → lint; взаимоисключение needs-review/needs-e2e (#${issue})\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-13T06:20:33Z\"}]"
+    # #942 — НЕ PR: PR_EXISTS_942 не задан → gh api pulls/942 должен дать 404.
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # e2e run на ветке PR НЕТ — fallback на CI-only.
+    set_state "RUN_LIST_${head}_JSON" '[]'
+    # PR #1192 меняет только scripts/agent_flow/ → CI-only.
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"scripts/agent_flow/agent-flow-merge-gate.sh"},{"path":"scripts/agent_flow/agent-flow-e2e-process.sh"}]}'
+    # CI зелёный.
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"SUCCESS"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # Guard НЕ должен скипнуть #942 как «это PR».
+    local skip_guard
+    skip_guard="$(printf '%s\n' "$journal" | grep -c "это PR (не issue).*942" || true)"
+    assert_eq "0" "$skip_guard" "guard does NOT skip issue #942 as PR"
+
+    # Ретро-путь должен закрыть issue #942 (CI-only + зелёный CI).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "retro-path closes issue #942 (CI-only green, PR merged)"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. retro-path: e2e PASS evidence → close unlabeled issue" test_A_retro_e2e_pass_closes
@@ -446,5 +490,6 @@ run_test "H. retro-path: e2e:rejected + merged CI-only green → close + remove 
 run_test "I. retro-path: e2e:rejected + merged no PASS → no needs-e2e loop" test_I_retro_rejected_no_evidence_no_loop
 run_test "J. retro-path: PR-number reference NOT closed (guard 13.08)" test_J_retro_pr_number_not_closed
 run_test "K. retro-path: needs-review issue NOT re-labeled (13.08)" test_K_retro_skips_needs_review_issue
+run_test "L. retro-path: issue #942 NOT skipped by PR/issue guard (13.08)" test_L_retro_issue_942_not_skipped_by_guard
 
 summary
