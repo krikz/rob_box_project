@@ -2324,9 +2324,16 @@ class TTSNode(Node):
             chunks = self._chunk_text(text, max_chars=self.chunk_max_chars_yandex)
             audio_segments: list = []
             per_chunk_rates: list = []
-            for chunk_text in chunks:
+            n_chunks = len(chunks)
+            for idx, chunk_text in enumerate(chunks, start=1):
+                _chunk_t0 = time.monotonic()
                 segment, sample_rate = self._synthesize_yandex_single(
                     chunk_text, speech_rate
+                )
+                _chunk_ms = (time.monotonic() - _chunk_t0) * 1000.0
+                self.get_logger().info(
+                    f"⏱️ Yandex chunk {idx}/{n_chunks}: {len(chunk_text)} chars → "
+                    f"{_chunk_ms:.0f} ms ({len(segment)} samples)"
                 )
                 audio_segments.append(segment)
                 per_chunk_rates.append(sample_rate)
@@ -2336,7 +2343,7 @@ class TTSNode(Node):
                 audio_results = synthesize_with_retry(
                     text,
                     "yandex_grpc_v3",
-                    lambda chunk_text: self._synthesize_yandex_single(
+                    lambda chunk_text: self._synthesize_yandex_single_with_latency(
                         chunk_text, speech_rate
                     ),
                     max_chars=self.chunk_max_chars_yandex,
@@ -2421,6 +2428,25 @@ class TTSNode(Node):
             raise Exception(f"Yandex gRPC error: {e.code()} - {e.details()}")
         except Exception as e:
             raise Exception(f"Yandex synthesis error: {e}")
+
+    def _synthesize_yandex_single_with_latency(
+        self, text: str, speech_rate: float
+    ) -> tuple[np.ndarray, int]:
+        """``_synthesize_yandex_single`` + лог латентности (issue #931 acceptance).
+
+        Обёртка для retry-halve пути в :meth:`_synthesize_yandex`: замеряет
+        время одного gRPC ``UtteranceSynthesis`` и пишет его в лог, чтобы
+        latency каждого чанка была видна (требование #931:
+        «Latency добавлена в логи (время синтеза каждого чанка)»).
+        """
+        _t0 = time.monotonic()
+        segment, sample_rate = self._synthesize_yandex_single(text, speech_rate)
+        _elapsed_ms = (time.monotonic() - _t0) * 1000.0
+        self.get_logger().info(
+            f"⏱️ Yandex synth: {len(text)} chars → {_elapsed_ms:.0f} ms "
+            f"({len(segment)} samples)"
+        )
+        return segment, sample_rate
 
     @staticmethod
     def _decoded_audio_to_float32(decoded: DecodedAudio) -> np.ndarray:

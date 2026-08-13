@@ -38,9 +38,9 @@ SENT = "А. " * 5  # 15 chars
 class TestChunkLimits(unittest.TestCase):
     """Что :data:`CHUNK_LIMITS` содержит правильные дефолты."""
 
-    def test_yandex_default_is_700(self):
-        """Issue #933 spec: yandex_grpc_v3=700 chars max chunk."""
-        self.assertEqual(CHUNK_LIMITS["yandex_grpc_v3"], 700)
+    def test_yandex_default_is_250(self):
+        """Issue #937 spec: yandex_grpc_v3=250 chars max chunk (API v3 hard limit)."""
+        self.assertEqual(CHUNK_LIMITS["yandex_grpc_v3"], 250)
 
     def test_silero_default_is_800(self):
         """Issue #933 spec: silero_v5=800 chars max chunk."""
@@ -61,7 +61,7 @@ class TestGetChunkLimit(unittest.TestCase):
     """Per-provider limit lookup (с override)."""
 
     def test_default_provider(self):
-        self.assertEqual(get_chunk_limit("yandex_grpc_v3"), 700)
+        self.assertEqual(get_chunk_limit("yandex_grpc_v3"), 250)
         self.assertEqual(get_chunk_limit("silero_v5"), 800)
         self.assertEqual(get_chunk_limit("minimax"), 5000)
 
@@ -336,7 +336,12 @@ class TestIntegrationObservations(unittest.TestCase):
             self.assertLessEqual(length, 800)
 
     def test_291_chars_with_yandex_limit(self):
-        """291 chars при yandex limit=700 → один chunk, OK."""
+        """291 chars при max_chars=700 → один chunk, OK.
+
+        NB: актуальный дефолт yandex_grpc_v3 = 250 (issue #937). Здесь
+        явно передаём max_chars=700, чтобы проверить поведение
+        ``synthesize_with_retry`` на тексте, который влезает в лимит.
+        """
         def synth(text):
             if len(text) > 700:
                 raise RuntimeError("Too long text")
