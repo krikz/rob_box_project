@@ -614,6 +614,22 @@ case "$subcmd" in
                 _data="$(get_state PR_${pr_num}_COMMITS_JSON)"
                 apply_jq "$_data" "$_jq_filter"
                 ;;
+            repos/*/pulls/[0-9]*)
+                # Ретро-путь guard PR/issue (ретро 13.08 t_2d78fbdd, #942):
+                # скрипт проверяет существование PR через REST gh api pulls/N
+                # (НЕ gh pr view --json number — тот для одного поля number не
+                # ходит в API и возвращает success для любого числа, из-за
+                # чего guard скипал ВСЕ ретро-issues). Здесь эмулируем REST:
+                # 200 + {"number":N} если PR_EXISTS_<n>=1 (это PR), иначе 404.
+                pr_num="$(printf '%s' "$path" | sed -nE 's#.*/pulls/([0-9]+).*#\1#p')"
+                journal "gh api $path (pulls guard)"
+                if [ "$(get_state PR_EXISTS_${pr_num})" = "1" ]; then
+                    printf '{"number":%s}' "$pr_num"
+                    exit 0
+                fi
+                echo "simulated: no pull request #$pr_num (HTTP 404)" >&2
+                exit 1
+                ;;
             repos/*/git/refs/heads/*)
                 branch="$(printf '%s' "$path" | sed -nE 's#.*/git/refs/heads/(.+)$#\1#p')"
                 journal "gh api -X DELETE $path"
