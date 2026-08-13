@@ -2420,7 +2420,16 @@ class DialogueNode(Node):
             "🗣️ [issue 992 Bug D] LLM babble detected — retrying once with "
             f"CRITICAL reminder (head={spoken[:60]!r})"
         )
-        self._dispatch_turn(retry_prompt, is_babble_retry=True)
+        # Issue #1204: ``user_input`` здесь — уже оригинальная команда
+        # юзера (caller передал raw_user_command or user_input). Форвардим
+        # её как raw_user_command, иначе music-гуард на ретрай-туре
+        # просканирует синтетический babble-промпт (в нём есть «песня»)
+        # и запустит ложный music-ретрай.
+        self._dispatch_turn(
+            retry_prompt,
+            is_babble_retry=True,
+            raw_user_command=user_input,
+        )
         return True
 
     def _build_babble_retry_prompt(self, user_input: str) -> str:
