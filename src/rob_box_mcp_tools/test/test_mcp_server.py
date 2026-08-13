@@ -133,6 +133,7 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "ListenForResponseTool": "listen_for_response",
         "EstimateTtsDurationTool": "estimate_tts_duration",
         "RegisterSpeakerTool": "register_speaker",
+        "SetVoiceTool": "set_voice",
         "MemorySaveTool": "memory_save",
         "MemorySearchTool": "memory_search",
         "MemoryContextTool": "memory_context",
