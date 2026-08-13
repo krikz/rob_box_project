@@ -293,9 +293,19 @@ for c in json.load(sys.stdin):
     v = re.search(r"Verdict[^\n]*\n[^\n]*?([A-Z]{2,})\b", b)
     s = re.search(r"e2e-signature: ([a-zA-Z0-9_]+)", b)
     docs.append((v.group(1) if v else "", s.group(1) if s else ""))
-for verdict, sig in reversed(docs):
-    print("%s\t%s" % (verdict, sig))
-' "$n" 2>/dev/null)
+try:
+    for verdict, sig in reversed(docs):
+        print("%s\t%s" % (verdict, sig))
+        sys.stdout.flush()
+except BrokenPipeError:
+    # Ретро 13.08 (t_a741841b): функция выходит раньше (return 0 в while-read),
+    # читатель пайпа закрыт — выходим тихо, не роняем тик под pipefail.
+    try:
+        sys.stdout.close()
+    except Exception:
+        pass
+    sys.exit(0)
+' "$n" 2>/dev/null || true)
     return 0
 }
 
@@ -1884,8 +1894,21 @@ for issue in sorted(data, key=lambda i: i["number"]):
     b = issue.get("body") or ""
     def esc(s):
         return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
-    sys.stdout.write(f"{n}\t{esc(t)}\t{esc(l)}\t{esc(b)}\n")
-')
+    try:
+        sys.stdout.write(f"{n}\t{esc(t)}\t{esc(l)}\t{esc(b)}\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Ретро 13.08 (t_a741841b): читатель (while-read) закрыл пайп раньше,
+        # чем python дописал (большой issues_json > 64KB буфера пайпа, скрипт
+        # умер/вышел: set -e, внешний kill). Без обработки python падает с
+        # BrokenPipeError (traceback «line 12» в логах run-now, round-69 12.08)
+        # и под pipefail роняет весь тик. Выходим тихо; || true — страховка.
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        sys.exit(0)
+' 2>/dev/null || true)
 
 # --- summary -----------------------------------------------------------------
 log "tick done: processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"
