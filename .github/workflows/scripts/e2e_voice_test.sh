@@ -244,7 +244,7 @@ for line in data.splitlines():
     if [ -z "$tg_metrics" ]; then
         log "TG_ECHO: метрики недоступны (нет prometheus_client / старый образ) — fallback на логи"
     else
-        out_count="$(printf '%s\n' "$tg_metrics" | grep -oE '[0-9]+$' | head -1)"
+        out_count="$(printf '%s\n' "$tg_metrics" | grep 'direction="out"' | grep -oE '[0-9]+$' | head -1)"
         if [ -n "$out_count" ] && [ "${out_count:-0}" -gt 0 ]; then
             log "TG_ECHO: ✅ telegram_message_total{out,...} = ${out_count} (бот отправлял сообщения)"
             return 0
