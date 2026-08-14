@@ -34,6 +34,7 @@ import pytest
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
     DialogState,
+    DialogueEvent,
     DialogueStateKind,
     DialogueStateMachine,
 )
@@ -1076,6 +1077,90 @@ def test_empty_first_response_triggers_corrective_retry(
     # last message and follows the user turn directly.
     assert retry_messages[-1].role == "user"
     assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_empty_finish_reason_none_triggers_corrective_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 follow-up — finish_reason=None with empty content retries.
+
+    e2e run on develop 79a284f showed ``Empty assistant response
+    (LLM вернул пустоту): finish_reason=None tools=[] raw=''`` — the
+    deepseek stream finished without a terminal finish_reason chunk, so
+    the aggregator returned ``finish_reason=None`` instead of 'stop'.
+    The corrective retry must treat that shape exactly like the bare
+    'done' / empty-'stop' variants (it keys on empty content + no tool
+    calls, NOT on finish_reason).
+    """
+    llm.responses = [
+        LLMResponse(content="", tool_calls=(), finish_reason=None),
+        LLMResponse(content="Сейчас пять часов", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("который час", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Сейчас пять часов"
+    assert len(llm.calls) == 2
+    retry_messages = llm.calls[1][0]
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — DJ-auto turn with preclassified_event must reach the LLM.
+
+    Regression from #1101: ``_run_turn`` passes
+    ``preclassified_event=STT_RESULT`` for every turn, so ``process_input``
+    skipped its own DSM transition (the ``pass`` in the preclassified
+    branch). DJ auto-turns do NOT come through ``_on_stt`` (which drives
+    IDLE→LISTENING→DIALOGUE) — they are dispatched straight from the
+    DJ tick. After a previous turn left the DSM in IDLE (DIALOGUE_END),
+    the LLM gate ``current_state == DIALOGUE`` silently dropped the turn:
+    the LLM was never called and the robot answered nothing in ~2 ms
+    (e2e run4: 4/4 DJ-auto turns ``spoken='' tools=[] finish_reason=None``
+    with zero ``[health] stream`` log lines).
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "dj"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    # DSM starts in IDLE (default) — no wake word fired for a DJ tick.
+    assert dsm.current_state == DialogueStateKind.IDLE
+
+    result = asyncio.run(core_obj.process_input(
+        "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] ...",
+        history=[],
+        is_dj_auto=True,
+        preclassified_event=DialogueEvent.STT_RESULT,
+    ))
+
+    # The turn must have reached the LLM and driven DSM into DIALOGUE.
+    assert result.error is None
+    assert len(llm.calls) == 2  # tool turn + final 'done'
+    assert result.tools_called == ["echo"]
+    assert result.spoken_text == "done"
+    assert dsm.current_state == DialogueStateKind.IDLE  # DIALOGUE_END ran
 
 
 def test_silent_done_retry_does_not_loop(

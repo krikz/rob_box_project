@@ -384,7 +384,24 @@ class DialogCore:
         if preclassified_event is not None:
             # Caller already drove the DSM (dialogue_node._on_stt).
             # Trust its current_state — typically DIALOGUE.
-            pass
+            #
+            # 🔴 FIX (issue #1217, DJ-auto regression from #1101):
+            # DJ auto-turns do NOT come through ``_on_stt`` — they are
+            # dispatched straight from ``DJModeController.tick`` via
+            # ``_run_turn``, which passes ``preclassified_event=STT_RESULT``.
+            # The else-branch below (with the DJ force-transition) is
+            # therefore skipped, so when the previous turn left the DSM
+            # in IDLE (DIALOGUE_END) the LLM gate
+            # ``current_state == DIALOGUE`` silently drops the turn —
+            # the LLM is never called and the robot answers nothing
+            # (observed in e2e run4: DJ-auto turns returned in ~2 ms
+            # with ``spoken='' tools=[] finish_reason=None`` and zero
+            # ``[health] stream`` log lines). Force the same transition
+            # the else-branch would have done.
+            if is_dj_auto:
+                if self._dsm.current_state == DialogueStateKind.IDLE:
+                    self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._dsm.on_event(DialogueEvent.STT_RESULT)
         else:
             self._dsm.on_event(event)
             # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
