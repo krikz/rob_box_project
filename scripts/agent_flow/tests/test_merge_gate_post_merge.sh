@@ -13,6 +13,9 @@
 #   H. regression: follow-up detection over e2e-done stays green
 #                  (regression per ADR §7 item 8: existing follow-up
 #                   detection logic remains intact).
+#   N. Ретро 14.08 t_0bd15be9: MERGED PR + blocked card → unblock +
+#      complete + archive (раньше архив-маппинг скипал status!=done и
+#      blocked-карточка висела вечно).
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_merge_gate_post_merge.sh
@@ -630,6 +633,46 @@ test_M_orphan_comment_dedup_still_closes() {
 }
 
 # ===========================================================================
+# N. Ретро 14.08 t_0bd15be9: MERGED PR + карточка в status=blocked.
+#    Раньше архив-маппинг скипал status!=done → blocked-ретро-карточка с
+#    влитым фиксом висела вечно (recovery «родитель закроется процессом»,
+#    а процесса для blocked нет). Теперь: unblock (reason «фикс влит,
+#    критерий выполнен») → complete → archive.
+# ===========================================================================
+test_N_merged_pr_blocked_card_unblock_complete_archive() {
+    new_test
+    local issue=1090 branch
+    branch="$(slugify_branch "$issue" 'blocked card merged demo')"
+    fixture_merged_pass_proven "$issue" 1092 'blocked card merged demo'
+    # Карточка НЕ done, а blocked — именно этот кейс раньше терялся.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead${issue}\",\"status\":\"blocked\"}]"
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Issue закрывается (PASS-proven, как обычно).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "blocked card: issue closed before cleanup"
+
+    # 2) Unblock вызван с reason «фикс влит, критерий выполнен».
+    local unblock_calls
+    unblock_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox unblock --reason .* t_dead${issue}" || true)"
+    assert_eq "1" "$unblock_calls" "blocked card: unblock called with фикс влит reason"
+
+    # 3) Complete вызван с summary.
+    local complete_calls
+    complete_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox complete --summary .* t_dead${issue}" || true)"
+    assert_eq "1" "$complete_calls" "blocked card: complete called"
+
+    # 4) Archive вызван ПОСЛЕ unblock+complete.
+    local archive_calls
+    archive_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox archive t_dead${issue}" || true)"
+    assert_eq "1" "$archive_calls" "blocked card: archived after unblock+complete"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. MERGED + e2e-done → close once, no e2e-done added" test_A_merged_pass_proven_closes_once
@@ -645,5 +688,6 @@ run_test "J. CONFLICTING → recovery card (not requeue) — respawn-guard fix" 
 run_test "K. conflict comment rate-limit / no recovery for running card" test_K_conflict_comment_rate_limited
 run_test "L. merged PR + branch deleted → unlabel orphan (Q22, t_423453b1)" test_L_merged_branch_deleted_unlabels_orphan
 run_test "M. orphan comment dedup by substring → no re-post, still closes (t_0b76514f)" test_M_orphan_comment_dedup_still_closes
+run_test "N. MERGED + blocked card → unblock+complete+archive (t_0bd15be9)" test_N_merged_pr_blocked_card_unblock_complete_archive
 
 summary
