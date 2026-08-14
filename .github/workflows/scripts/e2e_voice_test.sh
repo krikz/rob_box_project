@@ -40,7 +40,7 @@ ROBOT_USER="${ROBOT_USER:-ros2}"
 # (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
 # видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
 # работает только как литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 
