@@ -101,9 +101,15 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # Удаляем по одному (rm -f не падает на отсутствующих; -- не даёт съесть флаги).
+# Ретро 14.08 (t_cf325071): root-owned файлы (yandex_key_*/voice_e2e_*.log от
+# прошлых ранов) НЕ удаляются пользователем ros2 → xargs rm возвращает 123 →
+# set -euo pipefail убивал ВЕСЬ скрипт ДО секции 4 (round-cleanup на GitHub).
+# Именно поэтому stale round-ветки 61-110 не сносились неделями. Фикс:
+#  - rm с 2>/dev/null (root-owned мусор — норма, не спамим лог);
+#  - || true на пайп (независимо от rc rm/xargs скрипт идёт дальше).
 sshpass -p "$SSHPASS_VAL" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
     "${BUILD_USER}@${BUILD_HOST}" \
-    "list=\$($find_cmd); if [ -n \"\$list\" ]; then printf '%s\n' \"\$list\" | xargs -r rm -f -- && echo \"CLEANUP_OK removed: \$(printf '%s\n' \"\$list\" | wc -l) files\"; else echo 'CLEANUP_OK nothing to remove'; fi" 2>&1 | sed 's/^/  /'
+    "list=\$($find_cmd); if [ -n \"\$list\" ]; then printf '%s\n' \"\$list\" | xargs -r rm -f -- 2>/dev/null && echo \"CLEANUP_OK removed: \$(printf '%s\n' \"\$list\" | wc -l) files\" || echo \"CLEANUP_OK partial (root-owned files skipped): \$(printf '%s\n' \"\$list\" | wc -l) files\"; else echo 'CLEANUP_OK nothing to remove'; fi" 2>&1 | sed 's/^/  /' || true
 
 # --- 4. stale round-branch cleanup на remote (ретро 12.08 t_d3aeaa9b) ------
 # ПРАВИЛО: round-ветка без e2e-активности > ROUND_STALE_HOURS (48ч) → delete.

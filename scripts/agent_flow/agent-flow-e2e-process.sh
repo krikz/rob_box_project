@@ -761,6 +761,22 @@ except Exception:
     return 0
 }
 
+# --- EXIT-hook: post-round sweep при краше тика (ретро 14.08 t_cf325071) -----
+# cobra-краш 'accepts at most 1 arg(s), received 2' в SUCCESS-пути (после
+# waiting verdict, источник — gh run view/download с мультистрочным run_id,
+# коммит 2035a8a2; остаточный краш жив 14.08 12:39 round-110) убивает тик
+# (set -euo pipefail) ДО post-round sweep следующего тика → round-ветка с
+# успешным e2e остаётся на origin без e2e-done (осиротевшие 61-110, 14.08).
+# trap EXIT гарантирует: при ЛЮБОМ выходе (в т.ч. set -e) для активного
+# ROUND_BRANCH выполняется post_round_sweep — метки e2e-done/needs-review
+# ставятся, ветка не остаётся «немой». Идемпотентно (sweep проверяет метки).
+_exit_sweep() {
+    [ "$DRY_RUN" = "true" ] && return 0
+    [ -n "${ROUND_BRANCH:-}" ] || return 0
+    post_round_sweep "$ROUND_BRANCH" >/dev/null 2>&1 || true
+}
+trap _exit_sweep EXIT
+
 # --- shared helpers (kept compatible with merge-gate.sh) --------------------
 slugify() {
     printf '%s' "$1" \
@@ -810,6 +826,14 @@ detect_pr_kind() {  # $1=labels_csv $2=title
 # Output: prints "yes" / "no"; rc=0 always.
 worker_evidence_recent() {  # $1=pr_number $2=since_iso
     local pr_number="$1" since_iso="$2"
+    [ -z "$pr_number" ] && { printf 'no'; return 0; }
+    # Ретро 14.08 (t_cf325071): санитизация ДО gh api — мусорный pr_number/
+    # since_iso (пробел/перевод строки из gh pr list/date) разбивал URL на 2
+    # позиционных аргумента gh api → cobra-краш 'accepts at most 1 arg(s),
+    # received 2' (единственный gh api в SUCCESS-ветке, корреляция SUCCESS↔краш
+    # 100%: 28/33 тиков, 5 бескрашных = FAILURE).
+    pr_number="$(printf '%s' "$pr_number" | grep -oE '[0-9]+' | head -n1 || true)"
+    since_iso="$(printf '%s' "$since_iso" | tr -d '[:space:]' || true)"
     [ -z "$pr_number" ] && { printf 'no'; return 0; }
     # gh api issues/comments работает и для PR (PR comments — это issue comments).
     gh api "repos/${GH_REPO}/issues/${pr_number}/comments?since=${since_iso}&per_page=100" \
