@@ -111,8 +111,28 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words для немедленного STOP TTS (должны совпадать с dialogue_node!)
-        self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
+        # Wake words для немедленного STOP TTS (barge-in). Должны совпадать с dialogue_node!
+        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml (12 вариантов) +
+        # исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
+        # кривые варианты («робок», «роберт», «рыбок», «роботс») — все покрываем.
+        self.declare_parameter(
+            "wake_words",
+            [
+                "робок",
+                "робот",
+                "роббокс",
+                "робокос",
+                "роббос",
+                "робокс",
+                "роберт",
+                "рыбок",
+                "рома",
+                "бот",
+                "робо",
+                "роб",
+                "робик",
+            ],
+        )
 
         # Параметры fallback/retry (issue #979): единое место для таймаутов,
         # retry и правила коротких фраз. См. rob_box_voice/stt_fallback.py.

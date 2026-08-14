@@ -24,6 +24,7 @@ dialogue_node:
     - бот
     - робо
     - роб
+    - робик
     dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
     # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].

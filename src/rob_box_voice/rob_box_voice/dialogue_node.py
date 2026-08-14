@@ -610,7 +610,27 @@ class DialogueNode(Node):
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
-        self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
+        # 🔴 fix(voice #1252): wake words синхронизированы со stt_node.py — 12 вариантов
+        # из dialogue_node.yaml + исторический «робик» (потерян при 9ca7fb29, 21.02).
+        # STT реально выдаёт кривые варианты («робок», «роберт», «рыбок») — все покрываем.
+        self.declare_parameter(
+            "wake_words",
+            [
+                "робок",
+                "робот",
+                "роббокс",
+                "робокос",
+                "роббос",
+                "робокс",
+                "роберт",
+                "рыбок",
+                "рома",
+                "бот",
+                "робо",
+                "роб",
+                "робик",
+            ],
+        )
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)

@@ -23,6 +23,7 @@ dialogue_node:
     - бот
     - робо
     - роб
+    - робик
     dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
     enable_mcp_tools: true
