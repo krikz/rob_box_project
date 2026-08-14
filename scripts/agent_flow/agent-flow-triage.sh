@@ -414,6 +414,27 @@ except Exception: print("")')"
         skipped=$((skipped+1)); continue
     fi
 
+    # Ретро-фикс (14.08 t_0a765152): REOPENED issue — карточку создаём ЗАНОВО,
+    # но branch_name НЕ переиспользуем, если на нём уже влит PR. Триаж брал
+    # branch_name из прошлой карточки того же issue (#1217: PR #1220 merged на
+    # z-{agent}/1217-e2e-40-deepseek, триаж создал t_7cc96c7d с ТОЙ ЖЕ веткой
+    # → merge-gate по exact-match ветки ложно заархивировал ЖИВУЮ карточку,
+    # чья работа ещё в OPEN PR #1231). Если на кандидате уже есть MERGED PR —
+    # добавляем суффикс -v2/-r2 (цикл: -v3, -v4... пока ветка не свободна).
+    if [ "$is_reopened" = "true" ]; then
+        _branch_base="$branch"
+        _branch_v=2
+        while _merged_on_branch="$(gh pr list --repo "$GH_REPO" --head "$branch" \
+            --state merged --json number --jq '.[0].number' 2>/dev/null || true)" \
+            && [ -n "$_merged_on_branch" ]; do
+            branch="${_branch_base}-v${_branch_v}"
+            _branch_v=$((_branch_v+1))
+        done
+        if [ "$branch" != "$_branch_base" ]; then
+            log "issue #${number}: REOPENED — ветка ${_branch_base} уже влита через PR #${_merged_on_branch}, беру ${branch} (ретро t_0a765152)"
+        fi
+    fi
+
     # Ретро-фикс (13.08, #968 v3): THROTTLE — если по issue в БД уже есть
     # карточка (ЛЮБОЙ статус, включая archived) за последние 4 часа — не
     # создаём новую. Без этого тик каждые 2 мин плодил карточку (13:00,

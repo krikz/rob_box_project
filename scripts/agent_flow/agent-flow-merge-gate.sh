@@ -1937,6 +1937,24 @@ for pr in data:
     print(str(pr.get("number","")) + "\t" + (pr.get("headRefName") or ""))
 ' "$_retro_since" 2>/dev/null || true)"
 
+# Ретро-фикс (14.08 t_0a765152): head-ветки OPEN PR — один запрос на тик.
+# Карточка-продолжение REOPENED issue переиспользовала branch_name уже
+# влитого PR (#1217: PR #1220 merged на z-{agent}/1217-e2e-40-deepseek,
+# триаж создал t_7cc96c7d с ТОЙ ЖЕ веткой → этот проход заархивировал
+# ЖИВУЮ карточку, чья работа ещё в OPEN PR #1231). Если на ветке карточки
+# есть OPEN PR — merged PR относится к прошлому кругу, карточку НЕ
+# архивируем (ни done, ни blocked).
+_arch_open_heads="$(gh pr list --repo "$GH_REPO" --state open --base "$DEVELOP_BRANCH" \
+    --json number,headRefName 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for pr in data:
+        print(pr.get("headRefName") or "")
+except Exception:
+    pass
+' 2>/dev/null || true)"
+
 # Карточки загружаем один раз: id<TAB>status<TAB>branch<TAB>title (не-archived).
 # ВАЖНО: пустой branch_name печатаем как "-" (placeholder) — иначе два таба
 # подряд схлопываются в один при `IFS=$'\t' read` и title уезжает в branch
@@ -1989,6 +2007,20 @@ while IFS=$'\t' read -r c_id c_status c_branch c_title; do
         continue
     fi
     _arch_pr="${_matched%%$'\t'*}"
+    # Ретро-фикс (14.08 t_0a765152): карточка-продолжение REOPENED issue
+    # переиспользовала branch_name уже влитого PR (#1217: PR #1220 merged на
+    # z-{agent}/1217-e2e-40-deepseek; триаж создал t_7cc96c7d с ТОЙ ЖЕ веткой,
+    # merge-gate заархивировал ЖИВУЮ карточку 09:36Z, чья работа ещё в OPEN
+    # PR #1231). Если на ветке карточки сейчас есть OPEN PR — merged PR
+    # относится к ПРОШЛОМУ кругу (работа уже влита, карточка-продолжение
+    # делает НОВЫЙ фикс на той же ветке) → НЕ архивируем ни done, ни blocked.
+    # Это и есть «связь PR↔карточка» из РЕШЕНИЯ (б): открытый PR на ветке
+    # доказывает, что merged PR — не работа ЭТОЙ карточки.
+    if [ -n "$c_branch" ] && [ "$c_branch" != "-" ] \
+        && printf '%s\n' "$_arch_open_heads" | grep -Fxq -- "$c_branch"; then
+        log "retro-card-archive: card ${c_id} ${c_status} + merged PR #${_arch_pr}, но ветка ${c_branch} имеет OPEN PR — карточка-продолжение, НЕ архивирую (ретро 14.08 t_0a765152)"
+        continue
+    fi
     if [ "$c_status" = "done" ]; then
         log "retro-card-archive: card ${c_id} done + merged PR #${_arch_pr} → archive"
         if [ "$DRY_RUN" = "true" ]; then
