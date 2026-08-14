@@ -48,6 +48,14 @@ bash <repo>/scripts/agent_flow/install.sh             # реальная рас�
 устаревшем local). Автофикс через `install.sh`; если не помог — сразу
 создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
 
+**BRANCH_ACTIVE (главный worktree на фича-ветке воркера):** при дрейфе
+host↔origin автофикс выполняется из ВРЕМЕННОГО worktree на `origin/develop`
+(ретро 14.08 t_ea771b06), а НЕ из текущего дерева (оно на z-ветке и
+содержит незамерженный код — install.sh из него разнёс бы веточные скрипты):
+`git worktree add --detach <wt> origin/develop` → `REPO_DIR=<wt> bash
+<wt>/scripts/agent_flow/install.sh` → `git worktree remove --force <wt>`.
+Карточка создаётся только если и этот путь не помог (md5-сверка после).
+
 ## Скрипты
 
 ### `agent-flow-triage.sh` — no_agent=true, every 30m

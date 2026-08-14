@@ -36,6 +36,16 @@
 # безопасны, ветку не трогаем) и при дрейфе создаём карточку (exit 0 —
 # cron не валим, карточку разберёт воркер devops).
 #
+# Ретро 14.08 t_ea771b06: BRANCH_ACTIVE + DRIFT — раньше сразу create_drift_card
+# (auto-fix отложен, install.sh из текущего дерева разложил бы веточный код).
+# Это 2-й случай, когда дрейф при занятом воркером worktree требовал ручной
+# разборки (16:24 14.08 merge-gate+e2e-process; 01:52 14.08 triage). Теперь
+# автофикс выполняется ИЗ ВРЕМЕННОГО worktree на origin/develop:
+#   git worktree add --detach /tmp/wt-driftfix-$$ origin/develop
+#   REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh
+#   git worktree remove --force <wt>
+# Карточка создаётся ТОЛЬКО если и этот путь не помог (md5-сверка после).
+#
 # Теперь перед сверкой:
 #   1) `git fetch origin develop` (таймаут 30s); при недоступности origin —
 #      fallback на локальное дерево + WARN в stdout;
@@ -52,6 +62,9 @@
 #   - BRANCH_ACTIVE (current branch != develop)
 #                                       → маркер в stdout; host↔origin
 #                                         сверка выполняется; при дрейфе —
+#                                         автофикс из временного worktree на
+#                                         origin/develop; если вылечилось —
+#                                         exit 0 без карточки; если нет —
 #                                         create_drift_card; exit 0 (no_op)
 #   - OK (host == origin/develop, local == origin/develop)
 #                                       → exit 0, stdout пустой (no_op)
@@ -89,10 +102,13 @@ set -u
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
-ALERT_LOG="/home/builder/.hermes/profiles/devops/cron/output/agent-flow-drift.alert.log"
+ALERT_LOG="${DRIFT_ALERT_LOG:-/home/builder/.hermes/profiles/devops/cron/output/agent-flow-drift.alert.log}"
 REF_BRANCH="origin/develop"
 LOCAL_BRANCH="develop"
 FETCH_TIMEOUT=30
+# Префикс временного worktree для автофикса при BRANCH_ACTIVE (ретро 14.08
+# t_ea771b06). Переопределяется в тестах, чтобы не плодить /tmp.
+DRIFT_WT_PREFIX="${DRIFT_WT_PREFIX:-/tmp/wt-driftfix-}"
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -102,13 +118,30 @@ DRY_RUN=0
 # (`install.sh --list-files`). Ретро 13.08 t_2cae75c0: раньше список
 # дублировался здесь и разошёлся с install.sh (deploy-sweep, unlabeled-sweep,
 # kanban-retro-create отсутствовали) — drift-контроль молча не работал.
+# Ретро 14.08 t_ea771b06: список берём из install.sh на origin/develop
+# (эталон), а НЕ из локального дерева — на фича-ветке воркера install.sh
+# может быть старым (без --list-files) → FILES наполнился бы мусором из
+# full-install output и дрейф остался бы слепым (наблюдалось в live-прогоне
+# на z-devops/t_423453b1). Защита: фильтр на имена *.sh.
 FILES=()
-if [ -f "$INSTALL_SH" ]; then
+# 1) эталон: install.sh на origin/develop (после fetch ниже ref обновится,
+#    но даже pre-fetch ref достаточно — список файлов стабилен)
+if git -C "$REPO_DIR" cat-file -e "$REF_BRANCH:scripts/agent_flow/install.sh" 2>/dev/null; then
     while IFS= read -r f; do
-        [ -n "$f" ] && FILES+=("$f")
+        case "$f" in
+            *.sh) FILES+=("$f") ;;
+        esac
+    done < <(git -C "$REPO_DIR" show "$REF_BRANCH:scripts/agent_flow/install.sh" 2>/dev/null | bash -s -- --list-files 2>/dev/null)
+fi
+# 2) fallback: локальный install.sh (если origin недоступен)
+if [ "${#FILES[@]}" = "0" ] && [ -f "$INSTALL_SH" ]; then
+    while IFS= read -r f; do
+        case "$f" in
+            *.sh) FILES+=("$f") ;;
+        esac
     done < <(bash "$INSTALL_SH" --list-files 2>/dev/null)
 fi
-# fallback: если install.sh недоступен/сломан — прежний статический список
+# 3) fallback: если install.sh недоступен/сломан — прежний статический список
 if [ "${#FILES[@]}" = "0" ]; then
     FILES=(
         agent-flow-triage.sh
@@ -126,13 +159,19 @@ if [ "${#FILES[@]}" = "0" ]; then
     )
 fi
 
-TARGETS=(
-    "$REPO_DIR/scripts/agent_flow"
-    "/home/builder/.hermes/profiles/agent-flow/scripts"
-    "/home/builder/.hermes/profiles/architect/scripts"
-    "/home/builder/.hermes/profiles/devops/scripts"
-    "/home/builder/.hermes/scripts"
-)
+TARGETS=()
+if [ -n "${DRIFT_TARGETS:-}" ]; then
+    # Тесты/hermetic прогоны: DRIFT_TARGETS — colon-separated список путей.
+    IFS=':' read -r -a TARGETS <<< "$DRIFT_TARGETS"
+else
+    TARGETS=(
+        "$REPO_DIR/scripts/agent_flow"
+        "/home/builder/.hermes/profiles/agent-flow/scripts"
+        "/home/builder/.hermes/profiles/architect/scripts"
+        "/home/builder/.hermes/profiles/devops/scripts"
+        "/home/builder/.hermes/scripts"
+    )
+fi
 
 mkdir -p "$(dirname "$ALERT_LOG")" 2>/dev/null || true
 
@@ -211,7 +250,7 @@ compute_drift() {
 # пока воркер/надзор заметит, дрейф живёт часами). Теперь поднимаем карточку
 # сразу, через kanban-retro-create.sh (dedup по стабильному ключу — повторные
 # тики не плодят дубли, карточка обновляется воркером).
-RETRO_CREATE="/home/builder/.hermes/scripts/kanban-retro-create.sh"
+RETRO_CREATE="${RETRO_CREATE:-/home/builder/.hermes/scripts/kanban-retro-create.sh}"
 create_drift_card() {
     local key="agent-flow-host-drift-fix-failed"
     local title="ретро: host-дрейф agent-flow скриптов — auto-fix не помог (FIX FAILED)"
@@ -244,6 +283,14 @@ TARGETS: ${TARGETS[*]}
 # ветку не трогаем), при дрейфе — create_drift_card, НО exit 0 (не валим cron,
 # карточку разберёт воркер devops). install.sh НЕ запускаем: он раскладывает
 # файлы ТЕКУЩЕЙ ветки (z-*), что разнесло бы по хосту незамерженный код.
+#
+# Ретро 14.08 t_ea771b06: НО если дрейф можно вылечить БЕЗ установки кода
+# текущей ветки — раскладываем host-копии из временного worktree на
+# origin/develop (чистый эталон, не веточный код):
+#   git worktree add --detach /tmp/wt-driftfix-$$ origin/develop
+#   REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh
+#   git worktree remove --force <wt>
+# После — md5-сверка; карточка создаётся ТОЛЬКО если и этот путь не помог.
 CURRENT_BRANCH="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || true)"
 if [ -z "$CURRENT_BRANCH" ]; then
     # detached HEAD / не-git — не мешаем старой логике (fallback ниже)
@@ -260,6 +307,45 @@ else
     log "WARN: git fetch origin failed (timeout ${FETCH_TIMEOUT}s) — falling back to local-tree comparison; origin/develop drift NOT checked"
 fi
 
+# branch_active_autofix — автофикс при BRANCH_ACTIVE через временный worktree
+# на origin/develop (ретро 14.08 t_ea771b06). install.sh из worktree раскладывает
+# host-копии ИЗ origin/develop, а не из текущей z-ветки. После — md5-сверка.
+# Возврат: 0 = вылечено (или worktree недоступен — карточка всё равно создана
+# вызывающим), 1 = не вылечено.
+branch_active_autofix() {
+    local wt="${DRIFT_WT_PREFIX}$$"
+    log "BRANCH_ACTIVE auto-fix: temp worktree $wt at $REF_BRANCH"
+    if ! git -C "$REPO_DIR" worktree add --detach "$wt" "$REF_BRANCH" >>"$ALERT_LOG" 2>&1; then
+        log "FIX FAILED — git worktree add $wt $REF_BRANCH failed"
+        create_drift_card
+        return 1
+    fi
+    local wt_install="$wt/scripts/agent_flow/install.sh"
+    if [ ! -f "$wt_install" ]; then
+        log "FIX FAILED — $wt_install not found in worktree"
+        git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
+        create_drift_card
+        return 1
+    fi
+    log "Auto-fix (worktree): REPO_DIR=$wt bash $wt_install"
+    if REPO_DIR="$wt" bash "$wt_install" >> "$ALERT_LOG" 2>&1; then
+        log "Auto-fix (worktree) OK. Re-checking drift..."
+        compute_drift
+        if [ "$DRIFT" = "0" ]; then
+            log "FIXED — drift resolved via origin/develop worktree"
+            git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
+            return 0
+        fi
+        log "FIX FAILED — drift still present after worktree install: ${DRIFT_FILES[*]}"
+        create_drift_card
+    else
+        log "FIX FAILED — install.sh from worktree exited non-zero"
+        create_drift_card
+    fi
+    git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
+    return 1
+}
+
 if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "$LOCAL_BRANCH" ]; then
     echo "BRANCH_ACTIVE: $CURRENT_BRANCH"
     if [ "$FETCH_OK" = "1" ]; then
@@ -267,10 +353,9 @@ if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "$LOCAL_BRANCH" ]; then
         if [ "$DRIFT" = "1" ]; then
             log "DRIFT detected while BRANCH_ACTIVE ($CURRENT_BRANCH): ${DRIFT_FILES[*]}"
             if [ "$DRY_RUN" = "1" ]; then
-                log "DRY-RUN: card creation skipped (DRIFT_DRY_RUN=1)"
+                log "DRY-RUN: auto-fix skipped (DRIFT_DRY_RUN=1)"
             else
-                log "card created, auto-fix deferred (install.sh would deploy branch code)"
-                create_drift_card
+                branch_active_autofix
             fi
         fi
     fi
