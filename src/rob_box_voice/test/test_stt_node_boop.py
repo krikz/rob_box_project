@@ -133,7 +133,9 @@ def _ensure_rclpy_mock(monkeypatch):
                 RawAudio=MagicMock(LINEAR16_PCM=MagicMock()),
                 RecognitionModelOptions=MagicMock(REAL_TIME=MagicMock()),
                 LanguageRestrictionOptions=MagicMock(WHITELIST=MagicMock()),
-                TextNormalizationOptions=MagicMock(TEXT_NORMALIZATION_DISABLED=MagicMock()),
+                TextNormalizationOptions=MagicMock(
+                    TEXT_NORMALIZATION_DISABLED=MagicMock()
+                ),
                 SpeechAnalysisOptions=MagicMock(enable_speaker_analysis=MagicMock()),
                 StreamingOptions=MagicMock(),
                 StreamingRequest=MagicMock(),
@@ -159,13 +161,6 @@ def _ensure_optional_deps(monkeypatch):
             delattr(rob_box_voice, _leaf)
     _ensure_rclpy_mock(monkeypatch)
     yield
-
-
-from rob_box_voice.stt_fallback import (  # noqa: E402
-    DEFAULT_MIN_TEXT_CHARS,
-    DEFAULT_YANDEX_MAX_RETRIES,
-    DEFAULT_YANDEX_TIMEOUT_S,
-)
 
 
 def _make_boop_node(**param_overrides):
