@@ -36,6 +36,20 @@ CRITICAL_EXCLUDE_COMMON = [
     r"undeclare unknown subscriber",
     r"undeclare unknown queryable",
     r"zeroconf: failed to create client: daemon not running",
+    # Voice-assistant readiness line: "Missing critical SynthDefs: none"
+    # means ALL critical SynthDefs are present — the word "critical" alone
+    # must not trigger a deployment-critical issue (retro 15.08 t_a14ac65d).
+    r"missing critical synthdefs: none",
+    # BrokenPipeError from `ros2 topic list | head` in start_nav2_direct.sh:
+    # head closes the pipe after the first line, ros2cli prints a traceback —
+    # benign, the topic was found (retro 15.08 t_a14ac65d).
+    r"brokenpipeerror: \[errno 32\] broken pipe",
+    # The bare traceback header carries no signal by itself; the exception
+    # line that follows (e.g. "BrokenPipeError:", "ModuleNotFoundError:")
+    # still matches CRITICAL_MATCH_RE via "error" and is reported unless it
+    # is explicitly excluded above. This lets us exclude pipe-noise without
+    # hiding real Python crash tracebacks.
+    r"^traceback \(most recent call last\):$",
     # Clock-skew noise: zenoh router replaces the offending timestamp and
     # forwards the message — data is not lost, so this is not an outage.
     # Root cause is NTP desync between Pis (see scripts/maintenance/sync_time.sh).
