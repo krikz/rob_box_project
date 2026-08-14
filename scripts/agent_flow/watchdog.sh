@@ -435,6 +435,18 @@ WT_SWEEP_STATE="${WT_SWEEP_STATE:-$HERMES_HOME/state/agent-flow-wt-sweep.last}"
 WT_SWEEP_LOG="${WT_SWEEP_LOG:-$HERMES_HOME/logs/agent-flow-wt-sweep.log}"
 WT_SWEEP_PATTERNS="${WT_SWEEP_PATTERNS:-/tmp/wt-* /home/builder/wt-*}"
 WT_SWEEP_LOCKS="${WT_SWEEP_LOCKS:-/tmp/agent-flow-e2e-process.lock /tmp/agent-flow-merge-gate.lock /tmp/agent-flow-triage.lock}"
+# Проектные worktree (.worktrees/<task_id>) от archived/done карточек (ретро 14.08 t_d007c365).
+# kanban archive НЕ удаляет workspace/worktree, а `kanban gc` чистит только
+# scratch-workspaces (workspace_kind != 'scratch' → skip). Поэтому .worktrees/t_*
+# копятся (14.08: 42 шт, ~6.3 GB). Чистим по статусу карточки в kanban DB:
+# archived/done → git worktree remove --force; running/ready/прочие и карточки,
+# которых нет в DB → keep. Свой state-файл, чтобы оба sweep могли работать в
+# одном тике (у локального sweep свой cooldown).
+WT_PROJECT_WT_DIR="${WT_PROJECT_WT_DIR:-/home/builder/rob_box_project/.worktrees}"
+WT_PROJECT_SWEEP_KANBAN_DB="${WT_PROJECT_SWEEP_KANBAN_DB:-$KANBAN_BOARDS_DIR/robbox/kanban.db}"
+WT_PROJECT_SWEEP_STATE="${WT_PROJECT_SWEEP_STATE:-$HERMES_HOME/state/agent-flow-project-wt-sweep.last}"
+WT_PROJECT_SWEEP_LOG="${WT_PROJECT_SWEEP_LOG:-$HERMES_HOME/logs/agent-flow-project-wt-sweep.log}"
+WT_PROJECT_SWEEP_REMOVE_STATUSES="${WT_PROJECT_SWEEP_REMOVE_STATUSES:-archived done}"
 
 sweep_stale_local_worktrees() {
     local now last_run age_cutoff pat d gitdir_file gitdir branch repo_root removed=0
@@ -509,7 +521,123 @@ sweep_stale_local_worktrees() {
     [ "$removed" -gt 0 ] && log "wt-sweep: removed $removed stale worktree(s)"
     return 0
 }
+
+# ============================================================================
+# sweep_stale_project_worktrees — проектные worktree .worktrees/<task_id>
+# (ретро 14.08 t_d007c365: 41 archived/done карточка, ~6.3 GB не чистится —
+# kanban archive не удаляет workspace, `kanban gc` чистит только scratch).
+#
+# Отличие от sweep_stale_local_worktrees: критерий удаления НЕ «ветки нет в
+# origin» (у done-карточек t_9af45692/t_cc9cc56d/t_e0b221ff ветки ещё живут в
+# origin), а статус карточки в kanban DB: archived|done → remove; running,
+# ready и прочие, а также карточки, отсутствующие в DB → keep.
+#
+# Безопасность:
+#   - смотрим только $WT_PROJECT_WT_DIR/t_* (не трогаем главный worktree
+#     репозитория и чужие каталоги в .worktrees/);
+#   - статус читаем из kanban DB (python3+sqlite3, как основной watchdog);
+#   - DB недоступна/пуста → тик пропускается целиком (fail-closed);
+#   - каталог без валидного .git-файла → не наш worktree, не трогаем;
+#   - gitdir отсутствует → осиротевший каталог, rm -rf;
+#   - удаление через git worktree remove --force + prune (не rm -rf руками),
+#     чтобы не оставлять мусор в .git/worktrees/.
+# ============================================================================
+sweep_stale_project_worktrees() {
+    local now last_run d tid status gitdir_file gitdir repo_root removed=0
+    local lock db
+    # 1. cooldown: не чаще раза в WT_SWEEP_COOLDOWN_SEC (свой state-файл)
+    if [ -f "$WT_PROJECT_SWEEP_STATE" ]; then
+        last_run="$(cat "$WT_PROJECT_SWEEP_STATE" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        [ $(( now - last_run )) -lt "$WT_SWEEP_COOLDOWN_SEC" ] && return 0
+    fi
+    # 2. flock-guard: активные процессы agent-flow → пропуск тика
+    for lock in $WT_SWEEP_LOCKS; do
+        if [ -f "$lock" ] && ! flock -n "$lock" -c true 2>/dev/null; then
+            log "🛑 project-wt-sweep: $lock занят активным процессом — тик пропущен"
+            return 0
+        fi
+    done
+    # 3. каталог проектных worktree и kanban DB должны существовать
+    [ -d "$WT_PROJECT_WT_DIR" ] || return 0
+    db="$WT_PROJECT_SWEEP_KANBAN_DB"
+    [ -f "$db" ] || { log "🛑 project-wt-sweep: kanban DB $db не найден — тик пропущен"; return 0; }
+    # 4. кандидаты: только t_* (карточки kanban), без age-фильтра — статус
+    #    в DB является авторитетным (карточка может быть archived вчера).
+    local -a candidates=()
+    for d in "$WT_PROJECT_WT_DIR"/t_*; do
+        [ -d "$d" ] || continue
+        candidates+=("$d")
+    done
+    [ "${#candidates[@]}" -eq 0 ] && return 0
+    # 5. статусы всех кандидатов одним python-вызовом (fail-closed: ошибка → пусто)
+    local status_map
+    status_map="$(python3 - "$db" "${candidates[@]}" <<'PYEOF' 2>/dev/null || true
+import sqlite3, sys
+db = sys.argv[1]
+paths = sys.argv[2:]
+ids = [p.rsplit("/", 1)[-1] for p in paths]
+try:
+    con = sqlite3.connect(db)
+    try:
+        rows = con.execute(
+            "SELECT id, status FROM tasks WHERE id IN (%s)"
+            % ",".join("?" * len(ids)),
+            ids,
+        ).fetchall()
+    finally:
+        con.close()
+except Exception:
+    sys.exit(0)
+for tid, status in rows:
+    print(f"{tid}\t{status}")
+PYEOF
+)"
+    [ -n "$status_map" ] || { log "🛑 project-wt-sweep: kanban DB недоступен/пуст — тик пропущен"; return 0; }
+    # 6. разбор кандидатов
+    for d in "${candidates[@]}"; do
+        tid="${d##*/}"
+        gitdir_file="$d/.git"
+        # не наш worktree (нет .git-файла) → не трогаем
+        [ -f "$gitdir_file" ] || { log "project-wt-sweep: skip $d (нет .git-файла)"; continue; }
+        gitdir="$(sed -n 's/^gitdir: //p' "$gitdir_file" | head -1)"
+        # осиротевший каталог (.git-файл есть, gitdir отсутствует) → rm -rf
+        # (это мусор независимо от статуса карточки — worktree не зарегистрирован)
+        if [ -z "$gitdir" ] || [ ! -d "$gitdir" ]; then
+            rm -rf -- "$d" && {
+                log "project-wt-sweep: removed orphan $d (card $tid)"
+                echo "$(date -Is) REMOVED_ORPHAN $d card=$tid" >> "$WT_PROJECT_SWEEP_LOG"
+                removed=$((removed+1))
+            }
+            continue
+        fi
+        # статус карточки из status_map (tab-разделитель)
+        status="$(printf '%s\n' "$status_map" | awk -F'\t' -v t="$tid" '$1==t {print $2; exit}')"
+        # карточки нет в DB или статус не в списке на удаление → keep
+        case " $WT_PROJECT_SWEEP_REMOVE_STATUSES " in
+            *" $status "*) ;;
+            *)
+                log "project-wt-sweep: keep $d (card $tid status='${status:-<not-in-db>}')"
+                continue ;;
+        esac
+        repo_root="${gitdir%/.git/worktrees/*}"
+        if [ -n "$repo_root" ] && [ -d "$repo_root/.git" ] \
+            && git -C "$repo_root" worktree remove --force "$d" 2>/dev/null; then
+            git -C "$repo_root" worktree prune 2>/dev/null || true
+            log "project-wt-sweep: removed $d (card $tid $status)"
+            echo "$(date -Is) REMOVED $d card=$tid status=$status repo=$repo_root" >> "$WT_PROJECT_SWEEP_LOG"
+            removed=$((removed+1))
+        else
+            log "project-wt-sweep: FAILED remove $d (card $tid $status)"
+        fi
+    done
+    mkdir -p "$(dirname "$WT_PROJECT_SWEEP_STATE")"
+    echo "$(date +%s)" > "$WT_PROJECT_SWEEP_STATE"
+    [ "$removed" -gt 0 ] && log "project-wt-sweep: removed $removed stale project worktree(s)"
+    return 0
+}
 sweep_stale_local_worktrees || true
+sweep_stale_project_worktrees || true
 
 # ============================================================================
 # SOT→host auto-sync (ретро 13.08 t_767ab9b8)
