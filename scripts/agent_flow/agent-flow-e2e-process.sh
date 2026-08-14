@@ -434,6 +434,11 @@ ensure_worktree() {
 # Ретро 12.08 (t_bff6eccf): max также учитывает персистентный счётчик
 # (ROUND_COUNTER_FILE) — cleanup round-веток не должен сбрасывать нумерацию.
 ROUND_BRANCH=""
+# Ретро 14.08 (t_4268f2bf): 1 = round_ensure СОЗДАЛ (или пересоздал) round-ветку
+# этим тиком (а не переиспользовал существующую). Нужен для post-tick cleanup
+# пустых round-веток (см. ниже): если ветка создана, но за тик на ней не
+# появилось ни одного run — кандидат был снят до запуска, ветку удаляем.
+ROUND_CREATED=0
 round_ensure() {
     local list max_n n counter_n
     list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
@@ -462,6 +467,7 @@ round_ensure() {
         log "creating ${ROUND_BRANCH} from ${FOUNDATION_BRANCH} (fresh fetch)"
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: git push origin origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}"
+            ROUND_CREATED=1
         else
             # CRITICAL: пушим origin/${FOUNDATION_BRANCH}, НЕ локальную ветку —
             # локальный develop может отстать (чужие коммиты). Всегда свежий.
@@ -471,6 +477,9 @@ round_ensure() {
             if ! git -C "$REPO_DIR" push origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
                 log "failed to create ${ROUND_BRANCH}"; return 1
             fi
+            # Ретро 14.08 (t_4268f2bf): ветка создана ЭТИМ тиком — post-tick
+            # cleanup сможет удалить её, если на ней не появится ни одного run.
+            ROUND_CREATED=1
         fi
     else
         # Ретро 12.08 t_d3aeaa9b: НЕ переиспользуем stale round (база устарела).
@@ -493,6 +502,10 @@ round_ensure() {
                 if ! git -C "$REPO_DIR" push origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
                     log "failed to recreate ${ROUND_BRANCH}"; return 1
                 fi
+                # Ретро 14.08 (t_4268f2bf): ветка ПЕРЕСОЗДАНА этим тиком — если на
+                # ней не появится run'ов, post-tick cleanup удалит её (stale-база +
+                # 0 прогонов = мусор).
+                ROUND_CREATED=1
                 log "recreated ${ROUND_BRANCH} from fresh origin/${FOUNDATION_BRANCH}"
             fi
         fi
@@ -2217,6 +2230,34 @@ for issue in sorted(data, key=lambda i: i["number"]):
             pass
         sys.exit(0)
 ' 2>/dev/null || true)
+
+# --- round-cleanup: пустая round-ветка (ретро 14.08 t_4268f2bf) --------------
+# Гонка guard/sweep: pre-round guard видит живого кандидата (первый снимок) →
+# round_ensure создаёт round-N → но ДО запуска build/e2e кандидат снимается
+# (post_round_sweep следующего тика / merge-gate / пользовательский merge /
+# живой чек меток в основном цикле видит e2e-done) → на round-N 0 run'ов,
+# ветка остаётся пустой на remote (наблюдение: round-101/102/104/107/109,
+# 13-14.08). Фикс t_fe266643 чистил только ветку из тика round=NONE (кандидат
+# снят ДО создания round_ensure); здесь чистим ветку, СОЗДАННУЮ этим тиком,
+# но не получившую НИ ОДНОГО run. Удаление через gh api (git push --delete
+# требовал бы локального ref, которого может не быть после cleanup worktree).
+if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
+    _round_runs="$(gh run list --repo "$GH_REPO" --branch "$ROUND_BRANCH" --limit 5 \
+        --json databaseId --jq 'length' 2>/dev/null || echo 0)"
+    _round_runs="$(printf '%s' "$_round_runs" | grep -oE '[0-9]+' | head -n1 || echo 0)"
+    if [ "${_round_runs:-0}" -eq 0 ] 2>/dev/null; then
+        log "🛑 ${ROUND_BRANCH}: создана этим тиком, 0 run'ов — кандидат снят до запуска (ретро 14.08 t_4268f2bf)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: gh api -X DELETE repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}"
+        elif gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}" >/dev/null 2>&1; then
+            log "✅ ${ROUND_BRANCH} deleted (empty round branch — 0 run'ов за тик)"
+        else
+            log "⚠️ failed to delete ${ROUND_BRANCH} via gh api — следующий тик повторит (или разовый sweep)"
+        fi
+    else
+        log "${ROUND_BRANCH}: ${_round_runs} run(s) — ветка оставлена"
+    fi
+fi
 
 # --- summary -----------------------------------------------------------------
 log "tick done: processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"
