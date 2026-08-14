@@ -146,6 +146,17 @@ default **24ч**; e2e-активность = свежий коммит в вет
 перед каждым прогоном). Guard: тот же flock e2e-process — активный round
 не тронем.
 
+Дополнительно (ретро 14.08 t_3cfb3b5b): удаляет **stale PR-ветки** на remote —
+ветки, чей PR **MERGED** > `MERGED_STALE_HOURS` (default **2ч**) или **CLOSED**
+без merge > `CLOSED_STALE_HOURS` (default **24ч**). Без этого per-card/прочие
+ветки копятся вечно (в репо `auto-delete-head-branches` выключен) и мусорят
+реконсилейшн PR-сканы. Guard'ы: (a) ветки **OPEN PR** не трогаются никогда;
+(b) защищённые ветки (default + `develop`); (c) round-ветки `z-{e2e}/test-round-*`
+(их чистит round-sweep); (d) fork-PR (ветка живёт в fork'е); (e) **переиспользование**
+— если HEAD-коммит ветки новее момента merge/close её PR (в ветку пушили после
+закрытия PR), ветка не удаляется. Проверяется `gh pr list --state merged/closed`
++ `gh api branches`; удаление — `DELETE /git/refs/heads/{branch}`.
+
 **Cron (ретро 13.08 t_04d73108):** зарегистрирован в devops-профиле,
 `every 6h`, no_agent=true. Регистрация идемпотентно пересоздаётся
 `install.sh` (секция "Ensure cron job registration") — не потеряется при
@@ -154,7 +165,8 @@ default **24ч**; e2e-активность = свежий коммит в вет
 ```bash
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # показать, что удалит
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh            # удалить (с guard'ами)
-ROUND_STALE_HOURS=48 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh  # консервативный порог
+ROUND_STALE_HOURS=48 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh  # консервативный порог round
+MERGED_STALE_HOURS=6 CLOSED_STALE_HOURS=72 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # консервативный порог PR-веток
 ```
 
 ### `agent-flow-deploy-sweep.sh` — авто-sweep stale deployment issues (ретро 12.08 t_d3e44336)
