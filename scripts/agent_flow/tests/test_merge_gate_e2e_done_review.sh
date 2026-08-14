@@ -178,11 +178,74 @@ test_M4_dry_run_no_pr_edit() {
 }
 
 # ===========================================================================
+# M5. e2e-done + OPEN PR, НО PR создан ПОСЛЕ e2e-done → needs-review НЕ
+#     ставится; e2e-done снимается, возврат в needs-e2e (ретро 14.08
+#     t_28afb585, пункт 4: PR не тестировался — раунд прошёл до создания PR).
+# ===========================================================================
+test_M5_pr_created_after_e2e_done_back_to_needs_e2e() {
+    new_test
+    local issue=1238 pr=1238
+    fixture_e2e_done_open_pr "$issue" "$pr" 'voice 1238 demo' OPEN
+    # e2e-done повешен в 10:35Z, PR создан в 12:00Z (позже).
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[{"event":"labeled","label":{"name":"e2e-done"},"created_at":"2026-08-14T10:35:00Z"}]'
+    set_state "PR_${pr}_VIEW_JSON" '{"createdAt":"2026-08-14T12:00:00Z"}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # needs-review НЕ ставится на PR.
+    local add_review
+    add_review="$(printf '%s\n' "$journal" | grep -cE "gh pr edit ${pr} .*--add-label needs-review" || true)"
+    assert_eq "0" "$add_review" "PR created after e2e-done → needs-review NOT set" || return 1
+
+    # e2e-done снят с issue, needs-e2e поставлен (возврат в ротацию).
+    local remove_done
+    remove_done="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --remove-label e2e-done" || true)"
+    assert_eq "1" "$remove_done" "e2e-done removed from issue" || return 1
+    local add_e2e
+    add_e2e="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --add-label needs-e2e" || true)"
+    assert_eq "1" "$add_e2e" "needs-e2e added back" || return 1
+
+    # Комментарий-объяснение постится.
+    local comment
+    comment="$(printf '%s\n' "$journal" | grep -c 'e2e-done снят — PR' || true)"
+    assert_eq "1" "$comment" "explanation comment posted" || return 1
+}
+
+# ===========================================================================
+# M6. e2e-done + OPEN PR, PR создан ДО e2e-done → обычный reconcile
+#     (needs-review ставится). Регрессия M1 с данными timeline.
+# ===========================================================================
+test_M6_pr_created_before_e2e_done_still_reconciles() {
+    new_test
+    local issue=944 pr=1195
+    fixture_e2e_done_open_pr "$issue" "$pr" 'voice 944 demo' OPEN
+    # e2e-done повешен в 12:00Z, PR создан в 10:00Z (раньше) → нормально.
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[{"event":"labeled","label":{"name":"e2e-done"},"created_at":"2026-08-14T12:00:00Z"}]'
+    set_state "PR_${pr}_VIEW_JSON" '{"createdAt":"2026-08-14T10:00:00Z"}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local add_review
+    add_review="$(printf '%s\n' "$journal" | grep -cE "gh pr edit ${pr} .*--add-label needs-review" || true)"
+    assert_eq "1" "$add_review" "PR created before e2e-done → needs-review still set" || return 1
+
+    local remove_done
+    remove_done="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --remove-label e2e-done" || true)"
+    assert_eq "0" "$remove_done" "e2e-done NOT removed (PR был протестирован)" || return 1
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "M1. e2e-done + OPEN PR → needs-review" test_M1_e2e_done_open_pr_sets_needs_review
 run_test "M2. retick idempotent, no close" test_M2_reconcile_idempotent_on_retick
 run_test "M3. merged PR still closes (regression)" test_M3_e2e_done_merged_pr_still_closes
 run_test "M4. DRY_RUN no side effects" test_M4_dry_run_no_pr_edit
+run_test "M5. PR after e2e-done → back to needs-e2e" test_M5_pr_created_after_e2e_done_back_to_needs_e2e
+run_test "M6. PR before e2e-done → reconcile" test_M6_pr_created_before_e2e_done_still_reconciles
 
 summary

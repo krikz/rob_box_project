@@ -1359,6 +1359,23 @@ EOF
     # --- merge agent branch DIRECTLY into test-round-N (no wip layer) ---
     # Q20-rework: промежуточная wip-ветка не нужна. z-{agent}/<id>-<slug> уже
     # прошёл CI (PR в develop, merge-gate поставил needs-e2e) → льём сразу в round.
+    # Ретро 14.08 t_28afb585: ветка уже влита через ДРУГОЙ PR (переиспользование
+    # ветки влитого PR — паттерн #1238/#1218) → НЕ льём в round: e2e-раунд
+    # протестирует устаревшую базу, а diff нового PR (функциональные фиксы на
+    # влитой ветке) в develop не попадёт. Снимаем needs-review и возвращаем
+    # воркеру (merge-gate stale_branch_scan_all уже постит блок-коммент с
+    # инструкцией «новая ветка z-{agent}/t_<card>-<slug>»).
+    if [ -n "${pr_number:-}" ]; then
+        _ep_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$branch" \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+        if [ -n "$_ep_prev_merged" ] && [ "$_ep_prev_merged" != "$pr_number" ]; then
+            log "issue #${number}: 🛑 ветка ${branch} уже влита через PR #${_ep_prev_merged}, PR #${pr_number} — НЕ льём в round (ретро 14.08 t_28afb585)"
+            if [ "$DRY_RUN" != "true" ]; then
+                gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+            fi
+            skipped=$((skipped+1)); continue
+        fi
+    fi
     log "issue #${number}: merging ${branch} directly into ${ROUND_BRANCH}"
     if [ "$DRY_RUN" = "true" ]; then
         log "DRY-RUN would: merge ${branch} into ${ROUND_BRANCH} and push"

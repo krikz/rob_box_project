@@ -150,6 +150,15 @@ except Exception: pass'
                     journal "gh pr list --head $head_branch"
                     _data="$(get_state "PR_HEAD_${head_branch}_JSON")"
                     [ -n "$_data" ] || _data='[]'
+                    # Ретро 14.08 t_28afb585: guard в e2e-process проверяет
+                    # merged PR по head-ветке (`gh pr list --state merged
+                    # --head <branch>`). Отдельный ключ PR_MERGED_HEAD_<branch>_JSON
+                    # (fallback PR_HEAD_*) — чтобы тест мог симулировать «ветка
+                    # уже влита через ДРУГОЙ PR» (#1238/#1218).
+                    if printf '%s' "$*" | grep -q -- '--state merged'; then
+                        _merged_data="$(get_state "PR_MERGED_HEAD_${head_branch}_JSON")"
+                        [ -n "$_merged_data" ] && _data="$_merged_data"
+                    fi
                     # Применить минимальный jq: if length>0 then .[0].state / .[0].number
                     if printf '%s' "$*" | grep -q -- '--jq'; then
                         _jq="$(printf '%s' "$*" | sed -nE 's/.*--jq[[:space:]]+//p')"
@@ -777,6 +786,46 @@ test_H_branch_created_candidate_removed_deleted() {
     assert_eq "1" "$counter" "H: round-ветка была создана (счётчик инкрементирован), затем удалена"
 }
 
+# ===========================================================================
+# H2. Переиспользование ветки влитого PR (ретро 14.08 t_28afb585, #1238/#1218):
+#     у issue есть OPEN PR, НО его head-ветка уже влита через ДРУГОЙ PR →
+#     merge в round НЕ выполняется, needs-review снимается (поставлен без e2e).
+# ---------------------------------------------------------------------------
+test_H_merged_branch_reuse_skips_merge() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4901
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    # OPEN PR #4902 на ветке (как в C) — это «новый» PR поверх влитой ветки.
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":4902,\"state\":\"OPEN\",\"headRefName\":\"${branch}\"}]"
+    set_state "PR_4902_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:devops\"}]}"
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # НО ветка УЖЕ влита через ДРУГОЙ PR #1218 (паттерн #1238/#1218).
+    set_state "PR_MERGED_HEAD_${branch}_JSON" "[{\"number\":1218,\"state\":\"MERGED\"}]"
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "уже влита через PR #1218" "$errlog" "H: guard видит merged-PR по head-ветке"
+    assert_not_contains "merging ${branch} directly" "$errlog" "H: ветка влитого PR НЕ льётся в round"
+    # needs-review снят с PR (поставлен без e2e).
+    local review_removed
+    review_removed="$(printf '%s\n' "$journal" | grep -c 'gh pr edit 4902 .*--remove-label needs-review' || true)"
+    assert_eq "1" "$review_removed" "H: needs-review снят с PR"
+}
 
 # ===========================================================================
 run_test "A. issues без PR → round НЕ создаётся" test_A_no_prs_no_round
@@ -788,5 +837,6 @@ run_test "F. кандидат снят sweep'ом того же тика → rou
 run_test "F2. issue в АКТИВНОМ round → round НЕ создаётся (dedup)" test_F_active_round_dedup_no_new_round
 run_test "G. round завершён → dedup НЕ блокирует новый round" test_G_completed_round_not_active
 run_test "H. ветка создана, кандидат снят до прогона → round удаляется (t_4268f2bf)" test_H_branch_created_candidate_removed_deleted
+run_test "H2. ветка влитого PR → merge skip + needs-review снят" test_H_merged_branch_reuse_skips_merge
 
 summary
