@@ -726,6 +726,19 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (Q22 user-merge, e2e невозможен)"
+                        # Ретро 14.08 t_36c9ac4e: Q22-путь раньше делал continue ДО
+                        # archive-блока (стр. 774-783) → done-карточка оставалась
+                        # done НАВСЕГДА при смерженном PR (t_41fec39e: issue #1217
+                        # закрыта Q22-путём, PR #1220 merged, карточка done 21:25).
+                        # Архивируем здесь (close успешен → destructive cleanup
+                        # разрешён по ADR-0014 §4 req 4).
+                        if [ -n "${task_id:-}" ]; then
+                            _q22_state="$(kanban_card_status "$task_id")"
+                            if [ "$_q22_state" = "done" ]; then
+                                "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$task_id" >/dev/null 2>&1 \
+                                    && log "issue #${number}: card ${task_id} archived (Q22 merge, done)" || true
+                            fi
+                        fi
                     else
                         log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
                     fi
@@ -741,15 +754,22 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
         # 1) Find the issue's kanban card (may be done already).
         card_id=""
         if [ -z "${task_id:-}" ]; then
-            card_id="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null \
+            # Ретро 14.08 t_36c9ac4e: `kanban list --json` НЕ содержит поле
+            # "issue" (hermes v0.20.0 _task_to_dict — только id/title/body/...).
+            # Раньше t.get("issue") всегда был пуст → карточка по issue НЕ
+            # находилась НИКОГДА. Ищем маркер "issue: #N" в теле карточки
+            # (формат triage: "issue: #1217").
+            card_id="$( "$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null \
                 | python3 -c '
-import sys, json
+import sys, json, re
 try:
     d = json.load(sys.stdin)
     tasks = d if isinstance(d, list) else d.get("tasks", [])
+    num = sys.argv[1]
+    pat = re.compile(r"issue\s*[:=]\s*#?" + re.escape(num) + r"\b", re.IGNORECASE)
     for t in tasks:
-        if str(t.get("issue","")) == sys.argv[1]:
-            print(t.get("id","")); break
+        if pat.search(t.get("body") or ""):
+            print(t.get("id", "")); break
 except Exception:
     pass
 ' "$number" 2>/dev/null || true)"
@@ -1852,8 +1872,113 @@ for pr in data:
         print(issue + "\t" + pr_num + "\t" + head)
 ' "$_retro_since" 2>/dev/null)
 
+# ============================================================================
+# Ретро-архив done-карточек по MERGED PR (ретро 14.08 t_36c9ac4e)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: ретро/recovery-карточки (маркер retro-key, БЕЗ issue-линка) после
+# merge PR остаются done НАВСЕГДА:
+#   - archive-путь основного цикла (стр. 774-783) находит карточку ТОЛЬКО по
+#     issue: #N в body (kanban list --json -> t.get("issue")), а поля "issue"
+#     в выводе v0.20.0 НЕТ ВООБЩЕ → card_id пуст → archive не выполняется;
+#   - scan-all-prs смотрит только OPEN PR (UNSTABLE/CONFLICTING);
+#   - retro-path закрывает только ISSUES — карточки ретро/recovery не трогает.
+# ФАКТЫ 13.08 22:20Z: t_fe266643 (#1221), t_da3e0bd5 (#1212), t_04d73108
+# (#1216), t_2cae75c0 (#1215), t_2d78fbdd (#1211), t_7eab35a0 (#1210),
+# t_0d2479ba (#1163), t_35ff29f1 (#1214), recovery t_e9e09694/t_de961c1b
+# (PR #1212) — все done при MERGED PR, не archived.
+# РЕШЕНИЕ: тот же скан смерженных PR (base=develop, окно RETRO_MERGED_DAYS),
+# маппинг MERGED PR → task_id:
+#   (a) task_id из head-ветки: t_<hex> (паттерн scan-all-prs стр. 1202-1204);
+#   (b) карточки, чей title упоминает смерженный PR/branch (recovery-карточки
+#       вида "🔀 rebase PR #N (`branch`)" — своих PR не имеют);
+#   (c) карточки, чей СОБСТВЕННЫЙ branch_name (exact) совпадает с head-веткой
+#       смерженного PR — issue-путь основного цикла не достаёт их, когда issue
+#       УЖЕ CLOSED (t_41fec39e — issue #1217 закрыта Q22-путём, PR #1220
+#       merged, ветка z-{agent}/1217-... без t_<hex>). ВАЖНО: exact-match,
+#       НЕ substring по issue-номеру — иначе заархивируются done-карточки с
+#       CLOSED-но-НЕ-merged PR (t_cc9cc56d: PR #1155 CLOSED, issue #1041 CLOSED).
+# status=done → archive. Идемпотентно: archived пропускаем.
+# ============================================================================
+retro_archived=0
+log "retro-card-archive: scanning merged PRs → done cards (branch t_<hex> / title ref / own-branch merged)"
+
+# refs: pr_num<TAB>head смерженных PR в окне (используем тот же _retro_prs_json)
+_arch_refs="$(printf '%s' "$_retro_prs_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+since = sys.argv[1]
+for pr in data:
+    if (pr.get("mergedAt") or "") < since:
+        continue
+    print(str(pr.get("number","")) + "\t" + (pr.get("headRefName") or ""))
+' "$_retro_since" 2>/dev/null || true)"
+
+# Карточки загружаем один раз: id<TAB>status<TAB>branch<TAB>title (не-archived).
+# ВАЖНО: пустой branch_name печатаем как "-" (placeholder) — иначе два таба
+# подряд схлопываются в один при `IFS=$'\t' read` и title уезжает в branch
+# (та же ловушка, что scan-all-prs стр. 1238-1241).
+_arch_cards="$( "$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null \
+    | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+    for t in tasks:
+        if "archived" in (t.get("status") or ""):
+            continue
+        title = (t.get("title") or "").replace("\t", " ").replace("\n", " ")
+        branch = (t.get("branch_name") or "").replace("\t", " ").replace("\n", " ")
+        if not branch:
+            branch = "-"
+        print("{}\t{}\t{}\t{}".format(t.get("id",""), t.get("status",""), branch, title))
+except Exception:
+    pass
+' 2>/dev/null || true)"
+
+# Для каждой done-карточки: архивируем, если (a) её id встречается в head-ветке
+# смерженного PR, (b) title упоминает смерженный PR (#N) / его ветку, или
+# (c) собственный branch_name карточки (exact) — смерженный head PR.
+while IFS=$'\t' read -r c_id c_status c_branch c_title; do
+    [ -z "$c_id" ] && continue
+    [ "$c_status" != "done" ] && continue
+    _matched="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v id="$c_id" '
+        {
+            # Извлекаем t_<hex>-токен из head-ветки и сравниваем ТОЧНО с id
+            # карточки. Substring-матч ($2 ~ id) опасен: ветка t_abc1234-*
+            # ложно совпадёт с карточкой t_abc123 (ретро 14.08 t_36c9ac4e).
+            if (match($2, /t_[a-f0-9]+/)) {
+                tok = substr($2, RSTART, RLENGTH)
+                if (tok == id) { print $1"\t"$2; exit }
+            }
+        }')"
+    if [ -z "$_matched" ]; then
+        _matched="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v t="$c_title" '
+            ($1 != "" && index(t, "rebase PR #" $1) > 0) || ($2 != "" && index(t, $2) > 0) {print $1"\t"$2; exit}')"
+    fi
+    if [ -z "$_matched" ] && [ -n "$c_branch" ] && [ "$c_branch" != "-" ]; then
+        # (c) own branch_name (exact) против merged heads — безопасно, без
+        # ложных срабатываний на CLOSED-но-не-merged PR.
+        _matched="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v b="$c_branch" '$2 == b {print $1"\t"$2; exit}')"
+    fi
+    if [ -z "$_matched" ]; then
+        continue
+    fi
+    _arch_pr="${_matched%%$'\t'*}"
+    log "retro-card-archive: card ${c_id} done + merged PR #${_arch_pr} → archive"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would archive card ${c_id} (PR #${_arch_pr})"
+        retro_archived=$((retro_archived+1)); continue
+    fi
+    if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$c_id" >/dev/null 2>&1; then
+        retro_archived=$((retro_archived+1))
+        log "retro-card-archive: card ${c_id} archived (PR #${_arch_pr} merged)"
+    else
+        log "retro-card-archive: WARNING archive failed for ${c_id} (PR #${_arch_pr})"
+    fi
+done < <(printf '%s\n' "$_arch_cards")
+
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} retro_archived=${retro_archived}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
